@@ -13,37 +13,43 @@ merely extended.
 
 Memory: every frame is local to `run()`; nothing is stashed on `self`.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
+from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+from src.context import Context
 from src.data_aggregate.utils.assemble.cube import _betas_to_long, labels_to_wide
 from src.data_aggregate.utils.common.gics import load_gics_maps
-from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
-from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.incremental import (
-    COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, window_start, write_part,
+    COLUMNS_CHANGED,
+    PART_REFRESH_TRADING_DAYS,
+    plan_window,
+    window_start,
+    write_part,
 )
+from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames, load_price_frames, load_trading_calendar,
+    PriceFrames,
+    load_price_frames,
+    load_trading_calendar,
 )
 from src.data_aggregate.utils.target.betas import estimate_all_betas
 from src.data_aggregate.utils.target.factors import (
-    assemble_factor_panel, build_characteristics,
+    assemble_factor_panel,
+    build_characteristics,
     characteristic_to_factor_return,
     gics_sector_excess_returns,
     macro_change_factors,
 )
 from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
-
-from src.constants.constants_price import (DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS,
-                                     MACRO_MARKET_SERIES)
-from src.context import Context
+from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
 from src.utils.step import Step
 
@@ -76,14 +82,13 @@ class StepCubeTarget(Step):
 
     def run(self, full: bool = False) -> None:
 
-        # global variable definition 
+        # global variable definition
         horizons = self._cfg.targets.horizons
         max_h = max(horizons)
         calendar = load_trading_calendar(self._store)
-        window = plan_window(self._store, Tables.cube_part_targets, full=full,
-                             warmup= self._part.warmup_trading_days, 
-                             trading_index=calendar,
-                             extra_back=max_h)
+        window = plan_window(
+            self._store, Tables.cube_part_targets, full=full, warmup=self._part.warmup_trading_days, trading_index=calendar, extra_back=max_h
+        )
 
         # load inputs
         price_frames = self._load_frames(window.since)
@@ -101,29 +106,28 @@ class StepCubeTarget(Step):
 
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
-        targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons,
-                                      sector_groups, sector_excess, fundamentals, seams)
+        targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons, sector_groups, sector_excess, fundamentals, seams)
         n = self._persist(targets, betas, window, calendar, max_h)
-        
+
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(
-            store=self._store,
-            peers=load_peers_or_raise(self._context, self._config),
-            fields=self._FIELDS,
-            since=since)
+        return load_price_frames(store=self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
         """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
         frames.require("close_total")
         seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
-        self._log.info("Seam masks: %s of %s registered null_ret entries measured (%s ticker(s)) "
-                       "-> masked in the momentum style factor and the label's momentum exposure",
-                       sum(len(v) for v in seams.values()), listed, len(seams))
+        self._log.info(
+            "Seam masks: %s of %s registered null_ret entries measured (%s ticker(s)) "
+            "-> masked in the momentum style factor and the label's momentum exposure",
+            sum(len(v) for v in seams.values()),
+            listed,
+            len(seams),
+        )
         return seams
 
     def _load_fundamentals(self) -> pd.DataFrame:
@@ -138,8 +142,7 @@ class StepCubeTarget(Step):
         row of every `d_*` column. ~15 narrow series over 31y, so the full read is cheap."""
         wide = load_macro_wide(self._store)
         if wide is None:
-            raise RuntimeError(f"'{Tables.prices_macro}' is missing or empty -> no market or "
-                               "macro factors. Run `data_extract macro` first.")
+            raise RuntimeError(f"'{Tables.prices_macro}' is missing or empty -> no market or macro factors. Run `data_extract macro` first.")
         return wide.set_index("date").sort_index()
 
     # ---- factor panel ---- #
@@ -154,22 +157,19 @@ class StepCubeTarget(Step):
         ffill BEFORE pct_change and then reindex, so a macro-calendar hole becomes a zero
         return rather than shifting the next day's return onto a two-day move."""
         if MACRO_MARKET_SERIES not in macro.columns:
-            raise RuntimeError(f"'{MACRO_MARKET_SERIES}' missing from {Tables.prices_macro} -> "
-                               "no market factor, so betas and epsilon are undefined.")
+            raise RuntimeError(f"'{MACRO_MARKET_SERIES}' missing from {Tables.prices_macro} -> no market factor, so betas and epsilon are undefined.")
         s = macro[MACRO_MARKET_SERIES].astype(float)
         s = s.reindex(s.index.union(calendar)).ffill()
         return s.pct_change(fill_method=None).reindex(calendar)
 
-    def _asset_factors(self, macro: pd.DataFrame,
-                       calendar: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def _asset_factors(self, macro: pd.DataFrame, calendar: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Commodity + FX factor returns from `prices_macro`. The panel column names are the
         `MACRO_CUBE_FACTORS` keys, unchanged from when these came out of `prices` via
         `cube_part_market`, so no beta or feature name downstream moves."""
         cols: dict[str, pd.Series] = {}
         for panel_col, series in MACRO_CUBE_FACTORS.items():
             if series not in macro.columns:
-                self._log.warning("factor '%s' skipped: series '%s' absent from %s",
-                                  panel_col, series, Tables.prices_macro)
+                self._log.warning("factor '%s' skipped: series '%s' absent from %s", panel_col, series, Tables.prices_macro)
                 continue
             s = macro[series].astype(float)
             s = s.reindex(s.index.union(calendar)).ffill()
@@ -181,22 +181,24 @@ class StepCubeTarget(Step):
         fx = [c for c in frame.columns if MACRO_CUBE_FACTORS[c].startswith("fx_")]
         return frame.drop(columns=fx), frame[fx]
 
-    def _factor_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
-                      seams: dict[str, list[pd.Timestamp]] | None = None
-                      ) -> tuple[pd.DataFrame, list[str]]:
+    def _factor_panel(
+        self, frames: PriceFrames, fundamentals: pd.DataFrame | None, seams: dict[str, list[pd.Timestamp]] | None = None
+    ) -> tuple[pd.DataFrame, list[str]]:
         """Flat by design: style, macro, commodity/currency and market are each ONE call
         away, so every factor family that goes into the panel is visible here instead of
         behind another wrapper."""
 
         frames.require("close_split", "close_total", "ret")
-        chars = build_characteristics(stock_close_total=frames.close_total,
-                                      stock_ret=frames.ret,
-                                      fundamentals_history=fundamentals,
-                                      resvol_window=63,
-                                      stock_close_split=frames.close_split,
-                                      level_factor=frames.level_factor,
-                                      seams=seams)
-        macro = self._load_macro()                     # ONE read, ONE pivot, all macro below
+        chars = build_characteristics(
+            stock_close_total=frames.close_total,
+            stock_ret=frames.ret,
+            fundamentals_history=fundamentals,
+            resvol_window=63,
+            stock_close_split=frames.close_split,
+            level_factor=frames.level_factor,
+            seams=seams,
+        )
+        macro = self._load_macro()  # ONE read, ONE pivot, all macro below
         macro_chg = self._macro_changes(macro, frames.trading_index)
         commodity, currency = self._asset_factors(macro, frames.trading_index)
         mkt_ret = self._market_return(macro, frames.trading_index)
@@ -207,40 +209,32 @@ class StepCubeTarget(Step):
             style_cols[name] = characteristic_to_factor_return(char, frames.ret)
         style = pd.DataFrame(style_cols)
 
-        panel, macro_cols = assemble_factor_panel(
-            mkt_ret, style, commodity, currency, macro_chg)
+        panel, macro_cols = assemble_factor_panel(mkt_ret, style, commodity, currency, macro_chg)
 
-        self._log.info("Factor panel: %s factors (%s style/market, %s macro)",
-                       panel.shape[1], panel.shape[1] - len(macro_cols), len(macro_cols))
+        self._log.info("Factor panel: %s factors (%s style/market, %s macro)", panel.shape[1], panel.shape[1] - len(macro_cols), len(macro_cols))
 
         return panel, macro_cols
 
     # ---- GICS sector factor ---- #
-    def _sector_factor(self, frames: PriceFrames, sector_groups: dict[str, dict[str, str]],
-                       market_ret: pd.Series) -> pd.DataFrame | None:
+    def _sector_factor(self, frames: PriceFrames, sector_groups: dict[str, dict[str, str]], market_ret: pd.Series) -> pd.DataFrame | None:
 
         cfg = self._cfg.betas
-        sector = sector_groups['sector']
+        sector = sector_groups["sector"]
         frames.require("ret")
 
         # `market_ret` is the panel's own `market` column, passed in rather than re-derived:
         # this de-markets the sector REGRESSOR before any beta is fit, so it must be the exact
         # same series the betas are later fit against.
         df_sector_neutral = gics_sector_excess_returns(
-            stock_ret=frames.ret,
-            sector_map=sector,
-            market_ret=market_ret,
-            window=cfg.window,
-            min_obs=cfg.min_obs)
-        
-        self._log.info("GICS sector factor: %s sectors over %s tickers",
-                       len(set(sector.values())), df_sector_neutral.notna().any().sum())
-        
+            stock_ret=frames.ret, sector_map=sector, market_ret=market_ret, window=cfg.window, min_obs=cfg.min_obs
+        )
+
+        self._log.info("GICS sector factor: %s sectors over %s tickers", len(set(sector.values())), df_sector_neutral.notna().any().sum())
+
         return df_sector_neutral
 
     # ---- betas ---- #
-    def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame,
-                        sector_excess: pd.DataFrame | None) -> dict:
+    def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame, sector_excess: pd.DataFrame | None) -> dict:
         cfg = self._cfg.betas
         frames.require("ret")
         betas = estimate_all_betas(
@@ -253,7 +247,8 @@ class StepCubeTarget(Step):
             ridge_alpha_market=cfg.get("ridge_alpha_market", 0.5),
             step=cfg.get("step", 1),
             market_prior=cfg.get("market_prior", 1.0),
-            ffill_limit=cfg.get("ffill_limit", 21))
+            ffill_limit=cfg.get("ffill_limit", 21),
+        )
 
         # `_assemble_output` already OMITS a ticker with no estimable window, and
         # `compute_epsilon` skips a ticker absent from this dict -- so an empty dict is the
@@ -262,17 +257,22 @@ class StepCubeTarget(Step):
             raise RuntimeError("no ticker produced betas -> factor panel or returns are empty")
 
         bm = np.nanmean([b["beta_market"].mean() for b in betas.values()])
-        self._log.info("Estimated multi-factor betas for %s tickers (mean beta_market=%.2f)",
-                       len(betas), bm)
+        self._log.info("Estimated multi-factor betas for %s tickers (mean beta_market=%.2f)", len(betas), bm)
         return betas
 
     # ---- targets ---- #
-    def _build_targets(self, frames: PriceFrames, betas: dict, panel: pd.DataFrame,
-                       macro_cols: list[str], horizons: list[int],
-                       sector_groups: dict[str, dict[str, str]],
-                       sector_excess: pd.DataFrame | None,
-                       fundamentals: pd.DataFrame,
-                       seams: dict[str, list[pd.Timestamp]] | None = None) -> dict:
+    def _build_targets(
+        self,
+        frames: PriceFrames,
+        betas: dict,
+        panel: pd.DataFrame,
+        macro_cols: list[str],
+        horizons: list[int],
+        sector_groups: dict[str, dict[str, str]],
+        sector_excess: pd.DataFrame | None,
+        fundamentals: pd.DataFrame,
+        seams: dict[str, list[pd.Timestamp]] | None = None,
+    ) -> dict:
 
         cfg = self._cfg.targets
         frames.require("ret")
@@ -282,9 +282,9 @@ class StepCubeTarget(Step):
         label_types = list(cfg.get("labels", ["zscore", "rank", "epsilon"]))
         # recomputed here rather than reused from `PitFrames.market_cap`: that cache belongs to
         # the fundamentals sub-step, which runs later and over a different warm-up window.
-        market_cap = (daily_market_cap(fundamentals, frames.close_split,
-                                       level_factor=frames.level_factor)
-                      if cfg.get("neutralize_log_mcap", False) else None)
+        market_cap = (
+            daily_market_cap(fundamentals, frames.close_split, level_factor=frames.level_factor) if cfg.get("neutralize_log_mcap", False) else None
+        )
         labels = build_targets_multi(
             close_total=frames.close_total,
             betas=betas,
@@ -299,23 +299,27 @@ class StepCubeTarget(Step):
             stock_ret=frames.ret,
             vol_standardize=cfg.get("vol_standardize", False),
             market_cap=market_cap,
-            seams=seams)
+            seams=seams,
+        )
 
-        non_null = sum(int(df.notna().sum().sum())
-                       for per in labels.values() for df in per.values())
+        non_null = sum(int(df.notna().sum().sum()) for per in labels.values() for df in per.values())
         # the log_mcap name count is the ONLY observable for the one silent failure mode: an
         # EMPTY market-cap frame becomes an all-zero design column `lstsq` absorbs exactly, so
         # the flag would no-op with the size tilt intact and no test or gate would fire.
-        self._log.info("Built factor-neutral targets %s for horizons %s (projected orthogonal "
-                       "to %s loadings + momentum + GICS industry + log_mcap on %s names, "
-                       "non-null=%s)", label_types, horizons, len(fitted_beta_columns(betas)),
-                       0 if market_cap is None else int(market_cap.notna().any().sum()),
-                       non_null)
+        self._log.info(
+            "Built factor-neutral targets %s for horizons %s (projected orthogonal "
+            "to %s loadings + momentum + GICS industry + log_mcap on %s names, "
+            "non-null=%s)",
+            label_types,
+            horizons,
+            len(fitted_beta_columns(betas)),
+            0 if market_cap is None else int(market_cap.notna().any().sum()),
+            non_null,
+        )
         return labels
 
     # ---- persist ---- #
-    def _persist(self, labels: dict, betas: dict, window,
-                 calendar: pd.DatetimeIndex, max_h: int) -> int:
+    def _persist(self, labels: dict, betas: dict, window, calendar: pd.DatetimeIndex, max_h: int) -> int:
         targets_wide, betas_long = labels_to_wide(labels), _betas_to_long(betas)
 
         # targets: overwrite the trailing max_horizon window so MATURED labels refresh -- the
@@ -326,24 +330,21 @@ class StepCubeTarget(Step):
         # while `target_*_h30` is already set. What it DOES fix is the key -- `write_part`'s
         # default `keys=PANEL_KEYS` (["date","ticker"]) is now this part's true grain, where
         # the long format left a latent 2-vs-3 mismatch against the registry.
-        refresh_from = (None if window.is_full
-                        else window_start(calendar, window.last, max_h))
-        n = write_part(self._store, Tables.cube_part_targets, targets_wide, window,
-                       refresh_from=refresh_from)
+        refresh_from = None if window.is_full else window_start(calendar, window.last, max_h)
+        n = write_part(self._store, Tables.cube_part_targets, targets_wide, window, refresh_from=refresh_from)
         if n == COLUMNS_CHANGED:
             return n
-        
+
         # betas: backward-looking -> rewrite the trailing week INCLUSIVELY, then append.
         # `warmup=0` because `betas_long` is already computed over the TARGET window (which
         # reaches `warmup + max_h` back), so every refreshed date has its full look-back here
         # regardless; `refresh` only decides how far back the WRITE reaches.
-        beta_window = plan_window(self._store, Tables.cube_part_betas, full=window.is_full,
-                                  warmup=0, trading_index=calendar,
-                                  refresh=PART_REFRESH_TRADING_DAYS)
+        beta_window = plan_window(
+            self._store, Tables.cube_part_betas, full=window.is_full, warmup=0, trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS
+        )
         # `write_part` returns COLUMNS_CHANGED *instead of writing*, so discarding this return
         # would silently leave the betas part missing both the new column and the run's rows
         # (adding a macro factor adds a beta column, which is exactly when this fires).
-        if write_part(self._store, Tables.cube_part_betas, betas_long,
-                      beta_window) == COLUMNS_CHANGED:
+        if write_part(self._store, Tables.cube_part_betas, betas_long, beta_window) == COLUMNS_CHANGED:
             return COLUMNS_CHANGED
         return n

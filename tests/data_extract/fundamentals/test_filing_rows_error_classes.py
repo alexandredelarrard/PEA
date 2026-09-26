@@ -87,11 +87,11 @@ def test_an_unreadable_filing_is_always_swallowed_whatever_the_class(monkeypatch
 
     assert rows == []
     assert len(failures) == 1
-    print(f"\n  {type(error).__name__} from filing.xbrl() -> swallowed and counted " f"({failures[0][1][:40]})")
+    print(f"\n  {type(error).__name__} from filing.xbrl() -> swallowed and counted ({failures[0][1][:40]})")
 
 
 def test_the_programming_error_classes_are_the_ones_the_driver_uses():
     """One list, so the per-filing and per-ticker handlers cannot drift apart."""
     assert NameError in PROGRAMMING_ERRORS and KeyError in PROGRAMMING_ERRORS
     print("\n=== SANITY CHECK: shared class list ===")
-    print(f"  PROGRAMMING_ERRORS = " f"{tuple(e.__name__ for e in PROGRAMMING_ERRORS)}")
+    print(f"  PROGRAMMING_ERRORS = {tuple(e.__name__ for e in PROGRAMMING_ERRORS)}")

@@ -84,9 +84,7 @@ _SCALARS: tuple[tuple[str, str], ...] = (
     ("peer_group_tsr", "ecd:PeerGroupTotalShareholderRtnAmt"),
     ("company_selected_measure_value", "ecd:CoSelectedMeasureAmt"),
 )
-_TEXT_SCALARS: tuple[tuple[str, str], ...] = (
-    ("company_selected_measure_name", "ecd:CoSelectedMeasureName"),
-)
+_TEXT_SCALARS: tuple[tuple[str, str], ...] = (("company_selected_measure_name", "ecd:CoSelectedMeasureName"),)
 #: Item 402(x) boolean flags -> 1.0 / 0.0 / NaN.
 _FLAGS: tuple[tuple[str, str], ...] = (
     ("insider_trading_policy_adopted", "ecd:InsiderTrdPoliciesProcAdoptedFlag"),
@@ -111,17 +109,15 @@ def ecd_facts(filing) -> pd.DataFrame | None:
     """
     try:
         xbrl = filing.xbrl()
-    except Exception as e:                                  # noqa: BLE001 -- best-effort
-        logger.info("%s: filing.xbrl() failed (%s: %s)",
-                    getattr(filing, "accession_number", "?"), type(e).__name__, e)
+    except Exception as e:  # noqa: BLE001 -- best-effort
+        logger.info("%s: filing.xbrl() failed (%s: %s)", getattr(filing, "accession_number", "?"), type(e).__name__, e)
         return None
     if xbrl is None:
         return None
     try:
         df = xbrl.facts.to_dataframe()
-    except Exception as e:                                  # noqa: BLE001
-        logger.info("%s: facts.to_dataframe() failed (%s: %s)",
-                    getattr(filing, "accession_number", "?"), type(e).__name__, e)
+    except Exception as e:  # noqa: BLE001
+        logger.info("%s: facts.to_dataframe() failed (%s: %s)", getattr(filing, "accession_number", "?"), type(e).__name__, e)
         return None
     if df is None or df.empty or "concept" not in df.columns:
         return None
@@ -219,8 +215,7 @@ def peo_block(facts: pd.DataFrame) -> dict:
     # co-PEO breadcrumb, and BA tags both names at a single period_end regardless of the year
     # their compensation belongs to
     names_all = _concept(facts, _PEO_NAME)
-    all_names = sorted({str(v).strip() for v in names_all.get("value", pd.Series(dtype=object))
-                        if isinstance(v, str) and v.strip()})
+    all_names = sorted({str(v).strip() for v in names_all.get("value", pd.Series(dtype=object)) if isinstance(v, str) and v.strip()})
 
     out = {
         "ecd_period_end": period,
@@ -266,8 +261,7 @@ def peo_block(facts: pd.DataFrame) -> dict:
     # PeoMember-filtered name when the winning fact carried no individual label
     if out["peo_name"] is None:
         named = _at_period(names_all, period)
-        vals = [str(v).strip() for v in named.get("value", pd.Series(dtype=object))
-                if isinstance(v, str) and v.strip()]
+        vals = [str(v).strip() for v in named.get("value", pd.Series(dtype=object)) if isinstance(v, str) and v.strip()]
         if not vals and len(all_names) == 1:
             vals = all_names
         if vals:
@@ -283,7 +277,7 @@ def _scalar(facts: pd.DataFrame, concept: str, period: pd.Timestamp | None) -> f
 
 def _text(facts: pd.DataFrame, concept: str, period: pd.Timestamp | None) -> str | None:
     sub = _at_period(_concept(facts, concept), period)
-    if sub.empty:                              # the measure name is often tagged once, not per year
+    if sub.empty:  # the measure name is often tagged once, not per year
         sub = _concept(facts, concept)
     for v in sub.get("value", pd.Series(dtype=object)):
         if isinstance(v, str) and v.strip():
@@ -331,8 +325,7 @@ def ecd_row(facts: pd.DataFrame) -> dict:
     for col, concept in _FLAGS:
         row[col] = _flag(facts, concept)
     row["net_income"] = net_income(facts, period)
-    row["has_individual_executive_data"] = float(
-        _INDIVIDUAL_AXIS in facts.columns and bool(facts[_INDIVIDUAL_AXIS].notna().any()))
+    row["has_individual_executive_data"] = float(_INDIVIDUAL_AXIS in facts.columns and bool(facts[_INDIVIDUAL_AXIS].notna().any()))
     return row
 
 

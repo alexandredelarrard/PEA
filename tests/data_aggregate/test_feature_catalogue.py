@@ -97,7 +97,7 @@ def test_the_governance_catalogue_matches_the_declared_fields_both_ways():
     print(f"  suppressed (allowed)  {sorted(SUPPRESSED)}")
     print(f"  catalogue entries     {len(cat)}")
     print(f"  peer legs {len(d['peers'])} + self-history {len(d['hist'])} resolve to their raw")
-    print(f"  parents, so {len(cat)} entries describe " f"{len(d['raw'] - SUPPRESSED) + len(d['peers']) + len(d['hist'])} columns.")
+    print(f"  parents, so {len(cat)} entries describe {len(d['raw'] - SUPPRESSED) + len(d['peers']) + len(d['hist'])} columns.")
     print("  Before 2026-09-08 this was 0 entries for the whole part.")
 
 

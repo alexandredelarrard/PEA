@@ -95,7 +95,7 @@ def _select_fundamentals() -> pd.DataFrame:
     store = DataStore(get_engine())
     fh = store.load("fundamentals_history")
     if fh.empty:
-        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation " "fingerprint (run the extraction step first)")
+        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
     # `attach_gics_columns` reads `context.store` and nothing else
     fh = attach_gics_columns(add_cube_time_growth(fh), SimpleNamespace(store=store))
     picked: list[str] = []
@@ -486,7 +486,7 @@ def synthetic_ownership(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rando
                         "reporting_person_cik": f"{int(filer) + rp:010d}",
                         "reporting_person_name": f"ACTIVIST {i} MEMBER {rp}",
                         "item4_purpose_of_transaction": (
-                            "The Reporting Persons intend to seek board representation and to " "explore strategic alternatives."
+                            "The Reporting Persons intend to seek board representation and to explore strategic alternatives."
                             if a == 0
                             else "The Reporting Persons acquired additional shares."
                         ),

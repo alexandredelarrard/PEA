@@ -19,6 +19,7 @@ table and appear in neither column here.
 
     PYTHONPATH=. python scripts/measure_identity_resolution.py
 """
+
 from __future__ import annotations
 
 import zipfile
@@ -36,12 +37,10 @@ CACHE = Path("data/sec_insider_transactions")
 OUT = Path("reports/2026-09-11")
 
 
-def _read(z: zipfile.ZipFile, names: dict[str, str], member: str,
-          wanted: set[str]) -> pd.DataFrame:
+def _read(z: zipfile.ZipFile, names: dict[str, str], member: str, wanted: set[str]) -> pd.DataFrame:
     if member not in names:
         return pd.DataFrame()
-    frame = pd.read_csv(z.open(names[member]), sep="\t", dtype=str, low_memory=False,
-                        usecols=lambda c: c.upper() in wanted)
+    frame = pd.read_csv(z.open(names[member]), sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in wanted)
     frame.columns = [c.upper() for c in frame.columns]
     return frame
 
@@ -61,12 +60,10 @@ def main() -> None:
     for path in zips:
         with zipfile.ZipFile(path) as z:
             names = {n.upper(): n for n in z.namelist()}
-            sub = _read(z, names, "SUBMISSION.TSV",
-                        {"ACCESSION_NUMBER", "ISSUERCIK", "ISSUERTRADINGSYMBOL", "ISSUERNAME"})
+            sub = _read(z, names, "SUBMISSION.TSV", {"ACCESSION_NUMBER", "ISSUERCIK", "ISSUERTRADINGSYMBOL", "ISSUERNAME"})
             if sub.empty:
                 continue
-            nonderiv = _read(z, names, "NONDERIV_TRANS.TSV",
-                             {"ACCESSION_NUMBER", "NONDERIV_TRANS_SK"})
+            nonderiv = _read(z, names, "NONDERIV_TRANS.TSV", {"ACCESSION_NUMBER", "NONDERIV_TRANS_SK"})
             deriv = _read(z, names, "DERIV_TRANS.TSV", {"ACCESSION_NUMBER", "DERIV_TRANS_SK"})
 
         # rows per filing, keyed exactly as the table's PK is -- one per (accession, sk) per
@@ -79,10 +76,8 @@ def main() -> None:
             per_filing.update(kept["ACCESSION_NUMBER"].value_counts().to_dict())
 
         symbol = sub["ISSUERTRADINGSYMBOL"].astype("string").str.strip().str.upper()
-        cik = (sub["ISSUERCIK"].astype(str).str.strip()
-               .str.replace(r"\.0$", "", regex=True).str.zfill(10))
-        old = symbol.where(symbol.isin(universe)).fillna(
-            pd.Series(cik.map(cik2tkr), index=sub.index))
+        cik = sub["ISSUERCIK"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True).str.zfill(10)
+        old = symbol.where(symbol.isin(universe)).fillna(pd.Series(cik.map(cik2tkr), index=sub.index))
         old = old.where(old.isin(universe))
         new = pd.Series(cik.map(identity.entity_ticker), index=sub.index)
         rows = sub["ACCESSION_NUMBER"].map(per_filing).fillna(0).astype(int)
@@ -92,33 +87,47 @@ def main() -> None:
         is_relabelled = old.notna() & new.notna() & (old != new)
         tally["filings_read"] += len(sub)
         tally["no_issuer_cik"] += int(sub["ISSUERCIK"].isna().sum())
-        for label, mask in (("admitted", is_admitted), ("quarantined", is_rejected),
-                            ("relabelled", is_relabelled)):
+        for label, mask in (("admitted", is_admitted), ("quarantined", is_rejected), ("relabelled", is_relabelled)):
             tally[f"{label}_filings"] += int(mask.sum())
             tally[f"{label}_rows"] += int(rows[mask].sum())
         if is_admitted.any():
-            admitted.append(pd.DataFrame({"ticker": new[is_admitted], "cik": cik[is_admitted],
-                                          "name": sub.loc[is_admitted, "ISSUERNAME"],
-                                          "rows": rows[is_admitted]}))
+            admitted.append(
+                pd.DataFrame(
+                    {"ticker": new[is_admitted], "cik": cik[is_admitted], "name": sub.loc[is_admitted, "ISSUERNAME"], "rows": rows[is_admitted]}
+                )
+            )
         moved = is_rejected | is_relabelled
         if moved.any():
-            rejected.append(pd.DataFrame({"filed_as": old[moved], "resolves_to": new[moved],
-                                          "cik": cik[moved],
-                                          "name": sub.loc[moved, "ISSUERNAME"],
-                                          "rows": rows[moved]}))
+            rejected.append(
+                pd.DataFrame(
+                    {"filed_as": old[moved], "resolves_to": new[moved], "cik": cik[moved], "name": sub.loc[moved, "ISSUERNAME"], "rows": rows[moved]}
+                )
+            )
 
     print("\n=== IDENTITY RESOLUTION REPLAY: 81 cached quarters ===")
-    for key in ("filings_read", "no_issuer_cik", "admitted_filings", "admitted_rows",
-                "quarantined_filings", "quarantined_rows", "relabelled_filings",
-                "relabelled_rows"):
+    for key in (
+        "filings_read",
+        "no_issuer_cik",
+        "admitted_filings",
+        "admitted_rows",
+        "quarantined_filings",
+        "quarantined_rows",
+        "relabelled_filings",
+        "relabelled_rows",
+    ):
         print(f"  {key:22s} {tally[key]:>12,}")
 
-    for frames, name, keys in ((admitted, "identity-admitted.csv", ["ticker", "cik", "name"]),
-                               (rejected, "identity-rejected-replay.csv",
-                                ["filed_as", "resolves_to", "cik", "name"])):
-        out = (pd.concat(frames).groupby(keys)["rows"].agg(["sum", "size"])
-               .rename(columns={"sum": "rows", "size": "filings"})
-               .sort_values("rows", ascending=False))
+    for frames, name, keys in (
+        (admitted, "identity-admitted.csv", ["ticker", "cik", "name"]),
+        (rejected, "identity-rejected-replay.csv", ["filed_as", "resolves_to", "cik", "name"]),
+    ):
+        out = (
+            pd.concat(frames)
+            .groupby(keys)["rows"]
+            .agg(["sum", "size"])
+            .rename(columns={"sum": "rows", "size": "filings"})
+            .sort_values("rows", ascending=False)
+        )
         out.to_csv(OUT / name)
         print(f"\n  {name}: {len(out)} group(s), {out['rows'].sum():,} rows")
         print(out.head(12).to_string())

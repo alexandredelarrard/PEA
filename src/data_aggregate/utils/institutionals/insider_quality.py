@@ -322,7 +322,7 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     t["is_10b5_1"] = pd.to_numeric(t.get("is_10b5_1"), errors="coerce")
 
     _log.info(
-        "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, " "%s underpriced left as filed ($%.3ftn -> $%.3fbn)",
+        "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
         diag["input_rows"],
         diag["scoped_rows"],
         diag["dropped_unpriced"],

@@ -47,28 +47,57 @@ from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Table, Tables
 
 _MAIN_COLS = [
-    "ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
-    "company_name", "has_individual_executive_data",
+    "ticker",
+    "cik",
+    "accession_number",
+    "form",
+    "filing_date",
+    "period_of_report",
+    "company_name",
+    "has_individual_executive_data",
     # The fiscal year the PVP facts describe. Not derivable from `period_of_report`, which for a
     # proxy is the MEETING date -- without this column nothing says which year `peo_total_comp`
     # belongs to, and the PVP table carries five.
     "ecd_period_end",
-    "peo_name", "peo_total_comp", "peo_actually_paid_comp", "n_peos", "peo_names_all",
-    "neo_avg_total_comp", "neo_avg_actually_paid_comp",
-    "total_shareholder_return", "peer_group_tsr", "net_income",
-    "company_selected_measure_name", "company_selected_measure_value",
-    "insider_trading_policy_adopted", "award_timing_mnpi_considered",
-    "award_dates_predetermined", "mnpi_disclosure_timed_for_comp_value",
+    "peo_name",
+    "peo_total_comp",
+    "peo_actually_paid_comp",
+    "n_peos",
+    "peo_names_all",
+    "neo_avg_total_comp",
+    "neo_avg_actually_paid_comp",
+    "total_shareholder_return",
+    "peer_group_tsr",
+    "net_income",
+    "company_selected_measure_name",
+    "company_selected_measure_value",
+    "insider_trading_policy_adopted",
+    "award_timing_mnpi_considered",
+    "award_dates_predetermined",
+    "mnpi_disclosure_timed_for_comp_value",
 ]
 
 #: Destination table -> its numeric columns. Doubles as the table list handed to the driver, so
 #: the two can never disagree.
 _NUMERIC_COLS: dict[Table, list[str]] = {
-    Tables.def14a_edgar: [c for c in _MAIN_COLS if c not in (
-        "ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
-        "ecd_period_end", "company_name", "peo_name", "peo_names_all",
-        "company_selected_measure_name",
-    )],
+    Tables.def14a_edgar: [
+        c
+        for c in _MAIN_COLS
+        if c
+        not in (
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "ecd_period_end",
+            "company_name",
+            "peo_name",
+            "peo_names_all",
+            "company_selected_measure_name",
+        )
+    ],
 }
 
 #: Cover-page registrant name. Read from XBRL when tagged, else from the filing index --
@@ -87,9 +116,13 @@ def _company_name(facts: pd.DataFrame, filing) -> str | None:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
-def build_ticker_def14a_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                              done_accessions: frozenset[str] = frozenset(),
-                              ) -> dict[Table, pd.DataFrame]:
+def build_ticker_def14a_edgar(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+) -> dict[Table, pd.DataFrame]:
     """One ECD row per tagged filing. A filing with no `ecd:` facts yields nothing.
 
     `filing.xbrl()` replaces the old `filing.obj()`: the typed `ProxyStatement` was only needed
@@ -101,7 +134,7 @@ def build_ticker_def14a_edgar(ticker: str, cik: str, *, since: pd.Timestamp | No
     for f in new_filings(ticker, DEF14A_FORMS, since, done_accessions):
         facts = ecd_facts(f)
         if not has_ecd_block(facts):
-            continue                       # pre-402(v) fiscal year -- correct behaviour, no row
+            continue  # pre-402(v) fiscal year -- correct behaviour, no row
         row = ecd_row(facts)
         row.update(
             # ⚠ THE CIK COMES OFF THE FILING, NOT OFF THE ROSTER. `new_filings` resolves by
@@ -115,9 +148,11 @@ def build_ticker_def14a_edgar(ticker: str, cik: str, *, since: pd.Timestamp | No
             # register in `def14a/fetch.py` is for). What it fixes is OBSERVABILITY: with the
             # filer's own CIK stored, a reorganisation shows up immediately as two CIKs either
             # side of a date instead of hiding behind a uniformly-stamped column.
-            ticker=ticker, cik=str(getattr(f, "cik", cik) or cik).zfill(10),
+            ticker=ticker,
+            cik=str(getattr(f, "cik", cik) or cik).zfill(10),
             accession_number=f.accession_number,
-            form=str(f.form), filing_date=pd.Timestamp(f.filing_date).normalize(),
+            form=str(f.form),
+            filing_date=pd.Timestamp(f.filing_date).normalize(),
             # From the filing index, like every sibling fetcher. `ProxyStatement.fiscal_year_end`
             # was the previous source and never once resolved -- 0 of 329 stored rows had it.
             period_of_report=f.period_of_report,
@@ -129,8 +164,7 @@ def build_ticker_def14a_edgar(ticker: str, cik: str, *, since: pd.Timestamp | No
     # De-dup on the PK FIRST (an upsert touching one PK row twice is an error in Postgres),
     # then coerce -- coercing first would do the work on rows about to be dropped.
     table = Tables.def14a_edgar
-    return {table: _coerce_numeric(df.drop_duplicates(subset=list(table.pk), keep="last"),
-                                   _NUMERIC_COLS[table])}
+    return {table: _coerce_numeric(df.drop_duplicates(subset=list(table.pk), keep="last"), _NUMERIC_COLS[table])}
 
 
 def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -141,5 +175,4 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 
 def fetch_def14a_edgar(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history, tables=tuple(_NUMERIC_COLS),
-                    build=build_ticker_def14a_edgar, desc="DEF 14A (ECD XBRL)")
+    run_edgar_fetch(context, tickers, years_history, tables=tuple(_NUMERIC_COLS), build=build_ticker_def14a_edgar, desc="DEF 14A (ECD XBRL)")

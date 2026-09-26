@@ -92,7 +92,7 @@ def test_period_urls_legacy_vs_modern_boundary():
     mod = ftd._period_urls("202401a")
     assert _foia not in mod[0] and "fails-deliver-data/cnsfails202401a" in mod[0] and _foia in mod[1]
     print("\n=== SANITY: FTD legacy/modern URL selection ===")
-    print("  <=201706a -> FOIA legacy path first (modern fallback); >=201706b -> current path " "(legacy fallback). Boundary at 2017-06b. Validated.")
+    print("  <=201706a -> FOIA legacy path first (modern fallback); >=201706b -> current path (legacy fallback). Boundary at 2017-06b. Validated.")
 
 
 def test_parse_ftd_math_and_na_price():

@@ -7,6 +7,7 @@ credentials are masked in logs; and it works direct (no proxies). The transport 
 network, no proxies, no real IPs. This tool rotates only the operator's OWN authorized proxies; it
 never acquires anonymous proxy pools.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -23,17 +24,18 @@ class _Resp:
 
     def json(self):
         import json
+
         return json.loads(self.text)
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    monkeypatch.setattr(cw.time, "sleep", lambda *_: None)   # keep the fast-retry test instant
+    monkeypatch.setattr(cw.time, "sleep", lambda *_: None)  # keep the fast-retry test instant
 
 
 def test_rotates_ip_on_block_then_succeeds(monkeypatch):
     c = cw.Crawler(retries=3, backoff=0.0, proxies=["http://a:1", "http://b:2"])
-    seq = iter([429, 200])                                    # blocked on IP #1, ok on IP #2
+    seq = iter([429, 200])  # blocked on IP #1, ok on IP #2
     used, uas = [], []
 
     def fake(url, params, headers, proxy):
@@ -52,8 +54,7 @@ def test_rotates_ip_on_block_then_succeeds(monkeypatch):
     print("\n=== SANITY CHECK: rotate IP on block ===")
     print(f"  request 1 via {cw._mask(used[0])} -> 429 (detected); rotated -> {cw._mask(used[1])} -> 200")
     print(f"  rolling UAs distinct-capable: {len(set(uas))} seen across 2 calls")
-    print("  CONCLUSION: detection -> immediate IP rotation over the CONFIGURED (authorized) pool + "
-          "fast retry to success. Validated.")
+    print("  CONCLUSION: detection -> immediate IP rotation over the CONFIGURED (authorized) pool + fast retry to success. Validated.")
 
 
 def test_terminal_404_no_retry(monkeypatch):
@@ -119,4 +120,5 @@ def test_load_proxy_pool_from_env(monkeypatch):
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

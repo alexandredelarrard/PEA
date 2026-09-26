@@ -9,11 +9,12 @@ serially, one modern proxy takes ~94s (a 130k-char payload on a reasoning model)
 filings would be ~17h. The work is entirely network-bound on an API that is fine with
 parallel requests.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from queue import Queue
 from threading import Lock, Thread
-from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -50,8 +51,9 @@ class LLMExtractor(GptExtracter):
        ticker's filings are all parsed means a Ctrl-C costs at most one ticker's calls.
     """
 
-    def __init__(self, context: Context, config: DictConfig, action: str | None = None,
-                 threads: int | None = None, methodes: Sequence[str] | None = None):
+    def __init__(
+        self, context: Context, config: DictConfig, action: str | None = None, threads: int | None = None, methodes: Sequence[str] | None = None
+    ):
         super().__init__(context=context, config=config, action=action)
 
         self.threads = int(threads or self.threads)
@@ -79,7 +81,7 @@ class LLMExtractor(GptExtracter):
         The queue is emptied first: this extracter is reused across tickers, and topping
         it up every run would grow it without bound.
         """
-        while not self._clients.empty():                # a previous run's slots
+        while not self._clients.empty():  # a previous run's slots
             self._clients.get_nowait()
 
         if self._provider_pool is None:
@@ -114,7 +116,7 @@ class LLMExtractor(GptExtracter):
         """
         while True:
             task = self._tasks.get()
-            if task is None:                       # sentinel -> this worker is done
+            if task is None:  # sentinel -> this worker is done
                 self._tasks.task_done()
                 return
 
@@ -124,9 +126,13 @@ class LLMExtractor(GptExtracter):
                 parsed, usage = provider.parse(task.schema, system, user)
                 self.usage.record(usage)
                 result = LlmResult(seq=task.seq, task=task, parsed=parsed, usage=usage)
-            except Exception as exc:               # noqa: BLE001 -- one filing must not
-                result = LlmResult(seq=task.seq, task=task, parsed=None,  # kill the run
-                                   error=f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001 -- one filing must not
+                result = LlmResult(
+                    seq=task.seq,
+                    task=task,
+                    parsed=None,  # kill the run
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             finally:
                 # In `finally` or a raising task drains the client queue and the run
                 # deadlocks with every worker blocked on `clients.get()`.
@@ -148,8 +154,7 @@ class LLMExtractor(GptExtracter):
         self.initialize_queue_clients(n_workers)
 
         with tqdm(total=total, desc=f"llm:{self.action or 'extract'}", unit="call") as bar:
-            workers = [Thread(target=self._worker, args=(bar,), daemon=True)
-                       for _ in range(n_workers)]
+            workers = [Thread(target=self._worker, args=(bar,), daemon=True) for _ in range(n_workers)]
             for worker in workers:
                 worker.start()
             self.close_queue_clients(n_workers)
@@ -160,9 +165,13 @@ class LLMExtractor(GptExtracter):
         results = [self._results[seq] for seq in range(total)]
         self._submitted = 0
         self._results = {}
-        self._log.info("%d call(s), %s, $%.2f, cached input %.0f%%",
-                       self.usage.totals["calls"], self.usage.totals,
-                       self.usage.spend_estimate(), 100 * self.usage.cached_share)
+        self._log.info(
+            "%d call(s), %s, $%.2f, cached input %.0f%%",
+            self.usage.totals["calls"],
+            self.usage.totals,
+            self.usage.spend_estimate(),
+            100 * self.usage.cached_share,
+        )
         return results
 
     # ---------------------------------------------------------------- the entry --- #
@@ -215,6 +224,5 @@ class LLMExtractor(GptExtracter):
 
         failed = [r for r in results if not r.ok]
         if failed:
-            self._log.warning("%d of %d call(s) failed: %s", len(failed), len(results),
-                              {r.seq: r.error for r in failed[:5]})
+            self._log.warning("%d of %d call(s) failed: %s", len(failed), len(results), {r.seq: r.error for r in failed[:5]})
         return results

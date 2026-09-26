@@ -18,6 +18,7 @@ rather than duplicating.
     "$PY" scripts/seed_extraction_run.py --yes
     "$PY" scripts/seed_extraction_run.py --verify          # after --yes, before deleting the JSON
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,24 +42,26 @@ def _seed_frame(manifest: dict) -> pd.DataFrame:
     for table_name, entry in manifest.items():
         last_run = entry.get("last_run_date")
         last_full = entry.get("last_full_rescan_date")
-        rows.append({
-            "table_name": table_name,
-            "run_id": "seed",
-            "scope_hash": None,
-            "run_date": last_run,
-            "last_full_rescan_date": last_full,
-            # The JSON's ticker_count meant four different things across fetchers (Phase 5.3
-            # research); seeded as-is under the new name because it is what `manifest_window`
-            # actually compared against on the live run.
-            "tickers_requested": entry.get("ticker_count"),
-            "tickers_written": None,       # unknown, and honestly so -- the JSON never had it
-            "tickers_failed": None,
-            "rows_added": entry.get("rows_added"),
-            "is_full_rescan": bool(last_run) and last_run == last_full,
-            "started_at": entry.get("updated_at"),
-            "finished_at": entry.get("updated_at"),
-            "status": "ok",
-        })
+        rows.append(
+            {
+                "table_name": table_name,
+                "run_id": "seed",
+                "scope_hash": None,
+                "run_date": last_run,
+                "last_full_rescan_date": last_full,
+                # The JSON's ticker_count meant four different things across fetchers (Phase 5.3
+                # research); seeded as-is under the new name because it is what `manifest_window`
+                # actually compared against on the live run.
+                "tickers_requested": entry.get("ticker_count"),
+                "tickers_written": None,  # unknown, and honestly so -- the JSON never had it
+                "tickers_failed": None,
+                "rows_added": entry.get("rows_added"),
+                "is_full_rescan": bool(last_run) and last_run == last_full,
+                "started_at": entry.get("updated_at"),
+                "finished_at": entry.get("updated_at"),
+                "status": "ok",
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -81,22 +84,17 @@ def _old_manifest_window(entry: dict | None, ticker_count: int, full_rescan_days
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--yes", action="store_true", help="write the seed rows")
     parser.add_argument("--dry-run", action="store_true", help="print what would be written")
-    parser.add_argument("--verify", action="store_true",
-                        help="assert manifest_window agrees, JSON vs DB, for every table "
-                             "(run after --yes)")
-    parser.add_argument("--manifest", default=str(_MANIFEST_PATH),
-                        help=f"path to the JSON manifest (default: {_MANIFEST_PATH})")
+    parser.add_argument("--verify", action="store_true", help="assert manifest_window agrees, JSON vs DB, for every table (run after --yes)")
+    parser.add_argument("--manifest", default=str(_MANIFEST_PATH), help=f"path to the JSON manifest (default: {_MANIFEST_PATH})")
     args = parser.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     frame = _seed_frame(manifest)
     print(f"{len(frame)} table(s) in {args.manifest}:")
-    print(frame[["table_name", "run_date", "last_full_rescan_date",
-                "tickers_requested", "rows_added"]].to_string(index=False))
+    print(frame[["table_name", "run_date", "last_full_rescan_date", "tickers_requested", "rows_added"]].to_string(index=False))
 
     if args.dry_run or not (args.yes or args.verify):
         print("\nNothing written. Pass --yes to seed, --verify to check parity.")
@@ -117,23 +115,20 @@ def main() -> None:
             ticker_count = int(entry.get("ticker_count") or 0)
             old_since, old_full = _old_manifest_window(entry, ticker_count, full_rescan_days)
             new_since, new_full = manifest_window(
-                context, table_name, ticker_count,
-                fallback_since=pd.Timestamp("1900-01-01"), full_rescan_days=full_rescan_days)
+                context, table_name, ticker_count, fallback_since=pd.Timestamp("1900-01-01"), full_rescan_days=full_rescan_days
+            )
             # A fallback (`is_full_rescan=True`) makes `since` a caller-supplied constant on
             # BOTH paths, so only the flag is comparable there; a non-fallback window compares
             # the resolved date too.
             ok = (old_full == new_full) and (old_full or old_since == new_since)
-            print(f"  {table_name:28s} old=({old_since}, {old_full})  "
-                 f"new=({new_since}, {new_full})  {'OK' if ok else 'MISMATCH'}")
+            print(f"  {table_name:28s} old=({old_since}, {old_full})  new=({new_since}, {new_full})  {'OK' if ok else 'MISMATCH'}")
             if not ok:
                 mismatches.append(table_name)
 
         if mismatches:
-            print(f"\nFAILED: {len(mismatches)} table(s) disagree -- do NOT delete the JSON: "
-                 f"{mismatches}")
+            print(f"\nFAILED: {len(mismatches)} table(s) disagree -- do NOT delete the JSON: {mismatches}")
             sys.exit(1)
-        print(f"\nPASS: manifest_window agrees for all {len(manifest)} table(s). "
-             "The JSON may now be deleted.")
+        print(f"\nPASS: manifest_window agrees for all {len(manifest)} table(s). The JSON may now be deleted.")
 
 
 if __name__ == "__main__":

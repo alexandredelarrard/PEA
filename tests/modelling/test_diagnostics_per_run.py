@@ -17,13 +17,13 @@ Covered here:
   4. the run-level kpis.csv carries one row per (horizon, member) with the CV IC / IC_IR
      and the blend weight.
 """
+
 from __future__ import annotations
 
 import json
 import types
 from pathlib import Path
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
@@ -55,23 +55,23 @@ def _oos(panel, feats):
         if tr.empty or te.empty:
             continue
         b = train_ranker(tr, feats, "y", num_boost_round=25)
-        frames.append(pd.DataFrame({"date": te["date"].to_numpy(),
-                                    "ticker": te["ticker"].to_numpy(),
-                                    "pred": predict(b, te, feats).to_numpy(),
-                                    "y": te["y"].to_numpy()}))
+        frames.append(
+            pd.DataFrame(
+                {"date": te["date"].to_numpy(), "ticker": te["ticker"].to_numpy(), "pred": predict(b, te, feats).to_numpy(), "y": te["y"].to_numpy()}
+            )
+        )
     return pd.concat(frames, ignore_index=True)
 
 
 def _step(tmp_path: Path, ensemble: list[str]) -> StepModelling:
     """A StepModelling with just enough state for the diagnostics hook (no DB, no training)."""
-    step = StepModelling.__new__(StepModelling)          # bypass __init__ (needs a DB context)
-    step._context = types.SimpleNamespace(
-        save=True, paths={"OUTPUT_DIR": tmp_path}, log=None)
-    step._log = types.SimpleNamespace(
-        info=lambda *a, **k: None, warning=lambda *a, **k: warnings.append(a))
-    step._config = {"model": {"diagnostics": {"enabled": True, "top_n_features": 3,
-                                              "shap_sample": 300, "pdp_grid": 8}},
-                    "train": {"start_date": "2018-01-01", "end_date": "2019-01-01"}}
+    step = StepModelling.__new__(StepModelling)  # bypass __init__ (needs a DB context)
+    step._context = types.SimpleNamespace(save=True, paths={"OUTPUT_DIR": tmp_path}, log=None)
+    step._log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: warnings.append(a))
+    step._config = {
+        "model": {"diagnostics": {"enabled": True, "top_n_features": 3, "shap_sample": 300, "pdp_grid": 8}},
+        "train": {"start_date": "2018-01-01", "end_date": "2019-01-01"},
+    }
     # OmegaConf-like attribute access over the plain dicts above
     step._config = _Attr(step._config)
     step.model_types = list(ensemble)
@@ -85,6 +85,7 @@ def _step(tmp_path: Path, ensemble: list[str]) -> StepModelling:
 
 class _Attr(dict):
     """Minimal attribute-access dict so the step can read `config.model.diagnostics`."""
+
     def __getattr__(self, k):
         v = self[k]
         return _Attr(v) if isinstance(v, dict) else v
@@ -102,14 +103,15 @@ def test_booster_members_resolved_by_type_not_name():
     linear members are ignored."""
     panel, feats = _panel(n_days=30, n_tickers=20)
     booster = train_ranker(panel, feats, "y", num_boost_round=10)
-    linear = object()                                   # stands in for the elasticnet member
+    linear = object()  # stands in for the elasticnet member
 
     step = StepModelling.__new__(StepModelling)
-    for names in (["elasticnet", "lgbm", "random_forest"],      # current config
-                  ["elasticnet", "lightgbm"],                   # legacy name
-                  ["elasticnet"]):                              # linear-only -> nothing
-        step.models = {30: {n: (linear if n in ("elasticnet", "ridge") else booster)
-                            for n in names}}
+    for names in (
+        ["elasticnet", "lgbm", "random_forest"],  # current config
+        ["elasticnet", "lightgbm"],  # legacy name
+        ["elasticnet"],
+    ):  # linear-only -> nothing
+        step.models = {30: {n: (linear if n in ("elasticnet", "ridge") else booster) for n in names}}
         got = set(step._booster_members(30))
         assert got == {n for n in names if n not in ("elasticnet", "ridge")}, (names, got)
         assert "elasticnet" not in got
@@ -118,8 +120,7 @@ def test_booster_members_resolved_by_type_not_name():
     print("  ensemble [elasticnet, lgbm, random_forest] -> boosters {lgbm, random_forest}")
     print("  ensemble [elasticnet, lightgbm]            -> boosters {lightgbm}   (legacy name)")
     print("  ensemble [elasticnet]                      -> boosters {}          (warns, no crash)")
-    print("  Resolution is by isinstance(lgb.Booster), so renaming a member in "
-          "model.ensemble can no longer silently disable diagnostics. Validated.")
+    print("  Resolution is by isinstance(lgb.Booster), so renaming a member in model.ensemble can no longer silently disable diagnostics. Validated.")
 
 
 def test_run_writes_shap_values_and_kpis_per_horizon(tmp_path):
@@ -127,18 +128,25 @@ def test_run_writes_shap_values_and_kpis_per_horizon(tmp_path):
     IC curve and kpis.json -- for EVERY booster member -- plus the run-level kpis.csv."""
     panel, feats = _panel()
     lgbm = train_ranker(panel, feats, "y", num_boost_round=30)
-    rf = train_ranker(panel, feats, "y", num_boost_round=30,
-                      params={"objective": "regression", "boosting": "rf",
-                              "bagging_fraction": 0.7, "bagging_freq": 1,
-                              "feature_fraction": 0.7, "verbosity": -1})
+    rf = train_ranker(
+        panel,
+        feats,
+        "y",
+        num_boost_round=30,
+        params={"objective": "regression", "boosting": "rf", "bagging_fraction": 0.7, "bagging_freq": 1, "feature_fraction": 0.7, "verbosity": -1},
+    )
     oos = _oos(panel, feats)
 
     step = _step(tmp_path, ["elasticnet", "lgbm", "random_forest"])
     step.models = {30: {"elasticnet": object(), "lgbm": lgbm, "random_forest": rf}}
     step.horizon_ic = {30: {"mean_ic": 0.031, "ic_ir": 1.42}}
-    step.member_ic = {30: {"lgbm": {"mean_ic": 0.028, "ic_ir": 1.20},
-                           "random_forest": {"mean_ic": 0.026, "ic_ir": 1.05},
-                           "elasticnet": {"mean_ic": 0.019, "ic_ir": 0.90}}}
+    step.member_ic = {
+        30: {
+            "lgbm": {"mean_ic": 0.028, "ic_ir": 1.20},
+            "random_forest": {"mean_ic": 0.026, "ic_ir": 1.05},
+            "elasticnet": {"mean_ic": 0.019, "ic_ir": 0.90},
+        }
+    }
     step.oos_predictions = {30: oos}
     step._lgb_feats = lambda h=None: feats
     step.horizon_weights = {30: 1.0}
@@ -162,8 +170,7 @@ def test_run_writes_shap_values_and_kpis_per_horizon(tmp_path):
         assert pdps, f"{member}: no PDP written"
         assert (mdir / "shap_values.parquet").exists(), f"{member}: raw SHAP values missing"
         assert (mdir / "shap_importance.csv").exists() and (mdir / "shap_importance.png").exists()
-        assert ((mdir / "feature_importance.xlsx").exists()
-                or (mdir / "feature_importance.csv").exists())
+        assert (mdir / "feature_importance.xlsx").exists() or (mdir / "feature_importance.csv").exists()
         sv = pd.read_parquet(mdir / "shap_values.parquet")
         # the RAW matrix: keyed by (date, ticker), one column per model feature
         assert list(sv.columns[:2]) == ["date", "ticker"], sv.columns[:4].tolist()
@@ -187,16 +194,15 @@ def test_run_writes_shap_values_and_kpis_per_horizon(tmp_path):
     assert ens["cv_ic_ir"] == 1.42 and ens["blend_weight"] == 1.0
 
     print("\n=== SANITY CHECK: per-run diagnostics written per horizon ===")
-    print(f"  {hdir.relative_to(tmp_path)}/  kpis.json, ic_over_time.png+csv "
-          f"({hk['oos_ic_days']} OOS IC days, mean {hk['oos_ic_mean']:+.4f})")
+    print(f"  {hdir.relative_to(tmp_path)}/  kpis.json, ic_over_time.png+csv ({hk['oos_ic_days']} OOS IC days, mean {hk['oos_ic_mean']:+.4f})")
     for member, (n_pdp, n_shap) in per_member.items():
-        print(f"    {member}/  {n_pdp} PDP PNGs, shap_values.parquet "
-              f"({n_shap} rows x {len(feats)} features), shap_importance.png+csv, gain table")
+        print(f"    {member}/  {n_pdp} PDP PNGs, shap_values.parquet ({n_shap} rows x {len(feats)} features), shap_importance.png+csv, gain table")
     print("    elasticnet/ -> absent (linear member, no SHAP/PDP)")
-    print(f"  run kpis.csv: {len(kcsv)} rows "
-          f"(ENSEMBLE IC_IR {ens['cv_ic_ir']:+.2f}, blend weight {ens['blend_weight']:.2f})")
-    print("  CONCLUSION: training now saves the raw SHAP values + PDPs per booster member and "
-          "the key KPIs per horizon, under one run-stamp folder. Validated.")
+    print(f"  run kpis.csv: {len(kcsv)} rows (ENSEMBLE IC_IR {ens['cv_ic_ir']:+.2f}, blend weight {ens['blend_weight']:.2f})")
+    print(
+        "  CONCLUSION: training now saves the raw SHAP values + PDPs per booster member and "
+        "the key KPIs per horizon, under one run-stamp folder. Validated."
+    )
 
 
 def test_shap_values_match_importance_and_are_signed(tmp_path):
@@ -209,6 +215,7 @@ def test_shap_values_match_importance_and_are_signed(tmp_path):
     got = diagnostics.shap_row_values(booster, x, feats, sample=200)
     if got is None:
         import pytest
+
         pytest.skip("shap not installed in this environment")
     values, idx = got
     imp = diagnostics.shap_importance_from_values(values, feats)
@@ -217,19 +224,15 @@ def test_shap_values_match_importance_and_are_signed(tmp_path):
     sv = pd.read_parquet(tmp_path / "shap_values.parquet")
 
     recomputed = sv[feats].abs().mean().sort_values(ascending=False)
-    pd.testing.assert_series_equal(recomputed, imp.astype("float32"),
-                                  check_names=False, rtol=1e-5)
+    pd.testing.assert_series_equal(recomputed, imp.astype("float32"), check_names=False, rtol=1e-5)
     assert (values < 0).any() and (values > 0).any(), "SHAP values must be SIGNED"
     # rows are keyed back to the panel they came from
     assert (sv["ticker"].to_numpy() == panel.iloc[idx]["ticker"].to_numpy()).all()
 
     print("\n=== SANITY CHECK: raw SHAP values <-> importance ===")
-    print(f"  {len(sv)} rows x {len(feats)} features; signed (min {values.min():+.4f}, "
-          f"max {values.max():+.4f})")
-    print(f"  mean|SHAP| recomputed from the saved matrix == shap_importance ranking "
-          f"(top: {list(imp.head(3).index)})")
-    print("  rows join back to (date, ticker), so a single name/day attribution is "
-          "recoverable after the run. Validated.")
+    print(f"  {len(sv)} rows x {len(feats)} features; signed (min {values.min():+.4f}, max {values.max():+.4f})")
+    print(f"  mean|SHAP| recomputed from the saved matrix == shap_importance ranking (top: {list(imp.head(3).index)})")
+    print("  rows join back to (date, ticker), so a single name/day attribution is recoverable after the run. Validated.")
 
 
 def test_design_matrix_matches_training_encoding_for_categoricals():
@@ -243,7 +246,7 @@ def test_design_matrix_matches_training_encoding_for_categoricals():
 
     panel, feats = _panel(n_days=12, n_tickers=15, seed=7)
     panel["sector"] = np.where(panel["ticker"] < "T007", "Energy", "Utilities")  # TEXT
-    panel["industry_group"] = np.where(panel["ticker"] < "T004", 3, 8)           # already numeric
+    panel["industry_group"] = np.where(panel["ticker"] < "T004", 3, 8)  # already numeric
     cats = ["sector", "industry_group"]
     all_feats = feats + cats
 
@@ -258,22 +261,23 @@ def test_design_matrix_matches_training_encoding_for_categoricals():
     assert (coerced["industry_group"].to_numpy() == panel["industry_group"].to_numpy()).all()
 
     # and the whole pipeline runs on it end to end (train -> SHAP) without raising
-    booster = train_ranker(panel, all_feats, "y", num_boost_round=10,
-                           categorical_features=cats)
+    booster = train_ranker(panel, all_feats, "y", num_boost_round=10, categorical_features=cats)
     got = diagnostics.shap_row_values(booster, x, all_feats, sample=50)
     n_shap = "shap absent" if got is None else f"{got[0].shape[0]}x{got[0].shape[1]}"
 
     print("\n=== SANITY CHECK: diagnostics encoding == training encoding ===")
-    print(f"  sector (TEXT 'Energy'/'Utilities') -> code {ml.CATEGORICAL_NA_CODE} "
-          "(training's missing code), no exception where the old to_numpy('float32') raised")
+    print(
+        f"  sector (TEXT 'Energy'/'Utilities') -> code {ml.CATEGORICAL_NA_CODE} "
+        "(training's missing code), no exception where the old to_numpy('float32') raised"
+    )
     print("  industry_group (already numeric 3/8) -> passed through unchanged: {3.0, 8.0}")
     print(f"  train(categoricals) -> SHAP on the same matrix: {n_shap}")
-    print("  ONE coercion rule (model.coerce_categoricals) serves the LightGBM Dataset and the "
-          "SHAP/PDP matrix. Validated.")
+    print("  ONE coercion rule (model.coerce_categoricals) serves the LightGBM Dataset and the SHAP/PDP matrix. Validated.")
 
 
 if __name__ == "__main__":
     import sys
 
     import pytest
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

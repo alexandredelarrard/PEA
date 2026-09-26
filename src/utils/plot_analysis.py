@@ -1,6 +1,6 @@
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
 
 
@@ -16,19 +16,14 @@ def var_vs_target(data, Y_label, variable, bins=30, normalize=False):
 
     if len(data[variable].value_counts()) > bins:
         if data[variable].dtype != "O":
-            data[variable] = pd.qcut(
-                data[variable], bins, precision=1, duplicates="drop"
-            )
+            data[variable] = pd.qcut(data[variable], bins, precision=1, duplicates="drop")
         else:
             modalities = data[variable].value_counts().index[:bins]
             data.loc[~data[variable].isin(modalities), variable] = "other"
 
     avg_target = data[Y_label].mean()
     if normalize:
-        Y = (
-            data[[variable] + list(Y_label)].groupby(variable).mean()
-            / data[list(Y_label)].mean()
-        )
+        Y = data[[variable] + list(Y_label)].groupby(variable).mean() / data[list(Y_label)].mean()
 
     else:
         Y = data[[variable] + list(Y_label)].groupby(variable).mean()
@@ -90,9 +85,7 @@ def plot_dendrogram(model, **kwargs):
                 current_count += counts[child_idx - n_samples]
         counts[i] = current_count
 
-    linkage_matrix = np.column_stack(
-        [model.children_, model.distances_, counts]
-    ).astype(float)
+    linkage_matrix = np.column_stack([model.children_, model.distances_, counts]).astype(float)
 
     # Plot the corresponding dendrogram
     dendrogram(linkage_matrix, **kwargs)

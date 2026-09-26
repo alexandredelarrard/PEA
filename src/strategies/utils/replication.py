@@ -34,25 +34,24 @@ POINT-IN-TIME. Flows are stamped on the filing date, and filings routinely land 
 so trading that same close would be look-ahead. Every flow is executed `execution_lag` trading
 days later (default 1) at that day's close.
 """
+
 from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_SEED_MIN_NAMES = 50    # the cohort holds 2 names on its first filing day and 271 by 2014-02-28;
-                        # seeding on a 2-name book is not a replication of anything
+_SEED_MIN_NAMES = 50  # the cohort holds 2 names on its first filing day and 271 by 2014-02-28;
+# seeding on a 2-name book is not a replication of anything
 
 
 def _wide(panel: pd.DataFrame, col: str) -> pd.DataFrame:
     return panel.pivot_table(index="as_of", columns="ticker", values=col, aggfunc="last")
 
 
-def _close_panel(prices: pd.DataFrame, index: pd.DatetimeIndex,
-                 tickers: list[str]) -> pd.DataFrame:
+def _close_panel(prices: pd.DataFrame, index: pd.DatetimeIndex, tickers: list[str]) -> pd.DataFrame:
     """Long [date, ticker, close] -> a wide close matrix on the panel's own calendar,
     forward-filled (a market holiday must not read as a missing price and silently drop a
     position from the book)."""
@@ -102,8 +101,7 @@ def replicate_superinvestors(
 
     close = _close_panel(prices, shares_w.index, list(shares_w.columns))
     tradable = [t for t in shares_w.columns if close[t].notna().any()]
-    shares_w, net_w, init_w, close = (shares_w[tradable], net_w[tradable],
-                                      init_w[tradable], close[tradable])
+    shares_w, net_w, init_w, close = (shares_w[tradable], net_w[tradable], init_w[tradable], close[tradable])
     held_w = shares_w.fillna(0.0)
 
     # a holding disclosed on day t is only actionable at the close `execution_lag` days later
@@ -127,8 +125,11 @@ def replicate_superinvestors(
         eligible = n_names[n_names > 0]
         if eligible.empty:
             raise ValueError("no priced holdings on any date -> nothing to seed")
-        logger.info("replication: book never holds %d priced names (max %d) -> seeding on its "
-                    "first priced holding instead", seed_min_names, int(n_names.max()))
+        logger.info(
+            "replication: book never holds %d priced names (max %d) -> seeding on its first priced holding instead",
+            seed_min_names,
+            int(n_names.max()),
+        )
     t0 = eligible.index[0]
     dates = shares_w.index[shares_w.index >= t0]
 
@@ -146,7 +147,7 @@ def replicate_superinvestors(
     equity, invested, cash_hist, rows, book = [], [], [], [], []
     for i, t in enumerate(dates):
         px = close.loc[t].fillna(0.0)
-        if i > 0 and moved.loc[t]:                      # day 0 is the seed, already traded
+        if i > 0 and moved.loc[t]:  # day 0 is the seed, already traded
             # TARGET the cohort's weights rather than accumulating their share increments.
             # Accumulating `f x delta_shares` looks equivalent but is not: `f` moves over time,
             # so a name the cohort fully EXITS leaves a residual (the buys were scaled at a
@@ -171,22 +172,22 @@ def replicate_superinvestors(
                 capped = False
                 if gross > 0:
                     affordable = max(cash, 0.0) / (1.0 + cost_rate)
-                    if gross > affordable:              # cohort bought more than I can fund
-                        buy *= (affordable / gross)
+                    if gross > affordable:  # cohort bought more than I can fund
+                        buy *= affordable / gross
                         gross, capped = affordable, True
                     shares += buy
                     cash -= gross * (1.0 + cost_rate)
                 # `capped` is recorded even when the cap scaled the buy to exactly zero -- a
                 # fully-blocked purchase is the constraint biting hardest, not a non-event
                 if proceeds > 0 or gross > 0 or capped:
-                    rows.append({"date": t, "sold_usd": proceeds, "bought_usd": gross,
-                                 "cost_usd": (proceeds + gross) * cost_rate,
-                                 "buy_capped": capped})
+                    rows.append(
+                        {"date": t, "sold_usd": proceeds, "bought_usd": gross, "cost_usd": (proceeds + gross) * cost_rate, "buy_capped": capped}
+                    )
         inv = float((shares * px).sum())
         equity.append(inv + cash)
         invested.append(inv)
         cash_hist.append(cash)
-        book.append((shares * px).to_numpy(copy=True))          # $ position, priced at t
+        book.append((shares * px).to_numpy(copy=True))  # $ position, priced at t
 
     eq = pd.Series(equity, index=dates, dtype=float)
     inv_s = pd.Series(invested, index=dates, dtype=float)
@@ -206,8 +207,7 @@ def replicate_superinvestors(
     orphan = book_val.where(held_lag.loc[dates].fillna(0.0) <= 0, 0.0).abs().sum(axis=1)
     orphan_weight = (orphan / eq.where(eq > 0)).fillna(0.0)
 
-    trades = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["date", "sold_usd", "bought_usd", "cost_usd", "buy_capped"])
+    trades = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date", "sold_usd", "bought_usd", "cost_usd", "buy_capped"])
     diagnostics = {
         "seed_date": t0,
         "seed_names": int((w0 > 0).sum()),
@@ -222,6 +222,13 @@ def replicate_superinvestors(
         "max_orphan_weight": float(orphan_weight.max()),
         "orphan_date": (orphan_weight.idxmax() if float(orphan_weight.max()) > 0 else None),
     }
-    return {"returns": ret, "equity": eq, "invested": inv_s, "cash": cash_s,
-            "cash_weight": (cash_s / eq), "trades": trades, "diagnostics": diagnostics,
-            "weights": weights}
+    return {
+        "returns": ret,
+        "equity": eq,
+        "invested": inv_s,
+        "cash": cash_s,
+        "cash_weight": (cash_s / eq),
+        "trades": trades,
+        "diagnostics": diagnostics,
+        "weights": weights,
+    }

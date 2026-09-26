@@ -8,12 +8,12 @@ Every test is synthetic and offline. The parameter tests assert on the kwargs th
 WOULD send (`request_kwargs`), which is the only way to pin a recorded 400 without paying
 for one.
 """
+
 from __future__ import annotations
 
 import threading
 
 import pytest
-from omegaconf import OmegaConf
 
 from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
 from src.gpt_extract.utils.providers import OpenAIProvider
@@ -34,10 +34,8 @@ def _extracter(monkeypatch, keys=("k1",), **overrides) -> GptExtracter:
 # --------------------------------------------------------------------------- #
 def test_a_reasoning_model_is_never_sent_temperature_or_seed():
     """gpt-5-mini is a reasoning model and 400s on `temperature`. Recorded, not guessed."""
-    reasoning = OpenAIProvider("gpt-5-mini", client=object(), temperature=0.2, seed=1234,
-                               reasoning=True)
-    plain = OpenAIProvider("gpt-4o-mini", client=object(), temperature=0.2, seed=1234,
-                           reasoning=False)
+    reasoning = OpenAIProvider("gpt-5-mini", client=object(), temperature=0.2, seed=1234, reasoning=True)
+    plain = OpenAIProvider("gpt-4o-mini", client=object(), temperature=0.2, seed=1234, reasoning=False)
 
     r_kwargs = reasoning.request_kwargs(Answer, "sys", "user")
     p_kwargs = plain.request_kwargs(Answer, "sys", "user")
@@ -70,12 +68,10 @@ def test_prompt_cache_key_is_stable_per_model_and_schema():
     second = provider.request_kwargs(Answer, "sys", "payload two")
 
     assert first["prompt_cache_key"] == second["prompt_cache_key"] == "gpt-5-mini:Answer"
-    assert "prompt_cache_key" not in OpenAIProvider(
-        "gpt-5-mini", client=object(), cache=False).request_kwargs(Answer, "s", "u")
+    assert "prompt_cache_key" not in OpenAIProvider("gpt-5-mini", client=object(), cache=False).request_kwargs(Answer, "s", "u")
 
     print("\n=== SANITY: prompt_cache_key ===")
-    print(f"  two different payloads -> one key {first['prompt_cache_key']!r}; "
-          "cache=False sends none. Validated.")
+    print(f"  two different payloads -> one key {first['prompt_cache_key']!r}; cache=False sends none. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -197,7 +193,7 @@ def test_local_needs_no_key(monkeypatch):
     ext = GptExtracter(fake_context(), gpt_config())
 
     assert "local" in ext.available_methodes()
-    ext._require_key("local")            # must not raise
+    ext._require_key("local")  # must not raise
 
     print("\n=== SANITY: keyless provider ===")
     print(f"  available with no keys set: {ext.available_methodes()}. Validated.")
@@ -225,15 +221,13 @@ def test_usage_totals_are_lock_safe():
     assert tracker.totals["input_tokens"] == 10 * n
 
     print("\n=== SANITY: concurrent usage accounting ===")
-    print(f"  {n} threads recorded -> calls={tracker.totals['calls']}, "
-          f"input={tracker.totals['input_tokens']}. Validated.")
+    print(f"  {n} threads recorded -> calls={tracker.totals['calls']}, input={tracker.totals['input_tokens']}. Validated.")
 
 
 def test_spend_estimate_treats_cached_tokens_as_a_subset():
     """`cached_input_tokens` is a SUBSET of `input_tokens`, not a separate bucket."""
     tracker = UsageTracker()
-    tracker.record({"input_tokens": 1_000_000, "output_tokens": 0,
-                    "cached_input_tokens": 1_000_000})
+    tracker.record({"input_tokens": 1_000_000, "output_tokens": 0, "cached_input_tokens": 1_000_000})
     all_cached = tracker.spend_estimate()
 
     fresh = UsageTracker()
@@ -244,8 +238,7 @@ def test_spend_estimate_treats_cached_tokens_as_a_subset():
     assert fresh.spend_estimate() == pytest.approx(10 * all_cached)
 
     print("\n=== SANITY: spend estimate ===")
-    print(f"  1M input tokens: ${fresh.spend_estimate():.3f} fresh vs ${all_cached:.3f} "
-          "fully cached -- the 10x the budget assumes. Validated.")
+    print(f"  1M input tokens: ${fresh.spend_estimate():.3f} fresh vs ${all_cached:.3f} fully cached -- the 10x the budget assumes. Validated.")
 
 
 def test_extract_records_usage_through_a_stub_provider(monkeypatch):
@@ -263,6 +256,5 @@ def test_extract_records_usage_through_a_stub_provider(monkeypatch):
 
 if __name__ == "__main__":
     for model in ("gpt-5-mini", "gpt-4o-mini"):
-        provider = OpenAIProvider(model, client=object(), temperature=0.2, seed=1234,
-                                  reasoning=model.startswith("gpt-5"))
+        provider = OpenAIProvider(model, client=object(), temperature=0.2, seed=1234, reasoning=model.startswith("gpt-5"))
         print(f"{model:<14} -> {sorted(provider.request_kwargs(Answer, 's', 'u'))}")

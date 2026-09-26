@@ -62,8 +62,8 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
 
     print("\n=== SANITY CHECK: Wikipedia incremental per-ticker ===")
     print(f"  stored max: AAA={aaa_last.date()} (stale), BBB={bbb_last.date()} (current)")
-    print(f"  requests: {[(a, s) for a, s, _ in calls]} -> AAA re-extracted from {expected_start} " f"(last+1); BBB skipped (no call)")
-    print(f"  default pause = {inspect.signature(wp.fetch_wiki_pageviews).parameters['pause'].default}s " "-> <=1 req/s. Validated.")
+    print(f"  requests: {[(a, s) for a, s, _ in calls]} -> AAA re-extracted from {expected_start} (last+1); BBB skipped (no call)")
+    print(f"  default pause = {inspect.signature(wp.fetch_wiki_pageviews).parameters['pause'].default}s -> <=1 req/s. Validated.")
 
 
 if __name__ == "__main__":

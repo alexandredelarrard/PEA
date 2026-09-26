@@ -9,6 +9,7 @@ That guard is the only thing standing between a duplicated part and a silently m
 cube, so it gets its own test rather than living as an untested code path. These fixtures are
 synthetic on purpose -- this is key arithmetic with a known truth.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.panel_merge import (
-    DuplicateKeyError, FeatureCollisionError, PanelMerger,
+    DuplicateKeyError,
+    FeatureCollisionError,
+    PanelMerger,
 )
 
 _LOG = logging.getLogger("panel_merge_test")
@@ -26,8 +29,7 @@ _DATES = pd.to_datetime(["2023-01-02", "2023-01-03"])
 
 def _panel(feature: str, rows=None) -> pd.DataFrame:
     rows = rows or [(d, t) for d in _DATES for t in ("AAA", "BBB")]
-    return pd.DataFrame(rows, columns=["date", "ticker"]).assign(
-        **{feature: [float(i) for i in range(len(rows))]})
+    return pd.DataFrame(rows, columns=["date", "ticker"]).assign(**{feature: [float(i) for i in range(len(rows))]})
 
 
 def test_duplicate_key_raises_and_names_the_panel():
@@ -62,10 +64,9 @@ def test_the_guard_replaces_an_opaque_pandas_error_and_leaves_no_trace():
     clean, dirty = _panel("f_mom"), _panel("f_val", rows=dup_rows)
 
     with pytest.raises(pd.errors.InvalidIndexError) as raw:
-        pd.concat([clean.set_index(["date", "ticker"]),
-                   dirty.set_index(["date", "ticker"])], axis=1)
+        pd.concat([clean.set_index(["date", "ticker"]), dirty.set_index(["date", "ticker"])], axis=1)
     raw_msg = str(raw.value)
-    assert "fundamentals" not in raw_msg and "AAA" not in raw_msg   # says nothing useful
+    assert "fundamentals" not in raw_msg and "AAA" not in raw_msg  # says nothing useful
 
     merger = PanelMerger(_LOG)
     merger.add(clean, "momentum")
@@ -78,10 +79,9 @@ def test_the_guard_replaces_an_opaque_pandas_error_and_leaves_no_trace():
 
     print("\n=== SANITY CHECK: the guard replaces an opaque pandas error ===")
     print(f"  bare concat(axis=1) -> InvalidIndexError: {raw_msg!r}")
-    print(f"     ^ names no panel, no key, no count")
+    print("     ^ names no panel, no key, no count")
     print(f"  through PanelMerger  -> {str(guarded.value).splitlines()[0]}")
-    print(f"  and the accumulator still yields {len(merger.to_long())} clean rows without "
-          f"f_val -- a refused add contributes nothing. Validated.")
+    print(f"  and the accumulator still yields {len(merger.to_long())} clean rows without f_val -- a refused add contributes nothing. Validated.")
 
 
 def test_clean_panels_merge_one_to_one():
@@ -97,8 +97,7 @@ def test_clean_panels_merge_one_to_one():
     assert merger.feature_columns == ["f_mom", "f_val"]
 
     print("\n=== SANITY CHECK: clean one-to-one merge ===")
-    print(f"  2 panels x 4 unique keys -> {len(out)} rows, columns {sorted(out.columns)}, "
-          f"0 duplicates. Validated.")
+    print(f"  2 panels x 4 unique keys -> {len(out)} rows, columns {sorted(out.columns)}, 0 duplicates. Validated.")
 
 
 def test_two_panels_owning_the_same_feature_name_still_raise():
@@ -113,10 +112,13 @@ def test_two_panels_owning_the_same_feature_name_still_raise():
     assert "f_shared" in msg and "momentum" in msg and "fundamentals" in msg
 
     print("\n=== SANITY CHECK: duplicate feature NAME raises ===")
-    print("  'f_shared' emitted by two panels -> FeatureCollisionError naming the current "
-          "owner and the newcomer, instead of a silent _x/_y split. Validated.")
+    print(
+        "  'f_shared' emitted by two panels -> FeatureCollisionError naming the current "
+        "owner and the newcomer, instead of a silent _x/_y split. Validated."
+    )
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

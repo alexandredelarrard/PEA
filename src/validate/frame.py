@@ -11,9 +11,11 @@ pd.Timestamp("2024-01-01")` raises rather than comparing -- so a PIT check that 
 that reads two DATE columns silently compares day-resolution values against nanosecond ones.
 Both sides go through here.
 """
+
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
@@ -63,8 +65,7 @@ def _is_leg(series: pd.Series) -> bool:
     return not pd.to_numeric(present, errors="coerce").isna().any()
 
 
-def feature_columns(context: Context, table: Table | str, *,
-                    frame: pd.DataFrame | None = None) -> list[str]:
+def feature_columns(context: Context, table: Table | str, *, frame: pd.DataFrame | None = None) -> list[str]:
     """The numeric columns under test: everything that is not part of the grain.
 
     Dtypes come from a `LIMIT` sample rather than from reflection, because the store facade
@@ -101,4 +102,4 @@ def column_groups(columns: Sequence[str], size: int) -> list[list[str]]:
     210 MB."""
     if size < 1:
         raise ValueError(f"column group size must be >= 1, got {size}")
-    return [list(columns[i:i + size]) for i in range(0, len(columns), size)]
+    return [list(columns[i : i + size]) for i in range(0, len(columns), size)]

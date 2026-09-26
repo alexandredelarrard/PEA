@@ -139,7 +139,7 @@ class ConditioningSink:
         # was handed a DataFrame. A sink that accepts an ambiguous column is not a contract.
         dupes = sorted({c for c in frame.columns if list(frame.columns).count(c) > 1})
         if dupes:
-            raise ValueError(f"{family} frame has duplicate column(s) {dupes} -- project the " f"columns you want BEFORE renaming into them")
+            raise ValueError(f"{family} frame has duplicate column(s) {dupes} -- project the columns you want BEFORE renaming into them")
         keep = [c for c in columns if c in frame.columns]
         required = {"ticker", "date"} | ({"actor"} if need_actor else set())
         if not required.issubset(keep):

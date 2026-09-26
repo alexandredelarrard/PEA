@@ -19,6 +19,7 @@ NOT collapsed into one function:
 `safe_div`'s third parameter therefore keeps its exact name (`den_positive`) and stays
 positional, because `sector_features` passes it positionally throughout.
 """
+
 from __future__ import annotations
 
 from typing import TypeVar

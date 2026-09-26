@@ -217,11 +217,11 @@ def load_manual_lineage(config_dir: str | None = None) -> dict[str, dict]:
         same = [str(c).strip().zfill(10) for c in entry.get("same_entity", [])]
         own = [str(c).strip().zfill(10) for c in entry.get("own_entity", [])]
         if not same and not own:
-            raise ValueError(f"entity_lineage_manual[{key}]: needs `same_entity` or " "`own_entity`; an entry that asserts nothing decides nothing.")
+            raise ValueError(f"entity_lineage_manual[{key}]: needs `same_entity` or `own_entity`; an entry that asserts nothing decides nothing.")
         if len(same) == 1:
-            raise ValueError(f"entity_lineage_manual[{key}]: `same_entity` needs >= 2 CIKs " "-- one CIK is not a relationship. Use `own_entity`.")
+            raise ValueError(f"entity_lineage_manual[{key}]: `same_entity` needs >= 2 CIKs -- one CIK is not a relationship. Use `own_entity`.")
         if not str(entry.get("evidence", "")).strip():
-            raise ValueError(f"entity_lineage_manual[{key}]: empty `evidence`. An " "undocumented verdict is a guess that moves a decade of rows.")
+            raise ValueError(f"entity_lineage_manual[{key}]: empty `evidence`. An undocumented verdict is a guess that moves a decade of rows.")
         out[key] = {"same_entity": same, "own_entity": own, "evidence": str(entry["evidence"]).strip()}
     return out
 
@@ -267,7 +267,7 @@ def derive_owner_sets(cache: Path, ciks: frozenset[str]) -> dict[str, set[str]]:
                 owners[issuer].update(grp["RPTOWNERCIK"])
             read += len(own)
     logger.info(
-        "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner " "rows matched); %d CIK(s) have no Form 345 owner at all",
+        "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner rows matched); %d CIK(s) have no Form 345 owner at all",
         len(ciks),
         len(zips),
         read,
@@ -327,7 +327,7 @@ def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame,
         expected = entity_by_cik.get(home_cik, f"E{home_cik}")
         actual = entity_by_cik.get(row.issuer_cik, f"E{row.issuer_cik}")
         if actual != expected:
-            errors.append(f"{row.canonical_ticker}/{row.symbol}/{row.issuer_cik}: " f"manual entity {actual}, roster entity {expected}")
+            errors.append(f"{row.canonical_ticker}/{row.symbol}/{row.issuer_cik}: manual entity {actual}, roster entity {expected}")
     if errors:
         raise ManualTenureEntityError("symbol_tenure_manual contains CIKs outside their canonical current entity: " + "; ".join(errors))
 
@@ -457,7 +457,7 @@ def derive_entity_lineage(
             if verdict == "grey":
                 grey.append((ticker, cik, home, shared, jaccard))
             elif verdict == "same" and union.union(cik, home, source=f"owner_overlap[{ticker}]", confidence=jaccard):
-                claim(cik, "owner_overlap", jaccard, f"{ticker}: {shared} reporting owner(s) shared with {home}, " f"jaccard {jaccard:.3f}")
+                claim(cik, "owner_overlap", jaccard, f"{ticker}: {shared} reporting owner(s) shared with {home}, jaccard {jaccard:.3f}")
     if grey:
         listed = "; ".join(f"{t}/{c} (shared={s}, jaccard={j:.3f})" for t, c, _, s, j in grey)
         raise UndecidedGreyBandError(
@@ -527,12 +527,12 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
     )
     if not blocked.empty:
         logger.warning(
-            "entity_lineage: %d merge(s) refused because they would put two " "universe tickers in one entity:\n%s",
+            "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
             len(blocked),
             blocked.to_string(index=False),
         )
     if existing is None:
-        context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over " f"{out['entity_id'].nunique()} entity(ies)")
+        context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over {out['entity_id'].nunique()} entity(ies)")
     else:
         rekeys = detect_older_cik_rekeys(existing, out)
         if rekeys:

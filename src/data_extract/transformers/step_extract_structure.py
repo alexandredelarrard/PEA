@@ -14,15 +14,14 @@ owns and stores. That step must therefore run BEFORE this one -- see `StepExtrac
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
+from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
 from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
+from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.utils.step import Step
 
 
 class StepExtractStructure(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 

@@ -26,14 +26,15 @@ positions, not a log of events. A BUY row written weeks ago only learns its exit
 P&L on the day the position closes, so past rows must be rewritten -- which also makes the
 step self-healing: a missed day, or a retrained model, corrects itself on the next run.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
 from src.context import Context
+from src.data_store.schema import Tables
 from src.portfolio.step_portfolio import StepPortfolio
 from src.strategies import STRATEGY_REGISTRY
 from src.strategies.utils.blotter import trade_blotter
@@ -42,7 +43,6 @@ from src.utils.step import Step
 
 
 class StepStrategyMoves(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.portfolio
@@ -67,10 +67,13 @@ class StepStrategyMoves(Step):
         pf.blend()
         self._portfolio = pf
         self.capital = float(self._cfg.get("starting_capital", 1_000_000))
-        self._log.info("Sleeves %s blended (%s, vol target %.0f%%); avg leverage %.2f",
-                       list(pf.sleeve_rets.columns), str(self._cfg.get("scheme", "erc")).upper(),
-                       float(self._cfg.get("portfolio_vol_target", 0.10)) * 100,
-                       float(pf.blended["leverage"].mean()))
+        self._log.info(
+            "Sleeves %s blended (%s, vol target %.0f%%); avg leverage %.2f",
+            list(pf.sleeve_rets.columns),
+            str(self._cfg.get("scheme", "erc")).upper(),
+            float(self._cfg.get("portfolio_vol_target", 0.10)) * 100,
+            float(pf.blended["leverage"].mean()),
+        )
 
     def _capital_factor(self, sleeve: str, index: pd.DatetimeIndex) -> pd.Series:
         """`erc_weight(t) * leverage(t)` for one sleeve, aligned to `index`.
@@ -100,15 +103,22 @@ class StepStrategyMoves(Step):
 
         cfg = self._sleeve_cfg(sleeve)
         trades = trade_blotter(
-            scaled, self.capital,
+            scaled,
+            self.capital,
             float(cfg.get("fee_bps", self._cfg.get("fee_bps", 2.0))),
             float(cfg.get("spread_bps", self._cfg.get("spread_bps", 8.0))),
-            sleeve, prices=res.book_prices,
-            floor_usd=float(self._cfg.get("trade_floor_usd", 0.0)))
+            sleeve,
+            prices=res.book_prices,
+            floor_usd=float(self._cfg.get("trade_floor_usd", 0.0)),
+        )
         led = round_trip_ledger(trades, run_time=self.run_time)
-        self._log.info("sleeve '%s': %d move(s) over %d day(s); avg allocation $%.0f",
-                       sleeve, len(led), led["trading_day"].nunique() if not led.empty else 0,
-                       float(factor.mean()) * self.capital)
+        self._log.info(
+            "sleeve '%s': %d move(s) over %d day(s); avg allocation $%.0f",
+            sleeve,
+            len(led),
+            led["trading_day"].nunique() if not led.empty else 0,
+            float(factor.mean()) * self.capital,
+        )
         return led
 
     def _sleeve_cfg(self, sleeve: str):
@@ -119,11 +129,11 @@ class StepStrategyMoves(Step):
         return (self._config.get(cls.config_key) or {}) if cls is not None else {}
 
     def _ledger(self) -> pd.DataFrame:
-        parts = [led for s in self._portfolio.sleeve_rets.columns
-                 if (led := self._sleeve_ledger(str(s))) is not None and not led.empty]
+        parts = [led for s in self._portfolio.sleeve_rets.columns if (led := self._sleeve_ledger(str(s))) is not None and not led.empty]
         if not parts:
-            raise RuntimeError("No sleeve produced any trading move -> nothing to write to "
-                               f"'{Tables.strategy}'. Check the portfolio window / sleeve data.")
+            raise RuntimeError(
+                f"No sleeve produced any trading move -> nothing to write to '{Tables.strategy}'. Check the portfolio window / sleeve data."
+            )
         led = pd.concat(parts, ignore_index=True)
         return led.sort_values(["trading_day", "sleeve", "ticker"]).reset_index(drop=True)
 
@@ -142,20 +152,28 @@ class StepStrategyMoves(Step):
         open_rows = ledger[ledger["pnl"].isna() & ledger["price_sold"].isna()]
         last_day = ledger["trading_day"].max()
         today = ledger[ledger["trading_day"] == last_day]
-        by_sleeve = (ledger.groupby("sleeve")
-                     .agg(moves=("ticker", "size"),
-                          traded_usd=("amount_invested", "sum"),
-                          fees=("fee", "sum"),
-                          realized_pnl=("pnl", "sum"))
-                     .round(0))
-        self._log.info("--- trading ledger: %d move(s), %s -> %s ---", len(ledger),
-                       pd.Timestamp(ledger["trading_day"].min()).date(),
-                       pd.Timestamp(last_day).date())
+        by_sleeve = (
+            ledger.groupby("sleeve")
+            .agg(moves=("ticker", "size"), traded_usd=("amount_invested", "sum"), fees=("fee", "sum"), realized_pnl=("pnl", "sum"))
+            .round(0)
+        )
+        self._log.info(
+            "--- trading ledger: %d move(s), %s -> %s ---",
+            len(ledger),
+            pd.Timestamp(ledger["trading_day"].min()).date(),
+            pd.Timestamp(last_day).date(),
+        )
         self._log.info("\n%s", by_sleeve.to_string())
-        self._log.info("closed round trips %d (realized P&L $%.0f net of $%.0f fees) | still open %d",
-                       len(closed), float(ledger["pnl"].sum(min_count=1) or 0.0),
-                       float(ledger["fee"].sum()), len(open_rows))
-        self._log.info("LATEST trading day %s -> %d move(s) to place:\n%s",
-                       pd.Timestamp(last_day).date(), len(today),
-                       today[["sleeve", "ticker", "side", "shares", "price",
-                              "amount_invested", "fee"]].to_string(index=False))
+        self._log.info(
+            "closed round trips %d (realized P&L $%.0f net of $%.0f fees) | still open %d",
+            len(closed),
+            float(ledger["pnl"].sum(min_count=1) or 0.0),
+            float(ledger["fee"].sum()),
+            len(open_rows),
+        )
+        self._log.info(
+            "LATEST trading day %s -> %d move(s) to place:\n%s",
+            pd.Timestamp(last_day).date(),
+            len(today),
+            today[["sleeve", "ticker", "side", "shares", "price", "amount_invested", "fee"]].to_string(index=False),
+        )

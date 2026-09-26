@@ -8,6 +8,7 @@
 Uses lightweight mock models (anything with a .predict) so no LightGBM/training
 is needed -- the logic under test is pure numpy/pandas.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -20,6 +21,7 @@ class _LinearMock:
     """A stand-in 'model': prediction = X @ w (+ optional noise). ``predict`` is
     PURE (deterministic in X) -- the noise is reseeded each call -- so repeated
     calls return identical output (needed for the backward-compat assertion)."""
+
     def __init__(self, w: np.ndarray, noise: float = 0.0, seed: int = 0):
         self.w = np.asarray(w, float)
         self.noise = noise
@@ -48,8 +50,8 @@ def test_ensemble_returns_members_and_blend_is_their_mean():
     panel = _panel()
     feats = ["f0", "f1"]
     models = {
-        "elasticnet": _LinearMock([1.0, 0.0]),          # reads the useful feature
-        "lightgbm":   _LinearMock([1.0, 0.0], noise=2.0, seed=7),  # noisier copy
+        "elasticnet": _LinearMock([1.0, 0.0]),  # reads the useful feature
+        "lightgbm": _LinearMock([1.0, 0.0], noise=2.0, seed=7),  # noisier copy
     }
 
     # ensemble_predict always returns (blended_score, {member_name: z-series})
@@ -74,18 +76,20 @@ def test_ensemble_returns_members_and_blend_is_their_mean():
     assert isinstance(blended, pd.Series)
 
     print("\n=== SANITY CHECK: ensemble_predict returns blend + members ===")
-    print(f"  members={list(members)}; each per-day z (mean~0,std~1); "
-          f"blend == nanmean(members) (max abs diff "
-          f"{np.max(np.abs(blended.to_numpy() - np.nanmean(stacked,axis=1))):.2e}). "
-          f"Validated.")
+    print(
+        f"  members={list(members)}; each per-day z (mean~0,std~1); "
+        f"blend == nanmean(members) (max abs diff "
+        f"{np.max(np.abs(blended.to_numpy() - np.nanmean(stacked, axis=1))):.2e}). "
+        f"Validated."
+    )
 
 
 def test_per_member_ic_separates_skill_from_noise():
     panel = _panel()
     feats = ["f0", "f1"]
     models = {
-        "skilled": _LinearMock([1.0, 0.0]),                    # reads f0 -> high IC
-        "noise":   _LinearMock([0.0, 0.0], noise=1.0, seed=3),  # pure noise -> IC ~0
+        "skilled": _LinearMock([1.0, 0.0]),  # reads f0 -> high IC
+        "noise": _LinearMock([0.0, 0.0], noise=1.0, seed=3),  # pure noise -> IC ~0
     }
     _, members = ml.ensemble_predict(models, panel, feats)
 
@@ -97,9 +101,11 @@ def test_per_member_ic_separates_skill_from_noise():
     assert ic_skilled["ic_ir"] > ic_noise["ic_ir"]
 
     print("\n=== SANITY CHECK: per-member CV IC / IC_IR is computable & meaningful ===")
-    print(f"  skilled: mean_IC={ic_skilled['mean_ic']:+.3f} IC_IR={ic_skilled['ic_ir']:+.2f}; "
-          f"noise: mean_IC={ic_noise['mean_ic']:+.3f} IC_IR={ic_noise['ic_ir']:+.2f}. "
-          f"The CV loop can now log IC/IC_IR for each ensemble member. Validated.")
+    print(
+        f"  skilled: mean_IC={ic_skilled['mean_ic']:+.3f} IC_IR={ic_skilled['ic_ir']:+.2f}; "
+        f"noise: mean_IC={ic_noise['mean_ic']:+.3f} IC_IR={ic_noise['ic_ir']:+.2f}. "
+        f"The CV loop can now log IC/IC_IR for each ensemble member. Validated."
+    )
 
 
 if __name__ == "__main__":

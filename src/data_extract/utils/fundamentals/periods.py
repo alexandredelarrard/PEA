@@ -43,6 +43,7 @@ switch revenue concept at the ASC-606 cutover). So a switch is allowed and recor
 only then does the scale test decide -- which the legacy engine had to apply
 unconditionally, because it had no `source_concept` column to compare.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -52,8 +53,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, FieldSpec, resolve_config_dir)
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec, resolve_config_dir
 from src.utils.config import read_config
 
 
@@ -81,7 +81,9 @@ def _guards_at(config_dir: str) -> PeriodGuards:
     return PeriodGuards(
         max_opposite_sign_ratio=float(block.max_opposite_sign_q4_ratio),
         concept_switch_scale_max=float(block.q4_tag_mismatch_fy_max),
-        share_basis_max_ratio=float(block.share_basis_max_ratio))
+        share_basis_max_ratio=float(block.share_basis_max_ratio),
+    )
+
 
 # --------------------------------------------------------------------- period shapes ---
 
@@ -100,6 +102,7 @@ _DURATION_BANDS: tuple[tuple[int, int, str], ...] = (
 QUARTERLY, YTD6, YTD9, ANNUAL = (name for _, _, name in _DURATION_BANDS)
 INSTANT = "instant"
 OTHER_SHAPE = "other"
+
 
 def period_shape(period_type: str, days: float | None) -> str:
     """The period's SHAPE -- what the ladder below selects on.
@@ -182,11 +185,23 @@ TTM_QUARTERS = 4
 _SAME_PERIOD_DAYS = 7
 
 _QUARTER_COLUMNS: tuple[str, ...] = (
-    "ticker", "field", "period_start", "period_end", "period_days", "value", "basis",
-    "known_from", "source_concept", "concept_switch", "fiscal_year", "fiscal_quarter")
+    "ticker",
+    "field",
+    "period_start",
+    "period_end",
+    "period_days",
+    "value",
+    "basis",
+    "known_from",
+    "source_concept",
+    "concept_switch",
+    "fiscal_year",
+    "fiscal_quarter",
+)
 
 
 # ------------------------------------------------------------------ selection helpers ---
+
 
 def _inclusive_days(days):
     """Day counts for the share-day arithmetic, counting BOTH endpoints.
@@ -206,8 +221,7 @@ def _inclusive_days(days):
 _WINDOW_ORDER: list[str] = ["period_end", "filing_date", "period_days"]
 
 
-def _latest_per_window(frame: pd.DataFrame, *,
-                       presorted: bool = False) -> pd.DataFrame:
+def _latest_per_window(frame: pd.DataFrame, *, presorted: bool = False) -> pd.DataFrame:
     """One row per calendar window, the LATEST filing winning.
 
     `presorted` says the caller has already ordered the frame by `_WINDOW_ORDER`. Sorting a
@@ -291,9 +305,10 @@ def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
     return bool(nine > 0.01 * abs(quarter) and abs(quarter) > nine)
 
 
-def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame,
-                                         refusals: list[dict] | None = None,
-                                         ) -> pd.DataFrame:
+def _drop_annual_masquerading_as_quarter(
+    frame: pd.DataFrame,
+    refusals: list[dict] | None = None,
+) -> pd.DataFrame:
     """Drop duration facts whose window says *quarter* but whose value is the FULL YEAR.
 
     Some filers tag the annual figure against a fourth-quarter context, so the row arrives
@@ -375,11 +390,17 @@ def _drop_annual_masquerading_as_quarter(frame: pd.DataFrame,
             if _is_ambiguous_duration(q, y9_end, y9_value):
                 drop.append(q.Index)
                 if refusals is not None:
-                    refusals.append({
-                        "period_start": q.period_start, "period_end": q.period_end,
-                        "period_days": q.period_days, "value": float(q.value),
-                        "known_from": q.filing_date, "dc_code": AMBIGUOUS_DURATION,
-                        "source_concept": getattr(q, "source_concept", None)})
+                    refusals.append(
+                        {
+                            "period_start": q.period_start,
+                            "period_end": q.period_end,
+                            "period_days": q.period_days,
+                            "value": float(q.value),
+                            "known_from": q.filing_date,
+                            "dc_code": AMBIGUOUS_DURATION,
+                            "source_concept": getattr(q, "source_concept", None),
+                        }
+                    )
             continue
         near_value = a_value[near]
         scale = float(np.abs(near_value).max())
@@ -406,8 +427,7 @@ def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None
     """
     if candidates.empty or pd.isna(start):
         return None
-    hits = candidates[(candidates["period_start"] == start)
-                      & (candidates["period_end"] < end)]
+    hits = candidates[(candidates["period_start"] == start) & (candidates["period_end"] < end)]
     if hits.empty:
         return None
     return hits.sort_values("period_end").iloc[-1]
@@ -415,8 +435,8 @@ def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None
 
 # ---------------------------------------------------------------------------- guards ---
 
-def _scale_agrees(total: float, total_days: float, part: float, part_days: float,
-                  guards: PeriodGuards, two_sided: bool) -> bool:
+
+def _scale_agrees(total: float, total_days: float, part: float, part_days: float, guards: PeriodGuards, two_sided: bool) -> bool:
     """Are the two legs of a subtraction plausibly the SAME line, judged purely on scale?
 
     Compared as **per-day rates**, which is the only dimensionally honest comparison: the
@@ -446,15 +466,13 @@ def _scale_agrees(total: float, total_days: float, part: float, part_days: float
     # A share count gets its own, much tighter bound: `concept_switch_scale_max` is 2.0 and
     # a 2-for-1 split lands at 1.996-2.003, so the commonest split ratio in existence sat
     # exactly on the threshold and half of them passed.
-    bound = (guards.share_basis_max_ratio if two_sided
-             else guards.concept_switch_scale_max)
+    bound = guards.share_basis_max_ratio if two_sided else guards.concept_switch_scale_max
     if ratio > bound:
         return False
     return not two_sided or ratio >= 1 / bound
 
 
-def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec,
-                 guards: PeriodGuards) -> bool:
+def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec, guards: PeriodGuards) -> bool:
     """Is a derived quarter broadly consistent with the quarters already observed?
 
     Deliberately permissive about magnitude alone: a real business can have a legitimately
@@ -492,9 +510,10 @@ def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec,
 
 # ----------------------------------------------------------------------- the ladder ---
 
-def _derived(total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float],
-             guards: PeriodGuards,
-             refusals: list[dict] | None = None) -> dict | None:
+
+def _derived(
+    total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float], guards: PeriodGuards, refusals: list[dict] | None = None
+) -> dict | None:
     """One subtraction, guarded. Returns None where the guards refuse it, because a NULL
     the validator can explain is worth more than a plausible wrong number.
 
@@ -518,40 +537,50 @@ def _derived(total, subtrahend, basis: str, spec: FieldSpec, siblings: list[floa
     def refuse(code: str) -> None:
         if refusals is None:
             return
-        refusals.append({
-            "period_start": start, "period_end": end, "period_days": (end - start).days,
-            "value": value, "basis": basis,
-            "known_from": max(pd.Timestamp(total["filing_date"]),
-                              pd.Timestamp(subtrahend["filing_date"])),
-            "source_concept": total["source_concept"], "dc_code": code})
+        refusals.append(
+            {
+                "period_start": start,
+                "period_end": end,
+                "period_days": (end - start).days,
+                "value": value,
+                "basis": basis,
+                "known_from": max(pd.Timestamp(total["filing_date"]), pd.Timestamp(subtrahend["filing_date"])),
+                "source_concept": total["source_concept"],
+                "dc_code": code,
+            }
+        )
 
     # The scale test runs on a concept switch (the legs may be two different lines) and
     # ALWAYS for a non-additive share count (the legs may be two different SPLIT BASES --
     # same concept, same line, incompatible units).
     if switched or not spec.is_additive:
-        if not _scale_agrees(total["value"], total["period_days"], subtrahend["value"],
-                             subtrahend["period_days"], guards,
-                             two_sided=not spec.is_additive):
-            refuse(SPLIT_BASIS_MISMATCH if not spec.is_additive
-                   else DERIVED_BASIS_MISMATCH)
+        if not _scale_agrees(
+            total["value"], total["period_days"], subtrahend["value"], subtrahend["period_days"], guards, two_sided=not spec.is_additive
+        ):
+            refuse(SPLIT_BASIS_MISMATCH if not spec.is_additive else DERIVED_BASIS_MISMATCH)
             return None
     if not _is_coherent(value, siblings, spec, guards):
         refuse(DERIVED_SIGN_IMPLAUSIBLE)
         return None
     return {
-        "period_start": start, "period_end": end, "period_days": (end - start).days,
-        "value": value, "basis": basis,
-        "known_from": max(pd.Timestamp(total["filing_date"]),
-                          pd.Timestamp(subtrahend["filing_date"])),
+        "period_start": start,
+        "period_end": end,
+        "period_days": (end - start).days,
+        "value": value,
+        "basis": basis,
+        "known_from": max(pd.Timestamp(total["filing_date"]), pd.Timestamp(subtrahend["filing_date"])),
         "source_concept": total["source_concept"],
         "concept_switch": switched,
     }
 
 
-def quarterize(facts: pd.DataFrame, spec: FieldSpec,
-               guards: PeriodGuards | None = None,
-               year_ends: list[pd.Timestamp] | None = None,
-               refusals: list[dict] | None = None) -> pd.DataFrame:
+def quarterize(
+    facts: pd.DataFrame,
+    spec: FieldSpec,
+    guards: PeriodGuards | None = None,
+    year_ends: list[pd.Timestamp] | None = None,
+    refusals: list[dict] | None = None,
+) -> pd.DataFrame:
     """One (ticker, field)'s duration facts -> discrete quarters, with provenance.
 
     Reported discrete quarters are kept as they are. Everything else climbs the ladder:
@@ -585,8 +614,7 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     guards = guards or load_guards()
     if facts.empty:
         return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
-    frame = facts[facts["value"].notna() & facts["period_start"].notna()
-                  & facts["period_end"].notna()].copy()
+    frame = facts[facts["value"].notna() & facts["period_start"].notna() & facts["period_end"].notna()].copy()
     # Coerced only if the caller did not. `build_history._normalise_facts` does it once per
     # ticker, so on the production path all three columns already arrive as `datetime64` and
     # re-converting them ran once per (event, field) for an answer that never changed. A
@@ -607,19 +635,24 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     frame = frame.sort_values(_WINDOW_ORDER)
 
     quarters = _shape(frame, QUARTERLY, presorted=True)
-    rows: list[dict] = [{
-        "period_start": r.period_start, "period_end": r.period_end,
-        "period_days": r.period_days, "value": float(r.value), "basis": AS_REPORTED,
-        "known_from": r.filing_date, "source_concept": r.source_concept,
-        "concept_switch": False,
-    } for r in quarters.itertuples()]                # still in share-days if weighted
+    rows: list[dict] = [
+        {
+            "period_start": r.period_start,
+            "period_end": r.period_end,
+            "period_days": r.period_days,
+            "value": float(r.value),
+            "basis": AS_REPORTED,
+            "known_from": r.filing_date,
+            "source_concept": r.source_concept,
+            "concept_switch": False,
+        }
+        for r in quarters.itertuples()
+    ]  # still in share-days if weighted
 
     y6, y9, annual = (_shape(frame, s, presorted=True) for s in (YTD6, YTD9, ANNUAL))
     rows.extend(_ladder(quarters, y6, y9, annual, spec, guards, refusals))
 
-    out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS
-                                      if c not in ("ticker", "field", "fiscal_year",
-                                                   "fiscal_quarter")])
+    out = pd.DataFrame(rows, columns=[c for c in _QUARTER_COLUMNS if c not in ("ticker", "field", "fiscal_year", "fiscal_quarter")])
     if out.empty:
         return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     if not spec.is_additive:
@@ -627,9 +660,7 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     # An as-reported quarter always beats a derived one for the same window: it is the
     # filer's own number rather than our arithmetic on two of them.
     out["_rank"] = (out["basis"] != AS_REPORTED).astype(int)
-    out = (out.sort_values(["period_end", "_rank", "known_from"])
-              .drop_duplicates(subset=["period_end"], keep="first")
-              .drop(columns="_rank"))
+    out = out.sort_values(["period_end", "_rank", "known_from"]).drop_duplicates(subset=["period_end"], keep="first").drop(columns="_rank")
     out.insert(0, "field", spec.name)
     out.insert(0, "ticker", facts["ticker"].iloc[0])
     # The calendar is the TICKER's, never this field's own annual facts. A field with one
@@ -637,14 +668,18 @@ def quarterize(facts: pd.DataFrame, spec: FieldSpec,
     # reported then lands in that single fiscal year: measured, AMT's `interestExpense` put
     # 2015, 2016 and 2017 all into FY2017 and produced four Q1s. 69 such collisions across
     # 11 tickers, and every one of them disappears once the calendar is shared.
-    return label_fiscal_periods(
-        out, fiscal_year_ends(frame) if year_ends is None else year_ends)
+    return label_fiscal_periods(out, fiscal_year_ends(frame) if year_ends is None else year_ends)
 
 
-def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
-            annual: pd.DataFrame, spec: FieldSpec,
-            guards: PeriodGuards,
-            refusals: list[dict] | None = None) -> list[dict]:
+def _ladder(
+    quarters: pd.DataFrame,
+    y6: pd.DataFrame,
+    y9: pd.DataFrame,
+    annual: pd.DataFrame,
+    spec: FieldSpec,
+    guards: PeriodGuards,
+    refusals: list[dict] | None = None,
+) -> list[dict]:
     """The three decumulation rungs plus the two Q4 routes, in that order.
 
     `refusals` is forwarded to every `_derived` call, so a rung that declines a window is
@@ -653,21 +688,18 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
     recorded: nothing was rejected, the input was simply never published.
     """
     out: list[dict] = []
-    for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6),
-                                       (y9, y6, Q3_FROM_YTD9)):
+    for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
         for row in cumulative.itertuples():
             prior = _same_start_before(earlier, row.period_start, row.period_end)
             if prior is None:
                 continue
-            derived = _derived(row._asdict(), prior, basis, spec,
-                               [float(prior["value"])], guards, refusals)
+            derived = _derived(row._asdict(), prior, basis, spec, [float(prior["value"])], guards, refusals)
             if derived:
                 out.append(derived)
 
     for fy in annual.itertuples():
         fy_row = fy._asdict()
-        inside = quarters[(quarters["period_start"] >= fy.period_start)
-                          & (quarters["period_end"] <= fy.period_end)]
+        inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
         # A discrete quarter already ending on the fiscal year-end IS Q4 as reported --
         # nothing to derive, and deriving anyway would duplicate the window.
         if (inside["period_end"] == fy.period_end).any():
@@ -676,8 +708,7 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
 
         ytd9 = _same_start_before(y9, fy.period_start, fy.period_end)
         if ytd9 is not None:
-            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards,
-                               refusals)
+            derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards, refusals)
             if derived:
                 out.append(derived)
                 continue
@@ -689,17 +720,28 @@ def _ladder(quarters: pd.DataFrame, y6: pd.DataFrame, y9: pd.DataFrame,
             continue
         total = float(inside["value"].sum())
         last = inside.sort_values("period_end").iloc[-1]
-        derived = _derived(fy_row, {"value": total, "period_end": last["period_end"],
-                                    "period_days": float(inside["period_days"].sum()),
-                                    "filing_date": inside["filing_date"].max(),
-                                    "source_concept": last["source_concept"]},
-                           FY_MINUS_QUARTERS, spec, siblings, guards, refusals)
+        derived = _derived(
+            fy_row,
+            {
+                "value": total,
+                "period_end": last["period_end"],
+                "period_days": float(inside["period_days"].sum()),
+                "filing_date": inside["filing_date"].max(),
+                "source_concept": last["source_concept"],
+            },
+            FY_MINUS_QUARTERS,
+            spec,
+            siblings,
+            guards,
+            refusals,
+        )
         if derived:
             out.append(derived)
     return out
 
 
 # ------------------------------------------------------------------ fiscal calendar ---
+
 
 def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
     """The issuer's own fiscal year-end dates, taken from the ANNUAL-shaped facts' window
@@ -712,8 +754,7 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
     them apart.
     """
     annual = facts[(facts["duration_type"] == ANNUAL) & facts["value"].notna()]
-    ends = sorted(pd.Timestamp(e) for e in
-                  pd.to_datetime(annual["period_end"]).dropna().unique())
+    ends = sorted(pd.Timestamp(e) for e in pd.to_datetime(annual["period_end"]).dropna().unique())
     if not ends:
         return []
     # Extrapolate ONE year past the last 10-K. The quarters a model actually trades on are
@@ -738,20 +779,16 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
 
 
 @lru_cache(maxsize=256)
-def _bounds_of(year_ends: tuple[pd.Timestamp, ...]
-               ) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
+def _bounds_of(year_ends: tuple[pd.Timestamp, ...]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
     """`_fiscal_bounds` keyed on the calendar itself. One ticker has ONE calendar and every
     field is labelled against it, so this is asked the same question E*K + E times a replay.
     Tuples out, not lists: the answer is shared between callers and must not be mutable."""
     ends = tuple(sorted(pd.Timestamp(e) for e in year_ends))
-    starts = (ends[0] - pd.Timedelta(days=364),
-              *(e + pd.Timedelta(days=1) for e in ends[:-1]))
+    starts = (ends[0] - pd.Timedelta(days=364), *(e + pd.Timedelta(days=1) for e in ends[:-1]))
     return ends, starts
 
 
-def _fiscal_bounds(
-        year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...],
-                                                tuple[pd.Timestamp, ...]]:
+def _fiscal_bounds(year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
     """The fiscal years as (end, start) pairs: each year starts the day after the previous
     one ended, and the first is back-dated 364 days because there is no earlier end to
     anchor it on.
@@ -789,8 +826,7 @@ def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
     return int(min(max(round(covered / quarter_length), 1), TTM_QUARTERS))
 
 
-def label_fiscal_periods(quarters: pd.DataFrame,
-                         year_ends: list[pd.Timestamp]) -> pd.DataFrame:
+def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) -> pd.DataFrame:
     """Attach `fiscal_year` and `fiscal_quarter`, positioned against the fiscal year's own
     START and its own LENGTH.
 
@@ -824,16 +860,14 @@ def label_fiscal_periods(quarters: pd.DataFrame,
         quarter_length = max((year_end - year_start).days + 1, 1) / TTM_QUARTERS
         offset = (pd.Timestamp(out.at[index, "period_start"]) - year_start).days
         out.at[index, "fiscal_year"] = year_end.year
-        out.at[index, "fiscal_quarter"] = int(
-            min(max(round(offset / quarter_length) + 1, 1), TTM_QUARTERS))
+        out.at[index, "fiscal_quarter"] = int(min(max(round(offset / quarter_length) + 1, 1), TTM_QUARTERS))
     return out[list(_QUARTER_COLUMNS)]
 
 
 # ----------------------------------------------------------------- trailing twelve ---
 
-def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec,
-                    annual: pd.DataFrame | None = None,
-                    guards: PeriodGuards | None = None) -> pd.DataFrame:
+
+def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFrame | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
     """A trailing-twelve-month value at every quarter end it can be built from FOUR
     DISCRETE QUARTERS -- and nowhere else.
 
@@ -850,8 +884,7 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec,
     twelve-month average is used instead, because it is the filer's own exact number rather
     than our mean of four means.
     """
-    empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis",
-                                  "known_from", "n_quarters", "dc_code"])
+    empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis", "known_from", "n_quarters", "dc_code"])
     if quarters.empty:
         return empty
     guards = guards or load_guards()
@@ -862,35 +895,43 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec,
     reported_annual = {} if spec.is_additive else _annual_by_end(annual)
     rows = []
     for i in range(len(ordered)):
-        window = ordered.iloc[max(0, i - TTM_QUARTERS + 1): i + 1]
+        window = ordered.iloc[max(0, i - TTM_QUARTERS + 1) : i + 1]
         end = window["period_end"].iloc[-1]
         base = {"ticker": ordered["ticker"].iloc[0], "field": spec.name, "period_end": end}
         if not spec.is_additive and end in reported_annual:
             fact = reported_annual[end]
-            rows.append({**base, "value": float(fact["value"]),
-                         "basis": TTM_AS_REPORTED_ANNUAL,
-                         "known_from": fact["filing_date"], "n_quarters": 0,
-                         "dc_code": None})
+            rows.append(
+                {
+                    **base,
+                    "value": float(fact["value"]),
+                    "basis": TTM_AS_REPORTED_ANNUAL,
+                    "known_from": fact["filing_date"],
+                    "n_quarters": 0,
+                    "dc_code": None,
+                }
+            )
             continue
         if len(window) < TTM_QUARTERS or not _window_is_contiguous(window):
-            rows.append({**base, "value": None, "basis": None, "known_from": None,
-                         "n_quarters": len(window), "dc_code": INSUFFICIENT_QUARTERS})
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": INSUFFICIENT_QUARTERS})
             continue
         if not spec.is_additive and not _one_share_basis(window, guards):
-            rows.append({**base, "value": None, "basis": None, "known_from": None,
-                         "n_quarters": len(window), "dc_code": SPLIT_BASIS_MISMATCH})
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": SPLIT_BASIS_MISMATCH})
             continue
         # Share-days again for a non-additive field: a twelve-month weighted average is the
         # share-day total over the days, not the mean of four means (which is only equal
         # when all four quarters are the same length -- a 53-week year's Q4 is not).
         days = _inclusive_days(window["period_days"])
-        value = (window["value"].sum() if spec.is_additive
-                 else (window["value"] * days).sum() / days.sum())
-        rows.append({**base, "value": float(value),
-                     "basis": TTM_FOUR_QUARTERS if spec.is_additive
-                     else TTM_FOUR_QUARTER_MEAN,
-                     "known_from": window["known_from"].max(),
-                     "n_quarters": TTM_QUARTERS, "dc_code": None})
+        value = window["value"].sum() if spec.is_additive else (window["value"] * days).sum() / days.sum()
+        rows.append(
+            {
+                **base,
+                "value": float(value),
+                "basis": TTM_FOUR_QUARTERS if spec.is_additive else TTM_FOUR_QUARTER_MEAN,
+                "known_from": window["known_from"].max(),
+                "n_quarters": TTM_QUARTERS,
+                "dc_code": None,
+            }
+        )
     out = pd.DataFrame(rows, columns=list(empty.columns))
     # One null representation, not two: a python `None` and a numpy NaN in the same object
     # column survive a parquet round-trip as two distinct values and make every downstream
@@ -902,8 +943,7 @@ def _annual_by_end(annual: pd.DataFrame | None) -> dict:
     if annual is None or annual.empty:
         return {}
     latest = _latest_per_window(annual[annual["duration_type"] == ANNUAL])
-    return {pd.Timestamp(r.period_end): {"value": r.value, "filing_date": r.filing_date}
-            for r in latest.itertuples()}
+    return {pd.Timestamp(r.period_end): {"value": r.value, "filing_date": r.filing_date} for r in latest.itertuples()}
 
 
 def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
@@ -975,8 +1015,7 @@ def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
         out["fiscal_period"] = out["fiscal_period"].replace(_YEAR_END_LABEL)
     keys = [c for c in ("ticker", "field", "period_end") if c in out.columns]
     if keys and "filing_date" in out.columns:
-        out = (out.sort_values([*keys, "filing_date"])
-                  .drop_duplicates(subset=keys, keep="last"))
+        out = out.sort_values([*keys, "filing_date"]).drop_duplicates(subset=keys, keep="last")
     return out
 
 
@@ -1006,12 +1045,10 @@ class InstantLookup:
         if instants is None or instants.empty or "field" not in instants.columns:
             return
         frame = instants[[c for c in self._COLUMNS if c in instants.columns]].copy()
-        frame["period_end"] = pd.to_datetime(frame["period_end"],
-                                             errors="coerce").astype("datetime64[ns]")
+        frame["period_end"] = pd.to_datetime(frame["period_end"], errors="coerce").astype("datetime64[ns]")
         frame = frame.dropna(subset=["period_end"])
         if "filing_date" in frame.columns:
-            frame = (frame.sort_values(["period_end", "filing_date"])
-                          .drop_duplicates(subset=["field", "period_end"], keep="last"))
+            frame = frame.sort_values(["period_end", "filing_date"]).drop_duplicates(subset=["field", "period_end"], keep="last")
         else:
             frame = frame.sort_values("period_end")
         values = pd.to_numeric(frame["value"], errors="coerce").to_numpy(dtype=float)
@@ -1021,12 +1058,9 @@ class InstantLookup:
         # preserves within-group row order, so a globally ascending `period_end` is
         # ascending inside every group.
         ends = frame["period_end"].to_numpy("datetime64[ns]")
-        assert bool(np.all(ends[:-1] <= ends[1:])), \
-            "InstantLookup: period_end is not ascending -- searchsorted would be wrong"
+        assert bool(np.all(ends[:-1] <= ends[1:])), "InstantLookup: period_end is not ascending -- searchsorted would be wrong"
         for name, group in frame.groupby("field", sort=False):
-            self._by_field[str(name)] = (
-                group["period_end"].to_numpy(dtype="datetime64[ns]"),
-                group["_value"].to_numpy(dtype=float))
+            self._by_field[str(name)] = (group["period_end"].to_numpy(dtype="datetime64[ns]"), group["_value"].to_numpy(dtype=float))
 
     def value(self, field: str, as_of) -> float | None:
         """`field`'s latest value dated on or before `as_of`, or None where the field has
@@ -1036,8 +1070,7 @@ class InstantLookup:
         if entry is None or as_of is None or pd.isna(as_of):
             return None
         ends, values = entry
-        index = int(np.searchsorted(ends, np.datetime64(pd.Timestamp(as_of), "ns"),
-                                    side="right")) - 1
+        index = int(np.searchsorted(ends, np.datetime64(pd.Timestamp(as_of), "ns"), side="right")) - 1
         if index < 0:
             return None
         value = values[index]
@@ -1046,11 +1079,14 @@ class InstantLookup:
 
 # ----------------------------------------------------------------------- entry point ---
 
-def build_periods(facts: pd.DataFrame, catalogue,
-                  guards: PeriodGuards | None = None,
-                  refusals: list[dict] | None = None,
-                  year_ends: list[pd.Timestamp] | None = None,
-                  ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+
+def build_periods(
+    facts: pd.DataFrame,
+    catalogue,
+    guards: PeriodGuards | None = None,
+    refusals: list[dict] | None = None,
+    year_ends: list[pd.Timestamp] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Every field's discrete quarters, TTM values and instants for one ticker's facts.
 
     Returns `(quarters, ttm, instants)` -- all three, rather than leaving instants to a
@@ -1082,9 +1118,11 @@ def build_periods(facts: pd.DataFrame, catalogue,
     # (event, field) and would each re-resolve the default.
     guards = guards or load_guards()
     if facts.empty:
-        return (pd.DataFrame(columns=list(_QUARTER_COLUMNS)),
-                trailing_twelve(pd.DataFrame(), catalogue.field(
-                    catalogue.extracted_fields[0]), guards=guards), facts)
+        return (
+            pd.DataFrame(columns=list(_QUARTER_COLUMNS)),
+            trailing_twelve(pd.DataFrame(), catalogue.field(catalogue.extracted_fields[0]), guards=guards),
+            facts,
+        )
     durations = facts[~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])]
     # One calendar for the whole ticker, built from every annual-shaped fact any field
     # reported -- see `quarterize`. `durations` rather than `facts` makes no difference to
@@ -1105,7 +1143,6 @@ def build_periods(facts: pd.DataFrame, catalogue,
             continue
         all_quarters.append(quarters)
         all_ttm.append(trailing_twelve(quarters, spec, annual=group, guards=guards))
-    quarters = (pd.concat(all_quarters, ignore_index=True) if all_quarters
-                else pd.DataFrame(columns=list(_QUARTER_COLUMNS)))
+    quarters = pd.concat(all_quarters, ignore_index=True) if all_quarters else pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     ttm = pd.concat(all_ttm, ignore_index=True) if all_ttm else pd.DataFrame()
     return quarters, ttm, instant_stock(facts)

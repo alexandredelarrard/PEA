@@ -66,9 +66,7 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0, label: s
         except Exception as e:  # noqa: BLE001
             if is_rate_limited(e) and attempt < retries:
                 wait = base_wait * (2**attempt)
-                logger.warning(
-                    f"[{label}] transient source error; attempt {attempt + 1}/{retries}" f" -> waiting {wait:.0f}s + rotating IP before retry"
-                )
+                logger.warning(f"[{label}] transient source error; attempt {attempt + 1}/{retries} -> waiting {wait:.0f}s + rotating IP before retry")
                 time.sleep(wait)
                 attempt += 1
                 _on_retry(on_retry)
@@ -76,7 +74,7 @@ def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0, label: s
             raise
         if retry_empty is not None and attempt < retries and retry_empty(result):
             wait = base_wait * (2**attempt)
-            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries}" f" -> waiting {wait:.0f}s + rotating IP before retry")
+            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries} -> waiting {wait:.0f}s + rotating IP before retry")
             time.sleep(wait)
             attempt += 1
             _on_retry(on_retry)

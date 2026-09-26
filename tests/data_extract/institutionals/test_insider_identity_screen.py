@@ -13,30 +13,30 @@ CIKs throughout, because a synthetic id would let a wrong entity mapping pass un
            case: the symbol path drops it, the CIK path keeps it.
     AVGO   Avicena Group 0001317092 typed `AVGO` before Broadcom existed under it.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    _filter_universe, _to_quarantine, _verdicts)
+from src.data_extract.utils.institutionals.fetch_insider_transactions import _filter_universe, _to_quarantine, _verdicts
 from src.data_store.schema import Tables
 
 # --------------------------------------------------------------------------- #
 # fixtures                                                                      #
 # --------------------------------------------------------------------------- #
 
-BROADCOM = "0001441634"           # Broadcom Inc, AVGO's roster CIK
-BROADCOM_LTD = "0001649338"       # Broadcom Ltd, the Singapore segment
-AVAGO = "0001441634"              # (same CIK family; the register chains them)
-AVICENA = "0001317092"            # Avicena Group -- typed AVGO, unrelated company
-TRANE = "0001466258"              # Ingersoll-Rand plc, TT's registrant today
-TRANE_NEW = "0001699150"          # Trane Technologies plc, TT's roster CIK
-INGERSOLL_OLD = "0000836102"      # Ingersoll-Rand Company -- the entity IR's ROSTER points at
-DUPONT_EI = "0000030554"          # DuPont E I de Nemours -- DD's own predecessor
-ABC = "0001140859"                # AmerisourceBergen / Cencora, COR's roster CIK
-CORESITE = "0001490892"           # CoreSite Realty -- held COR until 2021
+BROADCOM = "0001441634"  # Broadcom Inc, AVGO's roster CIK
+BROADCOM_LTD = "0001649338"  # Broadcom Ltd, the Singapore segment
+AVAGO = "0001441634"  # (same CIK family; the register chains them)
+AVICENA = "0001317092"  # Avicena Group -- typed AVGO, unrelated company
+TRANE = "0001466258"  # Ingersoll-Rand plc, TT's registrant today
+TRANE_NEW = "0001699150"  # Trane Technologies plc, TT's roster CIK
+INGERSOLL_OLD = "0000836102"  # Ingersoll-Rand Company -- the entity IR's ROSTER points at
+DUPONT_EI = "0000030554"  # DuPont E I de Nemours -- DD's own predecessor
+ABC = "0001140859"  # AmerisourceBergen / Cencora, COR's roster CIK
+CORESITE = "0001490892"  # CoreSite Realty -- held COR until 2021
 
 UNIVERSE = {"AVGO", "TT", "DD", "COR", "IR"}
 
@@ -45,51 +45,66 @@ UNIVERSE = {"AVGO", "TT", "DD", "COR", "IR"}
 def identity():
     """Axis A only -- the screen never reads tenure (D1), so tenure carries just enough to
     satisfy the D19 cross-check that every roster ticker's filings name its roster entity."""
-    lineage = pd.DataFrame([
-        # Broadcom: a register chain, two CIKs one entity
-        {"cik": BROADCOM, "entity_id": "E0001441634", "source": "register"},
-        {"cik": BROADCOM_LTD, "entity_id": "E0001441634", "source": "register"},
-        # Trane: the old Ingersoll-Rand plc belongs with Trane Technologies, NOT with `IR`
-        {"cik": TRANE, "entity_id": "E0001699150", "source": "register"},
-        {"cik": TRANE_NEW, "entity_id": "E0001699150", "source": "register"},
-        # `IR` (Ingersoll Rand Inc) is a DIFFERENT entity that happens to hold the symbol
-        {"cik": INGERSOLL_OLD, "entity_id": "E0000836102", "source": "roster"},
-        {"cik": DUPONT_EI, "entity_id": "E0000030554", "source": "register"},
-        {"cik": ABC, "entity_id": "E0001140859", "source": "roster"},
-        {"cik": CORESITE, "entity_id": "E0001490892", "source": "owner_overlap"},
-    ]).assign(confidence=None, evidence="test")
-    tenure = pd.DataFrame([
-        {"symbol": s, "issuer_cik": c, "valid_from": pd.Timestamp(f),
-         "valid_to": None if t is None else pd.Timestamp(t), "n_filings": n}
-        for s, c, f, t, n in [
-            ("AVGO", BROADCOM, "2018-04-04", None, 900),
-            ("AVGO", AVICENA, "2006-03-01", "2008-01-01", 12),
-            ("TT", TRANE_NEW, "2020-03-02", None, 400),
-            ("IR", TRANE, "2009-07-01", "2020-02-28", 2075),
-            ("IR", INGERSOLL_OLD, "2020-03-01", None, 500),
-            ("DD", DUPONT_EI, "2006-01-03", "2017-09-01", 3422),
-            ("COR", ABC, "2023-09-01", None, 700),
-            ("COR", CORESITE, "2010-06-01", "2021-12-28", 1207),
-        ]]).assign(source="form345", evidence="")
-    roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in [
-        ("AVGO", BROADCOM), ("TT", TRANE_NEW), ("IR", INGERSOLL_OLD),
-        ("DD", DUPONT_EI), ("COR", ABC)]])
+    lineage = pd.DataFrame(
+        [
+            # Broadcom: a register chain, two CIKs one entity
+            {"cik": BROADCOM, "entity_id": "E0001441634", "source": "register"},
+            {"cik": BROADCOM_LTD, "entity_id": "E0001441634", "source": "register"},
+            # Trane: the old Ingersoll-Rand plc belongs with Trane Technologies, NOT with `IR`
+            {"cik": TRANE, "entity_id": "E0001699150", "source": "register"},
+            {"cik": TRANE_NEW, "entity_id": "E0001699150", "source": "register"},
+            # `IR` (Ingersoll Rand Inc) is a DIFFERENT entity that happens to hold the symbol
+            {"cik": INGERSOLL_OLD, "entity_id": "E0000836102", "source": "roster"},
+            {"cik": DUPONT_EI, "entity_id": "E0000030554", "source": "register"},
+            {"cik": ABC, "entity_id": "E0001140859", "source": "roster"},
+            {"cik": CORESITE, "entity_id": "E0001490892", "source": "owner_overlap"},
+        ]
+    ).assign(confidence=None, evidence="test")
+    tenure = pd.DataFrame(
+        [
+            {"symbol": s, "issuer_cik": c, "valid_from": pd.Timestamp(f), "valid_to": None if t is None else pd.Timestamp(t), "n_filings": n}
+            for s, c, f, t, n in [
+                ("AVGO", BROADCOM, "2018-04-04", None, 900),
+                ("AVGO", AVICENA, "2006-03-01", "2008-01-01", 12),
+                ("TT", TRANE_NEW, "2020-03-02", None, 400),
+                ("IR", TRANE, "2009-07-01", "2020-02-28", 2075),
+                ("IR", INGERSOLL_OLD, "2020-03-01", None, 500),
+                ("DD", DUPONT_EI, "2006-01-03", "2017-09-01", 3422),
+                ("COR", ABC, "2023-09-01", None, 700),
+                ("COR", CORESITE, "2010-06-01", "2021-12-28", 1207),
+            ]
+        ]
+    ).assign(source="form345", evidence="")
+    roster = pd.DataFrame(
+        [{"ticker": t, "cik": c} for t, c in [("AVGO", BROADCOM), ("TT", TRANE_NEW), ("IR", INGERSOLL_OLD), ("DD", DUPONT_EI), ("COR", ABC)]]
+    )
     return build_identity(lineage=lineage, tenure=tenure, roster=roster)
 
 
 def _rows(pairs) -> pd.DataFrame:
     """One transaction row per (claimed symbol, issuer CIK)."""
-    return pd.DataFrame([
-        {"accession_number": f"a{i}", "security_type": "nonderiv", "transaction_sk": str(i),
-         "ticker": sym, "issuer_cik": cik, "issuer_name": f"CO {i}",
-         "filing_date": pd.Timestamp("2015-06-01"), "transaction_code": "P",
-         "value_usd": 1000.0 * (i + 1)}
-        for i, (sym, cik) in enumerate(pairs)])
+    return pd.DataFrame(
+        [
+            {
+                "accession_number": f"a{i}",
+                "security_type": "nonderiv",
+                "transaction_sk": str(i),
+                "ticker": sym,
+                "issuer_cik": cik,
+                "issuer_name": f"CO {i}",
+                "filing_date": pd.Timestamp("2015-06-01"),
+                "transaction_code": "P",
+                "value_usd": 1000.0 * (i + 1),
+            }
+            for i, (sym, cik) in enumerate(pairs)
+        ]
+    )
 
 
 # --------------------------------------------------------------------------- #
 # the four named cases                                                          #
 # --------------------------------------------------------------------------- #
+
 
 def test_a_trane_row_filed_under_IR_is_relabelled_to_TT_not_quarantined(identity):
     """The headline defect -- 2,075 rows of Trane Technologies insider trading sitting in
@@ -119,12 +134,14 @@ def test_a_coresite_row_filed_under_COR_is_rejected_with_both_entity_ids(identit
     row = rejected.iloc[0]
     assert row["reject_reason"] == "entity_mismatch"
     assert row["claimed_ticker"] == "COR"
-    assert row["resolved_entity_id"] == "E0001490892"     # the entity the CIK really is
-    assert row["universe_entity_id"] == "E0001140859"     # the entity `COR` names today
+    assert row["resolved_entity_id"] == "E0001490892"  # the entity the CIK really is
+    assert row["universe_entity_id"] == "E0001140859"  # the entity `COR` names today
     assert row["resolved_entity_id"] != row["universe_entity_id"]
     print("\n=== the COR reuse case ===")
-    print(f"  CoreSite {CORESITE} claimed COR -> rejected; {row['resolved_entity_id']} "
-          f"!= {row['universe_entity_id']}. Both ids stored, so an id shift is a diff.")
+    print(
+        f"  CoreSite {CORESITE} claimed COR -> rejected; {row['resolved_entity_id']} "
+        f"!= {row['universe_entity_id']}. Both ids stored, so an id shift is a diff."
+    )
 
 
 def test_a_dupont_E_I_row_filed_under_DD_is_kept(identity):
@@ -154,9 +171,7 @@ def test_an_amerisourcebergen_row_filed_as_ABC_is_admitted_as_COR(identity):
 def test_avicena_is_rejected_while_every_broadcom_segment_is_kept(identity):
     """One symbol, a register CHAIN and a reuse case at once -- the shape that cannot be
     expressed by one CIK per ticker, and the reason axis A is a table rather than a dict."""
-    kept, rejected = _filter_universe(
-        _rows([("AVGO", AVICENA), ("AVGO", BROADCOM), ("AVGO", BROADCOM_LTD)]),
-        UNIVERSE, identity)
+    kept, rejected = _filter_universe(_rows([("AVGO", AVICENA), ("AVGO", BROADCOM), ("AVGO", BROADCOM_LTD)]), UNIVERSE, identity)
 
     assert list(rejected["issuer_cik"]) == [AVICENA]
     assert rejected.iloc[0]["reject_reason"] == "entity_mismatch"
@@ -169,6 +184,7 @@ def test_avicena_is_rejected_while_every_broadcom_segment_is_kept(identity):
 # --------------------------------------------------------------------------- #
 # the reasons and the partition                                                 #
 # --------------------------------------------------------------------------- #
+
 
 def test_a_row_with_no_issuer_cik_gets_its_own_reason(identity):
     """Measured ZERO across all 4,402,307 filings in the 81 cached quarters, which is why no
@@ -188,20 +204,18 @@ def test_a_departed_universe_ticker_is_reason_entity_not_in_universe(identity):
     frame = _rows([("COR", CORESITE)])
     scored = _verdicts(frame, UNIVERSE, identity)
 
-    assert list(scored["reject_reason"]) == ["entity_mismatch"]      # COR IS in the universe
+    assert list(scored["reject_reason"]) == ["entity_mismatch"]  # COR IS in the universe
     gone = _verdicts(frame, UNIVERSE - {"COR"}, identity)
     assert list(gone["reject_reason"]) == ["entity_not_in_universe"]
     print("\n=== the two rejection reasons are distinguishable ===")
-    print("  the same CoreSite row reads entity_mismatch while COR is in the universe and "
-          "entity_not_in_universe once it leaves.")
+    print("  the same CoreSite row reads entity_mismatch while COR is in the universe and entity_not_in_universe once it leaves.")
 
 
 def test_the_partition_is_disjoint_and_loses_no_in_scope_row(identity):
     """⚠ The one invariant a partition must have, and the one the old `return df[mask]` could
     not be asked about. Scope is checked separately: `df` is every filer in the quarter, so
     an EXHAUSTIVE quarantine would store ~50M rows about companies nothing here reads."""
-    pairs = [("IR", TRANE), ("DD", DUPONT_EI), ("ABC", ABC), ("AVGO", AVICENA),
-             ("AVGO", BROADCOM), ("COR", CORESITE), ("ZZZZ", "0009999999")]
+    pairs = [("IR", TRANE), ("DD", DUPONT_EI), ("ABC", ABC), ("AVGO", AVICENA), ("AVGO", BROADCOM), ("COR", CORESITE), ("ZZZZ", "0009999999")]
     frame = _rows(pairs)
     kept, rejected = _filter_universe(frame, UNIVERSE, identity)
 
@@ -212,8 +226,7 @@ def test_the_partition_is_disjoint_and_loses_no_in_scope_row(identity):
     assert len(kept) + len(rejected) == len(frame) - 1, "only the off-universe row is dropped"
     assert "ZZZZ" not in set(rejected["claimed_ticker"])
     print("\n=== partition ===")
-    print(f"  {len(frame)} rows in -> {len(kept)} kept + {len(rejected)} quarantined, "
-          "disjoint; 1 unrelated filer dropped rather than quarantined.")
+    print(f"  {len(frame)} rows in -> {len(kept)} kept + {len(rejected)} quarantined, disjoint; 1 unrelated filer dropped rather than quarantined.")
 
 
 def test_the_quarantine_frame_stores_the_CLAIMED_ticker(identity):
@@ -224,9 +237,8 @@ def test_the_quarantine_frame_stores_the_CLAIMED_ticker(identity):
     out = _to_quarantine(rejected)
 
     assert list(out["ticker"]) == ["COR"]
-    assert out.iloc[0]["screened_on"] == pd.Timestamp("2015-06-01")     # D18: filing_date
-    assert {"reject_reason", "resolved_entity_id", "universe_entity_id",
-            "screened_on"} <= set(out.columns)
+    assert out.iloc[0]["screened_on"] == pd.Timestamp("2015-06-01")  # D18: filing_date
+    assert {"reject_reason", "resolved_entity_id", "universe_entity_id", "screened_on"} <= set(out.columns)
     print("\n=== quarantine shape ===")
     print("  ticker='IR' (the claim), screened_on=filing_date, both entity ids present.")
 
@@ -243,8 +255,8 @@ def test_no_date_filter_runs_on_a_post_boundary_predecessor_row(identity):
     """Forms 3/4/5 are UNION events (`registrant.FORM_POLICY`). A date cut here is the named
     XOM-`SCHEDULE 13G` regression, so `screened_on` is RECORDED and never READ."""
     frame = _rows([("DD", DUPONT_EI), ("DD", DUPONT_EI)])
-    frame.loc[0, "filing_date"] = pd.Timestamp("2006-02-01")    # inside the tenure
-    frame.loc[1, "filing_date"] = pd.Timestamp("2025-02-01")    # long past its close
+    frame.loc[0, "filing_date"] = pd.Timestamp("2006-02-01")  # inside the tenure
+    frame.loc[1, "filing_date"] = pd.Timestamp("2025-02-01")  # long past its close
     kept, rejected = _filter_universe(frame, UNIVERSE, identity)
 
     assert len(kept) == 2 and rejected.empty
@@ -258,10 +270,8 @@ def test_footnotes_follow_the_kept_accessions_only(identity):
     `insider_footnotes` has 0 of them today."""
     from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnotes
 
-    kept, rejected = _filter_universe(
-        _rows([("DD", DUPONT_EI), ("COR", CORESITE)]), UNIVERSE, identity)
-    notes = pd.DataFrame({"ACCESSION_NUMBER": ["a0", "a1"], "FOOTNOTE_ID": ["F1", "F1"],
-                          "FOOTNOTE_TXT": ["kept", "quarantined"]})
+    kept, rejected = _filter_universe(_rows([("DD", DUPONT_EI), ("COR", CORESITE)]), UNIVERSE, identity)
+    notes = pd.DataFrame({"ACCESSION_NUMBER": ["a0", "a1"], "FOOTNOTE_ID": ["F1", "F1"], "FOOTNOTE_TXT": ["kept", "quarantined"]})
     out = _footnotes(notes, set(kept["accession_number"]))
 
     assert list(out["accession_number"]) == ["a0"]
@@ -274,6 +284,7 @@ def test_footnotes_follow_the_kept_accessions_only(identity):
 # the stored-row sweep -- the only new code that DELETEs                        #
 # --------------------------------------------------------------------------- #
 
+
 def test_the_sweep_quarantines_and_deletes_the_stored_rejects(tmp_path, identity):
     """⚠ THE PARSE SCREEN CANNOT DO THIS AND THAT IS THE WHOLE POINT. `store.save` upserts, so
     a `--reparse` declines to re-write a rejected row and leaves it in the table for ever. The
@@ -285,18 +296,23 @@ def test_the_sweep_quarantines_and_deletes_the_stored_rejects(tmp_path, identity
     """
     from sqlalchemy import create_engine
 
-    from src.data_store.store import DataStore
     from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+    from src.data_store.store import DataStore
 
     store = DataStore(create_engine(f"sqlite:///{tmp_path / 'sweep.db'}"))
-    stored = _rows([("DD", DUPONT_EI),      # keep
-                    ("COR", CORESITE),      # reject: entity_mismatch
-                    ("IR", TRANE),          # keep, relabelled to TT
-                    ("ZZZZ", CORESITE)])    # reject: claimed ticker left the universe
+    stored = _rows(
+        [
+            ("DD", DUPONT_EI),  # keep
+            ("COR", CORESITE),  # reject: entity_mismatch
+            ("IR", TRANE),  # keep, relabelled to TT
+            ("ZZZZ", CORESITE),
+        ]
+    )  # reject: claimed ticker left the universe
     store.save(Tables.insider_transactions, stored)
 
     class _Ctx:
         pass
+
     ctx = _Ctx()
     ctx.store = store
 
@@ -311,8 +327,7 @@ def test_the_sweep_quarantines_and_deletes_the_stored_rejects(tmp_path, identity
     assert len(left) + len(quarantine) == len(stored)
     assert not set(left["accession_number"]) & set(quarantine["accession_number"])
     print("\n=== the stored-row sweep ===")
-    print(f"  {len(stored)} stored -> {len(left)} kept + {len(quarantine)} quarantined; "
-          "the upsert alone could have removed neither.")
+    print(f"  {len(stored)} stored -> {len(left)} kept + {len(quarantine)} quarantined; the upsert alone could have removed neither.")
 
 
 def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity):
@@ -321,14 +336,15 @@ def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity
     but the sweep should not even reach that, because nothing is left to reject."""
     from sqlalchemy import create_engine
 
-    from src.data_store.store import DataStore
     from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+    from src.data_store.store import DataStore
 
     store = DataStore(create_engine(f"sqlite:///{tmp_path / 'idem.db'}"))
     store.save(Tables.insider_transactions, _rows([("DD", DUPONT_EI), ("COR", CORESITE)]))
 
     class _Ctx:
         pass
+
     ctx = _Ctx()
     ctx.store = store
 

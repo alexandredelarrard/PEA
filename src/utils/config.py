@@ -1,6 +1,6 @@
-from omegaconf import DictConfig, OmegaConf
-import glob
 from pathlib import Path
+
+from omegaconf import DictConfig, OmegaConf
 
 
 def read_config(path: str) -> DictConfig:

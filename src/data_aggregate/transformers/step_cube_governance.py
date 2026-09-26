@@ -18,6 +18,7 @@ and the part's warm-up exists for exactly one leg -- the 252-day trailing shareh
 the pay-vs-performance family differences against pay growth. That is also the only reason
 this step takes `close_total` (see `_FIELDS`).
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -29,7 +30,9 @@ from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames, load_price_frames, load_trading_calendar,
+    PriceFrames,
+    load_price_frames,
+    load_trading_calendar,
 )
 from src.data_aggregate.utils.governance.def14a_impute import (
     impute_def14a,
@@ -48,7 +51,6 @@ from src.utils.step import Step
 
 
 class StepCubeGovernance(Step):
-
     # ⚠ the ONLY feature step besides momentum/target allowed the total-return series:
     # the pay-vs-performance family needs a RETURN, not a level. What makes that safe here,
     # where it is forbidden in fundamentals/extras, is that this step builds no market cap
@@ -66,16 +68,16 @@ class StepCubeGovernance(Step):
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._store, Tables.cube_part_governance, full=full,
-                             warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._store))
+        window = plan_window(
+            self._store, Tables.cube_part_governance, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store)
+        )
         frames = self._load_frames(window.since)
 
         merger = PanelMerger(self._log)
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
-        merger.add(self._governance_panel(frames), "governance",
-                   "No governance features built (def14a_llm empty — accrues as "
-                   "fetch_def14a_llm runs).")
+        merger.add(
+            self._governance_panel(frames), "governance", "No governance features built (def14a_llm empty — accrues as fetch_def14a_llm runs)."
+        )
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames
@@ -89,9 +91,7 @@ class StepCubeGovernance(Step):
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(
-            self._store, peers=load_peers_or_raise(self._context, self._config),
-            fields=self._FIELDS, since=since)
+        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _load_def14a(self) -> pd.DataFrame | None:
         """The proxy archive, read in FULL: one row per annual proxy per ticker, so the whole
@@ -100,8 +100,7 @@ class StepCubeGovernance(Step):
         df = self._store.load(Tables.def14a_llm, optional=True)
         if df is None or df.empty:
             return None
-        self._log.info("Loaded %s: %s rows x %s cols",
-                       Tables.def14a_llm.name, len(df), len(df.columns))
+        self._log.info("Loaded %s: %s rows x %s cols", Tables.def14a_llm.name, len(df), len(df.columns))
         return df
 
     def _load_votes(self) -> pd.DataFrame | None:
@@ -117,11 +116,9 @@ class StepCubeGovernance(Step):
         """
         df = self._store.load(Tables.sec_8k_votes, optional=True)
         if df is None or df.empty:
-            self._log.warning("No %s -> the four shareholder-dissent families are skipped.",
-                              Tables.sec_8k_votes.name)
+            self._log.warning("No %s -> the four shareholder-dissent families are skipped.", Tables.sec_8k_votes.name)
             return None
-        self._log.info("Loaded %s: %s rows x %s cols",
-                       Tables.sec_8k_votes.name, len(df), len(df.columns))
+        self._log.info("Loaded %s: %s rows x %s cols", Tables.sec_8k_votes.name, len(df), len(df.columns))
         return df
 
     def _load_exec_comp(self) -> pd.DataFrame | None:
@@ -138,13 +135,11 @@ class StepCubeGovernance(Step):
         """
         df = self._store.load(Tables.def14a_executive_comp, optional=True)
         if df is None or df.empty:
-            self._log.warning("No %s -> the exact CEO Pay Slice family is skipped.",
-                              Tables.def14a_executive_comp.name)
+            self._log.warning("No %s -> the exact CEO Pay Slice family is skipped.", Tables.def14a_executive_comp.name)
             return None
         df, stats = impute_exec_comp(df)
         if stats:
-            self._log.info("NEO comp clean-on-read: %s",
-                           ", ".join(f"{k}={v:,}" for k, v in stats.items()))
+            self._log.info("NEO comp clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
         return df
 
     def _load_directors(self) -> pd.DataFrame | None:
@@ -163,16 +158,14 @@ class StepCubeGovernance(Step):
         """
         table = Tables.def14a_directors
         if not self._store.exists(table):
-            self._log.warning("No %s -> the board averages stay on the parent scalar and the "
-                              "board-quality family is skipped.", table.name)
+            self._log.warning("No %s -> the board averages stay on the parent scalar and the board-quality family is skipped.", table.name)
             return None
         df = self._store.load(table, project=True, optional=True)
         if df is None or df.empty:
             return None
         df, stats = fill_director_attributes(df)
         if stats:
-            self._log.info("Director clean-on-read: %s",
-                           ", ".join(f"{k}={v:,}" for k, v in stats.items()))
+            self._log.info("Director clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
         return df
 
     def _load_director_comp(self) -> pd.DataFrame | None:
@@ -196,8 +189,7 @@ class StepCubeGovernance(Step):
             return None
         df, stats = impute_director_comp(df)
         if stats:
-            self._log.info("Director-comp clean-on-read: %s",
-                           ", ".join(f"{k}={v:,}" for k, v in stats.items()))
+            self._log.info("Director-comp clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
         return df
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
@@ -217,8 +209,7 @@ class StepCubeGovernance(Step):
         """
         df = self._store.load(Tables.fundamentals_history, optional=True)
         if df is None or df.empty:
-            self._log.warning("No fundamentals history -> the pay-vs-revenue-growth "
-                              "misalignment feature is skipped.")
+            self._log.warning("No fundamentals history -> the pay-vs-revenue-growth misalignment feature is skipped.")
             return None
         return df
 
@@ -249,8 +240,7 @@ class StepCubeGovernance(Step):
 
         df, stats = impute_def14a(df)
         if stats:
-            self._log.info("DEF 14A clean-on-read: deduced %d missing cells across %d rules "
-                           "(raw table untouched).", sum(stats.values()), len(stats))
+            self._log.info("DEF 14A clean-on-read: deduced %d missing cells across %d rules (raw table untouched).", sum(stats.values()), len(stats))
         # Step 4 of the precedence chain has now run, so the three-valued provenance can be
         # completed and said out loud: how much of each board average is EVIDENCE.
         df, sstats = finalize_board_source(df)
@@ -258,13 +248,16 @@ class StepCubeGovernance(Step):
             self._log.info("  board aggregate provenance | %s: %s", k, f"{v:,}")
 
         panel, tally = build_governance_feature_panel(
-            df, frames.peers, frames.trading_index,
+            df,
+            frames.peers,
+            frames.trading_index,
             fundamentals_history=self._load_fundamentals(),
             votes=self._load_votes(),
             exec_comp=self._load_exec_comp(),
             directors=directors,
             director_comp=self._load_director_comp(),
-            close_total=frames.close_total)
+            close_total=frames.close_total,
+        )
         # Per-family row counts, the [0,1] rejects and the CEO-ballot split, one line each.
         # These are the numbers that make a thin family readable as a KNOWN property of the
         # ballot rather than a silent build failure -- `management_dissent_spread` in

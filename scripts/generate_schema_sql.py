@@ -9,6 +9,7 @@ the database yet is emitted as a `-- SKIPPED` comment rather than guessed at.
 Run:
     python -m scripts.generate_schema_sql
 """
+
 from __future__ import annotations
 
 import sys

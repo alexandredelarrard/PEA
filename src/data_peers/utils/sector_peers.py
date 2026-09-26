@@ -9,6 +9,7 @@ similarity captures actual business similarity (Zoetis <-> Elanco/IDEXX), which
 correlation misses. We combine the two so peers must be BOTH statistically and
 economically similar.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,10 +29,11 @@ import pandas as pd
 # secondary is dropped as a peer CANDIDATE and instead inherits its primary's
 # basket. Extend as the universe adds dual-class names (e.g. "UA": "UAA").
 DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
-    "GOOG": "GOOGL",   # Alphabet   class C -> class A
-    "FOX": "FOXA",     # Fox        class B -> class A
-    "NWS": "NWSA",     # News Corp  class B -> class A
+    "GOOG": "GOOGL",  # Alphabet   class C -> class A
+    "FOX": "FOXA",  # Fox        class B -> class A
+    "NWS": "NWSA",  # News Corp  class B -> class A
 }
+
 
 def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> dict:
     """Top-k peers from one row of a similarity matrix (self excluded)."""
@@ -44,7 +46,7 @@ def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> 
         return {}
     if weighting == "equal":
         w = pd.Series(1.0, index=top.index)
-    elif weighting == "corr":                 # weight by similarity strength
+    elif weighting == "corr":  # weight by similarity strength
         w = top.clip(lower=0.0)
     else:
         raise ValueError("weighting must be 'equal' or 'corr'")
@@ -72,27 +74,23 @@ def _peers_from_similarity_matrix(
     company in every basket. It is therefore never a peer CANDIDATE; instead each
     secondary INHERITS its primary's basket, so it still has valid, non-self peers.
     """
-    redundant_map = (DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None
-                     else redundant_map)
+    redundant_map = DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None else redundant_map
     secondaries = set(redundant_map)
-    cand = [c for c in sim.columns if c not in secondaries]         # peer candidates
+    cand = [c for c in sim.columns if c not in secondaries]  # peer candidates
     sim_c = sim[cand]
-    peer_dict = {t: _weights_from_similarity(sim_c.loc[t], top_k, weighting)
-                 for t in sim.index if t not in secondaries}
-    for sec, prim in redundant_map.items():                         # twin -> primary's basket
+    peer_dict = {t: _weights_from_similarity(sim_c.loc[t], top_k, weighting) for t in sim.index if t not in secondaries}
+    for sec, prim in redundant_map.items():  # twin -> primary's basket
         if sec in sim.index and prim in peer_dict:
             peer_dict[sec] = dict(peer_dict[prim])
     return peer_dict
 
 
-def dedupe_share_classes(peer_dict: dict,
-                         redundant_map: dict[str, str] | None = None) -> dict:
+def dedupe_share_classes(peer_dict: dict, redundant_map: dict[str, str] | None = None) -> dict:
     """Post-hoc dual-class dedup for an already-built / CACHED peer dict: strip every
     secondary share class out of all baskets (renormalizing the remaining weights)
     and give each secondary its primary's basket. Idempotent -- applied on load so a
     dict built before this fix is corrected without recomputing embeddings."""
-    redundant_map = (DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None
-                     else redundant_map)
+    redundant_map = DUAL_CLASS_SECONDARY_TO_PRIMARY if redundant_map is None else redundant_map
     if not redundant_map:
         return peer_dict
     secondaries = set(redundant_map)
@@ -107,8 +105,7 @@ def dedupe_share_classes(peer_dict: dict,
     return out
 
 
-def build_peer_dict(stock_returns, top_k=20, weighting="corr", min_obs=120,
-                    redundant_map=None) -> dict:
+def build_peer_dict(stock_returns, top_k=20, weighting="corr", min_obs=120, redundant_map=None) -> dict:
     """Correlation-only peer dict (dual-class-deduped; kept for fallback/comparison)."""
     corr = stock_returns.corr(min_periods=min_obs)
     return _peers_from_similarity_matrix(corr, top_k, weighting, redundant_map)
@@ -155,8 +152,8 @@ def combine_similarity(
     described. `load_peers_or_raise` is the guard that makes the empty basket loud regardless.
     """
     tickers = corr.index.union(embed_sim.index)
-    c = ((corr.reindex(index=tickers, columns=tickers) + 1.0) / 2.0)
-    e = ((embed_sim.reindex(index=tickers, columns=tickers) + 1.0) / 2.0)
+    c = (corr.reindex(index=tickers, columns=tickers) + 1.0) / 2.0
+    e = (embed_sim.reindex(index=tickers, columns=tickers) + 1.0) / 2.0
 
     wc = c.notna().astype(float) * w_corr
     we = e.notna().astype(float) * w_embed
@@ -188,8 +185,7 @@ def build_peer_dict_hybrid(
 # Sector returns from peers (unchanged)                                       #
 # --------------------------------------------------------------------------- #
 def compute_sector_returns(stock_returns: pd.DataFrame, peer_dict: dict) -> pd.DataFrame:
-    sector = pd.DataFrame(index=stock_returns.index, columns=stock_returns.columns,
-                          dtype="float64")
+    sector = pd.DataFrame(index=stock_returns.index, columns=stock_returns.columns, dtype="float64")
     for ticker, peers in peer_dict.items():
         if not peers or ticker not in stock_returns.columns:
             continue

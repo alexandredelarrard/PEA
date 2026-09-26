@@ -78,7 +78,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
     out = fe._download_one("AAPL", 8)
     assert out is not None and out["eps_actual"].iloc[0] == 1.1 and state["n"] == 2
     print("\n=== SANITY CHECK: earnings retries the throttled call ===")
-    print(f"  get_earnings_dates 429'd once then succeeded (calls={state['n']}); " f"ticker recovered instead of being dropped. Validated.")
+    print(f"  get_earnings_dates 429'd once then succeeded (calls={state['n']}); ticker recovered instead of being dropped. Validated.")
 
 
 def test_incremental_skip_logic():
@@ -102,7 +102,7 @@ def test_incremental_skip_logic():
     assert (last_by["OLD"] + pd.Timedelta(days=1)) <= end  # has missing days
     assert (end + pd.Timedelta(days=1)) > end  # current -> skipped
     print("\n=== SANITY CHECK: incremental skip / missing-days logic ===")
-    print("  current ticker skipped (freshness window); stale ticker refetched; " "wiki requests only [cached_max+1 .. yesterday]. Validated.")
+    print("  current ticker skipped (freshness window); stale ticker refetched; wiki requests only [cached_max+1 .. yesterday]. Validated.")
 
 
 if __name__ == "__main__":

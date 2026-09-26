@@ -24,19 +24,20 @@ Notes:
     nothing else, which is what let the cube drop its `cube_part_market` firewall
     and three `drop(columns=[market])` guards.
 """
+
+import logging
 import time
 
 import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
-import logging
 
-from src.data_store.schema import Tables
+from src.constants.constants import DATE_FORMAT
+from src.context import Context
 from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sessions import last_completed_session
-from src.constants.constants import DATE_FORMAT
-from src.context import Context
+from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,8 @@ def _normalize_prices(df: pd.DataFrame, auto_adjust: bool) -> pd.DataFrame:
         # from a correct table until a label came out on the wrong basis.
         raise RuntimeError(
             "yfinance returned no 'Adj Close' under auto_adjust=False -- refusing to write a "
-            f"single-basis price frame. Columns present: {sorted(out.columns)}")
+            f"single-basis price frame. Columns present: {sorted(out.columns)}"
+        )
     return out.rename(columns={"close": "close_split", "adj close": "close_total"})
 
 
@@ -165,8 +167,8 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
         return prices
     return prices.loc[~drop].reset_index(drop=True)
 
-def _refresh_floor(since: pd.Timestamp, until: pd.Timestamp,
-                   window_start: pd.Timestamp) -> pd.Timestamp:
+
+def _refresh_floor(since: pd.Timestamp, until: pd.Timestamp, window_start: pd.Timestamp) -> pd.Timestamp:
     """Widen an incremental `since` back over the recent tail, but never past `window_start`.
 
     `resume_since` answers "the oldest per-ticker MAX date", which is the right frontier only
@@ -180,6 +182,7 @@ def _refresh_floor(since: pd.Timestamp, until: pd.Timestamp,
     floor = until - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
     return max(min(since, floor), window_start)
 
+
 def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.DataFrame]:
     frames = []
     if isinstance(data.columns, pd.MultiIndex):
@@ -191,9 +194,13 @@ def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.D
             # complete one and only surfaced three tables downstream as a thin cross-section.
             # This is the single line that made the 45-of-491 day invisible at fetch time.
             logger.warning(
-                "yfinance returned no data for %d of %d tickers in chunk %s..%s -- their bars "
-                "for this window are MISSING, not empty: %s",
-                len(missing), len(chunk), chunk[0], chunk[-1], ", ".join(missing))
+                "yfinance returned no data for %d of %d tickers in chunk %s..%s -- their bars for this window are MISSING, not empty: %s",
+                len(missing),
+                len(chunk),
+                chunk[0],
+                chunk[-1],
+                ", ".join(missing),
+            )
         for tkr in chunk:
             if tkr not in served:
                 continue
@@ -227,7 +234,7 @@ def _download_price_chunk(
                 interval="1d",
                 group_by="ticker",
                 auto_adjust=auto_adjust,
-                actions=actions,          # also return Dividends / Stock Splits
+                actions=actions,  # also return Dividends / Stock Splits
                 threads=True,
                 progress=False,
             )
@@ -268,7 +275,7 @@ def download_ohlcv(
     progress-bar label. Both are now explicit arguments."""
     frames: list[pd.DataFrame] = []
     for i in tqdm(range(0, len(tickers), chunk_size), desc=desc):
-        chunk = tickers[i:i + chunk_size]
+        chunk = tickers[i : i + chunk_size]
         frames.extend(_download_price_chunk(chunk, since, until, pause, actions, auto_adjust))
         time.sleep(pause)
 
@@ -291,8 +298,7 @@ def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
     Without this trigger, EVERY future splitter re-corrupts the table the same way, and the
     one-off `--full` re-download buys only a clean snapshot. Empty list when `prices_splits`
     has no rows yet (P2 not run), so this degrades to today's behaviour rather than failing."""
-    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"],
-                                where={"ticker": tickers}, optional=True)
+    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"], where={"ticker": tickers}, optional=True)
     if splits is None or splits.empty:
         return []
     last_bar = context.store.max_date_by(Tables.prices, "ticker", "date")
@@ -301,10 +307,7 @@ def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
 
     splits = splits.copy()
     splits["date"] = pd.to_datetime(splits["date"])
-    stale = {
-        ticker for ticker, event in zip(splits["ticker"], splits["date"])
-        if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])
-    }
+    stale = {ticker for ticker, event in zip(splits["ticker"], splits["date"]) if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])}
     return sorted(stale)
 
 
@@ -350,9 +353,11 @@ def fetch_price_history(
         batches.append((tickers, window_start, "full history"))
     else:
         if repull:
-            logger.info("%d ticker(s) split after their last stored bar -- re-pulling their "
-                        "full history to clear the stale adjustment basis: %s",
-                        len(repull), ", ".join(repull))
+            logger.info(
+                "%d ticker(s) split after their last stored bar -- re-pulling their full history to clear the stale adjustment basis: %s",
+                len(repull),
+                ", ".join(repull),
+            )
             batches.append((repull, window_start, "post-split re-pull"))
         if incremental:
             since = resume_since(context, Tables.prices, incremental, years_history)
@@ -362,20 +367,17 @@ def fetch_price_history(
             # without fetching. The floor below deliberately makes every run re-pull the last
             # PRICE_REFRESH_TRADING_DAYS sessions; that redundancy IS the repair mechanism and
             # the upsert merges it away.
-            batches.append((incremental, _refresh_floor(since, until, window_start),
-                            "incremental"))
+            batches.append((incremental, _refresh_floor(since, until, window_start), "incremental"))
 
     total = 0
     for batch, since, label in batches:
-        logger.info("Downloading prices for %d tickers over %s .. %s (%s)",
-                    len(batch), since.date(), until.date(), label)
+        logger.info("Downloading prices for %d tickers over %s .. %s (%s)", len(batch), since.date(), until.date(), label)
         # actions=False keeps `prices` clean OHLCV: no `dividends` / `stock splits` column
         # can reach the upsert. Both price bases arrive regardless -- `auto_adjust=False`
         # returns `Close` AND `Adj Close` on its own (verified: AAPL 2020-07-31 -> 106.26 and
         # 102.795). Ex-dates and split events have their own fetchers with their own sparse
         # resume frontiers.
-        df_prices = download_ohlcv(batch, since, until, chunk_size, pause,
-                                   auto_adjust=False, actions=False)
+        df_prices = download_ohlcv(batch, since, until, chunk_size, pause, auto_adjust=False, actions=False)
 
         # Drop the synthetic pre-listing prefix BEFORE the upsert, so a full-history pull
         # never writes another ticker's predecessor line into `prices`. It matters most on
@@ -385,7 +387,6 @@ def fetch_price_history(
         # upsert the freshly-downloaded delta; the DB merges on (ticker, date)
         context.store.save(Tables.prices, df_prices)
         total += len(df_prices)
-        logger.info("Saved %d price rows to DB table '%s' (%s)",
-                    len(df_prices), Tables.prices, label)
+        logger.info("Saved %d price rows to DB table '%s' (%s)", len(df_prices), Tables.prices, label)
 
     record_run(context, Tables.prices, len(tickers), total)

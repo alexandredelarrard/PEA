@@ -12,6 +12,7 @@ Two SEPARATE decisions (keeping them apart is what stops the book collapsing to 
 Everything is point-in-time: weights/leverage at t use volatility estimated up to t-1, applied to
 the sleeves' day-t returns, so there is no look-ahead.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,8 +27,7 @@ def trailing_vol(rets: pd.DataFrame, window: int, min_periods: int | None = None
     return rets.rolling(window, min_periods=mp).std().shift(1) * np.sqrt(_ANN)
 
 
-def inverse_vol_weights(rets: pd.DataFrame, window: int, scheme: str = "inverse_vol",
-                        max_weight: float = 1.0) -> pd.DataFrame:
+def inverse_vol_weights(rets: pd.DataFrame, window: int, scheme: str = "inverse_vol", max_weight: float = 1.0) -> pd.DataFrame:
     """date x sleeve MIX weights summing to 1 each day. `inverse_vol` = risk parity (∝1/vol);
     `equal` = equal-weight. Only sleeves with a return that day get weight; cap + renormalize."""
     if scheme == "equal":
@@ -37,30 +37,36 @@ def inverse_vol_weights(rets: pd.DataFrame, window: int, scheme: str = "inverse_
         w = 1.0 / vol
     else:
         raise ValueError(f"unknown weight scheme '{scheme}' (use inverse_vol | equal)")
-    w = w.where(rets.notna())                                   # don't allocate to a missing sleeve
+    w = w.where(rets.notna())  # don't allocate to a missing sleeve
     w = w.div(w.sum(axis=1), axis=0)
-    if max_weight < 1.0:                                        # cap concentration, renormalize
+    if max_weight < 1.0:  # cap concentration, renormalize
         for _ in range(3):
             w = w.clip(upper=max_weight)
             w = w.div(w.sum(axis=1), axis=0)
     return w.fillna(0.0)
 
 
-def blend_to_vol_target(rets: pd.DataFrame, weights: pd.DataFrame, portfolio_vol_target: float,
-                        vol_window: int, max_leverage: float = 2.0) -> pd.DataFrame:
+def blend_to_vol_target(
+    rets: pd.DataFrame, weights: pd.DataFrame, portfolio_vol_target: float, vol_window: int, max_leverage: float = 2.0
+) -> pd.DataFrame:
     """Combine sleeves with `weights` (the MIX) then scale the whole book to `portfolio_vol_target`.
     Returns date-indexed [ret, leverage, mix_ret]. `ret` is the final blended daily return."""
-    mix = (weights * rets).sum(axis=1, skipna=True)             # weights sum to 1 → the mix stream
+    mix = (weights * rets).sum(axis=1, skipna=True)  # weights sum to 1 → the mix stream
     mp = max(10, vol_window // 2)
     pv = mix.rolling(vol_window, min_periods=mp).std().shift(1) * np.sqrt(_ANN)
     lev = (portfolio_vol_target / pv).clip(upper=max_leverage)
-    lev = lev.where(np.isfinite(lev)).fillna(1.0)               # warmup → neutral 1.0
+    lev = lev.where(np.isfinite(lev)).fillna(1.0)  # warmup → neutral 1.0
     return pd.DataFrame({"ret": lev * mix, "leverage": lev, "mix_ret": mix})
 
 
-def blend_strategies(rets: pd.DataFrame, portfolio_vol_target: float = 0.10, vol_window: int = 63,
-                     scheme: str = "inverse_vol", max_weight: float = 0.7,
-                     max_leverage: float = 2.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+def blend_strategies(
+    rets: pd.DataFrame,
+    portfolio_vol_target: float = 0.10,
+    vol_window: int = 63,
+    scheme: str = "inverse_vol",
+    max_weight: float = 0.7,
+    max_leverage: float = 2.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """End-to-end day-by-day blend of sleeve return streams (date x sleeve) -> (blended, weights).
     `blended` has [ret, leverage, mix_ret]; `weights` is the daily sleeve mix."""
     rets = rets.sort_index()

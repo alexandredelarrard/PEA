@@ -26,9 +26,7 @@ DEFAULT_CONFIG_DIR = "./configs"
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) " "Chrome/124.0 Safari/537.36; contact@example.com"
-    )
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 
 # Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
@@ -174,7 +172,7 @@ SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # must be URL-quoted. Response: one <company-info> block per match with <cik> +
 # <conformed-name> (tags are lower-case).
 SEC_EDGAR_COMPANY_SEARCH_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}" "&type=13F-HR&dateb=&owner=include&count=10&output=atom"
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}&type=13F-HR&dateb=&owner=include&count=10&output=atom"
 )
 
 # 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
@@ -190,8 +188,8 @@ SEC_INSIDER_OWNER_ATOM_URL = (
     "&start={start}&count={count}&output=atom"
 )
 SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
-SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
-SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/" "insider-transactions-data-sets/{quarter}_form345.zip"
+SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
+SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_FIRST_YEAR = 2006
 SEC_INSIDER_SWAP_YEAR = 2026
 

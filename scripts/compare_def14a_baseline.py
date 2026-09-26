@@ -22,6 +22,7 @@ Table mapping across the cutover (the edgar HTML block is retired, the LLM path 
 
     "$PY" scripts/compare_def14a_baseline.py [--out DIR] [--baseline-only]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,10 +52,8 @@ SUPPORT_ALERT = 0.70
 
 #: Exec-comp / director-comp component columns. The new LLM-side tables deliberately REUSE the
 #: retired edgar tables' vocabulary so the two snapshots compare column-for-column.
-EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards",
-                   "non_equity_incentive", "pension_change", "other_compensation", "total"]
-DIR_COMPONENTS = ["fees_earned", "stock_awards", "option_awards",
-                  "non_equity_incentive", "pension_change", "other_compensation", "total"]
+EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation", "total"]
+DIR_COMPONENTS = ["fees_earned", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation", "total"]
 
 TABLE_MAP = {
     "def14a_llm": "def14a_llm",
@@ -82,7 +81,7 @@ def load_side(d: Path, mapping_key: str) -> dict[str, pd.DataFrame]:
         out[base_name] = _read(d, base_name if mapping_key == "baseline" else new_name)
     if mapping_key == "baseline":
         out["sec_def14a_votes"] = _read(d, "sec_def14a_votes")
-    for extra in ("def14a_directors",):                 # new-side only (the table is new)
+    for extra in ("def14a_directors",):  # new-side only (the table is new)
         out[extra] = _read(d, extra)
     return out
 
@@ -149,9 +148,21 @@ def _pct_single_neo(df: pd.DataFrame) -> float | None:
 #: dual_class_shares=0, majority_voting=0` and reads as "populated". Measured on the baseline:
 #: 17 of 26 pre-2001 rows carry NOTHING ELSE. G9 is therefore computed over the SUBSTANTIVE
 #: payload, which is why it reads ~92% here against the 34.6% a naive all-null test reports.
-_NON_SIGNAL_COLS = {"ticker", "as_of", "period", "accession_number", "def14a_json", "cik",
-                    "poison_pill", "classified_board", "dual_class_shares", "majority_voting",
-                    "technology_committee", "n_technology_directors", "pct_technology_directors"}
+_NON_SIGNAL_COLS = {
+    "ticker",
+    "as_of",
+    "period",
+    "accession_number",
+    "def14a_json",
+    "cik",
+    "poison_pill",
+    "classified_board",
+    "dual_class_shares",
+    "majority_voting",
+    "technology_committee",
+    "n_technology_directors",
+    "pct_technology_directors",
+}
 
 
 def _pct_fully_null(df: pd.DataFrame, until: str) -> tuple[int, int] | None:
@@ -208,6 +219,7 @@ def _low_say_on_pay(df: pd.DataFrame) -> tuple[int, list[str]] | None:
     if df.empty or "say_on_pay_support_pct" not in df.columns:
         return None
     from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+
     cleaned, _ = impute_def14a(df.copy())
     v = pd.to_numeric(cleaned["say_on_pay_support_pct"], errors="coerce")
     d = cleaned[(v > 0) & (v < 0.50)]
@@ -284,14 +296,12 @@ def _fmt(v) -> str:
     return f"{v:,}" if isinstance(v, int) else str(v)
 
 
-def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame],
-                base_dir: Path, new_dir: Path) -> list[dict]:
+def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame], base_dir: Path, new_dir: Path) -> list[dict]:
     """The G1-G14 table. Each gate carries its own `check`, so a gate with no `new` side yet
     reports `-` and PENDING rather than a spurious FAIL."""
     b_llm, n_llm = base["def14a_llm"], new["def14a_llm"]
     # same-accession population for every fill comparison
-    shared = (set(b_llm.get("accession_number", pd.Series(dtype=str)))
-              & set(n_llm.get("accession_number", pd.Series(dtype=str)))) or None
+    shared = (set(b_llm.get("accession_number", pd.Series(dtype=str))) & set(n_llm.get("accession_number", pd.Series(dtype=str)))) or None
 
     b_null, n_null = _pct_fully_null(b_llm, "2001-01-01"), _pct_fully_null(n_llm, "2001-01-01")
     b_sop, n_sop = _low_say_on_pay(b_llm), _low_say_on_pay(n_llm)
@@ -302,38 +312,78 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame],
         return None if x is None else round(100 * x, 2)
 
     gates = [
-        dict(id="G1", name="exec-comp rows with a component > $1e9",
-             base=_n_implausible(base["sec_def14a_executive_comp"], EXEC_COMPONENTS),
-             new=_n_implausible(new["sec_def14a_executive_comp"], EXEC_COMPONENTS),
-             req="0", check=lambda v: v == 0),
-        dict(id="G2", name="ownership rows with a footnote-digit share count",
-             base=_n_footnote_digit(base["sec_def14a_ownership"]),
-             new=_n_footnote_digit(new["sec_def14a_ownership"]),
-             req="0", check=lambda v: v == 0),
-        dict(id="G3", name="sec_def14a rows with peo_total_comp == 0.0",
-             base=_peo_zero(base["sec_def14a"]), new=_peo_zero(new["sec_def14a"]),
-             req="0", check=lambda v: v == 0),
-        dict(id="G4", name="PEOs recorded for BA / NKE co-PEO years",
-             base=_or_none(_co_peo(base["sec_def14a"])), new=_or_none(_co_peo(new["sec_def14a"])),
-             req="2 each", check=lambda v: bool(v) and all(n >= 2 for n in v.values())),
-        dict(id="G5", name="% of 2012+ accessions with n_neos == 1",
-             base=pct(_pct_single_neo(b_llm)), new=pct(_pct_single_neo(n_llm)),
-             req="< 8%", check=lambda v: v < 8.0),
-        dict(id="G6", name="auditor_name fill (def14a_llm; baseline = sec_def14a)",
-             base=pct(_fill(base["sec_def14a"], "auditor_name")),
-             new=pct(_fill(n_llm, "auditor_name")),
-             req="> 80%", check=lambda v: v > 80.0),
-        dict(id="G7", name="% of post-2008 proxies with >=1 director-comp row",
-             base=pct(_director_comp_coverage(base["sec_def14a_director_comp"], b_llm)),
-             new=pct(_director_comp_coverage(new["sec_def14a_director_comp"], n_llm)),
-             req="> 90%", check=lambda v: v > 90.0),
-        dict(id="G8", name="say-on-pay values < 0.50 present",
-             base=None if b_sop is None else b_sop[0], new=None if n_sop is None else n_sop[0],
-             req=">= 3", check=lambda v: v >= 3),
-        dict(id="G9", name="pre-2001 rows fully NULL",
-             base=None if b_null is None else pct(b_null[0] / b_null[1]),
-             new=None if n_null is None else pct(n_null[0] / n_null[1]),
-             req="< 10%", check=lambda v: v < 10.0),
+        dict(
+            id="G1",
+            name="exec-comp rows with a component > $1e9",
+            base=_n_implausible(base["sec_def14a_executive_comp"], EXEC_COMPONENTS),
+            new=_n_implausible(new["sec_def14a_executive_comp"], EXEC_COMPONENTS),
+            req="0",
+            check=lambda v: v == 0,
+        ),
+        dict(
+            id="G2",
+            name="ownership rows with a footnote-digit share count",
+            base=_n_footnote_digit(base["sec_def14a_ownership"]),
+            new=_n_footnote_digit(new["sec_def14a_ownership"]),
+            req="0",
+            check=lambda v: v == 0,
+        ),
+        dict(
+            id="G3",
+            name="sec_def14a rows with peo_total_comp == 0.0",
+            base=_peo_zero(base["sec_def14a"]),
+            new=_peo_zero(new["sec_def14a"]),
+            req="0",
+            check=lambda v: v == 0,
+        ),
+        dict(
+            id="G4",
+            name="PEOs recorded for BA / NKE co-PEO years",
+            base=_or_none(_co_peo(base["sec_def14a"])),
+            new=_or_none(_co_peo(new["sec_def14a"])),
+            req="2 each",
+            check=lambda v: bool(v) and all(n >= 2 for n in v.values()),
+        ),
+        dict(
+            id="G5",
+            name="% of 2012+ accessions with n_neos == 1",
+            base=pct(_pct_single_neo(b_llm)),
+            new=pct(_pct_single_neo(n_llm)),
+            req="< 8%",
+            check=lambda v: v < 8.0,
+        ),
+        dict(
+            id="G6",
+            name="auditor_name fill (def14a_llm; baseline = sec_def14a)",
+            base=pct(_fill(base["sec_def14a"], "auditor_name")),
+            new=pct(_fill(n_llm, "auditor_name")),
+            req="> 80%",
+            check=lambda v: v > 80.0,
+        ),
+        dict(
+            id="G7",
+            name="% of post-2008 proxies with >=1 director-comp row",
+            base=pct(_director_comp_coverage(base["sec_def14a_director_comp"], b_llm)),
+            new=pct(_director_comp_coverage(new["sec_def14a_director_comp"], n_llm)),
+            req="> 90%",
+            check=lambda v: v > 90.0,
+        ),
+        dict(
+            id="G8",
+            name="say-on-pay values < 0.50 present",
+            base=None if b_sop is None else b_sop[0],
+            new=None if n_sop is None else n_sop[0],
+            req=">= 3",
+            check=lambda v: v >= 3,
+        ),
+        dict(
+            id="G9",
+            name="pre-2001 rows fully NULL",
+            base=None if b_null is None else pct(b_null[0] / b_null[1]),
+            new=None if n_null is None else pct(n_null[0] / n_null[1]),
+            req="< 10%",
+            check=lambda v: v < 10.0,
+        ),
         # 45,000 and not the plan's original 40,000: that number came from a 36,544-char estimate
         # that predates the same plan's +3,000 widenings of PAY RATIO / SAY ON PAY and its new
         # AUDITOR NAME slice, so it was unreachable as specified. 45,000 leaves 6.6% over the
@@ -343,36 +393,58 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame],
         # would not reliably trip when the table classifier silently finds nothing and all three
         # fallback slices (7,000 + 10,000 + 2,500) fire on every filing -- a failure this phase
         # actually hit once, via an lxml encoding-declaration error hidden behind a bare except.
-        dict(id="G10", name="mean carve payload chars",
-             base=_payload(base_dir), new=_payload(new_dir),
-             req="<= 45,000", check=lambda v: v <= 45_000),
+        dict(id="G10", name="mean carve payload chars", base=_payload(base_dir), new=_payload(new_dir), req="<= 45,000", check=lambda v: v <= 45_000),
         # The baseline is 0 BY CONSTRUCTION -- no code parses Item 5.07 today -- so the
         # denominator (the 5.07 corpus) always comes from the baseline snapshot, and only the
         # numerator moves. Passing the corpus as its own numerator would report a hollow 100%.
-        dict(id="G11", name="% of 5.07 filings w/ a comma-number that yielded vote rows",
-             base=0.0 if not base["sec_8k_item507"].empty else None,
-             new=pct(_vote_coverage(new["sec_8k_item507"], base["sec_8k_item507"])),
-             req="> 90%", check=lambda v: v > 90.0),
-        dict(id="G12", name="pct_female_directors fill",
-             base=pct(b_gender.get("pct_female_fill")), new=pct(n_gender.get("pct_female_fill")),
-             req="must not fall",
-             check=lambda v, b=b_gender.get("pct_female_fill"): b is None or v >= 100 * b - 1e-9),
-        dict(id="G13", name="gender_basis populated wherever gender is set",
-             base=pct(b_gender.get("basis_coverage")), new=pct(n_gender.get("basis_coverage")),
-             req="100%", check=lambda v: v >= 100.0),
-        dict(id="G14", name="% of filings where n_women_directors_vs_inferred == 0",
-             base=pct(b_gender.get("pct_women_count_agrees")),
-             new=pct(n_gender.get("pct_women_count_agrees")),
-             req="> baseline",
-             check=lambda v, b=b_gender.get("pct_women_count_agrees"): b is None or v > 100 * b),
+        dict(
+            id="G11",
+            name="% of 5.07 filings w/ a comma-number that yielded vote rows",
+            base=0.0 if not base["sec_8k_item507"].empty else None,
+            new=pct(_vote_coverage(new["sec_8k_item507"], base["sec_8k_item507"])),
+            req="> 90%",
+            check=lambda v: v > 90.0,
+        ),
+        dict(
+            id="G12",
+            name="pct_female_directors fill",
+            base=pct(b_gender.get("pct_female_fill")),
+            new=pct(n_gender.get("pct_female_fill")),
+            req="must not fall",
+            check=lambda v, b=b_gender.get("pct_female_fill"): b is None or v >= 100 * b - 1e-9,
+        ),
+        dict(
+            id="G13",
+            name="gender_basis populated wherever gender is set",
+            base=pct(b_gender.get("basis_coverage")),
+            new=pct(n_gender.get("basis_coverage")),
+            req="100%",
+            check=lambda v: v >= 100.0,
+        ),
+        dict(
+            id="G14",
+            name="% of filings where n_women_directors_vs_inferred == 0",
+            base=pct(b_gender.get("pct_women_count_agrees")),
+            new=pct(n_gender.get("pct_women_count_agrees")),
+            req="> baseline",
+            check=lambda v, b=b_gender.get("pct_women_count_agrees"): b is None or v > 100 * b,
+        ),
     ]
     for g in gates:
         g["status"] = "PENDING" if g["new"] is None else ("PASS" if _safe(g["check"], g["new"]) else "FAIL")
-    gates.append(dict(id="--", name="say-on-pay survivors (tickers)", status="INFO",
-                      base=None if b_sop is None else b_sop[1],
-                      new=None if n_sop is None else n_sop[1], req="JPM/INTC/SPG"))
-    gates.append(dict(id="--", name="gender_basis distribution", status="INFO",
-                      base=b_gender.get("basis_dist"), new=n_gender.get("basis_dist"), req="-"))
+    gates.append(
+        dict(
+            id="--",
+            name="say-on-pay survivors (tickers)",
+            status="INFO",
+            base=None if b_sop is None else b_sop[1],
+            new=None if n_sop is None else n_sop[1],
+            req="JPM/INTC/SPG",
+        )
+    )
+    gates.append(
+        dict(id="--", name="gender_basis distribution", status="INFO", base=b_gender.get("basis_dist"), new=n_gender.get("basis_dist"), req="-")
+    )
     return gates
 
 
@@ -384,60 +456,68 @@ def _safe(check, value) -> bool:
 
 
 def render(gates: list[dict], base: dict, new: dict) -> str:
-    lines = ["# DEF 14A extraction fix — baseline vs. new", "",
-             "Generated by `scripts/compare_def14a_baseline.py`. Fill rates are measured over the",
-             "same accession set on both sides, so a coverage change cannot read as a quality change.",
-             "", "## Row counts", "",
-             "| table | baseline | new |", "|---|---|---|"]
+    lines = [
+        "# DEF 14A extraction fix — baseline vs. new",
+        "",
+        "Generated by `scripts/compare_def14a_baseline.py`. Fill rates are measured over the",
+        "same accession set on both sides, so a coverage change cannot read as a quality change.",
+        "",
+        "## Row counts",
+        "",
+        "| table | baseline | new |",
+        "|---|---|---|",
+    ]
     for k in list(TABLE_MAP) + ["sec_def14a_votes", "def14a_directors"]:
         b, n = base.get(k, pd.DataFrame()), new.get(k, pd.DataFrame())
         if b.empty and n.empty:
             continue
         lines.append(f"| `{k}` | {len(b):,} | {len(n):,} |")
 
-    lines += ["", "## Gates", "", "| # | check | baseline | new | required | status |",
-              "|---|---|---|---|---|---|"]
+    lines += ["", "## Gates", "", "| # | check | baseline | new | required | status |", "|---|---|---|---|---|---|"]
     for g in gates:
-        lines.append(f"| {g['id']} | {g['name']} | {_fmt(g['base'])} | {_fmt(g['new'])} "
-                     f"| {g['req']} | **{g['status']}** |")
+        lines.append(f"| {g['id']} | {g['name']} | {_fmt(g['base'])} | {_fmt(g['new'])} | {g['req']} | **{g['status']}** |")
     fails = [g["id"] for g in gates if g["status"] == "FAIL"]
-    lines += ["", f"**{sum(g['status'] == 'PASS' for g in gates)} PASS / "
-                  f"{len(fails)} FAIL / {sum(g['status'] == 'PENDING' for g in gates)} PENDING**"]
+    lines += [
+        "",
+        f"**{sum(g['status'] == 'PASS' for g in gates)} PASS / {len(fails)} FAIL / {sum(g['status'] == 'PENDING' for g in gates)} PENDING**",
+    ]
     if fails:
         lines.append(f"Failing gates: {', '.join(fails)} — fix in the owning phase and re-run.")
 
     own = base.get("sec_def14a_ownership", pd.DataFrame())
     have = sorted(own["ticker"].unique()) if not own.empty else []
-    lines += ["", "## Baseline caveats", "",
-              "- **G2 cannot be demonstrated on the baseline side.** The edgar HTML backfill had only "
-              f"reached {len(have)} of the 23 tickers ({', '.join(have)}) when the snapshot was taken, "
-              "and PG — the ticker carrying the footnote-digit defect — is not among them. The gate "
-              "still guards the NEW side, which is what it is for.",
-              "- **G8 is measured THROUGH `impute_def14a`**, the cube's whole clean-on-read stage, "
-              "because that is where a nulling rule would bite: back when the stage held a 0.50 "
-              "floor, `def14a_llm` kept the revolts and the cube deleted them. ⚠ This makes G8 "
-              "the one gate whose BASELINE column is not frozen: the parquet tables are, but this "
-              "row re-runs live `src/` code over them, so it reads 3 once Phase 1 removes the floor "
-              "and read 0 before. The true pre-fix baseline is **0**, recorded in "
-              "`PHASE-0-baseline-harness.md`. Every other gate is a pure query over the frozen "
-              "tables and is therefore reproducible at any commit.",
-              "- **G9 excludes the four inferred-FALSE provision flags.** Today's prompt orders the "
-              "model to return FALSE for them, so a row extracted from a 10 KB folder index still "
-              "looks populated; 17 of 26 pre-2001 baseline rows carry nothing else."]
+    lines += [
+        "",
+        "## Baseline caveats",
+        "",
+        "- **G2 cannot be demonstrated on the baseline side.** The edgar HTML backfill had only "
+        f"reached {len(have)} of the 23 tickers ({', '.join(have)}) when the snapshot was taken, "
+        "and PG — the ticker carrying the footnote-digit defect — is not among them. The gate "
+        "still guards the NEW side, which is what it is for.",
+        "- **G8 is measured THROUGH `impute_def14a`**, the cube's whole clean-on-read stage, "
+        "because that is where a nulling rule would bite: back when the stage held a 0.50 "
+        "floor, `def14a_llm` kept the revolts and the cube deleted them. ⚠ This makes G8 "
+        "the one gate whose BASELINE column is not frozen: the parquet tables are, but this "
+        "row re-runs live `src/` code over them, so it reads 3 once Phase 1 removes the floor "
+        "and read 0 before. The true pre-fix baseline is **0**, recorded in "
+        "`PHASE-0-baseline-harness.md`. Every other gate is a pure query over the frozen "
+        "tables and is therefore reproducible at any commit.",
+        "- **G9 excludes the four inferred-FALSE provision flags.** Today's prompt orders the "
+        "model to return FALSE for them, so a row extracted from a 10 KB folder index still "
+        "looks populated; 17 of 26 pre-2001 baseline rows carry nothing else.",
+    ]
     return "\n".join(lines) + "\n"
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Compare the DEF 14A baseline with the new run.")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
-    ap.add_argument("--baseline-only", action="store_true",
-                    help="print the 'before' picture with the new column empty")
+    ap.add_argument("--baseline-only", action="store_true", help="print the 'before' picture with the new column empty")
     args = ap.parse_args()
 
     out = Path(args.out)
     base = load_side(out / "baseline", "baseline")
-    new = ({k: pd.DataFrame() for k in base} if args.baseline_only
-           else load_side(out / "new", "new"))
+    new = {k: pd.DataFrame() for k in base} if args.baseline_only else load_side(out / "new", "new")
 
     gates = build_gates(base, new, out / "baseline", out / "new")
     report = render(gates, base, new)

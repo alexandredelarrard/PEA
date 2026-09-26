@@ -198,7 +198,7 @@ def test_panel_columns_and_emission_coverage():
         [
             {
                 "ticker": "AAA",
-                "accession_number": f"000{i+1}",
+                "accession_number": f"000{i + 1}",
                 "cusip": "CUS1",
                 "filing_date": dates[i],
                 "is_amendment": float(i),
@@ -288,7 +288,7 @@ def test_holder_count_is_a_bounded_share_and_lapses():
     lapsed = IDX[IDX.get_indexer([pd.Timestamp("2023-01-05")])[0] + HOLDER_ACTIVE_DAYS + 5]
     assert pd.isna(hc.loc[lapsed, "AAA"]) or hc.loc[lapsed, "AAA"] == 0.0
     print("\n=== SANITY CHECK: holder_count is a bounded share that lapses ===")
-    print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after " f"{HOLDER_ACTIVE_DAYS} trading days. Validated.")
+    print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after {HOLDER_ACTIVE_DAYS} trading days. Validated.")
 
 
 def test_holder_share_zero_requires_a_complete_active_window():

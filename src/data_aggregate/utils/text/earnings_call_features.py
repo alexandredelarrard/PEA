@@ -30,23 +30,24 @@ Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward)
     ec_vocab_novelty   1 − cosine(prepared-remarks bag-of-words vs prior call)
                        (a new narrative / strategy shift)
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_store.schema import Tables
-from src.constants.constants import (EARNINGS_CALL_SCORED_TAGS, FINBERT_TONE_MODEL)
+from src.constants.constants import EARNINGS_CALL_SCORED_TAGS, FINBERT_TONE_MODEL
 from src.context import Context
-from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
+from src.data_store.schema import Tables
 from src.utils.nlp_sentiment import get_sentiment_engine
 from src.utils.text_metrics import content_frequency, cosine_similarity, uncertainty_ratio, word_count
 
-_TRANSCRIPT_LAG_DAYS = 1        # transcript public the trading day AFTER the call
-_FFILL_LIMIT = 190             # ~9 months: bridge a skipped quarter, but let stale calls die
+_TRANSCRIPT_LAG_DAYS = 1  # transcript public the trading day AFTER the call
+_FFILL_LIMIT = 190  # ~9 months: bridge a skipped quarter, but let stale calls die
 _VOCAB_TAG = "prepared_remarks"  # scripted narrative — where a strategy shift shows up
-_SECTION_COLS = ["ticker", "quarter", "tag", "as_of", "text"]   # never SELECT * : `text` is huge
+_SECTION_COLS = ["ticker", "quarter", "tag", "as_of", "text"]  # never SELECT * : `text` is huge
 
 
 # --------------------------------------------------------------------------- #
@@ -58,22 +59,26 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
     probs = engine.score_texts(rows["text"].tolist())
     out = []
     for r, p in zip(rows.itertuples(index=False), probs):
-        if p is None:                               # blank section -> no tone
+        if p is None:  # blank section -> no tone
             continue
-        out.append({
-            "ticker": r.ticker, "quarter": r.quarter, "tag": r.tag, "as_of": r.as_of,
-            "sent_pos": round(float(p["pos"]), 6),
-            "sent_neg": round(float(p["neg"]), 6),
-            "sent_neu": round(float(p["neu"]), 6),
-            "n_words": int(word_count(r.text)),
-            "uncertainty_ratio": round(float(uncertainty_ratio(r.text)), 6),
-            "model": FINBERT_TONE_MODEL,
-        })
+        out.append(
+            {
+                "ticker": r.ticker,
+                "quarter": r.quarter,
+                "tag": r.tag,
+                "as_of": r.as_of,
+                "sent_pos": round(float(p["pos"]), 6),
+                "sent_neg": round(float(p["neg"]), 6),
+                "sent_neu": round(float(p["neu"]), 6),
+                "n_words": int(word_count(r.text)),
+                "uncertainty_ratio": round(float(uncertainty_ratio(r.text)), 6),
+                "model": FINBERT_TONE_MODEL,
+            }
+        )
     return pd.DataFrame(out)
 
 
-def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame,
-                             sections: pd.DataFrame | None, tags: tuple[str, ...]):
+def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, sections: pd.DataFrame | None, tags: tuple[str, ...]):
     """GENERATOR yielding (ticker, rows_to_score) ONE TICKER AT A TIME — reads the transcript text
     per ticker (ticker+tag pushed down server-side, or sliced from a provided `sections` frame),
     keeping only the sections still absent from the cache. Bounded memory: never the whole table."""
@@ -84,8 +89,7 @@ def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame,
         if sections is not None:
             g = sections[(sections["ticker"] == tkr) & (sections["tag"].isin(tags))]
         else:
-            g = context.store.load(Tables.earnings_call_sections, _SECTION_COLS,
-                                   where={"ticker": tkr, "tag": list(tags)}, optional=True)
+            g = context.store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tkr, "tag": list(tags)}, optional=True)
             if g is None:
                 continue
         g = g[[(q, tag) in pairs for q, tag in zip(g["quarter"], g["tag"])]]
@@ -93,9 +97,7 @@ def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame,
             yield tkr, g
 
 
-def score_earnings_calls(context: Context,
-                         sections: pd.DataFrame | None = None,
-                         tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS) -> None:
+def score_earnings_calls(context: Context, sections: pd.DataFrame | None = None, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS) -> None:
     """Ensure every high-signal section has a cached FinBERT tone score. MEMORY-SAFE + incremental:
     the REMAINING sections are found by comparing two key-column-only reads (section keys vs. the
     already-scored keys — never the transcript text), then each remaining ticker's text is read,
@@ -104,25 +106,25 @@ def score_earnings_calls(context: Context,
     ticker (`sentiment_kpis_streamed`)."""
     store, log = context.store, context.log
     # section keys (no text) vs. already-scored keys (no probs) -> only what's left to score
-    keys = (sections[sections["tag"].isin(tags)] if sections is not None else
-            store.load(Tables.earnings_call_sections, ["ticker", "quarter", "tag"],
-                       where={"tag": list(tags)}, optional=True))
+    keys = (
+        sections[sections["tag"].isin(tags)]
+        if sections is not None
+        else store.load(Tables.earnings_call_sections, ["ticker", "quarter", "tag"], where={"tag": list(tags)}, optional=True)
+    )
     if keys is None or keys.empty:
         log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
         return
     sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
     done_df = store.load(Tables.earnings_call_sentiment, ["ticker", "quarter", "tag"], optional=True)
-    done = (set() if done_df is None
-            else set(map(tuple, done_df.drop_duplicates().to_numpy())))
+    done = set() if done_df is None else set(map(tuple, done_df.drop_duplicates().to_numpy()))
     todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
     if todo_keys.empty:
         log.info("Earnings-call sentiment cache already complete.")
         return
 
     engine = get_sentiment_engine(log)
-    if engine is None:                              # torch/transformers/model unavailable
-        log.warning("Sentiment model unavailable -> %d sections left unscored; "
-                    "earnings-call features will be skipped.", len(todo_keys))
+    if engine is None:  # torch/transformers/model unavailable
+        log.warning("Sentiment model unavailable -> %d sections left unscored; earnings-call features will be skipped.", len(todo_keys))
         return
 
     log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
@@ -130,10 +132,9 @@ def score_earnings_calls(context: Context,
     for _tkr, grp in _yield_sections_to_score(context, todo_keys, sections, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
-            store.save(Tables.earnings_call_sentiment, scored)   # iterative per-ticker upsert
+            store.save(Tables.earnings_call_sentiment, scored)  # iterative per-ticker upsert
             n_new += len(scored)
-    log.info("Earnings-call sentiment: +%d newly scored rows -> '%s'.",
-             n_new, Tables.earnings_call_sentiment)
+    log.info("Earnings-call sentiment: +%d newly scored rows -> '%s'.", n_new, Tables.earnings_call_sentiment)
 
 
 # --------------------------------------------------------------------------- #
@@ -144,7 +145,7 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
     with the smart KPIs. Cross-call KPIs (deltas, novelty) are computed per ticker in
     call order. Returns columns: ticker, as_of, ec_tone, ec_tone_delta, ec_qa_gap,
     ec_uncertainty, ec_length_delta, ec_vocab_novelty."""
-    
+
     s = sentiment.copy()
     s["net"] = s["sent_pos"].astype(float) - s["sent_neg"].astype(float)
     s["n_words"] = pd.to_numeric(s["n_words"], errors="coerce").fillna(0.0)
@@ -159,20 +160,23 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
 
     w = words_tag.reindex(columns=tone_tag.columns).fillna(0.0)
     tot_w = w.sum(axis=1)
-    ec_tone = (tone_tag * w).sum(axis=1) / tot_w.where(tot_w > 0)          # length-weighted tone
+    ec_tone = (tone_tag * w).sum(axis=1) / tot_w.where(tot_w > 0)  # length-weighted tone
     ec_unc = (unc_tag.reindex(columns=w.columns) * w).sum(axis=1) / tot_w.where(tot_w > 0)
     prep, qa = "prepared_remarks", "qa"
-    ec_qa_gap = (tone_tag[qa] - tone_tag[prep]
-                 if qa in tone_tag.columns and prep in tone_tag.columns else np.nan)
+    ec_qa_gap = tone_tag[qa] - tone_tag[prep] if qa in tone_tag.columns and prep in tone_tag.columns else np.nan
 
-    per_q = pd.DataFrame({
-        "as_of": pd.to_datetime(as_of), "ec_tone": ec_tone,
-        "ec_qa_gap": ec_qa_gap, "ec_uncertainty": ec_unc,
-        "total_words": tot_w,
-        # per-section tone levels (helpers -> quarter-to-quarter tone deltas below)
-        "qa_tone_lvl": tone_tag[qa] if qa in tone_tag.columns else np.nan,
-        "prep_tone_lvl": tone_tag[prep] if prep in tone_tag.columns else np.nan,
-    }).reset_index()
+    per_q = pd.DataFrame(
+        {
+            "as_of": pd.to_datetime(as_of),
+            "ec_tone": ec_tone,
+            "ec_qa_gap": ec_qa_gap,
+            "ec_uncertainty": ec_unc,
+            "total_words": tot_w,
+            # per-section tone levels (helpers -> quarter-to-quarter tone deltas below)
+            "qa_tone_lvl": tone_tag[qa] if qa in tone_tag.columns else np.nan,
+            "prep_tone_lvl": tone_tag[prep] if prep in tone_tag.columns else np.nan,
+        }
+    ).reset_index()
 
     nov = _vocab_novelty(sections) if sections is not None else None
     if nov is not None:
@@ -212,8 +216,7 @@ def _vocab_novelty(sections: pd.DataFrame, tag: str = _VOCAB_TAG) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-def _daily_frame(per_call: pd.DataFrame, value_col: str,
-                 idx: pd.DatetimeIndex) -> pd.DataFrame:
+def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Wide [date × ticker] point-in-time frame for one KPI: stamp the value on the
     call date, forward-fill until the next call (bounded), and lag one trading day so
     it is only visible AFTER the call (transcript-publication delay)."""
@@ -222,19 +225,31 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str,
         return piv
     piv.index = pd.to_datetime(piv.index).normalize()
     piv = piv[~piv.index.duplicated(keep="last")].sort_index()
-    piv = (piv.reindex(piv.index.union(idx)).ffill(limit=_FFILL_LIMIT)
-           .reindex(idx).shift(_TRANSCRIPT_LAG_DAYS))
+    piv = piv.reindex(piv.index.union(idx)).ffill(limit=_FFILL_LIMIT).reindex(idx).shift(_TRANSCRIPT_LAG_DAYS)
     return piv
 
 
 # SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
-_SENTIMENT_KPI_COLS = ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
-                       "ec_length_delta", "ec_vocab_novelty",
-                       "ec_qa_tone_delta", "ec_prep_tone_delta"]   # per-section QoQ tone drift
+_SENTIMENT_KPI_COLS = [
+    "ec_tone",
+    "ec_tone_delta",
+    "ec_qa_gap",
+    "ec_uncertainty",
+    "ec_length_delta",
+    "ec_vocab_novelty",
+    "ec_qa_tone_delta",
+    "ec_prep_tone_delta",
+]  # per-section QoQ tone drift
 # EMBEDDING KPIs — from the OpenAI-embedding pass (`embed_earnings_calls` -> build_embedding_kpis).
-_EMBEDDING_KPI_COLS = ["ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa",
-                       "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq",  # answer/question density + QoQ Δ
-                       "ec_qa_qq_sim", "ec_prep_qq_sim"]              # narrative QoQ drift
+_EMBEDDING_KPI_COLS = [
+    "ec_qa_coherence_mean",
+    "ec_qa_coherence_std",
+    "ec_n_qa",
+    "ec_qa_answer_ratio",
+    "ec_qa_answer_ratio_qq",  # answer/question density + QoQ Δ
+    "ec_qa_qq_sim",
+    "ec_prep_qq_sim",
+]  # narrative QoQ drift
 _KPI_COLS = _SENTIMENT_KPI_COLS + _EMBEDDING_KPI_COLS
 
 
@@ -249,8 +264,7 @@ def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
         s = store.load(Tables.earnings_call_sentiment, where={"ticker": tk}, optional=True)
         if s is None:
             continue
-        vocab = store.load(Tables.earnings_call_sections, _SECTION_COLS,
-                           where={"ticker": tk, "tag": _VOCAB_TAG}, optional=True)
+        vocab = store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tk, "tag": _VOCAB_TAG}, optional=True)
         parts.append(_per_call_kpis(s, vocab))
     if not parts:
         return None
@@ -314,8 +328,7 @@ def build_earnings_call_embedding_panel(
         ekpi = build_embedding_kpis(embeddings)
     if ekpi is None or ekpi.empty or sections is None or sections.empty:
         return pd.DataFrame(columns=["date", "ticker"])
-    asof = (sections[["ticker", "quarter", "as_of"]].dropna(subset=["as_of"])
-            .drop_duplicates(subset=["ticker", "quarter"]))
+    asof = sections[["ticker", "quarter", "as_of"]].dropna(subset=["as_of"]).drop_duplicates(subset=["ticker", "quarter"])
     per_call = ekpi.merge(asof, on=["ticker", "quarter"], how="left").dropna(subset=["as_of"])
     if per_call.empty:
         return pd.DataFrame(columns=["date", "ticker"])

@@ -16,6 +16,7 @@ reports/planning/active-tasks/2026-08-21-fundamentals-rebuild-plan.md. That guar
 also always covered strictly less than `aggregate_fingerprint.py` (9 of 13 panel
 builders unfingerprinted). What remains here is the shared kernel.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -70,7 +71,8 @@ def frame_digest(df: pd.DataFrame | None) -> dict:
             payload = "|".join(map(str, s.tolist())).encode()
         per_col[str(c)] = hashlib.md5(payload).hexdigest()[:16]
     return {
-        "rows": int(len(d)), "cols": int(d.shape[1]),
+        "rows": int(len(d)),
+        "cols": int(d.shape[1]),
         "columns": [str(c) for c in d.columns],
         "hash": hashlib.md5(json.dumps(per_col, sort_keys=True).encode()).hexdigest(),
         "per_column": per_col,

@@ -24,6 +24,7 @@ importances then each read as half the truth.
 REAL DATA, deliberately: the defect is a property of what the live table can feed, and a
 synthetic frame that hand-builds the missing column reproduces none of it.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -31,14 +32,22 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.pit import (
-    add_cube_time_growth, fundamentals_to_daily, infer_yoy_periods,
+    add_cube_time_growth,
+    fundamentals_to_daily,
+    infer_yoy_periods,
 )
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _FACT_COLS, _FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, _NET_PENSION_TAGS,
-    _NOTES_NUM_TABLE, _PENSION_FACTS_TABLE, _derived_fields,
+    _FACT_COLS,
+    _FN_PBO_TAG,
+    _FN_PLAN_ASSETS_TAG,
+    _NET_PENSION_TAGS,
+    _NOTES_NUM_TABLE,
+    _PENSION_FACTS_TABLE,
+    _derived_fields,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import (
-    SECTOR_KPI_COLS, compute_sector_kpis,
+    SECTOR_KPI_COLS,
+    compute_sector_kpis,
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -51,8 +60,7 @@ CORRELATION_CEILING = 0.999
 
 #: Enough names to span every GICS family the sector gates scope on, so a gated KPI is
 #: present in the matrix rather than absent and trivially "not correlated".
-_TICKERS = ["JPM", "BAC", "AIG", "PGR", "SPG", "PLD", "XOM", "CVX", "NEE", "DUK",
-            "PFE", "MRK", "AAPL", "MSFT", "KO", "PG", "GE", "CAT"]
+_TICKERS = ["JPM", "BAC", "AIG", "PGR", "SPG", "PLD", "XOM", "CVX", "NEE", "DUK", "PFE", "MRK", "AAPL", "MSFT", "KO", "PG", "GE", "CAT"]
 
 #: A pair needs at least this many overlapping observations before its correlation is
 #: believable; two features that only ever co-occur on a handful of rows can hit 1.0 by
@@ -76,9 +84,8 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     block moved to the reconciled `totalDebt`, and that feature was deleted as a result."""
     try:
         store = DataStore(get_engine())
-        fh = store.load(Tables.fundamentals_history,
-                        where={"ticker": _TICKERS}, optional=True)
-    except Exception as exc:                    # pragma: no cover - env without the DB
+        fh = store.load(Tables.fundamentals_history, where={"ticker": _TICKERS}, optional=True)
+    except Exception as exc:  # pragma: no cover - env without the DB
         pytest.skip(f"{Tables.fundamentals_history} unavailable ({type(exc).__name__})")
     if fh is None or fh.empty:
         pytest.skip(f"{Tables.fundamentals_history} is empty")
@@ -88,11 +95,9 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     ref = store.load(Tables.sp500_tickers, columns=["ticker", "sector", "industry_group"])
     fh = fh.merge(ref, on="ticker", how="left")
 
-    px = store.load(Tables.prices, columns=["date", "ticker", "close_split"],
-                    where={"ticker": _TICKERS})
+    px = store.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": _TICKERS})
     px["date"] = pd.to_datetime(px["date"])
-    close = px.pivot_table(index="date", columns="ticker", values="close_split",
-                           aggfunc="last").sort_index()
+    close = px.pivot_table(index="date", columns="ticker", values="close_split", aggfunc="last").sort_index()
     idx = pd.DatetimeIndex(close.index)
 
     def _facts(table: str, tags: tuple[str, ...]) -> pd.DataFrame | None:
@@ -100,9 +105,13 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         return got.reset_index(drop=True) if got is not None else None
 
     frames = _derived_fields(
-        fund_hist=fh, idx=idx, close=close, yoy_periods=infer_yoy_periods(fh),
+        fund_hist=fh,
+        idx=idx,
+        close=close,
+        yoy_periods=infer_yoy_periods(fh),
         pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)))
+        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
+    )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:
         if name in kdf.columns:
@@ -152,8 +161,7 @@ def test_no_two_features_are_the_same_signal(feature_frames):
             break
 
     print("\n=== SANITY CHECK: cross-feature redundancy ===")
-    print(f"  {mat.shape[1]} features x {len(mat):,} (date, ticker) cells, "
-          f"ceiling |r| >= {CORRELATION_CEILING}")
+    print(f"  {mat.shape[1]} features x {len(mat):,} (date, ticker) cells, ceiling |r| >= {CORRELATION_CEILING}")
     print("  most-correlated surviving pairs:")
     for a, b, r in top:
         print(f"    {r:.6f}  {a} <-> {b}")
@@ -162,13 +170,13 @@ def test_no_two_features_are_the_same_signal(feature_frames):
         for a, b, r in offenders:
             print(f"    {r:.6f}  {a} <-> {b}")
     else:
-        print("  no pair reaches the ceiling -> no feature is a computational no-op "
-              "of another. Validated.")
+        print("  no pair reaches the ceiling -> no feature is a computational no-op of another. Validated.")
 
     assert not offenders, (
         "these feature pairs carry the same signal; one of each is a computational no-op "
         "(usually a source column that no producer writes, silently read as empty):\n"
-        + "\n".join(f"  r={r:.6f}  {a} <-> {b}" for a, b, r in offenders))
+        + "\n".join(f"  r={r:.6f}  {a} <-> {b}" for a, b, r in offenders)
+    )
 
 
 def test_the_three_historical_duplicate_pairs_stay_broken(feature_frames):
@@ -178,8 +186,7 @@ def test_the_three_historical_duplicate_pairs_stay_broken(feature_frames):
     pairs = [
         ("fcf_yield", "intrinsic_yield", "revenueGrowth is computed at cube time"),
         ("returnOnEquity", "sustainable_growth_rate", "dividendsPaid is outflow-positive"),
-        ("roic_incl_intangibles", "roic_ex_intangibles",
-         "the intangibles deduction is non-empty"),
+        ("roic_incl_intangibles", "roic_ex_intangibles", "the intangibles deduction is non-empty"),
     ]
     print("\n=== SANITY CHECK: the former r=1.0000 pairs ===")
     for a, b, because in pairs:
@@ -190,6 +197,5 @@ def test_the_three_historical_duplicate_pairs_stay_broken(feature_frames):
         assert len(xa) >= _MIN_OVERLAP, f"{a}/{b}: only {len(xa)} overlapping cells"
         r = float(np.corrcoef(xa, ya)[0, 1])
         print(f"  {a} vs {b}: r={r:+.6f}  n={len(xa):,}  ({because})")
-        assert abs(r) < CORRELATION_CEILING, (
-            f"{a} and {b} are identical again -- check that {because}")
+        assert abs(r) < CORRELATION_CEILING, f"{a} and {b} are identical again -- check that {because}"
     print(f"  all {len(pairs)} broken; each was exactly 1.0000 at some point. Validated.")

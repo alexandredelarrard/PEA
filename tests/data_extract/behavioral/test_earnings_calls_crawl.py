@@ -9,6 +9,7 @@ after 3 of them — truncating the index to a handful of links. The fix only cou
 toward the stop when it has universe transcripts that are ALL already indexed (genuine
 re-run convergence); a page with no universe names must NOT stop the deep crawl.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,7 @@ from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
 
 def _href(date: str, slug: str, q: int, fy: int) -> str:
     y, m, d = date.split("-")
-    return (f'<a href="/earnings/call-transcripts/{y}/{m}/{d}/{slug}-q{q}-{fy}-'
-            f'earnings-call-transcript/">x</a>')
+    return f'<a href="/earnings/call-transcripts/{y}/{m}/{d}/{slug}-q{q}-{fy}-earnings-call-transcript/">x</a>'
 
 
 def _page(items) -> str:
@@ -30,15 +30,19 @@ def _page(items) -> str:
 
 
 def _fake_ctx(tickers, tmp_path):
-    store = types.SimpleNamespace(
-        load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
+    store = types.SimpleNamespace(load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     return types.SimpleNamespace(
-        store=store, paths={"DATA_STORE": tmp_path},
-        config=types.SimpleNamespace(local=types.SimpleNamespace(
-            filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
-            paths=types.SimpleNamespace(call_transcripts="call_transcripts"))))
+        store=store,
+        paths={"DATA_STORE": tmp_path},
+        config=types.SimpleNamespace(
+            local=types.SimpleNamespace(
+                filename=types.SimpleNamespace(extraction="extraction_manifest.json"),
+                paths=types.SimpleNamespace(call_transcripts="call_transcripts"),
+            )
+        ),
+    )
 
 
 def test_crawl_does_not_stop_on_universe_empty_pages(tmp_path, monkeypatch):
@@ -46,8 +50,7 @@ def test_crawl_does_not_stop_on_universe_empty_pages(tmp_path, monkeypatch):
     # abort here; p5 carries a NEW universe name (CCC) only reachable if the crawl continued;
     # p6-p9 repeat already-indexed universe links -> genuine convergence -> stop.
     pages = {
-        1: _page([("2026-07-20", "alpha-aaa", 1, 2026), ("2026-07-19", "beta-bbb", 1, 2026),
-                  ("2026-07-19", "junkco-zzz", 1, 2026)]),
+        1: _page([("2026-07-20", "alpha-aaa", 1, 2026), ("2026-07-19", "beta-bbb", 1, 2026), ("2026-07-19", "junkco-zzz", 1, 2026)]),
         2: _page([("2026-07-18", "smallcap-yyy", 2, 2026)]),
         3: _page([("2026-07-17", "micro-xxx", 2, 2026)]),
         4: _page([("2026-07-16", "tiny-www", 2, 2026)]),
@@ -62,13 +65,12 @@ def test_crawl_does_not_stop_on_universe_empty_pages(tmp_path, monkeypatch):
     def fake_get(url, *a, **k):
         page = 1 if url == fe._INDEX else int(url.rstrip("/").split("/")[-1])
         fetched.append(page)
-        return pages.get(page)                      # None past the defined pages = end of feed
+        return pages.get(page)  # None past the defined pages = end of feed
 
     monkeypatch.setattr(fe, "_get", fake_get)
     ctx = _fake_ctx(["AAA", "BBB", "CCC"], tmp_path)
 
-    index = fe.build_transcript_index(ctx, max_pages=50, stop_after_empty=4,
-                                      pause=0.0, history_years=100)
+    index = fe.build_transcript_index(ctx, max_pages=50, stop_after_empty=4, pause=0.0, history_years=100)
 
     tickers = {r["ticker"] for r in index.values()}
     assert tickers == {"AAA", "BBB", "CCC"}, f"missing universe links: {tickers}"
@@ -81,16 +83,15 @@ def test_crawl_does_not_stop_on_universe_empty_pages(tmp_path, monkeypatch):
     assert len(saved) == 3
 
     # unit-level: the convergence predicate itself
-    assert fe._page_converged([{"url": "u"}], 0) is True        # universe links, all seen
-    assert fe._page_converged([], 0) is False                   # no universe names -> keep going
-    assert fe._page_converged([{"url": "u"}], 1) is False       # a new link
+    assert fe._page_converged([{"url": "u"}], 0) is True  # universe links, all seen
+    assert fe._page_converged([], 0) is False  # no universe names -> keep going
+    assert fe._page_converged([{"url": "u"}], 1) is False  # a new link
 
     print("\n=== SANITY CHECK: MF transcript-index crawl stop logic ===")
     print(f"  pages fetched: {fetched}")
     print(f"  indexed tickers: {sorted(tickers)} ({len(saved)} links)")
     print("  3 universe-EMPTY pages (p2-p4) no longer abort the crawl -> CCC on p5 is reached;")
-    print("  genuine convergence (p6-p9 all already-indexed) stops it at "
-          f"page {max(fetched)}. Old logic stopped at ~p3-4 with a truncated index.")
+    print(f"  genuine convergence (p6-p9 all already-indexed) stops it at page {max(fetched)}. Old logic stopped at ~p3-4 with a truncated index.")
 
 
 def test_crawl_stops_at_history_horizon(tmp_path, monkeypatch):
@@ -108,12 +109,11 @@ def test_crawl_stops_at_history_horizon(tmp_path, monkeypatch):
     ctx = _fake_ctx(["AAA"], tmp_path)
     fe.build_transcript_index(ctx, max_pages=50, stop_after_empty=4, pause=0.0, history_years=1)
     assert max(fetched) <= 2, f"history-horizon stop failed; ran to page {max(fetched)}"
-    print("  history horizon: a 2016 feed with a 1y horizon stops at page "
-          f"{max(fetched)} instead of crawling max_pages. Validated.")
+    print(f"  history horizon: a 2016 feed with a 1y horizon stops at page {max(fetched)} instead of crawling max_pages. Validated.")
 
 
 if __name__ == "__main__":
-    import tempfile, pathlib
     for t in (test_crawl_does_not_stop_on_universe_empty_pages, test_crawl_stops_at_history_horizon):
         import pytest
+
         pytest.main(["-x", "-s", f"{__file__}::{t.__name__}"])

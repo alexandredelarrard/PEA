@@ -1,4 +1,5 @@
 """Round-trip test: one pickle file per horizon."""
+
 from __future__ import annotations
 
 import pickle
@@ -10,9 +11,8 @@ import pytest
 from src.data_aggregate.utils.assemble.cube import panel_from_cube, target_column
 from src.modelling.long_short.utils import model as ml
 
-
 _PANEL_ROWS = 8_000
-_WINDOW_DAYS = 400          # ~one trading year back from the latest labelled date
+_WINDOW_DAYS = 400  # ~one trading year back from the latest labelled date
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +34,7 @@ def sample_panel():
     config, ctx = get_config_context("./configs", use_cache=False, save=False)
     label = config.model.label_column
     h = int(config.build_cube.targets.primary_horizon)
-    target_type = config.model.get("target_type", "rank")   # same key step_train reads
+    target_type = config.model.get("target_type", "rank")  # same key step_train reads
     cube_cols = ctx.store.columns("cube")
     if not cube_cols:
         pytest.skip("cube table does not exist")
@@ -51,14 +51,11 @@ def sample_panel():
         pytest.skip("no labelled cube rows for the primary horizon")
     since = pd.Timestamp(latest[0]) - pd.Timedelta(days=_WINDOW_DAYS)
 
-    cube = ctx.store.load("cube",
-                          columns=["date", "ticker", target_col] + feats,
-                          where=scope, since=since, optional=True)
+    cube = ctx.store.load("cube", columns=["date", "ticker", target_col] + feats, where=scope, since=since, optional=True)
     if cube is None:
         pytest.skip("no labelled cube rows in the recent window")
 
-    panel = panel_from_cube(cube, h, label, feats,
-                            target_type=target_type).tail(_PANEL_ROWS)
+    panel = panel_from_cube(cube, h, label, feats, target_type=target_type).tail(_PANEL_ROWS)
     if panel.empty:
         pytest.skip("empty modelling panel")
     return panel, feats, label, h
@@ -100,5 +97,4 @@ def test_one_pickle_per_horizon_roundtrip(sample_panel, tmp_path):
     assert loaded_meta["feature_cols"] == feats
 
     print("\n=== SANITY CHECK: one pickle per horizon ===")
-    print(f"  {pkl.name}: horizon={h}, {len(feats)} features, "
-          f"max |pred diff|={np.abs(orig - reloaded).max():.2e}. Validated.")
+    print(f"  {pkl.name}: horizon={h}, {len(feats)} features, max |pred diff|={np.abs(orig - reloaded).max():.2e}. Validated.")

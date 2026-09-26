@@ -14,13 +14,14 @@ appear with real NaNs / late IPOs:
                         the 12-1 momentum characteristic each day, so on any
                         given day the ranking carries no momentum tilt.
 """
+
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pandas as pd
 import pytest
-
-import warnings
 
 from src.data_aggregate.utils.common.xs import xs_project_out
 from src.data_aggregate.utils.target.factors import momentum_characteristic
@@ -32,7 +33,7 @@ def test_forward_compound_no_log1p_warning_on_sub_minus1_return():
     emit 'invalid value encountered in log1p', and must stay finite (floored)."""
     s = pd.Series([0.01, -1.8, 0.02, 0.03, -0.02, 0.01, np.nan, 0.00])
     with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)   # any RuntimeWarning -> failure
+        warnings.simplefilter("error", RuntimeWarning)  # any RuntimeWarning -> failure
         fwd = forward_compound(s, 2)
     # windows that don't span the NaN produce finite compounded returns
     assert np.isfinite(fwd.dropna()).all() and fwd.notna().any()
@@ -69,12 +70,9 @@ def test_amd_target_spans_history(real_pipeline):
     assert len(valid) > 0, "AMD has no valid target at all"
 
     span_years = (valid.index.max() - valid.index.min()).days / 365.25
-    coverage = amd.loc[amd.first_valid_index():].notna().mean()
+    coverage = amd.loc[amd.first_valid_index() :].notna().mean()
 
-    assert span_years > 4.0, (
-        f"AMD target only spans {span_years:.1f} years -> history was truncated "
-        "(sector-NaN bug). Expected multi-year coverage."
-    )
+    assert span_years > 4.0, f"AMD target only spans {span_years:.1f} years -> history was truncated (sector-NaN bug). Expected multi-year coverage."
     assert coverage > 0.5, f"AMD target coverage only {coverage:.1%} after first valid date"
 
     print("\n=== SANITY CHECK: AMD target coverage (h=60) ===")
@@ -113,10 +111,7 @@ def test_amd_not_persistently_top_ranked(real_pipeline):
         print(f"  h={h:>3}: AMD mean rank = {means[h]:.3f}")
 
     # Pre-fix this climbed to ~0.71 at h=60; after the fix it must be far tamer.
-    assert means[60] < 0.62, (
-        f"AMD h=60 mean rank {means[60]:.3f} still strongly biased -> "
-        "history-truncation bug likely back."
-    )
+    assert means[60] < 0.62, f"AMD h=60 mean rank {means[60]:.3f} still strongly biased -> history-truncation bug likely back."
     print("  -> AMD sits near neutral; no longer 'almost always beating' at h=60.")
 
 
@@ -133,18 +128,15 @@ def test_xs_project_out_removes_tilt_to_correlated_factors():
     tickers = [f"T{i:02d}" for i in range(40)]
 
     def frame(scale):
-        return pd.DataFrame(rng.normal(0, scale, (len(dates), len(tickers))),
-                            index=dates, columns=tickers)
+        return pd.DataFrame(rng.normal(0, scale, (len(dates), len(tickers))), index=dates, columns=tickers)
 
     factor_a = frame(1.0)
-    factor_b = 0.8 * factor_a + frame(0.6)          # correlated with a, as real exposures are
+    factor_b = 0.8 * factor_a + frame(0.6)  # correlated with a, as real exposures are
     values = 2.0 * factor_a - 1.5 * factor_b + frame(0.3)
 
-    before = (values.corrwith(factor_a, axis=1).mean(),
-              values.corrwith(factor_b, axis=1).mean())
+    before = (values.corrwith(factor_a, axis=1).mean(), values.corrwith(factor_b, axis=1).mean())
     neutral = xs_project_out(values, [factor_a, factor_b])
-    after = (neutral.corrwith(factor_a, axis=1).mean(),
-             neutral.corrwith(factor_b, axis=1).mean())
+    after = (neutral.corrwith(factor_a, axis=1).mean(), neutral.corrwith(factor_b, axis=1).mean())
 
     # Sanity on the SETUP: factor_a starts strongly correlated. factor_b does NOT, even though its
     # true loading is -1.5, because the two channels cancel:
@@ -161,10 +153,14 @@ def test_xs_project_out_removes_tilt_to_correlated_factors():
     print("\n=== SANITY CHECK: xs_project_out removes tilt to correlated factors ===")
     print(f"  per-day corr(values, factor_a): before={before[0]:+.3f}  after={after[0]:+.6f}")
     print(f"  per-day corr(values, factor_b): before={before[1]:+.3f}  after={after[1]:+.6f}")
-    print(f"  factor_b's MARGINAL corr is only {before[1]:+.3f} despite a true loading of -1.5 "
-          "(the two channels cancel) -- exactly the case a univariate pass misses.")
-    print(f"  cross-sectional sd {values.std(axis=1).mean():.2f} -> "
-          f"{neutral.std(axis=1).mean():.2f}: the JOINT projection drives both correlations to 0.")
+    print(
+        f"  factor_b's MARGINAL corr is only {before[1]:+.3f} despite a true loading of -1.5 "
+        "(the two channels cancel) -- exactly the case a univariate pass misses."
+    )
+    print(
+        f"  cross-sectional sd {values.std(axis=1).mean():.2f} -> "
+        f"{neutral.std(axis=1).mean():.2f}: the JOINT projection drives both correlations to 0."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -183,9 +179,7 @@ def test_target_orthogonal_to_momentum_per_day(real_pipeline):
         daily = tgt.corrwith(mom.reindex_like(tgt), axis=1)
         mean_corr = float(daily.mean())
         print(f"  h={h:>3}: mean daily xs-corr(target, mom_12_1) = {mean_corr:+.3f}")
-        assert abs(mean_corr) < 0.05, (
-            f"h={h}: target still tilts to momentum per day (corr={mean_corr:+.3f})"
-        )
+        assert abs(mean_corr) < 0.05, f"h={h}: target still tilts to momentum per day (corr={mean_corr:+.3f})"
     print("  -> target is orthogonal to the momentum characteristic each day.")
 
 

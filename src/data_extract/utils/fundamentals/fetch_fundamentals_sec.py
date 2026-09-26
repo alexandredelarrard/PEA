@@ -25,6 +25,7 @@ write to a cold table behind a lock -- `store.ensure_table` is a check-then-crea
 locking, and on a cold table concurrent workers otherwise race the CREATE and silently lose
 whole tickers' rows.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,33 +38,65 @@ import pandas as pd
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
-    PROGRAMMING_ERRORS, filed_by, period_of_report, run_edgar_fetch,
+    PROGRAMMING_ERRORS,
+    filed_by,
+    period_of_report,
+    run_edgar_fetch,
 )
+from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
-from src.data_extract.utils.common.registrant import (
-    Registrant, load_registrants, resolve_registrant_filings)
-from src.data_extract.utils.fundamentals.fundamentals_employees import (
-    employee_fact_frame, history_by_ticker, is_headcount_form)
+from src.data_extract.utils.fundamentals.fundamentals_employees import employee_fact_frame, history_by_ticker, is_headcount_form
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
-from src.data_extract.utils.fundamentals.periods import (
-    AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape)
-from src.data_extract.utils.fundamentals.reason_codes import (
-    NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL)
+from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
+from src.data_extract.utils.fundamentals.reason_codes import NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    FIELD_SUM, INCOMPLETE_ROLL_UP, LINKBASE_SUM, NO_USABLE_PERIOD, STATEMENT_LEAF_SUM,
-    UNRESOLVED, ArcGraph, Resolution, bare, calculation_arcs, resolve_field,
-    segment_only_concepts, statement_arcs)
+    FIELD_SUM,
+    INCOMPLETE_ROLL_UP,
+    LINKBASE_SUM,
+    NO_USABLE_PERIOD,
+    STATEMENT_LEAF_SUM,
+    UNRESOLVED,
+    ArcGraph,
+    Resolution,
+    bare,
+    calculation_arcs,
+    resolve_field,
+    segment_only_concepts,
+    statement_arcs,
+)
 from src.data_store.schema import Table, Tables
 
 logger = logging.getLogger(__name__)
 
-_COLS = ["ticker", "accession_number", "field", "fiscal_year", "fiscal_period",
-         "duration_type", "cik", "form", "filing_date", "is_amendment",
-         "period_of_report", "regime", "period_start", "period_end", "period_days",
-         "value", "unit", "decimals", "resolution_method", "source_concept",
-         "roll_up_children", "root_anchor", "adjustment", "role_uri", "is_extension",
-         "dc_code"]
+_COLS = [
+    "ticker",
+    "accession_number",
+    "field",
+    "fiscal_year",
+    "fiscal_period",
+    "duration_type",
+    "cik",
+    "form",
+    "filing_date",
+    "is_amendment",
+    "period_of_report",
+    "regime",
+    "period_start",
+    "period_end",
+    "period_days",
+    "value",
+    "unit",
+    "decimals",
+    "resolution_method",
+    "source_concept",
+    "roll_up_children",
+    "root_anchor",
+    "adjustment",
+    "role_uri",
+    "is_extension",
+    "dc_code",
+]
 
 #: Fiscal period recorded when the filer tagged none. No longer a PK column -- the key is the
 #: calendar window now -- but kept, because an empty string and a NULL would sort and join as
@@ -91,16 +124,13 @@ def _period_frame(facts: pd.DataFrame) -> pd.DataFrame:
     out["period_start"] = start
     out["period_end"] = end
     out["period_days"] = (end - start).dt.days
-    out["duration_type"] = [
-        period_shape(str(pt), d)
-        for pt, d in zip(out.get("period_type", ""), out["period_days"])]
+    out["duration_type"] = [period_shape(str(pt), d) for pt, d in zip(out.get("period_type", ""), out["period_days"])]
     out["_bare"] = [scope.bare_concept(c) for c in out["concept"]]
     return out
 
 
 def _period_key(row) -> tuple:
-    return (row.fiscal_year, row.fiscal_period, row.duration_type,
-            row.period_start, row.period_end)
+    return (row.fiscal_year, row.fiscal_period, row.duration_type, row.period_start, row.period_end)
 
 
 #: `decimals` value meaning "exact" -- the finest precision an XBRL fact can declare.
@@ -149,25 +179,32 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
     for row in hits.itertuples():
         key = _period_key(row)
         fact = {
-            "value": float(row.numeric_value), "unit": getattr(row, "unit_ref", None),
+            "value": float(row.numeric_value),
+            "unit": getattr(row, "unit_ref", None),
             "decimals": getattr(row, "decimals", None),
-            "fiscal_year": row.fiscal_year, "fiscal_period": row.fiscal_period,
-            "duration_type": row.duration_type, "period_start": row.period_start,
-            "period_end": row.period_end, "period_days": row.period_days,
+            "fiscal_year": row.fiscal_year,
+            "fiscal_period": row.fiscal_period,
+            "duration_type": row.duration_type,
+            "period_start": row.period_start,
+            "period_end": row.period_end,
+            "period_days": row.period_days,
         }
         prior = out.get(key)
         if prior is None:
             out[key] = fact
             continue
-        winner, loser = ((fact, prior)
-                         if _precision(fact["decimals"]) > _precision(prior["decimals"])
-                         else (prior, fact))
+        winner, loser = (fact, prior) if _precision(fact["decimals"]) > _precision(prior["decimals"]) else (prior, fact)
         if winner["value"] != loser["value"]:
             seen = list(prior.get("duplicate_fact", []))
-            seen.append({"concept": concept, "kept": winner["value"],
-                         "kept_decimals": str(winner["decimals"]),
-                         "dropped": loser["value"],
-                         "dropped_decimals": str(loser["decimals"])})
+            seen.append(
+                {
+                    "concept": concept,
+                    "kept": winner["value"],
+                    "kept_decimals": str(winner["decimals"]),
+                    "dropped": loser["value"],
+                    "dropped_decimals": str(loser["decimals"]),
+                }
+            )
             winner = {**winner, "duplicate_fact": seen}
         out[key] = winner
     return out
@@ -220,8 +257,7 @@ def _covering_annual(windows: list[_Window], period: dict) -> tuple | None:
     return None
 
 
-def _lone_quarters(periods: dict[tuple, dict],
-                   filing_windows: list[_Window] | None = None) -> dict[tuple, tuple]:
+def _lone_quarters(periods: dict[tuple, dict], filing_windows: list[_Window] | None = None) -> dict[tuple, tuple]:
     """`{key of a quarter that is the ONLY one of its fiscal year: key of that year}`.
 
     A 10-K carries quarterly contexts from a note, and there are only two notes that put a
@@ -293,9 +329,12 @@ def _filing_annual_windows(values: dict[str, dict[tuple, dict]]) -> list[_Window
     return list(by_span.values())
 
 
-def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str,
-                            filing_windows: list[_Window] | None = None,
-                            ) -> dict[tuple, dict]:
+def _drop_note_only_quarter(
+    periods: dict[tuple, dict],
+    *,
+    form: str,
+    filing_windows: list[_Window] | None = None,
+) -> dict[tuple, dict]:
     """Refuse a quarterly fact an ANNUAL report published ALONE for its fiscal year.
 
     The value is a discrete item disclosed in prose, never the quarter's total, and storing
@@ -348,16 +387,27 @@ def _drop_note_only_quarter(periods: dict[tuple, dict], *, form: str,
             continue
         dropped, host = periods[key], out[year]
         rejected = list(host.get("note_quarter_rejected", []))
-        rejected.append({"period_end": str(pd.Timestamp(dropped["period_end"]).date()),
-                         "value": dropped["value"]})
+        rejected.append({"period_end": str(pd.Timestamp(dropped["period_end"]).date()), "value": dropped["value"]})
         out[year] = {**host, "note_quarter_rejected": rejected}
     return out
 
 
-def _retry_without(name, resolution, catalogue, graph, available, regime, facts,
-                   durations, zero_only, magnitudes, ticker, prefer_structure,
-                   form: str, filing_windows: list[_Window],
-                   ) -> tuple[Resolution, dict[tuple, dict], dict[tuple, dict]] | None:
+def _retry_without(
+    name,
+    resolution,
+    catalogue,
+    graph,
+    available,
+    regime,
+    facts,
+    durations,
+    zero_only,
+    magnitudes,
+    ticker,
+    prefer_structure,
+    form: str,
+    filing_windows: list[_Window],
+) -> tuple[Resolution, dict[tuple, dict], dict[tuple, dict]] | None:
     """Re-resolve `name` with the concept that yielded NOTHING withheld, or None.
 
     A concept every one of whose periods was refused did not resolve the field -- it only
@@ -393,10 +443,18 @@ def _retry_without(name, resolution, catalogue, graph, available, regime, facts,
     dead = resolution.concept
     if not dead:
         return None
-    retry = resolve_field(catalogue.field(name), graph, available - {bare(dead)},
-                          catalogue, regime, duration_concepts=durations,
-                          zero_only=zero_only, magnitudes=magnitudes,
-                          ticker=ticker, prefer_structure=prefer_structure)
+    retry = resolve_field(
+        catalogue.field(name),
+        graph,
+        available - {bare(dead)},
+        catalogue,
+        regime,
+        duration_concepts=durations,
+        zero_only=zero_only,
+        magnitudes=magnitudes,
+        ticker=ticker,
+        prefer_structure=prefer_structure,
+    )
     if not retry.resolved or retry.concept == dead:
         return None
     periods, refused = _materialise(retry, facts)
@@ -404,8 +462,7 @@ def _retry_without(name, resolution, catalogue, graph, available, regime, facts,
     return (retry, kept, refused) if kept else None
 
 
-def _materialise(resolution: Resolution,
-                 facts: pd.DataFrame) -> tuple[dict[tuple, dict], dict[tuple, dict]]:
+def _materialise(resolution: Resolution, facts: pd.DataFrame) -> tuple[dict[tuple, dict], dict[tuple, dict]]:
     """Turn one field's resolution into `({period key: value + provenance}, {refused})`.
 
     A `linkbase_sum` emits a period ONLY where every leg is reported for that same period.
@@ -447,8 +504,7 @@ def _materialise(resolution: Resolution,
             # Union the duplicate ledger across the legs, not just the first one: a summed
             # field with a duplicate in its SECOND leg is exactly as affected, and taking
             # `base`'s copy alone would silently lose it.
-            duplicates = [d for c, _ in resolution.children
-                          for d in legs[c][key].get("duplicate_fact", [])]
+            duplicates = [d for c, _ in resolution.children for d in legs[c][key].get("duplicate_fact", [])]
             out[key] = {**base, "value": total}
             if duplicates:
                 out[key]["duplicate_fact"] = duplicates
@@ -474,18 +530,24 @@ def _refused_period(legs: dict[str, dict[tuple, dict]], key: tuple) -> dict:
     since all of them describe the same one.
     """
     reported = next(legs[c][key] for c in legs if key in legs[c])
-    return {"fiscal_year": reported["fiscal_year"],
-            "fiscal_period": reported["fiscal_period"],
-            "duration_type": reported["duration_type"],
-            "period_start": reported["period_start"],
-            "period_end": reported["period_end"],
-            "period_days": reported["period_days"],
-            "value": None, "unit": reported.get("unit"), "decimals": None}
+    return {
+        "fiscal_year": reported["fiscal_year"],
+        "fiscal_period": reported["fiscal_period"],
+        "duration_type": reported["duration_type"],
+        "period_start": reported["period_start"],
+        "period_end": reported["period_end"],
+        "period_days": reported["period_days"],
+        "value": None,
+        "unit": reported.get("unit"),
+        "decimals": None,
+    }
 
 
-def _compose(spec, component_fields: tuple[str, ...],
-             resolved: dict[str, dict[tuple, dict]],
-             ) -> tuple[dict[tuple, dict], str | None]:
+def _compose(
+    spec,
+    component_fields: tuple[str, ...],
+    resolved: dict[str, dict[tuple, dict]],
+) -> tuple[dict[tuple, dict], str | None]:
     """Sum a field composed of OTHER CATALOGUE FIELDS (`totalDebt` from its four debt/lease
     legs, `ppeNet` from gross less accumulated depreciation).
 
@@ -592,7 +654,7 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     return json.dumps(blob) if blob else None
 
 
-def _period_end(period: dict | None, stamp: "_FilingStamp") -> pd.Timestamp:
+def _period_end(period: dict | None, stamp: _FilingStamp) -> pd.Timestamp:
     """The row's `period_end`, guaranteed non-NULL because it is part of the PK.
 
     Falls back through the filing's `period_of_report` to its filing date. Both fallbacks are
@@ -622,33 +684,41 @@ class _FilingStamp:
     is_amendment: bool
 
     @classmethod
-    def of(cls, filing) -> "_FilingStamp":
+    def of(cls, filing) -> _FilingStamp:
         return cls(
             accession_number=filing.accession_number,
             form=filing.form,
             filed=pd.Timestamp(filing.filing_date),
             reported=pd.to_datetime(period_of_report(filing), errors="coerce"),
-            is_amendment=str(filing.form).upper().endswith("/A"))
+            is_amendment=str(filing.form).upper().endswith("/A"),
+        )
 
 
-def _row(ticker: str, cik: str, stamp: _FilingStamp, regime: str | None, field: str,
-         resolution: Resolution, period: dict | None, *,
-         dc_code: str | None = None) -> dict:
+def _row(
+    ticker: str,
+    cik: str,
+    stamp: _FilingStamp,
+    regime: str | None,
+    field: str,
+    resolution: Resolution,
+    period: dict | None,
+    *,
+    dc_code: str | None = None,
+) -> dict:
     """One `fundamentals_facts` row.
 
     `dc_code` overrides the resolution's own, for the one case where they differ: a period
     the strict intersection refused on a field that resolved perfectly well elsewhere in the
     same filing. The resolution has no code (it resolved); the PERIOD does.
     """
-    children = ([[c, w] for c, w in resolution.children] if resolution.children
-                else None)
+    children = [[c, w] for c, w in resolution.children] if resolution.children else None
     return {
-        "ticker": ticker, "cik": cik,
-        "accession_number": stamp.accession_number, "field": field,
-        "fiscal_year": int(period["fiscal_year"]) if period and pd.notna(
-            period.get("fiscal_year")) else stamp.filed.year,
-        "fiscal_period": (str(period["fiscal_period"]) if period and pd.notna(
-            period.get("fiscal_period")) else UNLABELLED_PERIOD),
+        "ticker": ticker,
+        "cik": cik,
+        "accession_number": stamp.accession_number,
+        "field": field,
+        "fiscal_year": int(period["fiscal_year"]) if period and pd.notna(period.get("fiscal_year")) else stamp.filed.year,
+        "fiscal_period": (str(period["fiscal_period"]) if period and pd.notna(period.get("fiscal_period")) else UNLABELLED_PERIOD),
         "duration_type": period["duration_type"] if period else OTHER_SHAPE,
         "form": stamp.form,
         "filing_date": stamp.filed,
@@ -666,9 +736,7 @@ def _row(ticker: str, cik: str, stamp: _FilingStamp, regime: str | None, field: 
         "value": period["value"] if period else None,
         "unit": period.get("unit") if period else None,
         # `str(NaN)` is the string "nan", which joins and compares as a real value.
-        "decimals": (str(period["decimals"])
-                     if period and period.get("decimals") is not None
-                     and pd.notna(period.get("decimals")) else None),
+        "decimals": (str(period["decimals"]) if period and period.get("decimals") is not None and pd.notna(period.get("decimals")) else None),
         "resolution_method": resolution.method,
         "source_concept": resolution.source_concept,
         "roll_up_children": json.dumps(children) if children else None,
@@ -680,9 +748,9 @@ def _row(ticker: str, cik: str, stamp: _FilingStamp, regime: str | None, field: 
     }
 
 
-def filing_rows(ticker: str, cik: str, filing, catalogue: Catalogue,
-                gics: dict[str, str | None] | None, *,
-                failures: list[tuple[str, str]] | None = None) -> list[dict]:
+def filing_rows(
+    ticker: str, cik: str, filing, catalogue: Catalogue, gics: dict[str, str | None] | None, *, failures: list[tuple[str, str]] | None = None
+) -> list[dict]:
     """Every catalogue field, for every period, from one filing.
 
     Returns [] rather than raising on an unreadable filing: one bad filing must not abort a
@@ -700,7 +768,7 @@ def filing_rows(ticker: str, cik: str, filing, catalogue: Catalogue,
     """
     try:
         xbrl = filing.xbrl()
-    except Exception as exc:                # noqa: BLE001 -- the filer's XBRL, not our code
+    except Exception as exc:  # noqa: BLE001 -- the filer's XBRL, not our code
         _note_failure(failures, filing, exc)
         return []
     if xbrl is None:
@@ -708,8 +776,8 @@ def filing_rows(ticker: str, cik: str, filing, catalogue: Catalogue,
     try:
         return rows_from_xbrl(ticker, cik, filing, xbrl, catalogue, gics)
     except PROGRAMMING_ERRORS:
-        raise                                           # our bug, not the filer's
-    except Exception as exc:                            # noqa: BLE001 -- one bad filing
+        raise  # our bug, not the filer's
+    except Exception as exc:  # noqa: BLE001 -- one bad filing
         _note_failure(failures, filing, exc)
         return []
 
@@ -722,9 +790,9 @@ def _note_failure(failures: list[tuple[str, str]] | None, filing, exc: Exception
     failures.append((str(getattr(filing, "accession_number", "unknown")), str(exc)))
 
 
-def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
-                   gics: dict[str, str | None] | None, *,
-                   prefer_structure: bool = True) -> list[dict]:
+def rows_from_xbrl(
+    ticker: str, cik: str, filing, xbrl, catalogue: Catalogue, gics: dict[str, str | None] | None, *, prefer_structure: bool = True
+) -> list[dict]:
     """`filing_rows` with the parsed XBRL handed in.
 
     Split out because `filing.xbrl()` is the pipeline's whole cost (1.4-5.8 s against
@@ -758,8 +826,7 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     # segment-note arc by the time the graph exists -- which is precisely why the graph's own
     # `is_note_only` cannot see this population. See `xbrl_linkbase.SEGMENT_ROLE`.
     segment_only = segment_only_concepts(arcs)
-    regime = catalogue.regime_for(
-        gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
+    regime = catalogue.regime_for(gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
 
     # Resolve every concept-backed field first; the composed ones (`totalDebt`, `ppeNet`)
     # then read those results rather than the facts.
@@ -769,11 +836,19 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     #: from `values` so a composed field cannot accidentally sum a refused stub.
     refused: dict[str, dict[tuple, dict]] = {}
     for name in catalogue.extracted_fields:
-        resolution = resolve_field(catalogue.field(name), graph, available,
-                                   catalogue, regime, duration_concepts=durations,
-                                   zero_only=zero_only, magnitudes=magnitudes,
-                                   ticker=ticker, prefer_structure=prefer_structure,
-                                   segment_only=segment_only)
+        resolution = resolve_field(
+            catalogue.field(name),
+            graph,
+            available,
+            catalogue,
+            regime,
+            duration_concepts=durations,
+            zero_only=zero_only,
+            magnitudes=magnitudes,
+            ticker=ticker,
+            prefer_structure=prefer_structure,
+            segment_only=segment_only,
+        )
         resolutions[name] = resolution
         if resolution.method != FIELD_SUM:
             values[name], refused[name] = _materialise(resolution, facts)
@@ -796,12 +871,24 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
     if form in _ANNUAL_FORMS:
         filing_windows = _filing_annual_windows(values)
         for name, periods in list(values.items()):
-            kept = _drop_note_only_quarter(periods, form=form,
-                                           filing_windows=filing_windows)
+            kept = _drop_note_only_quarter(periods, form=form, filing_windows=filing_windows)
             if periods and not kept:
-                retry = _retry_without(name, resolutions[name], catalogue, graph, available,
-                                       regime, facts, durations, zero_only, magnitudes,
-                                       ticker, prefer_structure, form, filing_windows)
+                retry = _retry_without(
+                    name,
+                    resolutions[name],
+                    catalogue,
+                    graph,
+                    available,
+                    regime,
+                    facts,
+                    durations,
+                    zero_only,
+                    magnitudes,
+                    ticker,
+                    prefer_structure,
+                    form,
+                    filing_windows,
+                )
                 if retry is not None:
                     resolutions[name], values[name], refused[name] = retry
                     continue
@@ -809,8 +896,7 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
             values[name] = kept
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
-            composed, reason = _compose(catalogue.field(name),
-                                        resolution.component_fields, values)
+            composed, reason = _compose(catalogue.field(name), resolution.component_fields, values)
             values[name] = composed
             if reason:
                 resolutions[name] = replace(resolution, method=UNRESOLVED, dc_code=reason)
@@ -835,33 +921,34 @@ def rows_from_xbrl(ticker: str, cik: str, filing, xbrl, catalogue: Catalogue,
             # lives in exactly that code path), and a named code makes any future instance
             # of the class visible instead of silent.
             if resolution.resolved:
-                resolution = replace(resolution, method=UNRESOLVED,
-                                     dc_code=(AMBIGUOUS_DURATION if name in note_refused
-                                              else NO_USABLE_PERIOD))
+                resolution = replace(resolution, method=UNRESOLVED, dc_code=(AMBIGUOUS_DURATION if name in note_refused else NO_USABLE_PERIOD))
             rows.append(_row(ticker, cik, stamp, regime, name, resolution, None))
             continue
-        rows.extend(_row(ticker, cik, stamp, regime, name, resolution, period)
-                    for period in periods.values())
+        rows.extend(_row(ticker, cik, stamp, regime, name, resolution, period) for period in periods.values())
     # The periods route 3b refused, each as a value-less row carrying its own code. Emitted
     # for EVERY field, including the ones that resolved -- that is the whole of B.6.6.
     for name, periods in refused.items():
         # Disjoint by construction -- `refused` is `union - intersection` and `values` is the
         # intersection -- but asserted, because a key in both would write the same PK twice
         # and the dedup in `build_ticker_fundamentals` would silently keep the value-less one.
-        assert not (set(periods) & set(values.get(name, {}))), (
-            f"{ticker} {filing.accession_number} {name}: a refused period is also resolved")
-        rows.extend(_row(ticker, cik, stamp, regime, name, resolutions[name], period,
-                         dc_code=PERIOD_INTERSECTION_PARTIAL)
-                    for period in periods.values())
+        assert not (set(periods) & set(values.get(name, {}))), f"{ticker} {filing.accession_number} {name}: a refused period is also resolved"
+        rows.extend(
+            _row(ticker, cik, stamp, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL) for period in periods.values()
+        )
     return rows
 
 
-def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                              done_accessions: frozenset[str] = frozenset(),
-                              catalogue: Catalogue, gics_by_ticker: dict[str, dict],
-                              registrants: dict[str, Registrant] | None = None,
-                              headcounts: dict[str, list[int]] | None = None,
-                              ) -> dict[Table, pd.DataFrame]:
+def build_ticker_fundamentals(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+    catalogue: Catalogue,
+    gics_by_ticker: dict[str, dict],
+    registrants: dict[str, Registrant] | None = None,
+    headcounts: dict[str, list[int]] | None = None,
+) -> dict[Table, pd.DataFrame]:
     """One ticker's facts, walking EVERY registrant in its chain.
 
     `Company(ticker)` sees only the current registrant, so without the register APA loses
@@ -880,9 +967,7 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
     The `cik` recorded on each row is the registrant that actually FILED it, not the
     ticker's current one, so a row's provenance survives the boundary.
     """
-    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=since,
-                                         done_accessions=done_accessions,
-                                         registrants=registrants)
+    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=since, done_accessions=done_accessions, registrants=registrants)
     rows: list[dict] = []
     # Headcount rides the SAME walk (decision 35): the number is in the 10-K prose this loop
     # already has a handle on, so a separate fetcher would list, download and date those
@@ -899,8 +984,7 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
         # filing already carries its own registrant's CIK; `filed_by` just falls back
         # to the roster's when a filing exposes none.
         filing_cik = filed_by(filing, cik)
-        rows.extend(filing_rows(ticker, filing_cik, filing, catalogue,
-                                gics_by_ticker.get(ticker), failures=failures))
+        rows.extend(filing_rows(ticker, filing_cik, filing, catalogue, gics_by_ticker.get(ticker), failures=failures))
         if not is_headcount_form(getattr(filing, "form", None)):
             continue
         parsed = employee_fact_frame(filing, accepted)
@@ -908,20 +992,20 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
             continue
         count = float(parsed["value"].iloc[0])
         accepted.append(int(count))
-        staff.append({"ticker": ticker,
-                      "as_of": pd.Timestamp(filing.filing_date), "employees": count})
+        staff.append({"ticker": ticker, "as_of": pd.Timestamp(filing.filing_date), "employees": count})
     employees = pd.DataFrame(staff, columns=["ticker", "as_of", "employees"])
     if failures:
-        logger.warning("%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures),
-                       len(filings),
-                       ", ".join(f"{acc} ({err})" for acc, err in failures))
+        logger.warning(
+            "%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures), len(filings), ", ".join(f"{acc} ({err})" for acc, err in failures)
+        )
     # The line that would have caught the `cols` NameError in hour one instead of hour ten:
     # filings were walked and NOT ONE of them yielded a fact. Never a normal outcome -- every
     # 10-K/10-Q in `FUNDAMENTALS_FORMS` carries some catalogue field -- so it is an ERROR even
     # though the walk itself completed and the run will report success.
     if filings and not rows:
-        logger.error("%s: 0 facts from %d filing(s) (%d unreadable) -- the ticker's whole "
-                     "history is missing, not empty", ticker, len(filings), len(failures))
+        logger.error(
+            "%s: 0 facts from %d filing(s) (%d unreadable) -- the ticker's whole history is missing, not empty", ticker, len(filings), len(failures)
+        )
     df = pd.DataFrame(rows, columns=_COLS)
     if df.empty:
         return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
@@ -940,14 +1024,14 @@ def build_ticker_fundamentals(ticker: str, cik: str, *, since: pd.Timestamp | No
         raise ValueError(
             f"{ticker}: the {' -> '.join(entry.all_ciks())} chain "
             f"({', '.join(str(b.date()) for b in entry.boundaries)}) lost accessions in dedup "
-            f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap")
+            f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap"
+        )
     # Two 10-K/A amendments filed the same day would collide on the employees PK.
     employees = employees.drop_duplicates(subset=["ticker", "as_of"], keep="last")
     return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
 
 
-def fetch_fundamentals_sec(context: Context, tickers: list[str],
-                           years_history: int, *, full: bool = False) -> None:
+def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: int, *, full: bool = False) -> None:
     # `context.config_dir` is the CLI's `-c` value, resolved once by `get_config_context`;
     # threading it explicitly is what lets a non-default `-c` actually reach the catalogue.
     catalogue = load_catalogue(context.config_dir)
@@ -960,30 +1044,31 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str],
     # for the regimes and once inside the driver for the CIKs.
     levels = ["sector", "industry_group", "sub_industry"]
     cik_map = load_cik_mapping(context, tickers)
-    gics = {row.ticker: {lvl: getattr(row, lvl) for lvl in levels}
-            for row in cik_map.itertuples()}
+    gics = {row.ticker: {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
     # The headcount continuity guard's seed, and the ONE read of this table that is
     # deliberately unfiltered: `history_by_ticker` seeds a per-ticker median from every
     # stored headcount, and a `where=` on the run's ticker list would silently narrow the
     # continuity guard to the chunk being fetched. Three columns of an annual, ~500-ticker
     # table, so the whole-table read is bounded by construction.
-    stored = context.store.load(Tables.fundamentals_employees,
-                                columns=["ticker", "as_of", "employees"], optional=True)
-    headcounts = history_by_ticker(
-        stored.rename(columns={"as_of": "filing_date", "employees": "value"})
-        if stored is not None else None)
+    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", "employees"], optional=True)
+    headcounts = history_by_ticker(stored.rename(columns={"as_of": "filing_date", "employees": "value"}) if stored is not None else None)
     registrants = load_registrants(context.config_dir)
     if registrants:
         context.log.info(
-            "fundamentals: %d registrant chain(s) declared -- %s", len(registrants),
-            ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}"
-                      for t, r in sorted(registrants.items())))
+            "fundamentals: %d registrant chain(s) declared -- %s",
+            len(registrants),
+            ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}" for t, r in sorted(registrants.items())),
+        )
     run_edgar_fetch(
-        context, tickers, years_history,
+        context,
+        tickers,
+        years_history,
         # `fundamentals_facts` stays FIRST: it keys the manifest window and the accession
         # dedup set, and headcount is a by-product of the same filings.
         tables=(Tables.fundamentals_facts, Tables.fundamentals_employees),
-        build=partial(build_ticker_fundamentals, catalogue=catalogue,
-                      gics_by_ticker=gics, registrants=registrants, headcounts=headcounts),
-        desc="fundamentals (linkbase)", full=full, cik_map=cik_map,
-        max_workers=int(context.config.data_extract.fundamentals_workers))
+        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics, registrants=registrants, headcounts=headcounts),
+        desc="fundamentals (linkbase)",
+        full=full,
+        cik_map=cik_map,
+        max_workers=int(context.config.data_extract.fundamentals_workers),
+    )

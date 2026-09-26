@@ -154,7 +154,7 @@ def test_an_as_reported_quarter_is_never_replaced_by_a_derived_one():
     assert len(q4) == 1
     assert q4.iloc[0]["basis"] == periods.AS_REPORTED
     assert q4.iloc[0]["value"] == pytest.approx(90.0)
-    print(f"\nSANITY: the filer's own Q4 of 90 is kept over the derived 100, and only one " f"row survives for the window -- {q4.iloc[0]['basis']}.")
+    print(f"\nSANITY: the filer's own Q4 of 90 is kept over the derived 100, and only one row survives for the window -- {q4.iloc[0]['basis']}.")
 
 
 def test_the_97_day_fact_a_filer_labels_fy_is_not_the_annual_anchor():
@@ -228,7 +228,7 @@ def test_one_loss_quarter_does_not_destroy_the_years_fourth_quarter():
     quarters = periods.quarterize(facts, signed, GUARDS)
     q4 = quarters[quarters["period_end"] == pd.Timestamp("2020-12-31")].iloc[0]
     assert q4["value"] == pytest.approx(1572.0)
-    print(f"\nSANITY: quarters -368 / +2,207 / +284 and FY 3,695 -> Q4 = " f"{q4['value']:,.0f}. One loss quarter no longer nulls the year.")
+    print(f"\nSANITY: quarters -368 / +2,207 / +284 and FY 3,695 -> Q4 = {q4['value']:,.0f}. One loss quarter no longer nulls the year.")
 
 
 def test_a_concept_switch_is_allowed_when_the_two_legs_are_the_same_size():
@@ -265,7 +265,7 @@ def test_a_concept_switch_to_a_different_sized_line_is_refused():
     )
     quarters = periods.quarterize(facts, _spec(), GUARDS)
     assert quarters.empty
-    print(f"\nSANITY: an FY running at 12x the nine-month rate under a different concept " f"is refused -- {len(quarters)} quarters emitted.")
+    print(f"\nSANITY: an FY running at 12x the nine-month rate under a different concept is refused -- {len(quarters)} quarters emitted.")
 
 
 # ----------------------------------------------------------------- share counts ---
@@ -497,7 +497,7 @@ def test_the_configured_guards_are_the_ones_this_file_asserts_against():
     the engine accepts."""
     live = periods.load_guards("./configs")
     assert live == GUARDS
-    print(f"\nSANITY: configs/configs.yml carries {live}, matching the values every guard " f"test above is written against.")
+    print(f"\nSANITY: configs/configs.yml carries {live}, matching the values every guard test above is written against.")
 
 
 # --------------------------------------------------------------------- real data ---
@@ -867,7 +867,7 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
         row = revenue[revenue["period_end"] == pd.Timestamp(year_end)]
         assert len(row) == 1, f"{year_end}: expected exactly one Q4 row"
         assert row.iloc[0].basis == periods.FY_MINUS_YTD9, (
-            f"{year_end}: a fourth quarter here can only be derived, never as-reported -- " f"the only as-reported candidate is the mislabelled year"
+            f"{year_end}: a fourth quarter here can only be derived, never as-reported -- the only as-reported candidate is the mislabelled year"
         )
         assert 8e9 < row.iloc[0].value < 20e9, f"{year_end}: ${row.iloc[0].value / 1e9:.3f}bn is not a fourth quarter"
 
@@ -877,7 +877,7 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
         & (facts["period_end"].isin([pd.Timestamp(y) for y in years]))
     ]
     assert as_filed.empty, (
-        f"{len(as_filed)} mislabelled year(s) still stored as a quarter in " f"fundamentals_facts -- the substrate every Tier-2/3 check reads"
+        f"{len(as_filed)} mislabelled year(s) still stored as a quarter in fundamentals_facts -- the substrate every Tier-2/3 check reads"
     )
     print("  OK: 0 of 9 mislabelled years survive as quarters; all 5 fourth quarters derive")
 
@@ -910,26 +910,25 @@ def test_the_retry_recovers_the_annual_the_filer_tagged_under_the_other_element(
     recovered = annual[annual["accession_number"].isin(broken)]
     print("\n=== SANITY CHECK: annuals recovered from the three broken 10-Ks ===")
     for r in recovered.sort_values(["accession_number", "period_end"]).itertuples():
-        print(f"  {r.accession_number}  {str(r.period_end)[:10]}  " f"${r.value / 1e9:6.3f}bn  {r.source_concept.split(':')[-1]}")
+        print(f"  {r.accession_number}  {str(r.period_end)[:10]}  ${r.value / 1e9:6.3f}bn  {r.source_concept.split(':')[-1]}")
 
     assert len(recovered) == 9, "3 fiscal years x 3 filings, every one an annual window"
-    assert set(recovered["source_concept"]) == {
-        "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax"
-    }, "the retry must land on the ASC 606 element, not back on `Revenues`"
+    assert set(recovered["source_concept"]) == {"us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax"}, (
+        "the retry must land on the ASC 606 element, not back on `Revenues`"
+    )
     assert recovered["value"].notna().all(), "a recovered annual is not a value-less stub"
 
     fy2020 = annual[annual["period_end"] == pd.Timestamp("2020-05-31")]
     assert not fy2020.empty, (
-        "fiscal 2020's annual is in NO other vintage -- if the retry misses it, Q4 2020 is "
-        "unrecoverable and the point-in-time row keeps carrying Q3"
+        "fiscal 2020's annual is in NO other vintage -- if the retry misses it, Q4 2020 is unrecoverable and the point-in-time row keeps carrying Q3"
     )
     assert fy2020["value"].min() == fy2020["value"].max() == 39_068_000_000.0
     assert str(fy2020["accession_number"].min()) == "0001564590-20-030125", "recovered from the fiscal 2020 10-K itself, not from a later restatement"
 
     q4_2020 = quarters[(quarters["field"] == "totalRevenue") & (quarters["period_end"] == pd.Timestamp("2020-05-31"))]
     assert len(q4_2020) == 1 and q4_2020.iloc[0].basis == periods.FY_MINUS_YTD9
-    assert 10.3e9 < q4_2020.iloc[0].value < 10.6e9, f"Q4 2020 is ${q4_2020.iloc[0].value / 1e9:.3f}bn, not the ~$10.44bn " f"$39,068M - YTD9 implies"
-    print(f"  fiscal 2020 Q4 now DERIVES at ${q4_2020.iloc[0].value / 1e9:.3f}bn " f"(was: no row at all, and the PIT quarter carried Q3's $9.796bn)")
+    assert 10.3e9 < q4_2020.iloc[0].value < 10.6e9, f"Q4 2020 is ${q4_2020.iloc[0].value / 1e9:.3f}bn, not the ~$10.44bn $39,068M - YTD9 implies"
+    print(f"  fiscal 2020 Q4 now DERIVES at ${q4_2020.iloc[0].value / 1e9:.3f}bn (was: no row at all, and the PIT quarter carried Q3's $9.796bn)")
 
 
 def test_d1b_keeps_a_genuine_loss_quarter_bigger_than_the_nine_months():
@@ -958,7 +957,7 @@ def test_d1b_keeps_a_genuine_loss_quarter_bigger_than_the_nine_months():
     q4 = q[q.period_end == pd.Timestamp("2017-12-31")]
     print("\n=== SANITY CHECK: D1b keeps a genuine loss quarter ===")
     print(f"  nine months +$1,452.8M, Q4 -$1,656.9M -> kept {len(q4)}, refusals {len(refusals)}")
-    print(f"  four quarters sum to {q['value'].sum() / 1e6:,.1f}M " f"(LLY's reported FY2017 net loss was -204.1M)")
+    print(f"  four quarters sum to {q['value'].sum() / 1e6:,.1f}M (LLY's reported FY2017 net loss was -204.1M)")
     assert len(q4) == 1 and q4.iloc[0].value == pytest.approx(-1_656.9e6)
     assert not refusals, "a loss quarter is not a mislabelled year"
     assert q["value"].sum() == pytest.approx(-204.1e6, rel=1e-6)

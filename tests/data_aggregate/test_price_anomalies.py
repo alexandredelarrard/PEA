@@ -2,6 +2,7 @@
 (MAX, return skewness, downside semi-deviation, idiosyncratic vol). All are
 trailing-window / point-in-time and built from the already-extracted price panel.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -14,8 +15,7 @@ def _prices(n_days=200, seed=0):
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range("2019-01-01", periods=n_days)
     tickers = ["AAA", "BBB", "CCC"]
-    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.012, (n_days, 3)), axis=0),
-                         index=dates, columns=tickers)
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.012, (n_days, 3)), axis=0), index=dates, columns=tickers)
     open_ = close.shift(1).bfill()
     sector = pd.DataFrame(0.0, index=dates, columns=tickers)
     return close, open_, sector
@@ -43,6 +43,8 @@ def test_price_anomalies_present_and_exact():
     assert np.isnan(feats["ret_skew_126"].iloc[0]["AAA"])
 
     print("\n=== SANITY CHECK: price-only anomalies ===")
-    print(f"  MAX_21={feats['max_21'].loc[d,'AAA']:.4f} (=max of last 21 daily rets); "
-          f"idio_vol_63={feats['idio_vol_63'].loc[d,'AAA']:.4f} (market-relative). Exact.")
+    print(
+        f"  MAX_21={feats['max_21'].loc[d, 'AAA']:.4f} (=max of last 21 daily rets); "
+        f"idio_vol_63={feats['idio_vol_63'].loc[d, 'AAA']:.4f} (market-relative). Exact."
+    )
     print("  skewness NaN at start -> trailing/point-in-time. Validated.")

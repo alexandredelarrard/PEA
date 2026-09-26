@@ -1290,7 +1290,7 @@ def resolve(table: Table | str) -> Table:
     try:
         return BY_NAME[table]
     except KeyError:
-        raise UnknownTableError(f"{table!r} is not in src/data_store/schema.py. Add a Table for it rather " f"than creating it implicitly.") from None
+        raise UnknownTableError(f"{table!r} is not in src/data_store/schema.py. Add a Table for it rather than creating it implicitly.") from None
 
 
 def name_of(table: Table | str) -> str:

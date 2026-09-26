@@ -1,20 +1,17 @@
-
-from src.context import Context
-from pathlib import Path
 import json
+from pathlib import Path
 
+from src.constants.constants import FOOL_BASE
+from src.context import Context
+from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.utils import polite_http as ph
 from src.utils.crawler import Crawler
-
-from src.constants.constants import (
-    FOOL_BASE
-    )
-from src.data_extract.utils.common.bulk_cache import cache_dir
 
 # --------------------------------------------------------------------------- #
 # IO helpers                                                                    #
 # --------------------------------------------------------------------------- #
 _CRAWLER: Crawler | None = None
+
 
 def _crawler() -> Crawler:
     """The ONE lazily-built crawler shared by every Motley Fool request.
@@ -44,8 +41,7 @@ def _load_index(path: Path) -> dict[str, dict]:
         return {}
 
 
-def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
-         log_missing: bool = True) -> str | None:
+def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0, log_missing: bool = True) -> str | None:
     """MF transcript GET -> HTML text on 200 (else None), via the shared IP-rotating `Crawler`
     (headless, no cookies/JS/images, rolling real-browser fingerprint, moving IPs over
     PEA_SCRAPE_PROXIES on a Cloudflare block, fast retry). `log_missing=False` silences the expected
@@ -57,5 +53,3 @@ def _get(url: str, timeout: int = 30, retries: int = 4, backoff: float = 3.0,
 def _sleep_pace(base: float) -> None:
     """Paced inter-request sleep for fool.com (shared per-host slowdown + jitter)."""
     ph.sleep_pace(base, FOOL_BASE)
-
-

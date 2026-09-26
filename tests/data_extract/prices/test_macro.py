@@ -4,6 +4,7 @@ short-gap mean-fill, the derived spreads, the untransformed price leg, and the w
 Synthetic known-truth fixtures throughout -- this is parsing/algebra, not an economic claim,
 so real data would only make the assertions weaker.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -12,8 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants_price import (MACRO_ALL_SERIES, MACRO_FRED_SERIES,
-                                     MACRO_PRICE_SERIES, MACRO_SPREAD_SERIES)
+from src.constants.constants_price import MACRO_ALL_SERIES, MACRO_FRED_SERIES, MACRO_PRICE_SERIES, MACRO_SPREAD_SERIES
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices.fetch_macro import derive_series, fill_short_gaps, to_long
 
@@ -35,20 +35,20 @@ def test_fill_short_gaps_carries_forward_and_keeps_the_week_guard():
     """
     idx = pd.date_range("2024-01-01", "2024-01-20", freq="D")
     s = pd.Series(np.nan, index=idx)
-    s["2024-01-01"] = 10.0            # valid
+    s["2024-01-01"] = 10.0  # valid
     # 01-02, 01-03 missing -> gap span 01-01..01-04 = 3 days (< 7) -> carry 10.0 forward
-    s["2024-01-04"] = 16.0            # valid
+    s["2024-01-04"] = 16.0  # valid
     # 01-05 .. 01-14 missing -> gap span 01-04..01-15 = 11 days (>= 7) -> NOT filled
-    s["2024-01-15"] = 20.0            # valid
-    s["2024-01-16":] = np.nan         # trailing NaNs -> untouched
+    s["2024-01-15"] = 20.0  # valid
+    s["2024-01-16":] = np.nan  # trailing NaNs -> untouched
     df = pd.DataFrame({"x": s})
 
     out = fill_short_gaps(df.copy(), ["x"], max_gap_days=7)
-    assert out.loc["2024-01-02", "x"] == pytest.approx(10.0)   # the value BEFORE the gap
+    assert out.loc["2024-01-02", "x"] == pytest.approx(10.0)  # the value BEFORE the gap
     assert out.loc["2024-01-03", "x"] == pytest.approx(10.0)
     assert out.loc["2024-01-02", "x"] != pytest.approx(13.0), "the midpoint fill is back"
-    assert pd.isna(out.loc["2024-01-08", "x"])                 # long gap left NaN
-    assert pd.isna(out.loc["2024-01-18", "x"])                 # trailing NaN untouched
+    assert pd.isna(out.loc["2024-01-08", "x"])  # long gap left NaN
+    assert pd.isna(out.loc["2024-01-18", "x"])  # trailing NaN untouched
     assert out.loc["2024-01-01", "x"] == 10.0 and out.loc["2024-01-15", "x"] == 20.0
 
     # the FILLED CELL SET is identical to the old rule's -- only the value changed. Anything
@@ -61,12 +61,15 @@ def test_fill_short_gaps_carries_forward_and_keeps_the_week_guard():
     assert truncated.loc["2024-01-02", "x"] == pytest.approx(10.0)
 
     print("\n=== SANITY CHECK: short-gap forward carry ===")
-    print(f"  2-day gap between 10.0 and 16.0 -> filled {out.loc['2024-01-02', 'x']:.1f} "
-          "(the value before it), NOT the 13.0 midpoint the old rule wrote")
-    print(f"  cells filled: {sorted(d.date() for d in filled_now)} -- the same set as the mean "
-          "rule filled, so the trading calendar cannot move")
-    print("  11-day gap and trailing NaNs untouched; the same answer on a frame truncated at "
-          "the gap, so no future observation is read for the value. Validated.")
+    print(
+        f"  2-day gap between 10.0 and 16.0 -> filled {out.loc['2024-01-02', 'x']:.1f} "
+        "(the value before it), NOT the 13.0 midpoint the old rule wrote"
+    )
+    print(f"  cells filled: {sorted(d.date() for d in filled_now)} -- the same set as the mean rule filled, so the trading calendar cannot move")
+    print(
+        "  11-day gap and trailing NaNs untouched; the same answer on a frame truncated at "
+        "the gap, so no future observation is read for the value. Validated."
+    )
 
 
 def test_derived_spreads_are_exact_differences():
@@ -74,17 +77,13 @@ def test_derived_spreads_are_exact_differences():
     is built off `cash_rate` -- `yield_3m` (DGS3MO) was dropped as the second quote of the
     same 3-month bill, so nothing may still reference it."""
     idx = pd.date_range("2024-01-01", periods=5, freq="B")
-    wide = pd.DataFrame({"yield_10y": [4.0, 4.1, 4.2, 4.3, 4.4],
-                         "yield_2y": [3.5, 3.5, 3.6, 3.8, 4.5],
-                         "cash_rate": [5.0, 5.0, 5.0, 4.9, 4.8]}, index=idx)
+    wide = pd.DataFrame(
+        {"yield_10y": [4.0, 4.1, 4.2, 4.3, 4.4], "yield_2y": [3.5, 3.5, 3.6, 3.8, 4.5], "cash_rate": [5.0, 5.0, 5.0, 4.9, 4.8]}, index=idx
+    )
 
     out = derive_series(wide)
-    pd.testing.assert_series_equal(out["yield_curve_10y2y"],
-                                  wide["yield_10y"] - wide["yield_2y"],
-                                  check_names=False)
-    pd.testing.assert_series_equal(out["yield_curve_10y3m"],
-                                   wide["yield_10y"] - wide["cash_rate"],
-                                   check_names=False)
+    pd.testing.assert_series_equal(out["yield_curve_10y2y"], wide["yield_10y"] - wide["yield_2y"], check_names=False)
+    pd.testing.assert_series_equal(out["yield_curve_10y3m"], wide["yield_10y"] - wide["cash_rate"], check_names=False)
     # an inverted curve must come out NEGATIVE, not absolute -- the sign IS the signal
     assert out["yield_curve_10y3m"].iloc[0] == pytest.approx(-1.0)
     assert out["yield_curve_10y2y"].iloc[-1] == pytest.approx(-0.1)
@@ -95,7 +94,7 @@ def test_derived_spreads_are_exact_differences():
     assert "yield_3m" not in MACRO_ALL_SERIES
     assert MACRO_SPREAD_SERIES["yield_curve_10y3m"] == ("yield_10y", "cash_rate")
     print("\n=== SANITY CHECK: derived spreads ===")
-    print(f"  10y2y == yield_10y - yield_2y; 10y3m == yield_10y - cash_rate (exact).")
+    print("  10y2y == yield_10y - yield_2y; 10y3m == yield_10y - cash_rate (exact).")
     print(f"  inverted curve stays signed: 10y3m[0] = {out['yield_curve_10y3m'].iloc[0]:+.2f}")
     print("  yield_3m/DGS3MO absent from the registry (collapsed into cash_rate). Validated.")
 
@@ -105,9 +104,9 @@ def test_derive_skips_a_series_it_cannot_build():
     long table must never carry a series with no data."""
     idx = pd.date_range("2024-01-01", periods=3, freq="B")
     out = derive_series(pd.DataFrame({"yield_10y": [4.0, 4.1, 4.2]}, index=idx))
-    assert "yield_curve_10y2y" not in out.columns      # needs yield_2y
-    assert "yield_curve_10y3m" not in out.columns      # needs cash_rate
-    assert "bond_10y_tr" in out.columns                # yield_10y is present
+    assert "yield_curve_10y2y" not in out.columns  # needs yield_2y
+    assert "yield_curve_10y3m" not in out.columns  # needs cash_rate
+    assert "bond_10y_tr" in out.columns  # yield_10y is present
     print("\n=== SANITY CHECK: derive skips unbuildable series ===")
     print("  missing yield_2y/cash_rate -> spreads omitted entirely, not all-NaN. Validated.")
 
@@ -134,45 +133,44 @@ def test_price_leg_stores_closes_untransformed(monkeypatch):
     # returned series after its BASIS. The macro leg is pinned to that flag precisely so
     # `equity_tr` stays a total return -- see `_fetch_price_leg`.
     idx = pd.date_range("2024-01-02", periods=3, freq="B")
-    raw = pd.concat([pd.DataFrame({"date": idx, "ticker": sym,
-                                   "close_total": [c, c + 1.0, c + 2.0], "volume": 1.0})
-                     for sym, c in zip(MACRO_PRICE_SERIES, [100.0, 200.0, 300.0, 400.0, 500.0])],
-                    ignore_index=True)
+    raw = pd.concat(
+        [
+            pd.DataFrame({"date": idx, "ticker": sym, "close_total": [c, c + 1.0, c + 2.0], "volume": 1.0})
+            for sym, c in zip(MACRO_PRICE_SERIES, [100.0, 200.0, 300.0, 400.0, 500.0])
+        ],
+        ignore_index=True,
+    )
     monkeypatch.setattr(fm, "download_ohlcv", lambda *a, **k: raw)
 
-    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None,
-                                              warning=lambda *a, **k: None))
+    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
     wide = fm._fetch_price_leg(ctx, idx[0], idx[-1])
 
     assert set(wide.columns) == set(MACRO_PRICE_SERIES.values())
     for sym, name in MACRO_PRICE_SERIES.items():
         expected = raw.loc[raw["ticker"] == sym, "close_total"].to_numpy()
         np.testing.assert_allclose(wide[name].to_numpy(), expected)
-    assert "volume" not in wide.columns          # the "trim the volume" step
+    assert "volume" not in wide.columns  # the "trim the volume" step
     print("\n=== SANITY CHECK: price leg is untransformed ===")
-    print(f"  {len(MACRO_PRICE_SERIES)} symbols -> {sorted(wide.columns)}, closes identical to "
-          f"the yfinance response, volume dropped. Validated.")
+    print(f"  {len(MACRO_PRICE_SERIES)} symbols -> {sorted(wide.columns)}, closes identical to the yfinance response, volume dropped. Validated.")
 
 
 def test_to_long_drops_nan_and_is_one_row_per_series_date():
     """The melt is where the wide layout's NaN padding disappears: a series that starts late
     contributes NO rows before it starts, instead of a NaN block per date."""
     idx = pd.date_range("2024-01-01", periods=4, freq="B")
-    wide = pd.DataFrame({"equity_tr": [100.0, 101.0, 102.0, 103.0],
-                         "breakeven_10y": [np.nan, np.nan, 2.3, 2.4]}, index=idx)
+    wide = pd.DataFrame({"equity_tr": [100.0, 101.0, 102.0, 103.0], "breakeven_10y": [np.nan, np.nan, 2.3, 2.4]}, index=idx)
 
     long = to_long(wide)
     assert list(long.columns) == ["date", "ticker", "close"]
-    assert len(long) == 4 + 2                                    # 4 equity + 2 breakeven
+    assert len(long) == 4 + 2  # 4 equity + 2 breakeven
     assert not long["close"].isna().any()
-    assert not long.duplicated(subset=["date", "ticker"]).any()   # the (ticker, date) pk
+    assert not long.duplicated(subset=["date", "ticker"]).any()  # the (ticker, date) pk
     bk = long[long["ticker"] == "breakeven_10y"]
-    assert bk["date"].min() == idx[2]                             # ragged start, no padding
-    assert to_long(pd.DataFrame()).empty                          # empty-safe
+    assert bk["date"].min() == idx[2]  # ragged start, no padding
+    assert to_long(pd.DataFrame()).empty  # empty-safe
 
     print("\n=== SANITY CHECK: wide -> long melt ===")
-    print(f"  4 dates x 2 series with a late start -> {len(long)} rows, not 8; "
-          f"0 NaN; breakeven starts {bk['date'].min().date()}. Validated.")
+    print(f"  4 dates x 2 series with a late start -> {len(long)} rows, not 8; 0 NaN; breakeven starts {bk['date'].min().date()}. Validated.")
 
 
 if __name__ == "__main__":

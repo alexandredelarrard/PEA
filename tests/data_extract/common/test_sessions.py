@@ -9,6 +9,7 @@ The property under test is CONSERVATISM -- the answer must never be a session wh
 has not printed. Being a day early is harmless (the rolling re-pull floor revisits it); being
 a day late is the defect.
 """
+
 import pandas as pd
 import pytest
 

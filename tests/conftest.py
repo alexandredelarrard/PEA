@@ -9,6 +9,7 @@ Two flavours of fixture live here, matching the project testing conventions:
   tests see the real NaNs, delistings and late IPOs that the estimator has to
   survive (this is exactly what surfaced the sector-NaN truncation bug).
 """
+
 from __future__ import annotations
 
 import sys
@@ -75,8 +76,7 @@ def sqlite_store():
     # StaticPool + one shared connection: the default pool hands out a NEW (and therefore
     # EMPTY) in-memory database per checkout, so a table written by `save` would vanish
     # before the next `load` -- the failure mode looks like a broken store, not a fixture bug.
-    engine = create_engine("sqlite://", poolclass=StaticPool,
-                           connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     store = DataStore(engine)
     yield store
     engine.dispose()
@@ -99,15 +99,13 @@ class FakeStore:
     """
 
     def __init__(self, tables: dict | None = None):
-        self.t: dict[str, pd.DataFrame] = {name_of(k): v.copy()
-                                           for k, v in (tables or {}).items()}
-        self.writes: list[tuple[str, str, pd.DataFrame]] = []   # (op, table, df) in call order
+        self.t: dict[str, pd.DataFrame] = {name_of(k): v.copy() for k, v in (tables or {}).items()}
+        self.writes: list[tuple[str, str, pd.DataFrame]] = []  # (op, table, df) in call order
 
     @staticmethod
     def _filter(df, where):
         for col, val in (where or {}).items():
-            df = (df[df[col].isin(list(val))]
-                  if isinstance(val, (list, tuple, set, frozenset)) else df[df[col] == val])
+            df = df[df[col].isin(list(val))] if isinstance(val, (list, tuple, set, frozenset)) else df[df[col] == val]
         return df
 
     # -- introspection -- #
@@ -168,8 +166,7 @@ class FakeStore:
         both = pd.concat([self.t.get(name), df], ignore_index=True)
         pk = list(pk or resolve(table).pk)
         keys = [c for c in pk if c in both.columns] or None
-        self.t[name] = (both.drop_duplicates(subset=keys, keep="last") if keys else both
-                        ).reset_index(drop=True)
+        self.t[name] = (both.drop_duplicates(subset=keys, keep="last") if keys else both).reset_index(drop=True)
         return len(df)
 
     def replace(self, table, df, chunksize=200_000):
@@ -203,8 +200,7 @@ class FakeStore:
     def saved_frames(self, table=None) -> list[pd.DataFrame]:
         """The frames passed to `save`, in call order (optionally for one table only)."""
         want = None if table is None else name_of(table)
-        return [df for op, name, df in self.writes
-                if op == "save" and (want is None or name == want)]
+        return [df for op, name, df in self.writes if op == "save" and (want is None or name == want)]
 
 
 def _store():
@@ -219,9 +215,10 @@ def _store():
     try:
         with engine.connect():
             pass
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable: {type(exc).__name__}")
     return DataStore(engine)
+
 
 SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
 # The market / commodity / FX series are NOT in `prices` any more -- they are series in
@@ -247,16 +244,15 @@ def real_frames():
     FX series. It used to be one read plus three `drop(columns=...)` calls, because those
     series were mixed into `prices`.
     """
-    from src.data_aggregate.utils.common import data_utils as du
     from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+    from src.data_aggregate.utils.common import data_utils as du
     from src.utils.macro import load_macro_wide
 
     store = _store()
     all_tickers = sorted(store.distinct("prices", "ticker"))
     if not all_tickers:
         pytest.skip("prices table is empty")
-    subset = (["AMD"] if "AMD" in all_tickers else []) + \
-             [c for c in all_tickers if c != "AMD"][:SUBSET_SIZE]
+    subset = (["AMD"] if "AMD" in all_tickers else []) + [c for c in all_tickers if c != "AMD"][:SUBSET_SIZE]
 
     macro = load_macro_wide(store)
     if macro is None or MACRO_MARKET_SERIES not in macro.columns:
@@ -281,8 +277,8 @@ def real_frames():
     mkt_level = mkt_level.reindex(mkt_level.index.union(close.index)).ffill()
     return {
         "mkt_ret": mkt_level.pct_change(fill_method=None).reindex(close.index),
-        "stock_close": close[keep],                 # close_split -- the LEVEL basis
-        "stock_close_total": close_total[keep],     # the RETURN basis
+        "stock_close": close[keep],  # close_split -- the LEVEL basis
+        "stock_close_total": close_total[keep],  # the RETURN basis
         "stock_ret": returns[keep],
         # the macro/market series the commodity + currency factors read, wide by series name
         "macro_wide": macro,
@@ -294,18 +290,18 @@ def real_frames():
 def real_pipeline(real_frames):
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.data_aggregate.utils.target.betas import estimate_all_betas
-    from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_aggregate.utils.common.gics import load_gics_maps
+    from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
+        assemble_factor_panel,
         build_characteristics,
         characteristic_to_factor_return,
         macro_change_factors,
-        assemble_factor_panel,
     )
+    from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_peers.utils.sector_peers import build_peer_dict
 
-    stock_close = real_frames["stock_close"]              # close_split -- LEVELS
+    stock_close = real_frames["stock_close"]  # close_split -- LEVELS
     stock_close_total = real_frames["stock_close_total"]  # close_total -- RETURNS
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
@@ -323,8 +319,7 @@ def real_pipeline(real_frames):
     sector_groups = load_gics_maps(context)
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
-    chars = build_characteristics(stock_close_total, stock_ret, fundamentals,
-                                  resvol_window=63, stock_close_split=stock_close)
+    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, stock_close_split=stock_close)
     style_cols = {}
     for name, char in chars.items():
         char.name = name
@@ -337,17 +332,19 @@ def real_pipeline(real_frames):
         s = s.reindex(s.index.union(stock_close.index)).ffill()
         return s.pct_change(fill_method=None).reindex(stock_close.index)
 
-    asset = pd.DataFrame({col: _factor_ret(series) for col, series in factor_series.items()
-                          if series in macro.columns}, index=stock_close.index)
+    asset = pd.DataFrame({col: _factor_ret(series) for col, series in factor_series.items() if series in macro.columns}, index=stock_close.index)
     fx_cols = [c for c in asset.columns if factor_series[c].startswith("fx_")]
     commodity_returns = asset.drop(columns=fx_cols)
     currency_returns = asset[fx_cols]
-    factor_panel, macro_cols = assemble_factor_panel(
-        mkt_ret, style, commodity_returns, currency_returns, macro_chg)
+    factor_panel, macro_cols = assemble_factor_panel(mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 
     betas = estimate_all_betas(
-        stock_ret, factor_panel,
-        window=63, min_obs=40, ridge_alpha=0.08, step=1,
+        stock_ret,
+        factor_panel,
+        window=63,
+        min_obs=40,
+        ridge_alpha=0.08,
+        step=1,
     )
 
     horizons = (5, 20, 60)
@@ -355,9 +352,15 @@ def real_pipeline(real_frames):
     # deleted); unwrap {h: {"rank": df}} -> {h: df} so the fixture's shape is unchanged
     # and its five consumer tests need no edits.
     _multi = build_targets_multi(
-        stock_close_total, betas, factor_panel, macro_cols,
-        horizons=horizons, labels=("rank",), min_names=20,
-        sector_groups=sector_groups, stock_ret=stock_ret,
+        stock_close_total,
+        betas,
+        factor_panel,
+        macro_cols,
+        horizons=horizons,
+        labels=("rank",),
+        min_names=20,
+        sector_groups=sector_groups,
+        stock_ret=stock_ret,
     )
     labels_rank = {h: by_label["rank"] for h, by_label in _multi.items()}
 
@@ -386,16 +389,17 @@ def fundamental_panel(real_frames):
     # 495-ticker history against a 101-ticker close frame built a ~1.9M-row x 200-feature
     # panel (with rolling(1260) windows) for tickers the test never looks at.
     tickers = sorted(stock_close.columns)
-    fundamentals = _store().load("fundamentals_history",
-                                 where={"ticker": tickers}, optional=True)
+    fundamentals = _store().load("fundamentals_history", where={"ticker": tickers}, optional=True)
     if fundamentals is None:
         pytest.skip("fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
-        fundamentals, peers, stock_close.index, stock_close=stock_close,
+        fundamentals,
+        peers,
+        stock_close.index,
+        stock_close=stock_close,
     )
-    return {"panel": panel, "fundamentals": fundamentals,
-            "peers": peers, "stock_close": stock_close}
+    return {"panel": panel, "fundamentals": fundamentals, "peers": peers, "stock_close": stock_close}
 
 
 # --------------------------------------------------------------------------- #
@@ -432,8 +436,7 @@ def synthetic_factor_model():
 # --------------------------------------------------------------------------- #
 # PriceFrames for the seven cube builders                                      #
 # --------------------------------------------------------------------------- #
-def make_frames(trading_index, peers: dict | None = None,
-                universe=None, **fields):
+def make_frames(trading_index, peers: dict | None = None, universe=None, **fields):
     """A `PriceFrames` for a builder test, carrying only the wide frames the scenario needs.
 
     Since the builders take one `PriceFrames` rather than four-to-six unpacked fields, every
@@ -461,8 +464,6 @@ def make_frames(trading_index, peers: dict | None = None,
         idx = idx.rename("date")
     peers = peers if peers is not None else {}
     if universe is None:
-        wide = next((f for f in fields.values()
-                     if isinstance(f, pd.DataFrame) and not f.empty), None)
+        wide = next((f for f in fields.values() if isinstance(f, pd.DataFrame) and not f.empty), None)
         universe = list(wide.columns) if wide is not None else list(peers)
-    return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe),
-                       peers=peers, **fields)
+    return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe), peers=peers, **fields)

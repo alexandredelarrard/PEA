@@ -258,7 +258,7 @@ def _insider_price_legs(
             factor = future_split_factor(splits, e["ticker"], e["date"])
             n = int((np.abs(factor - 1.0) > 1e-9).sum())
             logger.info(
-                "insider cost anchor: %s of %s purchases restated onto today's split " "basis (V5 trigger count); max factor %.1fx",
+                "insider cost anchor: %s of %s purchases restated onto today's split basis (V5 trigger count); max factor %.1fx",
                 n,
                 len(e),
                 float(np.max(factor)) if len(factor) else 1.0,

@@ -4,19 +4,20 @@ since the most recent PAST earnings report (0 on report day, rising to 90+, rese
 at the next report). Must be leak-free (uses only past reports), reset each quarter,
 NaN before the first report, and clipped for late/gap reporters.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.earnings_features import (
-    build_earnings_feature_panel, days_since_earnings,
+    build_earnings_feature_panel,
+    days_since_earnings,
 )
 
 
 def _earnings():
-    rows = [("A", "2020-01-15"), ("A", "2020-04-15"), ("A", "2020-07-15"),
-            ("B", "2020-01-15")]                       # B never reports again -> clip test
+    rows = [("A", "2020-01-15"), ("A", "2020-04-15"), ("A", "2020-07-15"), ("B", "2020-01-15")]  # B never reports again -> clip test
     return pd.DataFrame(rows, columns=["ticker", "earnings_date"])
 
 
@@ -38,8 +39,10 @@ def test_days_since_earnings_ramp_reset_clip():
     assert ds.loc[pd.Timestamp("2020-09-01"), "B"] == 180
 
     print("\n=== SANITY CHECK: days_since_earnings ===")
-    print("  0 on the report day, +5 after 5 calendar days, 90 just before the next report, "
-          "resets to 0 at each report, NaN before the first, clipped to 180. Leak-free. Validated.")
+    print(
+        "  0 on the report day, +5 after 5 calendar days, 90 just before the next report, "
+        "resets to 0 at each report, NaN before the first, clipped to 180. Leak-free. Validated."
+    )
 
 
 def test_panel_emits_raw_feature_leakfree():
@@ -56,8 +59,7 @@ def test_panel_emits_raw_feature_leakfree():
     # no row before A's first report carries the feature (leak-free)
     assert a["date"].min() >= pd.Timestamp("2020-01-15")
     print("\n=== SANITY CHECK: f_days_since_earnings in cube panel ===")
-    print("  emitted as a RAW (non-peer) f_days_since_earnings column; first non-null on the "
-          "first report date (no pre-report leakage). Validated.")
+    print("  emitted as a RAW (non-peer) f_days_since_earnings column; first non-null on the first report date (no pre-report leakage). Validated.")
 
 
 if __name__ == "__main__":

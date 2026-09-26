@@ -150,7 +150,7 @@ def test_an_undeclared_concept_is_unaffected_because_silence_is_not_evidence():
     assert resolution.method == TAG_PRIMARY
     assert resolution.concept == "us-gaap:LongTermDebtNoncurrent"
     print("\n=== SANITY CHECK: undeclared concept unaffected ===")
-    print(f"  LongTermDebtNoncurrent declared on: " f"{sorted(graph.roles_of('LongTermDebtNoncurrent')) or 'nothing'}")
+    print(f"  LongTermDebtNoncurrent declared on: {sorted(graph.roles_of('LongTermDebtNoncurrent')) or 'nothing'}")
     print(f"  resolved to: {resolution.concept} via {resolution.method}")
     print("  OK: silence is not evidence -- the guard fires on positive note-hood only.")
 

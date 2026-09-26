@@ -170,7 +170,7 @@ def test_asc270_schedule_keeps_all_four_quarters():
 
     assert after == before, "four siblings is a series, not a sentence"
     assert _quarter_ends(after) == {"2010-03-31", "2010-06-30", "2010-09-30", "2010-12-31"}
-    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, " f"Q4 revenue still $16,550M")
+    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, Q4 revenue still $16,550M")
 
 
 def test_a_10q_keeps_its_lone_quarter():

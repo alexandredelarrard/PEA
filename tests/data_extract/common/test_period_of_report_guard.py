@@ -8,6 +8,7 @@ This is a regression test for the defect the register EXPOSED rather than caused
 filing aborted a 16-ticker run after BKR (237 recovered predecessor filings) and VTRS (292)
 had already resolved.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -28,7 +29,7 @@ class _Raising:
 
     @property
     def period_of_report(self):
-        _, _, period = None                             # what attachments.py:1170 really does
+        _, _, period = None  # what attachments.py:1170 really does
         return period
 
 
@@ -59,4 +60,4 @@ def test_the_guard_returns_none_instead():
 def test_the_guard_is_transparent_when_the_property_works():
     good = SimpleNamespace(period_of_report="2024-12-31")
     assert period_of_report(good) == "2024-12-31"
-    assert period_of_report(SimpleNamespace()) is None       # absent attribute, not an error
+    assert period_of_report(SimpleNamespace()) is None  # absent attribute, not an error

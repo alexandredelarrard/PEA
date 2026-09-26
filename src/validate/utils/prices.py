@@ -16,19 +16,25 @@ same two tables through the same function so the validator can run against a dat
 cube has not been rebuilt yet, and so a validator run can never be the thing that changes a
 number it is about to judge.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+import logging
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import pandas as pd
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
-import logging
-
 from src.data_aggregate.utils.common.level_basis import (
-    apply_level_bugfix, apply_return_seams, apply_split_vintage, genuine_splits, level_factor,
-    load_bugfix)
+    apply_level_bugfix,
+    apply_return_seams,
+    apply_split_vintage,
+    genuine_splits,
+    level_factor,
+    load_bugfix,
+)
 from src.data_store.schema import Tables
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
@@ -93,6 +99,7 @@ class InvariantResult:
     unit for every invariant -- ticker-days -- so `share` and `worst_share()` remain
     comparable across the four.
     """
+
     name: str
     rows: int = 0
     failed: int = 0
@@ -121,7 +128,7 @@ class InvariantResult:
         if self.clustered_by == "date":
             line += f"; {len(self.detail)} short day(s) across {self.tickers} tickers"
         else:
-            line += (f"; {len(self.failing_tickers)} of {self.tickers} tickers affected")
+            line += f"; {len(self.failing_tickers)} of {self.tickers} tickers affected"
         if self.raw_share is not None:
             line += f" [without S(d): {1 - self.raw_share:.2%}]"
         return line
@@ -141,8 +148,7 @@ def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # loading                                                                     #
 # --------------------------------------------------------------------------- #
-def load_panel(context: Context, tickers: list[str] | None = None,
-               since: str | pd.Timestamp | None = None) -> pd.DataFrame:
+def load_panel(context: Context, tickers: list[str] | None = None, since: str | pd.Timestamp | None = None) -> pd.DataFrame:
     """One row per (ticker, filing date): both vendors' prices and both share counts.
 
     An AS-OF join, not an equality join: a filing date is frequently a weekend or a holiday,
@@ -150,33 +156,36 @@ def load_panel(context: Context, tickers: list[str] | None = None,
     which is exactly what `pit.daily_market_cap` computes after its forward-fill."""
     where = {"ticker": tickers} if tickers else None
 
-    prices = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"],
-                                where=where)
+    prices = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
     prices = _as_ns(prices, "date").dropna(subset=["close_split"])
 
     vendor = context.store.load(
         Tables.sharadar_fundamentals,
         columns=["ticker", "date", "dimension", "price", "sharesbas", "marketcap"],
-        where={**(where or {}), "dimension": "ARQ"}, since=since)
+        where={**(where or {}), "dimension": "ARQ"},
+        since=since,
+    )
     vendor = _as_ns(vendor, "date")
 
     prices = _repair_registered(context, prices, vendor)
 
-    merged = context.store.load(Tables.fundamentals_history,
-                                columns=["ticker", "as_of", "sharesOutstanding"], where=where)
+    merged = context.store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding"], where=where)
     merged = _as_ns(merged, "as_of")
 
-    panel = vendor.merge(merged, left_on=["ticker", "date"], right_on=["ticker", "as_of"],
-                         how="left")
-    panel = pd.merge_asof(panel.sort_values("date"), prices.sort_values("date"),
-                          on="date", by="ticker", direction="backward",
-                          tolerance=pd.Timedelta(days=ASOF_TOLERANCE_DAYS))
+    panel = vendor.merge(merged, left_on=["ticker", "date"], right_on=["ticker", "as_of"], how="left")
+    panel = pd.merge_asof(
+        panel.sort_values("date"),
+        prices.sort_values("date"),
+        on="date",
+        by="ticker",
+        direction="backward",
+        tolerance=pd.Timedelta(days=ASOF_TOLERANCE_DAYS),
+    )
     panel["level_factor"] = _level_factor_for(context, panel, where)
     return panel
 
 
-def _repair_registered(context: Context, prices: pd.DataFrame,
-                       vendor: pd.DataFrame) -> pd.DataFrame:
+def _repair_registered(context: Context, prices: pd.DataFrame, vendor: pd.DataFrame) -> pd.DataFrame:
     """Apply the two RETURN-MOVING entries of `configs/prices/yf_price_bugfix.json`.
 
     ⚠ THIS DOES NOT COMPROMISE THE INDEPENDENCE ABOVE. The register is a SOURCE -- a curated
@@ -198,18 +207,15 @@ def _repair_registered(context: Context, prices: pd.DataFrame,
         return prices
 
     slice_ = prices[prices["ticker"].isin(named)]
-    wide = {"close_split": slice_.pivot(index="date", columns="ticker",
-                                        values="close_split").sort_index()}
+    wide = {"close_split": slice_.pivot(index="date", columns="ticker", values="close_split").sort_index()}
     apply_split_vintage(wide, blob, vendor[["ticker", "date", "price"]], logger.info)
     apply_return_seams(wide, blob, logger.info)
 
-    repaired = (wide["close_split"].stack(future_stack=True).rename("close_split")
-                .reset_index().dropna(subset=["close_split"]))
+    repaired = wide["close_split"].stack(future_stack=True).rename("close_split").reset_index().dropna(subset=["close_split"])
     return pd.concat([prices[~prices["ticker"].isin(named)], repaired], ignore_index=True)
 
 
-def _level_factor_for(context: Context, panel: pd.DataFrame,
-                      where: dict | None) -> pd.Series:
+def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None) -> pd.Series:
     """`S(d)` for each panel row, computed IN MEMORY. Writes nothing, ever (D6).
 
     Deliberately NOT read from `cube_part_prices.level_factor`, even though that column
@@ -224,13 +230,13 @@ def _level_factor_for(context: Context, panel: pd.DataFrame,
     Wide-then-lookup rather than a per-row loop: `level_factor` is vectorised over a
     (date x ticker) grid, and the panel is ~52k rows over ~500 tickers.
     """
-    yf_splits = context.store.load(Tables.prices_splits,
-                                   columns=["ticker", "date", "ratio"],
-                                   where=where, optional=True)
+    yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where=where, optional=True)
     actions = context.store.load(
-        Tables.sharadar_actions, columns=["ticker", "date", "action", "value"],
+        Tables.sharadar_actions,
+        columns=["ticker", "date", "action", "value"],
         where={**(where or {}), "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]},
-        optional=True)
+        optional=True,
+    )
 
     tickers = sorted(panel["ticker"].astype(str).unique())
     idx = pd.DatetimeIndex(sorted(panel["date"].dropna().unique()), name="date")
@@ -243,9 +249,9 @@ def _level_factor_for(context: Context, panel: pd.DataFrame,
     # invariant scores against. It is 8 tickers and it is stated in every one of their
     # register entries; the alternative is scoring a basis the cube does not use.
     close_wide = panel.pivot_table(index="date", columns="ticker", values="close_split")
-    wide = apply_level_bugfix(wide, load_bugfix(context.config_dir),
-                              panel[["ticker", "date", "price"]],
-                              close_wide.reindex(index=idx, columns=tickers), logger.info)
+    wide = apply_level_bugfix(
+        wide, load_bugfix(context.config_dir), panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers), logger.info
+    )
 
     flat = wide.stack(future_stack=True).rename("level_factor")
     flat.index = flat.index.set_names(["date", "ticker"])
@@ -293,10 +299,13 @@ def invariant_market_cap(panel: pd.DataFrame) -> InvariantResult:
     frame["ratio"] = base * frame["level_factor"].fillna(1.0)
     bad = (frame["ratio"] - 1).abs() > MCAP_TOLERANCE
     return InvariantResult(
-        name="market_cap_identity", rows=int(len(frame)), failed=int(bad.sum()),
+        name="market_cap_identity",
+        rows=int(len(frame)),
+        failed=int(bad.sum()),
         tickers=int(frame["ticker"].nunique()),
         failing_tickers=_cluster(frame, bad, "ratio"),
-        raw_failed=int(((base - 1).abs() > MCAP_TOLERANCE).sum()))
+        raw_failed=int(((base - 1).abs() > MCAP_TOLERANCE).sum()),
+    )
 
 
 def invariant_price_vintage(panel: pd.DataFrame) -> InvariantResult:
@@ -318,10 +327,13 @@ def invariant_price_vintage(panel: pd.DataFrame) -> InvariantResult:
     frame["ratio"] = base * frame["level_factor"].fillna(1.0)
     bad = (frame["ratio"] - 1).abs() > PRICE_TOLERANCE
     return InvariantResult(
-        name="price_vintage", rows=int(len(frame)), failed=int(bad.sum()),
+        name="price_vintage",
+        rows=int(len(frame)),
+        failed=int(bad.sum()),
         tickers=int(frame["ticker"].nunique()),
         failing_tickers=_cluster(frame, bad, "ratio"),
-        raw_failed=int(((base - 1).abs() > PRICE_TOLERANCE).sum()))
+        raw_failed=int(((base - 1).abs() > PRICE_TOLERANCE).sum()),
+    )
 
 
 def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -> InvariantResult:
@@ -331,18 +343,15 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
     not "did the price move a lot" but "did it move a lot, come back, and is there no event
     on the books". Reads the full price history, so it is the expensive one."""
     where = {"ticker": tickers} if tickers else None
-    px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"],
-                            where=where)
+    px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
     px = _as_ns(px, "date").sort_values(["ticker", "date"])
     px["ret"] = px.groupby("ticker")["close_split"].pct_change(fill_method=None)
     pre_jump = px.groupby("ticker")["close_split"].shift(1)
-    ahead = [(px.groupby("ticker")["close_split"].shift(-i) / pre_jump - 1).abs()
-             for i in range(1, SPIKE_REVERT_BARS + 1)]
+    ahead = [(px.groupby("ticker")["close_split"].shift(-i) / pre_jump - 1).abs() for i in range(1, SPIKE_REVERT_BARS + 1)]
     px["revert_gap"] = pd.concat(ahead, axis=1).min(axis=1)
     hit = px[(px["ret"].abs() > SPIKE_THRESHOLD) & (px["revert_gap"] < SPIKE_REVERT_BAND)]
 
-    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"],
-                                where=where, optional=True)
+    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"], where=where, optional=True)
     known: set[tuple[str, pd.Timestamp]] = set()
     if splits is not None and not splits.empty:
         splits = _as_ns(splits, "date")
@@ -353,10 +362,13 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
     detail, failing = [], {}
     for row in hit.sort_values(["date", "ticker"]).itertuples():
         corroborated = (str(row.ticker), row.date) in known
-        record = {"ticker": str(row.ticker), "date": row.date.strftime("%Y-%m-%d"),
-                  "ret": round(float(row.ret), 4),
-                  "revert_gap": round(float(row.revert_gap), 4),
-                  "corroborated_by_split": corroborated}
+        record = {
+            "ticker": str(row.ticker),
+            "date": row.date.strftime("%Y-%m-%d"),
+            "ret": round(float(row.ret), 4),
+            "revert_gap": round(float(row.revert_gap), 4),
+            "corroborated_by_split": corroborated,
+        }
         detail.append(record)
         if not corroborated:
             failing.setdefault(str(row.ticker), {"rows": 0, "dates": []})
@@ -364,13 +376,16 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
             failing[str(row.ticker)]["dates"].append(record["date"])
 
     return InvariantResult(
-        name="spike_and_revert", rows=int(len(px)),
+        name="spike_and_revert",
+        rows=int(len(px)),
         failed=sum(v["rows"] for v in failing.values()),
-        tickers=int(px["ticker"].nunique()), failing_tickers=failing, detail=detail)
+        tickers=int(px["ticker"].nunique()),
+        failing_tickers=failing,
+        detail=detail,
+    )
 
 
-def invariant_day_coverage(context: Context,
-                           tickers: list[str] | None = None) -> InvariantResult:
+def invariant_day_coverage(context: Context, tickers: list[str] | None = None) -> InvariantResult:
     """INVARIANT 4 -- every trading day in the table's span carries the whole universe.
 
     The defect this exists for: `prices` held 45 of 491 tickers on 2026-08-28, with 491 on
@@ -393,8 +408,7 @@ def invariant_day_coverage(context: Context,
     where = {"ticker": tickers} if tickers else None
     per_day: dict[pd.Timestamp, int] = {}
     seen: set[str] = set()
-    for chunk in context.store.iter_load(Tables.prices, columns=["ticker", "date"],
-                                         where=where, chunksize=500_000):
+    for chunk in context.store.iter_load(Tables.prices, columns=["ticker", "date"], where=where, chunksize=500_000):
         seen.update(chunk["ticker"].astype(str))
         counts = pd.to_datetime(chunk["date"]).dt.normalize().value_counts()
         for day, n in counts.items():
@@ -406,21 +420,22 @@ def invariant_day_coverage(context: Context,
     coverage = pd.Series(per_day).sort_index()
     # shift(1): the reference is the population strictly BEFORE this date, so a collapse can
     # never dilute the median it is being judged against.
-    ref = (coverage.shift(1).rolling(DAY_COVERAGE_WINDOW, min_periods=5).median()
-           .bfill())
+    ref = coverage.shift(1).rolling(DAY_COVERAGE_WINDOW, min_periods=5).median().bfill()
     short = coverage[coverage < DAY_COVERAGE_FLOOR * ref]
 
-    detail = [{"date": str(day.date()), "tickers": int(n),
-               "expected": int(ref[day]), "missing": int(ref[day] - n),
-               "share_present": round(float(n) / float(ref[day]), 4)}
-              for day, n in short.items()]
+    detail = [
+        {
+            "date": str(day.date()),
+            "tickers": int(n),
+            "expected": int(ref[day]),
+            "missing": int(ref[day] - n),
+            "share_present": round(float(n) / float(ref[day]), 4),
+        }
+        for day, n in short.items()
+    ]
     return InvariantResult(
-        name="day_coverage",
-        rows=int(ref.sum()),
-        failed=int(sum(d["missing"] for d in detail)),
-        tickers=len(seen),
-        detail=detail,
-        clustered_by="date")
+        name="day_coverage", rows=int(ref.sum()), failed=int(sum(d["missing"] for d in detail)), tickers=len(seen), detail=detail, clustered_by="date"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -429,6 +444,7 @@ def invariant_day_coverage(context: Context,
 @dataclass
 class PricesReport:
     """All three invariants, plus the one number a gate can read."""
+
     invariants: list[InvariantResult]
 
     def worst_share(self) -> float:
@@ -436,14 +452,18 @@ class PricesReport:
         return max((r.share for r in self.invariants), default=0.0)
 
     def to_markdown(self) -> str:
-        lines = ["# Prices adjustment-basis validation", "",
-                 "Read-only. Invariants 1 and 2 apply `S(d)`, the spinoff LEVEL factor, to "
-                 "the price leg IN MEMORY -- nothing is written. Each is reported twice: the "
-                 "corrected rate, and in brackets what it scored WITHOUT `S`, so the size of "
-                 "the spinoff wedge stays visible rather than being absorbed into a "
-                 "headline.", "",
-                 "A surviving finding names a vendor DISAGREEMENT to settle, not a value to "
-                 "overwrite.", ""]
+        lines = [
+            "# Prices adjustment-basis validation",
+            "",
+            "Read-only. Invariants 1 and 2 apply `S(d)`, the spinoff LEVEL factor, to "
+            "the price leg IN MEMORY -- nothing is written. Each is reported twice: the "
+            "corrected rate, and in brackets what it scored WITHOUT `S`, so the size of "
+            "the spinoff wedge stays visible rather than being absorbed into a "
+            "headline.",
+            "",
+            "A surviving finding names a vendor DISAGREEMENT to settle, not a value to overwrite.",
+            "",
+        ]
         for res in self.invariants:
             lines += [f"## {res.name}", "", res.summary(), ""]
 
@@ -454,14 +474,13 @@ class PricesReport:
                 if not res.detail:
                     lines += ["No failures — every trading day carries the full universe.", ""]
                     continue
-                lines += ["| date | tickers | expected | missing | present |",
-                          "|---|---|---|---|---|"]
-                lines += [f"| {d['date']} | {d['tickers']} | {d['expected']} | "
-                          f"{d['missing']} | {d['share_present']:.1%} |"
-                          for d in res.detail[:DAY_COVERAGE_MAX_LISTED]]
+                lines += ["| date | tickers | expected | missing | present |", "|---|---|---|---|---|"]
+                lines += [
+                    f"| {d['date']} | {d['tickers']} | {d['expected']} | {d['missing']} | {d['share_present']:.1%} |"
+                    for d in res.detail[:DAY_COVERAGE_MAX_LISTED]
+                ]
                 if len(res.detail) > DAY_COVERAGE_MAX_LISTED:
-                    lines.append(f"| ... | +{len(res.detail) - DAY_COVERAGE_MAX_LISTED} more "
-                                 f"short day(s) | | | |")
+                    lines.append(f"| ... | +{len(res.detail) - DAY_COVERAGE_MAX_LISTED} more short day(s) | | | |")
                 lines.append("")
                 continue
 
@@ -470,15 +489,14 @@ class PricesReport:
                 continue
             first = next(iter(res.failing_tickers.values()))
             if "median_ratio" in first:
-                lines += ["| ticker | rows | median | min | max | from | to |",
-                          "|---|---|---|---|---|---|---|"]
-                lines += [f"| {t} | {v['rows']} | {v['median_ratio']} | {v['min_ratio']} "
-                          f"| {v['max_ratio']} | {v['first_date']} | {v['last_date']} |"
-                          for t, v in list(res.failing_tickers.items())[:40]]
+                lines += ["| ticker | rows | median | min | max | from | to |", "|---|---|---|---|---|---|---|"]
+                lines += [
+                    f"| {t} | {v['rows']} | {v['median_ratio']} | {v['min_ratio']} | {v['max_ratio']} | {v['first_date']} | {v['last_date']} |"
+                    for t, v in list(res.failing_tickers.items())[:40]
+                ]
             else:
                 lines += ["| ticker | jumps | dates |", "|---|---|---|"]
-                lines += [f"| {t} | {v['rows']} | {', '.join(v['dates'][:6])} |"
-                          for t, v in res.failing_tickers.items()]
+                lines += [f"| {t} | {v['rows']} | {', '.join(v['dates'][:6])} |" for t, v in res.failing_tickers.items()]
             lines.append("")
         return "\n".join(lines)
 
@@ -506,7 +524,7 @@ SPIKE_BLOCK_SHARE = 1e-4
 MCAP_BLOCK_SHARE = None
 
 
-def gate(report: "PricesReport") -> tuple[bool, str]:
+def gate(report: PricesReport) -> tuple[bool, str]:
     """`(ok, reason)` for the pre-cube-build gate.
 
     Only invariant 3 blocks. It is the one whose failures are unambiguous -- an unexplained
@@ -523,17 +541,17 @@ def gate(report: "PricesReport") -> tuple[bool, str]:
             f"{len(spike.failing_tickers)} ticker(s): "
             f"{', '.join(sorted(spike.failing_tickers)[:8])}. A >50% jump that comes back "
             f"with no corroborating row in `prices_splits` is two adjustment vintages inside "
-            f"one ticker -- re-pull those tickers with `price-history --full` before building.")
+            f"one ticker -- re-pull those tickers with `price-history --full` before building."
+        )
     return True, f"{spike.failed} unexplained spike(s), within the {SPIKE_BLOCK_SHARE:.0e} budget"
 
 
-def run_prices_validation(context: Context, tickers: list[str] | None = None,
-                          since: str | pd.Timestamp | None = None,
-                          skip_spike: bool = False) -> PricesReport:
+def run_prices_validation(
+    context: Context, tickers: list[str] | None = None, since: str | pd.Timestamp | None = None, skip_spike: bool = False
+) -> PricesReport:
     """Run all four invariants and return the report. Writes nothing."""
     panel = load_panel(context, tickers=tickers, since=since)
-    results = [invariant_market_cap(panel), invariant_price_vintage(panel),
-               invariant_day_coverage(context, tickers=tickers)]
+    results = [invariant_market_cap(panel), invariant_price_vintage(panel), invariant_day_coverage(context, tickers=tickers)]
     if not skip_spike:
         results.append(invariant_spike_revert(context, tickers=tickers))
     return PricesReport(invariants=results)

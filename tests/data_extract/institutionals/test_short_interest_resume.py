@@ -141,7 +141,7 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
     # A 5-business-day window is non-empty on every day of the week, and serving the day-file
     # only ONCE keeps the assertion on "one new row" exact regardless of how many days the
     # range holds.
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: (pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5)))
+    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5))
     served: list[pd.Timestamp] = []
 
     def _one_day(day, session=None):

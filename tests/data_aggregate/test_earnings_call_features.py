@@ -8,14 +8,14 @@ Validates the pure feature layer on synthetic cache rows (no model/GPU):
   * POINT-IN-TIME / leak-free alignment: a call on date d only affects features on
     d+1 onward (transcript-publication lag), forward-filled until the next call.
 """
+
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
 import pandas as pd
-
-import logging
 
 from src.data_aggregate.utils.text.earnings_call_features import (
     _per_call_kpis,
@@ -27,27 +27,35 @@ _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"
 
 
 def _row(tkr, q, tag, pos, neg, words, unc):
-    return {"ticker": tkr, "quarter": q, "tag": tag, "as_of": _QDATE[q],
-            "sent_pos": pos, "sent_neg": neg, "sent_neu": round(1 - pos - neg, 6),
-            "n_words": words, "uncertainty_ratio": unc}
+    return {
+        "ticker": tkr,
+        "quarter": q,
+        "tag": tag,
+        "as_of": _QDATE[q],
+        "sent_pos": pos,
+        "sent_neg": neg,
+        "sent_neu": round(1 - pos - neg, 6),
+        "n_words": words,
+        "uncertainty_ratio": unc,
+    }
 
 
 def _sentiment_frame() -> pd.DataFrame:
     rows = [
         # ticker A — the arithmetic-checked name
         _row("A", "2023Q1", "prepared_remarks", 0.60, 0.10, 1000, 0.02),
-        _row("A", "2023Q1", "qa",               0.40, 0.10, 500,  0.05),
+        _row("A", "2023Q1", "qa", 0.40, 0.10, 500, 0.05),
         _row("A", "2023Q2", "prepared_remarks", 0.70, 0.05, 1200, 0.01),
-        _row("A", "2023Q2", "qa",               0.50, 0.10, 600,  0.04),
+        _row("A", "2023Q2", "qa", 0.50, 0.10, 600, 0.04),
         _row("A", "2023Q3", "prepared_remarks", 0.55, 0.15, 1100, 0.03),
-        _row("A", "2023Q3", "qa",               0.45, 0.20, 550,  0.06),
+        _row("A", "2023Q3", "qa", 0.45, 0.20, 550, 0.06),
     ]
     # B..E: distinct tone/uncertainty so the cross-section & peer basket are non-degenerate
     for i, tkr in enumerate(["B", "C", "D", "E"], start=1):
         for q in _QDATE:
             base = 0.30 + 0.1 * i
             rows.append(_row(tkr, q, "prepared_remarks", min(0.9, base), 0.10, 900 + 50 * i, 0.02 + 0.005 * i))
-            rows.append(_row(tkr, q, "qa",               min(0.9, base - 0.05), 0.12, 450 + 20 * i, 0.03 + 0.005 * i))
+            rows.append(_row(tkr, q, "qa", min(0.9, base - 0.05), 0.12, 450 + 20 * i, 0.03 + 0.005 * i))
     return pd.DataFrame(rows)
 
 
@@ -61,8 +69,7 @@ def _sections_frame() -> pd.DataFrame:
     }
     rows = []
     for (tkr, q), t in txt.items():
-        rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q],
-                     "tag": "prepared_remarks", "text": t})
+        rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "prepared_remarks", "text": t})
     return pd.DataFrame(rows)
 
 
@@ -80,7 +87,7 @@ def test_per_call_kpi_arithmetic():
     tone_q1 = (0.5 * 1000 + 0.3 * 500) / 1500
     tone_q2 = (0.65 * 1200 + 0.40 * 600) / 1800
     assert abs(a.loc["2023Q2", "ec_tone_delta"] - (tone_q2 - tone_q1)) < 1e-9
-    assert math.isnan(a.loc["2023Q1", "ec_tone_delta"])          # first call -> no prior
+    assert math.isnan(a.loc["2023Q1", "ec_tone_delta"])  # first call -> no prior
     # disclosure-length delta Q2 = log(1800/1500)
     assert abs(a.loc["2023Q2", "ec_length_delta"] - math.log(1800 / 1500)) < 1e-9
     # vocabulary novelty: Q1 (first) NaN; Q2 low (near-identical); Q3 high (topic shift)
@@ -90,7 +97,9 @@ def test_per_call_kpi_arithmetic():
 
 
 class _Ctx:
-    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+    def __init__(self, store):
+        self.store = store
+        self.log = logging.getLogger("test")
 
 
 def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
@@ -105,8 +114,16 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     batch = _per_call_kpis(sent, sec)
     m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))
     assert len(m) == len(batch) == len(streamed), "row set changed under streaming"
-    kpi_cols = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_tone_delta", "ec_length_delta",
-                "ec_vocab_novelty", "ec_qa_tone_delta", "ec_prep_tone_delta"]
+    kpi_cols = [
+        "ec_tone",
+        "ec_qa_gap",
+        "ec_uncertainty",
+        "ec_tone_delta",
+        "ec_length_delta",
+        "ec_vocab_novelty",
+        "ec_qa_tone_delta",
+        "ec_prep_tone_delta",
+    ]
     for col in kpi_cols:
         s, b = m[f"{col}_s"].to_numpy(float), m[f"{col}_b"].to_numpy(float)
         ok = (np.isnan(s) & np.isnan(b)) | np.isclose(s, b, equal_nan=True)
@@ -115,20 +132,20 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     a3 = streamed[(streamed.ticker == "A") & (streamed.quarter == "2023Q3")]["ec_vocab_novelty"]
     assert float(a3.iloc[0]) > 0.5, "QoQ novelty lost under per-ticker streaming"
     print("\n=== SANITY CHECK: sentiment KPI streaming ===")
-    print(f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
-          f"KPIs (incl. QoQ tone/length deltas + vocab novelty). A 2023Q3 novelty "
-          f"{float(a3.iloc[0]):.3f} (>0.5 topic shift) -> cross-call order preserved.")
+    print(
+        f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
+        f"KPIs (incl. QoQ tone/length deltas + vocab novelty). A 2023Q3 novelty "
+        f"{float(a3.iloc[0]):.3f} (>0.5 topic shift) -> cross-call order preserved."
+    )
 
 
 def test_panel_columns_and_leak_free():
     tickers = ["A", "B", "C", "D", "E"]
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}   # all mutual peers
+    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}  # all mutual peers
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(_sentiment_frame(), peers, idx,
-                                              sections=_sections_frame())
+    panel = build_earnings_call_feature_panel(_sentiment_frame(), peers, idx, sections=_sections_frame())
     assert not panel.empty
-    for kpi in ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty",
-                "ec_vocab_novelty", "ec_length_delta"]:
+    for kpi in ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty", "ec_vocab_novelty", "ec_length_delta"]:
         assert f"f_{kpi}_xs" in panel.columns, f"missing f_{kpi}_xs"
         assert f"f_{kpi}_vs_peers" in panel.columns, f"missing f_{kpi}_vs_peers"
 
@@ -144,19 +161,24 @@ def test_panel_columns_and_leak_free():
     assert mid in set(a_tone["date"])
 
     print("\n=== SANITY CHECK: earnings-call features ===")
-    print(f"  panel {panel.shape[0]} rows; KPIs f_ec_{{tone,tone_delta,qa_gap,uncertainty,"
-          "vocab_novelty,length_delta}}_{{xs,vs_peers}} present.")
-    print(f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
-          "(call 2023-02-01 + 1 trading day), carried forward to 2023-03-15. "
-          "Length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
-          "arithmetic + vocab-novelty direction validated in test_per_call_kpi_arithmetic.")
+    print(
+        f"  panel {panel.shape[0]} rows; KPIs f_ec_{{tone,tone_delta,qa_gap,uncertainty,vocab_novelty,length_delta}}}}_{{{{xs,vs_peers}}}} present."
+    )
+    print(
+        f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
+        "(call 2023-02-01 + 1 trading day), carried forward to 2023-03-15. "
+        "Length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
+        "arithmetic + vocab-novelty direction validated in test_per_call_kpi_arithmetic."
+    )
 
 
 if __name__ == "__main__":
     test_per_call_kpi_arithmetic()
     test_panel_columns_and_leak_free()
     print("\n=== SANITY CHECK: earnings-call features ===")
-    print("  length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
-          "arithmetic correct; vocab novelty low for repeated text & high on a topic shift; "
-          "panel emits f_ec_*_xs + _vs_peers; features are leak-free (appear call-date +1 "
-          "trading day) and forward-filled to the next call. Validated.")
+    print(
+        "  length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
+        "arithmetic correct; vocab novelty low for repeated text & high on a topic shift; "
+        "panel emits f_ec_*_xs + _vs_peers; features are leak-free (appear call-date +1 "
+        "trading day) and forward-filled to the next call. Validated."
+    )

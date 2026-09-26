@@ -448,9 +448,9 @@ def test_d19_allowlist_covers_every_live_disagreement(live_lineage):
     )
 
     print("\n=== SANITY CHECK: D19 roster-CIK cross-check ===")
-    print(f"  tickers {len(roster)}; agree {len(roster) - len(disagree)}; " f"disagree {len(disagree)}; all allow-listed with evidence")
+    print(f"  tickers {len(roster)}; agree {len(roster) - len(disagree)}; disagree {len(disagree)}; all allow-listed with evidence")
     for ticker, cik, tenure_cik in disagree:
-        print(f"    {ticker:6s} roster {cik} vs tenure {tenure_cik or 'NO TENURE':10s}" f" -- {allow[ticker][:78]}")
+        print(f"    {ticker:6s} roster {cik} vs tenure {tenure_cik or 'NO TENURE':10s} -- {allow[ticker][:78]}")
     print("  OK: no unexplained disagreement remains")
     print("  -> This is the free check that would have caught XOM's wrong CIK in 2026-08.")
 
@@ -473,7 +473,7 @@ def test_the_register_beats_owner_overlap(live_lineage):
     assert from_register == register_ciks & set(source)
 
     print("\n=== SANITY CHECK: oracle priority ===")
-    print(f"  XOM 0000034088 / 0002115436 -> {entity['0000034088']} via " f"{source['0000034088']} (owner overlap scored them UNRELATED)")
+    print(f"  XOM 0000034088 / 0002115436 -> {entity['0000034088']} via {source['0000034088']} (owner overlap scored them UNRELATED)")
     print(f"  every one of the {len(from_register)} register CIKs is sourced `register`")
     print("  OK: the curated layer is never overruled by the automatic oracle")
     print("  -> A hand-evidenced chain outranks a statistic, which is the whole point of it.")

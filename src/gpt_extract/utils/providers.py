@@ -10,9 +10,11 @@ than merely unlikely. A provider with no such mode is expected to fall back to
 `RobustJSONParser` and to say so in `structured`, so a caller can log the difference
 instead of discovering it in the data.
 """
+
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence, TypeVar
+from collections.abc import Sequence
+from typing import Any, Protocol, TypeVar
 
 from openai import OpenAI
 from pydantic import BaseModel
@@ -81,9 +83,7 @@ class OpenAIProvider:
         #: configured list by the caller rather than pattern-matched on the model name, so
         #: a new model is a config change and not a 400 in the middle of a paid run.
         self.reasoning = reasoning
-        self._client = client if client is not None else OpenAI(
-            api_key=api_key, **({"base_url": base_url} if base_url else {})
-        )
+        self._client = client if client is not None else OpenAI(api_key=api_key, **({"base_url": base_url} if base_url else {}))
 
     def request_kwargs(self, schema: type[T], system: str, user: str) -> dict[str, Any]:
         """Exactly what `parse` will send. Split out so the parameter rules are assertable

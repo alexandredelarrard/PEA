@@ -282,15 +282,15 @@ class StepCubeInstitutionals(Step):
 
         roster = roster_cik_union(self._context)  # 106 managers as of 2026-09-08
         if not roster:
-            self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features " "skipped (run `data_extract superinvestors --seed`).")
+            self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors --seed`).")
             return None
 
         holdings = load_superinvestor_holdings(self._context, roster)
         if holdings is None or holdings.empty:
-            self._log.warning("No elite-manager 13F holdings -> superinvestor features " "skipped.")
+            self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
             return None
         self._log.info(
-            "Elite 13F books: %s rows across %s ever-listed managers (%s on " "today's roster)",
+            "Elite 13F books: %s rows across %s ever-listed managers (%s on today's roster)",
             len(holdings),
             len(roster),
             len(roster_map_as_of(self._context)),
@@ -373,7 +373,7 @@ class StepCubeInstitutionals(Step):
             if not diag.empty:
                 settled = diag[diag["n_public"] >= k]
                 self._log.info(
-                    "elite selection (%s, k=%s): %s of %s manager-quarters eligible, " "live set %s-%s managers, median churn %s per filing date",
+                    "elite selection (%s, k=%s): %s of %s manager-quarters eligible, live set %s-%s managers, median churn %s per filing date",
                     mode,
                     k,
                     int(ok.sum()),

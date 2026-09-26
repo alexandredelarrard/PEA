@@ -82,7 +82,7 @@ def test_statement_arcs_returns_empty_frame_when_no_arc_is_a_statement_arc():
     print(f"  statement_arcs: {len(out)} row(s), columns={list(out.columns)}")
     _assert_empty_arc_frame(out, "no arc survived the filter")
     assert len(raw) == 2, "calculation_arcs must keep the UNFILTERED arcs"
-    print("  -> Returned the empty ARC_COLUMNS frame instead of raising; the filing routes " "to tag_fallback.")
+    print("  -> Returned the empty ARC_COLUMNS frame instead of raising; the filing routes to tag_fallback.")
 
 
 def test_the_other_three_empty_returns_share_the_same_shape():
@@ -100,5 +100,5 @@ def test_the_other_three_empty_returns_share_the_same_shape():
         raw, out = calculation_arcs(filing), statement_arcs(filing)
         _assert_empty_arc_frame(raw, f"calculation_arcs, {label}")
         _assert_empty_arc_frame(out, f"statement_arcs, {label}")
-        print(f"  {label}: calculation_arcs {len(raw)} row(s), " f"statement_arcs {len(out)} row(s), both ARC_COLUMNS")
+        print(f"  {label}: calculation_arcs {len(raw)} row(s), statement_arcs {len(out)} row(s), both ARC_COLUMNS")
     print("  -> All 4 empty returns now agree on one shape.")

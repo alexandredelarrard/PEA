@@ -22,6 +22,7 @@ routing decision. On the real panel the level horizon removes 3.37% of cells ove
 0.11% (`pct_independent_directors`) to 18.89% (`insider_ownership_pct`) -- a factor of 172,
 which is why `LEVEL_MAX_AGE_DAYS` records the per-field figures instead of one headline.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -29,8 +30,14 @@ import pytest
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.staleness import (
-    GOVERNANCE_EVENT_MAX_AGE_DAYS, LEGACY_EXEMPT_FROM_EXPIRY, LEVEL_HORIZON_FIELDS,
-    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields, expire_stale, horizon_for,
+    GOVERNANCE_EVENT_MAX_AGE_DAYS,
+    LEGACY_EXEMPT_FROM_EXPIRY,
+    LEVEL_HORIZON_FIELDS,
+    LEVEL_MAX_AGE_DAYS,
+    expire_event_fields,
+    expire_level_fields,
+    expire_stale,
+    horizon_for,
 )
 
 
@@ -41,15 +48,14 @@ def _daily(history: pd.DataFrame, field: str, idx: pd.DatetimeIndex) -> pd.DataF
 def test_expiry_boundary_on_both_tiers():
     """17 months lives, 19 months dies -- and a LEVEL lives to 1,095 days, then dies."""
     idx = pd.bdate_range("2020-01-01", "2024-12-31")
-    hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2020-06-01",
-                          "sop_dissent": 0.11, "ceo_pay_growth": 0.11}])
+    hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2020-06-01", "sop_dissent": 0.11, "ceo_pay_growth": 0.11}])
 
     daily = _daily(hist, "sop_dissent", idx)
     capped = expire_stale(daily, hist, "sop_dissent")
 
     filed = pd.Timestamp("2020-06-01")
-    d17 = filed + pd.Timedelta(days=int(30.4 * 17))     # ~517 days -> inside the horizon
-    d19 = filed + pd.Timedelta(days=int(30.4 * 19))     # ~577 days -> outside it
+    d17 = filed + pd.Timedelta(days=int(30.4 * 17))  # ~517 days -> inside the horizon
+    d19 = filed + pd.Timedelta(days=int(30.4 * 19))  # ~577 days -> outside it
     assert (d17 - filed).days <= GOVERNANCE_EVENT_MAX_AGE_DAYS < (d19 - filed).days
 
     v17 = capped.loc[capped.index.asof(d17), "AAA"]
@@ -58,8 +64,7 @@ def test_expiry_boundary_on_both_tiers():
     assert pd.isna(v19), "a 19-month-old event survived"
 
     # the exact boundary: still alive on day 548, gone on day 549
-    assert capped.loc[capped.index.asof(filed + pd.Timedelta(days=548)), "AAA"] \
-        == pytest.approx(0.11)
+    assert capped.loc[capped.index.asof(filed + pd.Timedelta(days=548)), "AAA"] == pytest.approx(0.11)
     assert pd.isna(capped.loc[capped.index.asof(filed + pd.Timedelta(days=549)), "AAA"])
 
     # --- the LEVEL tier: a legacy field is on 1,095 days, NOT exempt and NOT on 548 ---
@@ -84,8 +89,7 @@ def test_expiry_boundary_on_both_tiers():
     assert pd.isna(at(kept, 1096)), "a level never expired at all (the pre-phase-3 defect)"
 
     print("\n=== SANITY CHECK: governance expiry, both tiers (boundary) ===")
-    print(f"  EVENT horizon = {GOVERNANCE_EVENT_MAX_AGE_DAYS} days   "
-          f"LEVEL horizon = {LEVEL_MAX_AGE_DAYS} days")
+    print(f"  EVENT horizon = {GOVERNANCE_EVENT_MAX_AGE_DAYS} days   LEVEL horizon = {LEVEL_MAX_AGE_DAYS} days")
     print(f"  filed 2020-06-01: +17mo ({(d17 - filed).days}d) = {v17}  (survives)")
     print(f"                    +19mo ({(d19 - filed).days}d) = NaN   (expired)")
     print("  event boundary: alive on day 548, NaN on day 549.")
@@ -97,14 +101,16 @@ def test_expiry_boundary_on_both_tiers():
 def test_expiry_uses_the_filing_that_produced_the_cell():
     """Two filings: the clock restarts on the later one — and a NULL filing does not restart it."""
     idx = pd.bdate_range("2018-01-01", "2024-12-31")
-    hist = pd.DataFrame([
-        {"ticker": "AAA", "as_of": "2019-05-01", "sop_dissent": 0.05},
-        {"ticker": "AAA", "as_of": "2020-05-01", "sop_dissent": 0.09},
-        # a LATER filing that disclosed nothing for this field: it must not reset the clock
-        {"ticker": "AAA", "as_of": "2021-05-01", "sop_dissent": None},
-        # a different ticker whose only filing is ancient -> fully expired
-        {"ticker": "BBB", "as_of": "2018-03-01", "sop_dissent": 0.42},
-    ])
+    hist = pd.DataFrame(
+        [
+            {"ticker": "AAA", "as_of": "2019-05-01", "sop_dissent": 0.05},
+            {"ticker": "AAA", "as_of": "2020-05-01", "sop_dissent": 0.09},
+            # a LATER filing that disclosed nothing for this field: it must not reset the clock
+            {"ticker": "AAA", "as_of": "2021-05-01", "sop_dissent": None},
+            # a different ticker whose only filing is ancient -> fully expired
+            {"ticker": "BBB", "as_of": "2018-03-01", "sop_dissent": 0.42},
+        ]
+    )
     daily = _daily(hist, "sop_dissent", idx)
     capped = expire_stale(daily, hist, "sop_dissent")
 
@@ -131,8 +137,7 @@ def test_expiry_uses_the_filing_that_produced_the_cell():
     print("   2020-06-01 -> 0.09 (31d old)   2021-10-01 -> 0.09 (518d old, the NULL filing")
     print("   did NOT restart the clock)     2022-01-01 -> NaN (611d old)")
     print("  BBB's lone 2018 filing is alive at +3mo and dead by 2021.")
-    print(f"  expire_event_fields bite: {expired} of {before} non-null cells "
-          f"({expired / before:.1%})")
+    print(f"  expire_event_fields bite: {expired} of {before} non-null cells ({expired / before:.1%})")
     print("  CONCLUSION: the age is measured against the filing that PRODUCED the cell,")
     print("  which is the only reason a forward-filled frame can be expired at all.")
 
@@ -141,19 +146,28 @@ def test_expiry_bite_on_real_def14a():
     """How hard does 548 days bite each proxy field, with the tier forced to the event one?"""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
 
     from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
-    imp, _ = impute_def14a(raw)
-    idx = pd.bdate_range("2011-01-03", "2026-09-04")        # the modern era only
 
-    fields = ["say_on_pay_support_pct", "ceo_total_comp", "avg_other_public_boards",
-              "board_size", "pct_independent_directors", "poison_pill", "majority_voting"]
+    imp, _ = impute_def14a(raw)
+    idx = pd.bdate_range("2011-01-03", "2026-09-04")  # the modern era only
+
+    fields = [
+        "say_on_pay_support_pct",
+        "ceo_total_comp",
+        "avg_other_public_boards",
+        "board_size",
+        "pct_independent_directors",
+        "poison_pill",
+        "majority_voting",
+    ]
     rows = []
     for f in fields:
         if f not in imp.columns:
@@ -170,8 +184,7 @@ def test_expiry_bite_on_real_def14a():
         capped = expire_stale(daily, imp, f, feature=f"_measure_{f}")
         after = int(capped.notna().to_numpy().sum())
         exempt = f in LEVEL_HORIZON_FIELDS
-        rows.append((f, before, before - after,
-                     (before - after) / before if before else 0.0, exempt))
+        rows.append((f, before, before - after, (before - after) / before if before else 0.0, exempt))
 
     assert rows, "no field produced a daily frame"
     # An expiry can only remove cells, never add them.
@@ -192,8 +205,7 @@ def test_expiry_bite_on_real_def14a():
     print(f"  daily grid {idx[0].date()}..{idx[-1].date()} ({len(idx)} days), post-impute")
     print(f"  {'field':<28} {'non-null':>10} {'expired':>10} {'share':>8}  exempt?")
     for f, before, n, share, exempt in sorted(rows, key=lambda r: -r[3]):
-        print(f"  {f:<28} {before:>10,} {n:>10,} {share:>7.1%}  "
-              f"{'EXEMPT (legacy)' if exempt else ''}")
+        print(f"  {f:<28} {before:>10,} {n:>10,} {share:>7.1%}  {'EXEMPT (legacy)' if exempt else ''}")
     worst = max(rows, key=lambda r: r[3])
     print(f"  worst: {worst[0]} at {worst[3]:.1%}")
     print("  CONCLUSION: this is the EVENT horizon's bite, measured with the tier routing")
@@ -209,6 +221,7 @@ def test_expiry_bite_on_real_def14a():
 # Phase 3: the LEVEL horizon. Each shape is named for the real ticker that motivated it.
 # --------------------------------------------------------------------------------------------
 
+
 def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     """JNJ: two early filings carry a value, 29 later ones carry NULL.
 
@@ -222,10 +235,11 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     who skips a single proxy loses a year of otherwise-good structure.
     """
     idx = pd.bdate_range("1996-01-01", "2026-09-04")
-    rows = [{"ticker": "JNJ", "as_of": "1996-04-25", "insider_ownership_pct": 0.01},
-            {"ticker": "JNJ", "as_of": "1997-04-24", "insider_ownership_pct": 0.01}]
-    rows += [{"ticker": "JNJ", "as_of": f"{y}-04-24", "insider_ownership_pct": None}
-             for y in range(1998, 2027)]
+    rows = [
+        {"ticker": "JNJ", "as_of": "1996-04-25", "insider_ownership_pct": 0.01},
+        {"ticker": "JNJ", "as_of": "1997-04-24", "insider_ownership_pct": 0.01},
+    ]
+    rows += [{"ticker": "JNJ", "as_of": f"{y}-04-24", "insider_ownership_pct": None} for y in range(1998, 2027)]
     hist = pd.DataFrame(rows)
 
     daily = _daily(hist, "insider_ownership_pct", idx)
@@ -252,8 +266,7 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     kept, before = int(capped["JNJ"].notna().sum()), int(daily["JNJ"].notna().sum())
     print("\n=== SANITY CHECK: the JNJ shape (2 of 31 proxies carry a value) ===")
     print(f"  unbounded ffill: {before:,} daily cells from 2 filings, 30.5 years")
-    print(f"  level horizon:   {kept:,} kept, {before - kept:,} expired "
-          f"({(before - kept) / before:.1%})")
+    print(f"  level horizon:   {kept:,} kept, {before - kept:,} expired ({(before - kept) / before:.1%})")
     print(f"  alive at +548d and +1000d, NaN at +{LEVEL_MAX_AGE_DAYS + 1}d after the 1997 filing")
     print("  CONCLUSION: what is removed is fiction, not information -- there was never a")
     print("  measurement of JNJ insider ownership in 2020 to lose.")
@@ -273,14 +286,12 @@ def test_a_ford_shaped_history_expires_the_zero_and_reopens_on_the_new_filing():
     """
     idx = pd.bdate_range("2010-01-01", "2026-09-04")
     rows = [{"ticker": "F", "as_of": "2011-04-01", "ceo_to_director_pay_ratio": 0.0}]
-    rows += [{"ticker": "F", "as_of": f"{y}-04-01", "ceo_to_director_pay_ratio": None}
-             for y in range(2012, 2022)]
+    rows += [{"ticker": "F", "as_of": f"{y}-04-01", "ceo_to_director_pay_ratio": None} for y in range(2012, 2022)]
     rows += [{"ticker": "F", "as_of": "2022-04-01", "ceo_to_director_pay_ratio": 62.4}]
     hist = pd.DataFrame(rows)
 
     daily = _daily(hist, "ceo_to_director_pay_ratio", idx)
-    capped = expire_stale(daily, hist, "ceo_to_director_pay_ratio",
-                          max_age_days=LEVEL_MAX_AGE_DAYS)
+    capped = expire_stale(daily, hist, "ceo_to_director_pay_ratio", max_age_days=LEVEL_MAX_AGE_DAYS)
 
     def at(d):
         return capped.loc[capped.index.asof(pd.Timestamp(d)), "F"]
@@ -316,8 +327,7 @@ def test_a_normal_annual_filer_is_bit_identical():
     frame must compare equal cell-for-cell rather than merely in count.
     """
     idx = pd.bdate_range("2012-01-01", "2026-09-04")
-    hist = pd.DataFrame([{"ticker": "AAA", "as_of": f"{y}-04-15", "board_size": 10.0 + (y % 3)}
-                         for y in range(2012, 2027)])
+    hist = pd.DataFrame([{"ticker": "AAA", "as_of": f"{y}-04-15", "board_size": 10.0 + (y % 3)} for y in range(2012, 2027)])
 
     for field in ("board_size", "insider_ownership_pct", "ceo_pay_ratio"):
         h = hist.rename(columns={"board_size": field})
@@ -335,15 +345,13 @@ def test_a_normal_annual_filer_is_bit_identical():
 def test_the_event_tier_is_unperturbed_and_the_two_wrappers_route_correctly():
     """548 still means 548, and neither wrapper can put a field on the other's clock."""
     idx = pd.bdate_range("2018-01-01", "2026-09-04")
-    hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2019-05-01",
-                          "sop_dissent": 0.11, "board_size": 9.0}])
+    hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2019-05-01", "sop_dissent": 0.11, "board_size": 9.0}])
     event = _daily(hist, "sop_dissent", idx)
     level = _daily(hist, "board_size", idx)
 
     # The EVENT wrapper refuses to expire a level, so a family that mis-declares one in its
     # `EVENT_FIELDS` cannot silently downgrade it from 1,095 days to 548.
-    frames, stats = expire_event_fields({"sop_dissent": event, "board_size": level}, hist,
-                                        {"sop_dissent", "board_size"})
+    frames, stats = expire_event_fields({"sop_dissent": event, "board_size": level}, hist, {"sop_dissent", "board_size"})
     assert "sop_dissent" in stats and "board_size" not in stats
     assert frames["board_size"] is level, "a level was expired on the event clock"
     assert int(frames["sop_dissent"].notna().sum().sum()) < int(event.notna().sum().sum())
@@ -385,8 +393,7 @@ def test_the_director_pay_family_declares_its_levels():
 
     print("\n=== SANITY CHECK: the director-pay family is on the level horizon ===")
     print(f"  EVENT_FIELDS = {set(dc.EVENT_FIELDS)}  (still empty, and still correct)")
-    print(f"  LEVEL_FIELDS = ALL_FIELDS = {len(dc.LEVEL_FIELDS)} fields, on "
-          f"{LEVEL_MAX_AGE_DAYS}d")
+    print(f"  LEVEL_FIELDS = ALL_FIELDS = {len(dc.LEVEL_FIELDS)} fields, on {LEVEL_MAX_AGE_DAYS}d")
     print("  before phase 3 an empty EVENT_FIELDS meant an UNBOUNDED ffill:")
     print("  f_log_median_director_pay held ONE value for 20.4 years on WMB, 18.5 on PSA.")
 
@@ -460,8 +467,7 @@ def test_every_governance_field_is_on_a_horizon_or_deliberately_exempt():
     from src.data_aggregate.utils.governance import provisions_features as pv
     from src.data_aggregate.utils.governance import vote_dissent_features as vd
 
-    families = {"pay_features": pay, "provisions_features": pv, "directors": dr,
-                "director_comp": dc, "vote_dissent_features": vd}
+    families = {"pay_features": pay, "provisions_features": pv, "directors": dr, "director_comp": dc, "vote_dissent_features": vd}
     rows, loose = [], set()
     for name, module in families.items():
         declared = set(getattr(module, "ALL_FIELDS", set())) or set(module.EVENT_FIELDS)
@@ -480,7 +486,8 @@ def test_every_governance_field_is_on_a_horizon_or_deliberately_exempt():
         f"unexpired fields changed.\n"
         f"  newly unexpired (no recorded decision): {sorted(loose - DELIBERATELY_UNEXPIRED)}\n"
         f"  now expired (drop from the allowlist):  "
-        f"{sorted(DELIBERATELY_UNEXPIRED - loose)}")
+        f"{sorted(DELIBERATELY_UNEXPIRED - loose)}"
+    )
 
     print("\n=== SANITY CHECK: every field is on a horizon, or exempt ON THE RECORD ===")
     print(f"  {'family':<24} {'declared':>8} {'event':>6} {'level':>6}  no horizon")

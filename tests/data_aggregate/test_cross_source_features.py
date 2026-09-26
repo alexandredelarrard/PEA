@@ -202,11 +202,11 @@ def test_declared_vs_emitted():
         if mode == "raw+xs":
             expected.add(f"f_{name}_xs")
     emitted = {c for c in panel.columns if c.startswith("f_")}
-    assert emitted == expected, f"missing {sorted(expected - emitted)}; " f"undeclared {sorted(emitted - expected)}"
+    assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
     for col in sorted(emitted):
         assert panel[col].notna().any(), f"{col} is declared, emitted and ALL-NaN"
     print("\n=== SANITY CHECK: ic_xs_* declared vs emitted ===")
-    print(f"  {len(EMISSION)} features -> {len(emitted)} legs, exact match, all non-empty. " "Validated.")
+    print(f"  {len(EMISSION)} features -> {len(emitted)} legs, exact match, all non-empty. Validated.")
 
 
 def test_an_unavailable_family_does_not_change_the_ratio_until_it_becomes_available():

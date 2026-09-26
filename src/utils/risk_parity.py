@@ -15,6 +15,7 @@ point-in-time weighting and no cross-package import.
   * series_metrics        -- ann return / vol / Sharpe / maxDD of a daily return series
   * daily_frame           -- assemble the portfolio-vs-benchmark daily frame for metrics/plots
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,8 +27,7 @@ _ANN: float = 252.0
 # --------------------------------------------------------------------------- #
 # Weighting schemes                                                            #
 # --------------------------------------------------------------------------- #
-def erc_weights(cov: np.ndarray, budget: np.ndarray | None = None,
-                max_iter: int = 10_000, tol: float = 1e-10) -> np.ndarray:
+def erc_weights(cov: np.ndarray, budget: np.ndarray | None = None, max_iter: int = 10_000, tol: float = 1e-10) -> np.ndarray:
     """Equal-Risk-Contribution weights (long-only, sum=1) via cyclical coordinate descent
     (Griveau-Billion / Spinu). Per coordinate it solves the risk-parity fixed point
         σ_ii x_i² + (Σ_{j≠i} σ_ij x_j) x_i − b_i = 0
@@ -51,7 +51,7 @@ def erc_weights(cov: np.ndarray, budget: np.ndarray | None = None,
             if not good[i]:
                 x[i] = 0.0
                 continue
-            a1 = float(cov[i, :] @ x - cov[i, i] * x[i])        # Σ_{j≠i} σ_ij x_j
+            a1 = float(cov[i, :] @ x - cov[i, i] * x[i])  # Σ_{j≠i} σ_ij x_j
             sii = float(cov[i, i])
             x[i] = (-a1 + np.sqrt(max(a1 * a1 + 4.0 * sii * b[i], 0.0))) / (2.0 * sii)
         if np.max(np.abs(x - x_prev)) < tol:
@@ -94,8 +94,9 @@ def ewma_cov(window_rets: pd.DataFrame, halflife: int, min_obs: int = 20) -> tup
     return cov * _ANN, cols
 
 
-def risk_on_score(rets: pd.DataFrame, vix: pd.Series | None = None, equity: str = "equity",
-                  trend_win: int = 252, vol_hl: int = 42, z_win: int = 756) -> pd.Series:
+def risk_on_score(
+    rets: pd.DataFrame, vix: pd.Series | None = None, equity: str = "equity", trend_win: int = 252, vol_hl: int = 42, z_win: int = 756
+) -> pd.Series:
     """Point-in-time RISK-ON score in [0,1]: HIGH when crash-probability is low (equity in an
     uptrend AND vol/VIX low vs their own recent history), LOW in stress. Equal-weight blend of:
       * equity 12m trend up (1/0),
@@ -115,15 +116,14 @@ def risk_on_score(rets: pd.DataFrame, vix: pd.Series | None = None, equity: str 
     return s.clip(0.0, 1.0).shift(1)
 
 
-def tilted_budget(cols: list[str], score: float, offensive: tuple[str, ...],
-                  off_range: tuple[float, float]) -> np.ndarray:
+def tilted_budget(cols: list[str], score: float, offensive: tuple[str, ...], off_range: tuple[float, float]) -> np.ndarray:
     """Regime-tilted ERC risk budgets: give the OFFENSIVE sleeves (equity/energy) a larger risk
     share when `score` (risk-on) is high, the DEFENSIVE sleeves (bond/gold/fx) more when low.
     off_share = clip(0.2 + 0.6*score, *off_range); split equally within each group. Sums to 1."""
     lo, hi = off_range
     off = [c for c in cols if c in offensive]
     deff = [c for c in cols if c not in offensive]
-    if not off or not deff:                                   # only one group live -> equal
+    if not off or not deff:  # only one group live -> equal
         return np.ones(len(cols)) / len(cols)
     off_share = float(np.clip(0.2 + 0.6 * score, lo, hi))
     b = np.zeros(len(cols))
@@ -134,23 +134,31 @@ def tilted_budget(cols: list[str], score: float, offensive: tuple[str, ...],
     return b / b.sum()
 
 
-def base_weights(rets: pd.DataFrame, window: int, scheme: str, rebalance_freq: int, *,
-                 cov_mode: str = "std", cov_halflife: int = 42, score: pd.Series | None = None,
-                 offensive: tuple[str, ...] = ("equity", "energy"),
-                 off_share_range: tuple[float, float] = (0.15, 0.85)) -> pd.DataFrame:
+def base_weights(
+    rets: pd.DataFrame,
+    window: int,
+    scheme: str,
+    rebalance_freq: int,
+    *,
+    cov_mode: str = "std",
+    cov_halflife: int = 42,
+    score: pd.Series | None = None,
+    offensive: tuple[str, ...] = ("equity", "energy"),
+    off_share_range: tuple[float, float] = (0.15, 0.85),
+) -> pd.DataFrame:
     """date x asset base MIX weights (sum=1 across the live assets), point-in-time: recompute
     every `rebalance_freq` days on the trailing `window` (strictly up to t-1), hold (ffill) in
     between. `scheme` in {erc, inverse_vol}; `cov_mode` in {std, ewma}. If `score` (a risk-on
     series in [0,1]) is given, budgets are REGIME-TILTED toward the offensive names."""
     idx = rets.index
     reb = np.zeros(len(idx), dtype=bool)
-    reb[::max(1, int(rebalance_freq))] = True
+    reb[:: max(1, int(rebalance_freq))] = True
     W = pd.DataFrame(index=idx, columns=rets.columns, dtype=float)
     for pos, t in enumerate(idx):
         if not reb[pos]:
             continue
-        win = rets.iloc[max(0, pos - window):pos]                  # exclusive of t
-        cov, cols = (ewma_cov(win, cov_halflife) if cov_mode == "ewma" else cov_window(win))
+        win = rets.iloc[max(0, pos - window) : pos]  # exclusive of t
+        cov, cols = ewma_cov(win, cov_halflife) if cov_mode == "ewma" else cov_window(win)
         if not cols:
             continue
         budget = None
@@ -164,7 +172,7 @@ def base_weights(rets: pd.DataFrame, window: int, scheme: str, rebalance_freq: i
             vol = np.sqrt(np.diag(cov))
             inv = np.where(vol > 0, 1.0 / vol, 0.0)
             if budget is not None:
-                inv = inv * budget                                 # tilt inverse-vol too
+                inv = inv * budget  # tilt inverse-vol too
             w = inv / inv.sum() if inv.sum() > 0 else np.full(len(cols), 1.0 / len(cols))
         else:
             raise ValueError(f"unknown scheme '{scheme}' (use erc | inverse_vol)")
@@ -189,8 +197,9 @@ def series_metrics(ret: pd.Series, rf_annual: float = 0.0) -> dict[str, float]:
     return {"ann_return": ann, "ann_vol": vol, "sharpe": sharpe, "max_drawdown": mdd}
 
 
-def daily_frame(net_ret: pd.Series, benchmark_ret: pd.Series, turnover: pd.Series,
-                cost: pd.Series, starting_capital: float = 1_000_000.0) -> pd.DataFrame:
+def daily_frame(
+    net_ret: pd.Series, benchmark_ret: pd.Series, turnover: pd.Series, cost: pd.Series, starting_capital: float = 1_000_000.0
+) -> pd.DataFrame:
     """Assemble the daily frame `compute_metrics` / plotting expect (portfolio vs benchmark)."""
     idx = net_ret.dropna().index
     b = benchmark_ret.reindex(idx).fillna(0.0)

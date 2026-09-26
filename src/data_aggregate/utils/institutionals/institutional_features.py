@@ -195,7 +195,7 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     n = int((np.abs(factor - 1.0) > 1e-9).sum())
     if n:
         logger.info(
-            "13F split restatement: %s of %s (ticker, quarter) pairs had the prior " "quarter's share count rebased (V5 trigger count)", n, len(pairs)
+            "13F split restatement: %s of %s (ticker, quarter) pairs had the prior quarter's share count rebased (V5 trigger count)", n, len(pairs)
         )
     return {(t, p): f for t, p, f in zip(pairs["ticker"], pairs["period"], factor, strict=False)}
 
@@ -289,7 +289,7 @@ def _stamp_availability(
         # silently reindexed away later -- and `prev` must not carry a period the panel never
         # emitted, or the next quarter's deltas difference against an invisible predecessor.
         logger.info(
-            "13F availability: %s row(s) across period(s) %s have no availability date " "inside the trading calendar (it ends %s) -> not emitted",
+            "13F availability: %s row(s) across period(s) %s have no availability date inside the trading calendar (it ends %s) -> not emitted",
             f"{int(unavailable.sum()):,}",
             sorted({str(pd.Timestamp(p).date()) for p in h.loc[unavailable, "period"].unique()})[:6],
             str(pd.DatetimeIndex(trading_index).max().date()) if len(trading_index) else "(empty)",
@@ -501,7 +501,7 @@ def _quarter_features(
     holes, breaks, coverage = _coverage_periods(h, break_pct)
     if holes or breaks:
         logger.info(
-            "13F coverage guard: %s hole quarter(s) %s (every feature nulled), " "%s break quarter(s) %s (deltas nulled). Filer counts: %s",
+            "13F coverage guard: %s hole quarter(s) %s (every feature nulled), %s break quarter(s) %s (deltas nulled). Filer counts: %s",
             len(holes),
             sorted(str(p.date()) for p in holes),
             len(breaks),
@@ -751,7 +751,7 @@ def build_institutional_feature_panel(
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return pd.DataFrame(columns=["date", "ticker"])
     if splits is None or splits.empty:
-        logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a " "20-for-1 split will read as +1,900%% accumulation.")
+        logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a 20-for-1 split will read as +1,900%% accumulation.")
 
     # clean and report holdings
     holdings = clean_holdings(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))

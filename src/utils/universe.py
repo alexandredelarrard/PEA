@@ -8,9 +8,10 @@ cube, modelling, backtest) resolves which tickers to analyse from ONE place: the
 
 from __future__ import annotations
 
-from src.data_store.schema import Tables
-from src.context import Context
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
+from src.context import Context
+from src.data_store.schema import Tables
+
 
 def load_universe_tickers(context: Context) -> list[str]:
     """The analysis universe: sorted, de-duplicated, upper-cased tickers from the
@@ -22,10 +23,8 @@ def load_universe_tickers(context: Context) -> list[str]:
     if df is None or "ticker" not in df.columns:
         return []
     # Exclude after normalising, so a lower-cased "goog" is dropped like "GOOG".
-    excluded = INSUFFICIENT_HISTORY_TICKERS | {
-        str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
-    return sorted({t for raw in df["ticker"].dropna()
-                   if (t := str(raw).strip().upper()) and t not in excluded})
+    excluded = INSUFFICIENT_HISTORY_TICKERS | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
+    return sorted({t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper()) and t not in excluded})
 
 
 #: The filing tables a company keyed by CIK must appear in if its CIK is the right one. Kept
@@ -81,7 +80,7 @@ def unverified_ciks(context: Context) -> list[dict]:
     def _tickers(table: str) -> set[str]:
         try:
             return {str(t).strip().upper() for t in context.store.distinct(table, "ticker") if t}
-        except Exception:                           # noqa: BLE001 -- a table may not exist yet
+        except Exception:  # noqa: BLE001 -- a table may not exist yet
             return set()
 
     seen = {table: _tickers(table) for table in CIK_EVIDENCE_TABLES}
@@ -93,12 +92,15 @@ def unverified_ciks(context: Context) -> list[dict]:
         ticker = str(raw_t).strip().upper()
         if not ticker or ticker in filed:
             continue
-        out.append({
-            "ticker": ticker, "cik": str(raw_c),
-            "in_prices": ticker in priced,
-            "filing_tables_checked": list(CIK_EVIDENCE_TABLES),
-            # a company that has traded for years with no filing row ANYWHERE is the XOM
-            # shape; one absent from `prices` too is simply too new to have been fetched
-            "shape": "SUSPECT CIK" if ticker in priced else "too new / not yet fetched",
-        })
+        out.append(
+            {
+                "ticker": ticker,
+                "cik": str(raw_c),
+                "in_prices": ticker in priced,
+                "filing_tables_checked": list(CIK_EVIDENCE_TABLES),
+                # a company that has traded for years with no filing row ANYWHERE is the XOM
+                # shape; one absent from `prices` too is simply too new to have been fetched
+                "shape": "SUSPECT CIK" if ticker in priced else "too new / not yet fetched",
+            }
+        )
     return out

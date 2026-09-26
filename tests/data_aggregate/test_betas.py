@@ -20,15 +20,16 @@ Covers:
                        NOT a shared column) recovers a DIFFERENT known loading per
                        stock (Schur-complement fold-in, `_fold_in_sector`).
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.target.betas import (
-    estimate_all_betas, estimate_betas_for_stock,
+    estimate_all_betas,
+    estimate_betas_for_stock,
 )
-from src.data_aggregate.utils.target.factors import gics_sector_excess_returns
 
 
 # --------------------------------------------------------------------------- #
@@ -39,8 +40,7 @@ def test_ridge_recovers_known_betas(synthetic_factor_model):
     X = pd.concat([shared, sector.rename("sector")], axis=1)
 
     # near-OLS (tiny ridge) + long window => estimator should recover truth.
-    out = estimate_betas_for_stock(y, X, window=250, min_obs=200,
-                                   ridge_alpha=0.001, step=1)
+    out = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=0.001, step=1)
     last = out.dropna().iloc[-1]
 
     recovered = {
@@ -50,9 +50,7 @@ def test_ridge_recovers_known_betas(synthetic_factor_model):
         "sector": last["beta_sector"],
     }
     for name, truth in true_betas.items():
-        assert abs(recovered[name] - truth) < 0.15, (
-            f"beta_{name}={recovered[name]:.3f} not within 0.15 of true {truth}"
-        )
+        assert abs(recovered[name] - truth) < 0.15, f"beta_{name}={recovered[name]:.3f} not within 0.15 of true {truth}"
 
     print("\n=== SANITY CHECK: ridge recovers known betas ===")
     for name, truth in true_betas.items():
@@ -72,30 +70,23 @@ def test_ridge_more_stable_than_ols_under_collinearity():
 
     market = pd.Series(rng.normal(0, 0.01, n), index=dates, name="market")
     # sector strongly collinear with market (corr ~0.9)
-    sector = pd.Series(0.9 * market.to_numpy() + rng.normal(0, 0.004, n),
-                       index=dates, name="sector")
+    sector = pd.Series(0.9 * market.to_numpy() + rng.normal(0, 0.004, n), index=dates, name="sector")
     shared = pd.concat([market, sector], axis=1)
 
     y = 0.8 * market + 0.5 * sector + pd.Series(rng.normal(0, 0.004, n), index=dates)
     y.name = "STOCK"
 
-    ols = estimate_betas_for_stock(y, shared, window=63, min_obs=40,
-                                   ridge_alpha=0.0, step=5)
-    rdg = estimate_betas_for_stock(y, shared, window=63, min_obs=40,
-                                   ridge_alpha=0.08, step=5)
+    ols = estimate_betas_for_stock(y, shared, window=63, min_obs=40, ridge_alpha=0.0, step=5)
+    rdg = estimate_betas_for_stock(y, shared, window=63, min_obs=40, ridge_alpha=0.08, step=5)
 
     ols_std = ols["beta_market"].std()
     rdg_std = rdg["beta_market"].std()
 
-    assert rdg_std < ols_std, (
-        f"ridge should stabilize collinear loadings: ridge std={rdg_std:.3f} "
-        f"vs ols std={ols_std:.3f}"
-    )
+    assert rdg_std < ols_std, f"ridge should stabilize collinear loadings: ridge std={rdg_std:.3f} vs ols std={ols_std:.3f}"
 
     print("\n=== SANITY CHECK: ridge vs OLS stability (collinear market/sector) ===")
     print(f"  temporal std(beta_market)  OLS={ols_std:.3f}   RIDGE={rdg_std:.3f}")
-    print(f"  -> ridge cut loading volatility by {100*(1-rdg_std/ols_std):.0f}%. "
-          "Ridge is the better choice here.")
+    print(f"  -> ridge cut loading volatility by {100 * (1 - rdg_std / ols_std):.0f}%. Ridge is the better choice here.")
 
 
 # --------------------------------------------------------------------------- #
@@ -144,16 +135,13 @@ def test_sparse_sector_does_not_truncate_history(synthetic_factor_model):
     valid = out["beta_sector"].ne(0.0) & out["beta_sector"].notna()
 
     # ~40% of dates have a sector value; after warmup we expect a healthy chunk.
-    assert valid.mean() > 0.25, (
-        f"betas collapsed: only {valid.mean():.1%} of dates estimated"
-    )
+    assert valid.mean() > 0.25, f"betas collapsed: only {valid.mean():.1%} of dates estimated"
     first_valid = out["beta_sector"].first_valid_index()
     span_days = (out.index[-1] - first_valid).days
     assert span_days > 200, "beta coverage should span the available history"
 
     print("\n=== SANITY CHECK: sparse regressor does not truncate history ===")
-    print(f"  sector available on last 40% of dates -> betas fitted on "
-          f"{valid.mean():.0%} of dates, spanning {span_days} days.")
+    print(f"  sector available on last 40% of dates -> betas fitted on {valid.mean():.0%} of dates, spanning {span_days} days.")
     print("  -> estimator uses all available data instead of collapsing.")
 
 
@@ -173,16 +161,11 @@ def test_market_beta_shrinks_toward_one_not_zero():
     market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
     style = pd.Series(rng.normal(0, 0.008, n), index=dates, name="style")
     X = pd.concat([market, style], axis=1)
-    y = (1.6 * market + 0.9 * style
-         + pd.Series(rng.normal(0, 0.004, n), index=dates)).rename("STOCK")
+    y = (1.6 * market + 0.9 * style + pd.Series(rng.normal(0, 0.004, n), index=dates)).rename("STOCK")
 
-    light = estimate_betas_for_stock(y, X, window=250, min_obs=200,
-                                     ridge_alpha=0.001, step=1).dropna().iloc[-1]
-    heavy = estimate_betas_for_stock(y, X, window=250, min_obs=200,
-                                     ridge_alpha=50.0, step=1).dropna().iloc[-1]
-    zero_prior = estimate_betas_for_stock(y, X, window=250, min_obs=200,
-                                          ridge_alpha=50.0, step=1,
-                                          market_prior=0.0).dropna().iloc[-1]
+    light = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=0.001, step=1).dropna().iloc[-1]
+    heavy = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=50.0, step=1).dropna().iloc[-1]
+    zero_prior = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=50.0, step=1, market_prior=0.0).dropna().iloc[-1]
 
     assert abs(heavy["beta_market"] - 1.0) < 0.05, "market must shrink toward 1.0"
     assert abs(heavy["beta_style"]) < 0.05, "style must shrink toward 0.0"
@@ -192,12 +175,9 @@ def test_market_beta_shrinks_toward_one_not_zero():
     assert abs(light["beta_style"] - 0.9) < 0.10
 
     print("\n=== SANITY CHECK: shrinkage targets (true betas market=1.60 style=0.90) ===")
-    print(f"  ridge_alpha=0.001            beta_market={light['beta_market']:+.3f} "
-          f" beta_style={light['beta_style']:+.3f}")
-    print(f"  ridge_alpha=50, prior=1.0    beta_market={heavy['beta_market']:+.3f} "
-          f" beta_style={heavy['beta_style']:+.3f}")
-    print(f"  ridge_alpha=50, prior=0.0    beta_market={zero_prior['beta_market']:+.3f} "
-          f" beta_style={zero_prior['beta_style']:+.3f}")
+    print(f"  ridge_alpha=0.001            beta_market={light['beta_market']:+.3f}  beta_style={light['beta_style']:+.3f}")
+    print(f"  ridge_alpha=50, prior=1.0    beta_market={heavy['beta_market']:+.3f}  beta_style={heavy['beta_style']:+.3f}")
+    print(f"  ridge_alpha=50, prior=0.0    beta_market={zero_prior['beta_market']:+.3f}  beta_style={zero_prior['beta_style']:+.3f}")
     print("  -> market collapses to its 1.0 prior, style to 0.0. Prior 0.0 would leave")
     print("     ~1.0 of unhedged market beta inside the 'idiosyncratic' residual.")
 
@@ -221,12 +201,9 @@ def test_ridge_shrinkage_ratio_is_constant_across_sample_sizes():
     alpha = 0.25
     ratios = {}
     for n_win in (40, 63, 252):
-        b = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win,
-                                     ridge_alpha=alpha, step=1)
-        raw = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win,
-                                       ridge_alpha=0.0, step=1)
-        j = pd.concat([b["beta_market"].rename("s"), raw["beta_market"].rename("r")],
-                      axis=1).dropna()
+        b = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win, ridge_alpha=alpha, step=1)
+        raw = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win, ridge_alpha=0.0, step=1)
+        j = pd.concat([b["beta_market"].rename("s"), raw["beta_market"].rename("r")], axis=1).dropna()
         # (shrunk - prior) / (unshrunk - prior)
         ratios[n_win] = float(((j["s"] - 1.0) / (j["r"] - 1.0)).mean())
 
@@ -237,8 +214,9 @@ def test_ridge_shrinkage_ratio_is_constant_across_sample_sizes():
     print("\n=== SANITY CHECK: shrinkage ratio is invariant to sample size ===")
     for n_win, r in ratios.items():
         print(f"  N={n_win:<4} (shrunk-prior)/(ols-prior) = {r:.4f}")
-    print(f"  -> all equal 1/(1+alpha) = {expected:.4f}. A fixed lambda would give "
-          f"{1/(1+alpha*63/40):.4f} at N=40 vs {expected:.4f} at N=63.")
+    print(
+        f"  -> all equal 1/(1+alpha) = {expected:.4f}. A fixed lambda would give {1 / (1 + alpha * 63 / 40):.4f} at N=40 vs {expected:.4f} at N=63."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -253,26 +231,21 @@ def test_single_factor_gap_does_not_null_the_window():
     dates = pd.bdate_range("2019-01-01", periods=n)
     market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
     fx = pd.Series(rng.normal(0, 0.005, n), index=dates, name="fx")
-    y = (1.1 * market + 0.7 * fx
-         + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
+    y = (1.1 * market + 0.7 * fx + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
 
-    clean = estimate_betas_for_stock(y, pd.concat([market, fx], axis=1),
-                                     window=63, min_obs=40, step=1)
+    clean = estimate_betas_for_stock(y, pd.concat([market, fx], axis=1), window=63, min_obs=40, step=1)
     holed = fx.copy()
-    holed.iloc[200] = np.nan                       # ONE missing day
-    gappy = estimate_betas_for_stock(y, pd.concat([market, holed], axis=1),
-                                     window=63, min_obs=40, step=1)
+    holed.iloc[200] = np.nan  # ONE missing day
+    gappy = estimate_betas_for_stock(y, pd.concat([market, holed], axis=1), window=63, min_obs=40, step=1)
 
-    affected = gappy.index[200:263]                # the 63 windows containing the hole
-    assert (gappy.loc[affected, "beta_fx"].abs() > 1e-6).all(), \
-        "beta_fx was zeroed by a single missing day"
+    affected = gappy.index[200:263]  # the 63 windows containing the hole
+    assert (gappy.loc[affected, "beta_fx"].abs() > 1e-6).all(), "beta_fx was zeroed by a single missing day"
     drift = (gappy.loc[affected, "beta_market"] - clean.loc[affected, "beta_market"]).abs()
     assert drift.max() < 0.10, "one missing FX day should barely move beta_market"
 
     print("\n=== SANITY CHECK: a one-day factor gap is imputed, not dropped ===")
     print(f"  windows containing the hole: {len(affected)}")
-    print(f"  beta_fx still fitted on all of them (min |beta_fx| = "
-          f"{gappy.loc[affected, 'beta_fx'].abs().min():.3f})")
+    print(f"  beta_fx still fitted on all of them (min |beta_fx| = {gappy.loc[affected, 'beta_fx'].abs().min():.3f})")
     print(f"  max drift in beta_market vs the un-holed panel = {drift.max():.4f}")
     print("  -> the gap costs a rounding error instead of the factor's whole beta.")
 
@@ -291,8 +264,7 @@ def test_step_one_has_no_staircase(synthetic_factor_model):
     assert flat_stair > 0.5, "step=5 is expected to hold the beta most days"
 
     print("\n=== SANITY CHECK: the 5-day staircase ===")
-    print(f"  share of days with an unchanged beta_market: step=5 -> {flat_stair:.1%}, "
-          f"step=1 -> {flat_daily:.1%}")
+    print(f"  share of days with an unchanged beta_market: step=5 -> {flat_stair:.1%}, step=1 -> {flat_daily:.1%}")
     print("  -> step=1 removes the step function at the source; no EWMA (i.e. no extra")
     print("     lag) is needed to hide it.")
 
@@ -308,11 +280,9 @@ def test_panel_and_single_stock_paths_agree(synthetic_factor_model):
     late.iloc[:300] = np.nan
     panel_ret = pd.concat([y.rename("EARLY"), late.rename("LATE")], axis=1)
 
-    both = estimate_all_betas(panel_ret, shared, window=63, min_obs=40, step=1,
-                              filter_factors=False)
+    both = estimate_all_betas(panel_ret, shared, window=63, min_obs=40, step=1, filter_factors=False)
     for tk in ("EARLY", "LATE"):
-        one = estimate_betas_for_stock(panel_ret[tk].rename(tk), shared,
-                                       window=63, min_obs=40, step=1)
+        one = estimate_betas_for_stock(panel_ret[tk].rename(tk), shared, window=63, min_obs=40, step=1)
         pd.testing.assert_frame_equal(both[tk], one, check_exact=False, atol=1e-10)
 
     n_ragged = int(both["LATE"]["beta_market"].notna().sum())
@@ -346,8 +316,10 @@ def test_label_window_does_not_overlap_estimation_window():
 
     print("\n=== SANITY CHECK: estimation and label windows are disjoint ===")
     print(f"  beta window ends with the return of {dates[t].date()}")
-    print(f"  label at {dates[t].date()} = close[{dates[t+h].date()}]/close[{dates[t].date()}]-1"
-          f" = returns of {dates[t+1].date()}..{dates[t+h].date()}")
+    print(
+        f"  label at {dates[t].date()} = close[{dates[t + h].date()}]/close[{dates[t].date()}]-1"
+        f" = returns of {dates[t + 1].date()}..{dates[t + h].date()}"
+    )
     print("  -> no shared observation, so beta_t applied to the label is NOT in-sample.")
 
 
@@ -369,17 +341,15 @@ def test_per_stock_sector_factor_recovers_known_loading():
     sector_b = pd.Series(rng.normal(0, 0.008, n), index=dates)
     true_beta_a, true_beta_b = 0.8, -0.5
 
-    y_a = (1.0 * market + true_beta_a * sector_a
-           + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("A")
-    y_b = (1.0 * market + true_beta_b * sector_b
-           + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("B")
+    y_a = (1.0 * market + true_beta_a * sector_a + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("A")
+    y_b = (1.0 * market + true_beta_b * sector_b + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("B")
 
     stock_returns = pd.concat([y_a, y_b], axis=1)
     per_stock_factors = pd.concat([sector_a.rename("A"), sector_b.rename("B")], axis=1)
 
-    out = estimate_all_betas(stock_returns, market.to_frame(), per_stock_factors,
-                             window=200, min_obs=150, ridge_alpha=0.001, step=1,
-                             filter_factors=False)
+    out = estimate_all_betas(
+        stock_returns, market.to_frame(), per_stock_factors, window=200, min_obs=150, ridge_alpha=0.001, step=1, filter_factors=False
+    )
 
     last_a = out["A"].dropna().iloc[-1]
     last_b = out["B"].dropna().iloc[-1]
@@ -416,20 +386,14 @@ def test_market_gets_its_own_ridge_alpha():
     market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
     style = pd.Series(rng.normal(0, 0.008, n), index=dates, name="style")
     shared = pd.concat([market, style], axis=1)
-    y = (1.6 * market + 0.9 * style
-         + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
+    y = (1.6 * market + 0.9 * style + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
 
-    base = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
-                                    ridge_alpha=0.08, step=1)
-    same = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
-                                    ridge_alpha=0.08, ridge_alpha_market=None, step=1)
-    pd.testing.assert_frame_equal(base, same)          # bit-identical, no tolerance
+    base = estimate_betas_for_stock(y, shared, window=126, min_obs=80, ridge_alpha=0.08, step=1)
+    same = estimate_betas_for_stock(y, shared, window=126, min_obs=80, ridge_alpha=0.08, ridge_alpha_market=None, step=1)
+    pd.testing.assert_frame_equal(base, same)  # bit-identical, no tolerance
 
-    unshrunk = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
-                                       ridge_alpha=0.0, step=1).dropna().iloc[-1]
-    split = estimate_betas_for_stock(y, shared, window=126, min_obs=80,
-                                     ridge_alpha=1.5, ridge_alpha_market=0.24,
-                                     step=1).dropna().iloc[-1]
+    unshrunk = estimate_betas_for_stock(y, shared, window=126, min_obs=80, ridge_alpha=0.0, step=1).dropna().iloc[-1]
+    split = estimate_betas_for_stock(y, shared, window=126, min_obs=80, ridge_alpha=1.5, ridge_alpha_market=0.24, step=1).dropna().iloc[-1]
 
     market_kept = (split["beta_market"] - 1.0) / (unshrunk["beta_market"] - 1.0)
     style_kept = split["beta_style"] / unshrunk["beta_style"]
@@ -439,7 +403,9 @@ def test_market_gets_its_own_ridge_alpha():
 
     print("\n=== SANITY CHECK: per-factor ridge alpha ===")
     print("  ridge_alpha_market=None -> frame is bit-identical to the single-alpha path")
-    print(f"  alpha_market=0.24 / alpha_other=1.5: market keeps {market_kept:.3f} of its "
-          f"distance from the 1.0 prior (expected {1/1.24:.3f}), style keeps {style_kept:.3f} "
-          f"of its distance from 0.0 (expected {1/2.5:.3f})")
+    print(
+        f"  alpha_market=0.24 / alpha_other=1.5: market keeps {market_kept:.3f} of its "
+        f"distance from the 1.0 prior (expected {1 / 1.24:.3f}), style keeps {style_kept:.3f} "
+        f"of its distance from 0.0 (expected {1 / 2.5:.3f})"
+    )
     print("  -> the market column is shrunk on its own dial. Validated.")

@@ -3,12 +3,13 @@
 Nothing here touches the network or the store, so the whole threaded path can be exercised
 at zero spend.
 """
+
 from __future__ import annotations
 
 import logging
 import types
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
@@ -34,7 +35,9 @@ def gpt_config(**overrides) -> DictConfig:
 
 def fake_context(store=None):
     return types.SimpleNamespace(
-        store=store, log=logging.getLogger("test"), config_dir=Path("."),
+        store=store,
+        log=logging.getLogger("test"),
+        config_dir=Path("."),
     )
 
 
@@ -44,8 +47,7 @@ class StubProvider:
     name = "stub"
     structured = True
 
-    def __init__(self, model: str = "stub-model", api_key: str | None = None,
-                 answers=None, fail_on=None, delay=0.0, **_) -> None:
+    def __init__(self, model: str = "stub-model", api_key: str | None = None, answers=None, fail_on=None, delay=0.0, **_) -> None:
         self.model = model
         self.api_key = api_key
         self.calls: list[tuple[str, str]] = []

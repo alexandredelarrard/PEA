@@ -47,15 +47,25 @@ Also here, for the same reason (two layers, one definition, a sign that is easy 
 backwards): `share_repurchases(get)`, which turns Sharadar's NET-ISSUANCE cash-flow line
 into the buyback magnitude the payout ratios want.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import FieldGetter
 
-__all__ = ["borrowings", "capitalized_leases", "liquid_assets", "total_debt",
-           "net_debt", "invested_capital", "off_balance_sheet_obligations",
-           "assets_ex_lease", "share_repurchases", "drop_operating_cash"]
+__all__ = [
+    "borrowings",
+    "capitalized_leases",
+    "liquid_assets",
+    "total_debt",
+    "net_debt",
+    "invested_capital",
+    "off_balance_sheet_obligations",
+    "assets_ex_lease",
+    "share_repurchases",
+    "drop_operating_cash",
+]
 
 # accessor: field name -> numeric Series (row-level) or date x ticker frame (daily).
 # Was the string literal `Getter = "callable"`, which described the protocol in a comment
@@ -86,8 +96,7 @@ def _add(*parts) -> pd.Series | pd.DataFrame | None:
     known = present[0].notna()
     for p in present[1:]:
         out = out.add(p.fillna(0.0), fill_value=0.0)
-        known = (known.reindex_like(out).fillna(False).astype(bool)
-                 | p.notna().reindex_like(out).fillna(False).astype(bool))
+        known = known.reindex_like(out).fillna(False).astype(bool) | p.notna().reindex_like(out).fillna(False).astype(bool)
     return out.where(known)
 
 
@@ -217,7 +226,7 @@ def off_balance_sheet_obligations(get, pension: pd.DataFrame | None = None):
     returns nothing), so that leg contributed exactly zero on every live row."""
     deficit = pension
     if _has(deficit):
-        deficit = deficit.clip(lower=0.0)            # underfunding only
+        deficit = deficit.clip(lower=0.0)  # underfunding only
     return _add(deficit, get("assetRetirementObligation"))
 
 
@@ -228,9 +237,14 @@ def total_debt(get, *, include_leases: bool = True):
     return _add(borrowings(get), capitalized_leases(get))
 
 
-def net_debt(get, *, include_leases: bool = True, off_balance_sheet: bool = False,
-             pension: pd.DataFrame | None = None,
-             operating_cash: frozenset[str] | None = None):
+def net_debt(
+    get,
+    *,
+    include_leases: bool = True,
+    off_balance_sheet: bool = False,
+    pension: pd.DataFrame | None = None,
+    operating_cash: frozenset[str] | None = None,
+):
     """Total debt (optionally + off-balance-sheet obligations) minus non-operating liquid
     assets. `off_balance_sheet=True` adds the pension deficit and ARO. `operating_cash`
     names tickers whose cash is not spare cash -- see `liquid_assets`."""
@@ -243,8 +257,7 @@ def net_debt(get, *, include_leases: bool = True, off_balance_sheet: bool = Fals
     return gross if liquid is None else gross.sub(liquid.fillna(0.0), fill_value=0.0)
 
 
-def invested_capital(get, *, include_leases: bool = True,
-                     operating_cash: frozenset[str] | None = None):
+def invested_capital(get, *, include_leases: bool = True, operating_cash: frozenset[str] | None = None):
     """Financing-side invested capital = equity + total debt (incl. leases) - cash.
 
     Leases are included because they are counted as debt everywhere else (EV, leverage);

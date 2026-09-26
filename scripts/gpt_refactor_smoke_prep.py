@@ -34,15 +34,15 @@ rollback that exists for the row data and it costs nothing to have taken it twic
     "$PY" scripts/gpt_refactor_smoke_prep.py [-c ./configs]             # dry run + snapshot
     "$PY" scripts/gpt_refactor_smoke_prep.py [-c ./configs] --confirm   # do it
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-import pandas as pd
 from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,8 +55,7 @@ from src.data_store.schema import Tables
 #: The 15 smoke tickers, chosen for filing GEOMETRY rather than familiarity: BA/NKE co-PEO
 #: years, SBUX's all-zero PVP matrix, GOOGL/BRK-B dual-class ownership, A's pre-2001 filings
 #: with an empty `primaryDocument`, TDG's tally-free 5.07(d), XOM's transposed vote layout.
-SMOKE_TICKERS = ("AAPL", "JPM", "BA", "NKE", "SBUX", "GOOGL", "BRK-B", "XOM", "PG",
-                 "CAT", "PFE", "A", "AMAT", "TDG", "GE")
+SMOKE_TICKERS = ("AAPL", "JPM", "BA", "NKE", "SBUX", "GOOGL", "BRK-B", "XOM", "PG", "CAT", "PFE", "A", "AMAT", "TDG", "GE")
 
 DROP_COLUMNS = ("n_technology_directors", "pct_technology_directors", "technology_committee")
 
@@ -86,7 +85,7 @@ def snapshot(store, out_dir: Path) -> dict:
 
     smoke = df[df["ticker"].isin(SMOKE_TICKERS)]
     info = {
-        "snapshot_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "snapshot_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "rows": int(len(df)),
         "columns": int(df.shape[1]),
         "tickers": int(df["ticker"].nunique()),
@@ -118,10 +117,8 @@ def main() -> None:
 
     info = snapshot(store, OUT_DIR)
     print(f"\nSnapshot -> {OUT_DIR}")
-    print(f"  def14a_llm  {info['rows']} rows x {info['columns']} cols, "
-          f"{info['tickers']} tickers")
-    print(f"  of which the 15 smoke tickers: {info['smoke_rows']} rows, "
-          f"{info['smoke_accessions']} accessions")
+    print(f"  def14a_llm  {info['rows']} rows x {info['columns']} cols, {info['tickers']} tickers")
+    print(f"  of which the 15 smoke tickers: {info['smoke_rows']} rows, {info['smoke_accessions']} accessions")
     print("  " + "  ".join(f"{t}={n}" for t, n in sorted(info["per_ticker"].items())))
 
     live = list(store.columns(Tables.def14a_llm))
@@ -129,13 +126,15 @@ def main() -> None:
     stmts: list[tuple[str, str]] = []
     if present:
         cols = ", ".join(f'DROP COLUMN IF EXISTS "{c}"' for c in present)
-        stmts.append((f'ALTER TABLE "def14a_llm" {cols}',
-                      f"retire {len(present)} technology column(s): {len(live)} -> "
-                      f"{len(live) - len(present)}"))
+        stmts.append((f'ALTER TABLE "def14a_llm" {cols}', f"retire {len(present)} technology column(s): {len(live)} -> {len(live) - len(present)}"))
     names = ", ".join(f"'{t}'" for t in SMOKE_TICKERS)
-    stmts.append((f'DELETE FROM "def14a_llm" WHERE "ticker" IN ({names})',
-                  f"clear {info['smoke_rows']} smoke row(s) so the accession dedup re-extracts "
-                  f"them ({info['rows']} -> {info['rows'] - info['smoke_rows']})"))
+    stmts.append(
+        (
+            f'DELETE FROM "def14a_llm" WHERE "ticker" IN ({names})',
+            f"clear {info['smoke_rows']} smoke row(s) so the accession dedup re-extracts "
+            f"them ({info['rows']} -> {info['rows'] - info['smoke_rows']})",
+        )
+    )
 
     print(f"\n{len(stmts)} statement(s):")
     for sql, why in stmts:
@@ -156,18 +155,16 @@ def main() -> None:
     remaining = store.load(Tables.def14a_llm, columns=["ticker"])
     still_smoke = sorted(set(remaining["ticker"]) & set(SMOKE_TICKERS))
 
-    print(f"\nAfter:")
+    print("\nAfter:")
     print(f"  columns              {len(after)} (expected {EXPECTED_COLUMNS})")
     print(f"  technology columns   {left or 'NONE'}")
     print(f"  rows                 {rows_after}")
     print(f"  smoke tickers left   {still_smoke or 'NONE'}")
     assert not left, f"technology columns survived the ALTER: {left}"
-    assert len(after) == EXPECTED_COLUMNS, \
-        f"def14a_llm has {len(after)} columns, expected {EXPECTED_COLUMNS}"
+    assert len(after) == EXPECTED_COLUMNS, f"def14a_llm has {len(after)} columns, expected {EXPECTED_COLUMNS}"
     assert not still_smoke, f"smoke tickers still have rows: {still_smoke}"
 
-    print("\nREADY. The paid smoke run is the next step, one ticker first so the four child "
-          "tables are created warm:")
+    print("\nREADY. The paid smoke run is the next step, one ticker first so the four child tables are created warm:")
     print('  "$PY" -m src data_extract def14a -c ./configs -t AAPL')
     print('  "$PY" -m src data_extract def14a -c ./configs -t ' + ",".join(SMOKE_TICKERS[1:]))
 

@@ -485,7 +485,7 @@ def log_symbol_resolutions(
     current_reuse = accepted[accepted[symbol_col].isin(universe) & (accepted[symbol_col] != accepted["ticker"])]
     if not current_reuse.empty:
         names = sorted(current_reuse[symbol_col].dropna().astype(str).unique())
-        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe " f"entity: {', '.join(names)}")
+        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe entity: {', '.join(names)}")
 
     if not unresolved.empty:
         by_verdict = unresolved.groupby("resolution_verdict")[symbol_col].agg(lambda values: ", ".join(sorted(set(map(str, values)))))
@@ -522,7 +522,7 @@ def build_identity(
             "`identity-tables` first."
         )
     if roster is None or roster.empty:
-        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to " "resolve rows against.")
+        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
 
     # --- axis A ------------------------------------------------------------- #
     ciks = lineage["cik"].map(normalise_cik)
@@ -657,7 +657,7 @@ def _check_d19(identity: Identity, allowlist: Mapping[str, str], today=None) -> 
         )
     if disagree:
         logger.info(
-            "identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed " "with evidence",
+            "identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed with evidence",
             len(identity.roster_cik) - len(disagree),
             len(identity.roster_cik),
             len(disagree),

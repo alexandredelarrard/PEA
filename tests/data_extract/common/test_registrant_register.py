@@ -233,7 +233,7 @@ def test_the_live_register_declares_only_kinds_that_change_the_cik():
             f"{', '.join(str(b.date()) for b in reg.boundaries)}"
         )
     n_chains = sum(1 for r in registrants.values() if len(r.segments) > 2)
-    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one " "that changes the CIK.")
+    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one that changes the CIK.")
 
 
 def test_the_missing_register_file_is_not_an_error(tmp_path):

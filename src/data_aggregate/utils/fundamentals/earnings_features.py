@@ -32,6 +32,7 @@ Also exposes `ntm_ttm_eps()` (NTM & TTM annual EPS) for PEGY's projected-growth 
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
@@ -59,8 +60,7 @@ def _forward_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -
     sub = df.dropna(subset=[value_col])
     if sub.empty:
         return pd.DataFrame(index=idx)
-    wide = sub.pivot_table(index="earnings_date", columns="ticker",
-                           values=value_col, aggfunc="last").sort_index()
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values=value_col, aggfunc="last").sort_index()
     return wide.reindex(wide.index.union(idx)).bfill(limit=FWD_FILL_LIMIT).reindex(idx)
 
 
@@ -70,21 +70,17 @@ def _realized_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) 
     sub = df.dropna(subset=[value_col])
     if sub.empty:
         return pd.DataFrame(index=idx)
-    wide = sub.pivot_table(index="earnings_date", columns="ticker",
-                           values=value_col, aggfunc="last").sort_index()
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values=value_col, aggfunc="last").sort_index()
     return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
 
 
-def _reported_rolling_to_daily(df: pd.DataFrame, value_col: str,
-                               idx: pd.DatetimeIndex, window: int) -> pd.DataFrame:
+def _reported_rolling_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, window: int) -> pd.DataFrame:
     """Trailing mean over the last `window` REPORTED quarters, forward-filled."""
     sub = df.dropna(subset=[value_col]).copy()
     if sub.empty:
         return pd.DataFrame(index=idx)
-    sub["v"] = sub.groupby("ticker")[value_col].transform(
-        lambda s: s.rolling(window, min_periods=1).mean())
-    wide = sub.pivot_table(index="earnings_date", columns="ticker",
-                           values="v", aggfunc="last").sort_index()
+    sub["v"] = sub.groupby("ticker")[value_col].transform(lambda s: s.rolling(window, min_periods=1).mean())
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="v", aggfunc="last").sort_index()
     return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
 
 
@@ -94,10 +90,8 @@ def _trailing_actual_sum(df: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -
     sub = df.dropna(subset=["eps_actual"]).copy()
     if sub.empty:
         return pd.DataFrame(index=idx)
-    sub["v"] = sub.groupby("ticker")["eps_actual"].transform(
-        lambda s: s.rolling(window, min_periods=window).sum())
-    wide = sub.pivot_table(index="earnings_date", columns="ticker",
-                           values="v", aggfunc="last").sort_index()
+    sub["v"] = sub.groupby("ticker")["eps_actual"].transform(lambda s: s.rolling(window, min_periods=window).sum())
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="v", aggfunc="last").sort_index()
     return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
 
 
@@ -111,20 +105,18 @@ def _ntm_ttm_from_prepped(df: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.D
     reported actuals. A true 4-quarter-ahead consensus is NOT reconstructable
     leak-free here (yfinance stores one estimate per quarter, so q+2..q+4 would use
     values not known at the as-of date)."""
-    fwd_eps = _forward_to_daily(df, "eps_estimate", idx)     # next quarter (est), PIT window
+    fwd_eps = _forward_to_daily(df, "eps_estimate", idx)  # next quarter (est), PIT window
     ttm4 = _trailing_actual_sum(df, idx, 4)
     ttm3 = _trailing_actual_sum(df, idx, 3)
     ntm = fwd_eps + ttm3 if not fwd_eps.empty and not ttm3.empty else pd.DataFrame(index=idx)
     return ntm, ttm4
 
 
-def ntm_ttm_eps(earnings_history: pd.DataFrame | None,
-                idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+def ntm_ttm_eps(earnings_history: pd.DataFrame | None, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Public helper: forward-rolled annual EPS (NTM) and trailing annual EPS (TTM)
     from the earnings-surprise archive. Reused by fundamental_features for PEGY's
     projected-growth term. Empty frames when the archive is unavailable."""
-    if (earnings_history is None or earnings_history.empty
-            or "earnings_date" not in earnings_history.columns):
+    if earnings_history is None or earnings_history.empty or "earnings_date" not in earnings_history.columns:
         return pd.DataFrame(index=idx), pd.DataFrame(index=idx)
     return _ntm_ttm_from_prepped(_prep(earnings_history), idx)
 
@@ -132,8 +124,7 @@ def ntm_ttm_eps(earnings_history: pd.DataFrame | None,
 _EPOCH = pd.Timestamp("1970-01-01")
 
 
-def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex,
-                        cap_days: int = 180) -> pd.DataFrame:
+def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex, cap_days: int = 180) -> pd.DataFrame:
     """Wide [date x ticker] CALENDAR days since the most recent PAST earnings report
     (0 on the report day, rising to ~90+ as the next report approaches, then resetting).
 
@@ -146,18 +137,15 @@ def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex,
         return pd.DataFrame(index=idx)
     # numeric ordinal (days since epoch) so the pivot/ffill stays a clean float path
     sub["ord"] = (sub["earnings_date"] - _EPOCH).dt.days
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="ord",
-                           aggfunc="last").sort_index()
+    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="ord", aggfunc="last").sort_index()
     # last report ordinal known on/before each trading day (forward-fill the date)
     wide = wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
     idx_ord = pd.Series((idx - _EPOCH).days, index=idx)
-    days = wide.rsub(idx_ord, axis=0)                       # idx_ord - last_report_ord
+    days = wide.rsub(idx_ord, axis=0)  # idx_ord - last_report_ord
     return days.clip(lower=0, upper=cap_days)
 
 
-def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                             close: pd.DataFrame,
-                             level_factor: pd.DataFrame | None = None) -> dict:
+def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, close: pd.DataFrame, level_factor: pd.DataFrame | None = None) -> dict:
     """⚠ THE PRICE LEG IS PUT BACK ON THE LEVEL BASIS BEFORE ANY YIELD IS TAKEN.
 
     Every yield here is `eps / price`, and the two legs do NOT sit on the same basis by
@@ -182,7 +170,7 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
         price = price.mul(level_factor.reindex_like(price).fillna(1.0))
 
     if not fwd_eps.empty:
-        F["fwd_eps_yield"] = ratio(fwd_eps, price)                 # next-quarter forward E/P
+        F["fwd_eps_yield"] = ratio(fwd_eps, price)  # next-quarter forward E/P
         if not last_actual.empty:
             F["eps_expectation_growth"] = ratio(fwd_eps, last_actual, positive_den=True) - 1.0
 
@@ -190,7 +178,7 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # historical, backtestable replacement for the yfinance forwardPE snapshot.
     ntm_eps, _ = _ntm_ttm_from_prepped(df, idx)
     if not ntm_eps.empty and ntm_eps.notna().any().any():
-        F["forward_earnings_yield"] = ratio(ntm_eps, price)        # NTM E/P (higher = cheaper)
+        F["forward_earnings_yield"] = ratio(ntm_eps, price)  # NTM E/P (higher = cheaper)
 
     last_surprise = _realized_to_daily(df, "surprise_pct", idx)
     if not last_surprise.empty:
@@ -210,13 +198,11 @@ def build_earnings_feature_panel(
 ) -> pd.DataFrame:
     """Long-format earnings-expectation feature panel (`f_<name>_vs_peers`,
     `f_<name>_xs`). Empty if the earnings history or prices are unavailable."""
-    if (earnings_history is None or earnings_history.empty
-            or stock_close is None or "earnings_date" not in earnings_history.columns):
+    if earnings_history is None or earnings_history.empty or stock_close is None or "earnings_date" not in earnings_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     prepped = _prep(earnings_history)
-    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close,
-                                      level_factor)
+    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor)
     panel = build_peer_relative_panel(fields, peer_dict)
 
     # RAW calendar signal (NOT peer-relative): days since the most recent earnings.
@@ -227,6 +213,5 @@ def build_earnings_feature_panel(
         long = dse.stack()
         long.index.set_names(["date", "ticker"], inplace=True)
         long = long.rename("f_days_since_earnings").reset_index()
-        panel = long if (panel is None or panel.empty) else \
-            panel.merge(long, on=["date", "ticker"], how="outer")
+        panel = long if (panel is None or panel.empty) else panel.merge(long, on=["date", "ticker"], how="outer")
     return panel

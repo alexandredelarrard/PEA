@@ -99,7 +99,7 @@ def test_all_cached_makes_zero_openai_calls(monkeypatch):
     assert set(out.index) == {"AAA", "BBB"}
     assert not store.saved_frames("ticker_embeddings")  # nothing new saved
     print("\n=== SANITY CHECK: fully-cached universe = zero API calls ===")
-    print("  all tickers in ticker_embeddings -> OpenAI never constructed, matrix served " "from cache, nothing re-saved. Validated.")
+    print("  all tickers in ticker_embeddings -> OpenAI never constructed, matrix served from cache, nothing re-saved. Validated.")
 
 
 if __name__ == "__main__":

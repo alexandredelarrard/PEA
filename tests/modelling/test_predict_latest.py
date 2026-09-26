@@ -17,6 +17,7 @@ predictable.
 tests (the latter drives the real method against a spy store); the end-to-end one needs a
 populated `cube` + trained artifacts and SKIPS cleanly otherwise.
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,12 +33,12 @@ from src.modelling.long_short.step_train import StepModelling
 
 warnings.filterwarnings("ignore")
 
-_LONG_COLUMNS = ["predicted_at", "date", "ticker", "horizon", "model", "predicts_for",
-                 "pred", "rank"]
+_LONG_COLUMNS = ["predicted_at", "date", "ticker", "horizon", "model", "predicts_for", "pred", "rank"]
 
 
 def _step():
     from src.context import get_config_context
+
     config, context = get_config_context("./configs", use_cache=False, save=True)
     return StepModelling(context=context, config=config)
 
@@ -45,7 +46,7 @@ def _step():
 def test_predicts_for_is_the_as_of_date_plus_horizon_trading_days():
     """The cube target is a forward return over h ROWS of the daily price panel = h TRADING
     days, so the target date is a BUSINESS-day offset, not a calendar one."""
-    as_of = pd.Timestamp("2026-07-27")            # a Monday
+    as_of = pd.Timestamp("2026-07-27")  # a Monday
     for h in (1, 5, 30, 60, 90):
         got = StepModelling.predicts_for(as_of, h)
         assert got == as_of + pd.tseries.offsets.BDay(h)
@@ -56,15 +57,14 @@ def test_predicts_for_is_the_as_of_date_plus_horizon_trading_days():
     print("\n=== SANITY CHECK: predicts_for arithmetic ===")
     for h in (30, 60, 90):
         d = StepModelling.predicts_for(as_of, h)
-        print(f"  as-of {as_of.date()} + h{h} trading days -> {d.date()} "
-              f"({(d - as_of).days} calendar days)")
+        print(f"  as-of {as_of.date()} + h{h} trading days -> {d.date()} ({(d - as_of).days} calendar days)")
     print("  business-day offset (never a weekend); h30 = 42 calendar days, NOT 30. Validated.")
 
 
 def test_prediction_rows_are_long_and_stamped():
     """`_prediction_rows` builds one (horizon, model) slice: z-scored per day, ranked, and
     stamped with predicted_at + predicts_for."""
-    step = StepModelling.__new__(StepModelling)   # no DB needed for this pure shaping step
+    step = StepModelling.__new__(StepModelling)  # no DB needed for this pure shaping step
     dates = pd.to_datetime(["2026-07-24", "2026-07-24", "2026-07-24", "2026-07-27", "2026-07-27"])
     keys = pd.DataFrame({"date": dates, "ticker": ["AAA", "BBB", "CCC", "AAA", "BBB"]})
     raw = np.array([1.0, 2.0, 3.0, 10.0, 20.0])
@@ -86,9 +86,11 @@ def test_prediction_rows_are_long_and_stamped():
 
     print("\n=== SANITY CHECK: long prediction rows ===")
     print(out.to_string(index=False))
-    print("  one row per (date, ticker) for this (horizon=30, model=lgbm); predicted_at is the "
-          "RUN time, predicts_for follows each row's own as-of date; pred z-scored per day. "
-          "Validated.")
+    print(
+        "  one row per (date, ticker) for this (horizon=30, model=lgbm); predicted_at is the "
+        "RUN time, predicts_for follows each row's own as-of date; pred z-scored per day. "
+        "Validated."
+    )
 
 
 class _StubModel:
@@ -144,22 +146,19 @@ def test_predict_latest_scores_the_newest_date_even_with_all_labels_nan(monkeypa
     label in the projection is what made the staleness invisible."""
     dates = pd.to_datetime(["2026-09-08", "2026-09-09", "2026-09-10"])
     tickers = ["AAA", "BBB", "CCC"]
-    rows = [{"date": d, "ticker": t, "f_a": float(i + 1) * (j + 1)}
-            for j, d in enumerate(dates) for i, t in enumerate(tickers)]
+    rows = [{"date": d, "ticker": t, "f_a": float(i + 1) * (j + 1)} for j, d in enumerate(dates) for i, t in enumerate(tickers)]
     cube = pd.DataFrame(rows)
     # labels mature oldest-first; the NEWEST date has nothing at any horizon
     cube["target_rank_h30"] = [0.1, 0.5, 0.9] * 2 + [np.nan] * 3
     cube["target_rank_h90"] = [0.2, 0.6, 0.8] + [np.nan] * 6
     newest = dates.max()
-    assert cube.loc[cube["date"] == newest, ["target_rank_h30", "target_rank_h90"]] \
-        .isna().all(axis=None), "fixture must have an ALL-NaN newest date"
+    assert cube.loc[cube["date"] == newest, ["target_rank_h30", "target_rank_h90"]].isna().all(axis=None), "fixture must have an ALL-NaN newest date"
 
     store = _SpyStore(cube)
     step = StepModelling.__new__(StepModelling)
     step._context = SimpleNamespace(store=store)
     step._log = logging.getLogger("predict_latest_test")
-    meta = {"feature_cols": ["f_a"], "categorical_cols": [],
-            "train_ic_ir": {"30": 0.6, "90": 0.4}}
+    meta = {"feature_cols": ["f_a"], "categorical_cols": [], "train_ic_ir": {"30": 0.6, "90": 0.4}}
     models = {30: {"lgbm": _StubModel(1.0)}, 90: {"lgbm": _StubModel(-1.0)}}
     monkeypatch.setattr(StepModelling, "_load_saved_ensemble", lambda self: (meta, models))
 
@@ -185,20 +184,20 @@ def test_predict_latest_scores_the_newest_date_even_with_all_labels_nan(monkeypa
     assert store.written is not None and len(store.written) == len(out)
 
     print("\n=== SANITY CHECK: predict_latest reaches the unlabelled newest date ===")
-    print(f"  cube dates {[str(d.date()) for d in dates]}; {newest.date()} has "
-          f"target_rank_h30 AND target_rank_h90 all NaN")
-    print(f"  -> scored as-of {out['date'].max().date()} for {len(tickers)} names x "
-          f"{sorted(out['horizon'].unique())} horizons x {sorted(out['model'].unique())}")
+    print(f"  cube dates {[str(d.date()) for d in dates]}; {newest.date()} has target_rank_h30 AND target_rank_h90 all NaN")
+    print(
+        f"  -> scored as-of {out['date'].max().date()} for {len(tickers)} names x "
+        f"{sorted(out['horizon'].unique())} horizons x {sorted(out['model'].unique())}"
+    )
     print(f"  projection asked for {asked}: ZERO target columns loaded")
-    print("  the long cube had no row for this date at all, so this method predicted off a "
-          "stale one. Validated.")
+    print("  the long cube had no row for this date at all, so this method predicted off a stale one. Validated.")
 
 
 def test_predict_latest_makes_sense():
     try:
         step = _step()
         out = step.predict_latest(n_dates=1)
-    except Exception as e:                                    # no DB / no cube / no artifacts
+    except Exception as e:  # no DB / no cube / no artifacts
         pytest.skip(f"cube or model artifacts unavailable: {e}")
     if out is None or out.empty:
         pytest.skip("predict_latest returned no rows (empty cube)")
@@ -231,8 +230,7 @@ def test_predict_latest_makes_sense():
         assert spear > 0.999, f"{m} h{h}: rank not monotone in pred (spearman={spear:.3f})"
 
     # per-horizon ensembles are correlated but NOT identical -> the blend adds information
-    ens = last[last["model"] == PREDICTION_MODEL_ENSEMBLE].pivot(
-        index="ticker", columns="horizon", values="pred")
+    ens = last[last["model"] == PREDICTION_MODEL_ENSEMBLE].pivot(index="ticker", columns="horizon", values="pred")
     if ens.shape[1] >= 2:
         off = ens.corr().to_numpy()[np.triu_indices(ens.shape[1], 1)]
         assert (off > 0.2).all() and (off < 0.999).all(), f"horizon corr degenerate: {off}"
@@ -241,20 +239,23 @@ def test_predict_latest_makes_sense():
     top = blended.nlargest(3, "pred")["ticker"].tolist()
     bot = blended.nsmallest(3, "pred")["ticker"].tolist()
     print("\n=== SANITY CHECK: predict_latest on the last cube date ===")
-    print(f"  as-of {as_of.date()} | predicted_at {last['predicted_at'].max()} | "
-          f"{len(last)} rows = {blended['ticker'].nunique()} names x {len(horizons)} horizons "
-          f"x {len(models)} models")
-    print(f"  horizons {horizons} -> predicts_for "
-          f"{ {h: str(last[last['horizon']==h]['predicts_for'].max().date()) for h in horizons} }")
+    print(
+        f"  as-of {as_of.date()} | predicted_at {last['predicted_at'].max()} | "
+        f"{len(last)} rows = {blended['ticker'].nunique()} names x {len(horizons)} horizons "
+        f"x {len(models)} models"
+    )
+    print(f"  horizons {horizons} -> predicts_for { {h: str(last[last['horizon'] == h]['predicts_for'].max().date()) for h in horizons} }")
     print(f"  models {sorted(models)}")
-    print(f"  blended (h~{int(blended['horizon'].iloc[0])}) range "
-          f"[{blended['pred'].min():+.2f}, {blended['pred'].max():+.2f}]")
+    print(f"  blended (h~{int(blended['horizon'].iloc[0])}) range [{blended['pred'].min():+.2f}, {blended['pred'].max():+.2f}]")
     print(f"  top buys {top} | bottom {bot}")
-    print("  CONCLUSION: long-format predictions per horizon AND per model for the newest "
-          "(unlabelled) cube date, each stamped with when it was predicted and the date it "
-          "predicts -> allocation-ready. Validated.")
+    print(
+        "  CONCLUSION: long-format predictions per horizon AND per model for the newest "
+        "(unlabelled) cube date, each stamped with when it was predicted and the date it "
+        "predicts -> allocation-ready. Validated."
+    )
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

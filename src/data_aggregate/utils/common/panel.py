@@ -14,13 +14,17 @@ division and inf-sanitizing in `frames.py`, and every per-day cross-sectional tr
 `xs.py` (which is where the five duplicate standardizers were merged). What is left here is
 the one thing that is genuinely about PEERS.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.xs import (
-    PEER_DISPERSION_FLOOR, XS_CLIP_PEER, winsorize_xs, xs_rank_pct,
+    PEER_DISPERSION_FLOOR,
+    XS_CLIP_PEER,
+    winsorize_xs,
+    xs_rank_pct,
 )
 
 
@@ -154,8 +158,7 @@ def peer_relative(
 _EMISSION_MODES = ("raw", "raw+xs", "raw+peers")
 
 
-def build_peer_relative_panel(fields: dict, peer_dict: dict,
-                              emission: dict | None = None) -> pd.DataFrame:
+def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | None = None) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
     `f_<name>_xs` (universe percentile). Shared by every panel builder.
@@ -174,8 +177,7 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict,
     emission = emission or {}
     unknown = {m for m in emission.values() if m not in _EMISSION_MODES}
     if unknown:
-        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; "
-                         f"expected one of {list(_EMISSION_MODES)}")
+        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; expected one of {list(_EMISSION_MODES)}")
     stray = set(emission) - set(fields)
     if stray:
         # A name in the map that no field produces is a silent no-op -- exactly the drift the
@@ -219,7 +221,7 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict,
             s2.index.set_names(["date", "ticker"], inplace=True)
             long_frames.append(s2.rename(f"f_{name}_xs"))
             del xs, s2
-        del fdf                                       # free per-field intermediates promptly
+        del fdf  # free per-field intermediates promptly
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])

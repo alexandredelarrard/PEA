@@ -101,9 +101,7 @@ def repair_value_basis(
     out = holdings.copy()
     value_columns = [c for c in _VALUE_COLUMNS if c in out.columns]
     if close_split is None or not value_columns or out.empty:
-        logger.warning(
-            "13F value basis: no close_split or no value column -> repair SKIPPED, " "every row flagged kept and `value_usd` left as filed"
-        )
+        logger.warning("13F value basis: no close_split or no value column -> repair SKIPPED, every row flagged kept and `value_usd` left as filed")
         out["value_basis_repaired"] = KEPT
         return out, _empty_register()
 
@@ -123,7 +121,7 @@ def repair_value_basis(
         value = value.mask(swapped, shares * close)
         out["value_usd"] = value
         logger.warning(
-            "13F value basis: %s row(s) filed `value_usd == shares` -> restated at " "the period-end close, $%.3e -> $%.3e",
+            "13F value basis: %s row(s) filed `value_usd == shares` -> restated at the period-end close, $%.3e -> $%.3e",
             f"{int(swapped.sum()):,}",
             before,
             float(value[swapped].sum()),
@@ -148,7 +146,7 @@ def repair_value_basis(
         hit = (factor.isna() & k.between(2, 500) & (residual - k).abs().le(0.01)).fillna(False)
         if hit.any():
             logger.info(
-                "13F value basis: %s filing(s) sit on a whole-integer median ratio " "(split/spinoff basis) -> factor %.0e instead of nulled",
+                "13F value basis: %s filing(s) sit on a whole-integer median ratio (split/spinoff basis) -> factor %.0e instead of nulled",
                 f"{int(hit.sum()):,}",
                 unit,
             )
@@ -211,7 +209,7 @@ def log_register(register: pd.DataFrame, value_before_total: float, log=logger) 
         if not hit.empty:
             moved = float(hit["value_before"].sum())
             log.warning(
-                "13F value basis: %s filing(s) %s -- %s row(s), $%.3e of filed value " "(%.2f%% of the table's total)",
+                "13F value basis: %s filing(s) %s -- %s row(s), $%.3e of filed value (%.2f%% of the table's total)",
                 f"{len(hit):,}",
                 name,
                 f"{int(hit['rows'].sum()):,}",

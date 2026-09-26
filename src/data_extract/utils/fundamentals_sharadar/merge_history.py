@@ -60,6 +60,7 @@ stopped covering keeps its last snapshot forever and a stale number reads as a c
     later real number is stored as a string. That has already happened once on
     `fundamentals_history_sec` (APA's values came back as `'1997000000.0'`).
 """
+
 from __future__ import annotations
 
 import json
@@ -71,19 +72,25 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT, SHARADAR_COLLAPSE_KEY,
-    SHARADAR_COLLAPSE_ORDER, SHARADAR_CONFIG_SUBDIR, SHARADAR_OVERRIDE_APPROVED_KEY,
-    SHARADAR_OVERRIDE_SOURCE_SEC, SHARADAR_REGISTER_DOC_PREFIX,
-    SHARADAR_SEC_ASOF_TOLERANCE_DAYS, SHARADAR_SOURCE_OVERRIDES_FILENAME,
+    SHARADAR_ACTION_SPINOFF,
+    SHARADAR_ACTION_SPLIT,
+    SHARADAR_COLLAPSE_KEY,
+    SHARADAR_COLLAPSE_ORDER,
+    SHARADAR_CONFIG_SUBDIR,
+    SHARADAR_OVERRIDE_APPROVED_KEY,
+    SHARADAR_OVERRIDE_SOURCE_SEC,
+    SHARADAR_REGISTER_DOC_PREFIX,
+    SHARADAR_SEC_ASOF_TOLERANCE_DAYS,
+    SHARADAR_SOURCE_OVERRIDES_FILENAME,
 )
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
-from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
-from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    FieldMap, TranslationReport, apply_derived, load_field_map, translate)
+
 # Top-level, not deferred. `src/data_store/schema.py` imports only `data_store.errors`, so
 # there is no package cycle to dodge here -- a local import would only hide the dependency.
 from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
+from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
+from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, TranslationReport, apply_derived, load_field_map, translate
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
@@ -128,6 +135,7 @@ _SEC_PREFIX = "__sec__"
 #: The SEC row's own `as_of`, carried through the join so the no-leakage property is
 #: MEASURABLE rather than merely argued. Dropped before the write.
 SEC_AS_OF = "__sec_as_of__"
+
 
 # --------------------------------------------------------------------------- #
 # the override register (D22)                                                  #
@@ -182,17 +190,16 @@ def load_overrides(config_dir: str = DEFAULT_CONFIG_DIR) -> Overrides:
                 raise RuntimeError(
                     f"{where} names source {source!r}. The ONLY legal direction is "
                     f"{SHARADAR_OVERRIDE_SOURCE_SEC!r}: moving a column the other way is a "
-                    f"field-BLOCK change (D14) and belongs in sharadar_field_map.json.")
+                    f"field-BLOCK change (D14) and belongs in sharadar_field_map.json."
+                )
             if not str(entry.get("reason", "")).strip():
-                raise RuntimeError(f"{where} has no `reason`. An override that cannot be "
-                                   f"re-checked when the roster widens is not a decision.")
+                raise RuntimeError(f"{where} has no `reason`. An override that cannot be re-checked when the roster widens is not a decision.")
             bucket = approved if entry.get(SHARADAR_OVERRIDE_APPROVED_KEY) else pending
             bucket[(ticker, field)] = entry
     return Overrides(approved=approved, pending=pending)
 
 
-def write_overrides(entries: dict[str, dict[str, dict]], readme: list[str],
-                    config_dir: str = DEFAULT_CONFIG_DIR) -> Path:
+def write_overrides(entries: dict[str, dict[str, dict]], readme: list[str], config_dir: str = DEFAULT_CONFIG_DIR) -> Path:
     """Emit the register with a STABLE hand-readable shape, one line per entry.
 
     Not `json.dumps(indent=2)` over the whole file: a round-trip through the default emitter
@@ -203,19 +210,18 @@ def write_overrides(entries: dict[str, dict[str, dict]], readme: list[str],
     """
     path = overrides_path(config_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ['{', '  "_README": [']
-    lines += [f'    {json.dumps(line, ensure_ascii=False)},' for line in readme[:-1]]
-    lines += [f'    {json.dumps(readme[-1], ensure_ascii=False)}', '  ],']
+    lines = ["{", '  "_README": [']
+    lines += [f"    {json.dumps(line, ensure_ascii=False)}," for line in readme[:-1]]
+    lines += [f"    {json.dumps(readme[-1], ensure_ascii=False)}", "  ],"]
     for i, (ticker, by_field) in enumerate(sorted(entries.items())):
-        lines.append('')
-        lines.append(f'  {json.dumps(ticker)}: {{')
+        lines.append("")
+        lines.append(f"  {json.dumps(ticker)}: {{")
         items = sorted(by_field.items())
         for j, (field, entry) in enumerate(items):
             comma = "," if j < len(items) - 1 else ""
-            lines.append(f'    {json.dumps(field)}: '
-                         f'{json.dumps(entry, ensure_ascii=False)}{comma}')
-        lines.append('  }' + ("," if i < len(entries) - 1 else ""))
-    lines.append('}')
+            lines.append(f"    {json.dumps(field)}: {json.dumps(entry, ensure_ascii=False)}{comma}")
+        lines.append("  }" + ("," if i < len(entries) - 1 else ""))
+    lines.append("}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -235,8 +241,7 @@ def merged_columns(field_map: FieldMap) -> tuple[str, ...]:
     """
 
     owned = set(field_map.sec_owned)
-    columns = (*MERGE_KEYS,
-               *(sec_column(n) if n in owned else n for n in field_map.outputs))
+    columns = (*MERGE_KEYS, *(sec_column(n) if n in owned else n for n in field_map.outputs))
     declared = tuple(Tables.fundamentals_history.read_columns)
     if columns != declared:
         extra = [c for c in columns if c not in set(declared)]
@@ -245,7 +250,8 @@ def merged_columns(field_map: FieldMap) -> tuple[str, ...]:
             f"the merged column contract disagrees with the registry: {len(columns)} built "
             f"vs {len(declared)} declared; only in the build {extra}; only in "
             f"schema.py {gone}. Fix BOTH -- they are the same decision written twice on "
-            f"purpose.")
+            f"purpose."
+        )
     return columns
 
 
@@ -269,8 +275,7 @@ def collapse_same_date(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]
     return ordered[~duplicated].reset_index(drop=True), ordered[duplicated].copy()
 
 
-def _asof_join(left: pd.DataFrame, right: pd.DataFrame, *, tolerance_days: int,
-               also_to_datetime: tuple[str, ...] = ()) -> pd.DataFrame:
+def _asof_join(left: pd.DataFrame, right: pd.DataFrame, *, tolerance_days: int, also_to_datetime: tuple[str, ...] = ()) -> pd.DataFrame:
     """Backward as-of join on `as_of`, within a ticker, capped at `tolerance_days`.
 
     Both sides go to nanoseconds and are globally sorted by `on` first: `merge_asof` REFUSES
@@ -284,13 +289,16 @@ def _asof_join(left: pd.DataFrame, right: pd.DataFrame, *, tolerance_days: int,
         right[column] = pd.to_datetime(right[column]).astype("datetime64[ns]")
     right = right.dropna(subset=["as_of"])
     return pd.merge_asof(
-        left.sort_values("as_of"), right.sort_values("as_of"),
-        on="as_of", by="ticker", direction="backward",
-        tolerance=pd.Timedelta(days=tolerance_days)).reset_index(drop=True)
+        left.sort_values("as_of"),
+        right.sort_values("as_of"),
+        on="as_of",
+        by="ticker",
+        direction="backward",
+        tolerance=pd.Timedelta(days=tolerance_days),
+    ).reset_index(drop=True)
 
 
-def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *,
-                   tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
+def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *, tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
     """Attach the SEC-owned columns AS OF each Sharadar publication date, BACKWARD only.
 
     See the module docstring for why this is not an exact join and never a forward one. The
@@ -303,12 +311,10 @@ def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *,
         return out
     right = sec.rename(columns={"as_of": SEC_AS_OF}).copy()
     right["as_of"] = right[SEC_AS_OF]
-    return _asof_join(sharadar, right, tolerance_days=tolerance_days,
-                      also_to_datetime=(SEC_AS_OF,))
+    return _asof_join(sharadar, right, tolerance_days=tolerance_days, also_to_datetime=(SEC_AS_OF,))
 
 
-def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *,
-                     tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
+def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *, tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
     """Headcount, forward-filled onto the filing grain.
 
     Annual 10-K PROSE: it was never on the filing cadence, so a value stated once in the 10-K
@@ -348,19 +354,24 @@ def apply_overrides(frame: pd.DataFrame, overrides: Overrides) -> tuple[pd.DataF
             raise RuntimeError(
                 f"override {ticker}/{field}: the SEC block was not loaded for {field!r}. "
                 f"The SEC projection is built FROM the register, so this means the two "
-                f"disagree -- never silently write a NULL over a real Sharadar value.")
+                f"disagree -- never silently write a NULL over a real Sharadar value."
+            )
         out.loc[rows, field] = out.loc[rows, column]
         changed.add(field)
         covered = int(out.loc[rows, field].notna().sum())
-        log.warning("override %s/%s -> sec (approved %s): %d of %d row(s) carry a value; "
-                    "the rest are NULL, NOT a fallback to Sharadar (D14). %s",
-                    ticker, field, entry.get(SHARADAR_OVERRIDE_APPROVED_KEY),
-                    covered, int(rows.sum()), entry.get("reason", ""))
+        log.warning(
+            "override %s/%s -> sec (approved %s): %d of %d row(s) carry a value; the rest are NULL, NOT a fallback to Sharadar (D14). %s",
+            ticker,
+            field,
+            entry.get(SHARADAR_OVERRIDE_APPROVED_KEY),
+            covered,
+            int(rows.sum()),
+            entry.get("reason", ""),
+        )
     if overrides.pending:
         # the COUNT is the actionable part; enumerating 29 proposals on every merge run buries
         # the rest of the log, so the list itself drops to DEBUG
-        log.warning("%d override proposal(s) awaiting a decision and IGNORED",
-                    len(overrides.pending))
+        log.warning("%d override proposal(s) awaiting a decision and IGNORED", len(overrides.pending))
         log.debug("pending overrides: %s", sorted(f"{t}/{f}" for t, f in overrides.pending))
     return out, changed
 
@@ -375,22 +386,27 @@ def rederive(frame: pd.DataFrame, field_map: FieldMap, changed: set[str]) -> pd.
     Targeted rather than a blanket re-run of `apply_derived`: a blanket pass would also
     recompute a derived column somebody deliberately overrode, quietly undoing the decision.
     """
-    targets = {name for name, spec in field_map.derived.items()
-               if spec.op != "quarter" and set(spec.inputs) & changed} - changed
+    targets = {name for name, spec in field_map.derived.items() if spec.op != "quarter" and set(spec.inputs) & changed} - changed
     if not targets:
         return frame
-    log.info("re-deriving %d column(s) whose inputs the merge changed: %s",
-             len(targets), sorted(targets))
+    log.info("re-deriving %d column(s) whose inputs the merge changed: %s", len(targets), sorted(targets))
     return apply_derived(frame, field_map, only=targets)
 
 
 # --------------------------------------------------------------------------- #
 # the build                                                                    #
 # --------------------------------------------------------------------------- #
-def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.DataFrame | None,
-                actions: pd.DataFrame | None, field_map: FieldMap, overrides: Overrides, *,
-                yf_splits: pd.DataFrame | None = None,
-                report: TranslationReport | None = None) -> pd.DataFrame:
+def build_frame(
+    sharadar_arq: pd.DataFrame,
+    sec: pd.DataFrame,
+    employees: pd.DataFrame | None,
+    actions: pd.DataFrame | None,
+    field_map: FieldMap,
+    overrides: Overrides,
+    *,
+    yf_splits: pd.DataFrame | None = None,
+    report: TranslationReport | None = None,
+) -> pd.DataFrame:
     """The whole transform, with NO I/O, so every step is testable without a database.
 
     Step order, and each step's rule, is the phase-4 plan's: translate -> TTM -> collapse ->
@@ -410,28 +426,30 @@ def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.Dat
         raise RuntimeError(
             f"the override register moves {contradictory} to `sec`, but the field map already "
             f"declares them SEC-owned (D18). An override moves a SHARADAR-owned column; "
-            f"changing which block a column belongs to is a field-map edit, not an override.")
+            f"changing which block a column belongs to is a field-map edit, not an override."
+        )
     translated = translate(sharadar_arq, field_map, report=report)
-    
+
     # `actions` goes to `build_ttm`, not to `translate`: the split de-adjustment runs AFTER
     # the four-quarter aggregation, or a window straddling a split mixes two share bases.
-    ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits,
-                    report=report)
+    ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits, report=report)
     ttm = ttm.rename(columns=_KEY_FROM_VENDOR)
     for column in ("as_of", "fiscal_end"):
         ttm[column] = pd.to_datetime(ttm[column], errors="coerce").astype("datetime64[ns]")
 
     collapsed, dropped = collapse_same_date(ttm)
     if not dropped.empty:
-        log.warning("same-date collapse: %d row(s) dropped, greatest `fiscal_end` kept "
-                    "(Sharadar ships no form column, so FORM_PRECEDENCE has no analogue):\n%s",
-                    len(dropped), dropped[["ticker", "as_of", "fiscal_end"]].to_string())
+        log.warning(
+            "same-date collapse: %d row(s) dropped, greatest `fiscal_end` kept "
+            "(Sharadar ships no form column, so FORM_PRECEDENCE has no analogue):\n%s",
+            len(dropped),
+            dropped[["ticker", "as_of", "fiscal_end"]].to_string(),
+        )
 
     # The SEC-owned columns are all-NaN out of phase 3 -- drop them so the join can land the
     # real ones, rather than colliding into a `_x`/`_y` pair nothing downstream would read.
     sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
-    joined = join_sec_block(collapsed.drop(columns=[*sec_owned, EMPLOYEES_COLUMN],
-                                           errors="ignore"), sec)
+    joined = join_sec_block(collapsed.drop(columns=[*sec_owned, EMPLOYEES_COLUMN], errors="ignore"), sec)
     joined = attach_employees(joined, employees)
     joined, changed = apply_overrides(joined, overrides)
     joined = rederive(joined, field_map, changed | set(sec_owned))
@@ -443,19 +461,23 @@ def build_frame(sharadar_arq: pd.DataFrame, sec: pd.DataFrame, employees: pd.Dat
 
     missing = [c for c in columns if c not in joined.columns]
     if missing:
-        raise RuntimeError(f"the merged frame is missing {len(missing)} contract column(s): "
-                           f"{missing}")
+        raise RuntimeError(f"the merged frame is missing {len(missing)} contract column(s): {missing}")
     carriers = [c for c in joined.columns if c.startswith(_SEC_PREFIX)]
     out = joined[list(columns)].copy()
     # Coverage is measured on `SEC_AS_OF` -- did a SEC row JOIN -- and never on a value
     # column. A ticker that genuinely has no `goodwill` reads as an unjoined ticker under a
     # value-column proxy, which is how a correct join gets reported as a broken one.
     joined_rows = int(joined[SEC_AS_OF].notna().sum())
-    log.info("merged frame: %d row(s) x %d column(s); SEC block joined on %d row(s) over %d "
-             "ticker(s), lag %s..%s day(s); %d override-only SEC column(s) dropped",
-             len(out), len(out.columns), joined_rows,
-             joined.loc[joined[SEC_AS_OF].notna(), "ticker"].nunique(),
-             *(_lag_range(joined)), len(carriers))
+    log.info(
+        "merged frame: %d row(s) x %d column(s); SEC block joined on %d row(s) over %d "
+        "ticker(s), lag %s..%s day(s); %d override-only SEC column(s) dropped",
+        len(out),
+        len(out.columns),
+        joined_rows,
+        joined.loc[joined[SEC_AS_OF].notna(), "ticker"].nunique(),
+        *(_lag_range(joined)),
+        len(carriers),
+    )
     return _cast(out, columns)
 
 
@@ -484,8 +506,7 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
-def build_merged_history(context: Context, tickers: list[str], *, full: bool = False,
-                         config_dir: str = DEFAULT_CONFIG_DIR) -> None:
+def build_merged_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
     """`fundamentals_sharadar` + `fundamentals_history_sec` -> `fundamentals_history`.
 
     Both inputs are READ-ONLY here; neither is ever written by this build, which is what makes
@@ -504,11 +525,9 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     overrides = load_overrides(config_dir)
     names = sorted({t.strip().upper() for t in tickers if t and t.strip()})
 
-    vendor = context.store.load(Tables.sharadar_fundamentals, project=True,
-                                where={"ticker": names, "dimension": ARQ}, optional=True)
+    vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"ticker": names, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
-        context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- "
-                            "run `fundamentals-sharadar` first", len(names))
+        context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- run `fundamentals-sharadar` first", len(names))
         return
 
     # `sharadar_actions` is MARKET-WIDE -- every ticker Sharadar covers, every action type.
@@ -517,36 +536,33 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     # ⚠ The `spinoff` rows no longer VETO a co-dated split -- that veto was wrong, see
     # `split_events` -- but they are still read, to NAME the 27 rows the veto used to drop.
     actions = context.store.load(
-        Tables.sharadar_actions, project=True, optional=True,
-        where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
+        Tables.sharadar_actions, project=True, optional=True, where={"ticker": names, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
+    )
     # The SECOND split source. `sharadar_actions` misses GOOGL 2022 x20, NVDA 2021 x4, TSLA
     # 2022 x3, AVGO/CMG/ANET 2024 and BKNG/MNST/AMCR 2026 -- nine events yfinance has -- and
     # carries at least one false positive. `split_events` unions them under a corroboration
     # rule. Only `sharesOutstandingPit` reads the result; market cap no longer does.
-    yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"],
-                                   where={"ticker": names}, optional=True)
-    employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names},
-                                   optional=True)
+    yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names}, optional=True)
 
     # The SEC projection is built FROM the register, so an approved override can never name a
     # column the join did not bring. `employees` is NOT a column of this table (see
     # EMPLOYEES_COLUMN) and asking for it would raise on a projection, not return NULLs.
     sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
     sec_columns = ["ticker", "as_of", *sec_owned]
-    sec = context.store.load(Tables.fundamentals_history_sec,
-                             columns=sec_columns + list(overrides.fields),
-                             where={"ticker": names}, optional=True)
+    sec = context.store.load(Tables.fundamentals_history_sec, columns=sec_columns + list(overrides.fields), where={"ticker": names}, optional=True)
     if sec is None:
-        context.log.warning("merged history: NO SEC rows for these tickers -- all 15 "
-                            "SEC-owned columns will be NULL. That is the stated coverage "
-                            "asymmetry (D14), not a failure.")
+        context.log.warning(
+            "merged history: NO SEC rows for these tickers -- all 15 "
+            "SEC-owned columns will be NULL. That is the stated coverage "
+            "asymmetry (D14), not a failure."
+        )
         sec = pd.DataFrame(columns=sec_columns)
     else:
         sec = sec.rename(columns={f: f"{_SEC_PREFIX}{f}" for f in overrides.fields})
-    
+
     report = TranslationReport()
-    frame = build_frame(vendor, sec, employees, actions, field_map, overrides,
-                        yf_splits=yf_splits, report=report)
+    frame = build_frame(vendor, sec, employees, actions, field_map, overrides, yf_splits=yf_splits, report=report)
     if frame.empty:
         context.log.warning("merged history: the transform produced 0 rows")
         return
@@ -556,17 +572,22 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
         # universe (~491) whatever the entitlement covers, and a per-ticker loop pays 491
         # round-trips to delete rows for the 30 that have any.
         deleted = context.store.delete(Tables.fundamentals_history, {"ticker": names})
-        context.log.warning("merged history: --full deleted %d existing row(s) before the "
-                            "rebuild (scope: %d ticker(s))", deleted, len(names))
-        
+        context.log.warning("merged history: --full deleted %d existing row(s) before the rebuild (scope: %d ticker(s))", deleted, len(names))
+
     written = context.store.save(Tables.fundamentals_history, frame)
     covered = int(frame[sec_column("regime")].notna().sum())
     context.log.info(
         "merged history: %d row(s) over %d ticker(s), %s..%s | SEC block on %d row(s) "
         "(%d ticker(s)) -- the stated coverage asymmetry, not a gap | %d approved "
         "override(s), %d awaiting decision | %s",
-        written, frame["ticker"].nunique(), frame["as_of"].min().date(),
-        frame["as_of"].max().date(), covered,
+        written,
+        frame["ticker"].nunique(),
+        frame["as_of"].min().date(),
+        frame["as_of"].max().date(),
+        covered,
         frame.loc[frame[sec_column("regime")].notna(), "ticker"].nunique(),
-        len(overrides.approved), len(overrides.pending), report.summary())
+        len(overrides.approved),
+        len(overrides.pending),
+        report.summary(),
+    )
     record_run(context, Tables.fundamentals_history, len(names), written, is_full_rescan=full)

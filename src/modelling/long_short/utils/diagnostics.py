@@ -31,6 +31,7 @@ Design notes
     time-dependent skill curve rather than a single in-sample number. It is a
     property of the ENSEMBLE, so it sits at the horizon level, not per member.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,18 +39,19 @@ import re
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")           # headless: save figures without a display
+
+matplotlib.use("Agg")  # headless: save figures without a display
 import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np               # noqa: E402
-import pandas as pd              # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 from scipy.stats import spearmanr  # noqa: E402
 
 from src.modelling.long_short.utils import model as ml  # noqa: E402
 
-try:                             # declared dependency (pyproject + requirements-airflow),
-    import shap                  # guarded ONLY so a stale venv degrades to "no SHAP artifact"
-except ImportError:              # instead of killing the whole training run at import time.
-    shap = None                  # `shap_row_values` logs a WARNING with the install hint.
+try:  # declared dependency (pyproject + requirements-airflow),
+    import shap  # guarded ONLY so a stale venv degrades to "no SHAP artifact"
+except ImportError:  # instead of killing the whole training run at import time.
+    shap = None  # `shap_row_values` logs a WARNING with the install hint.
 
 
 def _safe(name: str) -> str:
@@ -72,8 +74,7 @@ def _sample_rows(x: np.ndarray, sample: int, seed: int = 42) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Partial dependence (booster-only, no extra deps)                             #
 # --------------------------------------------------------------------------- #
-def partial_dependence(booster, x: np.ndarray, feat_idx: int,
-                       grid_points: int = 30, sample: int = 2000) -> tuple:
+def partial_dependence(booster, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000) -> tuple:
     """1-D partial dependence: average model score as `feat_idx` is swept across
     its own 2-98% quantile grid, all other features held at their real values."""
     x = _sample_rows(x, sample)
@@ -92,8 +93,7 @@ def partial_dependence(booster, x: np.ndarray, feat_idx: int,
     return grid, means
 
 
-def save_pdp_plot(grid: np.ndarray, means: np.ndarray, feat: str,
-                  path: Path, horizon, feature_values: np.ndarray) -> None:
+def save_pdp_plot(grid: np.ndarray, means: np.ndarray, feat: str, path: Path, horizon, feature_values: np.ndarray) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(grid, means, color="steelblue", lw=2, marker="o", ms=3)
     # rug of the real feature distribution (deciles) along the x-axis
@@ -112,9 +112,9 @@ def save_pdp_plot(grid: np.ndarray, means: np.ndarray, feat: str,
 # --------------------------------------------------------------------------- #
 # SHAP: raw per-row values + the mean|SHAP| ranking derived from them           #
 # --------------------------------------------------------------------------- #
-def shap_row_values(booster, x: np.ndarray, feature_cols: list[str],
-                    sample: int = 2000, seed: int = 42,
-                    logger=None) -> tuple[np.ndarray, np.ndarray] | None:
+def shap_row_values(
+    booster, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42, logger=None
+) -> tuple[np.ndarray, np.ndarray] | None:
     """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable.
 
     `shap_matrix` is (n_sampled, n_features) of signed SHAP contributions and `row_idx`
@@ -127,35 +127,33 @@ def shap_row_values(booster, x: np.ndarray, feature_cols: list[str],
     so its absence means the environment is wrong -- most likely the Airflow venv."""
     if shap is None:
         if logger is not None:
-            logger.warning("SHAP artifacts skipped: `shap` is not installed in this "
-                           "environment (declared in pyproject / requirements-airflow.txt "
-                           "-- reinstall the venv: `poetry install`).")
+            logger.warning(
+                "SHAP artifacts skipped: `shap` is not installed in this "
+                "environment (declared in pyproject / requirements-airflow.txt "
+                "-- reinstall the venv: `poetry install`)."
+            )
         return None
     try:
         idx = _sample_idx(len(x), sample, seed)
         values = shap.TreeExplainer(booster).shap_values(x[idx])
-        if isinstance(values, list):                 # multi-output -> first output
+        if isinstance(values, list):  # multi-output -> first output
             values = values[0]
         values = np.asarray(values)
         if values.shape[1] == len(feature_cols) + 1:  # trailing base-value column
             values = values[:, :-1]
         return values, idx
-    except Exception as exc:                          # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         if logger is not None:
-            logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped",
-                           type(exc).__name__, exc)
+            logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)
         return None
 
 
-def shap_importance_from_values(values: np.ndarray,
-                                feature_cols: list[str]) -> pd.Series:
+def shap_importance_from_values(values: np.ndarray, feature_cols: list[str]) -> pd.Series:
     """Mean |SHAP| per feature, descending -- the global ranking."""
-    return pd.Series(np.abs(values).mean(axis=0),
-                     index=feature_cols).sort_values(ascending=False)
+    return pd.Series(np.abs(values).mean(axis=0), index=feature_cols).sort_values(ascending=False)
 
 
-def save_shap_values(values: np.ndarray, row_idx: np.ndarray, feature_cols: list[str],
-                     panel: pd.DataFrame, path: Path) -> Path:
+def save_shap_values(values: np.ndarray, row_idx: np.ndarray, feature_cols: list[str], panel: pd.DataFrame, path: Path) -> Path:
     """Persist the RAW SHAP matrix keyed by (date, ticker) -> parquet.
 
     This is what makes an attribution question answerable after the run ("which features
@@ -163,7 +161,7 @@ def save_shap_values(values: np.ndarray, row_idx: np.ndarray, feature_cols: list
     that away. Parquet (not CSV) because it is float32 x n_features x n_sampled rows."""
     out = pd.DataFrame(values.astype("float32"), columns=list(feature_cols))
     keys = panel.iloc[row_idx]
-    for key in ("ticker", "date"):                    # insert at front: date, ticker, ...
+    for key in ("ticker", "date"):  # insert at front: date, ticker, ...
         if key in keys.columns:
             out.insert(0, key, keys[key].to_numpy())
     out.to_parquet(path, index=False)
@@ -183,8 +181,7 @@ def save_shap_importance_plot(shap_imp: pd.Series, path: Path, horizon, top_n: i
 # --------------------------------------------------------------------------- #
 # Feature-importance table (Excel, CSV fallback)                               #
 # --------------------------------------------------------------------------- #
-def save_importance_table(gain_imp: pd.Series, shap_imp: pd.Series | None,
-                          out_dir: Path) -> Path:
+def save_importance_table(gain_imp: pd.Series, shap_imp: pd.Series | None, out_dir: Path) -> Path:
     """Per-horizon importance to Excel; falls back to CSV if no .xlsx engine."""
     df = pd.DataFrame({"lgbm_gain": gain_imp.astype(float)})
     total = df["lgbm_gain"].sum()
@@ -196,7 +193,7 @@ def save_importance_table(gain_imp: pd.Series, shap_imp: pd.Series | None,
 
     xlsx = out_dir / "feature_importance.xlsx"
     try:
-        df.to_excel(xlsx)          # needs openpyxl / xlsxwriter
+        df.to_excel(xlsx)  # needs openpyxl / xlsxwriter
         return xlsx
     except Exception:
         csv = out_dir / "feature_importance.csv"
@@ -218,8 +215,7 @@ def daily_ic_series(oos: pd.DataFrame, label_name: str, pred_col: str = "pred") 
     return pd.Series(rows, name="ic").sort_index()
 
 
-def save_ic_curve(oos: pd.DataFrame, label_name: str, out_dir: Path,
-                  horizon, roll: int = 21) -> pd.Series:
+def save_ic_curve(oos: pd.DataFrame, label_name: str, out_dir: Path, horizon, roll: int = 21) -> pd.Series:
     ic = daily_ic_series(oos, label_name)
     if ic.empty:
         return ic
@@ -231,14 +227,11 @@ def save_ic_curve(oos: pd.DataFrame, label_name: str, out_dir: Path,
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
     ax1.plot(ic.index, ic.values, color="steelblue", lw=0.6, alpha=0.5, label="daily IC")
     if len(ic) >= roll:
-        ax1.plot(ic.index, ic.rolling(roll, min_periods=1).mean().values,
-                 color="crimson", lw=1.6, label=f"{roll}d rolling mean")
+        ax1.plot(ic.index, ic.rolling(roll, min_periods=1).mean().values, color="crimson", lw=1.6, label=f"{roll}d rolling mean")
     ax1.axhline(0, color="black", lw=0.8)
-    ax1.axhline(mean_ic, color="green", ls="--", lw=1,
-                label=f"mean IC={mean_ic:+.4f}")
+    ax1.axhline(mean_ic, color="green", ls="--", lw=1, label=f"mean IC={mean_ic:+.4f}")
     ax1.set_ylabel("daily IC")
-    ax1.set_title(f"Out-of-sample IC over time — horizon {horizon} "
-                  f"(mean={mean_ic:+.4f}, hit-rate={hit:.0%}, n={len(ic)} days)", fontsize=10)
+    ax1.set_title(f"Out-of-sample IC over time — horizon {horizon} (mean={mean_ic:+.4f}, hit-rate={hit:.0%}, n={len(ic)} days)", fontsize=10)
     ax1.legend(fontsize=8, loc="upper left")
     ax2.plot(ic.index, ic.cumsum().values, color="darkorange", lw=1.4)
     ax2.axhline(0, color="black", lw=0.8)
@@ -291,34 +284,58 @@ def save_run_kpis(run_dir: Path, run_kpis: dict, logger=None) -> Path:
         common = {
             "horizon": int(h),
             "blend_weight": hk.get("blend_weight"),
-            "n_rows": hk.get("n_rows"), "n_tickers": hk.get("n_tickers"),
+            "n_rows": hk.get("n_rows"),
+            "n_tickers": hk.get("n_tickers"),
             "n_days": hk.get("n_days"),
-            "oos_ic_mean": hk.get("oos_ic_mean"), "oos_ic_hit_rate": hk.get("oos_ic_hit_rate"),
+            "oos_ic_mean": hk.get("oos_ic_mean"),
+            "oos_ic_hit_rate": hk.get("oos_ic_hit_rate"),
             "oos_ic_days": hk.get("oos_ic_days"),
         }
-        rows.append({**common, "member": "ENSEMBLE",
-                     "cv_mean_ic": hk.get("cv_mean_ic"), "cv_ic_ir": hk.get("cv_ic_ir"),
-                     "n_features": None, "n_pdp": None, "shap_available": None})
+        rows.append(
+            {
+                **common,
+                "member": "ENSEMBLE",
+                "cv_mean_ic": hk.get("cv_mean_ic"),
+                "cv_ic_ir": hk.get("cv_ic_ir"),
+                "n_features": None,
+                "n_pdp": None,
+                "shap_available": None,
+            }
+        )
         for name, mk in sorted((hk.get("members") or {}).items()):
-            rows.append({**common, "member": name,
-                         "cv_mean_ic": mk.get("cv_mean_ic"), "cv_ic_ir": mk.get("cv_ic_ir"),
-                         "n_features": mk.get("n_features"), "n_pdp": mk.get("n_pdp"),
-                         "shap_available": mk.get("shap_available")})
+            rows.append(
+                {
+                    **common,
+                    "member": name,
+                    "cv_mean_ic": mk.get("cv_mean_ic"),
+                    "cv_ic_ir": mk.get("cv_ic_ir"),
+                    "n_features": mk.get("n_features"),
+                    "n_pdp": mk.get("n_pdp"),
+                    "shap_available": mk.get("shap_available"),
+                }
+            )
     csv_path = run_dir / "kpis.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     if logger is not None:
-        logger.info("Diagnostics KPIs: %d row(s) across %d horizon(s) -> %s",
-                    len(rows), len(run_kpis.get("horizons") or {}), csv_path)
+        logger.info("Diagnostics KPIs: %d row(s) across %d horizon(s) -> %s", len(rows), len(run_kpis.get("horizons") or {}), csv_path)
     return path
 
 
 # --------------------------------------------------------------------------- #
 # Orchestration                                                                #
 # --------------------------------------------------------------------------- #
-def save_member_diagnostics(horizon, member: str, booster, panel: pd.DataFrame,
-                            feature_cols: list[str], out_dir: Path,
-                            top_n: int = 15, shap_sample: int = 2000,
-                            pdp_grid: int = 30, logger=None) -> dict:
+def save_member_diagnostics(
+    horizon,
+    member: str,
+    booster,
+    panel: pd.DataFrame,
+    feature_cols: list[str],
+    out_dir: Path,
+    top_n: int = 15,
+    shap_sample: int = 2000,
+    pdp_grid: int = 30,
+    logger=None,
+) -> dict:
     """PDP + SHAP (raw values, ranking, plot) + gain table for ONE booster member.
 
     Every booster member is worth its own folder: with `ensemble: [elasticnet, lgbm,
@@ -351,12 +368,10 @@ def save_member_diagnostics(horizon, member: str, booster, panel: pd.DataFrame,
     n_pdp = 0
     for rank, feat in enumerate(top_feats, 1):
         j = feature_cols.index(feat)
-        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid,
-                                         sample=shap_sample)
+        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample)
         if grid is None:
             continue
-        save_pdp_plot(grid, means, feat,
-                      pdp_dir / f"pdp_{rank:02d}_{_safe(feat)}.png", horizon, x[:, j])
+        save_pdp_plot(grid, means, feat, pdp_dir / f"pdp_{rank:02d}_{_safe(feat)}.png", horizon, x[:, j])
         n_pdp += 1
 
     imp_path = save_importance_table(gain_imp, shap_imp, out_dir)
@@ -372,14 +387,22 @@ def save_member_diagnostics(horizon, member: str, booster, panel: pd.DataFrame,
     }
 
 
-def save_horizon_diagnostics(horizon, booster, panel: pd.DataFrame,
-                             feature_cols: list[str], out_dir: Path,
-                             oos_predictions: pd.DataFrame | None,
-                             label_name: str = "y", top_n: int = 15,
-                             shap_sample: int = 2000, pdp_grid: int = 30,
-                             logger=None, boosters: dict | None = None,
-                             feature_cols_by_member: dict | None = None,
-                             kpis: dict | None = None) -> dict:
+def save_horizon_diagnostics(
+    horizon,
+    booster,
+    panel: pd.DataFrame,
+    feature_cols: list[str],
+    out_dir: Path,
+    oos_predictions: pd.DataFrame | None,
+    label_name: str = "y",
+    top_n: int = 15,
+    shap_sample: int = 2000,
+    pdp_grid: int = 30,
+    logger=None,
+    boosters: dict | None = None,
+    feature_cols_by_member: dict | None = None,
+    kpis: dict | None = None,
+) -> dict:
     """Every artifact for one horizon: the OOS IC curve (ensemble-level) + one folder per
     booster member + `kpis.json`.
 
@@ -406,10 +429,16 @@ def save_horizon_diagnostics(horizon, booster, panel: pd.DataFrame,
     member_summaries = {}
     for name, b in members.items():
         member_summaries[name] = save_member_diagnostics(
-            horizon=horizon, member=name, booster=b, panel=panel,
+            horizon=horizon,
+            member=name,
+            booster=b,
+            panel=panel,
             feature_cols=list(feats_by.get(name, feature_cols)),
             out_dir=out_dir if flat else out_dir / _safe(name),
-            top_n=top_n, shap_sample=shap_sample, pdp_grid=pdp_grid, logger=logger,
+            top_n=top_n,
+            shap_sample=shap_sample,
+            pdp_grid=pdp_grid,
+            logger=logger,
         )
 
     first = next(iter(member_summaries.values()))
@@ -429,7 +458,7 @@ def save_horizon_diagnostics(horizon, booster, panel: pd.DataFrame,
         "ic_days": 0 if ic is None else int(len(ic)),
         "ic_mean": float(ic.mean()) if ic is not None and len(ic) else float("nan"),
     }
-    if kpis:                                    # CV IC / blend weight known by the caller
+    if kpis:  # CV IC / blend weight known by the caller
         for key, value in kpis.items():
             if key == "members":
                 for name, mk in (value or {}).items():
@@ -440,11 +469,18 @@ def save_horizon_diagnostics(horizon, booster, panel: pd.DataFrame,
     return summary
 
 
-def save_run_diagnostics(run_dir: Path, models: dict, panels: dict,
-                         feature_cols: list[str], oos_predictions: dict,
-                         label_name: str = "y", top_n: int = 15,
-                         shap_sample: int = 2000, pdp_grid: int = 30,
-                         logger=None) -> Path:
+def save_run_diagnostics(
+    run_dir: Path,
+    models: dict,
+    panels: dict,
+    feature_cols: list[str],
+    oos_predictions: dict,
+    label_name: str = "y",
+    top_n: int = 15,
+    shap_sample: int = 2000,
+    pdp_grid: int = 30,
+    logger=None,
+) -> Path:
     """Create <run_dir>/h<H>/ diagnostics for every trained horizon.
 
     `models[h]` is either ONE booster or a `{member: booster}` dict -- the per-horizon
@@ -454,17 +490,27 @@ def save_run_diagnostics(run_dir: Path, models: dict, panels: dict,
     for h, entry in models.items():
         boosters = entry if isinstance(entry, dict) else None
         summaries[int(h)] = save_horizon_diagnostics(
-            horizon=h, booster=None if boosters else entry, panel=panels[h],
-            feature_cols=feature_cols, out_dir=run_dir / f"h{h}",
-            oos_predictions=oos_predictions.get(h), boosters=boosters,
-            label_name=label_name, top_n=top_n,
-            shap_sample=shap_sample, pdp_grid=pdp_grid, logger=logger,
+            horizon=h,
+            booster=None if boosters else entry,
+            panel=panels[h],
+            feature_cols=feature_cols,
+            out_dir=run_dir / f"h{h}",
+            oos_predictions=oos_predictions.get(h),
+            boosters=boosters,
+            label_name=label_name,
+            top_n=top_n,
+            shap_sample=shap_sample,
+            pdp_grid=pdp_grid,
+            logger=logger,
         )
         if logger is not None:
             s = summaries[int(h)]
-            logger.info("  h%s diagnostics: %s, IC days=%s (mean IC=%+.4f)", h,
-                        ", ".join(f"{n}: {m['n_pdp']} PDPs shap={m['shap_available']}"
-                                  for n, m in s["members"].items()),
-                        s["ic_days"], s["ic_mean"])
+            logger.info(
+                "  h%s diagnostics: %s, IC days=%s (mean IC=%+.4f)",
+                h,
+                ", ".join(f"{n}: {m['n_pdp']} PDPs shap={m['shap_available']}" for n, m in s["members"].items()),
+                s["ic_days"],
+                s["ic_mean"],
+            )
     save_run_kpis(run_dir, {"horizons": summaries}, logger=logger)
     return run_dir

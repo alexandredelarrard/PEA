@@ -208,7 +208,7 @@ def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd
         coalesced.append(winner.to_dict())
     out = pd.DataFrame.from_records(coalesced, columns=table_columns)
     logger.info(
-        "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique " "table-grain row(s) over %d symbol(s)",
+        "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique table-grain row(s) over %d symbol(s)",
         len(manual),
         len(derived),
         len(out),
@@ -258,7 +258,7 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
     try:
         archive = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
-        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is " "absent from the derivation", path.name)
+        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is absent from the derivation", path.name)
         drops["corrupt_zip"] += 1
         return None
     with archive:
@@ -408,14 +408,13 @@ def build_symbol_tenure(context: Context, cache: Path, config_dir: str | Path | 
     manual = load_manual_symbol_tenure(config_dir or context.config_dir)
     out = materialize_symbol_tenure(derived, manual)
     context.log.info(
-        f"symbol_tenure: validated {len(manual)} manual interval(s) for "
-        f"{manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
+        f"symbol_tenure: validated {len(manual)} manual interval(s) for {manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
     )
     if existing is None:
-        context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over " f"{out['symbol'].nunique()} symbol(s)")
+        context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over {out['symbol'].nunique()} symbol(s)")
     else:
         changed = changed_tenure_symbols(existing, out)
-        context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): " f"{', '.join(changed) if changed else 'none'}")
+        context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
     written = context.store.replace(Tables.symbol_tenure, out)
     # `ticker_count=0`: this is a market-wide derivation over every EDGAR symbol, not a
     # per-ticker walk -- the convention `fetch_sharadar_tickers` already uses. Always a full

@@ -115,7 +115,7 @@ def _canonicalize(df: pd.DataFrame, text_col: str | None = None, has_amendment: 
     key = ["ticker", "accession_number", "cusip"]
     agg_map = {
         "filing_date": ("filing_date", "first"),
-        "filer_id": ("_filer_key", lambda s: (s.dropna().sort_values().iloc[0] if s.notna().any() else None)),
+        "filer_id": ("_filer_key", lambda s: s.dropna().sort_values().iloc[0] if s.notna().any() else None),
         "n_reporting_persons": ("_filer_key", "nunique"),
     }
     if has_amendment:

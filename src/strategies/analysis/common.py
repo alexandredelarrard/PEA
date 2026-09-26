@@ -6,6 +6,7 @@ cross-sectional IC, rolling Sharpe / drawdown / beta / correlation, rolling pair
 correlation, and a loader for the market/energy reference return series (from
 `prices_macro`) used in the L/S neutrality and trend crisis-alpha checks.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -18,8 +19,7 @@ from src.utils.macro import load_macro_wide
 _ANN: float = 252.0
 
 
-def daily_ic(signal: pd.DataFrame, stock_ret: pd.DataFrame, horizon: int,
-             min_frac: float = 0.6, min_names: int = 10) -> pd.Series:
+def daily_ic(signal: pd.DataFrame, stock_ret: pd.DataFrame, horizon: int, min_frac: float = 0.6, min_names: int = 10) -> pd.Series:
     """Per-date cross-sectional rank IC: Spearman(signal_t, horizon-forward return_t) across
     names. This is the L/S model's day-by-day predictive power (rank correlation)."""
     fwd = forward_return(stock_ret, horizon, min_frac)
@@ -62,7 +62,7 @@ def rolling_pairwise_corr(df: pd.DataFrame, window: int = 126) -> tuple[dict[str
     reindexed — so a sleeve on a slightly different calendar (e.g. L/S vs the macro sleeves)
     isn't blanked out by `rolling().corr`'s default min_periods == window on the sparse union."""
     cols = list(df.columns)
-    pairs = [(a, b) for i, a in enumerate(cols) for b in cols[i + 1:]]
+    pairs = [(a, b) for i, a in enumerate(cols) for b in cols[i + 1 :]]
     d: dict[str, pd.Series] = {}
     for a, b in pairs:
         pair = df[[a, b]].dropna()
@@ -70,7 +70,7 @@ def rolling_pairwise_corr(df: pd.DataFrame, window: int = 126) -> tuple[dict[str
         d[f"{a}-{b}"] = c.reindex(df.index)
     # ffill each pair before averaging so a sleeve missing the odd date (calendar gaps) doesn't
     # spike the overall average to the one pair that happens to have a value that day
-    avg = (pd.concat(list(d.values()), axis=1).ffill().mean(axis=1) if d else pd.Series(dtype=float))
+    avg = pd.concat(list(d.values()), axis=1).ffill().mean(axis=1) if d else pd.Series(dtype=float)
     return d, avg
 
 

@@ -55,9 +55,7 @@ def test_all_ticker_live_coverage_makes_the_source_current(sqlite_store):
     assert status["ok"]
     assert status["live_complete_through"] == "2026-09-04"
     assert status["lag_days"] == 0
-    print(
-        "SANITY: both price-edge tickers were scanned through 2026-09-04, so the insider " "source-to-part lag is 0 days and the status gate passes."
-    )
+    print("SANITY: both price-edge tickers were scanned through 2026-09-04, so the insider source-to-part lag is 0 days and the status gate passes.")
 
 
 def test_partial_live_run_cannot_hide_the_stale_bulk_frontier(sqlite_store):
@@ -122,8 +120,7 @@ def test_unpromoted_bulk_overlap_cannot_make_status_green(sqlite_store):
     assert status["bulk_reported_quarter"] == "2026q3"
     assert status["bulk_complete_through"] == "2026-06-30"
     print(
-        "SANITY: an overlapping but unpromoted Q3 ZIP leaves source status capped at Q2; "
-        "a quarterly download cannot bypass the reconciliation gate."
+        "SANITY: an overlapping but unpromoted Q3 ZIP leaves source status capped at Q2; a quarterly download cannot bypass the reconciliation gate."
     )
 
 

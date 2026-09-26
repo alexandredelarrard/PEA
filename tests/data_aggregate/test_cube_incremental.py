@@ -15,6 +15,7 @@ close superseding a mid-session bar, a refilled hole). Appending strictly after 
 `cube_part_momentum` stopping ON a date whose features were ranked over 45 of 491 tickers, with no
 incremental run able to replace that row.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,14 +23,23 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import (
-    PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part, window_start,
+    PART_REFRESH_TRADING_DAYS,
+    PartWindow,
+    plan_window,
+    window_start,
+    write_part,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
+from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
-    ALL, Tables, name_of, projection, projection_report, resolve,
+    ALL,
+    Tables,
+    name_of,
+    projection,
+    projection_report,
+    resolve,
 )
 
 
@@ -37,15 +47,12 @@ def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
     dates = pd.bdate_range("2019-01-01", periods=n_days)
     tk = [f"T{i}" for i in range(n_tickers)]
     rng = np.random.default_rng(seed)
-    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.012, (n_days, n_tickers)), axis=0)),
-                         index=dates, columns=tk)
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.012, (n_days, n_tickers)), axis=0)), index=dates, columns=tk)
     open_ = close.shift(1).bfill()
     ret = close.pct_change().fillna(0.0)
-    sector = pd.DataFrame(np.repeat(ret.mean(axis=1).to_numpy()[:, None], n_tickers, axis=1),
-                          index=dates, columns=tk)                     # one shared "sector"
+    sector = pd.DataFrame(np.repeat(ret.mean(axis=1).to_numpy()[:, None], n_tickers, axis=1), index=dates, columns=tk)  # one shared "sector"
     high, low = close * 1.01, close * 0.99
-    volume = pd.DataFrame(rng.integers(1_000_000, 5_000_000, (n_days, n_tickers)).astype(float),
-                          index=dates, columns=tk)
+    volume = pd.DataFrame(rng.integers(1_000_000, 5_000_000, (n_days, n_tickers)).astype(float), index=dates, columns=tk)
     return dates, close, open_, sector, high, low, volume
 
 
@@ -74,17 +81,17 @@ def test_windowed_build_reproduces_full_tail():
     last = dates[cutoff_pos]
     refresh_from = dates[cutoff_pos - refresh]
     start = dates[cutoff_pos - refresh - warmup]
-    win = build_feature_panel(close.loc[start:], open_.loc[start:], sector.loc[start:], "rank",
-                              high.loc[start:], low.loc[start:], volume.loc[start:], sh)
+    win = build_feature_panel(
+        close.loc[start:], open_.loc[start:], sector.loc[start:], "rank", high.loc[start:], low.loc[start:], volume.loc[start:], sh
+    )
 
     # the tail the incremental run WRITES (date >= refresh_from) must match the full build
     # bit-for-bit -- both the `refresh` dates it overwrites and everything it appends after.
-    f_tail = (full[full["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index())
-    w_tail = (win[win["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index())
+    f_tail = full[full["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index()
+    w_tail = win[win["date"] >= refresh_from].set_index(["date", "ticker"]).sort_index()
     assert not f_tail.empty and f_tail.shape == w_tail.shape
     cols = list(f_tail.columns)
-    pd.testing.assert_frame_equal(f_tail[cols], w_tail[cols].reindex(f_tail.index),
-                                  check_exact=False, atol=1e-9, rtol=0)
+    pd.testing.assert_frame_equal(f_tail[cols], w_tail[cols].reindex(f_tail.index), check_exact=False, atol=1e-9, rtol=0)
 
     # the rewritten span really does include `last` itself -- the row a strictly-after append
     # could never replace, and the one a truncated extract run left wrong on the live table.
@@ -94,17 +101,24 @@ def test_windowed_build_reproduces_full_tail():
 
     n_tail_days = len(rewritten)
     print("\n=== SANITY CHECK: windowed build reproduces the full tail (INCLUSIVE) ===")
-    print(f"  full={len(full)} rows over {close.shape[0]} days; windowed recompute of the last "
-          f"{close.shape[0] - (cutoff_pos - refresh - warmup)} days "
-          f"(warmup {warmup} + refresh {refresh})")
-    print(f"  stored max was {last.date()}; the run REWRITES from {refresh_from.date()} "
-          f"({refresh + 1} dates through {last.date()}) and appends after")
-    print(f"  tail (date >= {refresh_from.date()}): {n_tail_days} days x "
-          f"{full['ticker'].nunique()} tickers x {len(cols)} feature cols -> IDENTICAL between "
-          "full and windowed builds")
-    print("  CONCLUSION: backward-looking features + per-day standardization -> the incremental "
-          "trailing recompute equals a full rebuild on every date it writes, rewritten dates "
-          "included. Validated.")
+    print(
+        f"  full={len(full)} rows over {close.shape[0]} days; windowed recompute of the last "
+        f"{close.shape[0] - (cutoff_pos - refresh - warmup)} days "
+        f"(warmup {warmup} + refresh {refresh})"
+    )
+    print(
+        f"  stored max was {last.date()}; the run REWRITES from {refresh_from.date()} ({refresh + 1} dates through {last.date()}) and appends after"
+    )
+    print(
+        f"  tail (date >= {refresh_from.date()}): {n_tail_days} days x "
+        f"{full['ticker'].nunique()} tickers x {len(cols)} feature cols -> IDENTICAL between "
+        "full and windowed builds"
+    )
+    print(
+        "  CONCLUSION: backward-looking features + per-day standardization -> the incremental "
+        "trailing recompute equals a full rebuild on every date it writes, rewritten dates "
+        "included. Validated."
+    )
 
 
 def test_incremental_horizon_arithmetic():
@@ -121,19 +135,23 @@ def test_incremental_horizon_arithmetic():
         return idx[max(0, pos - n_back)]
 
     max_h = 90
-    feat_start = window_start(last, 1400)                 # warm-up only (features)
-    tgt_start = window_start(last, 1400 + max_h)          # warm-up + horizon (targets compute)
-    refresh_from = window_start(last, max_h)              # matured-label overwrite window
+    feat_start = window_start(last, 1400)  # warm-up only (features)
+    tgt_start = window_start(last, 1400 + max_h)  # warm-up + horizon (targets compute)
+    refresh_from = window_start(last, max_h)  # matured-label overwrite window
 
     assert feat_start < last and tgt_start <= feat_start
     # the refresh window covers exactly the dates whose forward labels could have matured
     assert (idx.searchsorted(last) - idx.searchsorted(refresh_from)) == max_h
     print("\n=== SANITY CHECK: incremental window arithmetic ===")
-    print(f"  last stored date {last.date()} | feature warm-up start {feat_start.date()} | "
-          f"target compute start {tgt_start.date()} | matured-label refresh from {refresh_from.date()}")
-    print(f"  targets overwrite the trailing max_horizon window ({max_h} days, matured labels); "
-          f"betas/features rewrite only {PART_REFRESH_TRADING_DAYS}, so the wider explicit "
-          "window wins. Validated.")
+    print(
+        f"  last stored date {last.date()} | feature warm-up start {feat_start.date()} | "
+        f"target compute start {tgt_start.date()} | matured-label refresh from {refresh_from.date()}"
+    )
+    print(
+        f"  targets overwrite the trailing max_horizon window ({max_h} days, matured labels); "
+        f"betas/features rewrite only {PART_REFRESH_TRADING_DAYS}, so the wider explicit "
+        "window wins. Validated."
+    )
 
 
 def test_per_part_warmup_covers_binding_lookback():
@@ -148,8 +166,8 @@ def test_per_part_warmup_covers_binding_lookback():
     for part in CUBE_PARTS:
         for group, need in part.binding_lookbacks:
             assert part.warmup_trading_days >= need, (
-                f"{part.name}: warm-up {part.warmup_trading_days} < binding daily look-back "
-                f"{need} of member group '{group}'")
+                f"{part.name}: warm-up {part.warmup_trading_days} < binding daily look-back {need} of member group '{group}'"
+            )
             covered[group] = part.warmup_trading_days
 
     # the feature groups the old exploded DAG ran as separate tasks are all still owned.
@@ -184,9 +202,22 @@ def test_per_part_warmup_covers_binding_lookback():
     # belt-and-braces. For every other part this test passing is still not evidence that an
     # incremental build is correct -- L7 in `validate institutionals` is.
     assert set(covered) == {
-        "price", "fundamental", "sector", "earnings", "governance", "employee", "dividend",
-        "institutional", "superinvestor", "insider", "short_flow", "conditioning",
-        "cross_source", "ownership", "earnings_call_sentiment", "earnings_call_embedding",
+        "price",
+        "fundamental",
+        "sector",
+        "earnings",
+        "governance",
+        "employee",
+        "dividend",
+        "institutional",
+        "superinvestor",
+        "insider",
+        "short_flow",
+        "conditioning",
+        "cross_source",
+        "ownership",
+        "earnings_call_sentiment",
+        "earnings_call_embedding",
     }, f"feature groups lost/added: {sorted(covered)}"
 
     # heavy parts read ~5y; every other part stays light (this is where the memory win is)
@@ -198,9 +229,11 @@ def test_per_part_warmup_covers_binding_lookback():
     for part in CUBE_PARTS:
         members = ", ".join(f"{g}({n})" for g, n in part.binding_lookbacks) or "-"
         print(f"  {part.name:<26} warm-up={part.warmup_trading_days:>5}  members: {members}")
-    print(f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
-          f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
-          "as its longest member needs. Validated.")
+    print(
+        f"  CONCLUSION: all 14 feature groups are owned by {len(heavy)} heavy part(s) reading "
+        f"~5y and {len(light)} light part(s) reading <=400d. Each part reads only as far back "
+        "as its longest member needs. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +269,7 @@ class _RefreshStore:
         return len(tail)
 
 
-def _rows(dates=CAL[LAST_POS - 10:LAST_POS + 6]):
+def _rows(dates=CAL[LAST_POS - 10 : LAST_POS + 6]):
     return pd.DataFrame({"date": dates, "ticker": "T0", "f": 1.0})
 
 
@@ -247,8 +280,7 @@ def test_plan_window_refresh_arithmetic():
     REWRITTEN date, not from `last`, or that date is computed with less look-back than a full
     rebuild would give it."""
     warmup, refresh = 1320, PART_REFRESH_TRADING_DAYS
-    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False,
-                    trading_index=CAL, refresh=refresh)
+    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False, trading_index=CAL, refresh=refresh)
 
     assert w.last == LAST
     assert w.refresh_from == CAL[LAST_POS - refresh]
@@ -256,10 +288,11 @@ def test_plan_window_refresh_arithmetic():
     # the oldest rewritten date still gets the FULL warm-up behind it
     assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
     print("\n=== SANITY CHECK: plan_window(refresh=%d) ===" % refresh)
-    print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  "
-          f"since={w.since.date()}")
-    print(f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "
-          f"{warmup - refresh}), so it is computed exactly as a full rebuild would. Validated.")
+    print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  since={w.since.date()}")
+    print(
+        f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "
+        f"{warmup - refresh}), so it is computed exactly as a full rebuild would. Validated."
+    )
 
 
 def test_plan_window_without_refresh_is_unchanged():
@@ -272,8 +305,7 @@ def test_plan_window_without_refresh_is_unchanged():
 
 def test_plan_window_refresh_stacks_with_extra_back():
     """Targets take both: `extra_back` for the maturing-label compute window and `refresh`."""
-    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL,
-                    extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
+    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL, extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
     assert w.since == CAL[LAST_POS - 390 - 90 - PART_REFRESH_TRADING_DAYS]
 
 
@@ -290,8 +322,9 @@ def test_write_part_rewrites_inclusively_from_refresh_from():
     assert tail["date"].min() == window.refresh_from
     assert LAST in set(tail["date"]), "the previously-final row IS rewritten"
     print("\n=== SANITY CHECK: write_part rewrites its own tail ===")
-    print(f"  stored max {LAST.date()} -> DELETE >= {cutoff.date()} then append {n} rows "
-          f"({tail['date'].min().date()} .. {tail['date'].max().date()})")
+    print(
+        f"  stored max {LAST.date()} -> DELETE >= {cutoff.date()} then append {n} rows ({tail['date'].min().date()} .. {tail['date'].max().date()})"
+    )
     print("  the stored max date's own row is REPLACED, not skipped. Validated.")
 
 
@@ -310,7 +343,7 @@ def test_explicit_refresh_from_wins_over_the_part_default():
     store = _RefreshStore(columns=["date", "ticker", "f"])
     wide = window_start(CAL, LAST, 90)
     window = PartWindow(LAST, CAL[LAST_POS - 500], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    write_part(store, "p", _rows(CAL[LAST_POS - 150:LAST_POS + 6]), window, refresh_from=wide)
+    write_part(store, "p", _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window, refresh_from=wide)
     _, cutoff, inclusive = store.appended
     assert inclusive is True and cutoff == wide
     assert cutoff < window.refresh_from
@@ -321,15 +354,13 @@ def test_refresh_never_narrows_the_written_span():
     fetcher can still change its inputs, or a corrected price leaves a stale feature behind.
     The fetcher's floor is 7 BUSINESS days, which is 5 trading sessions of span."""
     from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS
-    fetcher_span = (pd.Timestamp("2026-09-04")
-                    - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS))
-    part_span = window_start(pd.bdate_range("2026-01-01", "2026-09-04"),
-                             pd.Timestamp("2026-09-04"), PART_REFRESH_TRADING_DAYS)
-    print(f"\n  fetcher re-pulls from {fetcher_span.date()}; part rewrites from "
-          f"{part_span.date()}")
+
+    fetcher_span = pd.Timestamp("2026-09-04") - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
+    part_span = window_start(pd.bdate_range("2026-01-01", "2026-09-04"), pd.Timestamp("2026-09-04"), PART_REFRESH_TRADING_DAYS)
+    print(f"\n  fetcher re-pulls from {fetcher_span.date()}; part rewrites from {part_span.date()}")
     assert part_span <= fetcher_span + pd.Timedelta(days=2), (
-        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's "
-        f"{PRICE_REFRESH_TRADING_DAYS} BDay re-pull floor")
+        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's {PRICE_REFRESH_TRADING_DAYS} BDay re-pull floor"
+    )
 
 
 def test_read_projection_covers_builder_needs():
@@ -342,11 +373,18 @@ def test_read_projection_covers_builder_needs():
     feature family.
     """
     required = {  # columns each builder actually consumes from the table (the contract)
-        Tables.sec13f_hr: {"cik", "period", "ticker", "shares", "value_usd",
-                           "call_value", "put_value", "filing_date"},
-        Tables.insider_transactions: {"ticker", "owner_cik", "filing_date", "transaction_code",
-                                      "shares", "price_per_share", "value_usd",
-                                      "security_type", "shares_owned_after"},
+        Tables.sec13f_hr: {"cik", "period", "ticker", "shares", "value_usd", "call_value", "put_value", "filing_date"},
+        Tables.insider_transactions: {
+            "ticker",
+            "owner_cik",
+            "filing_date",
+            "transaction_code",
+            "shares",
+            "price_per_share",
+            "value_usd",
+            "security_type",
+            "shares_owned_after",
+        },
         # ⚠ FOUR COLUMNS, NOT SIX. `short_interest` / `avg_daily_volume` were in this contract
         # for `ic_shortvol_days_to_cover` -- a feature that no longer exists, and whose absence
         # is a DESIGN decision rather than a missing projection: the live `sec_short_interest`
@@ -360,10 +398,8 @@ def test_read_projection_covers_builder_needs():
         # key (a group files one 13D under many reporting persons; summing their
         # `percent_of_class` would double-count the same block), and `filing_date` is the ONLY
         # legal stamp -- `date_of_event` is never projected, which is what makes L4 structural.
-        Tables.sec_13d: {"ticker", "accession_number", "cusip", "filing_date",
-                         "is_amendment", "percent_of_class", "reporting_person_cik"},
-        Tables.sec_13g: {"ticker", "accession_number", "cusip", "filing_date",
-                         "percent_of_class", "reporting_person_cik"},
+        Tables.sec_13d: {"ticker", "accession_number", "cusip", "filing_date", "is_amendment", "percent_of_class", "reporting_person_cik"},
+        Tables.sec_13g: {"ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik"},
         # the two per-person DEF 14A children, read by StepCubeGovernance. `accession_number`
         # is in the directors set because the per-FILING aggregates key on it (an `as_of` can
         # carry two filings), and every one of the six Item 402(k) components is required
@@ -372,11 +408,18 @@ def test_read_projection_covers_builder_needs():
         # `pct_independent_directors` is one of the twelve D3-protected features, so deriving
         # it from the child would move live cells). Left in the projection on purpose -- do not
         # "tidy" it out, it is the substrate for that deferred work.
-        Tables.def14a_directors: {"ticker", "accession_number", "as_of", "name", "age",
-                                  "tenure_years", "other_public_company_boards"},
-        Tables.def14a_director_comp: {"ticker", "as_of", "total", "fees_earned",
-                                      "stock_awards", "option_awards", "non_equity_incentive",
-                                      "pension_change", "other_compensation"},
+        Tables.def14a_directors: {"ticker", "accession_number", "as_of", "name", "age", "tenure_years", "other_public_company_boards"},
+        Tables.def14a_director_comp: {
+            "ticker",
+            "as_of",
+            "total",
+            "fees_earned",
+            "stock_awards",
+            "option_awards",
+            "non_equity_incentive",
+            "pension_change",
+            "other_compensation",
+        },
     }
     for table, need in required.items():
         proj = set(table.read_columns)
@@ -388,8 +431,7 @@ def test_read_projection_covers_builder_needs():
     for table in required:
         print(f"  {table.name:<24} -> {len(table.read_columns)} cols (covers builder needs)")
     print("  def14a_directors keeps `is_independent` projected-but-unread on purpose (D79).")
-    print("  sec13f_hr (~21.7M rows) drops the cusip-era bloat; a table declaring no "
-          "read_columns loads in full. Validated.")
+    print("  sec13f_hr (~21.7M rows) drops the cusip-era bloat; a table declaring no read_columns loads in full. Validated.")
 
 
 def test_step_forwards_the_registry_projection_to_the_store():
@@ -406,8 +448,7 @@ def test_step_forwards_the_registry_projection_to_the_store():
     """
     step = object.__new__(StepCubeInstitutionals)
     seen: dict[str, dict] = {}
-    live = {"sec13f_hr": list(Tables.sec13f_hr.read_columns),
-            "prices_splits": ["ticker", "date", "split_ratio"]}
+    live = {"sec13f_hr": list(Tables.sec13f_hr.read_columns), "prices_splits": ["ticker", "date", "split_ratio"]}
 
     class _Store:
         """Resolves through `name_of` exactly as `DataStore` does, because the step hands it
@@ -435,7 +476,7 @@ def test_step_forwards_the_registry_projection_to_the_store():
     step._store = step._context.store
     step._log = logging.getLogger("test")
     step._load_source(Tables.sec13f_hr)
-    step._load_source(Tables.prices_splits)           # declares no read_columns
+    step._load_source(Tables.prices_splits)  # declares no read_columns
 
     for name, call in seen.items():
         assert call["project"] is True, f"{name}: step must delegate the projection"
@@ -446,8 +487,10 @@ def test_step_forwards_the_registry_projection_to_the_store():
     print()
     print("=== SANITY: the step delegates the projection ===")
     print(f"  calls seen: {seen}")
-    print("  CONCLUSION: `_load_source` passes `project=True` for every table and resolves no "
-          "column list of its own, so the registry is the single declaration. Validated.")
+    print(
+        "  CONCLUSION: `_load_source` passes `project=True` for every table and resolves no "
+        "column list of its own, so the registry is the single declaration. Validated."
+    )
 
 
 def test_universe_scope_is_pushed_down_to_the_read():
@@ -494,9 +537,9 @@ def test_universe_scope_is_pushed_down_to_the_read():
     step._store = step._context.store
     step._log = logging.getLogger("test")
 
-    step._load_source(Tables.sec13f_hr, universe)              # (a) has ticker_col
+    step._load_source(Tables.sec13f_hr, universe)  # (a) has ticker_col
     step._load_source(Tables.sec13f_manager_holdings, universe)  # (b) ticker_col is None
-    step._load_source(Tables.prices_splits)                    # no universe -> no where
+    step._load_source(Tables.prices_splits)  # no universe -> no where
 
     assert calls["sec13f_hr"]["where"] == {"ticker": sorted(universe)}, calls["sec13f_hr"]
     assert Tables.sec13f_manager_holdings.ticker_col is None
@@ -510,9 +553,11 @@ def test_universe_scope_is_pushed_down_to_the_read():
     for name, call in calls.items():
         print(f"  {name:<26} where={call['where']}")
     print(f"  SELECT DISTINCT queries issued: {distincts}")
-    print("  CONCLUSION: the in-universe read carries `WHERE ticker IN (...)`, the table with "
-          "no ticker column carries none, and the off-universe report survives as one cheap "
-          "DISTINCT instead of a 21.7M-row load-and-discard. Validated.")
+    print(
+        "  CONCLUSION: the in-universe read carries `WHERE ticker IN (...)`, the table with "
+        "no ticker column carries none, and the off-universe report survives as one cheap "
+        "DISTINCT instead of a 21.7M-row load-and-discard. Validated."
+    )
 
 
 def test_every_projected_table_resolves_to_a_registered_physical_table():
@@ -534,17 +579,16 @@ def test_every_projected_table_resolves_to_a_registered_physical_table():
         assert set(t.optional_columns) <= set(t.read_columns), (
             f"{t.name}: optional_columns "
             f"{sorted(set(t.optional_columns) - set(t.read_columns))} are not in read_columns "
-            f"-- a dead exemption would silently tolerate a real missing column")
+            f"-- a dead exemption would silently tolerate a real missing column"
+        )
 
-    mismatched = {a: t.name for a, t in vars(Tables).items()
-                  if hasattr(t, "name") and a != t.name}
+    mismatched = {a: t.name for a, t in vars(Tables).items() if hasattr(t, "name") and a != t.name}
     print()
     print("=== SANITY: projections hang off the Table object, not a name key ===")
     print(f"  {len(projected)} tables declare read_columns, all reachable by physical name")
     print(f"  {len(mismatched)} registry entries where attribute != table name -- the trap:")
     for attr, real in sorted(mismatched.items()):
-        print(f"      Tables.{attr:22} -> {real}"
-              + ("   <- the one that broke ic_shortvol_*" if attr == "short_interest" else ""))
+        print(f"      Tables.{attr:22} -> {real}" + ("   <- the one that broke ic_shortvol_*" if attr == "short_interest" else ""))
     assert name_of(Tables.short_interest) == "sec_short_interest"
 
 
@@ -559,8 +603,7 @@ def test_projection_tolerates_an_absent_optional_column():
     unconditionally killed the whole institutionals step with `KeyError: 'short_interest'`.
     """
     live_short = ["date", "ticker", "short_volume", "total_volume"]
-    cols, required_missing, optional_missing = projection_report(Tables.short_interest,
-                                                                 live_short)
+    cols, required_missing, optional_missing = projection_report(Tables.short_interest, live_short)
     assert cols == live_short, cols
     assert not required_missing
     assert sorted(optional_missing) == ["avg_daily_volume", "short_interest"]
@@ -571,13 +614,11 @@ def test_projection_tolerates_an_absent_optional_column():
 
     # a missing REQUIRED column is REPORTED, not dropped in silence -- that is the half of
     # this that a quiet degrade would hide
-    _, req_missing, _ = projection_report(Tables.sec13f_hr,
-                                          [c for c in full_13f if c != "value_usd"])
+    _, req_missing, _ = projection_report(Tables.sec13f_hr, [c for c in full_13f if c != "value_usd"])
     assert req_missing == ["value_usd"], req_missing
 
     # unknown column list (table shape unreadable) -> project the full declared list
-    assert (projection(Tables.short_interest, None)
-            == list(Tables.short_interest.read_columns))
+    assert projection(Tables.short_interest, None) == list(Tables.short_interest.read_columns)
     # a table declaring no projection -> None (load in full)
     assert projection(Tables.prices_splits, ["a", "b"]) is None
 
@@ -586,9 +627,11 @@ def test_projection_tolerates_an_absent_optional_column():
     print(f"  short_interest live cols {live_short} -> projection {cols}")
     print(f"  dropped as optional: {sorted(optional_missing)}")
     print(f"  sec13f_hr without `value_usd` -> required_missing={req_missing}")
-    print("  CONCLUSION: an optional column missing from the live table is dropped from the "
-          "projection instead of raising KeyError and killing the step, while a missing "
-          "REQUIRED one is surfaced. Validated.")
+    print(
+        "  CONCLUSION: an optional column missing from the live table is dropped from the "
+        "projection instead of raising KeyError and killing the step, while a missing "
+        "REQUIRED one is surfaced. Validated."
+    )
 
 
 if __name__ == "__main__":

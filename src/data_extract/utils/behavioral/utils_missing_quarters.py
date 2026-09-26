@@ -28,18 +28,17 @@ could drift between the two sources, and `hf_latest_quarter_by_ticker` -- which 
 Names that hold no earnings call at all (NO_EARNINGS_CALL_TICKERS) are always empty.
 """
 
-import pandas as pd
 import re
 from pathlib import Path
 
-from src.data_store.schema import Tables
+import pandas as pd
+
+from src.constants.constants import EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
-from src.data_extract.utils.behavioral.utils_behavior import (
-    _index_path,
-    _load_index)
+from src.data_extract.utils.behavioral.utils_behavior import _index_path, _load_index
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.constants.constants import (EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS)
+from src.data_store.schema import Tables
 
 # --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
 _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
@@ -88,8 +87,7 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
 def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
     """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when the
     table is not created yet -> resume on disk + JSON coverage."""
-    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"],
-                            optional=True)
+    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"], optional=True)
     if db is None:
         return {}
     out: dict[str, set] = {}
@@ -98,8 +96,7 @@ def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
     return out
 
 
-def _released_quarter_idx_by_ticker(
-    context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
+def _released_quarter_idx_by_ticker(context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
     """{ticker: index of the latest quarter it has ACTUALLY REPORTED}, from `earnings_surprises`
     (which carries the earnings report date per ticker). We take the most recent earnings_date that
     is <= today and map it back into the quarter it reported (shift by `lag_days`, since a report
@@ -122,14 +119,21 @@ def _released_quarter_idx_by_ticker(
     latest = rep.groupby("ticker")["d"].max()
     out: dict[str, int] = {}
     for tk, dt in latest.items():
-        q = (dt - pd.Timedelta(days=lag_days))            # shift into the reported quarter
+        q = dt - pd.Timedelta(days=lag_days)  # shift into the reported quarter
         out[tk] = _quarter_index(q.year, q.quarter)
     return out
 
 
-def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache: Path,
-                 have_db: dict[str, set], have_json: dict[str, set],
-                 released: dict[str, int] | None = None) -> set[str]:
+def _missing_for(
+    tk: str,
+    hf_latest: dict,
+    floor_idx: int,
+    end_idx: int,
+    cache: Path,
+    have_db: dict[str, set],
+    have_json: dict[str, set],
+    released: dict[str, int] | None = None,
+) -> set[str]:
     """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
     HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest quarter
     the ticker has ACTUALLY REPORTED (`released[tk]` from earnings_surprises; falls back to the
@@ -141,11 +145,10 @@ def _missing_for(tk: str, hf_latest: dict, floor_idx: int, end_idx: int, cache: 
         return set()
     hf = hf_latest.get(tk)
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
-    tk_end = released.get(tk, end_idx) if released is not None else end_idx   # actual release, per ticker
+    tk_end = released.get(tk, end_idx) if released is not None else end_idx  # actual release, per ticker
     required = set(_quarters_between(gap_start, tk_end))
     have = _local_quarters(cache, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
     return required - have
-
 
 
 def sort_quarters(quarters) -> list[str]:
@@ -154,8 +157,7 @@ def sort_quarters(quarters) -> list[str]:
     return sorted(quarters, key=lambda q: _quarter_index(*(_parse_quarter(q) or (0, 1))))
 
 
-def remaining_after(missing: dict[str, list[str]],
-                    filled: dict[str, set[str]] | None) -> dict[str, list[str]]:
+def remaining_after(missing: dict[str, list[str]], filled: dict[str, set[str]] | None) -> dict[str, list[str]]:
     """`missing` minus whatever an earlier source just supplied -> what the NEXT source
     should attempt. Tickers left with nothing are dropped, so the following source skips
     them entirely instead of spending a request to discover they are complete.
@@ -171,10 +173,12 @@ def remaining_after(missing: dict[str, list[str]],
     return out
 
 
-def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = None,
-                               since: str = "2025-01-01",
-                               grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS,
-                               ) -> dict[str, list[str]]:
+def missing_quarters_by_ticker(
+    context: Context,
+    tickers: list[str] | None = None,
+    since: str = "2025-01-01",
+    grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS,
+) -> dict[str, list[str]]:
     """{ticker: [missing quarter labels, oldest-first]} — the recent-gap quarters each ticker still
     needs after the HF backbone + whatever is already on disk / in the DB / JSON index. Empty entries
     are dropped.
@@ -193,7 +197,7 @@ def missing_quarters_by_ticker(context: Context, tickers: list[str] | None = Non
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
     have_db = _db_quarters_by_ticker(context)
-    released = _released_quarter_idx_by_ticker(context)   # latest ACTUALLY-reported quarter per ticker
+    released = _released_quarter_idx_by_ticker(context)  # latest ACTUALLY-reported quarter per ticker
     index = _load_index(_index_path(context))
     have_json: dict[str, set] = {}
     for r in index.values():

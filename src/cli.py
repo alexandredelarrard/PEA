@@ -1,10 +1,10 @@
 import os
+
 import click
 from click.core import Command, Context
 
 
 class CLI(click.MultiCommand):
-
     def list_commands(self, ctx: Context):
 
         plugins = []

@@ -190,7 +190,7 @@ def build_gates(profiles: dict[str, dict], baseline: dict, *, expect_through: st
         if (p.get("pk_duplicate_rows") or 0) > 0
     ]
     drift = [
-        f"{n}: declared PK names column(s) absent from the live table: " f"{', '.join(p['pk_missing_cols'])}"
+        f"{n}: declared PK names column(s) absent from the live table: {', '.join(p['pk_missing_cols'])}"
         for n, p in profiles.items()
         if p.get("exists") and p.get("sampled_rows") and p.get("pk_missing_cols")
     ]
@@ -465,16 +465,15 @@ def main(argv: list[str] | None = None) -> int:
             f"- tickers: {', '.join(tickers) if tickers else '**all** (no ticker filter)'}",
             f"- since: {args.since or '**no lower bound**'}",
             f"- row limit per table: {limit:,}" if limit else "- row limit per table: **none**",
-            f"- full-scope tables (eligible to set the baseline): "
-            f"{', '.join(n for n, p in profiles.items() if is_full_scope(p['scope'])) or 'none'}",
+            f"- full-scope tables (eligible to set the baseline): {', '.join(n for n, p in profiles.items() if is_full_scope(p['scope'])) or 'none'}",
         ]
         + ([f"- **unknown table name(s) skipped: {', '.join(unknown)}**"] if unknown else [])
     )
 
     evidence_md = "\n".join(
-        [f"- baseline file: `{'reports/baselines/data_profile.json'}` " f"({len(baseline)} table(s) recorded)"]
+        [f"- baseline file: `{'reports/baselines/data_profile.json'}` ({len(baseline)} table(s) recorded)"]
         + [
-            f"- `{n}`: {p.get('rows', 0):,} rows, {len(p.get('columns') or [])} cols, " f"{p.get('sampled_rows', 0):,} sampled"
+            f"- `{n}`: {p.get('rows', 0):,} rows, {len(p.get('columns') or [])} cols, {p.get('sampled_rows', 0):,} sampled"
             for n, p in sorted(profiles.items())
         ]
         + ([f"- cube parts behind: {', '.join(parts_report.get('behind') or []) or 'none'}"] if parts_report else [])

@@ -8,6 +8,7 @@ and C all read it -- and `common/` is the lowest layer, so a loader there cannot
 into `fundamentals/` for a path helper without inverting the dependency. `kpi_catalogue`
 re-exports the name so its dozen existing importers are unaffected.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -6,6 +6,7 @@ have caught the `gpt_getter.py` IndentationError and the missing `GENERAL_SCHEMA
 either shipped: a broken module in this package fails silent until something tries to use
 it, because nothing in `src/data_extract/` imports `gpt_extract` yet.
 """
+
 from __future__ import annotations
 
 import importlib

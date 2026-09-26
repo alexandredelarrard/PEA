@@ -470,7 +470,7 @@ def _screen_stored_rows(context: Context, universe, identity: Identity, chunk: i
             continue
         quarantined += context.store.save(Tables.insider_transactions_quarantine, _to_quarantine(rejected))
         deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(rejected["accession_number"].unique())})
-    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), " "deleted %d", quarantined, len(accessions), deleted)
+    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), deleted %d", quarantined, len(accessions), deleted)
     return quarantined, deleted
 
 
@@ -501,7 +501,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
         logger.info("insider: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
     if reparse:
         logger.info(
-            "insider: --reparse -> re-reading every quarter back to %dq1 " "(no re-download; %d already ingested)",
+            "insider: --reparse -> re-reading every quarter back to %dq1 (no re-download; %d already ingested)",
             SEC_INSIDER_FIRST_YEAR,
             len(done_q),
         )
@@ -545,7 +545,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     quarantined += swept
     save_processed_universe(cache, Tables.insider_transactions, tickers)  # so a converged re-run skips
     logger.info(
-        "insider_transactions: upserted %d rows (+%d footnotes) over %d quarters " "(%s -> %s); quarantined %d, deleted %d",
+        "insider_transactions: upserted %d rows (+%d footnotes) over %d quarters (%s -> %s); quarantined %d, deleted %d",
         saved,
         notes_saved,
         len(quarters),

@@ -18,6 +18,7 @@ re-extract in place.
 (`def14a_baseline.py --tag pre-cutover`) is the only rollback that exists, and the plan makes
 taking it a prerequisite rather than an option.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,8 +38,7 @@ from src.context import get_config_context
 #: "(in thousands)" fee header, the Total column duplicated into a component slot), and the
 #: defects are ticker-persistent, so they do not average out. The LLM path's own child tables
 #: replaced them on every measured axis.
-DROP_TABLES = ("sec_def14a_executive_comp", "sec_def14a_director_comp",
-               "sec_def14a_ownership", "sec_def14a_votes")
+DROP_TABLES = ("sec_def14a_executive_comp", "sec_def14a_director_comp", "sec_def14a_ownership", "sec_def14a_votes")
 
 #: `sec_def14a` is DROPPED, not truncated: Phase 4 took it from 46 columns to 25, and
 #: `CREATE TABLE IF NOT EXISTS` cannot retire a column on a table that already exists, so a
@@ -85,12 +85,10 @@ def main() -> None:
         present = [c for c in DROP_COLUMNS if c in live]
         if present:
             cols = ", ".join(f'DROP COLUMN IF EXISTS "{c}"' for c in present)
-            stmts.append((f'ALTER TABLE "def14a_llm" {cols}',
-                          f"retire {len(present)} technology column(s)"))
+            stmts.append((f'ALTER TABLE "def14a_llm" {cols}', f"retire {len(present)} technology column(s)"))
     if store.exists("extraction_run"):
         names = ", ".join(f"'{t}'" for t in MANIFEST_TABLES)
-        stmts.append((f'DELETE FROM "extraction_run" WHERE table_name IN ({names})',
-                      "clear the run manifest so the next run does a FULL rescan"))
+        stmts.append((f'DELETE FROM "extraction_run" WHERE table_name IN ({names})', "clear the run manifest so the next run does a FULL rescan"))
 
     print("=" * 78)
     print("PHASE-6 CUTOVER PLAN" + ("" if args.confirm else "   (DRY RUN — nothing executed)"))
@@ -118,8 +116,7 @@ def main() -> None:
         print(f"  {t:30s} {store.row_count(t) if store.exists(t) else '(absent)'}")
     if store.exists("def14a_llm"):
         left = [c for c in DROP_COLUMNS if c in set(store.columns("def14a_llm"))]
-        print(f"\n  def14a_llm columns: {len(store.columns('def14a_llm'))}, "
-              f"technology columns left: {left or 'NONE'}")
+        print(f"\n  def14a_llm columns: {len(store.columns('def14a_llm'))}, technology columns left: {left or 'NONE'}")
     print("\nCUTOVER DONE. The tables are now empty/absent — the backfill is the next step:")
     print('  "$PY" -m src data_extract def14a       -c ./configs -t AAPL   # warm the tables')
     print('  "$PY" -m src data_extract def14a       -c ./configs')

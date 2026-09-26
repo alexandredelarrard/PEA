@@ -6,6 +6,7 @@ ENTIRE line -- message, level, timestamp -- leaving only a bare `--- Logging err
 traceback that never names which message died. The 2026-09-09 `cube_part_governance` rebuild
 lost its `⚠ control_wedge < 0 (voting/ownership legs swapped): 4` tally exactly this way.
 """
+
 from __future__ import annotations
 
 import io
@@ -42,10 +43,8 @@ def test_a_plain_streamhandler_on_cp1252_loses_the_whole_line() -> None:
     handler.setFormatter(logging.Formatter("%(message)s"))
     with pytest.raises(UnicodeEncodeError):
         # `handle` swallows the error via handleError, so go straight at emit's write path.
-        stream.write(handler.format(logging.LogRecord(
-            "t", logging.INFO, __file__, 1, MESSAGE, None, None)))
-    assert "control_wedge" not in read_back(stream), (
-        "the control is only meaningful if the message really is lost")
+        stream.write(handler.format(logging.LogRecord("t", logging.INFO, __file__, 1, MESSAGE, None, None)))
+    assert "control_wedge" not in read_back(stream), "the control is only meaningful if the message really is lost"
 
 
 def test_colorhandler_keeps_the_message_when_the_glyph_cannot_be_encoded() -> None:

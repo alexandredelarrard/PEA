@@ -89,7 +89,7 @@ def test_all_declared_ownership_form_variants_share_one_xml_contract(document_ty
         "deriv": [1],
         "nonderiv": [1],
     }
-    print(f"SANITY: {document_type} uses the same ownership-XML transaction contract and " "stable per-security-table row sequence.")
+    print(f"SANITY: {document_type} uses the same ownership-XML transaction contract and stable per-security-table row sequence.")
 
 
 def test_missing_ten_b5_flag_remains_unknown_on_an_amendment():
@@ -113,12 +113,12 @@ def test_omitted_relationship_checkboxes_are_false_not_unknown():
     assert transactions["is_director"].eq(0.0).all()
     assert transactions["is_ten_pct_owner"].eq(0.0).all()
     assert transactions["is_officer"].eq(1.0).all()
-    print("SANITY: omitted relationship checkboxes mean False, while the explicitly checked " "officer role remains True.")
+    print("SANITY: omitted relationship checkboxes mean False, while the explicitly checked officer role remains True.")
 
 
 def test_explicit_transaction_total_is_kept_without_shares_or_price():
     xml = FORM4_XML.replace(
-        "<transactionShares><value>1000</value></transactionShares>" "<transactionPricePerShare><value>91.6725</value></transactionPricePerShare>",
+        "<transactionShares><value>1000</value></transactionShares><transactionPricePerShare><value>91.6725</value></transactionPricePerShare>",
         "<transactionTotalValue><value>965000000</value></transactionTotalValue>",
         1,
     )
@@ -127,4 +127,4 @@ def test_explicit_transaction_total_is_kept_without_shares_or_price():
     assert pd.isna(sale["shares"])
     assert pd.isna(sale["price_per_share"])
     assert sale["value_usd"] == pytest.approx(965_000_000.0)
-    print("SANITY: transactionTotalValue survives when a derivative transaction has no " "shares or per-share price.")
+    print("SANITY: transactionTotalValue survives when a derivative transaction has no shares or per-share price.")

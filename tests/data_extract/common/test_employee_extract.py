@@ -1,5 +1,6 @@
 """extract_employee_count: robust headcount parsing from 10-K text. Covers the phrasings
 that the strict '<number> employees' form missed (real cases: AMZN/MCD/XOM/KO/QCOM/DVA/CAT)."""
+
 from __future__ import annotations
 
 from src.data_extract.utils.common.edgar_extract import extract_employee_count
@@ -40,8 +41,10 @@ def test_employee_count_rejects_subsets_and_noise():
     """Union/pension SUBSETS and benefit-plan money are not the headcount; the real total
     must win over them, and pure-noise text yields None."""
     # subset distractor present alongside the real total -> total wins
-    txt = ("As of December 31, 2024, we had approximately 130,000 employees worldwide. "
-           "Approximately 400 employees in North America were covered by collective bargaining.")
+    txt = (
+        "As of December 31, 2024, we had approximately 130,000 employees worldwide. "
+        "Approximately 400 employees in North America were covered by collective bargaining."
+    )
     assert extract_employee_count(txt) == 130_000
 
     # benefit-plan money near 'employees' must not be taken as a headcount

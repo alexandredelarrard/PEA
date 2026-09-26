@@ -11,6 +11,7 @@ convention nobody enforces.
 Synthetic-free by nature: this is about cache identity, not about numbers, so it reads the
 real `./configs` and asserts on object identity and miss counts.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,20 +20,22 @@ import pytest
 
 from src.data_extract.utils.common import registrant
 from src.data_extract.utils.fundamentals import periods
-from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    DEFAULT_CONFIG_DIR, _catalogue_at, load_catalogue, resolve_config_dir)
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, _catalogue_at, load_catalogue, resolve_config_dir
 from src.data_extract.utils.fundamentals_sharadar import field_map
 
 #: The three spellings of one directory that all reach these loaders in the live tree.
 SPELLINGS = (None, DEFAULT_CONFIG_DIR, os.path.abspath(DEFAULT_CONFIG_DIR))
 
 
-@pytest.mark.parametrize(("name", "load", "cached"), [
-    ("load_catalogue", load_catalogue, _catalogue_at),
-    ("load_guards", periods.load_guards, periods._guards_at),
-    ("load_registrants", registrant.load_registrants, registrant._registrants_at),
-    ("load_field_map", field_map.load_field_map, field_map._field_map_at),
-])
+@pytest.mark.parametrize(
+    ("name", "load", "cached"),
+    [
+        ("load_catalogue", load_catalogue, _catalogue_at),
+        ("load_guards", periods.load_guards, periods._guards_at),
+        ("load_registrants", registrant.load_registrants, registrant._registrants_at),
+        ("load_field_map", field_map.load_field_map, field_map._field_map_at),
+    ],
+)
 def test_one_directory_is_one_cache_entry(name, load, cached):
     """Three spellings, one parse. `load_field_map` is the one that had NO cache at all
     while calling the cached `load_catalogue` inside itself."""
@@ -40,12 +43,9 @@ def test_one_directory_is_one_cache_entry(name, load, cached):
     results = [load(spelling) for spelling in SPELLINGS]
 
     misses = cached.cache_info().misses
-    assert misses == 1, (
-        f"{name} parsed its config {misses} times for {len(SPELLINGS)} spellings of one "
-        f"directory")
+    assert misses == 1, f"{name} parsed its config {misses} times for {len(SPELLINGS)} spellings of one directory"
     first = results[0]
-    assert all(r is first for r in results), (
-        f"{name} returned distinct objects for the same directory")
+    assert all(r is first for r in results), f"{name} returned distinct objects for the same directory"
 
     print(f"\n=== SANITY CHECK: {name} cache key ===")
     print(f"  spellings asked for: {[str(s) for s in SPELLINGS]}")

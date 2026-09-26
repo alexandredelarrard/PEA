@@ -29,10 +29,11 @@ it. `add()` therefore checks the grain itself, before indexing, and names the of
 label. Keeping the check here is what lets the accumulator stay a single concat -- chained
 merges would buy the same guarantee by re-copying ~570 columns once per part.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from collections.abc import Sequence
 
 import pandas as pd
 
@@ -51,19 +52,17 @@ class DuplicateKeyError(ValueError):
 class PanelMerger:
     """Collect feature panels, then emit one long ['date', 'ticker', <features...>] frame."""
 
-    def __init__(self, log: logging.Logger | None = None,
-                 keys: Sequence[str] = tuple(PANEL_KEYS)) -> None:
+    def __init__(self, log: logging.Logger | None = None, keys: Sequence[str] = tuple(PANEL_KEYS)) -> None:
         self._log = log or logging.getLogger(__name__)
         self._keys = list(keys)
         self._frames: list[pd.DataFrame] = []
-        self._owner: dict[str, str] = {}          # feature name -> the label that produced it
+        self._owner: dict[str, str] = {}  # feature name -> the label that produced it
 
     @property
     def feature_columns(self) -> list[str]:
         return list(self._owner)
 
-    def add(self, panel: pd.DataFrame | None, label: str,
-            empty_msg: str | None = None) -> int:
+    def add(self, panel: pd.DataFrame | None, label: str, empty_msg: str | None = None) -> int:
         """Register one panel; returns how many feature columns it contributed.
 
         An empty / None panel is logged and skipped (a source that has not been fetched
@@ -81,7 +80,8 @@ class PanelMerger:
             ex = panel.loc[panel.duplicated(self._keys, keep=False), self._keys].head(5)
             raise DuplicateKeyError(
                 f"'{label}' panel has {dup} duplicate {self._keys} row(s) -- the merge must be "
-                f"one-to-one. First offenders:\n{ex.to_string(index=False)}")
+                f"one-to-one. First offenders:\n{ex.to_string(index=False)}"
+            )
 
         features = [c for c in panel.columns if c not in self._keys]
         clash = sorted(c for c in features if c in self._owner)
@@ -91,7 +91,8 @@ class PanelMerger:
                 f"feature name(s) already in the cube panel: {clash} "
                 f"(owned by {owners}; now also emitted by '{label}'). Give each feature a "
                 "single owning panel (or rename it) -- merging would silently split it "
-                "into _x / _y columns.")
+                "into _x / _y columns."
+            )
         if not features:
             self._log.warning("%s panel carries no feature columns.", label)
             return 0
@@ -99,11 +100,9 @@ class PanelMerger:
         for c in features:
             self._owner[c] = label
         indexed = panel.set_index(self._keys)
-        self._frames.append(indexed[features] if len(features) != len(indexed.columns)
-                            else indexed)
+        self._frames.append(indexed[features] if len(features) != len(indexed.columns) else indexed)
         cov = indexed[features].notna().any(axis=1).mean()
-        self._log.info("Merged %s %s features (row coverage %.1f%%)",
-                       len(features), label, 100 * cov)
+        self._log.info("Merged %s %s features (row coverage %.1f%%)", len(features), label, 100 * cov)
         return len(features)
 
     def to_long(self) -> pd.DataFrame:

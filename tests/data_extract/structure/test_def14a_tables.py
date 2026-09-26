@@ -11,6 +11,7 @@ The five cell-level cases are synthetic-from-real (known-truth fixtures for pars
 the repo convention). Each one is a defect that corrupts CLASSIFICATION, not just values, which
 is why they are prerequisites rather than nice-to-haves.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,8 +21,14 @@ from pathlib import Path
 import pytest
 
 from src.data_extract.utils.structure.def14a.tables import (
-    SCT, TARGETS, _has_salary_column, classify_filing, classify_table, iter_tables,
-    merge_header_rows, to_tsv,
+    SCT,
+    TARGETS,
+    _has_salary_column,
+    classify_filing,
+    classify_table,
+    iter_tables,
+    merge_header_rows,
+    to_tsv,
 )
 
 CACHE = Path(__file__).resolve().parents[3] / "data/cache/def14a_probe"
@@ -51,11 +58,11 @@ def _grid(html: str) -> tuple[list[str], list[list[str]]]:
 #: both were got WRONG in turn while this rule was being written, each time silently handing a
 #: filing the wrong table.
 _SALARY_LABELS = [
-    "Salary",                                                    # GE 2019
+    "Salary",  # GE 2019
     "Base Salary",
-    "Salary ($)(1)",                                             # BA 2013-2021
-    "Salary ($) (c)",                                            # KLAC -- Item 402 uses (a)(b)(c)
-    "SUMMARY COMPENSATION TABLE Salary ($) (c)",                 # colspan'd title propagation
+    "Salary ($)(1)",  # BA 2013-2021
+    "Salary ($) (c)",  # KLAC -- Item 402 uses (a)(b)(c)
+    "SUMMARY COMPENSATION TABLE Salary ($) (c)",  # colspan'd title propagation
     "Summary Compensation Table Annual Compensation Salary ($)",  # 57 chars, 8 words, genuine
     "Salary and incentive compensation Annual compensation Salary ($)",
     "Annual Compensation Salary($)",
@@ -85,11 +92,9 @@ def test_salary_column_is_told_apart_from_prose_about_salary():
     A char cap cannot separate them: genuine title-propagated labels reach 64 chars while the
     prose starts at 82. Word count can -- 1-6 words versus 11-13, with nothing in between.
     """
-    wrong = ([c for c in _SALARY_LABELS if not _has_salary_column([c])]
-             + [c for c in _NOT_SALARY_LABELS if _has_salary_column([c])])
+    wrong = [c for c in _SALARY_LABELS if not _has_salary_column([c])] + [c for c in _NOT_SALARY_LABELS if _has_salary_column([c])]
     print("\n=== SANITY: Salary column vs prose ===")
-    print(f"  {len(_SALARY_LABELS)} real column labels accepted, "
-          f"{len(_NOT_SALARY_LABELS)} prose cells rejected, {len(wrong)} wrong")
+    print(f"  {len(_SALARY_LABELS)} real column labels accepted, {len(_NOT_SALARY_LABELS)} prose cells rejected, {len(wrong)} wrong")
     for c in wrong:
         print(f"    MISCLASSIFIED: {c}")
     assert not wrong, wrong
@@ -108,9 +113,7 @@ def test_the_real_sct_beats_a_longer_cda_table():
       <tr><td>B. Exec</td><td>2025</td><td>900,000</td><td>4,000,000</td><td>4,900,000</td></tr>
     </table>"""
     # the CD&A table is LONGER and also classifies as an SCT candidate
-    cda_rows = "".join(
-        f"<tr><td>Exec {i}</td><td>2025</td><td>{i}00,000</td><td>{i}00,000</td>"
-        f"<td>{i}00,000</td></tr>" for i in range(1, 9))
+    cda_rows = "".join(f"<tr><td>Exec {i}</td><td>2025</td><td>{i}00,000</td><td>{i}00,000</td><td>{i}00,000</td></tr>" for i in range(1, 9))
     cda = f"""<table>
       <tr><td>Name</td><td>Year</td><td>Annual Incentive Compensation ($)</td>
           <td>Long-Term Incentive ($)</td><td>Total ($)</td></tr>{cda_rows}
@@ -120,8 +123,8 @@ def test_the_real_sct_beats_a_longer_cda_table():
     assert SCT in best, "neither table classified as an SCT"
     header, rows = best[SCT]
     print("\n=== SANITY: SCT tie-break prefers the Salary column ===")
-    print(f"  CD&A candidate: 8 data rows, no Salary column")
-    print(f"  SCT candidate : 2 data rows, Salary column")
+    print("  CD&A candidate: 8 data rows, no Salary column")
+    print("  SCT candidate : 2 data rows, Salary column")
     print(f"  winner: {len(rows)} rows, header={[str(h) for h in header[:3]]}")
     assert _has_salary_column(header), "the longer CD&A table won"
     assert len(rows) == 2
@@ -193,8 +196,7 @@ def test_currency_glyph_in_its_own_cell_does_not_desync_columns():
           <td>201,925</td><td>$</td><td>1,000</td><td>$</td><td>342,925</td></tr>
     </table>"""
     header, rows = _grid(html)
-    assert header == ["NAME OF DIRECTOR", "CASH FEES", "STOCK AWARDS",
-                      "ALL OTHER COMP", "TOTAL"], header
+    assert header == ["NAME OF DIRECTOR", "CASH FEES", "STOCK AWARDS", "ALL OTHER COMP", "TOTAL"], header
     assert rows[0] == ["Sebastien Bazin", "0", "345,795", "0", "345,795"], rows[0]
     print(f"\n  $-in-own-td -> {rows[0]}")
     print(f"                  aligned to {header}")
@@ -296,15 +298,11 @@ _REAL_402K_HEADERS = {
     # Netflix pays its directors in OPTIONS. `_DIR_STOCK_COLS` has no option label.
     "NFLX": ("Name", "Fees Earned or Paid in Cash ($)", "Option Awards ($)", "Total ($)"),
     # Williams writes "fees earned or paid in STOCK" -- not "stock award".
-    "WMB": ("NAME", "FEES EARNED OR PAID IN CASH", "FEES EARNED OR PAID IN STOCK",
-            "OPTION AWARDS", "TOTAL"),
+    "WMB": ("NAME", "FEES EARNED OR PAID IN CASH", "FEES EARNED OR PAID IN STOCK", "OPTION AWARDS", "TOTAL"),
     # IBM's directors take cash plus All Other Compensation, no equity column at all.
-    "IBM": ("Name (a)", "Fees earned or paid in cash ($) (b)",
-            "All other compensation ($) (c)", "Total ($) (d)"),
+    "IBM": ("Name (a)", "Fees earned or paid in cash ($) (b)", "All other compensation ($) (c)", "Total ($) (d)"),
     # Alliant's carries the pension/deferred column instead.
-    "LNT": ("Name", "Fees Earned or Paid in Cash ($)",
-            "Change in Pension Value and Non-qualified Deferred Compensation Earnings ($)",
-            "Total ($)"),
+    "LNT": ("Name", "Fees Earned or Paid in Cash ($)", "Change in Pension Value and Non-qualified Deferred Compensation Earnings ($)", "Total ($)"),
 }
 
 
@@ -382,8 +380,7 @@ def test_a_colspand_table_title_does_not_hide_the_header():
       <tr><td>Jorge L. Benitez</td><td>150,000</td><td>175,000</td><td>325,000</td></tr>
     </table>"""
     header, rows = _grid(titled)
-    assert "director" in " ".join(header).lower(), \
-        "the fixture no longer reproduces the title-as-header shape"
+    assert "director" in " ".join(header).lower(), "the fixture no longer reproduces the title-as-header shape"
     matched = classify_table(header, rows)
     assert "director_comp" in matched, f"the title still hides the header: {matched}"
     print(f"\n  header merged to {header[:2]} ... promoted from rows[0] -> {matched}")
@@ -396,14 +393,13 @@ def test_a_title_promotion_needs_the_fee_vocabulary_in_the_promoted_row():
     from src.data_extract.utils.structure.def14a.tables import _promoted_header
 
     # a real header already -> nothing to promote
-    assert _promoted_header(["Name", "Fees Earned or Paid in Cash", "Total"],
-                            [["A. Director", "1", "2"]]) is None
+    assert _promoted_header(["Name", "Fees Earned or Paid in Cash", "Total"], [["A. Director", "1", "2"]]) is None
     # a title, but no fee vocabulary anywhere in the first rows -> nothing to promote
-    assert _promoted_header(["2025 Ownership", "2025 Ownership"],
-                            [["Name", "Shares"], ["A. Holder", "10"]]) is None
+    assert _promoted_header(["2025 Ownership", "2025 Ownership"], [["Name", "Shares"], ["A. Holder", "10"]]) is None
     # a title AND the fee row -> promoted
-    got = _promoted_header(["2025 Director Compensation", "2025 Director Compensation"],
-                           [["Name", "Fees Earned or Paid in Cash"], ["A. Director", "1"]])
+    got = _promoted_header(
+        ["2025 Director Compensation", "2025 Director Compensation"], [["Name", "Fees Earned or Paid in Cash"], ["A. Director", "1"]]
+    )
     assert got == ["Name", "Fees Earned or Paid in Cash"], got
     print("\n  promotion fires only on (title header) AND (fee row). Validated.")
 
@@ -442,8 +438,10 @@ def test_the_sct_can_never_be_classified_as_director_comp():
 
     print(f"\n  a real SCT -> {matched}")
     print(f"  the same SCT with a 'Fees Earned' column bolted on -> {m2}")
-    print("  CONCLUSION: `has(fee_col) and not has(salary)` is the exact negation of the SCT "
-          "rule's admitting condition, so the two targets cannot both match. Validated.")
+    print(
+        "  CONCLUSION: `has(fee_col) and not has(salary)` is the exact negation of the SCT "
+        "rule's admitting condition, so the two targets cannot both match. Validated."
+    )
 
 
 def test_one_table_can_serve_both_ownership_targets():
@@ -520,13 +518,11 @@ def test_recall_matrix_and_payload_print_conclusion():
     mean_payload = statistics.mean(payloads)
     print(f"\n=== SANITY CHECK: table-anchored carve over {n} cached 2024-2026 filings ===")
     print(f"  {'target':<20}{'found':>8}{'rate':>8}   research (25 filings)")
-    research = {"sct": "25/25", "director_comp": "24/25", "audit_fees": "25/25",
-                "ownership_insider": "22/25", "ownership_5pct": "25/25"}
+    research = {"sct": "25/25", "director_comp": "24/25", "audit_fees": "25/25", "ownership_insider": "22/25", "ownership_5pct": "25/25"}
     for target in TARGETS:
         print(f"  {target:<20}{hit[target]:>5}/{n}{100 * hit[target] / n:>7.0f}%   {research[target]}")
     print(f"  {'TOTAL':<20}{total:>5}/{5 * n}{100 * total / (5 * n):>7.1f}%   121/125 = 96.8%")
-    print(f"  payload: mean {mean_payload:,.0f}  median {statistics.median(payloads):,.0f}  "
-          f"max {max(payloads):,} chars (research B mean 4,283)")
+    print(f"  payload: mean {mean_payload:,.0f}  median {statistics.median(payloads):,.0f}  max {max(payloads):,} chars (research B mean 4,283)")
     print("  The audit-fee residual is ONE measured format class: EOG / GE / JPM / PEG all put")
     print("  their fee CATEGORY LABELS in narrative prose, so no table classifier reaches them.")
     print("  The router's narrative fallback owns that 19%. Validated.")
@@ -549,5 +545,4 @@ def test_pre_2001_ascii_filing_does_not_crash_the_parser():
     f = old[0]
     best = classify_filing(f.read_text(encoding="utf-8", errors="ignore"))
     assert isinstance(best, dict)
-    print(f"\n  {f.name}: {len(iter_tables(f.read_text(encoding='utf-8', errors='ignore')))} "
-          f"tables, {len(best)} targets classified (no crash)")
+    print(f"\n  {f.name}: {len(iter_tables(f.read_text(encoding='utf-8', errors='ignore')))} tables, {len(best)} targets classified (no crash)")

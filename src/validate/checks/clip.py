@@ -22,6 +22,7 @@ no `_vs_peers` leg at all; declaring one anyway would make this check measure ti
 empty set of legs and report a clean pass. That is the exact failure this package exists to
 prevent, so a table with no declared convention exits 3.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,13 +52,17 @@ _CLIP_TOL = 1e-6
 
 _MAX_FINDINGS = 40
 
-_WHY_SUFFIX = ("no `xs_suffix` and no `peer_suffix`, so there is no standardised view to "
-               "measure -- and a table with no such leg (cube_part_momentum has none) would "
-               "otherwise report a clean on-clip share over an empty set of columns")
+_WHY_SUFFIX = (
+    "no `xs_suffix` and no `peer_suffix`, so there is no standardised view to "
+    "measure -- and a table with no such leg (cube_part_momentum has none) would "
+    "otherwise report a clean on-clip share over an empty set of columns"
+)
 
-_WHY_CLIP = ("peer-z legs exist here but no `clip_peer` value is declared, so there is no "
-             "number to test them against -- the clip is a builder constant, not something "
-             "this check can infer from the data it is testing")
+_WHY_CLIP = (
+    "peer-z legs exist here but no `clip_peer` value is declared, so there is no "
+    "number to test them against -- the clip is a builder constant, not something "
+    "this check can infer from the data it is testing"
+)
 
 
 def _tie_mass(values: pd.Series, dates: pd.Series, min_tickers: int) -> dict[str, Any]:
@@ -75,13 +80,19 @@ def _tie_mass(values: pd.Series, dates: pd.Series, min_tickers: int) -> dict[str
     if frame.empty:
         return {"dates": 0, "mean_modal_share": None, "worst": None, "worst_date": None}
     modal = frame.groupby("d")["v"].agg(lambda s: s.value_counts().iloc[0] / len(s))
-    return {"dates": int(len(modal)), "mean_modal_share": float(modal.mean()),
-            "worst": float(modal.max()), "worst_date": modal.idxmax()}
+    return {"dates": int(len(modal)), "mean_modal_share": float(modal.mean()), "worst": float(modal.max()), "worst_date": modal.idxmax()}
 
 
-def check_clip(context: Context, table: Table | str, *, config: DictConfig,
-               cache: Any = None, tickers: list[str] | None = None,
-               group: int = GROUP, **kwargs: Any) -> CheckResult:
+def check_clip(
+    context: Context,
+    table: Table | str,
+    *,
+    config: DictConfig,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    group: int = GROUP,
+    **kwargs: Any,
+) -> CheckResult:
     """On-clip share per peer-z leg, tie mass per cross-sectional leg."""
     spec_t = resolve(table)
     if (declined := full_table_only(CHECK, spec_t.name, tickers)) is not None:
@@ -94,13 +105,13 @@ def check_clip(context: Context, table: Table | str, *, config: DictConfig,
     date_col = spec_t.date_col
     columns = feature_columns(context, spec_t)
     peer_legs = [c for c in columns if spec.peer_suffix and c.endswith(spec.peer_suffix)]
-    xs_legs = [c for c in columns if spec.xs_suffix and c.endswith(spec.xs_suffix)
-               and not (spec.peer_suffix and c.endswith(spec.peer_suffix))]
+    xs_legs = [c for c in columns if spec.xs_suffix and c.endswith(spec.xs_suffix) and not (spec.peer_suffix and c.endswith(spec.peer_suffix))]
     if not peer_legs and not xs_legs:
         return CheckResult.abstained(
-            CHECK, spec_t.name,
-            f"the table declares the suffixes {suffixes} but carries no column ending in "
-            f"any of them -- the declaration and the live schema disagree")
+            CHECK,
+            spec_t.name,
+            f"the table declares the suffixes {suffixes} but carries no column ending in any of them -- the declaration and the live schema disagree",
+        )
     if peer_legs and spec.clip_peer is None:
         raise UndeclaredTableError(spec_t.name, "clip_peer", _WHY_CLIP)
 
@@ -122,53 +133,67 @@ def check_clip(context: Context, table: Table | str, *, config: DictConfig,
                 limit = float(spec.clip_peer)
                 on_clip = int((np.abs(values.values[finite]) >= limit - _CLIP_TOL).sum())
                 share = (on_clip / n_ok) if n_ok else None
-                peer_metrics[column] = {"n_ok": n_ok, "on_clip": on_clip, "share": share,
-                                        "clip": limit,
-                                        "max_abs": (float(np.abs(values.values[finite]).max())
-                                                    if n_ok else None)}
+                peer_metrics[column] = {
+                    "n_ok": n_ok,
+                    "on_clip": on_clip,
+                    "share": share,
+                    "clip": limit,
+                    "max_abs": (float(np.abs(values.values[finite]).max()) if n_ok else None),
+                }
             else:
                 tie_metrics[column] = _tie_mass(values, dates, spec.min_tickers_xs)
-        log.info("clip %s: %d/%d legs", spec_t.name,
-                 len(peer_metrics) + len(tie_metrics), len(peer_legs) + len(xs_legs))
+        log.info("clip %s: %d/%d legs", spec_t.name, len(peer_metrics) + len(tie_metrics), len(peer_legs) + len(xs_legs))
 
-    over = sorted(((c, m) for c, m in peer_metrics.items()
-                   if m["share"] is not None and m["share"] > spec.clip_limit_share),
-                  key=lambda kv: -kv[1]["share"])
+    over = sorted(
+        ((c, m) for c, m in peer_metrics.items() if m["share"] is not None and m["share"] > spec.clip_limit_share), key=lambda kv: -kv[1]["share"]
+    )
     for column, metric in over[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            6, field=column,
-            observed=f"{metric['share']:.1%} of {metric['n_ok']:,} values sit on the "
-                     f"+/-{metric['clip']:g} clip ({metric['on_clip']:,} rows)",
-            expected=f"< {spec.clip_limit_share:.0%} on the clip. A clipped value reports "
-                     f"that the standardisation ran out of room -- too few peers, collapsed "
-                     f"peer dispersion, or an extreme raw leg -- not a distance from peers, "
-                     f"and every name in that mass carries the SAME number. Fix the peer "
-                     f"group or the raw leg; do not clip harder",
-            **metric))
+        findings.append(
+            Finding.at(
+                6,
+                field=column,
+                observed=f"{metric['share']:.1%} of {metric['n_ok']:,} values sit on the +/-{metric['clip']:g} clip ({metric['on_clip']:,} rows)",
+                expected=f"< {spec.clip_limit_share:.0%} on the clip. A clipped value reports "
+                f"that the standardisation ran out of room -- too few peers, collapsed "
+                f"peer dispersion, or an extreme raw leg -- not a distance from peers, "
+                f"and every name in that mass carries the SAME number. Fix the peer "
+                f"group or the raw leg; do not clip harder",
+                **metric,
+            )
+        )
 
-    plateaus = sorted(((c, m) for c, m in tie_metrics.items()
-                       if m["mean_modal_share"] is not None
-                       and m["mean_modal_share"] >= spec.tie_limit_share),
-                      key=lambda kv: -kv[1]["mean_modal_share"])
+    plateaus = sorted(
+        ((c, m) for c, m in tie_metrics.items() if m["mean_modal_share"] is not None and m["mean_modal_share"] >= spec.tie_limit_share),
+        key=lambda kv: -kv[1]["mean_modal_share"],
+    )
     for column, metric in plateaus[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            6, field=column,
-            observed=f"the modal value covers {metric['mean_modal_share']:.1%} of the "
-                     f"cross-section on an average date ({metric['dates']:,} dates with at "
-                     f"least {spec.min_tickers_xs} names; worst {metric['worst']:.1%} on "
-                     f"{pd.Timestamp(metric['worst_date']).date()})",
-            expected=f"< {spec.tie_limit_share:.0%} -- a percentile leg where half the "
-                     f"cross-section shares one value is a plateau, not a ranking, and every "
-                     f"name inside it is unordered",
-            **metric))
+        findings.append(
+            Finding.at(
+                6,
+                field=column,
+                observed=f"the modal value covers {metric['mean_modal_share']:.1%} of the "
+                f"cross-section on an average date ({metric['dates']:,} dates with at "
+                f"least {spec.min_tickers_xs} names; worst {metric['worst']:.1%} on "
+                f"{pd.Timestamp(metric['worst_date']).date()})",
+                expected=f"< {spec.tie_limit_share:.0%} -- a percentile leg where half the "
+                f"cross-section shares one value is a plateau, not a ranking, and every "
+                f"name inside it is unordered",
+                **metric,
+            )
+        )
 
-    first_date, last_date = (context.store.bounds(spec_t) if date_col else (None, None))
-    scope = {"rows": rows, "first_date": first_date, "last_date": last_date,
-             "peer_legs": len(peer_legs), "xs_legs": len(xs_legs),
-             "peer_suffix": spec.peer_suffix, "xs_suffix": spec.xs_suffix,
-             "clip_peer": spec.clip_peer, "min_tickers_xs": spec.min_tickers_xs,
-             "source": "cache" if cache_used(cache, spec_t) else "db"}
-    metrics = {"peer": peer_metrics, "tie": tie_metrics,
-               "peer_over_limit": [c for c, _ in over],
-               "tie_over_limit": [c for c, _ in plateaus]}
+    first_date, last_date = context.store.bounds(spec_t) if date_col else (None, None)
+    scope = {
+        "rows": rows,
+        "first_date": first_date,
+        "last_date": last_date,
+        "peer_legs": len(peer_legs),
+        "xs_legs": len(xs_legs),
+        "peer_suffix": spec.peer_suffix,
+        "xs_suffix": spec.xs_suffix,
+        "clip_peer": spec.clip_peer,
+        "min_tickers_xs": spec.min_tickers_xs,
+        "source": "cache" if cache_used(cache, spec_t) else "db",
+    }
+    metrics = {"peer": peer_metrics, "tie": tie_metrics, "peer_over_limit": [c for c, _ in over], "tie_over_limit": [c for c, _ in plateaus]}
     return CheckResult.measured(CHECK, spec_t.name, findings, scope=scope, metrics=metrics)

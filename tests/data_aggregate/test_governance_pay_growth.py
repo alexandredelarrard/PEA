@@ -41,6 +41,7 @@ value instead — a SIGN FLIP on one ticker. Phase 2's pay-table sanity step doe
 2012 either, because that row is perfectly self-consistent ($1 total, $1 salary, zero
 components); only an external cross-check would, and none is in scope.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -70,9 +71,11 @@ N_CONTROLS = 100
 ORDINARY_GROWTH = 0.15
 
 
-def _proxies(bad_comp: tuple[float, float] = (1.0, 280_621_552.0),
-             bad_names: tuple[str | None, str | None] = ("Larry Page", "Sundar Pichai"),
-             extra: pd.DataFrame | None = None) -> pd.DataFrame:
+def _proxies(
+    bad_comp: tuple[float, float] = (1.0, 280_621_552.0),
+    bad_names: tuple[str | None, str | None] = ("Larry Page", "Sundar Pichai"),
+    extra: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """`N_CONTROLS` well-behaved filers plus `BAD`, two annual proxies each.
 
     `BAD` defaults to the real GOOGL pair -- a real $1 followed by a real $280,621,552 across a
@@ -81,15 +84,20 @@ def _proxies(bad_comp: tuple[float, float] = (1.0, 280_621_552.0),
     rows = []
     for i in range(N_CONTROLS):
         t = f"C{i:03d}"
-        rows += [{"ticker": t, "as_of": AS_OF_1, "ceo_total_comp": 1_000_000.0,
-                  "ceo_name_proxy": "Jane Q. Control", "board_size": 9.0},
-                 {"ticker": t, "as_of": AS_OF_2,
-                  "ceo_total_comp": 1_000_000.0 * (1.0 + ORDINARY_GROWTH),
-                  "ceo_name_proxy": "Jane Q. Control", "board_size": 9.0}]
-    rows += [{"ticker": "BAD", "as_of": AS_OF_1, "ceo_total_comp": bad_comp[0],
-              "ceo_name_proxy": bad_names[0], "board_size": 11.0},
-             {"ticker": "BAD", "as_of": AS_OF_2, "ceo_total_comp": bad_comp[1],
-              "ceo_name_proxy": bad_names[1], "board_size": 11.0}]
+        rows += [
+            {"ticker": t, "as_of": AS_OF_1, "ceo_total_comp": 1_000_000.0, "ceo_name_proxy": "Jane Q. Control", "board_size": 9.0},
+            {
+                "ticker": t,
+                "as_of": AS_OF_2,
+                "ceo_total_comp": 1_000_000.0 * (1.0 + ORDINARY_GROWTH),
+                "ceo_name_proxy": "Jane Q. Control",
+                "board_size": 9.0,
+            },
+        ]
+    rows += [
+        {"ticker": "BAD", "as_of": AS_OF_1, "ceo_total_comp": bad_comp[0], "ceo_name_proxy": bad_names[0], "board_size": 11.0},
+        {"ticker": "BAD", "as_of": AS_OF_2, "ceo_total_comp": bad_comp[1], "ceo_name_proxy": bad_names[1], "board_size": 11.0},
+    ]
     df = pd.DataFrame(rows)
     if extra is not None:
         df = pd.concat([df, extra], ignore_index=True)
@@ -102,14 +110,14 @@ def _revenue(tickers: list[str]) -> pd.DataFrame:
     transparent: the difference column then equals the pay leg exactly."""
     rows = []
     for t in tickers:
-        rows += [{"ticker": t, "as_of": AS_OF_1, "totalRevenue": 1.0e9},
-                 {"ticker": t, "as_of": AS_OF_2, "totalRevenue": 1.0e9}]
+        rows += [{"ticker": t, "as_of": AS_OF_1, "totalRevenue": 1.0e9}, {"ticker": t, "as_of": AS_OF_2, "totalRevenue": 1.0e9}]
     return pd.DataFrame(rows)
 
 
 # --------------------------------------------------------------------------- #
 # half 1 -- the CEO-identity guard                                            #
 # --------------------------------------------------------------------------- #
+
 
 def test_a_ceo_change_is_not_pay_growth():
     """The GOOGL cell, exactly as filed. $1 -> $280,621,552 across a change of CEO is NaN."""
@@ -124,8 +132,7 @@ def test_the_same_ceo_keeps_the_value_however_extreme():
     The guard must NOT fire here -- it is not an outlier detector -- which is precisely why
     the trim has to exist as well. 28,095,226 is the guard-only maximum measured on the live
     archive."""
-    g = _ceo_pay_growth(_proxies(bad_comp=(1.0, 28_095_227.0),
-                                 bad_names=("Charles Liang", "Charles Liang")), IDX)
+    g = _ceo_pay_growth(_proxies(bad_comp=(1.0, 28_095_227.0), bad_names=("Charles Liang", "Charles Liang")), IDX)
     assert np.allclose(g.loc[COVERED, "BAD"], 28_095_226.0), "the guard over-fired"
 
 
@@ -139,8 +146,7 @@ def test_a_zero_prior_year_is_NaN_not_infinity():
     because its only growth observation is the infinity and the pivot is built from the rows
     that survive. Asserted both ways so either outcome counts, and so a future `inf` leak
     fails loudly instead of hiding in a missing column."""
-    g = _ceo_pay_growth(_proxies(bad_comp=(0.0, 15_499_993.0),
-                                 bad_names=("Alan Mulally", "Alan Mulally")), IDX)
+    g = _ceo_pay_growth(_proxies(bad_comp=(0.0, 15_499_993.0), bad_names=("Alan Mulally", "Alan Mulally")), IDX)
     assert "BAD" not in g.columns or g.loc[COVERED, "BAD"].isna().all()
     v = g.loc[COVERED].to_numpy(dtype="float64").ravel()
     assert np.isfinite(v[~np.isnan(v)]).all(), "an infinity reached the daily grid"
@@ -172,9 +178,9 @@ def test_the_flag_cannot_be_borrowed_from_another_filing():
     growth from Pichai's first year to his second is a real growth rate.
     """
     as_of_3 = pd.Timestamp("2012-06-15")
-    extra = pd.DataFrame([{"ticker": "BAD", "as_of": as_of_3,
-                           "ceo_total_comp": 322_214_785.0,
-                           "ceo_name_proxy": "Sundar Pichai", "board_size": 11.0}])
+    extra = pd.DataFrame(
+        [{"ticker": "BAD", "as_of": as_of_3, "ceo_total_comp": 322_214_785.0, "ceo_name_proxy": "Sundar Pichai", "board_size": 11.0}]
+    )
     g = _ceo_pay_growth(_proxies(extra=extra), IDX)
     masked = IDX[(IDX >= AS_OF_2) & (IDX < as_of_3)]
     assert g.loc[masked, "BAD"].isna().all(), "the transition itself must stay masked"
@@ -188,9 +194,7 @@ def test_the_guard_shares_one_definition_with_the_pay_family():
     leg and the guarded `ceo_comp_growth_1y` can never disagree about a transition. Spelling
     drift is the thing it has to survive: comparing raw strings manufactures 356 spurious
     turnovers out of 1,625 on the live archive."""
-    h = pd.DataFrame({"ticker": ["X", "X", "X", "Y", "Y"],
-                      "n": ["Timothy D. Cook", "Timothy Cook", "Tim Cook",
-                            "Larry Page", "Sundar Pichai"]})
+    h = pd.DataFrame({"ticker": ["X", "X", "X", "Y", "Y"], "n": ["Timothy D. Cook", "Timothy Cook", "Tim Cook", "Larry Page", "Sundar Pichai"]})
     changed = ceo_identity_changed(h["n"], h["ticker"])
     assert changed.tolist()[1:3] == [0.0, 0.0], "spelling drift read as a turnover"
     assert changed.iloc[4] == 1.0, "a real transition was missed"
@@ -208,6 +212,7 @@ def test_the_tally_counts_cells_and_tickers():
 # half 2 -- the cross-sectional trim                                          #
 # --------------------------------------------------------------------------- #
 
+
 def _shipped(hist: pd.DataFrame, with_revenue: bool = True) -> dict[str, pd.DataFrame]:
     rev = _revenue(sorted(hist["ticker"].unique())) if with_revenue else None
     return _governance_fields(hist, IDX, rev, {})
@@ -217,8 +222,7 @@ def test_a_same_ceo_outlier_is_bounded_by_the_trim():
     """The half the guard cannot do. SMCI's shape survives the guard at 28,095,226x and must
     still leave `_governance_fields` bounded -- here at the controls' own 0.15, because every
     control carries the same year and both quantiles therefore sit on it."""
-    hist = _proxies(bad_comp=(1.0, 28_095_227.0),
-                    bad_names=("Charles Liang", "Charles Liang"))
+    hist = _proxies(bad_comp=(1.0, 28_095_227.0), bad_names=("Charles Liang", "Charles Liang"))
     f = _shipped(hist)["ceo_pay_growth"]
     assert np.isfinite(f.loc[COVERED, "BAD"].to_numpy()).all()
     assert np.allclose(f.loc[COVERED, "BAD"], ORDINARY_GROWTH)
@@ -228,15 +232,13 @@ def test_a_same_ceo_outlier_is_bounded_by_the_trim():
 def test_an_ordinary_pay_year_is_bit_identical():
     """WINSORIZATION MUST BE INERT IN THE BODY. A +15% year is the ordinary case and the trim
     that bounds the GOOGL cell is only defensible if it leaves this one alone."""
-    hist = _proxies(bad_comp=(1.0, 28_095_227.0),
-                    bad_names=("Charles Liang", "Charles Liang"))
+    hist = _proxies(bad_comp=(1.0, 28_095_227.0), bad_names=("Charles Liang", "Charles Liang"))
     f = _shipped(hist)["ceo_pay_growth"]
     controls = [c for c in f.columns if c.startswith("C")]
     assert len(controls) == N_CONTROLS
     pd.testing.assert_frame_equal(
-        f.loc[COVERED, controls],
-        pd.DataFrame(ORDINARY_GROWTH, index=COVERED, columns=controls),
-        check_exact=False, check_names=False, atol=1e-12)
+        f.loc[COVERED, controls], pd.DataFrame(ORDINARY_GROWTH, index=COVERED, columns=controls), check_exact=False, check_names=False, atol=1e-12
+    )
 
 
 def test_the_difference_column_inherits_both_halves():
@@ -251,8 +253,7 @@ def test_the_difference_column_inherits_both_halves():
     # flat revenue -> the difference IS the pay leg
     assert np.allclose(diff.loc[COVERED, "C000"], ORDINARY_GROWTH)
 
-    fields = _shipped(_proxies(bad_comp=(1.0, 28_095_227.0),
-                               bad_names=("Charles Liang", "Charles Liang")))
+    fields = _shipped(_proxies(bad_comp=(1.0, 28_095_227.0), bad_names=("Charles Liang", "Charles Liang")))
     diff = fields["ceo_pay_vs_revenue_growth"]
     assert np.isfinite(diff.loc[COVERED, "BAD"].to_numpy()).all(), "the trim did not reach it"
     assert np.allclose(diff.loc[COVERED, "BAD"], ORDINARY_GROWTH)
@@ -262,8 +263,7 @@ def test_the_difference_column_inherits_both_halves():
 def test_every_declared_member_is_actually_trimmed(name: str):
     """The set DRIVES the trim, so it can no longer drift out of date as documentation. If a
     third unencoded column is added to `_RAW_ONLY_COMPUTED` it is bounded on the same line."""
-    hist = _proxies(bad_comp=(1.0, 28_095_227.0),
-                    bad_names=("Charles Liang", "Charles Liang"))
+    hist = _proxies(bad_comp=(1.0, 28_095_227.0), bad_names=("Charles Liang", "Charles Liang"))
     f = _shipped(hist)[name]
     raw = _ceo_pay_growth(hist, IDX)
     assert raw.loc[COVERED, "BAD"].max() > 1e6, "the fixture stopped being extreme"
@@ -278,5 +278,4 @@ def test_the_trim_touches_nothing_else_in_the_family():
     f = _shipped(hist)["board_size"]
     assert np.allclose(f.loc[COVERED, "BAD"], 11.0), "board_size was winsorized"
     assert np.allclose(f.loc[COVERED, "C000"], 9.0)
-    assert not np.allclose(winsorize_xs(f).loc[COVERED, "BAD"], 11.0), (
-        "the fixture no longer proves the loop is scoped -- a trim would not move BAD")
+    assert not np.allclose(winsorize_xs(f).loc[COVERED, "BAD"], 11.0), "the fixture no longer proves the loop is scoped -- a trim would not move BAD"

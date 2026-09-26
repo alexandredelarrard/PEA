@@ -136,7 +136,7 @@ def test_completeness_gate_runs(frames):
 
     print("\n=== SANITY CHECK: gate 1, completeness ===")
     print(f"  tickers measured    : {len(frame)}")
-    print(f"  quarters stored     : {int(frame['n_quarters'].sum())} across " f"{frame['first_quarter'].min()}..{frame['last_quarter'].max()}")
+    print(f"  quarters stored     : {int(frame['n_quarters'].sum())} across {frame['first_quarter'].min()}..{frame['last_quarter'].max()}")
     print(f"  tickers with a gap  : {len(with_gaps)}")
     print(f"  missing quarters    : {int(frame['n_missing'].sum())}")
     print(f"  duplicate quarters  : {int(frame['n_duplicate_quarters'].sum())}")
@@ -145,7 +145,7 @@ def test_completeness_gate_runs(frames):
 
     assert not frame.empty, "the completeness gate measured no ticker at all"
     assert (frame["n_quarters"] > 0).all(), "a ticker was measured with zero quarters"
-    print(f"  OK: {len(frame)} tickers measured, " f"{int(frame['n_missing'].sum())} missing quarter(s) found.")
+    print(f"  OK: {len(frame)} tickers measured, {int(frame['n_missing'].sum())} missing quarter(s) found.")
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +185,7 @@ def test_sign_conventions_hold(frames):
         f"= {rate:.2%}, on {result['capex_positive_tickers']})"
     )
     for row in result["capex_positive_rows"].head(20).itertuples(index=False):
-        print(f"    +capex  {row.ticker:5s} {row.dimension} {row.fiscalperiod} " f"{pd.Timestamp(row.date).date()}  {row.capex:>16,.0f}")
+        print(f"    +capex  {row.ticker:5s} {row.dimension} {row.fiscalperiod} {pd.Timestamp(row.date).date()}  {row.capex:>16,.0f}")
 
     assert result["fcf_identity_holds"], "fcf is not ncfo + capex -- `freeCashflow <- fcf` needs a reconstruction after all"
     assert rate < MAX_POSITIVE_CAPEX_RATE, (
@@ -279,7 +279,7 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
             f"{row.verdict}"
         )
     if len(split):
-        print("  => `sharesbas` is NOT point-in-time for " f"{', '.join(split['ticker'].head(10))}. Multiplying it by an as-filed price")
+        print(f"  => `sharesbas` is NOT point-in-time for {', '.join(split['ticker'].head(10))}. Multiplying it by an as-filed price")
         print("     yields a market cap wrong by the split factor for every pre-split date.")
         print("     `build_ttm` de-adjusts using sharadar_actions, which carries the splits.")
 
@@ -311,7 +311,7 @@ def test_sharesbas_is_split_adjusted_not_point_in_time(frames):
         f"names -- it may now encode the split adjustment, which would change how the "
         f"de-adjustment has to work (de-adjusting on top of it would double-count)"
     )
-    print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted " f"history that `build_ttm` de-adjusts.")
+    print(f"  OK: {len(agree)}/{len(frame)} agree on level; {len(split)} carry a split-adjusted history that `build_ttm` de-adjusts.")
 
 
 # --------------------------------------------------------------------------- #
@@ -348,7 +348,7 @@ def test_cik_cutover_continuity(context, frames):
     if not testable:
         print("  => D19 IS UNVERIFIED. None of the register's cutover tickers has been")
         print("     extracted yet. This test runs as soon as one of them is stored.")
-        pytest.skip(f"no cutover ticker stored: register={sorted(cutovers)} " f"vs {len(stored)} stored tickers. D19 UNVERIFIED.")
+        pytest.skip(f"no cutover ticker stored: register={sorted(cutovers)} vs {len(stored)} stored tickers. D19 UNVERIFIED.")
 
     # ⚠ MEASURED IN A WINDOW AROUND THE CUTOVER, not over the whole stored series, which is
     # what this test claims to check and what it silently did not. A registrant change can
@@ -386,7 +386,7 @@ def test_cik_cutover_continuity(context, frames):
         known = CUTOVER_KNOWN_HOLES.get(ticker, ())
         unexpected = [q for q in found if q not in known]
         if known:
-            print(f"      KNOWN cutover hole (predecessor CIK, see CUTOVER_KNOWN_HOLES): " f"{list(known)}")
+            print(f"      KNOWN cutover hole (predecessor CIK, see CUTOVER_KNOWN_HOLES): {list(known)}")
         assert not unexpected, (
             f"{ticker} has {len(unexpected)} UNRECORDED missing quarter(s) within "
             f"{CUTOVER_WINDOW_YEARS}y of its CIK cutover ({cutovers[ticker]}): "

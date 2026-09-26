@@ -8,12 +8,13 @@ identical economic state ranks differently across years (the zero block reads 0.
 0.455 in 2013), which is a year effect masquerading as a stock signal. `test_the_dropped_
 tax_loss_pressure_stays_dropped` below pins the removal.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.momentum.features import compute_raw_features, build_feature_panel
+from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
 
 _FLOW = ["signed_vol_63", "volume_trend_63", "volume_cv_63"]
 
@@ -47,8 +48,7 @@ def test_flow_features_present_and_signed_volume():
     # S1 (volume on up-days) net-positive; S2 (volume on down-days) net-negative
     assert sv["S1"] > 0 > sv["S2"], (sv["S1"], sv["S2"])
     print("\n=== SANITY CHECK: flow features + signed volume ===")
-    print(f"  all of {_FLOW} built; signed_vol_63 S1={sv['S1']:+.2f} (buys) vs "
-          f"S2={sv['S2']:+.2f} (sells). Validated.")
+    print(f"  all of {_FLOW} built; signed_vol_63 S1={sv['S1']:+.2f} (buys) vs S2={sv['S2']:+.2f} (sells). Validated.")
 
 
 def test_the_dropped_tax_loss_pressure_stays_dropped():
@@ -72,8 +72,10 @@ def test_the_dropped_tax_loss_pressure_stays_dropped():
     assert not any("tax_loss" in name for name in raw), sorted(raw)
 
     print("\n=== SANITY CHECK: tax_loss_pressure is gone ===")
-    print(f"  {len(raw)} raw features built, none matching 'tax_loss'; the long panel has "
-          f"{len(panel.columns) - 2} feature columns and no tax_loss_pressure. Validated.")
+    print(
+        f"  {len(raw)} raw features built, none matching 'tax_loss'; the long panel has "
+        f"{len(panel.columns) - 2} feature columns and no tax_loss_pressure. Validated."
+    )
 
 
 def test_flow_is_leak_free_and_panel():
@@ -81,19 +83,17 @@ def test_flow_is_leak_free_and_panel():
     base = compute_raw_features(close, open_, sector, volume=volume)
     t_idx = 252 * 2
     close2, vol2 = close.copy(), volume.copy()
-    close2.iloc[t_idx + 1:] *= 1.5
-    vol2.iloc[t_idx + 1:] *= 4.0
+    close2.iloc[t_idx + 1 :] *= 1.5
+    vol2.iloc[t_idx + 1 :] *= 4.0
     pert = compute_raw_features(close2, open_, sector, volume=vol2)
     for k in _FLOW:
-        assert np.allclose(base[k].iloc[t_idx].to_numpy(),
-                           pert[k].iloc[t_idx].to_numpy(), equal_nan=True), f"{k} leaks"
+        assert np.allclose(base[k].iloc[t_idx].to_numpy(), pert[k].iloc[t_idx].to_numpy(), equal_nan=True), f"{k} leaks"
 
     panel = build_feature_panel(close, open_, sector, method="rank", volume=volume)
     for k in _FLOW:
         assert k in panel.columns and panel[k].dropna().between(0, 1).all()
     print("\n=== SANITY CHECK: flow features point-in-time + panel ===")
-    print("  perturbing all data AFTER t left every flow feature at t unchanged; "
-          "panel columns rank-standardized to [0,1]. Validated.")
+    print("  perturbing all data AFTER t left every flow feature at t unchanged; panel columns rank-standardized to [0,1]. Validated.")
 
 
 if __name__ == "__main__":

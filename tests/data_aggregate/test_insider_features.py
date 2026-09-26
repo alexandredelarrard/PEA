@@ -108,8 +108,7 @@ def test_only_open_market_codes_survive_the_scope_cut():
     kept = sorted(out["code"].unique())
     assert kept == sorted(OPEN_MARKET_CODES)
     print(
-        f"SANITY: 10 codes in, {kept} out -- the 8 non-discretionary codes "
-        f"({diag['input_rows'] - diag['scoped_rows']} rows) never reach a feature."
+        f"SANITY: 10 codes in, {kept} out -- the 8 non-discretionary codes ({diag['input_rows'] - diag['scoped_rows']} rows) never reach a feature."
     )
 
 
@@ -652,7 +651,7 @@ def test_the_sink_refuses_an_ambiguous_column_at_the_contract_point():
     frame = pd.DataFrame([[1, "AAA", pd.Timestamp("2015-06-01"), 2]], columns=["shares", "ticker", "date", "shares"])
     with pytest.raises(ValueError, match="duplicate column"):
         ConditioningSink().add_events("insider", frame)
-    print("SANITY: ConditioningSink.add_events raises ValueError naming the duplicate column " "instead of forwarding an ambiguous frame.")
+    print("SANITY: ConditioningSink.add_events raises ValueError naming the duplicate column instead of forwarding an ambiguous frame.")
 
 
 def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them():
@@ -720,7 +719,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     print(f"  shares_out_history columns passed: {sorted(fh.columns)}")
     for f, n in built.items():
         print(f"    {f:<42} {n:>4} non-null rows")
-    print(f"  with `sharesOutstanding` dropped -> {len(survived)} of {len(mcap_feats)} " f"features survive, and the builder logs:")
+    print(f"  with `sharesOutstanding` dropped -> {len(survived)} of {len(mcap_feats)} features survive, and the builder logs:")
     for m in logged:
         print(f"    WARNING {m}")
     print(

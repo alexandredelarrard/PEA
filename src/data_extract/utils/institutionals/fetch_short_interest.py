@@ -236,7 +236,7 @@ def fetch_short_interest(
 
     if not full:
         context.store.save(Tables.short_interest, fresh)
-        logger.info(f"Saved {len(fresh)} new short-volume rows to DB table " f"'{Tables.short_interest}'")
+        logger.info(f"Saved {len(fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
         logger.info(f"RegSHO: {len(unresolved)} unresolved raw row(s) excluded")
         record_run(context, Tables.short_interest, len(tickers), len(fresh))
         return

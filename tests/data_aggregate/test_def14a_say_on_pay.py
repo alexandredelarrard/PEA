@@ -14,6 +14,7 @@ had held no rule since. What these tests pin now is the property that made the f
 and must survive any future cleaning rule: `impute_def14a` is the WHOLE clean-on-read stage,
 it only ever writes where a cell is NaN, and it never aliases its caller's frame.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,11 +27,13 @@ REAL_REVOLTS = {"JPM": 0.31, "INTC": 0.34, "SPG": 0.111}
 
 
 def _proxies(values: list[float], ticker: str = "JPM") -> pd.DataFrame:
-    return pd.DataFrame({
-        "ticker": [ticker] * len(values),
-        "as_of": pd.date_range("2019-04-01", periods=len(values), freq="365D"),
-        "say_on_pay_support_pct": values,
-    })
+    return pd.DataFrame(
+        {
+            "ticker": [ticker] * len(values),
+            "as_of": pd.date_range("2019-04-01", periods=len(values), freq="365D"),
+            "say_on_pay_support_pct": values,
+        }
+    )
 
 
 def test_real_revolts_survive_the_clean_stage():
@@ -76,10 +79,8 @@ def test_say_on_pay_prints_conclusion():
     kept = out["say_on_pay_support_pct"].dropna()
     n_dropped = sum(v for k, v in stats.items() if "dropped" in k)
     print("\n=== SANITY CHECK: say-on-pay revolts survive ===")
-    print(f"  3 real revolts in -> {sum(1 for t, v in REAL_REVOLTS.items())} survive; "
-          f"{n_dropped} cells nulled")
-    print(f"  {len(values)} values in -> {len(kept)} out, range "
-          f"{kept.min():.3f} .. {kept.max():.3f} (0.111 kept, not floored)")
+    print(f"  3 real revolts in -> {sum(1 for t, v in REAL_REVOLTS.items())} survive; {n_dropped} cells nulled")
+    print(f"  {len(values)} values in -> {len(kept)} out, range {kept.min():.3f} .. {kept.max():.3f} (0.111 kept, not floored)")
     print("  Measured: 14/14 sampled sub-0.50 values are CORRECT. JPM 2023 disclosed 31%")
     print("  support, INTC 2023 34%, SPG 2024 11.1% — all quoted in the filings. The 0.50")
     print("  floor deleted 61 correct rows; it and its seam are gone. Validated.")

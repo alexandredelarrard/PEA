@@ -95,7 +95,7 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     with engine.begin() as conn:
         for c in missing:
             sqltype = ddl.sql_type(c, df[c].dtype, spec=None)
-            conn.execute(text(f'ALTER TABLE "{name}" ' f'ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
+            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
     return missing
 
 
@@ -214,7 +214,7 @@ def build_select(
 
     if since is not None or until is not None:
         if date_col is None:
-            raise ValueError("since/until need a date column: the table declares no " "`date_col`, so pass date_col= explicitly")
+            raise ValueError("since/until need a date column: the table declares no `date_col`, so pass date_col= explicitly")
         if where and date_col in where:
             # `date = a AND date >= b` is almost never what the caller meant, and silently
             # emitting it would hide the mistake behind an empty result.
@@ -562,7 +562,7 @@ class DataStore:
             return None
         cols, required_missing, optional_missing = projection_report(table, self.columns(table) or None)
         if required_missing:
-            logger.warning("%s is missing REQUIRED column(s) %s -> the features that need " "them will be empty", name_of(table), required_missing)
+            logger.warning("%s is missing REQUIRED column(s) %s -> the features that need them will be empty", name_of(table), required_missing)
         elif optional_missing:
             logger.info("%s has no %s (optional) -> those features are skipped", name_of(table), optional_missing)
         return cols

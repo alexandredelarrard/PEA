@@ -10,6 +10,7 @@ diversifier. Self-contained on the shared trend blocks (src/utils/trend); no ML.
 `trend_book()` is the "prediction + construction": vol-normalized multi-lookback forecast ->
 vol-scaled long/short weights -> daily NET returns (trailing-vol-scaled to a sleeve vol target).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -17,7 +18,7 @@ import pandas as pd
 
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
-from src.utils.trend import combined_forecast, vol_scaled_positions, sleeve_returns
+from src.utils.trend import combined_forecast, sleeve_returns, vol_scaled_positions
 
 # level (price / total-return-index) columns usable as trend "close"; renamed to short labels
 TREND_CLOSE_COLS = ["equity_tr", "gold", "energy", "bond_10y_tr", "fx_usdeur"]
@@ -47,17 +48,24 @@ def _vol_target_scale(ret: pd.Series, target: float, window: int = 126, cap: flo
     return (target / tv).clip(lower=1.0 / cap, upper=cap).fillna(1.0)
 
 
-def trend_book(close: pd.DataFrame, *, lookbacks: tuple[int, ...] = (63, 126, 252),
-               vol_window: int = 63, signal_cap: float = 2.0, per_asset_vol_target: float = 0.15,
-               sleeve_vol_target: float = 0.10, rebalance_freq: int = 5,
-               fee_bps: float = 2.0, spread_bps: float = 8.0) -> dict[str, object]:
+def trend_book(
+    close: pd.DataFrame,
+    *,
+    lookbacks: tuple[int, ...] = (63, 126, 252),
+    vol_window: int = 63,
+    signal_cap: float = 2.0,
+    per_asset_vol_target: float = 0.15,
+    sleeve_vol_target: float = 0.10,
+    rebalance_freq: int = 5,
+    fee_bps: float = 2.0,
+    spread_bps: float = 8.0,
+) -> dict[str, object]:
     """Long/short trend book -> {ret (daily NET, vol-targeted), positions (date x asset weights),
     gross, turnover}. Point-in-time (signal at t-1 earns t-1->t)."""
-    forecast = combined_forecast(close, list(lookbacks), vol_window, signal_cap)   # SIGNED
+    forecast = combined_forecast(close, list(lookbacks), vol_window, signal_cap)  # SIGNED
     weights = vol_scaled_positions(forecast, close, vol_window, per_asset_vol_target)
     sr = sleeve_returns(weights, close, fee_bps, spread_bps, rebalance_freq)
     scale = _vol_target_scale(sr["ret"].astype(float), sleeve_vol_target)
     ret = sr["ret"].astype(float) * scale
-    positions = weights.mul(scale.reindex(weights.index), axis=0)     # EFFECTIVE held book
-    return {"ret": ret, "positions": positions, "scale": scale,
-            "gross": sr["gross"], "turnover": sr["turnover"]}
+    positions = weights.mul(scale.reindex(weights.index), axis=0)  # EFFECTIVE held book
+    return {"ret": ret, "positions": positions, "scale": scale, "gross": sr["gross"], "turnover": sr["turnover"]}

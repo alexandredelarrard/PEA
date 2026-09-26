@@ -7,6 +7,7 @@ INCLUDING the older paginated pages that submissions/CIK{cik}.json splits out
 15y+). Shared, on-demand filing discovery for the structure fetchers (DEF 14A,
 employees) -- there is no separate filing-index download.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,9 @@ from pathlib import Path
 import pandas as pd
 
 from src.constants.constants import (
-    SEC_ARCHIVES_BASE_URL, SEC_SUBMISSIONS_PAGE_URL, SEC_SUBMISSIONS_URL,
+    SEC_ARCHIVES_BASE_URL,
+    SEC_SUBMISSIONS_PAGE_URL,
+    SEC_SUBMISSIONS_URL,
 )
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
@@ -52,8 +55,7 @@ def _doc_url(cik: str, accession: str, primary_doc: str) -> str:
     return f"{SEC_ARCHIVES_BASE_URL}/{int(cik)}/{acc_nodash}/{primary_doc}"
 
 
-def _rows_from_recent(block: dict, cik: str, company: str, forms: set,
-                      cutoff: pd.Timestamp) -> list[dict]:
+def _rows_from_recent(block: dict, cik: str, company: str, forms: set, cutoff: pd.Timestamp) -> list[dict]:
     rows = []
     n = len(block.get("accessionNumber", []))
     for i in range(n):
@@ -65,19 +67,25 @@ def _rows_from_recent(block: dict, cik: str, company: str, forms: set,
             continue
         acc = block["accessionNumber"][i]
         primary = block["primaryDocument"][i]
-        rows.append({
-            "cik": cik, "company_name": company, "form": form,
-            "filing_date": fdate, "period_of_report": block.get("reportDate", [None] * n)[i],
-            "accession_number": acc, "primary_document": primary,
-            "doc_url": _doc_url(cik, acc, primary),
-            # always-present fallback: a named primary document can be MISSING from the
-            # archive (7 of 663 measured DEF 14A filings, all 2000-08..2001-03, name
-            # "0001.txt" and 404), and those filings produce no row at all today because the
-            # fetch raises. Consumers retry this URL when the primary GET fails.
-            "txt_url": _full_submission_url(cik, acc),
-            # 8-K structured item codes (e.g. "2.02,9.01"); "" for forms without items
-            "items": (block.get("items", [""] * n)[i] or ""),
-        })
+        rows.append(
+            {
+                "cik": cik,
+                "company_name": company,
+                "form": form,
+                "filing_date": fdate,
+                "period_of_report": block.get("reportDate", [None] * n)[i],
+                "accession_number": acc,
+                "primary_document": primary,
+                "doc_url": _doc_url(cik, acc, primary),
+                # always-present fallback: a named primary document can be MISSING from the
+                # archive (7 of 663 measured DEF 14A filings, all 2000-08..2001-03, name
+                # "0001.txt" and 404), and those filings produce no row at all today because the
+                # fetch raises. Consumers retry this URL when the primary GET fails.
+                "txt_url": _full_submission_url(cik, acc),
+                # 8-K structured item codes (e.g. "2.02,9.01"); "" for forms without items
+                "items": (block.get("items", [""] * n)[i] or ""),
+            }
+        )
     return rows
 
 
@@ -89,13 +97,19 @@ def _cache_json(cache_dir: Path | None, name: str, payload: dict) -> None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         (cache_dir / name).write_text(json.dumps(payload), encoding="utf-8")
-    except Exception:                       # caching is best-effort; never break extraction
+    except Exception:  # caching is best-effort; never break extraction
         pass
 
 
-def list_filings(context: Context, cik: str, forms: list[str], years: int,
-                 company_name: str = "", since: pd.Timestamp | str | None = None,
-                 cache_dir: Path | None = None) -> pd.DataFrame:
+def list_filings(
+    context: Context,
+    cik: str,
+    forms: list[str],
+    years: int,
+    company_name: str = "",
+    since: pd.Timestamp | str | None = None,
+    cache_dir: Path | None = None,
+) -> pd.DataFrame:
     """All filings of `forms` for one CIK, across the recent page AND older
     archive pages. Returns columns incl. `items` (8-K structured item codes).
 

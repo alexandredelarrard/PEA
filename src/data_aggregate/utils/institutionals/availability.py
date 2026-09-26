@@ -148,7 +148,7 @@ class InstitutionalAvailability:
                     raise KeyError(f"Unknown field {field_name!r} for {name}")
                 field_start = _date(raw_date, f"{name}.{field_name}")
                 if field_start < start:
-                    raise ValueError(f"{name}.{field_name} starts {field_start.date()} before " f"the table default {start.date()}")
+                    raise ValueError(f"{name}.{field_name} starts {field_start.date()} before the table default {start.date()}")
                 fields[field_name] = field_start
             tables[name] = _TableAvailability(start=start, fields=fields)
 

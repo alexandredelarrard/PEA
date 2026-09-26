@@ -14,6 +14,7 @@ Each fixture is one measured tagging shape:
   ecd_sbux_2026  individual x year matrix with 0.0 in every non-applicable cell
   ecd_aapl_2026  26 PeoName facts on BOTH axes, but amounts fully UNDIMENSIONED
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,7 +24,13 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.structure.def14a.ecd import (
-    _CATEGORY_AXIS, _PEO_MEMBER, _PEO_TOTAL, ecd_row, has_ecd_block, latest_period, peo_block,
+    _CATEGORY_AXIS,
+    _PEO_MEMBER,
+    _PEO_TOTAL,
+    ecd_row,
+    has_ecd_block,
+    latest_period,
+    peo_block,
 )
 from src.data_extract.utils.structure.fetch_def14a_edgar import build_ticker_def14a_edgar
 from src.data_store.schema import Tables
@@ -70,14 +77,13 @@ def test_co_peo_year_keeps_both_names_and_the_larger_total():
     in document order and silently drops the other."""
     row = peo_block(_facts("ba_2025"))
     assert row["n_peos"] == 2.0
-    assert row["peo_total_comp"] == 18_388_629.0            # Ortberg > Calhoun's 15,050,812
-    assert row["peo_actually_paid_comp"] == 19_904_513.0    # Ortberg's CAP, not Calhoun's
+    assert row["peo_total_comp"] == 18_388_629.0  # Ortberg > Calhoun's 15,050,812
+    assert row["peo_actually_paid_comp"] == 19_904_513.0  # Ortberg's CAP, not Calhoun's
     assert "Ortberg" in row["peo_names_all"] and "Calhoun" in row["peo_names_all"]
     assert row["ecd_period_end"] == pd.Timestamp("2024-12-31")
 
     print("\n=== SANITY: co-PEO year (BA 2025 proxy, FY2024) ===")
-    print(f"  n_peos={row['n_peos']}, kept {row['peo_name']} at {row['peo_total_comp']:,.0f}, "
-          f"CAP {row['peo_actually_paid_comp']:,.0f}")
+    print(f"  n_peos={row['n_peos']}, kept {row['peo_name']} at {row['peo_total_comp']:,.0f}, CAP {row['peo_actually_paid_comp']:,.0f}")
     print(f"  peo_names_all={row['peo_names_all']} -- the co-PEO is VISIBLE, not halved.")
 
 
@@ -91,8 +97,7 @@ def test_a_negative_cap_survives_selection():
     assert row["peo_total_comp"] == 28_442_712.0
     assert row["peo_actually_paid_comp"] == -10_924_243.0
     print("\n=== SANITY: negative Compensation Actually Paid ===")
-    print(f"  {row['peo_name']}: total {row['peo_total_comp']:,.0f}, "
-          f"CAP {row['peo_actually_paid_comp']:,.0f} -- sign preserved.")
+    print(f"  {row['peo_name']}: total {row['peo_total_comp']:,.0f}, CAP {row['peo_actually_paid_comp']:,.0f} -- sign preserved.")
     print("  Selecting on the largest TOTAL also means the retained name can be the DEPARTING")
     print("  CEO (Donahoe over the incumbent Hill); n_peos=2 is what says so.")
 
@@ -104,8 +109,7 @@ def test_the_zero_matrix_cell_is_never_selected():
     facts = _facts("sbux_2026")
     row = peo_block(facts)
     period = latest_period(facts)
-    raw = facts[(facts["concept"].astype(str) == _PEO_TOTAL)
-                & (pd.to_datetime(facts["period_end"], errors="coerce") == period)]
+    raw = facts[(facts["concept"].astype(str) == _PEO_TOTAL) & (pd.to_datetime(facts["period_end"], errors="coerce") == period)]
     n_zero = int((pd.to_numeric(raw["value"], errors="coerce") == 0).sum())
 
     assert row["peo_total_comp"] == 30_992_773.0
@@ -143,8 +147,7 @@ def test_an_undimensioned_duplicate_is_not_a_second_peo():
     with no dimension, same 36,340,876. Counting both reads as two PEOs, one of them nameless."""
     facts = _facts("nke_2026")
     period = latest_period(facts)
-    raw = facts[(facts["concept"].astype(str) == _PEO_TOTAL)
-                & (pd.to_datetime(facts["period_end"], errors="coerce") == period)]
+    raw = facts[(facts["concept"].astype(str) == _PEO_TOTAL) & (pd.to_datetime(facts["period_end"], errors="coerce") == period)]
     row = peo_block(facts)
 
     assert len(raw) == 2, "the fixture is meant to contain the duplicate"
@@ -152,8 +155,7 @@ def test_an_undimensioned_duplicate_is_not_a_second_peo():
     assert row["peo_total_comp"] == 36_340_876.0
     assert "Hill" in row["peo_name"]
     print("\n=== SANITY: undimensioned duplicate (NKE 2026) ===")
-    print(f"  {len(raw)} facts for the covered year, same value; n_peos={row['n_peos']} "
-          f"({row['peo_name']})")
+    print(f"  {len(raw)} facts for the covered year, same value; n_peos={row['n_peos']} ({row['peo_name']})")
 
 
 # --------------------------------------------------------------------------- #
@@ -175,13 +177,26 @@ def test_no_ecd_facts_means_no_row():
 
 def test_ecd_row_carries_every_registered_column():
     row = ecd_row(_facts("ba_2025"))
-    for col in ("peo_name", "peo_total_comp", "peo_actually_paid_comp", "n_peos",
-                "peo_names_all", "ecd_period_end", "neo_avg_total_comp",
-                "neo_avg_actually_paid_comp", "total_shareholder_return", "peer_group_tsr",
-                "net_income", "company_selected_measure_name", "company_selected_measure_value",
-                "insider_trading_policy_adopted", "award_timing_mnpi_considered",
-                "award_dates_predetermined", "mnpi_disclosure_timed_for_comp_value",
-                "has_individual_executive_data"):
+    for col in (
+        "peo_name",
+        "peo_total_comp",
+        "peo_actually_paid_comp",
+        "n_peos",
+        "peo_names_all",
+        "ecd_period_end",
+        "neo_avg_total_comp",
+        "neo_avg_actually_paid_comp",
+        "total_shareholder_return",
+        "peer_group_tsr",
+        "net_income",
+        "company_selected_measure_name",
+        "company_selected_measure_value",
+        "insider_trading_policy_adopted",
+        "award_timing_mnpi_considered",
+        "award_dates_predetermined",
+        "mnpi_disclosure_timed_for_comp_value",
+        "has_individual_executive_data",
+    ):
         assert col in row, f"{col} missing from the ECD row"
     print("\n=== SANITY: ECD row shape ===")
     print(f"  {len(row)} columns, all registered on sec_def14a.")
@@ -198,29 +213,32 @@ def _fake_filing(*, accession: str, filing_date: str, form: str = "DEF 14A"):
     the ECD path rather than asserting against a mock of it."""
     facts = _facts(_FIXTURE)
     return SimpleNamespace(
-        accession_number=accession, accession_no=accession, form=form,
+        accession_number=accession,
+        accession_no=accession,
+        form=form,
         filing_date=pd.Timestamp(filing_date).date(),
-        period_of_report="2024-12-31", company="THE BOEING COMPANY",
+        period_of_report="2024-12-31",
+        company="THE BOEING COMPANY",
         xbrl=lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: facts)),
     )
 
 
 def test_build_ticker_skips_done_accessions_and_pre_since_filings(monkeypatch):
-    filings = [_fake_filing(accession="0001-old", filing_date="2020-01-01"),
-               _fake_filing(accession="0001-done", filing_date="2024-01-01"),
-               _fake_filing(accession="0001-new", filing_date="2024-06-01")]
-    monkeypatch.setattr("edgar.Company",
-                        lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
+    filings = [
+        _fake_filing(accession="0001-old", filing_date="2020-01-01"),
+        _fake_filing(accession="0001-done", filing_date="2024-01-01"),
+        _fake_filing(accession="0001-new", filing_date="2024-06-01"),
+    ]
+    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
 
-    df = build_ticker_def14a_edgar(
-        "BA", "0000012927", since=pd.Timestamp("2024-01-01"),
-        done_accessions=frozenset({"0001-done"}))[Tables.def14a_edgar]
+    df = build_ticker_def14a_edgar("BA", "0000012927", since=pd.Timestamp("2024-01-01"), done_accessions=frozenset({"0001-done"}))[
+        Tables.def14a_edgar
+    ]
 
     assert set(df["accession_number"]) == {"0001-new"}
-    assert df["n_peos"].iloc[0] == 2.0                       # the real frame really was read
+    assert df["n_peos"].iloc[0] == 2.0  # the real frame really was read
     print("\n=== SANITY: incremental walk ===")
-    print(f"  3 filings offered, 1 written ({set(df['accession_number'])}); "
-          f"n_peos={df['n_peos'].iloc[0]} proves a real facts frame went through.")
+    print(f"  3 filings offered, 1 written ({set(df['accession_number'])}); n_peos={df['n_peos'].iloc[0]} proves a real facts frame went through.")
 
 
 def test_a_filing_without_xbrl_is_skipped_not_crashed(monkeypatch):
@@ -234,9 +252,7 @@ def test_a_filing_without_xbrl_is_skipped_not_crashed(monkeypatch):
     raising = _fake_filing(accession="0001-raises", filing_date="2025-03-09")
     raising.xbrl = lambda: (_ for _ in ()).throw(RuntimeError("xbrl parse failed"))
 
-    monkeypatch.setattr("edgar.Company",
-                        lambda ticker: SimpleNamespace(
-                            get_filings=lambda form: [good, empty, raising]))
+    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [good, empty, raising]))
 
     df = build_ticker_def14a_edgar("BA", "0000012927")[Tables.def14a_edgar]
     assert set(df["accession_number"]) == {"0001-good"}
@@ -252,14 +268,12 @@ def test_company_name_falls_back_to_the_filing_index(monkeypatch):
     facts = _facts(_FIXTURE)
     stripped = facts[facts["concept"].astype(str) != "dei:EntityRegistrantName"]
     f.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: stripped))
-    monkeypatch.setattr("edgar.Company",
-                        lambda ticker: SimpleNamespace(get_filings=lambda form: [f]))
+    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [f]))
 
     df = build_ticker_def14a_edgar("BA", "0000012927")[Tables.def14a_edgar]
     assert df["company_name"].iloc[0] == "THE BOEING COMPANY"
     print("\n=== SANITY: company_name fallback ===")
-    print(f"  dei tag removed from the frame -> company_name={df['company_name'].iloc[0]!r} "
-          f"from the filing index.")
+    print(f"  dei tag removed from the frame -> company_name={df['company_name'].iloc[0]!r} from the filing index.")
 
 
 def test_the_retired_html_columns_are_gone():
@@ -268,14 +282,25 @@ def test_the_retired_html_columns_are_gone():
     three value-inventing repairs; the fee block and the proposal counters went with the parser
     that produced them."""
     row = ecd_row(_facts("ba_2025"))
-    gone = [c for c in ("has_xbrl", "auditor_name", "ceo_pay_ratio", "ceo_pay_ratio_ceo_comp",
-                        "audit_fees_current", "total_fees_current", "n_voting_proposals",
-                        "n_say_on_pay_proposals", "n_board_against_recommendations")
-            if c in row]
+    gone = [
+        c
+        for c in (
+            "has_xbrl",
+            "auditor_name",
+            "ceo_pay_ratio",
+            "ceo_pay_ratio_ceo_comp",
+            "audit_fees_current",
+            "total_fees_current",
+            "n_voting_proposals",
+            "n_say_on_pay_proposals",
+            "n_board_against_recommendations",
+        )
+        if c in row
+    ]
     print("\n=== SANITY: retired HTML columns ===")
     print(f"  still present on the ECD row: {gone or 'none'}")
     assert gone == []
 
 
-if __name__ == "__main__":                                   # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-s"])

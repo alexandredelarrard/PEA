@@ -29,6 +29,7 @@ NOT here either: the three `_is_up_to_date` functions. They share a name but not
 meaning (business-day price freshness vs per-ticker DB coverage vs universe-size
 meta), so merging them would invent an abstraction that does not exist.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -38,8 +39,7 @@ from src.context import Context
 __all__ = ["load_existing", "resume_since"]
 
 
-def load_existing(context: Context, table: str,
-                  date_col: str | None = "date") -> pd.DataFrame | None:
+def load_existing(context: Context, table: str, date_col: str | None = "date") -> pd.DataFrame | None:
     """A fetcher's already-stored rows, or None when there is nothing to resume from.
 
     None (not an empty frame) is the contract the callers rely on to branch between
@@ -76,7 +76,7 @@ def resume_since(
     needs its whole history, and self-correcting once it has rows. Pass **False**
     where absence is legitimate and PERMANENT: `dividends` never gets a row for a
     non-payer, so counting those would pin every run to the full window forever."""
-    
+
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     last_by_ticker = context.store.max_date_by(table, ticker_col, date_col)
     if not last_by_ticker:

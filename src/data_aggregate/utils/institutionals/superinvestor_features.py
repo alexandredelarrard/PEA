@@ -379,7 +379,7 @@ def attach_split_factor(contrib: pd.DataFrame, splits: pd.DataFrame | None) -> p
     out["prev_shares_adj"] = out["prev_shares"] * factor
     n = int((factor != 1.0).sum())
     if n:
-        logger.info("split restatement: %s manager-quarters had their prior share count " "rebased (a split fell between the two periods)", n)
+        logger.info("split restatement: %s manager-quarters had their prior share count rebased (a split fell between the two periods)", n)
     return out
 
 
@@ -582,7 +582,7 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _S
     guard = _corporate_action_mask(ratio)
     if int(guard.to_numpy().sum()):
         logger.info(
-            "share-change guard: %s ticker-dates nulled as residual corporate " "actions after the `prices_splits` restatement",
+            "share-change guard: %s ticker-dates nulled as residual corporate actions after the `prices_splits` restatement",
             int(guard.to_numpy().sum()),
         )
 
@@ -622,7 +622,7 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _S
         out["ic_super_selection_score"] = across(sel_e.fillna(0.0) * held_num) / sel_den.where(sel_den > 0)
     else:
         logger.info(
-            "`sel` is flat -> `ic_super_selection_score` would be constant and is " "not emitted; it becomes live under a point-in-time selector."
+            "`sel` is flat -> `ic_super_selection_score` would be constant and is not emitted; it becomes live under a point-in-time selector."
         )
     # NaN until the name is FIRST HELD, a real number after -- "no elite manager has ever
     # held this" and "they all sold out in 2019" are different facts, and only the second is

@@ -5,9 +5,9 @@ The parse/join/filter functions are PURE and tested on both hand-built inputs an
 the REAL cached 2024q1 zips (skipped if not downloaded). The incremental-state
 query is tested against a throwaway SQLite DB.
 """
+
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -15,20 +15,20 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_store.store import DataStore
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
+from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_store.store import DataStore
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
 # tests/data_extract/<area>/ layout) and the hard index silently repointed this at
 # tests/configs/ -- a hard index would silently point the fixture ZIPs at a
 # tests/data/ that does not exist, and the tests would skip rather than fail.
-_ROOT = next(p for p in Path(__file__).resolve().parents
-             if (p / "pyproject.toml").exists())
+_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 REPO = _ROOT
 INSIDER_ZIP = REPO / "data" / "sec_insider_transactions" / "2024q1_form345.zip"
 FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
+
 
 # --------------------------------------------------------------------------- #
 # Insider transactions                                                          #
@@ -41,70 +41,101 @@ def test_bulk_quarter_periods_are_deterministic_and_bounded():
     from src.data_extract.utils.common.bulk_cache import quarter_periods
 
     qs = quarter_periods(3, ins.SEC_INSIDER_FIRST_YEAR, today=pd.Timestamp("2024-05-01"))
-    assert qs == ["2021q1", "2021q2", "2021q3", "2021q4", "2022q1", "2022q2",
-                  "2022q3", "2022q4", "2023q1", "2023q2", "2023q3", "2023q4",
-                  "2024q1", "2024q2", "2024q3", "2024q4"]
+    assert qs == [
+        "2021q1",
+        "2021q2",
+        "2021q3",
+        "2021q4",
+        "2022q1",
+        "2022q2",
+        "2022q3",
+        "2022q4",
+        "2023q1",
+        "2023q2",
+        "2023q3",
+        "2023q4",
+        "2024q1",
+        "2024q2",
+        "2024q3",
+        "2024q4",
+    ]
     # never emits before the data set exists, whichever data set asks
     for first_year in (ins.SEC_INSIDER_FIRST_YEAR, fin.SEC_FINSTMT_FIRST_YEAR):
-        assert all(int(q[:4]) >= first_year
-                   for q in quarter_periods(50, first_year, today=pd.Timestamp("2024-05-01")))
+        assert all(int(q[:4]) >= first_year for q in quarter_periods(50, first_year, today=pd.Timestamp("2024-05-01")))
     print("\n=== SANITY: shared quarter_periods bounded to each data-set era ===")
-    print(f"  years_history=3 @2024 -> {len(qs)} quarters 2021q1..2024q4; "
-          f"first-year floor honoured for insider ({ins.SEC_INSIDER_FIRST_YEAR}) and "
-          f"finstmt ({fin.SEC_FINSTMT_FIRST_YEAR}). Validated.")
+    print(
+        f"  years_history=3 @2024 -> {len(qs)} quarters 2021q1..2024q4; "
+        f"first-year floor honoured for insider ({ins.SEC_INSIDER_FIRST_YEAR}) and "
+        f"finstmt ({fin.SEC_FINSTMT_FIRST_YEAR}). Validated."
+    )
 
 
 def test_insider_parse_and_universe_filter_synthetic():
-    sub = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1", "a2"],
-        "ISSUERCIK": ["320193", "999999"],
-        "ISSUERNAME": ["APPLE INC", "OFFUNIVERSE CO"],
-        "ISSUERTRADINGSYMBOL": ["AAPL", "ZZZZ"],
-        "DOCUMENT_TYPE": ["4", "4"],
-        "FILING_DATE": ["31-JAN-2024", "31-JAN-2024"],
-        "PERIOD_OF_REPORT": ["29-JAN-2024", "29-JAN-2024"],
-    })
-    own = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1", "a2"],
-        "RPTOWNERCIK": ["111", "222"],
-        "RPTOWNERNAME": ["COOK TIMOTHY", "DOE JOHN"],
-        "RPTOWNER_RELATIONSHIP": ["Officer", "Director"],
-        "RPTOWNER_TITLE": ["CEO", ""],
-    })
-    nd = pd.DataFrame({
-        "ACCESSION_NUMBER": ["a1", "a2"],
-        "NONDERIV_TRANS_SK": ["1", "1"],
-        "SECURITY_TITLE": ["Common", "Common"],
-        "TRANS_DATE": ["29-JAN-2024", "29-JAN-2024"],
-        "TRANS_CODE": ["P", "S"],
-        "TRANS_SHARES": ["1000", "500"],
-        "TRANS_PRICEPERSHARE": ["150", "20"],
-        "TRANS_ACQUIRED_DISP_CD": ["A", "D"],
-        "SHRS_OWND_FOLWNG_TRANS": ["5000", "100"],
-        "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
-    })
+    sub = pd.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["a1", "a2"],
+            "ISSUERCIK": ["320193", "999999"],
+            "ISSUERNAME": ["APPLE INC", "OFFUNIVERSE CO"],
+            "ISSUERTRADINGSYMBOL": ["AAPL", "ZZZZ"],
+            "DOCUMENT_TYPE": ["4", "4"],
+            "FILING_DATE": ["31-JAN-2024", "31-JAN-2024"],
+            "PERIOD_OF_REPORT": ["29-JAN-2024", "29-JAN-2024"],
+        }
+    )
+    own = pd.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["a1", "a2"],
+            "RPTOWNERCIK": ["111", "222"],
+            "RPTOWNERNAME": ["COOK TIMOTHY", "DOE JOHN"],
+            "RPTOWNER_RELATIONSHIP": ["Officer", "Director"],
+            "RPTOWNER_TITLE": ["CEO", ""],
+        }
+    )
+    nd = pd.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["a1", "a2"],
+            "NONDERIV_TRANS_SK": ["1", "1"],
+            "SECURITY_TITLE": ["Common", "Common"],
+            "TRANS_DATE": ["29-JAN-2024", "29-JAN-2024"],
+            "TRANS_CODE": ["P", "S"],
+            "TRANS_SHARES": ["1000", "500"],
+            "TRANS_PRICEPERSHARE": ["150", "20"],
+            "TRANS_ACQUIRED_DISP_CD": ["A", "D"],
+            "SHRS_OWND_FOLWNG_TRANS": ["5000", "100"],
+            "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
+        }
+    )
     out = ins._parse_insider(sub, own, nd, pd.DataFrame())
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
-    assert abs(a1["value_usd"] - 150000.0) < 1e-6            # 1000 * 150
+    assert abs(a1["value_usd"] - 150000.0) < 1e-6  # 1000 * 150
 
     # `ZZZZ`'s issuer is nobody's entity, so it is neither kept nor quarantined: quarantine
     # is scoped to rows that CLAIMED a universe ticker, or ~50M unrelated filers' rows would
     # be stored as evidence of nothing.
     identity = build_identity(
-        lineage=pd.DataFrame([{"cik": "0000320193", "entity_id": "E0000320193",
-                               "source": "roster", "confidence": None, "evidence": "test"}]),
-        tenure=pd.DataFrame([{"symbol": "AAPL", "issuer_cik": "0000320193",
-                              "valid_from": pd.Timestamp("2006-01-03"), "valid_to": None,
-                              "n_filings": 900, "source": "form345", "evidence": ""}]),
-        roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]))
+        lineage=pd.DataFrame([{"cik": "0000320193", "entity_id": "E0000320193", "source": "roster", "confidence": None, "evidence": "test"}]),
+        tenure=pd.DataFrame(
+            [
+                {
+                    "symbol": "AAPL",
+                    "issuer_cik": "0000320193",
+                    "valid_from": pd.Timestamp("2006-01-03"),
+                    "valid_to": None,
+                    "n_filings": 900,
+                    "source": "form345",
+                    "evidence": "",
+                }
+            ]
+        ),
+        roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]),
+    )
     filt, rejected = ins._filter_universe(out, {"AAPL"}, identity)
     assert set(filt["ticker"]) == {"AAPL"}
     assert rejected.empty
     print("\n=== SANITY: insider parse + universe filter ===")
-    print(f"  a1 AAPL officer PURCHASE 1000@150 = $150k; CIK-first kept AAPL, dropped the "
-          f"unrelated ZZZZ filer without quarantining it. Validated.")
+    print("  a1 AAPL officer PURCHASE 1000@150 = $150k; CIK-first kept AAPL, dropped the unrelated ZZZZ filer without quarantining it. Validated.")
 
 
 @pytest.mark.skipif(not INSIDER_ZIP.exists(), reason="cached insider 2024q1 zip absent")
@@ -117,8 +148,7 @@ def test_insider_parse_real_zip():
     codes = df["transaction_code"].value_counts()
     aapl = df[df["ticker"] == "AAPL"]
     print("\n=== SANITY: insider REAL 2024q1 zip ===")
-    print(f"  {len(df):,} transactions, {df['ticker'].nunique():,} issuers; "
-          f"top codes: {codes.head(4).to_dict()}")
+    print(f"  {len(df):,} transactions, {df['ticker'].nunique():,} issuers; top codes: {codes.head(4).to_dict()}")
     print(f"  AAPL rows={len(aapl)}; sample value_usd nonnull={aapl['value_usd'].notna().mean():.0%}. Validated.")
     assert len(df) > 10000 and df["ticker"].nunique() > 1000
 
@@ -127,12 +157,13 @@ def test_insider_incremental_state_converges(tmp_path):
     """Quarter-skip comes from the DB; the re-parse-on-new-ticker decision compares
     the CURRENT universe to the PROCESSED-universe sidecar (so it converges instead
     of re-parsing every run just because some names never file that quarter)."""
-    from src.data_extract.utils.common.sec_utils import (
-        bulk_ingested_quarters, load_processed_universe, save_processed_universe)
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path/'t.db'}"))
-    ds.save("insider_transactions", pd.DataFrame([{
-        "accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1",
-        "ticker": "AAPL", "quarter": "2024q1"}]))
+    from src.data_extract.utils.common.sec_utils import bulk_ingested_quarters, load_processed_universe, save_processed_universe
+
+    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
+    ds.save(
+        "insider_transactions",
+        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
+    )
     assert bulk_ingested_quarters(ds, "insider_transactions") == {"2024q1"}
 
     save_processed_universe(tmp_path, "insider_transactions", {"AAPL", "MSFT"})
@@ -143,27 +174,26 @@ def test_insider_incremental_state_converges(tmp_path):
     assert {"AAPL", "MSFT", "NVDA"} - load_processed_universe(tmp_path, "insider_transactions") == {"NVDA"}
 
     print("\n=== SANITY: incremental state converges ===")
-    print("  2024q1 ingested -> skipped next run; unchanged universe -> no re-parse; "
-          "adding NVDA -> only NVDA flagged for back-fill. Validated.")
+    print("  2024q1 ingested -> skipped next run; unchanged universe -> no re-parse; adding NVDA -> only NVDA flagged for back-fill. Validated.")
 
 
 # --------------------------------------------------------------------------- #
 # Pension facts (Financial Statement Data Sets)                                  #
 # --------------------------------------------------------------------------- #
 def test_pension_join_filters_segments_and_coreg():
-    num = pd.DataFrame({
-        "adsh": ["x", "x", "x", "x"],
-        "tag": ["PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"] * 3
-               + ["SomethingElse"],
-        "ddate": ["20231231", "20231231", "20231231", "20231231"],
-        "qtrs": ["0", "0", "0", "0"],
-        "uom": ["USD"] * 4,
-        "segments": ["", "PlanNameAxis=USPlan", "", ""],   # 2nd row = dimensional member
-        "coreg": ["", "", "SubCo", ""],                    # 3rd row = co-registrant
-        "value": ["1000", "600", "400", "50"],
-    })
-    sub = pd.DataFrame({"adsh": ["x"], "cik": ["320193"], "form": ["10-K"],
-                        "fy": ["2023"], "fp": ["FY"], "filed": ["20240201"]})
+    num = pd.DataFrame(
+        {
+            "adsh": ["x", "x", "x", "x"],
+            "tag": ["PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"] * 3 + ["SomethingElse"],
+            "ddate": ["20231231", "20231231", "20231231", "20231231"],
+            "qtrs": ["0", "0", "0", "0"],
+            "uom": ["USD"] * 4,
+            "segments": ["", "PlanNameAxis=USPlan", "", ""],  # 2nd row = dimensional member
+            "coreg": ["", "", "SubCo", ""],  # 3rd row = co-registrant
+            "value": ["1000", "600", "400", "50"],
+        }
+    )
+    sub = pd.DataFrame({"adsh": ["x"], "cik": ["320193"], "form": ["10-K"], "fy": ["2023"], "fp": ["FY"], "filed": ["20240201"]})
     out = fin._join_pension(num, sub)
     # only the consolidated pension row survives (segment + coreg + non-pension dropped)
     assert len(out) == 1
@@ -178,12 +208,13 @@ def test_pension_join_filters_segments_and_coreg():
 def test_pension_parse_real_zip():
     facts = fin._read_pension_facts(FINSTMT_ZIP)
     assert facts is not None and not facts.empty
-    net_liab = facts[facts["tag"] ==
-                     "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"]
+    net_liab = facts[facts["tag"] == "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"]
     assert not net_liab.empty
-    assert (facts["value"] > 0).mean() > 0.5           # liabilities are positive
+    assert (facts["value"] > 0).mean() > 0.5  # liabilities are positive
     print("\n=== SANITY: pension REAL 2024q1 zip ===")
-    print(f"  {len(facts):,} pension facts, {facts['cik'].nunique():,} companies; "
-          f"net-liability rows={len(net_liab):,}, median ${net_liab['value'].median():,.0f}")
+    print(
+        f"  {len(facts):,} pension facts, {facts['cik'].nunique():,} companies; "
+        f"net-liability rows={len(net_liab):,}, median ${net_liab['value'].median():,.0f}"
+    )
     print(f"  tags: {facts['tag'].value_counts().head(5).to_dict()}. Validated.")
-    assert net_liab["cik"].nunique() > 100      # ~244 filers report a net DB deficit in 2024q1
+    assert net_liab["cik"].nunique() > 100  # ~244 filers report a net DB deficit in 2024q1

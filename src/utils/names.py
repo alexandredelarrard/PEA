@@ -33,6 +33,7 @@ reconcile -- `Bob Smith` keys `smith|b`, `Robert Smith` keys `smith|r`. `tests/u
 asserts that inequality so it stays a documented limit instead of being rediscovered. A nickname
 table is its own project, and the 98.4% above already has this priced in.
 """
+
 from __future__ import annotations
 
 import re
@@ -64,8 +65,7 @@ _GLUED_TITLE_RE = re.compile(
 #: director with the same first initial onto ONE key, so a consensus pass would propagate one
 #: person's gender onto unrelated people.
 _DOT_RE = re.compile(r"\.")
-_SUFFIX_RE = re.compile(
-    r"\b(?:jr|sr|ii|iii|iv|v|phd|md|dvm|dds|dsc|edd|pharmd|mph|cpa|cfa|esq)\b", re.I)
+_SUFFIX_RE = re.compile(r"\b(?:jr|sr|ii|iii|iv|v|phd|md|dvm|dds|dsc|edd|pharmd|mph|cpa|cfa|esq)\b", re.I)
 _NON_ALPHA_RE = re.compile(r"[^a-z ]+")
 
 

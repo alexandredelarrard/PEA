@@ -20,6 +20,7 @@ do NOT evade bans:
 Used by `fetch_earnings_calls` (Cloudflare) and `fetch_wiki_pageviews`; `fetch_google_trends`
 keeps its bespoke cookie/token session client but shares `resolve_proxy`.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -37,7 +38,7 @@ from src.utils.ssl_setup import corporate_session
 
 logger = logging.getLogger(__name__)
 
-_SESSION = None                       # lazily-built requests.Session (corporate CA + non-strict)
+_SESSION = None  # lazily-built requests.Session (corporate CA + non-strict)
 
 
 def session():
@@ -50,21 +51,19 @@ def session():
         _SESSION = corporate_session()
     return _SESSION
 
+
 # curl_cffi impersonation targets (each = a coherent UA+TLS+header profile of a real browser)
 IMPERSONATE_POOL = ("chrome124", "chrome123", "chrome120", "chrome131", "safari17_0", "edge101")
 _PROXY_ENV = ("PEA_SCRAPE_PROXY", "HTTPS_PROXY", "https_proxy")
 _UA_POOL = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
 )
 _PACE_CAP = 8.0
-_PACE: dict[str, float] = {}          # host -> run-wide slowdown multiplier, ratcheted on 429
-_CA_HINT_HOSTS: set[str] = set()      # hosts an SSL failure was already explained for (once/run)
+_PACE: dict[str, float] = {}  # host -> run-wide slowdown multiplier, ratcheted on 429
+_CA_HINT_HOSTS: set[str] = set()  # hosts an SSL failure was already explained for (once/run)
 
 
 def resolve_proxy() -> dict | None:
@@ -78,9 +77,12 @@ def resolve_proxy() -> dict | None:
 
 def random_headers(extra: dict | None = None) -> dict:
     """A realistic desktop-browser header set with a rotated UA (for the requests path)."""
-    h = {"User-Agent": random.choice(_UA_POOL),
-         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-         "Accept-Language": "en-US,en;q=0.9", "Connection": "keep-alive"}
+    h = {
+        "User-Agent": random.choice(_UA_POOL),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
     if extra:
         h.update(extra)
     return h
@@ -98,8 +100,7 @@ def retry_after_seconds(resp) -> float | None:
         return float(ra)
     except (TypeError, ValueError):
         try:
-            return max(0.0, (parsedate_to_datetime(ra)
-                             - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+            return max(0.0, (parsedate_to_datetime(ra) - _dt.datetime.now(_dt.UTC)).total_seconds())
         except Exception:
             return None
 
@@ -154,11 +155,15 @@ def _note_ssl_failure(url_or_host: str, exc: BaseException) -> None:
     if h in _CA_HINT_HOSTS:
         return
     _CA_HINT_HOSTS.add(h)
-    logger.warning("TLS verification FAILED for %s (%s: %s). On a managed network this is the "
-                   "inspection proxy's root CA missing from Python's trust path: check that "
-                   "src.utils.ssl_setup.configure_corporate_ca() ran (src/context.py calls it), "
-                   "or run `python -m src.utils.ssl_setup` to set the CA env vars permanently.",
-                   h, type(exc).__name__, exc)
+    logger.warning(
+        "TLS verification FAILED for %s (%s: %s). On a managed network this is the "
+        "inspection proxy's root CA missing from Python's trust path: check that "
+        "src.utils.ssl_setup.configure_corporate_ca() ran (src/context.py calls it), "
+        "or run `python -m src.utils.ssl_setup` to set the CA env vars permanently.",
+        h,
+        type(exc).__name__,
+        exc,
+    )
 
 
 def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
@@ -171,18 +176,15 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
         try:
             prof = random.choice(IMPERSONATE_POOL)
             try:
-                return cr.get(url, params=params, headers=headers, impersonate=prof,
-                              timeout=timeout, proxies=proxies)
-            except Exception:                       # unknown profile / TLS quirk -> generic chrome
-                return cr.get(url, params=params, headers=headers, impersonate="chrome",
-                              timeout=timeout, proxies=proxies)
-        except Exception as exc:                    # curl_cffi transport error -> requests fallback
+                return cr.get(url, params=params, headers=headers, impersonate=prof, timeout=timeout, proxies=proxies)
+            except Exception:  # unknown profile / TLS quirk -> generic chrome
+                return cr.get(url, params=params, headers=headers, impersonate="chrome", timeout=timeout, proxies=proxies)
+        except Exception as exc:  # curl_cffi transport error -> requests fallback
             if _is_ssl_error(exc):
                 _note_ssl_failure(url, exc)
     try:
-        return session().get(url, params=params, headers=headers or random_headers(),
-                             timeout=timeout, proxies=proxies)
-    except Exception as exc:                            # noqa: BLE001
+        return session().get(url, params=params, headers=headers or random_headers(), timeout=timeout, proxies=proxies)
+    except Exception as exc:  # noqa: BLE001
         # Log the CAUSE. Swallowing it silently left callers with only "GET failed
         # (transport)", which cannot distinguish an SSL/CA problem from DNS, a dead
         # proxy or a timeout -- the retry loop then burns its 4 attempts on it.
@@ -203,12 +205,10 @@ def get_once(url, *, params=None, headers=None, timeout=30, impersonate=True):
     and http_get would both hide that it was a 403 and burn 4 exponential-backoff retries
     per ticker on an answer that will never change.
     """
-    return _raw_get(url, params=params, headers=headers, timeout=timeout,
-                    impersonate=impersonate)
+    return _raw_get(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
 
 
-def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3.0,
-             impersonate=True, log_missing=True):
+def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3.0, impersonate=True, log_missing=True):
     """Adaptive GET: rotated browser impersonation + retry with exponential backoff + jitter,
     honouring Retry-After and ratcheting a PER-HOST slowdown on each 429. Returns the response
     on HTTP 200; None on a terminal non-200 (logged unless `log_missing=False`) or transport
@@ -216,28 +216,33 @@ def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3
     own descriptive User-Agent, e.g. Wikimedia)."""
     for attempt in range(retries + 1):
         r = _raw_get(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
-        if r is None:                                    # transport error (all paths failed)
+        if r is None:  # transport error (all paths failed)
             if attempt < retries:
-                time.sleep(backoff * (2 ** attempt) + random.uniform(0.5, 2.0))
+                time.sleep(backoff * (2**attempt) + random.uniform(0.5, 2.0))
                 continue
             logger.warning("GET failed (transport) %s", url)
             return None
         code = getattr(r, "status_code", 0)
         if code == 200:
             return r
-        if code in (403, 429) or code >= 500:            # blocked / throttled / transient
+        if code in (403, 429) or code >= 500:  # blocked / throttled / transient
             if attempt < retries:
-                wait = max(retry_after_seconds(r) or 0.0,
-                           backoff * (2 ** attempt)) + random.uniform(0.5, 2.5)
+                wait = max(retry_after_seconds(r) or 0.0, backoff * (2**attempt)) + random.uniform(0.5, 2.5)
                 if code == 429:
-                    note_throttle(url)                   # slow THIS host for the rest of the run
-                logger.warning("GET %s -> HTTP %d (rate-limited); wait %.1fs, host-pace x%.1f "
-                               "(retry %d/%d)", url, code, wait, pace_mult(url), attempt + 1, retries)
+                    note_throttle(url)  # slow THIS host for the rest of the run
+                logger.warning(
+                    "GET %s -> HTTP %d (rate-limited); wait %.1fs, host-pace x%.1f (retry %d/%d)",
+                    url,
+                    code,
+                    wait,
+                    pace_mult(url),
+                    attempt + 1,
+                    retries,
+                )
                 time.sleep(wait)
                 continue
-            logger.warning("GET %s -> HTTP %d after %d retries; giving up. Lower the rate or set "
-                           "PEA_SCRAPE_PROXY.", url, code, retries)
-        elif log_missing:                                # 4xx that won't fix on retry (404 etc.)
+            logger.warning("GET %s -> HTTP %d after %d retries; giving up. Lower the rate or set PEA_SCRAPE_PROXY.", url, code, retries)
+        elif log_missing:  # 4xx that won't fix on retry (404 etc.)
             logger.warning("GET %s -> HTTP %d", url, code)
         return None
     return None

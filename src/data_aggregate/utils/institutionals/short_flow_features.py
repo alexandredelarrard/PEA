@@ -235,7 +235,7 @@ def _shortvol_fields(
         if len(live):
             p05, p50, p95 = np.percentile(live, [5, 50, 95])
             logger.info(
-                "RegSHO market coverage (off-exchange share of tape volume): " "p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
+                "RegSHO market coverage (off-exchange share of tape volume): p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
                 100 * p50,
                 100 * p05,
                 100 * p95,
@@ -252,7 +252,7 @@ def _fails_fields(
     covered = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
     logger.info(
-        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent " "ticker on a covered date is 0 fails, an absent date is NaN",
+        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent ticker on a covered date is 0 fails, an absent date is NaN",
         int(on_file.sum()),
         len(idx),
         100 * float(on_file.mean()),

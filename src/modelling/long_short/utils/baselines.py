@@ -14,6 +14,7 @@ scikit-learn dependency):
 Both expose the same `predict(X)` interface as a LightGBM booster, so the
 modelling/backtest code treats them interchangeably.
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,16 +68,14 @@ def _standardize(X: np.ndarray):
     return Xs, mean, std
 
 
-def train_ridge(panel: pd.DataFrame, feats: list, label_name: str = "y",
-                alpha: float = 10.0, half_life_years: float | None = None) -> LinearModel:
+def train_ridge(panel: pd.DataFrame, feats: list, label_name: str = "y", alpha: float = 10.0, half_life_years: float | None = None) -> LinearModel:
     """Closed-form (optionally time-decay weighted) ridge on standardized features:
-        coef = (Xs' W Xs + alpha I)^-1 Xs' W (y - y_bar)."""
+    coef = (Xs' W Xs + alpha I)^-1 Xs' W (y - y_bar)."""
     X = panel[feats].to_numpy(dtype=float)
     y = panel[label_name].to_numpy(dtype=float)
     Xs, mean, std = _standardize(X)
 
-    w = (time_decay_weights(panel["date"], half_life_years).astype(float)
-         if half_life_years is not None else np.ones(len(y)))
+    w = time_decay_weights(panel["date"], half_life_years).astype(float) if half_life_years is not None else np.ones(len(y))
     y_bar = float(np.average(y, weights=w))
     yc = y - y_bar
 
@@ -87,9 +86,7 @@ def train_ridge(panel: pd.DataFrame, feats: list, label_name: str = "y",
     return LinearModel(coef, y_bar, mean, std, feats, "ridge")
 
 
-def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray,
-                             lam: float, l1_ratio: float,
-                             max_iter: int, tol: float) -> np.ndarray:
+def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray, lam: float, l1_ratio: float, max_iter: int, tol: float) -> np.ndarray:
     """Weighted elastic-net via cyclic coordinate descent (glmnet-style) on the
     objective
         (1/2sw) Σ w_i (y_i - Xs_i·β)^2 + lam*[ l1_ratio*||β||_1 + (1-l1_ratio)/2*||β||_2^2 ].
@@ -106,7 +103,7 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray,
     l1, l2 = lam * l1_ratio, lam * (1.0 - l1_ratio)
 
     beta = np.zeros(k)
-    r = y.astype(float).copy()                 # residual = y - Xs @ beta (beta = 0)
+    r = y.astype(float).copy()  # residual = y - Xs @ beta (beta = 0)
     for _ in range(max_iter):
         max_step = 0.0
         for j in range(k):
@@ -119,7 +116,7 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray,
             else:
                 nj = 0.0
             if nj != bj:
-                r += Xs[:, j] * (bj - nj)       # keep residual in sync
+                r += Xs[:, j] * (bj - nj)  # keep residual in sync
                 beta[j] = nj
                 max_step = max(max_step, abs(nj - bj))
         if max_step < tol:
@@ -127,10 +124,16 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray,
     return beta
 
 
-def train_elasticnet(panel: pd.DataFrame, feats: list, label_name: str = "y",
-                     alpha: float = 1e-3, l1_ratio: float = 0.5,
-                     max_iter: int = 1000, tol: float = 1e-6,
-                     half_life_years: float | None = None) -> LinearModel:
+def train_elasticnet(
+    panel: pd.DataFrame,
+    feats: list,
+    label_name: str = "y",
+    alpha: float = 1e-3,
+    l1_ratio: float = 0.5,
+    max_iter: int = 1000,
+    tol: float = 1e-6,
+    half_life_years: float | None = None,
+) -> LinearModel:
     """Elastic net (L1 + L2) via pure-numpy coordinate descent -- no scikit-learn
     dependency. `alpha` is the overall penalty on the normalized (1/2n) loss
     (glmnet scale, so ~1e-4..1e-1), `l1_ratio` the L1 fraction (0 = ridge,
@@ -138,11 +141,9 @@ def train_elasticnet(panel: pd.DataFrame, feats: list, label_name: str = "y",
     X = panel[feats].to_numpy(dtype=float)
     y = panel[label_name].to_numpy(dtype=float)
     Xs, mean, std = _standardize(X)
-    w = (time_decay_weights(panel["date"], half_life_years).astype(float)
-         if half_life_years is not None else np.ones(len(y)))
+    w = time_decay_weights(panel["date"], half_life_years).astype(float) if half_life_years is not None else np.ones(len(y))
     y_bar = float(np.average(y, weights=w))
-    coef = _enet_coordinate_descent(Xs, y - y_bar, w, float(alpha), float(l1_ratio),
-                                    int(max_iter), float(tol))
+    coef = _enet_coordinate_descent(Xs, y - y_bar, w, float(alpha), float(l1_ratio), int(max_iter), float(tol))
     # Guard the silent-degeneracy failure mode: if `alpha` is too high for the
     # target's scale, every feature's gradient |rho| falls below the L1 threshold
     # (alpha*l1_ratio) and ALL coefficients soft-threshold to exactly zero -> the
@@ -155,19 +156,27 @@ def train_elasticnet(panel: pd.DataFrame, feats: list, label_name: str = "y",
             "elastic-net is DEGENERATE: all %d coefficients are zero (alpha=%.4g too "
             "high for the target scale -> every |rho| < alpha*l1_ratio=%.4g). The model "
             "will predict a CONSTANT; lower `alpha` in linear_modelling.yml.",
-            len(coef), alpha, alpha * l1_ratio)
+            len(coef),
+            alpha,
+            alpha * l1_ratio,
+        )
     return LinearModel(coef, y_bar, mean, std, feats, "elasticnet")
 
 
-def train_linear(panel: pd.DataFrame, feats: list, label_name: str = "y",
-                 kind: str = "elasticnet", alpha: float = 1e-3, l1_ratio: float = 0.5,
-                 max_iter: int = 1000, tol: float = 1e-6,
-                 half_life_years: float | None = None) -> LinearModel:
+def train_linear(
+    panel: pd.DataFrame,
+    feats: list,
+    label_name: str = "y",
+    kind: str = "elasticnet",
+    alpha: float = 1e-3,
+    l1_ratio: float = 0.5,
+    max_iter: int = 1000,
+    tol: float = 1e-6,
+    half_life_years: float | None = None,
+) -> LinearModel:
     if kind == "ridge":
-        return train_ridge(panel, feats, label_name, alpha=alpha,
-                           half_life_years=half_life_years)
-    return train_elasticnet(panel, feats, label_name, alpha=alpha, l1_ratio=l1_ratio,
-                            max_iter=max_iter, tol=tol, half_life_years=half_life_years)
+        return train_ridge(panel, feats, label_name, alpha=alpha, half_life_years=half_life_years)
+    return train_elasticnet(panel, feats, label_name, alpha=alpha, l1_ratio=l1_ratio, max_iter=max_iter, tol=tol, half_life_years=half_life_years)
 
 
 def linear_importance(model: LinearModel) -> dict:

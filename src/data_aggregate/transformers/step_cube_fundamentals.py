@@ -26,9 +26,7 @@ from __future__ import annotations
 
 import pandas as pd
 from omegaconf import DictConfig
-from omegaconf import OmegaConf
 
-from src.data_store.schema import Tables
 from src.context import Context
 from src.data_aggregate.utils.common.gics import attach_gics_columns
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
@@ -37,19 +35,24 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.pit import PitFrames, add_cube_time_growth
 from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames, load_price_frames, load_trading_calendar,
+    PriceFrames,
+    load_price_frames,
+    load_trading_calendar,
 )
 from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    build_fundamental_feature_panel, load_notes_num_scoped, load_pension_facts_scoped,
+    build_fundamental_feature_panel,
+    load_notes_num_scoped,
+    load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
+from src.data_store.schema import Tables
 from src.utils.step import Step
 
-class StepCubeFundamentals(Step):
 
+class StepCubeFundamentals(Step):
     # The price fields this step projects, declared like every sibling sub-step so the
     # projection stays visible and testable (valuation ratios need the close only).
     _FIELDS = ("close_split", "level_factor")
@@ -62,38 +65,34 @@ class StepCubeFundamentals(Step):
 
     def run(self, full: bool = False) -> None:
 
-        # load inputs 
-        window = plan_window(self._store, Tables.cube_part_fundamentals, full=full,
-                             warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._store))
+        # load inputs
+        window = plan_window(
+            self._store, Tables.cube_part_fundamentals, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store)
+        )
         frames = self._load_frames(window.since)
         fundamentals = self._load_fundamentals()
-        earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history",
-                                                       "fetch_earnings_surprises")
-        
+        earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history", "fetch_earnings_surprises")
+
         # ONE point-in-time cache for all five builders (see the module docstring)
-        pit = PitFrames(fundamentals, frames.trading_index, frames.close_split,
-                        frames.level_factor)
+        pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
 
         merger = PanelMerger(self._log)
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
-        merger.add(self._fundamental_panel(frames, fundamentals, earnings, pit),
-                   "peer-relative fundamental",
-                   "No fundamental features built (missing fundamentals).")
-        merger.add(self._sector_kpi_panel(frames, fundamentals, pit), "sector-KPI",
-                   "No sector KPI features built (missing fundamentals).")
+        merger.add(
+            self._fundamental_panel(frames, fundamentals, earnings, pit),
+            "peer-relative fundamental",
+            "No fundamental features built (missing fundamentals).",
+        )
+        merger.add(self._sector_kpi_panel(frames, fundamentals, pit), "sector-KPI", "No sector KPI features built (missing fundamentals).")
 
-        # earnings 
-        merger.add(self._earnings_panel(frames, earnings), "earnings-expectation",
-                   "No earnings-expectation features built.")
+        # earnings
+        merger.add(self._earnings_panel(frames, earnings), "earnings-expectation", "No earnings-expectation features built.")
 
-        # employees 
-        merger.add(self._employee_panel(frames, fundamentals, pit), "workforce",
-                   "No workforce features built.")
+        # employees
+        merger.add(self._employee_panel(frames, fundamentals, pit), "workforce", "No workforce features built.")
 
-        # dividends 
-        merger.add(self._dividend_panel(frames, fundamentals, pit), "dividend",
-                   "No dividend features built (missing dividend history).")
+        # dividends
+        merger.add(self._dividend_panel(frames, fundamentals, pit), "dividend", "No dividend features built (missing dividend history).")
         self._log.info("PitFrames shared across the fundamentals builders: %s", pit.stats())
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
@@ -109,11 +108,7 @@ class StepCubeFundamentals(Step):
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(
-            self._store, 
-            peers=load_peers_or_raise(self._context, self._config),
-            fields=self._FIELDS,
-            since=since)
+        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
@@ -125,10 +120,8 @@ class StepCubeFundamentals(Step):
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""
         df = self._context.store.load(Tables.fundamentals_history, optional=True)
         if df is None:
-            raise Exception("No fundamentals history -> the fundamental, sector, workforce "
-                              "and dividend-payout features will be skipped.")
-        self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)",
-                       Tables.fundamentals_history, len(df), df["ticker"].nunique())
+            raise Exception("No fundamentals history -> the fundamental, sector, workforce and dividend-payout features will be skipped.")
+        self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)", Tables.fundamentals_history, len(df), df["ticker"].nunique())
         df = add_cube_time_growth(df)
         return attach_gics_columns(df, self._context, self._log)
 
@@ -140,8 +133,9 @@ class StepCubeFundamentals(Step):
         return df
 
     # ---- panels ---- #
-    def _fundamental_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
-                           earnings: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
+    def _fundamental_panel(
+        self, frames: PriceFrames, fundamentals: pd.DataFrame | None, earnings: pd.DataFrame | None, pit: PitFrames
+    ) -> pd.DataFrame | None:
         if fundamentals is None:
             return None
         hist = self._cfg.get("hist", {})
@@ -156,13 +150,12 @@ class StepCubeFundamentals(Step):
             intrinsic_cfg=self._cfg.get("intrinsic", {}),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
-            earnings_history=earnings,                       # PEGY projected-growth term
+            earnings_history=earnings,  # PEGY projected-growth term
             pension_facts=load_pension_facts_scoped(self._context),
             notes_num=load_notes_num_scoped(self._context),
         )
 
-    def _sector_kpi_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
-                          pit: PitFrames) -> pd.DataFrame | None:
+    def _sector_kpi_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
         """Sector-specific KPIs (combined/loss ratio, NIM, efficiency ratio, FFO, inventory
         days, shareholder payout, net-debt/EBITDA, accruals), availability-gated per row so a
         KPI is null unless its sector reported the inputs."""
@@ -170,39 +163,38 @@ class StepCubeFundamentals(Step):
             return None
         return build_sector_feature_panel(fundamentals, frames.peers, frames.trading_index)
 
-    def _earnings_panel(self, frames: PriceFrames,
-                        earnings: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _earnings_panel(self, frames: PriceFrames, earnings: pd.DataFrame | None) -> pd.DataFrame | None:
         """Forward EPS yield, expected EPS growth and realized surprise. Genuinely historical
         and point-in-time: the forward estimate applies only within its own quarter, the
         actual only after the report."""
         if earnings is None:
             return None
-        return build_earnings_feature_panel(earnings, frames.peers, frames.trading_index,
-                                            stock_close=frames.close_split,
-                                            level_factor=frames.level_factor)
+        return build_earnings_feature_panel(
+            earnings, frames.peers, frames.trading_index, stock_close=frames.close_split, level_factor=frames.level_factor
+        )
 
-    def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
-                        pit: PitFrames) -> pd.DataFrame | None:
+    def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
         """Revenue per employee and YoY headcount growth, from the `employees` column of
         `fundamentals_history` (10-K body-text headcount). Headcount and the revenue it is
         divided by come from the SAME frame and the same `as_of`, which is why one source is
         passed twice."""
         if fundamentals is None:
             return None
-        return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index,
-                                            fundamentals_history=fundamentals)
+        return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index, fundamentals_history=fundamentals)
 
-    def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None,
-                        pit: PitFrames) -> pd.DataFrame | None:
+    def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
         """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(Tables.dividends, "dividend history",
-                                        "fetch_price_history -> StepExtractPrices")
+        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_price_history -> StepExtractPrices")
         if dividends is None:
             return None
-        return build_dividend_feature_panel(dividends, frames.peers, frames.trading_index,
-                                            stock_close=frames.close_split,
-                                            level_factor=frames.level_factor,
-                                            fundamentals_history=fundamentals)
+        return build_dividend_feature_panel(
+            dividends,
+            frames.peers,
+            frames.trading_index,
+            stock_close=frames.close_split,
+            level_factor=frames.level_factor,
+            fundamentals_history=fundamentals,
+        )

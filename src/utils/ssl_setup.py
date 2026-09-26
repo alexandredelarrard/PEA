@@ -24,6 +24,7 @@ default CA path THEN, so this must run BEFORE the first HTTP-client import — c
 it as the first line of `main.py`, or set the same vars persistently so every
 process inherits them:  `python -m src.utils.ssl_setup`  prints the `setx` commands.
 """
+
 from __future__ import annotations
 
 import os
@@ -95,7 +96,7 @@ def build_corporate_ca_bundle(dest: Path | None = None, force: bool = False) -> 
     tmp = dest.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text("\n".join(parts) + "\n", encoding="utf-8")
     try:
-        os.replace(tmp, dest)                    # atomic: readers see old or new, never torn
+        os.replace(tmp, dest)  # atomic: readers see old or new, never torn
     except OSError:
         # another process replaced it under us (Windows can refuse while it is open).
         # Its content is equivalent, so keep whichever is on disk if it is usable.
@@ -167,6 +168,7 @@ def relaxed_ssl_context(cafile: str | None = None):
     and a WRONG-HOSTNAME certificate. This is far narrower than `verify=False`.
     """
     import ssl as _ssl
+
     from urllib3.util.ssl_ import create_urllib3_context
 
     ctx = create_urllib3_context()
@@ -184,7 +186,7 @@ def relaxed_ssl_context(cafile: str | None = None):
                 ctx.load_verify_locations(cafile=f)
                 loaded += 1
             except Exception:
-                continue                       # a torn//unreadable file must not kill the rest
+                continue  # a torn//unreadable file must not kill the rest
         if not loaded:
             ctx.load_verify_locations(cafile=certifi.where())
     ctx.verify_flags &= ~_ssl.VERIFY_X509_STRICT

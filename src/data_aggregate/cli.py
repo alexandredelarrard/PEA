@@ -68,8 +68,7 @@ def build_prices(config_path: str, full: bool) -> None:
 
 
 @cli.command(
-    help="Factor panel + rolling betas + multi-horizon targets -> cube_part_targets "
-    "/ cube_part_betas. Refreshes the trailing maturing-label window.",
+    help="Factor panel + rolling betas + multi-horizon targets -> cube_part_targets / cube_part_betas. Refreshes the trailing maturing-label window.",
     help_priority=2,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -78,7 +77,7 @@ def build_target(config_path: str, full: bool) -> None:
     _step(StepCubeTarget, config_path).run(full=full)
 
 
-@cli.command(help="SEC-filing features (fundamental, sector KPI, earnings, workforce, " "dividend) -> cube_part_fundamentals.", help_priority=3)
+@cli.command(help="SEC-filing features (fundamental, sector KPI, earnings, workforce, dividend) -> cube_part_fundamentals.", help_priority=3)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_fundamentals(config_path: str, full: bool) -> None:
@@ -86,7 +85,7 @@ def build_fundamentals(config_path: str, full: bool) -> None:
 
 
 @cli.command(
-    help="Price-variation features (momentum, reversal, vol, trend, lottery, " "liquidity, seasonality, MACD/RSI/ATR) -> cube_part_momentum.",
+    help="Price-variation features (momentum, reversal, vol, trend, lottery, liquidity, seasonality, MACD/RSI/ATR) -> cube_part_momentum.",
     help_priority=4,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -95,7 +94,7 @@ def build_momentum(config_path: str, full: bool) -> None:
     _step(StepCubeMomentum, config_path).run(full=full)
 
 
-@cli.command(help="Earnings-call text features (FinBERT/LM sentiment + OpenAI-embedding " "coherence & drift) -> cube_part_text.", help_priority=5)
+@cli.command(help="Earnings-call text features (FinBERT/LM sentiment + OpenAI-embedding coherence & drift) -> cube_part_text.", help_priority=5)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_text(config_path: str, full: bool) -> None:
@@ -103,7 +102,7 @@ def build_text(config_path: str, full: bool) -> None:
 
 
 @cli.command(
-    help="13F institutional, elite 13F, insider, and short interest / fails-to-deliver " "features -> cube_part_institutionals.", help_priority=6
+    help="13F institutional, elite 13F, insider, and short interest / fails-to-deliver features -> cube_part_institutionals.", help_priority=6
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -112,7 +111,7 @@ def build_institutionals(config_path: str, full: bool) -> None:
 
 
 @cli.command(
-    help="DEF 14A + Item 5.07 governance alpha (shareholder dissent, executive pay, " "governance provisions) -> cube_part_governance.",
+    help="DEF 14A + Item 5.07 governance alpha (shareholder dissent, executive pay, governance provisions) -> cube_part_governance.",
     help_priority=7,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -121,7 +120,7 @@ def build_governance(config_path: str, full: bool) -> None:
     _step(StepCubeGovernance, config_path).run(full=full)
 
 
-@cli.command(help="Read all persisted parts -> features + betas + peers + targets " "-> save the `cube` table.", help_priority=8)
+@cli.command(help="Read all persisted parts -> features + betas + peers + targets -> save the `cube` table.", help_priority=8)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def assemble_cube(config_path: str) -> None:
     _step(StepAssembleCube, config_path).run()

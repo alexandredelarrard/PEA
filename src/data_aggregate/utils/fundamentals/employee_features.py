@@ -19,14 +19,15 @@ look-ahead.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
-_YOY_TRADING_DAYS = 252   # ~1 year of trading days for the YoY headcount change
+_YOY_TRADING_DAYS = 252  # ~1 year of trading days for the YoY headcount change
 
 #: Headcount is SEC-OWNED in the Sharadar-first merged table: it is parsed out of the 10-K
 #: body text, and Sharadar does not deliver it. `merge_history` therefore namespaces it
@@ -62,7 +63,7 @@ def _employee_fields(
             # YoY GROWTH in revenue-per-employee: is revenue outgrowing headcount
             # (productivity rising, operating leverage) or just scaling linearly with
             # the people pool (flat rev/employee)? Past-vs-past -> leak-free.
-            rpe_growth = (rev_per_emp / rev_per_emp.shift(_YOY_TRADING_DAYS) - 1.0)
+            rpe_growth = rev_per_emp / rev_per_emp.shift(_YOY_TRADING_DAYS) - 1.0
             # use np.nan (not pd.NA): DataFrame.replace(..., pd.NA) raises
             # "IndexError: pop index out of range" on an inf+NaN mixed frame (pandas 3.x)
             rpe_growth = rpe_growth.replace([np.inf, -np.inf], np.nan)
@@ -93,8 +94,7 @@ def build_employee_feature_panel(
     parameters stay separate because the headcount and the revenue it is divided
     by are conceptually independent inputs (and were separate tables until the
     `employees_history` table was retired)."""
-    if (headcount_history is None or headcount_history.empty
-            or "as_of" not in headcount_history.columns):
+    if headcount_history is None or headcount_history.empty or "as_of" not in headcount_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields = _employee_fields(headcount_history, trading_index, fundamentals_history)

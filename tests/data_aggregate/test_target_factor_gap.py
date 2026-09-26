@@ -8,6 +8,7 @@ the entire date from the cube. The fix fills only the FACTOR forward with 0 ther
 (skip that factor's neutralization) while keeping the stock's own forward return
 required, so the genuine tail stays undefined.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -21,28 +22,33 @@ def _setup(horizon=20, gap_at=100, T=150):
     tickers = ["A", "B", "C"]
     rng = np.random.default_rng(0)
 
-    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (T, 3)), axis=0),
-                         index=dates, columns=tickers)
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (T, 3)), axis=0), index=dates, columns=tickers)
 
     # shared factor panel: market + oil; oil has an INTERIOR one-day gap
-    factor = pd.DataFrame({
-        "market": rng.normal(0, 0.01, T),
-        "oil": rng.normal(0, 0.02, T),
-    }, index=dates)
-    factor.iloc[gap_at, factor.columns.get_loc("oil")] = np.nan   # the data gap
-    macro_cols = []                                               # oil = return factor
+    factor = pd.DataFrame(
+        {
+            "market": rng.normal(0, 0.01, T),
+            "oil": rng.normal(0, 0.02, T),
+        },
+        index=dates,
+    )
+    factor.iloc[gap_at, factor.columns.get_loc("oil")] = np.nan  # the data gap
+    macro_cols = []  # oil = return factor
 
     betas = {}
     for tk in tickers:
-        betas[tk] = pd.DataFrame({
-            "beta_market": 1.0, "beta_oil": 0.3,
-        }, index=dates)
+        betas[tk] = pd.DataFrame(
+            {
+                "beta_market": 1.0,
+                "beta_oil": 0.3,
+            },
+            index=dates,
+        )
     return close, close.pct_change(), betas, factor, macro_cols, horizon, dates, gap_at
 
 
 def test_shared_factor_gap_does_not_drop_the_cross_section():
-    (close, ret, betas, factor, macro_cols, horizon,
-     dates, gap_at) = _setup()
+    (close, ret, betas, factor, macro_cols, horizon, dates, gap_at) = _setup()
 
     eps = compute_epsilon(ret, betas, factor, macro_cols, horizon)
 
@@ -56,8 +62,7 @@ def test_shared_factor_gap_does_not_drop_the_cross_section():
     # forward return is defined (oil neutralization simply skipped there)
     stock_fwd_defined = close["A"].shift(-horizon).loc[t0]
     assert np.isfinite(stock_fwd_defined), "test setup: stock forward defined at t0"
-    assert eps.loc[t0].notna().all(), \
-        f"factor gap NaN'd the cross-section at {t0.date()} (eps={eps.loc[t0].to_dict()})"
+    assert eps.loc[t0].notna().all(), f"factor gap NaN'd the cross-section at {t0.date()} (eps={eps.loc[t0].to_dict()})"
 
     # the genuine TAIL (no future price) is still correctly undefined
     tail = dates[-1]
@@ -66,18 +71,19 @@ def test_shared_factor_gap_does_not_drop_the_cross_section():
     # coverage sanity: the affected window is now populated, not blank
     cov_affected = eps.loc[affected].notna().mean().mean()
     print("\n=== SANITY CHECK: shared-factor gap no longer drops the target ===")
-    print(f"  oil gap on {dates[gap_at].date()} makes oil-forward NaN for "
-          f"{len(affected)} dates; target coverage on those dates = "
-          f"{cov_affected*100:.0f}% (was ~0% before the fix). Tail stays NaN. "
-          f"A missing oil/gold/FX factor now skips its neutralization instead of "
-          f"blanking the whole cross-section. Validated.")
+    print(
+        f"  oil gap on {dates[gap_at].date()} makes oil-forward NaN for "
+        f"{len(affected)} dates; target coverage on those dates = "
+        f"{cov_affected * 100:.0f}% (was ~0% before the fix). Tail stays NaN. "
+        f"A missing oil/gold/FX factor now skips its neutralization instead of "
+        f"blanking the whole cross-section. Validated."
+    )
 
 
 def test_missing_beta_still_propagates_nan():
     """Filling the FACTOR (not the product) means a missing BETA still NaNs the
     residual -- early-history behaviour is preserved, only factor DATA gaps heal."""
-    (close, ret, betas, factor, macro_cols, horizon,
-     dates, gap_at) = _setup()
+    (close, ret, betas, factor, macro_cols, horizon, dates, gap_at) = _setup()
     # blank ticker A's market beta on an interior date with a defined forward
     t = dates[50]
     betas["A"].loc[t, "beta_market"] = np.nan
@@ -86,9 +92,11 @@ def test_missing_beta_still_propagates_nan():
     assert np.isnan(eps.loc[t, "A"]), "missing beta must still yield NaN (unchanged)"
     assert np.isfinite(eps.loc[t, "B"]), "other stocks unaffected"
     print("\n=== SANITY CHECK: missing beta still propagates NaN ===")
-    print(f"  A's blanked market beta on {t.date()} -> A target NaN (preserved); "
-          f"B unaffected. Only factor DATA gaps are healed, not missing betas. "
-          f"Validated.")
+    print(
+        f"  A's blanked market beta on {t.date()} -> A target NaN (preserved); "
+        f"B unaffected. Only factor DATA gaps are healed, not missing betas. "
+        f"Validated."
+    )
 
 
 if __name__ == "__main__":

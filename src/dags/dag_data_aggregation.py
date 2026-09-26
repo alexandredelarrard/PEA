@@ -28,17 +28,19 @@ parallel pool slots, and each step keeps its heavy frames local so they are free
 `assemble_cube` merges the parts (+ betas + peers + targets) into the cube. Peers are
 computed once up front and cached; `build_prices` folds them into a persisted sector-return column.
 """
+
 import json
 import subprocess
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.exceptions import AirflowFailException
+from airflow.models.baseoperator import chain
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
-from airflow.models.baseoperator import chain
 from airflow.utils.trigger_rule import TriggerRule
+
+from airflow import DAG
 
 PROJECT = "/opt/airflow/project"
 CONFIGS = f"{PROJECT}/configs"
@@ -67,10 +69,10 @@ dag = DAG(
     dag_id="data_aggregation",
     default_args=default_args,
     description="Build the cube from the DB in eight sequential, memory-bounded steps.",
-    schedule=None,                                   # triggered by the extraction DAG when it finishes
+    schedule=None,  # triggered by the extraction DAG when it finishes
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_tasks=1,               # sequential: peak memory = the largest single step
+    max_active_tasks=1,  # sequential: peak memory = the largest single step
     tags=["pea", "aggregation"],
 )
 
@@ -99,12 +101,12 @@ step_tasks = [run(cmd, pool="default_pool", task_id=cmd.replace("-", "_")) for c
 # 3) assemble the cube from the persisted parts
 assemble_cube = run("assemble-cube", pool="default_pool", task_id="assemble_cube")
 
+
 def _cube_status(**context) -> None:
     """Push the max date + row count of every cube part (+ cube / predictions) to XCom, so drift is
     visible; RED when a part is missing or more than one build behind the cube. XCom is pushed
     BEFORE raising, so the per-part status is available even on a red run."""
-    proc = subprocess.run([PIPE_PY, "-m", "src", "data_aggregate", "cube-status", "-c", CONFIGS],
-                          cwd=PROJECT, capture_output=True, text=True)
+    proc = subprocess.run([PIPE_PY, "-m", "src", "data_aggregate", "cube-status", "-c", CONFIGS], cwd=PROJECT, capture_output=True, text=True)
     report = None
     for line in reversed((proc.stdout or "").strip().splitlines()):
         line = line.strip()
@@ -116,8 +118,7 @@ def _cube_status(**context) -> None:
                 continue
     ti = context["ti"]
     if report is None:
-        ti.xcom_push(key="cube_status", value={"ok": False, "error": "no report",
-                                               "stderr_tail": (proc.stderr or "")[-800:]})
+        ti.xcom_push(key="cube_status", value={"ok": False, "error": "no report", "stderr_tail": (proc.stderr or "")[-800:]})
         raise AirflowFailException(f"cube-status produced no report (rc={proc.returncode})")
     ti.xcom_push(key="cube_status", value=report)
     for name, info in report.get("parts", {}).items():
@@ -133,7 +134,12 @@ cube_status = PythonOperator(task_id="cube_status", python_callable=_cube_status
 #    NOT `modelling`: (re)training is weekly (Saturday, see dag_modelling.py) while a freshly
 #    rebuilt cube should be SCORED every night, so the nightly downstream is prediction only.
 trigger_strat_prediction = TriggerDagRunOperator(
-    task_id="trigger_strat_prediction", trigger_dag_id="strat_prediction",
-    wait_for_completion=False, reset_dag_run=True, trigger_rule=TriggerRule.ALL_DONE, dag=dag)
+    task_id="trigger_strat_prediction",
+    trigger_dag_id="strat_prediction",
+    wait_for_completion=False,
+    reset_dag_run=True,
+    trigger_rule=TriggerRule.ALL_DONE,
+    dag=dag,
+)
 
 chain(deduce_peers, *step_tasks, assemble_cube, cube_status, trigger_strat_prediction)

@@ -12,16 +12,19 @@ the entire price prologue) to get it.
 This reads the cache directly and falls back to the deduce step when it is absent, so the
 dependency is one function instead of a cross-folder Step instantiation.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 
 from omegaconf import DictConfig
-from src.data_peers.step_deduce_peers import StepDeducePeers
+
 from src.context import Context
+from src.data_peers.step_deduce_peers import StepDeducePeers
 
 logger = logging.getLogger(__name__)
+
 
 def load_peers(context: Context, config: DictConfig | None = None) -> dict:
     """The peer dict, from the `SECTOR_PEERS_PATH` cache; recomputed via `StepDeducePeers`
@@ -51,9 +54,7 @@ def load_peers_or_raise(context: Context, config: DictConfig | None = None) -> d
     """
     peers = load_peers(context, config)
     if not peers:
-        raise RuntimeError(
-            f"no peer baskets at {context.paths['SECTOR_PEERS_PATH']} -> run "
-            "`python -m src data_peers deduce-peers` first")
+        raise RuntimeError(f"no peer baskets at {context.paths['SECTOR_PEERS_PATH']} -> run `python -m src data_peers deduce-peers` first")
     peerless = sorted(t for t, basket in peers.items() if not basket)
     if peerless:
         raise RuntimeError(
@@ -62,5 +63,6 @@ def load_peers_or_raise(context: Context, config: DictConfig | None = None) -> d
             "and `peer_mom_63` would be NaN for their whole history and the build would still "
             "report success. Check `ticker_descriptions` and `ticker_embeddings` for each name "
             "(a vendor rebrand needs a `DESCRIPTION_TICKER_ALIAS` entry), then delete the JSON "
-            "and re-run `python -m src data_peers deduce-peers`.")
+            "and re-run `python -m src data_peers deduce-peers`."
+        )
     return peers

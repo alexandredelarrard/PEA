@@ -15,13 +15,12 @@ Includes:
 from __future__ import annotations
 
 import pickle
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
 from omegaconf import ListConfig, OmegaConf
 from pandas.api.types import is_numeric_dtype
 from scipy.stats import spearmanr
@@ -52,11 +51,11 @@ def time_decay_weights(
     age = np.clip(age, 0.0, None)
     return np.power(0.5, age / half_life_days).astype(np.float32)
 
+
 # --------------------------------------------------------------------------- #
 # 1. Assemble the modeling panel                                              #
 # --------------------------------------------------------------------------- #
-def make_panel(feature_panel: pd.DataFrame, label_df: pd.DataFrame,
-               label_name: str = "y") -> pd.DataFrame:
+def make_panel(feature_panel: pd.DataFrame, label_df: pd.DataFrame, label_name: str = "y") -> pd.DataFrame:
     lab = label_df.stack()
     lab.index.set_names(["date", "ticker"], inplace=True)
     lab = lab.rename(label_name).reset_index()
@@ -92,15 +91,9 @@ def parse_monotone_feature_map(features_cfg: dict | ListConfig | None) -> dict[s
 
     for item in features_cfg:
         if not OmegaConf.is_dict(item):
-            raise ValueError(
-                "inputs.monotonic.features must be a mapping or a list of "
-                "single-key mappings like `- f_sales_yield_xs: 1`"
-            )
+            raise ValueError("inputs.monotonic.features must be a mapping or a list of single-key mappings like `- f_sales_yield_xs: 1`")
         if len(item) != 1:
-            raise ValueError(
-                "Each monotone list entry must contain exactly one feature "
-                f"and direction, got {dict(item)}"
-            )
+            raise ValueError(f"Each monotone list entry must contain exactly one feature and direction, got {dict(item)}")
         name, direction = next(iter(item.items()))
         d = int(direction)
         if d not in VALID_MONOTONE_DIRECTIONS:
@@ -150,11 +143,10 @@ def _graded_labels(panel: pd.DataFrame, label_name: str) -> np.ndarray:
     return np.clip((panel[label_name].to_numpy() * 30).round().astype(int), 0, 30)
 
 
-CATEGORICAL_NA_CODE = -1        # LightGBM categorical code standing for "missing"
+CATEGORICAL_NA_CODE = -1  # LightGBM categorical code standing for "missing"
 
 
-def coerce_categoricals(frame: pd.DataFrame, categorical_features: list[str] | None
-                        ) -> pd.DataFrame:
+def coerce_categoricals(frame: pd.DataFrame, categorical_features: list[str] | None) -> pd.DataFrame:
     """Copy of `frame` with each categorical column coerced to a NUMERIC code
     (unparseable / missing -> `CATEGORICAL_NA_CODE`).
 
@@ -165,22 +157,19 @@ def coerce_categoricals(frame: pd.DataFrame, categorical_features: list[str] | N
     categorical arrives as text, crash on `to_numpy(dtype="float32")` where training
     quietly coerced it."""
     out = frame.copy()
-    for c in (categorical_features or []):
+    for c in categorical_features or []:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(CATEGORICAL_NA_CODE)
     return out
 
 
-def design_matrix(panel: pd.DataFrame, feats: list[str],
-                  categorical_features: list[str] | None = None) -> np.ndarray:
+def design_matrix(panel: pd.DataFrame, feats: list[str], categorical_features: list[str] | None = None) -> np.ndarray:
     """`panel[feats]` as a float32 matrix in `feats` order, categoricals coerced to their
     numeric codes -- what `booster.predict` and SHAP consume. Any non-numeric column is
     treated as a categorical, so a text column can never raise here."""
     cats = list(categorical_features or [])
-    non_numeric = [c for c in feats
-                   if c in panel.columns and not is_numeric_dtype(panel[c])]
-    return (coerce_categoricals(panel[feats], list(dict.fromkeys(cats + non_numeric)))
-            .to_numpy(dtype="float32"))
+    non_numeric = [c for c in feats if c in panel.columns and not is_numeric_dtype(panel[c])]
+    return coerce_categoricals(panel[feats], list(dict.fromkeys(cats + non_numeric))).to_numpy(dtype="float32")
 
 
 def _build_datasets(
@@ -267,8 +256,8 @@ def train_ranker(
     cross-sectional IC of the validation fold (the ranking metric we optimize).
     """
     default = dict(
-        objective="regression", #"lambdarank",
-        metric="rmse", #"ndcg",
+        objective="regression",  # "lambdarank",
+        metric="rmse",  # "ndcg",
         learning_rate=0.03,
         max_depth=5,
         subsample=0.8,
@@ -296,23 +285,19 @@ def train_ranker(
     if sample_weight is not None:
         train_w = np.asarray(sample_weight, dtype=float)
     else:
-        train_w = (time_decay_weights(panel["date"], half_life_years)
-                   if half_life_years is not None else None)
-    train_set = _build_datasets(default, panel, feats, label_name, train_w,
-                                categorical_features=categorical_features)
+        train_w = time_decay_weights(panel["date"], half_life_years) if half_life_years is not None else None
+    train_set = _build_datasets(default, panel, feats, label_name, train_w, categorical_features=categorical_features)
     valid_sets = []
     callbacks = []
     feval = None
 
     if valid_panel is not None and not valid_panel.empty:
-        valid_set = _build_datasets(default, valid_panel, feats, label_name,
-                                    categorical_features=categorical_features)
+        valid_set = _build_datasets(default, valid_panel, feats, label_name, categorical_features=categorical_features)
         valid_sets = [valid_set]
         if eval_metric == "ic":
             # disable the built-in metric so early stopping keys on the custom IC
             default["metric"] = "None"
-            feval = _ic_eval_factory(valid_panel["date"].to_numpy(),
-                                     valid_panel[label_name].to_numpy())
+            feval = _ic_eval_factory(valid_panel["date"].to_numpy(), valid_panel[label_name].to_numpy())
         callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds))
 
     booster = lgb.train(
@@ -382,7 +367,7 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
         # to the shared `feats` for models without a stored feature_names.
         mfeats = list(getattr(m, "feature_names", None) or feats)
         raw = predict(m, panel, mfeats).to_numpy()
-        z = per_day_zscore(raw, dates)          # NaN on <2-name days / a constant member
+        z = per_day_zscore(raw, dates)  # NaN on <2-name days / a constant member
         zs.append(z)
         members[str(name)] = pd.Series(z, index=panel.index, name=str(name))
     # nan-mean across members WITHOUT np.nanmean, so an all-NaN row (a day no member
@@ -411,9 +396,7 @@ def _pairwise_corr(M: np.ndarray) -> np.ndarray:
     return C
 
 
-def optimal_forecast_weights(signals: dict[int, np.ndarray],
-                             ir: dict[int, float],
-                             shrink: float = 0.5) -> dict[int, float]:
+def optimal_forecast_weights(signals: dict[int, np.ndarray], ir: dict[int, float], shrink: float = 0.5) -> dict[int, float]:
     """Optimal combination of correlated per-horizon forecasts (Grinold-Kahn):
 
         w  ∝  Σ⁻¹ · IR
@@ -442,7 +425,7 @@ def optimal_forecast_weights(signals: dict[int, np.ndarray],
     finite = np.isfinite(ir_vec)
     if not finite.any():
         return {h: 1.0 / n for h in hs}
-    ir_vec[~finite] = ir_vec[finite].mean()          # neutral prior for NaN IR
+    ir_vec[~finite] = ir_vec[finite].mean()  # neutral prior for NaN IR
     mu = np.clip(ir_vec, 0.0, None)
     if mu.sum() <= 0:
         return {h: 1.0 / n for h in hs}
@@ -486,8 +469,7 @@ def temporal_valid_split(
 # --------------------------------------------------------------------------- #
 # 4. Evaluation: Information Coefficient                                       #
 # --------------------------------------------------------------------------- #
-def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y",
-             horizon: int = 1, trading_days_per_year: int = 252) -> dict:
+def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horizon: int = 1, trading_days_per_year: int = 252) -> dict:
     """Daily cross-sectional IC (Spearman) and its annualized information ratio.
 
     The IC is measured EVERY trading day, but the label is an `horizon`-day
@@ -537,7 +519,11 @@ def cross_validate(
             continue
         sub_train, sub_valid = temporal_valid_split(train)
         booster = train_ranker(
-            sub_train, feats, label_name, valid_panel=sub_valid, **train_kw,
+            sub_train,
+            feats,
+            label_name,
+            valid_panel=sub_valid,
+            **train_kw,
         )
         preds = predict(booster, test, feats)
         results.append(daily_ic(test, preds, label_name, horizon=horizon))
@@ -576,7 +562,7 @@ def save_models(models_dir: Path, models: dict[int, lgb.Booster], meta: dict) ->
     shared = {
         **meta,
         "horizons": sorted(int(h) for h in models),
-        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "saved_at": datetime.now(UTC).isoformat(),
     }
     for h, booster in models.items():
         payload = {**shared, "horizon": int(h), "model": booster}

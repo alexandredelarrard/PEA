@@ -17,6 +17,7 @@ leaving the rule unguarded until someone remembers it.
 (`src/data_extract/utils/institutionals/fetch_insider_transactions.py`), alongside the other
 price/settlement signals.
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,12 +55,13 @@ def _patched_step(monkeypatch, calls: list[str], *, boom: str | None = None):
             calls.append(label)
             if label == boom:
                 raise RuntimeError("simulated fundamentals fetch failure")
+
         return _fn
 
     for attr, label in ALL_SOURCES:
         monkeypatch.setattr(mod, attr, _recorder(label))
 
-    context = object.__new__(object)   # not touched: every dependency is monkeypatched
+    context = object.__new__(object)  # not touched: every dependency is monkeypatched
     step = object.__new__(StepExtractFundamentals)
     step._context = context
     # `run()` reads years_history off the config to size the EDGAR listing window.
@@ -80,12 +82,12 @@ def test_run_calls_its_active_sources_directly_in_order(monkeypatch):
     for _, dormant in DORMANT_SOURCES:
         assert dormant not in calls, (
             f"{dormant} is commented out in run() -- if it was deliberately re-enabled, move "
-            f"it from DORMANT_SOURCES to EXPECTED_SOURCES so the order is pinned again")
+            f"it from DORMANT_SOURCES to EXPECTED_SOURCES so the order is pinned again"
+        )
 
     print("\n=== SANITY CHECK: StepExtractFundamentals call order ===")
     print(f"  active : {' -> '.join(calls)}")
-    print(f"  dormant: {', '.join(label for _, label in DORMANT_SOURCES)} "
-          f"(imported, commented out in run())")
+    print(f"  dormant: {', '.join(label for _, label in DORMANT_SOURCES)} (imported, commented out in run())")
     print("  OK: direct calls, no per-source error isolation.")
 
 
@@ -103,17 +105,16 @@ def test_the_facts_walk_and_its_replay_stay_adjacent(monkeypatch):
     _patched_step(monkeypatch, calls).run(tickers=["AAPL"])
 
     if "fundamentals_sec" not in calls:
-        assert "fundamentals_history" not in calls, (
-            "the history replay must never run without the facts walk that feeds it")
+        assert "fundamentals_history" not in calls, "the history replay must never run without the facts walk that feeds it"
         print("\n  facts walk dormant -> replay correctly absent too (invariant vacuous)")
         return
 
     assert calls[0] == "fundamentals_sec", (
-        "the facts layer must run FIRST -- everything else in this step is either "
-        "independent of it or derived from it")
+        "the facts layer must run FIRST -- everything else in this step is either independent of it or derived from it"
+    )
     assert calls[1] == "fundamentals_history", (
-        "the history replay must run IMMEDIATELY after the facts walk, not later in the "
-        "sequence: it reads exactly what that walk stored")
+        "the history replay must run IMMEDIATELY after the facts walk, not later in the sequence: it reads exactly what that walk stored"
+    )
     print(f"\n  facts walk active -> adjacency held: {calls[0]} -> {calls[1]}")
 
 
@@ -130,7 +131,9 @@ def test_a_failing_source_aborts_the_rest(monkeypatch):
     assert calls == [first]
 
     print("\n=== SANITY CHECK: StepExtractFundamentals direct calls, no isolation ===")
-    print(f"  run() calls {len(EXPECTED_SOURCES)} active sources directly in order "
-          f"({', '.join(label for _, label in EXPECTED_SOURCES)}); no _run_source wrapper.")
+    print(
+        f"  run() calls {len(EXPECTED_SOURCES)} active sources directly in order "
+        f"({', '.join(label for _, label in EXPECTED_SOURCES)}); no _run_source wrapper."
+    )
     print(f"  A failure in the first source ({first}) propagates and the rest never run.")
     print("  Validated.")

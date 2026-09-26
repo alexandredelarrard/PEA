@@ -18,11 +18,11 @@ OpenAI embedding — only tickers missing from that table are (re)processed.
 
 Env: reads OPEN_AI_API_KEY (your .env spelling) or OPENAI_API_KEY.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 #: is STORED under the universe's symbol, so nothing downstream knows about the alias.
 #: Without it the embedding is never written and at `w_corr: 0` the peer basket comes back
 #: EMPTY -- 0 non-null `sector_ret` and `peer_mom_63` across FISV's whole 26-year history.
-DESCRIPTION_TICKER_ALIAS: dict[str, str] = {"FISV": "FIV.DE"}   # Fiserv: US profile is empty
+DESCRIPTION_TICKER_ALIAS: dict[str, str] = {"FISV": "FIV.DE"}  # Fiserv: US profile is empty
 
 #: Shortest `longBusinessSummary` worth embedding. Below this Yahoo has returned a stub rather
 #: than a business description, which embeds to noise.
@@ -108,16 +108,18 @@ def fetch_business_descriptions(
                         "%s: no usable business description from Yahoo (queried as '%s', "
                         "longBusinessSummary is %s) -> NO embedding, and at w_corr: 0 an EMPTY "
                         "peer basket. Add a DESCRIPTION_TICKER_ALIAS entry if it has been "
-                        "renamed.", t, queried,
-                        "absent" if not text else f"{len(str(text))} chars")
-            except Exception as e:                     # noqa: BLE001 -- one ticker, not the run
+                        "renamed.",
+                        t,
+                        queried,
+                        "absent" if not text else f"{len(str(text))} chars",
+                    )
+            except Exception as e:  # noqa: BLE001 -- one ticker, not the run
                 logger.warning("%s: description fetch failed (%s)", t, e)
             time.sleep(pause)
 
         cached = {**cached, **new}
         if store is not None and new:
-            store.save("ticker_descriptions",
-                       pd.DataFrame({"ticker": list(new), "description": list(new.values())}))
+            store.save("ticker_descriptions", pd.DataFrame({"ticker": list(new), "description": list(new.values())}))
     else:
         logger.info("All %d descriptions already cached - no Yahoo calls.", len(tickers))
 
@@ -173,11 +175,9 @@ def get_openai_embeddings(
 
     new: dict[str, np.ndarray] = {}
     if todo:
-        logger.info("Embedding %d new tickers (OpenAI); %d already cached.",
-                    len(todo), len(cached))
-        vectors = embed_texts([descriptions[t] for t in todo], model=model,
-                              batch_size=batch_size, max_chars=max_chars, client=client)
-        for t, vec in zip(todo, vectors):              # embed_texts preserves order
+        logger.info("Embedding %d new tickers (OpenAI); %d already cached.", len(todo), len(cached))
+        vectors = embed_texts([descriptions[t] for t in todo], model=model, batch_size=batch_size, max_chars=max_chars, client=client)
+        for t, vec in zip(todo, vectors):  # embed_texts preserves order
             new[t] = np.asarray(vec, dtype="float64")
     else:
         logger.info("All %d embeddings already cached - no OpenAI calls.", len(descriptions))
@@ -189,9 +189,8 @@ def get_openai_embeddings(
     emb = pd.DataFrame.from_dict(all_vecs, orient="index")
     emb.columns = [f"e{i}" for i in range(emb.shape[1])]
 
-    if store is not None and new:                       # persist only newly added
-        rows = pd.DataFrame({"ticker": list(new),
-                             "embedding": [v.tolist() for v in new.values()]})
+    if store is not None and new:  # persist only newly added
+        rows = pd.DataFrame({"ticker": list(new), "embedding": [v.tolist() for v in new.values()]})
         store.save("ticker_embeddings", rows)
 
     selection = universe if universe is not None else list(descriptions)

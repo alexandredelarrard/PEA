@@ -27,21 +27,19 @@ aggregation still runs on a red gate; flip to ALL_SUCCESS to hard-stop predictio
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
 run from the mounted repo. Fetchers are incremental, so a nightly run only pulls new data.
 """
-import json
-import subprocess
+
 from datetime import datetime, timedelta
 
-from airflow import DAG
-from airflow.exceptions import AirflowFailException
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.utils.trigger_rule import TriggerRule
 
-PROJECT = "/opt/airflow/project"                 # the repo, bind-mounted
+from airflow import DAG
+
+PROJECT = "/opt/airflow/project"  # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
-PIPE_PY = "/opt/pipeline/bin/python"             # pipeline's isolated venv interpreter
+PIPE_PY = "/opt/pipeline/bin/python"  # pipeline's isolated venv interpreter
 PIPE = f"{PIPE_PY} -m src data_extract"
 
 default_args = {
@@ -56,7 +54,7 @@ dag = DAG(
     dag_id="data_extraction",
     default_args=default_args,
     description="Refresh every raw data source (one task per fetcher) before the nightly cube build.",
-    schedule="0 1 * * *",                        # 01:00 daily
+    schedule="0 1 * * *",  # 01:00 daily
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_tasks=4,
@@ -94,19 +92,19 @@ fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
 thirteen_f = fetch("thirteen-f", pool="sec_bulk")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions", pool="sec_bulk")
-financial_notes = fetch("financial-notes", pool="sec_bulk")           # VERY heavy
-superinvestors = fetch("superinvestors")                              # light, needs 13F
-thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")    # roster books, needs roster
+financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
+superinvestors = fetch("superinvestors")  # light, needs 13F
+thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
 #   ^ institutionals step: thirteen_f, insider_transactions, fails_to_deliver,
 #     superinvestors, short-interest (in `light`), sec_8k_items, sec_13d and sec_13g (below)
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
-fundamentals = fetch("fundamentals", pool="sec_api")                  # incl. 10-K headcount
-def14a = fetch("def14a", pool="sec_api")                              # + LLM
-sec_8k_items = fetch("sec-8k-items", pool="sec_api")                 # 8-K item codes (structured)
-sec_13d = fetch("sec-13d", pool="sec_api")                           # SC 13D activist filings
-sec_13g = fetch("sec-13g", pool="sec_api")                           # SC 13G passive 5%+ stakes
-filing_text = fetch("filing-text", pool="sec_api")                   # 10-K Item 1A + Item 7 text
+fundamentals = fetch("fundamentals", pool="sec_api")  # incl. 10-K headcount
+def14a = fetch("def14a", pool="sec_api")  # + LLM
+sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
+sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
+sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
+filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 
 # 4) external scraping — capped to 2 (site rate limits)
 # wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
@@ -128,17 +126,27 @@ trigger_aggregation = TriggerDagRunOperator(
 )
 
 # --- wiring ---
-all_fetchers = light + [price_history, fails_to_deliver, thirteen_f, financial_statements,
-                        insider_transactions, financial_notes, fundamentals, def14a,
-                        sec_8k_items, sec_13d, sec_13g, filing_text,
-                        download_earnings_calls] #wiki_pageviews, google_trends,
+all_fetchers = light + [
+    price_history,
+    fails_to_deliver,
+    thirteen_f,
+    financial_statements,
+    insider_transactions,
+    financial_notes,
+    fundamentals,
+    def14a,
+    sec_8k_items,
+    sec_13d,
+    sec_13g,
+    filing_text,
+    download_earnings_calls,
+]  # wiki_pageviews, google_trends,
 
 seed_universe >> all_fetchers
-thirteen_f >> superinvestors                                         # roster reads the 13F holdings
-superinvestors >> thirteen_f_managers                                # roster IS the walk scope
-download_earnings_calls >> ingest_earnings_calls                     # ingest parses the downloaded files
+thirteen_f >> superinvestors  # roster reads the 13F holdings
+superinvestors >> thirteen_f_managers  # roster IS the walk scope
+download_earnings_calls >> ingest_earnings_calls  # ingest parses the downloaded files
 
 # all sources refreshed -> trigger aggregation
-(all_fetchers + [superinvestors, thirteen_f_managers,
-                 ingest_earnings_calls]) >> extraction_complete
+(all_fetchers + [superinvestors, thirteen_f_managers, ingest_earnings_calls]) >> extraction_complete
 extraction_complete >> trigger_aggregation

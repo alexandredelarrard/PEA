@@ -65,32 +65,46 @@ KPIs (grouped):
                  not on GICS: capitalizing R&D is meaningful for any research-intensive
                  filer, not only biotech
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily, infer_yoy_periods
+from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import safe_div
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily, infer_yoy_periods
 from src.data_aggregate.utils.common.sector_gates import row_gate
-from src.data_aggregate.utils.common import capital
 
 # KPI columns produced by compute_sector_kpis (the panel builder iterates these).
 SECTOR_KPI_COLS: list[str] = [
     # universal
-    "effective_tax_rate", "accruals_ratio", "asset_turnover",
-    "capex_intensity", "capex_to_dep", "payout_ratio", "buyback_intensity",
-    "earnings_quality", "reinvestment_rate", "sustainable_growth_rate",
-    "fixed_cost_coverage_margin", "gmroi",
+    "effective_tax_rate",
+    "accruals_ratio",
+    "asset_turnover",
+    "capex_intensity",
+    "capex_to_dep",
+    "payout_ratio",
+    "buyback_intensity",
+    "earnings_quality",
+    "reinvestment_rate",
+    "sustainable_growth_rate",
+    "fixed_cost_coverage_margin",
+    "gmroi",
     # financials
-    "aoci_to_equity", "book_value_growth",
+    "aoci_to_equity",
+    "book_value_growth",
     # banks
     "bank_roa",
     # reits
-    "ffo_margin", "ffo_payout", "affo_margin", "affo_dividend_coverage",
+    "ffo_margin",
+    "ffo_payout",
+    "affo_margin",
+    "affo_dividend_coverage",
     # energy
-    "ddna_intensity", "ebitda_margin",
+    "ddna_intensity",
+    "ebitda_margin",
     # software / tech
     "deferred_rev_intensity",
     # utilities
@@ -134,11 +148,10 @@ def _capitalized_rd(df: pd.DataFrame, rd: pd.Series, yoy: int) -> tuple[pd.Serie
     year's amortization is 1/5 of each of the prior 5 years' R&D. Both are keyed
     on the current filing; only defined when current R&D is reported."""
     asset = pd.Series(0.0, index=df.index)
-    for t in range(5):                                   # layers t=0..4 -> weight (1 - 0.2t)
-        asset = asset.add(_yearly_lag(df, rd, t, yoy).fillna(0.0) * (1.0 - 0.2 * t),
-                          fill_value=0.0)
+    for t in range(5):  # layers t=0..4 -> weight (1 - 0.2t)
+        asset = asset.add(_yearly_lag(df, rd, t, yoy).fillna(0.0) * (1.0 - 0.2 * t), fill_value=0.0)
     amort = pd.Series(0.0, index=df.index)
-    for t in range(1, 6):                                # last 5 years each amortize 1/5 this year
+    for t in range(1, 6):  # last 5 years each amortize 1/5 this year
         amort = amort.add(_yearly_lag(df, rd, t, yoy).fillna(0.0) * 0.2, fill_value=0.0)
     valid = rd.notna()
     return asset.where(valid), amort.where(valid)
@@ -156,7 +169,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
 
     df = fundamentals.copy()
     g = lambda n: _col(df, n)  # noqa: E731
-    yoy = infer_yoy_periods(df)                     # filings per year (4 quarterly, 1 annual)
+    yoy = infer_yoy_periods(df)  # filings per year (4 quarterly, 1 annual)
 
     revenue = g("totalRevenue")
     # ASC-842-adoption-free asset base (shared resolver: precomputed column, else derived,
@@ -296,8 +309,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     # a 5-year intangible) so organic innovators are comparable to serial acquirers.
     rd_asset, rd_amort = _capitalized_rd(df, rd, yoy)
     adj_oper_income = oper_income.fillna(0) + rd.fillna(0) - rd_amort.fillna(0)
-    adj_capital = (g("stockholdersEquity").fillna(0) + total_debt
-                   + rd_asset.fillna(0) - cash.fillna(0))
+    adj_capital = g("stockholdersEquity").fillna(0) + total_debt + rd_asset.fillna(0) - cash.fillna(0)
     df["rd_capitalized_roic"] = safe_div(adj_oper_income, adj_capital, True).where(rd.notna())
 
     # ---- financial-sector growth & capital ------------------------------- #
@@ -308,8 +320,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     # AOCI is mostly the AFS mark-to-market; a large NEGATIVE AOCI = unrealized securities
     # losses eroding tangible capital (signed: negative = losses). The 2023 SVB signal, minus
     # the held-to-maturity leg, which needs footnote fair values SF1 does not carry.
-    df["aoci_to_equity"] = safe_div(
-        g("accumulatedOtherComprehensiveIncome"), equity, True).where(fin_gate)
+    df["aoci_to_equity"] = safe_div(g("accumulatedOtherComprehensiveIncome"), equity, True).where(fin_gate)
 
     return df
 
@@ -324,8 +335,7 @@ def build_sector_feature_panel(
     Computes the row-level KPIs, forward-fills each point-in-time from its
     `as_of`, and peer-relativizes — identical treatment to the fundamental /
     management panels. Empty if fundamentals are unavailable."""
-    if (fundamentals is None or fundamentals.empty
-            or "as_of" not in fundamentals.columns):
+    if fundamentals is None or fundamentals.empty or "as_of" not in fundamentals.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     kdf = compute_sector_kpis(fundamentals)

@@ -10,6 +10,7 @@ and the resolution GATE — an unresolved manager that is not a recorded excepti
 because a manager that quietly drops out of the roster is the survivorship bug the table
 exists to remove.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -19,19 +20,22 @@ import pytest
 
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
 
-
-_SINGLE_ATOM = ('<?xml version="1.0"?><feed><company-info>'
-                '<cik>0001079114</cik><cik-href>x</cik-href>'
-                '<conformed-name>GREENLIGHT CAPITAL INC</conformed-name>'
-                '</company-info></feed>')
-_MULTI_ATOM = ('<?xml version="1.0"?><feed>'
-               '<company-info name="ARRAY(0x1)"><cik>0001336528</cik></company-info>'
-               '<company-info name="ARRAY(0x2)"><cik>0002026053</cik></company-info></feed>')
+_SINGLE_ATOM = (
+    '<?xml version="1.0"?><feed><company-info>'
+    "<cik>0001079114</cik><cik-href>x</cik-href>"
+    "<conformed-name>GREENLIGHT CAPITAL INC</conformed-name>"
+    "</company-info></feed>"
+)
+_MULTI_ATOM = (
+    '<?xml version="1.0"?><feed>'
+    '<company-info name="ARRAY(0x1)"><cik>0001336528</cik></company-info>'
+    '<company-info name="ARRAY(0x2)"><cik>0002026053</cik></company-info></feed>'
+)
 
 
 def test_pad_cik_canonical_10_digit():
     assert si.pad_cik("1067983") == "0001067983"
-    assert si.pad_cik("1067983.0") == "0001067983"        # float artifact tolerated
+    assert si.pad_cik("1067983.0") == "0001067983"  # float artifact tolerated
     assert si.pad_cik(1067983) == "0001067983"
     assert si.pad_cik("") == "" and si.pad_cik("N/A") == ""
     print("\n=== SANITY: CIK canonicalization ===")
@@ -45,8 +49,8 @@ def test_parse_dataroma_roster_strips_updated_suffix():
       <tr><td><a href="holdings.php?m=BRK">dupe link</a></td></tr>
       <tr><td><a href="/m/managers.php">All managers</a></td></tr></table>"""
     roster = si._parse_dataroma_roster(html)
-    assert [r["code"] for r in roster] == ["BRK", "GLRE"]   # deduped, non-manager link dropped
-    assert roster[0]["name"] == "Warren Buffett - Berkshire Hathaway"   # "Updated ..." stripped
+    assert [r["code"] for r in roster] == ["BRK", "GLRE"]  # deduped, non-manager link dropped
+    assert roster[0]["name"] == "Warren Buffett - Berkshire Hathaway"  # "Updated ..." stripped
     print("\n=== SANITY: Dataroma roster parse ===")
     print(f"  {[r['code'] for r in roster]}; 'Updated <date>' stripped, dupe/non-holdings dropped. Validated.")
 
@@ -61,8 +65,7 @@ def test_parse_edgar_matches_lowercase_cik_single_and_multi():
 
 def test_pick_best_match():
     # single -> trusted outright
-    assert si._pick_best_match([("0001079114", "GREENLIGHT CAPITAL INC")],
-                               "Greenlight Capital") == ("0001079114", "GREENLIGHT CAPITAL INC")
+    assert si._pick_best_match([("0001079114", "GREENLIGHT CAPITAL INC")], "Greenlight Capital") == ("0001079114", "GREENLIGHT CAPITAL INC")
     # multi WITH names -> highest token overlap
     pairs = [("0000000001", "ACME HOLDINGS"), ("0000000002", "PERSHING SQUARE CAPITAL")]
     assert si._pick_best_match(pairs, "Pershing Square")[0] == "0000000002"
@@ -82,11 +85,12 @@ def test_edgar_cik_for_name_stubbed():
 
     cik, filer = si._edgar_cik_for_name("David Einhorn - Greenlight Capital", get_fn=fake_get)
     assert cik == "0001079114" and "GREENLIGHT" in filer
-    assert "company=Greenlight" in calls["url"]              # searched the FUND part, url-quoted
+    assert "company=Greenlight" in calls["url"]  # searched the FUND part, url-quoted
 
     def boom(url):
         raise RuntimeError("network down")
-    assert si._edgar_cik_for_name("X - Y Capital", get_fn=boom) == (None, None)   # no raise
+
+    assert si._edgar_cik_for_name("X - Y Capital", get_fn=boom) == (None, None)  # no raise
     print("\n=== SANITY: name -> CIK via EDGAR ===")
     print("  'Greenlight Capital' -> 0001079114 (fund part queried); network error -> (None,None). Validated.")
 
@@ -105,55 +109,67 @@ def test_resolver_is_memoised_per_code_and_falls_back_to_older_names():
     # the name in hand does not resolve; the older one does
     assert resolve("GLRE", "David Einhorn - Some Rebrand") == ("0001079114", si.RESOLUTION_EDGAR)
     n_after_first = len(calls)
-    assert n_after_first == 2                                # the rebrand, then the old name
-    for _ in range(5):                                       # same code, 5 more snapshots
+    assert n_after_first == 2  # the rebrand, then the old name
+    for _ in range(5):  # same code, 5 more snapshots
         resolve("GLRE", "David Einhorn - Some Rebrand")
-    assert len(calls) == n_after_first                       # memoised: no extra EDGAR calls
+    assert len(calls) == n_after_first  # memoised: no extra EDGAR calls
     assert resolve("BRK", "anything") == ("0001067983", si.RESOLUTION_OVERRIDE)
-    assert len(calls) == n_after_first                       # an override never hits the network
+    assert len(calls) == n_after_first  # an override never hits the network
     print("\n=== SANITY: per-code memoised resolution ===")
-    print(f"  6 snapshot-rows of one code cost {len(calls)} EDGAR calls (2 = failed current "
-          "name + successful older name); an override costs 0. Validated.")
+    print(
+        f"  6 snapshot-rows of one code cost {len(calls)} EDGAR calls (2 = failed current "
+        "name + successful older name); an override costs 0. Validated."
+    )
 
 
 def test_snapshot_rows_shape_and_padding():
     rows = si.snapshot_rows(
-        [{"code": "BRK", "name": "Warren Buffett - Berkshire"},
-         {"code": "CMAFX", "name": "Century Management"}],
-        date(2016, 1, 1), "https://web.archive.org/web/2016/x",
-        lambda code, name: (("1067983", si.RESOLUTION_OVERRIDE) if code == "BRK"
-                            else (None, si.RESOLUTION_UNRESOLVED)))
-    assert [r["cik"] for r in rows] == ["0001067983", None]   # padded; unresolved -> NULL, not ""
+        [{"code": "BRK", "name": "Warren Buffett - Berkshire"}, {"code": "CMAFX", "name": "Century Management"}],
+        date(2016, 1, 1),
+        "https://web.archive.org/web/2016/x",
+        lambda code, name: ("1067983", si.RESOLUTION_OVERRIDE) if code == "BRK" else (None, si.RESOLUTION_UNRESOLVED),
+    )
+    assert [r["cik"] for r in rows] == ["0001067983", None]  # padded; unresolved -> NULL, not ""
     assert {r["snapshot_date"] for r in rows} == {date(2016, 1, 1)}
-    assert set(rows[0]) == {"snapshot_date", "dataroma_code", "manager_name", "cik",
-                            "resolution", "source_url"}
+    assert set(rows[0]) == {"snapshot_date", "dataroma_code", "manager_name", "cik", "resolution", "source_url"}
     print("\n=== SANITY: superinvestor_roster row shape ===")
-    print(f"  {len(rows)} rows keyed (snapshot_date, dataroma_code); CIK zero-padded to 10; "
-          "an unresolved manager keeps its row with cik=None (never dropped). Validated.")
+    print(
+        f"  {len(rows)} rows keyed (snapshot_date, dataroma_code); CIK zero-padded to 10; "
+        "an unresolved manager keeps its row with cik=None (never dropped). Validated."
+    )
 
 
 def test_unresolved_manager_raises_unless_recorded():
     """D22's gate: 100% resolution, or every exception named with its reason. An unresolved
     manager silently leaving the eligible pool IS the survivorship bug, so it must be loud."""
-    unknown = [{"snapshot_date": date(2016, 1, 1), "dataroma_code": "ZZZ",
-                "manager_name": "Nobody - Unlisted Boutique", "cik": None,
-                "resolution": si.RESOLUTION_UNRESOLVED, "source_url": "x"}]
+    unknown = [
+        {
+            "snapshot_date": date(2016, 1, 1),
+            "dataroma_code": "ZZZ",
+            "manager_name": "Nobody - Unlisted Boutique",
+            "cik": None,
+            "resolution": si.RESOLUTION_UNRESOLVED,
+            "source_url": "x",
+        }
+    ]
     with pytest.raises(si.SuperinvestorResolutionError, match="Unlisted Boutique"):
         si.assert_fully_resolved(unknown)
 
     recorded = [dict(unknown[0], dataroma_code="CMAFX", manager_name="Century Management")]
-    assert si.assert_fully_resolved(recorded) == ["CMAFX"]        # recorded -> passes, reported
-    assert si.assert_fully_resolved([dict(unknown[0], cik="0001067983",
-                                          resolution=si.RESOLUTION_EDGAR)]) == []
+    assert si.assert_fully_resolved(recorded) == ["CMAFX"]  # recorded -> passes, reported
+    assert si.assert_fully_resolved([dict(unknown[0], cik="0001067983", resolution=si.RESOLUTION_EDGAR)]) == []
     print("\n=== SANITY: resolution gate ===")
-    print(f"  an unknown unresolved code RAISES; the {len(si.SUPERINVESTOR_UNRESOLVABLE)} "
-          f"recorded exceptions {sorted(si.SUPERINVESTOR_UNRESOLVABLE)} pass and are returned "
-          "for the caller to report. Validated.")
+    print(
+        f"  an unknown unresolved code RAISES; the {len(si.SUPERINVESTOR_UNRESOLVABLE)} "
+        f"recorded exceptions {sorted(si.SUPERINVESTOR_UNRESOLVABLE)} pass and are returned "
+        "for the caller to report. Validated."
+    )
 
 
 def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_store):
-    roster_html = ('<a href="holdings.php?m=GLRE">David Einhorn - Greenlight Capital</a>'
-                   '<a href="holdings.php?m=BRK">Warren Buffett - Berkshire Hathaway</a>')
+    roster_html = (
+        '<a href="holdings.php?m=GLRE">David Einhorn - Greenlight Capital</a><a href="holdings.php?m=BRK">Warren Buffett - Berkshire Hathaway</a>'
+    )
     monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text=roster_html))
 
     def fake_edgar(url):
@@ -161,12 +177,14 @@ def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_st
 
     ctx = SimpleNamespace(store=sqlite_store)
     df = si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)
-    assert set(df["cik"]) == {"0001079114", "0001067983"}         # EDGAR + override
+    assert set(df["cik"]) == {"0001079114", "0001067983"}  # EDGAR + override
     assert df["snapshot_date"].nunique() == 1
-    si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)             # same day, again
+    si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)  # same day, again
     stored = sqlite_store.load(si.Tables.superinvestor_roster)
-    assert len(stored) == 2, stored                               # upserted on the PK, not doubled
+    assert len(stored) == 2, stored  # upserted on the PK, not doubled
     print("\n=== SANITY: live snapshot write ===")
-    print(f"  scraped 2 managers -> {len(stored)} rows in superinvestor_roster "
-          f"(resolution {df['resolution'].value_counts().to_dict()}); re-running the same day "
-          "upserts the same PK rather than duplicating. Validated on the real store.")
+    print(
+        f"  scraped 2 managers -> {len(stored)} rows in superinvestor_roster "
+        f"(resolution {df['resolution'].value_counts().to_dict()}); re-running the same day "
+        "upserts the same PK rather than duplicating. Validated on the real store."
+    )

@@ -1,22 +1,21 @@
 import logging
 import os
-
-from io import StringIO
-from pathlib import Path
 import sys
+from io import StringIO
 from logging.config import dictConfig
+from pathlib import Path
 
-from dotenv import load_dotenv, find_dotenv
-from omegaconf import DictConfig, OmegaConf
 import requests
+from dotenv import find_dotenv, load_dotenv
+from omegaconf import DictConfig, OmegaConf
 
-from src.utils.config import read_config
-from src.utils.seed import set_seed
-from src.utils.db import get_engine
 from src.data_store.store import DataStore
+from src.utils.config import read_config
+from src.utils.db import get_engine
+from src.utils.seed import set_seed
 from src.utils.ssl_setup import configure_corporate_ca
 
-os.environ['LC_ALL'] = "C"
+os.environ["LC_ALL"] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 
@@ -29,12 +28,14 @@ os.environ["PYTHONUTF8"] = "1"
 # already trusts and leaves verification ON; a CA env var the user set themselves still wins.
 configure_corporate_ca()
 
+
 def check_path_exist(path):
     path = Path(path)
     if path.suffix:
         path.parent.mkdir(parents=True, exist_ok=True)
     else:
         path.mkdir(parents=True, exist_ok=True)
+
 
 def define_global_paths(config: DictConfig):
     """Filesystem paths for NON-tabular artifacts only. All tabular data
@@ -62,7 +63,6 @@ def define_global_paths(config: DictConfig):
 
 
 class Context:
-
     def __init__(self, config: DictConfig, use_cache: bool, save: bool, config_dir: Path):
 
         self._config = config
@@ -151,7 +151,8 @@ class Context:
                     "SEC_USER_AGENT is not set. SEC EDGAR blocks requests without a "
                     "descriptive User-Agent (name + email). Add it to your .env file, e.g.\n"
                     '  SEC_USER_AGENT="Your Name your.email@example.com"\n'
-                    "See https://www.sec.gov/os/webmaster-faq#developers")
+                    "See https://www.sec.gov/os/webmaster-faq#developers"
+                )
             self._sec_user_agent = ua
         return self._sec_user_agent
 
@@ -164,6 +165,7 @@ class Context:
         if self._edgar_identity_set:
             return
         from edgar import set_identity
+
         set_identity(self.sec_user_agent)
         self._edgar_identity_set = True
 
@@ -175,10 +177,12 @@ class Context:
         gives the multi-hundred-MB bulk-ZIP downloads connection reuse."""
         if self._sec_session is None:
             session = requests.Session()
-            session.headers.update({
-                "User-Agent": self.sec_user_agent,
-                "Accept-Encoding": "gzip, deflate",
-            })
+            session.headers.update(
+                {
+                    "User-Agent": self.sec_user_agent,
+                    "Accept-Encoding": "gzip, deflate",
+                }
+            )
             self._sec_session = session
         return self._sec_session
 

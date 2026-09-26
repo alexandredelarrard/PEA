@@ -4,6 +4,7 @@ certifi + OS-trust-store bundle and points the CA env vars at it so every HTTPS
 client (curl_cffi/yfinance, requests, httpx) trusts a corporate TLS-inspection
 proxy WITHOUT disabling verification.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,7 @@ def test_bundle_is_valid_and_superset_of_certifi(tmp_path):
 
     n = dest.read_text(encoding="utf-8").count("BEGIN CERTIFICATE")
     certifi_n = Path(certifi.where()).read_text(encoding="utf-8").count("BEGIN CERTIFICATE")
-    assert n >= certifi_n                                   # certifi + (OS store on Windows)
+    assert n >= certifi_n  # certifi + (OS store on Windows)
     # must be a loadable PEM (proves it will verify, not silently break TLS)
     ssl.create_default_context().load_verify_locations(cafile=str(dest))
 
@@ -35,7 +36,7 @@ def test_configure_sets_env_then_respects_user_override(tmp_path, monkeypatch):
         monkeypatch.delenv(v, raising=False)
 
     dest = tmp_path / "ca.pem"
-    path = ssl_setup.configure_corporate_ca(dest=dest, force=True)   # force -> works cross-OS
+    path = ssl_setup.configure_corporate_ca(dest=dest, force=True)  # force -> works cross-OS
     assert path == str(dest)
     assert all(os.environ[v] == str(dest) for v in ssl_setup.CA_ENV_VARS)
 
@@ -46,8 +47,7 @@ def test_configure_sets_env_then_respects_user_override(tmp_path, monkeypatch):
     assert ssl_setup.configure_corporate_ca(dest=dest) == "/preexisting/ca.pem"
 
     print("\n=== SANITY CHECK: configure_corporate_ca ===")
-    print("  sets SSL_CERT_FILE/CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE; respects a pre-set "
-          "value (user override wins). Validated.")
+    print("  sets SSL_CERT_FILE/CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE; respects a pre-set value (user override wins). Validated.")
 
 
 def test_relaxed_context_drops_only_strict_and_still_verifies(tmp_path):
@@ -78,9 +78,7 @@ def test_bundle_write_is_atomic_and_reused(tmp_path, monkeypatch):
 
     # second call must REUSE (not rewrite) -- proven by making a rewrite impossible
     mtime = dest.stat().st_mtime_ns
-    monkeypatch.setattr(ssl_setup, "_os_store_pem",
-                        lambda: (_ for _ in ()).throw(AssertionError("rebuilt when it "
-                                                                    "should have reused")))
+    monkeypatch.setattr(ssl_setup, "_os_store_pem", lambda: (_ for _ in ()).throw(AssertionError("rebuilt when it should have reused")))
     again = ssl_setup.build_corporate_ca_bundle(dest)
     assert again == dest and dest.stat().st_mtime_ns == mtime, "usable bundle must be reused"
 
@@ -94,4 +92,5 @@ def test_bundle_write_is_atomic_and_reused(tmp_path, monkeypatch):
 
 if __name__ == "__main__":
     import tempfile
+
     test_bundle_is_valid_and_superset_of_certifi(Path(tempfile.mkdtemp()))

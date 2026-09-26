@@ -46,7 +46,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         params = inspect.signature(fn).parameters
         assert "years_history" in params, f"{fn.__name__} must take years_history"
         assert params["years_history"].default is inspect.Parameter.empty, (
-            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a " f"second place for the window to diverge"
+            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
         )
 
     # each step is the single place that reads the window off the config, for its own fetchers
@@ -62,7 +62,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         run = inspect.getsource(step.run)
         assert run.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
         assert run.count("years_history=years_history") == n_windowed, (
-            f"{step.__name__} passes the window to " f"{run.count('years_history=years_history')} fetchers, expected {n_windowed}"
+            f"{step.__name__} passes the window to {run.count('years_history=years_history')} fetchers, expected {n_windowed}"
         )
     print("\n=== SANITY: extraction window plumbing ===")
     print(
@@ -562,7 +562,7 @@ def test_normalize_item_text_fixes_mojibake_rules_and_whitespace():
     used as a visual rule under the heading (STX's Item 4 body opens with 40 of them).
     Both wreck tokenization for no semantic gain, so they are normalized away --
     characters only, never a sentence."""
-    body = "─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see" "\xa0below.\n\n\n   Ragged    spacing   here.   \n"
+    body = "─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see\xa0below.\n\n\n   Ragged    spacing   here.   \n"
     out = _normalize_item_text(body)
     assert '"group"' in out and "'shares'" in out  # cp1252 + unicode quotes straightened
     assert "─" not in out  # box-drawing rule gone
@@ -588,7 +588,7 @@ def test_normalize_item_text_decodes_a_semantic_cp1252_byte_rather_than_dropping
 def test_normalize_item_text_leaves_hyphenated_words_and_negatives_alone():
     """The rule-run stripper is bounded to runs of 3+ AND must not fire inside a word or a
     number -- a hyphenated term and a negative figure are real content, not furniture."""
-    body = "The non-transferable shares were valued at -1,234 per unit, a --5 point " "swing, under a well-known cost-plus arrangement."
+    body = "The non-transferable shares were valued at -1,234 per unit, a --5 point swing, under a well-known cost-plus arrangement."
     out = _normalize_item_text(body)
     assert "non-transferable" in out
     assert "-1,234" in out

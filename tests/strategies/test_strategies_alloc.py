@@ -8,15 +8,16 @@ Validates the three layers on controlled synthetic data:
      while keeping an UP-trending asset near full weight.
   3. the end-to-end backtest returns finite, sane P&L with cash as the residual leg.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.modelling.long_book import allocation as al
 from src.utils import risk_parity as rp
 from src.utils.trend import trend_scale_long_only as _tsl
-from src.modelling.long_book import allocation as al
 
 
 def _cov_from(vols, corr):
@@ -51,34 +52,35 @@ def test_erc_equalizes_risk_contributions_vs_inverse_vol():
 
 def test_trend_overlay_derisks_downtrend():
     idx = pd.bdate_range("2015-01-01", periods=400)
-    up = pd.Series(np.linspace(100, 200, len(idx)), index=idx)      # steady uptrend
-    down = pd.Series(np.linspace(200, 100, len(idx)), index=idx)    # steady downtrend
+    up = pd.Series(np.linspace(100, 200, len(idx)), index=idx)  # steady uptrend
+    down = pd.Series(np.linspace(200, 100, len(idx)), index=idx)  # steady downtrend
     close = pd.DataFrame({"up": up, "down": down})
-    scale = _tsl(close, [63, 126, 252], vol_window=63,
-                                     scheme="linear", floor=0.0, cap=2.0)
+    scale = _tsl(close, [63, 126, 252], vol_window=63, scheme="linear", floor=0.0, cap=2.0)
     last = scale.dropna().iloc[-1]
     assert last["up"] > 0.8, "uptrending asset should keep near-full weight"
     assert last["down"] < 0.2, "downtrending asset should be scaled toward cash"
 
     print("\n=== SANITY CHECK: long-only trend overlay ===")
-    print(f"  final scale  up={last['up']:.2f}  down={last['down']:.2f}  "
-          "(uptrend held, downtrend de-risked into cash). Validated.")
+    print(f"  final scale  up={last['up']:.2f}  down={last['down']:.2f}  (uptrend held, downtrend de-risked into cash). Validated.")
 
 
 def test_allocation_backtest_sane():
     rng = np.random.default_rng(0)
     idx = pd.bdate_range("2005-01-01", periods=1500)
     # equity drift+vol, gold, bond (lower vol), cash rate ~2%
-    rets = pd.DataFrame({
-        "equity": rng.normal(0.0004, 0.011, len(idx)),
-        "gold": rng.normal(0.0002, 0.010, len(idx)),
-        "bond": rng.normal(0.0001, 0.004, len(idx)),
-    }, index=idx)
+    rets = pd.DataFrame(
+        {
+            "equity": rng.normal(0.0004, 0.011, len(idx)),
+            "gold": rng.normal(0.0002, 0.010, len(idx)),
+            "bond": rng.normal(0.0001, 0.004, len(idx)),
+        },
+        index=idx,
+    )
     cash = pd.Series(0.02 / 252.0, index=idx, name="cash")
 
-    res = al.allocation_backtest(rets, cash, scheme="erc", vol_window=63, rebalance_freq=21,
-                                 trend_enabled=True, portfolio_vol_target=0.10,
-                                 fee_bps=2.0, spread_bps=8.0)
+    res = al.allocation_backtest(
+        rets, cash, scheme="erc", vol_window=63, rebalance_freq=21, trend_enabled=True, portfolio_vol_target=0.10, fee_bps=2.0, spread_bps=8.0
+    )
     net = res["net_ret"]
     assert np.isfinite(net).all() and len(net) > 1000
     m = rp.series_metrics(net)
@@ -89,8 +91,10 @@ def test_allocation_backtest_sane():
     assert np.isfinite(pam["sharpe"]["equity"])
 
     print("\n=== SANITY CHECK: end-to-end allocation backtest ===")
-    print(f"  days={len(net)}  ann_ret={m['ann_return']*100:.1f}%  ann_vol={m['ann_vol']*100:.1f}%  "
-          f"Sharpe={m['sharpe']:.2f}  maxDD={m['max_drawdown']*100:.1f}%")
+    print(
+        f"  days={len(net)}  ann_ret={m['ann_return'] * 100:.1f}%  ann_vol={m['ann_vol'] * 100:.1f}%  "
+        f"Sharpe={m['sharpe']:.2f}  maxDD={m['max_drawdown'] * 100:.1f}%"
+    )
     print(f"  avg cash weight={res['cash_weight'].mean():.2f}  avg leverage={res['leverage'].mean():.2f}")
     print("  finite P&L, vol near target, cash acts as residual. Validated.")
 
@@ -103,26 +107,25 @@ def test_regime_tilt_lifts_offensive_budget():
     off_hi = b_hi[[cols.index(c) for c in off]].sum()
     off_lo = b_lo[[cols.index(c) for c in off]].sum()
     assert off_hi > off_lo, "risk-on (high score) must give offensive sleeves MORE risk budget"
-    assert off_hi == pytest.approx(0.2 + 0.6 * 0.9, abs=1e-9)      # 0.74
-    assert off_lo == pytest.approx(0.2 + 0.6 * 0.1, abs=1e-9)      # 0.26
+    assert off_hi == pytest.approx(0.2 + 0.6 * 0.9, abs=1e-9)  # 0.74
+    assert off_lo == pytest.approx(0.2 + 0.6 * 0.1, abs=1e-9)  # 0.26
     # feed the tilted budgets into ERC -> equity dollar weight also rises with the score
     vols = np.array([0.18, 0.16, 0.28, 0.07, 0.09])
-    cov = np.diag(vols ** 2)
+    cov = np.diag(vols**2)
     w_hi = rp.erc_weights(cov, budget=b_hi)
     w_lo = rp.erc_weights(cov, budget=b_lo)
     assert w_hi[0] > w_lo[0], "equity weight should be higher in the risk-on regime"
 
     print("\n=== SANITY CHECK: risk-on regime tilt ===")
     print(f"  offensive risk share: risk-on={off_hi:.2f}  risk-off={off_lo:.2f}")
-    print(f"  equity ERC weight:    risk-on={w_hi[0]:.2f}  risk-off={w_lo[0]:.2f}  "
-          "(more equity when calm, less in stress). Validated.")
+    print(f"  equity ERC weight:    risk-on={w_hi[0]:.2f}  risk-off={w_lo[0]:.2f}  (more equity when calm, less in stress). Validated.")
 
 
 def test_ewma_cov_reacts_faster_than_flat_window():
     rng = np.random.default_rng(1)
     idx = pd.bdate_range("2018-01-01", periods=250)
     r = pd.Series(rng.normal(0, 0.008, len(idx)), index=idx)
-    r.iloc[-20:] = rng.normal(0, 0.030, 20)                        # recent vol SPIKE
+    r.iloc[-20:] = rng.normal(0, 0.030, 20)  # recent vol SPIKE
     win = pd.DataFrame({"a": r})
     cov_ewma, _ = rp.ewma_cov(win, halflife=20)
     cov_flat, _ = rp.cov_window(win)
@@ -131,8 +134,7 @@ def test_ewma_cov_reacts_faster_than_flat_window():
     assert ewma_vol > flat_vol, "EWMA vol should weight the recent spike more than a flat window"
 
     print("\n=== SANITY CHECK: EWMA vs flat-window vol ===")
-    print(f"  after a recent vol spike: EWMA ann-vol={ewma_vol*100:.1f}%  flat 250d={flat_vol*100:.1f}%  "
-          "(EWMA reacts faster). Validated.")
+    print(f"  after a recent vol spike: EWMA ann-vol={ewma_vol * 100:.1f}%  flat 250d={flat_vol * 100:.1f}%  (EWMA reacts faster). Validated.")
 
 
 def test_vol_responsive_leverage_by_regime():
@@ -141,23 +143,30 @@ def test_vol_responsive_leverage_by_regime():
     idx = pd.bdate_range("2010-01-01", periods=n)
     # first half CALM (low vol, up drift) -> risk-on; second half STRESS (high vol, down drift)
     eq = np.concatenate([rng.normal(0.0006, 0.006, n // 2), rng.normal(-0.0004, 0.022, n - n // 2)])
-    rets = pd.DataFrame({"equity": eq,
-                         "bond": rng.normal(0.0001, 0.004, n),
-                         "gold": rng.normal(0.0002, 0.009, n)}, index=idx)
+    rets = pd.DataFrame({"equity": eq, "bond": rng.normal(0.0001, 0.004, n), "gold": rng.normal(0.0002, 0.009, n)}, index=idx)
     cash = pd.Series(0.02 / 252.0, index=idx, name="cash")
-    res = al.allocation_backtest(rets, cash, scheme="erc", trend_enabled=False, risk_on=True,
-                                 lev_responsive=True, lev_min=1.0, lev_max=2.0,
-                                 portfolio_vol_target=0.10, cov_mode="ewma", vol_mode="ewma")
+    res = al.allocation_backtest(
+        rets,
+        cash,
+        scheme="erc",
+        trend_enabled=False,
+        risk_on=True,
+        lev_responsive=True,
+        lev_min=1.0,
+        lev_max=2.0,
+        portfolio_vol_target=0.10,
+        cov_mode="ewma",
+        vol_mode="ewma",
+    )
     lev = res["leverage"]
-    calm = float(lev.iloc[850:1050].mean())        # inside the calm regime (post-warmup)
-    stress = float(lev.iloc[1600:2100].mean())      # inside the stress regime
+    calm = float(lev.iloc[850:1050].mean())  # inside the calm regime (post-warmup)
+    stress = float(lev.iloc[1600:2100].mean())  # inside the stress regime
     assert lev.max() <= 2.0 + 1e-9, "leverage must never exceed lev_max"
     assert calm - stress >= 0.3, "leverage should be MATERIALLY higher in calm than stress"
     assert stress < 1.5, "stress leverage should sit well below the calm ceiling"
 
     print("\n=== SANITY CHECK: vol-responsive leverage (1x stress -> 2x calm) ===")
-    print(f"  avg leverage  calm={calm:.2f}  stress={stress:.2f}  max={float(lev.max()):.2f}  "
-          "(levers up when calm, unlevered in stress). Validated.")
+    print(f"  avg leverage  calm={calm:.2f}  stress={stress:.2f}  max={float(lev.max()):.2f}  (levers up when calm, unlevered in stress). Validated.")
 
 
 if __name__ == "__main__":

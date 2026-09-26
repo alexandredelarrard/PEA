@@ -18,6 +18,7 @@ point of carrying it here is that the screen must leave it alone. The 44 repaire
 80 underpriced ones are identified by (accession, security_type, transaction_sk), so a row that
 leaves the table is distinguishable from a row whose repair verdict changed.
 """
+
 from __future__ import annotations
 
 import sys
@@ -32,10 +33,22 @@ from src.data_store.schema import Tables
 CONFIG_DIR = "./configs"
 KEYS = ["accession_number", "security_type", "transaction_sk"]
 #: Everything `clean_transactions` reads, plus the PK so a repair can be traced to a row.
-_REPAIR_COLS = KEYS + ["ticker", "filing_date", "transaction_date", "transaction_code",
-                       "security_type", "security_title", "shares", "price_per_share",
-                       "value_usd", "officer_title", "is_director", "is_officer",
-                       "is_ten_pct_owner", "is_10b5_1"]
+_REPAIR_COLS = KEYS + [
+    "ticker",
+    "filing_date",
+    "transaction_date",
+    "transaction_code",
+    "security_type",
+    "security_title",
+    "shares",
+    "price_per_share",
+    "value_usd",
+    "officer_title",
+    "is_director",
+    "is_officer",
+    "is_ten_pct_owner",
+    "is_10b5_1",
+]
 
 
 def _out_dir() -> Path:
@@ -43,19 +56,19 @@ def _out_dir() -> Path:
 
 
 def _paths(out: Path) -> dict[str, Path]:
-    return {"main": out / "insider_prescreen_snapshot.csv",
-            "ticker": out / "insider_prescreen_by_ticker.csv",
-            "quarter": out / "insider_prescreen_by_quarter.csv",
-            "repair": out / "insider_prescreen_repairs.csv"}
+    return {
+        "main": out / "insider_prescreen_snapshot.csv",
+        "ticker": out / "insider_prescreen_by_ticker.csv",
+        "quarter": out / "insider_prescreen_by_quarter.csv",
+        "repair": out / "insider_prescreen_repairs.csv",
+    }
 
 
 def _measure(store) -> dict:
     """Read the table once and derive every snapshot axis from that one read."""
-    df = store.load(Tables.insider_transactions,
-                    columns=sorted(set(_REPAIR_COLS + ["quarter"])))
+    df = store.load(Tables.insider_transactions, columns=sorted(set(_REPAIR_COLS + ["quarter"])))
     repaired, diag = clean_transactions(df)
-    repairs = (repaired.loc[repaired["price_repaired"], KEYS]
-               .assign(kind="price_repaired"))
+    repairs = repaired.loc[repaired["price_repaired"], KEYS].assign(kind="price_repaired")
     return {
         "total": len(df),
         "accessions": df["accession_number"].nunique(),
@@ -76,18 +89,25 @@ def take_before() -> None:
         raise SystemExit(
             f"{paths['main']} already exists. A second `before` would snapshot the "
             "POST-screen table and the gate would then pass against itself. Delete it "
-            "deliberately if you really are re-baselining.")
+            "deliberately if you really are re-baselining."
+        )
 
     m = _measure(context.store)
     m["by_ticker"].to_csv(paths["ticker"])
     m["by_quarter"].to_csv(paths["quarter"])
     m["repairs"].to_csv(paths["repair"], index=False)
-    pd.DataFrame([{"metric": k, "value": v} for k, v in [
-        ("total_rows", m["total"]), ("distinct_accessions", m["accessions"]),
-        ("distinct_tickers", m["tickers"]),
-        *((f"diag_{k}", v) for k, v in m["diag"].items()),
-        ("taken_at", pd.Timestamp.now().isoformat()),
-    ]]).to_csv(paths["main"], index=False)
+    pd.DataFrame(
+        [
+            {"metric": k, "value": v}
+            for k, v in [
+                ("total_rows", m["total"]),
+                ("distinct_accessions", m["accessions"]),
+                ("distinct_tickers", m["tickers"]),
+                *((f"diag_{k}", v) for k, v in m["diag"].items()),
+                ("taken_at", pd.Timestamp.now().isoformat()),
+            ]
+        ]
+    ).to_csv(paths["main"], index=False)
 
     print("\n=== PRE-SCREEN SNAPSHOT ===")
     print(f"  total rows          {m['total']:>12,}")
@@ -112,25 +132,19 @@ def show_after() -> None:
 
     total_before = int(before["total_rows"])
     print("\n=== POST-SCREEN DIFF ===")
-    print(f"  rows  {total_before:,} -> {m['total']:,}  "
-          f"({m['total'] - total_before:+,})")
+    print(f"  rows  {total_before:,} -> {m['total']:,}  ({m['total'] - total_before:+,})")
 
-    quarantine = context.store.load(Tables.insider_transactions_quarantine,
-                                    columns=["reject_reason"], optional=True)
+    quarantine = context.store.load(Tables.insider_transactions_quarantine, columns=["reject_reason"], optional=True)
     if quarantine is not None and not quarantine.empty:
         print(f"\n  quarantined {len(quarantine):,} row(s):")
-        print(quarantine["reject_reason"].value_counts().to_string()
-              .replace("\n", "\n    ").rjust(0))
+        print(quarantine["reject_reason"].value_counts().to_string().replace("\n", "\n    ").rjust(0))
 
-    moved = (pd.concat([b_ticker.rename("before"), m["by_ticker"].rename("after")], axis=1)
-             .fillna(0).astype(int))
-    moved = moved[moved["before"] != moved["after"]].assign(
-        delta=lambda d: d["after"] - d["before"]).sort_values("delta")
+    moved = pd.concat([b_ticker.rename("before"), m["by_ticker"].rename("after")], axis=1).fillna(0).astype(int)
+    moved = moved[moved["before"] != moved["after"]].assign(delta=lambda d: d["after"] - d["before"]).sort_values("delta")
     print(f"\n  {len(moved)} ticker(s) moved, {len(b_ticker) - len(moved)} unchanged:")
     print("    " + moved.to_string().replace("\n", "\n    "))
 
-    q = (pd.concat([b_quarter.rename("before"), m["by_quarter"].rename("after")], axis=1)
-         .fillna(0).astype(int))
+    q = pd.concat([b_quarter.rename("before"), m["by_quarter"].rename("after")], axis=1).fillna(0).astype(int)
     q = q[q["before"] != q["after"]]
     print(f"\n  {len(q)} of {len(b_quarter)} quarter(s) moved")
 
@@ -138,14 +152,13 @@ def show_after() -> None:
     a_repairs = m["repairs"].astype(str)
     b_keys = set(map(tuple, b_repairs[KEYS].to_numpy()))
     a_keys = set(map(tuple, a_repairs[KEYS].to_numpy()))
-    print(f"\n  price repairs {len(b_keys)} -> {len(a_keys)}; "
-          f"{len(b_keys & a_keys)} identical, {len(b_keys - a_keys)} gone, "
-          f"{len(a_keys - b_keys)} new")
+    print(
+        f"\n  price repairs {len(b_keys)} -> {len(a_keys)}; {len(b_keys & a_keys)} identical, {len(b_keys - a_keys)} gone, {len(a_keys - b_keys)} new"
+    )
     if b_keys - a_keys:
         print("    gone: " + ", ".join(f"{k[0]}/{k[2]}" for k in sorted(b_keys - a_keys)[:10]))
     for key in ("underpriced_rows", "value_before", "value_after", "scoped_rows"):
-        print(f"  {key:<18} {float(before[f'diag_{key}']):>20,.0f} -> "
-              f"{float(m['diag'][key]):>20,.0f}")
+        print(f"  {key:<18} {float(before[f'diag_{key}']):>20,.0f} -> {float(m['diag'][key]):>20,.0f}")
 
 
 if __name__ == "__main__":

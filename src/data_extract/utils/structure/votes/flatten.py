@@ -8,6 +8,7 @@ election collapsed to a single row carrying per-role-category vote columns.
 `(rows, numeric, pk)`, this one takes `(rows)` and keys on `Tables.sec_8k_votes.pk`.
 Unifying them would be a logic change, not a move.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,12 +18,17 @@ import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.schemas.vote_schema import (
-    Item507Extract, PROPOSAL_TYPES, VOTE_STANDARDS,
+    PROPOSAL_TYPES,
+    VOTE_STANDARDS,
+    Item507Extract,
 )
 from src.data_extract.utils.structure.def14a.gender import person_key
-from src.data_extract.utils.structure.def14a.validate import clean_person_name, clean_text
+from src.data_extract.utils.structure.def14a.validate import clean_text
 from src.data_extract.utils.structure.votes.guard import (
-    _grounded_nominees, _is_grounded, _VOTE_FIELDS, mentions_preliminary,
+    _VOTE_FIELDS,
+    _grounded_nominees,
+    _is_grounded,
+    mentions_preliminary,
 )
 from src.data_store.schema import Tables
 
@@ -46,7 +52,8 @@ _NOMINEE_SUM_RTOL = 0.005
 #: `Stockholder Proposal #1`, and the glued-on-title forms handled below.
 _LABEL_NOISE_RE = re.compile(
     r"^(?:proposals|proposal|stockholders|stockholder|shareholders|shareholder|items|item|"
-    r"matters|matter|no)\b\.?\s*")
+    r"matters|matter|no)\b\.?\s*"
+)
 _LABEL_PUNCT = "().,;:#–—- "
 
 #: `4a` and `4b` are DIFFERENT proposals (Abbott 2021 split one bye-law amendment in two;
@@ -62,15 +69,16 @@ _LETTER_LABEL_RE = re.compile(r"^([a-z])$")
 _LABEL_TITLE_SEP_RE = re.compile(r"\s*[-–—:]\s*")
 
 _NUMBER_WORDS = {
-    w: str(i) for i, w in enumerate(
-        ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-         "eleven", "twelve"), start=1)
+    w: str(i) for i, w in enumerate(("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"), start=1)
 }
-_NUMBER_WORDS.update({
-    w: str(i) for i, w in enumerate(
-        ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
-         "ninth", "tenth", "eleventh", "twelfth"), start=1)
-})
+_NUMBER_WORDS.update(
+    {
+        w: str(i)
+        for i, w in enumerate(
+            ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth"), start=1
+        )
+    }
+)
 
 
 def _as_ordinal(label: str) -> str | None:
@@ -140,27 +148,23 @@ def _clean_proposal_number(value: object) -> str | None:
     return cleaned
 
 
-
 _DIRECTOR_COLS = tuple(
     [f"n_nominees_{c}" for c in _ROLE_CATEGORIES]
     + [f"{f}_{c}" for c in _ROLE_CATEGORIES for f in _VOTE_FIELDS]
-    + ["exec_officer_titles", "n_nominees", "min_support_pct", "min_support_name",
-       "n_nominees_below_70pct"]
+    + ["exec_officer_titles", "n_nominees", "min_support_pct", "min_support_name", "n_nominees_below_70pct"]
 )
 
 #: Columns coerced to numeric before the save. Must cover every vote column: a `None` in
 #: an otherwise-float column arrives as `object` dtype and Postgres would take the column
 #: as TEXT on a first-run CREATE.
 _NUMERIC_COLS = (
-    ("proposal_seq", "is_amendment", "mentions_preliminary", "is_preliminary_stated",
-     "nominee_sum_matches")
+    ("proposal_seq", "is_amendment", "mentions_preliminary", "is_preliminary_stated", "nominee_sum_matches")
     + _VOTE_FIELDS
     + tuple(c for c in _DIRECTOR_COLS if c not in ("exec_officer_titles", "min_support_name"))
 )
 
 
-def _director_columns(nominees: list[dict], roles: dict[str, str],
-                      titles: dict[str, str]) -> dict:
+def _director_columns(nominees: list[dict], roles: dict[str, str], titles: dict[str, str]) -> dict:
     """The 20 per-category vote columns + the support summary, for one election row.
 
     NULL on every non-director row (~85% of the table). That is the shape you asked for:
@@ -180,22 +184,20 @@ def _director_columns(nominees: list[dict], roles: dict[str, str],
             vals = [n[f] for n in bucket if n.get(f) is not None]
             row[f"{f}_{cat}"] = float(sum(vals)) if vals else None
 
-    exec_titles = sorted({titles[k] for k in
-                          (person_key(n["name"]) for n in nominees)
-                          if k in titles and roles.get(k) == "exec_officer"})
+    exec_titles = sorted({titles[k] for k in (person_key(n["name"]) for n in nominees) if k in titles and roles.get(k) == "exec_officer"})
     row["exec_officer_titles"] = " | ".join(exec_titles) or None
     row["n_nominees"] = float(len(nominees))
 
-    support = [(n["votes_for"] / (n["votes_for"] + n["votes_against"]), n["name"])
-               for n in nominees
-               if n.get("votes_for") is not None and n.get("votes_against") is not None
-               and (n["votes_for"] + n["votes_against"]) > 0]
+    support = [
+        (n["votes_for"] / (n["votes_for"] + n["votes_against"]), n["name"])
+        for n in nominees
+        if n.get("votes_for") is not None and n.get("votes_against") is not None and (n["votes_for"] + n["votes_against"]) > 0
+    ]
     if support:
         worst = min(support)
         row["min_support_pct"] = float(worst[0])
         row["min_support_name"] = worst[1]
-        row["n_nominees_below_70pct"] = float(
-            sum(1 for pct, _ in support if pct < _LOW_SUPPORT_THRESHOLD))
+        row["n_nominees_below_70pct"] = float(sum(1 for pct, _ in support if pct < _LOW_SUPPORT_THRESHOLD))
     else:
         row["min_support_pct"] = None
         row["min_support_name"] = None
@@ -211,18 +213,16 @@ def _nominee_sum_matches(nominees: list[dict]) -> float | None:
     and holds on 91% -- which makes it a useful monitor and a bad gate, so it is stored
     and never acted on. None when fewer than two nominees carry a complete set.
     """
-    totals = [sum(n[f] for f in _VOTE_FIELDS)
-              for n in nominees
-              if all(n.get(f) is not None for f in _VOTE_FIELDS)]
+    totals = [sum(n[f] for f in _VOTE_FIELDS) for n in nominees if all(n.get(f) is not None for f in _VOTE_FIELDS)]
     if len(totals) < 2:
         return None
     lo, hi = min(totals), max(totals)
     return 1.0 if hi - lo <= _NOMINEE_SUM_RTOL * hi else 0.0
 
 
-def _proposal_rows(ticker: str, filing: pd.Series, extract: Item507Extract, text: str,
-                   roles: dict[str, str],
-                   titles: dict[str, str]) -> tuple[list[dict], int]:
+def _proposal_rows(
+    ticker: str, filing: pd.Series, extract: Item507Extract, text: str, roles: dict[str, str], titles: dict[str, str]
+) -> tuple[list[dict], int]:
     """`(rows, guard rejections)` for one filing. One row per proposal, `proposal_seq`
     1-based in the filing's own order.
 
@@ -292,22 +292,19 @@ def _proposal_rows(ticker: str, filing: pd.Series, extract: Item507Extract, text
             "meeting_date": clean_text(extract.meeting_date),
             "is_amendment": filing.get("is_amendment"),
             "mentions_preliminary": 1.0 if preliminary else 0.0,
-            "is_preliminary_stated": (None if extract.is_preliminary is None
-                                      else float(bool(extract.is_preliminary))),
+            "is_preliminary_stated": (None if extract.is_preliminary is None else float(bool(extract.is_preliminary))),
             "proposal_number": _clean_proposal_number(p.proposal_number),
             "proposal_type": ptype,
             "description": description,
             "vote_standard": standard if standard in VOTE_STANDARDS else None,
             **proposal_votes,
-            "nominee_sum_matches": (_nominee_sum_matches(nominees) if is_election
-                                    else None),
+            "nominee_sum_matches": (_nominee_sum_matches(nominees) if is_election else None),
             "nominee_votes_json": json.dumps(nominees) if nominees else None,
         }
         # The 20 category columns exist on every row so the DDL is one shape; they are
         # NULL off an election row rather than 0, because "no nominees in this bucket"
         # and "this proposal has no nominees" are different statements.
-        row.update(_director_columns(nominees, roles, titles) if is_election
-                   else {c: None for c in _DIRECTOR_COLS})
+        row.update(_director_columns(nominees, roles, titles) if is_election else {c: None for c in _DIRECTOR_COLS})
         rows.append(row)
     return rows, rejected
 
@@ -317,6 +314,7 @@ def _proposal_rows(ticker: str, filing: pd.Series, extract: Item507Extract, text
 #: finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the
 #: 333-filing baseline is 17,032 chars), so the per-call latency is lower -- but there are
 
+
 def _prepare_frame(rows: list[dict]) -> pd.DataFrame:
     """Rows -> a save-ready frame: numeric columns coerced, NULs stripped, duplicates
     collapsed on the table's own primary key."""
@@ -324,9 +322,8 @@ def _prepare_frame(rows: list[dict]) -> pd.DataFrame:
     for c in _NUMERIC_COLS:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = strip_nul(df)                          # Postgres TEXT rejects NUL (\x00)
+    df = strip_nul(df)  # Postgres TEXT rejects NUL (\x00)
     for c in ("filing_date", "period_of_report", "meeting_date"):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df.drop_duplicates(subset=list(Tables.sec_8k_votes.pk), keep="last")
-

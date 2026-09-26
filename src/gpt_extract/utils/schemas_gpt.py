@@ -7,10 +7,11 @@ The caller passes the schema CLASS it wants filled -- there is no string registr
 in sync with the schemas, and therefore no way for a caller to name a schema that does not
 exist.
 """
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from pydantic import BaseModel
 

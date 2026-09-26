@@ -25,12 +25,13 @@ split-triggered price re-pull in `fetch_prices`, and the prices validator.
 from __future__ import annotations
 
 import logging
+
 import pandas as pd
 
 from src.context import Context
-from src.data_store.schema import Tables
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.prices.fetch_prices import download_ohlcv
+from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
@@ -92,23 +93,21 @@ def fetch_splits(
         since = today - pd.DateOffset(years=years_history)
     else:
         last = context.store.max_date(Tables.prices_splits)
-        since = (today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS) if last is None
-                 else min(pd.Timestamp(last),
-                          today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS)))
+        since = (
+            today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS)
+            if last is None
+            else min(pd.Timestamp(last), today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS))
+        )
 
     logger.info("Downloading splits for %d tickers since %s", len(tickers), since.date())
-    df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause,
-                                   desc="Downloading splits",
-                                   auto_adjust=False, actions=True)
+    df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause, desc="Downloading splits", auto_adjust=False, actions=True)
     df_splits = _extract_splits(df_downloaded)
 
     if df_splits.empty:
-        logger.warning("no split events returned -- leaving DB table '%s' untouched",
-                       Tables.prices_splits)
+        logger.warning("no split events returned -- leaving DB table '%s' untouched", Tables.prices_splits)
         record_run(context, Tables.prices_splits, len(tickers), 0)
         return
 
     n = context.store.save(Tables.prices_splits, df_splits)
-    logger.info("Saved %d split rows to DB table '%s' (%d distinct tickers)",
-                n, Tables.prices_splits, df_splits["ticker"].nunique())
+    logger.info("Saved %d split rows to DB table '%s' (%d distinct tickers)", n, Tables.prices_splits, df_splits["ticker"].nunique())
     record_run(context, Tables.prices_splits, len(tickers), n)

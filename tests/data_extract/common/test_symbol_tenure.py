@@ -153,7 +153,7 @@ def test_overlapping_tenures_survive_as_two_rows(tmp_path):
 
     print("\n=== SANITY CHECK: overlapping tenures ===")
     for row in out.itertuples():
-        print(f"  ZZZ {row.issuer_cik} {row.valid_from.date()} .. " f"{'open' if pd.isna(row.valid_to) else row.valid_to.date()}  n={row.n_filings}")
+        print(f"  ZZZ {row.issuer_cik} {row.valid_from.date()} .. {'open' if pd.isna(row.valid_to) else row.valid_to.date()}  n={row.n_filings}")
     print("  OK: Both CIKs kept; neither window was truncated by the other")
     print("  -> Resolution stays a membership test, never a single-answer lookup.")
 
@@ -473,7 +473,7 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
         old = rows[rows["symbol"].eq(old_symbol) & rows["issuer_cik"].eq(old_cik) & rows["valid_to"].eq(stamp)]
         new = rows[rows["symbol"].eq(new_symbol) & rows["issuer_cik"].eq(new_cik) & rows["valid_from"].eq(stamp)]
         assert len(old) == 1 and len(new) == 1, (
-            f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> " f"{new_symbol}/{new_cik} transition at {boundary}"
+            f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> {new_symbol}/{new_cik} transition at {boundary}"
         )
 
     print("\n=== SANITY CHECK: repository IA-3 manual boundaries ===")
@@ -511,7 +511,7 @@ def test_real_cache_reproduces_the_measured_reuse_cases(real_tenure):
         print(f"  {symbol}: {len(rows)} issuer CIK(s)")
         for row in rows.itertuples():
             end = "open" if pd.isna(row.valid_to) else str(row.valid_to.date())
-            print(f"     {row.issuer_cik}  {row.valid_from.date()} .. {end:>10}  " f"n={row.n_filings:>5d}  {row.evidence}")
+            print(f"     {row.issuer_cik}  {row.valid_from.date()} .. {end:>10}  n={row.n_filings:>5d}  {row.evidence}")
     print("  OK: Every reuse the plan names is present, with its own dated window")
     print("  -> Symbol-first ticker resolution would import all of these as one company.")
 
@@ -528,7 +528,7 @@ def test_real_cache_scale_and_determinism(real_tenure):
     assert real_tenure.equals(derive_symbol_tenure(CACHE))
 
     print("\n=== SANITY CHECK: real cache scale ===")
-    print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  " f"multi-CIK symbols={multi} ({share:.1%})")
+    print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  multi-CIK symbols={multi} ({share:.1%})")
     print(f"  open tenures={int(real_tenure['valid_to'].isna().sum())}")
     print("  OK: Re-deriving the same cache reproduces the table exactly")
     print("  -> ~1 symbol in 11 has had more than one issuer; reuse is not a long tail.")

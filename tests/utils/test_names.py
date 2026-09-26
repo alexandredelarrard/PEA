@@ -9,6 +9,7 @@ stored role-category columns, so these assertions are a contract, not a preferen
 The last test pins the key's known CEILING on purpose. A limitation that is asserted stays
 documented; one that is merely known gets rediscovered as a bug.
 """
+
 from __future__ import annotations
 
 from src.utils.names import clean_person_name, person_key
@@ -19,10 +20,10 @@ def test_the_measured_spelling_drifts_all_reconcile():
     drifts = {
         # AAPL printed THREE spellings of one CEO across consecutive proxies
         "AAPL": ["Timothy D. Cook", "Timothy Cook", "Tim Cook"],
-        "ADI": ["Vincent T. Roche", "Vincent Roche"],            # middle initial dropped
-        "ADM_1": ["G. Allen Andreas", "G. A. Andreas"],          # first name <-> initial, twice
-        "ADM_2": ["Juan R. Luciano", "J. R. LUCIANO"],           # first name -> initial AND case
-        "AEE": ["Charles W. Mueller", "C. W. Mueller"],          # first name -> initial
+        "ADI": ["Vincent T. Roche", "Vincent Roche"],  # middle initial dropped
+        "ADM_1": ["G. Allen Andreas", "G. A. Andreas"],  # first name <-> initial, twice
+        "ADM_2": ["Juan R. Luciano", "J. R. LUCIANO"],  # first name -> initial AND case
+        "AEE": ["Charles W. Mueller", "C. W. Mueller"],  # first name -> initial
     }
     for ticker, spellings in drifts.items():
         keys = {person_key(s) for s in spellings}
@@ -31,9 +32,11 @@ def test_the_measured_spelling_drifts_all_reconcile():
     print("\n=== SANITY CHECK: measured spelling drifts ===")
     for ticker, spellings in drifts.items():
         print(f"  {ticker:<6} {' | '.join(spellings):<55} -> {person_key(spellings[0])}")
-    print("  CONCLUSION: all five archive drifts collapse to one key each -- middle tokens are "
-          "ignored structurally (last token + first initial), so case flips and first-name/initial "
-          "swaps reconcile with no rule of their own. Validated.")
+    print(
+        "  CONCLUSION: all five archive drifts collapse to one key each -- middle tokens are "
+        "ignored structurally (last token + first initial), so case flips and first-name/initial "
+        "swaps reconcile with no rule of their own. Validated."
+    )
 
 
 def test_suffixes_and_footnotes_do_not_split_a_person():
@@ -46,8 +49,8 @@ def test_suffixes_and_footnotes_do_not_split_a_person():
         ("Harry A. Lawton III", "Harry Lawton"),
         ("H. Lawrence Culp, Jr.", "H. Lawrence Culp"),
         ("Albert Bourla, DVM, Ph.D.", "A. Bourla"),
-        ("Emma N. Walmsley11", "Emma Walmsley"),          # footnote glued to the surname
-        ("Katherine J. Smith", "Kathy Smith"),            # the docstring's own case
+        ("Emma N. Walmsley11", "Emma Walmsley"),  # footnote glued to the surname
+        ("Katherine J. Smith", "Kathy Smith"),  # the docstring's own case
     ]
     for full, short in pairs:
         assert person_key(full) == person_key(short), f"{full!r} != {short!r}"
@@ -56,8 +59,10 @@ def test_suffixes_and_footnotes_do_not_split_a_person():
     print("\n=== SANITY CHECK: suffixes, post-nominals, footnotes ===")
     for full, short in pairs:
         print(f"  {full:<28} == {short:<20} -> {person_key(full)}")
-    print("  CONCLUSION: suffixes and footnote markers are stripped before keying, so evidence "
-          "for one person is never split across two keys. Validated.")
+    print(
+        "  CONCLUSION: suffixes and footnote markers are stripped before keying, so evidence "
+        "for one person is never split across two keys. Validated."
+    )
 
 
 def test_distinct_people_stay_distinct():
@@ -75,8 +80,10 @@ def test_distinct_people_stay_distinct():
     print(f"  cook|t vs cash|t: {person_key('Tim Cook')} != {person_key('Tim Cash')}")
     print(f"  real ACGL turnover: {person_key('Mark D. Mosca')} != {person_key('Peter A. Appel')}")
     print(f"  None / '' / '   ' -> {person_key(None)}, {person_key('')}, {person_key('   ')}")
-    print("  CONCLUSION: distinct people keep distinct keys and an unusable cell keys to None "
-          "(UNKNOWN), never to a sentinel two rows could match on. Validated.")
+    print(
+        "  CONCLUSION: distinct people keep distinct keys and an unusable cell keys to None "
+        "(UNKNOWN), never to a sentinel two rows could match on. Validated."
+    )
 
 
 def test_nickname_with_a_different_initial_is_a_known_ceiling():
@@ -92,14 +99,14 @@ def test_nickname_with_a_different_initial_is_a_known_ceiling():
     assert person_key("Bill Gates") != person_key("William Gates")
 
     print("\n=== SANITY CHECK: the key's known ceiling ===")
-    print(f"  'Bob Smith' -> {person_key('Bob Smith')}   vs  'Robert Smith' -> "
-          f"{person_key('Robert Smith')}")
-    print(f"  'Bill Gates' -> {person_key('Bill Gates')}  vs  'William Gates' -> "
-          f"{person_key('William Gates')}")
-    print("  CONCLUSION: a nickname with a DIFFERENT first initial does not reconcile. This is a "
-          "documented limit of `lastname|firstinitial`, pinned here so it is not rediscovered as "
-          "a defect -- and so that changing it is a deliberate act, since the key's output is "
-          "stored in sec_8k_votes' role-category columns. Validated.")
+    print(f"  'Bob Smith' -> {person_key('Bob Smith')}   vs  'Robert Smith' -> {person_key('Robert Smith')}")
+    print(f"  'Bill Gates' -> {person_key('Bill Gates')}  vs  'William Gates' -> {person_key('William Gates')}")
+    print(
+        "  CONCLUSION: a nickname with a DIFFERENT first initial does not reconcile. This is a "
+        "documented limit of `lastname|firstinitial`, pinned here so it is not rediscovered as "
+        "a defect -- and so that changing it is a deliberate act, since the key's output is "
+        "stored in sec_8k_votes' role-category columns. Validated."
+    )
 
 
 if __name__ == "__main__":

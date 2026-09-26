@@ -9,6 +9,7 @@ Parsing financial statements out of an attached earnings release is deliberately
 out of scope -- it would store unstandardized figures competing with
 `fundamentals_facts`.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -18,13 +19,29 @@ import pandas as pd
 from src.constants.constants import SEC_8K_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
-    filed_by, new_filings, period_of_report, run_edgar_fetch,
+    filed_by,
+    new_filings,
+    period_of_report,
+    run_edgar_fetch,
 )
 from src.data_store.schema import Table, Tables
 
-_COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
-        "n_items", "is_amendment", "has_earnings", "has_press_release",
-        "primary_document", "item", "item_tag", "item_text"]
+_COLS = [
+    "ticker",
+    "cik",
+    "accession_number",
+    "form",
+    "filing_date",
+    "period_of_report",
+    "n_items",
+    "is_amendment",
+    "has_earnings",
+    "has_press_release",
+    "primary_document",
+    "item",
+    "item_tag",
+    "item_text",
+]
 
 # Curated leading distress/governance codes for the feature layer; any other code is
 # tagged `other_unclassified_item` rather than dropped.
@@ -93,7 +110,7 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
         obj = filing.obj()
         has_earnings = float(bool(obj.has_earnings))
         has_press_release = float(bool(obj.has_press_release))
-    except Exception:                                   # noqa: BLE001 -- best-effort only
+    except Exception:  # noqa: BLE001 -- best-effort only
         pass
 
     base = {
@@ -119,21 +136,22 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
         if obj is not None:
             try:
                 item_text = obj["Item " + item_code]
-            except Exception:                           # noqa: BLE001 -- best-effort only
+            except Exception:  # noqa: BLE001 -- best-effort only
                 item_text = None
-        rows.append({**base,
-                     "item": item_code,
-                     "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"),
-                     "item_text": item_text or ""})
+        rows.append(
+            {**base, "item": item_code, "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"), "item_text": item_text or ""}
+        )
     return rows
 
 
-def build_ticker_8k_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                          done_accessions: frozenset[str] = frozenset(),
-                          ) -> dict[Table, pd.DataFrame]:
-    rows = itertools.chain.from_iterable(
-        _filing_row(ticker, cik, f)
-        for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
+def build_ticker_8k_edgar(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+) -> dict[Table, pd.DataFrame]:
+    rows = itertools.chain.from_iterable(_filing_row(ticker, cik, f) for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
     df = pd.DataFrame(list(rows), columns=_COLS)
     # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
     # would make the upsert touch one PK row twice, which Postgres rejects outright.
@@ -141,6 +159,4 @@ def build_ticker_8k_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None =
 
 
 def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history,
-                    tables=(Tables.sec_8k,), build=build_ticker_8k_edgar,
-                    desc="8-K (edgartools)")
+    run_edgar_fetch(context, tickers, years_history, tables=(Tables.sec_8k,), build=build_ticker_8k_edgar, desc="8-K (edgartools)")

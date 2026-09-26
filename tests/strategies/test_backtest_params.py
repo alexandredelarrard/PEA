@@ -5,6 +5,7 @@ Motivated by "the params seem to have no effect": these lock in that each knob
 changes the traded book, and that pos_cap is now enforced on the FINAL weights
 (vol targeting used to be able to scale a name back above the cap).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -25,14 +26,24 @@ def _synth(seed: int = 0, T: int = 300, N: int = 60):
     spy_ret = pd.Series(mkt, index=dates)
     sig = np.full((T, N), np.nan)
     for t in range(T - 1):
-        sig[t] = idio[t + 1] + rng.normal(0, 0.02, N)   # noisy predictor of next idio
+        sig[t] = idio[t + 1] + rng.normal(0, 0.02, N)  # noisy predictor of next idio
     return pd.DataFrame(sig, index=dates, columns=tickers), stock_ret, spy_ret
 
 
 _SIG, _STK, _SPY = _synth()
-_BASE = dict(starting_capital=1e6, market_weight=0.0, target_ann_vol=0.08,
-             beta_neutral=True, pos_cap=0.05, gross_cap=5.0, step=0.35,
-             beta_window=63, vol_window=63, fee_bps=1.0, spread_bps=5.0)
+_BASE = dict(
+    starting_capital=1e6,
+    market_weight=0.0,
+    target_ann_vol=0.08,
+    beta_neutral=True,
+    pos_cap=0.05,
+    gross_cap=5.0,
+    step=0.35,
+    beta_window=63,
+    vol_window=63,
+    fee_bps=1.0,
+    spread_bps=5.0,
+)
 
 
 def _run(**over):
@@ -48,8 +59,10 @@ def test_diagnostic_columns_present():
     for col in ("alpha_ret", "mkt_ret", "alpha_gross", "alpha_max_w"):
         assert col in d.columns, f"missing sleeve-diagnostic column {col}"
     print("\n=== SANITY CHECK: sleeve diagnostics present ===")
-    print(f"  columns include alpha_ret/mkt_ret/alpha_gross/alpha_max_w -> "
-          f"avg alpha gross={d['alpha_gross'].mean():.2f}, avg max|w|={d['alpha_max_w'].mean():.3f}")
+    print(
+        f"  columns include alpha_ret/mkt_ret/alpha_gross/alpha_max_w -> "
+        f"avg alpha gross={d['alpha_gross'].mean():.2f}, avg max|w|={d['alpha_max_w'].mean():.3f}"
+    )
 
 
 def test_each_construction_param_moves_the_book():
@@ -71,12 +84,13 @@ def test_each_construction_param_moves_the_book():
     assert _run(target_ann_vol=0.16, gross_cap=0.3)["alpha_gross"].mean() < 0.35
 
     # beta_neutral: toggling changes the weights -> different P&L
-    assert not np.allclose(_run(beta_neutral=False)["net_ret"].to_numpy(),
-                           base["net_ret"].to_numpy())
+    assert not np.allclose(_run(beta_neutral=False)["net_ret"].to_numpy(), base["net_ret"].to_numpy())
 
     print("\n=== SANITY CHECK: every construction param moves the book ===")
-    print(f"  target_ann_vol 0.08->0.16: alpha vol {_alpha_vol(lo):.3f}->{_alpha_vol(hi):.3f}; "
-          f"step 0.35->1.0 turnover {to0:.3f}->{_run(step=1.0)['turnover'].mean():.3f}")
+    print(
+        f"  target_ann_vol 0.08->0.16: alpha vol {_alpha_vol(lo):.3f}->{_alpha_vol(hi):.3f}; "
+        f"step 0.35->1.0 turnover {to0:.3f}->{_run(step=1.0)['turnover'].mean():.3f}"
+    )
     print("  gross_cap=0.3 caps gross; beta_neutral toggles the P&L -> all active. Validated.")
 
 
@@ -92,8 +106,10 @@ def test_pos_cap_binds_on_final_weights():
     assert tight < loose
 
     print("\n=== SANITY CHECK: pos_cap enforced on final weights ===")
-    print(f"  avg max|w|: pos_cap=0.5 -> {loose:.3f} (slack); pos_cap=0.01 -> {tight:.4f} "
-          f"(binds ~0.01). Cap now applies AFTER vol targeting. Validated.")
+    print(
+        f"  avg max|w|: pos_cap=0.5 -> {loose:.3f} (slack); pos_cap=0.01 -> {tight:.4f} "
+        f"(binds ~0.01). Cap now applies AFTER vol targeting. Validated."
+    )
 
 
 def test_realized_risk_is_frequency_invariant():
@@ -103,11 +119,10 @@ def test_realized_risk_is_frequency_invariant():
     carried ~44% of the intended gross -> it looked like it barely traded. The fix
     risk-targets the ACTUALLY-HELD book each day, making realized risk frequency-
     invariant while turnover still falls with less-frequent rebalancing."""
+
     def _stats(freq):
         d = _run(target_ann_vol=0.08, rebalance_freq=freq)
-        return (float(d["alpha_gross"].mean()),
-                float(d["alpha_ret"].std() * np.sqrt(252)),
-                float(d["turnover"].mean()))
+        return (float(d["alpha_gross"].mean()), float(d["alpha_ret"].std() * np.sqrt(252)), float(d["turnover"].mean()))
 
     g1, v1, to1 = _stats(1)
     g63, v63, to63 = _stats(63)
@@ -123,9 +138,11 @@ def test_realized_risk_is_frequency_invariant():
     print("\n=== SANITY CHECK: realized risk is rebalance-frequency invariant ===")
     print(f"  market_weight=0: freq=1 -> gross {g1:.2f}, alpha_vol {v1:.3f}, turnover {to1:.3f}")
     print(f"                   freq=63-> gross {g63:.2f}, alpha_vol {v63:.3f}, turnover {to63:.3f}")
-    print(f"  book gross ratio freq1/freq63 = {g1/g63:.2f} (was ~0.44 before the fix); "
-          f"realized vol tracks the 0.08 target at both. The alpha sleeve no longer "
-          f"goes inert at daily rebalancing when market_weight=0. Validated.")
+    print(
+        f"  book gross ratio freq1/freq63 = {g1 / g63:.2f} (was ~0.44 before the fix); "
+        f"realized vol tracks the 0.08 target at both. The alpha sleeve no longer "
+        f"goes inert at daily rebalancing when market_weight=0. Validated."
+    )
 
 
 def test_degenerate_signal_warns(caplog=None):
@@ -133,11 +150,11 @@ def test_degenerate_signal_warns(caplog=None):
     with market_weight=0 the whole portfolio is inert. The engine must WARN
     rather than silently return a flat curve."""
     import logging
+
     T, N = 120, 40
     dates = pd.bdate_range("2020-01-01", periods=T)
     tickers = [f"T{i:02d}" for i in range(N)]
-    stock_ret = pd.DataFrame(np.random.default_rng(0).normal(0, 0.01, (T, N)),
-                             index=dates, columns=tickers)
+    stock_ret = pd.DataFrame(np.random.default_rng(0).normal(0, 0.01, (T, N)), index=dates, columns=tickers)
     spy_ret = pd.Series(np.random.default_rng(1).normal(0, 0.01, T), index=dates)
     flat_sig = pd.DataFrame(1.0, index=dates, columns=tickers)  # zero dispersion
 
@@ -145,18 +162,20 @@ def test_degenerate_signal_warns(caplog=None):
     records = []
     handler = logging.Handler()
     handler.emit = lambda r: records.append(r.getMessage())
-    logger.addHandler(handler); logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
     try:
-        d = simulate_portfolio_opt(flat_sig, stock_ret, spy_ret, market_weight=0.0,
-                                   target_ann_vol=0.08, beta_neutral=True, pos_cap=0.05,
-                                   gross_cap=5.0, step=0.35)
+        d = simulate_portfolio_opt(
+            flat_sig, stock_ret, spy_ret, market_weight=0.0, target_ann_vol=0.08, beta_neutral=True, pos_cap=0.05, gross_cap=5.0, step=0.35
+        )
     finally:
         logger.removeHandler(handler)
 
     assert float(d["alpha_gross"].mean()) < 1e-6, "flat signal should give empty book"
-    assert any("never established a position" in m for m in records), \
-        "degenerate/inert alpha book must emit a warning"
+    assert any("never established a position" in m for m in records), "degenerate/inert alpha book must emit a warning"
 
     print("\n=== SANITY CHECK: degenerate signal is flagged, not silent ===")
-    print(f"  zero-dispersion signal + market_weight=0 -> avg alpha gross "
-          f"{d['alpha_gross'].mean():.2e}; engine logged the inactivity warning. Validated.")
+    print(
+        f"  zero-dispersion signal + market_weight=0 -> avg alpha gross "
+        f"{d['alpha_gross'].mean():.2e}; engine logged the inactivity warning. Validated."
+    )

@@ -31,8 +31,7 @@ Three things, no code in this package:
 
 ```python
 extractor = LLMExtractor(context, config, action="myaction")
-tasks = [LlmTask(seq=i, payload=text, schema=MySchema, table=Tables.my_table,
-                 meta={"ticker": t}) for i, (t, text) in enumerate(inputs)]
+tasks = [LlmTask(seq=i, payload=text, schema=MySchema, table=Tables.my_table, meta={"ticker": t}) for i, (t, text) in enumerate(inputs)]
 extractor.run_extraction(tasks, group_key=lambda task: str(task.meta["ticker"]))
 ```
 

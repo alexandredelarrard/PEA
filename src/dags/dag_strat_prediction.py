@@ -30,12 +30,14 @@ placed weeks ago only learns its exit price and P&L on the day it closes, so pas
 rewritten. That also makes the DAG self-healing — a missed day, or a model retrained over the
 weekend, corrects itself on the next run.
 """
+
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.bash import BashOperator
 
-PROJECT = "/opt/airflow/project"                 # the repo, bind-mounted
+from airflow import DAG
+
+PROJECT = "/opt/airflow/project"  # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
 
 default_args = {
@@ -51,12 +53,11 @@ default_args = {
 dag = DAG(
     dag_id="strat_prediction",
     default_args=default_args,
-    description="DAILY: predict the latest cube date (long-format predictions_latest) then write "
-                "the tradeable strategy ledger (`strategy`).",
-    schedule="0 6 * * *",                        # every day at 06:00, after the nightly aggregation
+    description="DAILY: predict the latest cube date (long-format predictions_latest) then write the tradeable strategy ledger (`strategy`).",
+    schedule="0 6 * * *",  # every day at 06:00, after the nightly aggregation
     start_date=datetime(2024, 1, 1),
-    catchup=False,                               # only ever the latest cube date matters
-    max_active_runs=1,                           # the ledger is a full rewrite — never concurrently
+    catchup=False,  # only ever the latest cube date matters
+    max_active_runs=1,  # the ledger is a full rewrite — never concurrently
     max_active_tasks=1,
     tags=["pea", "prediction", "strategy", "daily"],
 )

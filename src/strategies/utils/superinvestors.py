@@ -15,9 +15,11 @@ Every function here is a pure DataFrame -> DataFrame transform (unit-tested in
 `tests/strategies/test_superinvestors.py`). There is no IO: the step owns the reads, and
 the roster itself comes from `utils/superinvestor_roster.roster_as_of`.
 """
+
 from __future__ import annotations
 
 import logging
+
 import pandas as pd
 
 from src.utils.string import pad_cik
@@ -40,28 +42,34 @@ def _aggregate_insiders(df: pd.DataFrame) -> pd.DataFrame:
     code = d["transaction_code"].astype("string").str.upper().str.strip()
     is_buy, is_sell = code == "P", code == "S"
     d = d[is_buy | is_sell]
-  
+
     is_buy, is_sell = is_buy.loc[d.index], is_sell.loc[d.index]
     value = pd.to_numeric(d["value_usd"], errors="coerce").fillna(0.0)
     shares = pd.to_numeric(d["shares"], errors="coerce").fillna(0.0)
     owned_after = pd.to_numeric(d["shares_owned_after"], errors="coerce")
 
-    g = (d.assign(insider_buy_value=value.where(is_buy, 0.0),
-                  insider_sell_value=value.where(~is_buy, 0.0),
-                  insider_buy_shares=shares.where(is_buy, 0.0),
-                  insider_sell_shares=shares.where(~is_buy, 0.0),
-                  _owned_after_sell=owned_after)
-         .groupby(["ticker", "as_of"], as_index=False)
-         .agg(insider_buy_value=("insider_buy_value", "sum"),
-              insider_sell_value=("insider_sell_value", "sum"),
-              insider_buy_shares=("insider_buy_shares", "sum"),
-              insider_sell_shares=("insider_sell_shares", "sum"),
-              insider_n_transactions=("transaction_sk", "count"),
-              _owned_after_sell=("_owned_after_sell", "sum")))
+    g = (
+        d.assign(
+            insider_buy_value=value.where(is_buy, 0.0),
+            insider_sell_value=value.where(~is_buy, 0.0),
+            insider_buy_shares=shares.where(is_buy, 0.0),
+            insider_sell_shares=shares.where(~is_buy, 0.0),
+            _owned_after_sell=owned_after,
+        )
+        .groupby(["ticker", "as_of"], as_index=False)
+        .agg(
+            insider_buy_value=("insider_buy_value", "sum"),
+            insider_sell_value=("insider_sell_value", "sum"),
+            insider_buy_shares=("insider_buy_shares", "sum"),
+            insider_sell_shares=("insider_sell_shares", "sum"),
+            insider_n_transactions=("transaction_sk", "count"),
+            _owned_after_sell=("_owned_after_sell", "sum"),
+        )
+    )
     g["insider_net_value"] = g["insider_buy_value"] - g["insider_sell_value"]
 
     sell_denom = (g["_owned_after_sell"] + g["insider_sell_shares"] - g["insider_buy_shares"]).replace(0.0, pd.NA)
-    g["insider_pct_moved"] = (-1*g["insider_sell_shares"] + g["insider_buy_shares"]) / sell_denom
+    g["insider_pct_moved"] = (-1 * g["insider_sell_shares"] + g["insider_buy_shares"]) / sell_denom
     return g
 
 
@@ -70,9 +78,16 @@ def _aggregate_activist(df: pd.DataFrame) -> pd.DataFrame:
     `as_of` = filing_date, NEVER `trade_date`: a disclosed trade can be up to 60 days old
     by filing time, so keying on `trade_date` would leak the position ahead of its actual
     public disclosure."""
-    cols = ["ticker", "as_of", "activist_buy_value", "activist_sell_value",
-            "activist_net_value", "activist_buy_shares", "activist_sell_shares",
-            "activist_n_transactions"]
+    cols = [
+        "ticker",
+        "as_of",
+        "activist_buy_value",
+        "activist_sell_value",
+        "activist_net_value",
+        "activist_buy_shares",
+        "activist_sell_shares",
+        "activist_n_transactions",
+    ]
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
     d = df.copy()
@@ -83,24 +98,36 @@ def _aggregate_activist(df: pd.DataFrame) -> pd.DataFrame:
     qty = pd.to_numeric(d["quantity"], errors="coerce").fillna(0.0)
     px = pd.to_numeric(d["price_per_share"], errors="coerce").fillna(0.0)
     value = qty * px
-    g = (d.assign(activist_buy_value=value.where(is_buy, 0.0),
-                  activist_sell_value=value.where(is_sell, 0.0),
-                  activist_buy_shares=qty.where(is_buy, 0.0),
-                  activist_sell_shares=qty.where(is_sell, 0.0))
-         .groupby(["ticker", "as_of"], as_index=False)
-         .agg(activist_buy_value=("activist_buy_value", "sum"),
-              activist_sell_value=("activist_sell_value", "sum"),
-              activist_buy_shares=("activist_buy_shares", "sum"),
-              activist_sell_shares=("activist_sell_shares", "sum"),
-              activist_n_transactions=("trade_seq", "count")))
+    g = (
+        d.assign(
+            activist_buy_value=value.where(is_buy, 0.0),
+            activist_sell_value=value.where(is_sell, 0.0),
+            activist_buy_shares=qty.where(is_buy, 0.0),
+            activist_sell_shares=qty.where(is_sell, 0.0),
+        )
+        .groupby(["ticker", "as_of"], as_index=False)
+        .agg(
+            activist_buy_value=("activist_buy_value", "sum"),
+            activist_sell_value=("activist_sell_value", "sum"),
+            activist_buy_shares=("activist_buy_shares", "sum"),
+            activist_sell_shares=("activist_sell_shares", "sum"),
+            activist_n_transactions=("trade_seq", "count"),
+        )
+    )
     g["activist_net_value"] = g["activist_buy_value"] - g["activist_sell_value"]
     return g[cols]
 
 
 _SUPER_LEVEL_COLS = ["superinvestor_shares", "superinvestor_value", "superinvestor_n_managers"]
-_SUPER_FLOW_COLS = ["superinvestor_buy_shares", "superinvestor_sell_shares",
-                    "superinvestor_init_shares", "superinvestor_n_new", "superinvestor_n_exited",
-                    "superinvestor_n_increased", "superinvestor_n_decreased"]
+_SUPER_FLOW_COLS = [
+    "superinvestor_buy_shares",
+    "superinvestor_sell_shares",
+    "superinvestor_init_shares",
+    "superinvestor_n_new",
+    "superinvestor_n_exited",
+    "superinvestor_n_increased",
+    "superinvestor_n_decreased",
+]
 
 
 def _published_calendar(d: pd.DataFrame) -> pd.DataFrame:
@@ -115,8 +142,7 @@ def _published_calendar(d: pd.DataFrame) -> pd.DataFrame:
     revised backwards through states that were never real (which surfaced as 6 impossible
     NEGATIVE share levels before this filter existed). Reports sharing one filing date are all
     kept -- their deltas telescope within that day's single `as_of` row."""
-    cal = (d[["cik", "period", "filing_date"]].drop_duplicates(["cik", "period"])
-           .sort_values(["cik", "filing_date", "period"]))
+    cal = d[["cik", "period", "filing_date"]].drop_duplicates(["cik", "period"]).sort_values(["cik", "filing_date", "period"])
     return cal[cal["period"] >= cal.groupby("cik")["period"].cummax()]
 
 
@@ -137,16 +163,15 @@ def _superinvestor_events(d: pd.DataFrame) -> pd.DataFrame:
     cal = _published_calendar(d)
     d = d.merge(cal[["cik", "period"]], on=["cik", "period"], how="inner")
     pairs = d[["cik", "ticker"]].drop_duplicates()
-    first_period = (d.groupby(["cik", "ticker"], as_index=False)["period"].min()
-                    .rename(columns={"period": "_first_period"}))
+    first_period = d.groupby(["cik", "ticker"], as_index=False)["period"].min().rename(columns={"period": "_first_period"})
 
-    full = (pairs.merge(cal, on="cik", how="left")
-            .merge(first_period, on=["cik", "ticker"], how="left"))
-    full = full[full["period"] >= full["_first_period"]]        # never fabricate pre-history
-    full = (full.merge(d[["cik", "ticker", "period", "shares", "value_usd"]],
-                       on=["cik", "ticker", "period"], how="left")
-            .fillna({"shares": 0.0, "value_usd": 0.0})
-            .sort_values(["cik", "ticker", "filing_date", "period"]))   # publication order
+    full = pairs.merge(cal, on="cik", how="left").merge(first_period, on=["cik", "ticker"], how="left")
+    full = full[full["period"] >= full["_first_period"]]  # never fabricate pre-history
+    full = (
+        full.merge(d[["cik", "ticker", "period", "shares", "value_usd"]], on=["cik", "ticker", "period"], how="left")
+        .fillna({"shares": 0.0, "value_usd": 0.0})
+        .sort_values(["cik", "ticker", "filing_date", "period"])
+    )  # publication order
 
     grp = full.groupby(["cik", "ticker"], sort=False)
     prev_shares = grp["shares"].shift(1)
@@ -162,15 +187,15 @@ def _superinvestor_events(d: pd.DataFrame) -> pd.DataFrame:
         _d_value=full["value_usd"] - pv,
         _d_holder=(full["shares"] > 0).astype(float) - (ps > 0).astype(float),
         _is_init=is_pair_start & is_mgr_start,
-        _is_new=is_pair_start & ~is_mgr_start,                       # genuinely fresh position
+        _is_new=is_pair_start & ~is_mgr_start,  # genuinely fresh position
         _is_exit=~is_pair_start & (full["shares"] == 0.0) & (ps > 0),
         _is_increased=~is_pair_start & (full["shares"] - ps > 0),
-        _is_decreased=~is_pair_start & (full["shares"] - ps < 0) & (full["shares"] > 0))
-    return full[(full["shares"] > 0) | (ps > 0)]                     # drop 0 -> 0 non-events
+        _is_decreased=~is_pair_start & (full["shares"] - ps < 0) & (full["shares"] > 0),
+    )
+    return full[(full["shares"] > 0) | (ps > 0)]  # drop 0 -> 0 non-events
 
 
-def _expand_daily(events: pd.DataFrame, end: pd.Timestamp,
-                  group_keys: list[str]) -> pd.DataFrame:
+def _expand_daily(events: pd.DataFrame, end: pd.Timestamp, group_keys: list[str]) -> pd.DataFrame:
     """Per-group event rows -> a DAY-BY-DAY panel: levels forward-filled, flows zero-filled.
 
     The level is a step function that only moves on a filing, but the panel must answer "what
@@ -193,8 +218,7 @@ def _expand_daily(events: pd.DataFrame, end: pd.Timestamp,
     return pd.concat(out, ignore_index=True)
 
 
-def _aggregate_superinvestors(df: pd.DataFrame, end: pd.Timestamp | None = None,
-                              by_cik: bool = False) -> pd.DataFrame:
+def _aggregate_superinvestors(df: pd.DataFrame, end: pd.Timestamp | None = None, by_cik: bool = False) -> pd.DataFrame:
     """Elite-manager 13F holdings -> a DAILY panel of the aggregate stake and the
     quarter-over-quarter movement behind it, keyed (ticker, as_of) -- or (cik, ticker, as_of)
     when `by_cik` is set, which carries each manager as its own portfolio so a caller can
@@ -232,32 +256,36 @@ def _aggregate_superinvestors(df: pd.DataFrame, end: pd.Timestamp | None = None,
     d["shares"] = pd.to_numeric(d["shares"], errors="coerce").fillna(0.0)
     d["value_usd"] = pd.to_numeric(d["value_usd"], errors="coerce").fillna(0.0)
     d = d.dropna(subset=["ticker", "cik", "period", "filing_date"])
-    
+
     # amendments: keep the last-filed row per (cik, ticker, period)
     d = d.sort_values("filing_date").drop_duplicates(["cik", "ticker", "period"], keep="last")
 
     ev = _superinvestor_events(d)
     ev["as_of"] = ev["filing_date"]
     delta = ev["_d_shares"]
-    ev = ev.assign(_buy=delta.clip(lower=0.0), _sell=(-delta).clip(lower=0.0),
-                   _init=delta.where(ev["_is_init"], 0.0).clip(lower=0.0))
+    ev = ev.assign(_buy=delta.clip(lower=0.0), _sell=(-delta).clip(lower=0.0), _init=delta.where(ev["_is_init"], 0.0).clip(lower=0.0))
 
     # collapse to the requested grain -> deltas + flows, then accumulate into the level.
     # `by_cik` keeps each manager separate, so the same panel can be replayed as ONE pooled
     # book or as 60-odd single-manager portfolios; the arithmetic below is identical either
     # way, only the grouping key changes.
     group_keys = ["cik", "ticker"] if by_cik else ["ticker"]
-    agg = (ev.groupby([*group_keys, "as_of"], as_index=False)
-           .agg(_d_shares=("_d_shares", "sum"), _d_value=("_d_value", "sum"),
-                _d_holder=("_d_holder", "sum"),
-                superinvestor_buy_shares=("_buy", "sum"),
-                superinvestor_sell_shares=("_sell", "sum"),
-                superinvestor_init_shares=("_init", "sum"),
-                superinvestor_n_new=("_is_new", "sum"),
-                superinvestor_n_exited=("_is_exit", "sum"),
-                superinvestor_n_increased=("_is_increased", "sum"),
-                superinvestor_n_decreased=("_is_decreased", "sum"))
-           .sort_values([*group_keys, "as_of"]))
+    agg = (
+        ev.groupby([*group_keys, "as_of"], as_index=False)
+        .agg(
+            _d_shares=("_d_shares", "sum"),
+            _d_value=("_d_value", "sum"),
+            _d_holder=("_d_holder", "sum"),
+            superinvestor_buy_shares=("_buy", "sum"),
+            superinvestor_sell_shares=("_sell", "sum"),
+            superinvestor_init_shares=("_init", "sum"),
+            superinvestor_n_new=("_is_new", "sum"),
+            superinvestor_n_exited=("_is_exit", "sum"),
+            superinvestor_n_increased=("_is_increased", "sum"),
+            superinvestor_n_decreased=("_is_decreased", "sum"),
+        )
+        .sort_values([*group_keys, "as_of"])
+    )
     by_group = agg.groupby(group_keys, sort=False)
     agg["superinvestor_shares"] = by_group["_d_shares"].cumsum()
     agg["superinvestor_value"] = by_group["_d_value"].cumsum()
@@ -265,8 +293,7 @@ def _aggregate_superinvestors(df: pd.DataFrame, end: pd.Timestamp | None = None,
 
     keep = [*group_keys, "as_of", *_SUPER_LEVEL_COLS, *_SUPER_FLOW_COLS]
     out = _expand_daily(agg[keep], end or agg["as_of"].max(), group_keys)
-    out["superinvestor_net_shares"] = (out["superinvestor_buy_shares"]
-                                       - out["superinvestor_sell_shares"])
+    out["superinvestor_net_shares"] = out["superinvestor_buy_shares"] - out["superinvestor_sell_shares"]
     return out.sort_values([*group_keys, "as_of"]).reset_index(drop=True)
 
 
@@ -280,14 +307,12 @@ def _aggregate_shorts(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     d["as_of"] = pd.to_datetime(d["date"], errors="coerce") + pd.tseries.offsets.BDay(1)
     d = d.dropna(subset=["ticker", "as_of"])
-    g = (d.groupby(["ticker", "as_of"], as_index=False)
-         .agg(short_volume=("short_volume", "sum"), total_volume=("total_volume", "sum")))
+    g = d.groupby(["ticker", "as_of"], as_index=False).agg(short_volume=("short_volume", "sum"), total_volume=("total_volume", "sum"))
     g["short_ratio"] = g["short_volume"] / g["total_volume"].replace(0.0, pd.NA)
     return g[cols]
 
 
-def merge_positions_panel(insiders: pd.DataFrame,
-                          superinvestors: pd.DataFrame, shorts: pd.DataFrame) -> pd.DataFrame:
+def merge_positions_panel(insiders: pd.DataFrame, superinvestors: pd.DataFrame, shorts: pd.DataFrame) -> pd.DataFrame:
     """Outer-merge the four per-(ticker, as_of) panels into one wide panel keyed by
     (ticker, as_of). A ticker/date with only one source present keeps NaN in the others --
     absence of a filing on a given day is not the same as zero conviction; later signal

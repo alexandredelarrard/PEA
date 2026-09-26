@@ -1,4 +1,3 @@
-
 # --------------------------------------------------------------------------- #
 # MACRO / MARKET series registry -- everything in `prices_macro`               #
 # --------------------------------------------------------------------------- #
@@ -32,11 +31,11 @@ MACRO_PRICE_SERIES = {
 # series (the London fixes were removed ~2025), which is why those legs are yfinance above.
 MACRO_FRED_SERIES = {
     "DGS2": "yield_2y",
-    "DGS10": "yield_10y",           # -> bond_10y_tr
+    "DGS10": "yield_10y",  # -> bond_10y_tr
     "DGS30": "yield_30y",
-    "DTB3": "cash_rate",            # 3-month T-bill secondary market rate (cash leg)
+    "DTB3": "cash_rate",  # 3-month T-bill secondary market rate (cash leg)
     "BAA10Y": "baa_credit_spread",  # Moody's Baa over 10Y: one consistently-defined series
-    "T10YIE": "breakeven_10y",      # 10Y breakeven inflation (since 2003)
+    "T10YIE": "breakeven_10y",  # 10Y breakeven inflation (since 2003)
     # FX from FRED, not Yahoo's USDEUR=X: DEXUSEU starts 1999-01 (the euro's own first
     # quote) where Yahoo starts 2003-12, and it is already quoted USD per EUR -- the
     # convention every consumer uses -- so no reciprocal to invert on ingest. Yahoo also
@@ -88,5 +87,4 @@ DAILY_MACRO_LEVELS = {
 
 # Every series name written to `prices_macro`, derived from the registries above so there is
 # no second list to drift. Used by the freshness gate, the tests and the sanity prints.
-MACRO_ALL_SERIES = (tuple(MACRO_PRICE_SERIES.values()) + tuple(MACRO_FRED_SERIES.values())
-                    + tuple(MACRO_SPREAD_SERIES) + (MACRO_BOND_TR_SERIES,))
+MACRO_ALL_SERIES = tuple(MACRO_PRICE_SERIES.values()) + tuple(MACRO_FRED_SERIES.values()) + tuple(MACRO_SPREAD_SERIES) + (MACRO_BOND_TR_SERIES,)

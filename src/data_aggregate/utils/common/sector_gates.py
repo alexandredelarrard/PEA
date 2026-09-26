@@ -27,6 +27,7 @@ Three shapes, because the two layers work on different objects:
     family_tickers -> the set of in-scope tickers           (cheap "any?" test)
     mask_columns   -> a daily date x ticker frame with out-of-scope tickers NaN'd
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -46,8 +47,7 @@ def _scope(family: str) -> tuple[str, tuple[str, ...]]:
         return SECTOR_KPI_SCOPE[family]
     except KeyError as exc:
         raise UnknownKpiFamilyError(
-            f"KPI family {family!r} has no GICS scope; add it to "
-            f"SECTOR_KPI_SCOPE (known: {sorted(SECTOR_KPI_SCOPE)})"
+            f"KPI family {family!r} has no GICS scope; add it to SECTOR_KPI_SCOPE (known: {sorted(SECTOR_KPI_SCOPE)})"
         ) from exc
 
 
@@ -70,8 +70,7 @@ def family_tickers(fundamentals: pd.DataFrame, family: str) -> set[str]:
     return set(fundamentals.loc[gate, "ticker"].dropna().unique())
 
 
-def mask_columns(frame: pd.DataFrame, fundamentals: pd.DataFrame,
-                 family: str) -> pd.DataFrame:
+def mask_columns(frame: pd.DataFrame, fundamentals: pd.DataFrame, family: str) -> pd.DataFrame:
     """A daily (date x ticker) `frame` with every ticker OUTSIDE the family's GICS scope
     set to NaN. Sector is a per-ticker constant, so the mask is a column Series
     broadcast down the rows -- no date x ticker boolean frame is materialised, and the

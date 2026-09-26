@@ -8,6 +8,7 @@ question / answer survives), the cached `earning_calls_embedding` table (ONE ROW
 own embedding + text + tag + person + exchange_idx + answer_idx), incremental skip on re-run, and the
 coherence + quarter-to-quarter drift KPIs DERIVED from the turns.
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from src.data_store.schema import name_of, resolve
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
@@ -24,6 +24,7 @@ from src.data_aggregate.utils.text.earnings_call_embeddings import (
     split_qa_pairs,
     split_turns,
 )
+from src.data_store.schema import name_of, resolve
 
 _KW = ("revenue", "margin", "growth", "guidance", "cash", "demand", "cost", "backlog", "?")
 
@@ -34,14 +35,18 @@ def _vec(t: str):
 
 
 class _Emb:
-    def __init__(self, parent): self.parent = parent
+    def __init__(self, parent):
+        self.parent = parent
+
     def create(self, model, input):
         self.parent.n_calls += 1
         return SimpleNamespace(data=[SimpleNamespace(embedding=_vec(t)) for t in input])
 
 
 class StubClient:
-    def __init__(self): self.n_calls = 0; self.embeddings = _Emb(self)
+    def __init__(self):
+        self.n_calls = 0
+        self.embeddings = _Emb(self)
 
 
 class FakeStore:
@@ -51,7 +56,9 @@ class FakeStore:
     The one test store that cannot be the real SQLite `DataStore`: `earning_calls_embedding.embedding`
     is a `DOUBLE PRECISION[]` and SQLite's driver refuses to bind a Python list.
     """
-    def __init__(self): self.t: dict[str, pd.DataFrame] = {}
+
+    def __init__(self):
+        self.t: dict[str, pd.DataFrame] = {}
 
     @staticmethod
     def _filter(df, where):
@@ -88,7 +95,9 @@ class FakeStore:
 
 
 class FakeCtx:
-    def __init__(self, store): self.store = store; self.log = logging.getLogger("test")
+    def __init__(self, store):
+        self.store = store
+        self.log = logging.getLogger("test")
 
 
 # Real 2024+ Motley-Fool shape: "Name:" headers, analyst named in the operator hand-off, and the
@@ -127,8 +136,10 @@ Tim Fox
 Chief Executive Officer
 Thanks, Amy. Cloud backlog grew nicely on strong bookings, demand, and revenue growth.
 """
-_PREP = ("Thanks, everyone. This quarter revenue grew nicely and margins improved as demand held up "
-         "and we controlled cost. Our guidance reflects continued growth and strong cash generation.")
+_PREP = (
+    "Thanks, everyone. This quarter revenue grew nicely and margins improved as demand held up "
+    "and we controlled cost. Our guidance reflects continued growth and strong cash generation."
+)
 
 
 def _sections():
@@ -136,8 +147,15 @@ def _sections():
     for tkr in ("AAA", "BBB"):
         for q, aod in (("2024Q1", "2024-05-01"), ("2024Q2", "2024-08-01")):
             rows.append({"ticker": tkr, "quarter": q, "tag": "qa", "as_of": aod, "text": _QA})
-            rows.append({"ticker": tkr, "quarter": q, "tag": "prepared_remarks", "as_of": aod,
-                         "text": _PREP + (" We also launched a new AI platform." if q == "2024Q2" else "")})
+            rows.append(
+                {
+                    "ticker": tkr,
+                    "quarter": q,
+                    "tag": "prepared_remarks",
+                    "as_of": aod,
+                    "text": _PREP + (" We also launched a new AI platform." if q == "2024Q2" else ""),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -151,10 +169,8 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     assert turns[0]["exchange_idx"] == turns[1]["exchange_idx"] == turns[2]["exchange_idx"] == 0
     assert turns[3]["exchange_idx"] == turns[4]["exchange_idx"] == 1
     q0 = turns[0]["text"].lower()
-    assert "revenue growth" in q0 and "thanks" not in q0 and "congrats" not in q0, \
-        f"question preamble not stripped: {turns[0]['text']!r}"
-    assert not turns[1]["text"].lower().startswith("thanks"), \
-        f"answer lead-in 'Thanks, Jane.' not stripped: {turns[1]['text']!r}"
+    assert "revenue growth" in q0 and "thanks" not in q0 and "congrats" not in q0, f"question preamble not stripped: {turns[0]['text']!r}"
+    assert not turns[1]["text"].lower().startswith("thanks"), f"answer lead-in 'Thanks, Jane.' not stripped: {turns[1]['text']!r}"
     # Jane's pure-courtesy follow-up, the IR-flow line, and Mark's "do you have questions" are gone
     assert all("appreciate it" not in t["text"].lower() for t in turns), "courtesy turn survived"
     assert all("next question" not in t["text"].lower() for t in turns), "IR-flow turn survived"
@@ -169,21 +185,36 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     # ---- list of questions with mapped answers ------------------------------------------------
     ex = split_qa_exchanges(_QA)
     assert len(ex) == 2 and ex[0]["analyst"] == "Jane Doe" and ex[0]["managers"] == ["John Smith", "Sarah Lee"]
-    assert len(split_qa_pairs(_QA)) == 2                                # back-compat helper intact
+    assert len(split_qa_pairs(_QA)) == 2  # back-compat helper intact
 
     # ---- embed -> ONE ROW PER TURN, cached with every requested column ------------------------
-    store = FakeStore(); store.t["earnings_call_sections"] = _sections()
-    ctx = FakeCtx(store); stub = StubClient()
-    embed_earnings_calls(ctx, client=stub)                             # populates the cache (returns None)
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = FakeCtx(store)
+    stub = StubClient()
+    embed_earnings_calls(ctx, client=stub)  # populates the cache (returns None)
     emb = store.load("earning_calls_embedding")
     qa_rows, prep_rows = emb[emb["section"] == "qa"], emb[emb["section"] == "prepared_remarks"]
     assert len(qa_rows) == 20, f"5 qa turns x 4 calls, got {len(qa_rows)}"
     assert len(prep_rows) == 4, f"1 prepared turn x 4 calls, got {len(prep_rows)}"
     assert set(emb["tag"]) == {"question", "answer", "prepared"}
-    assert {"ticker", "quarter", "seq", "section", "tag", "exchange_idx", "answer_idx", "person",
-            "text", "as_of", "embedding", "model", "run_at"}.issubset(emb.columns)
+    assert {
+        "ticker",
+        "quarter",
+        "seq",
+        "section",
+        "tag",
+        "exchange_idx",
+        "answer_idx",
+        "person",
+        "text",
+        "as_of",
+        "embedding",
+        "model",
+        "run_at",
+    }.issubset(emb.columns)
     calls_after_first = stub.n_calls
-    embed_earnings_calls(ctx, client=stub)                             # re-run: incremental
+    embed_earnings_calls(ctx, client=stub)  # re-run: incremental
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
 
     # ---- KPIs derived from the turns ----------------------------------------------------------
@@ -199,34 +230,45 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     assert q2["ec_prep_qq_sim"].notna().all() and q2["ec_prep_qq_sim"].between(-1, 1).all()
 
     print("\n=== SANITY CHECK: per-turn earnings-call embeddings (cleaned) ===")
-    print(f"  colon format -> tags {tags}, answer_idx {[t['answer_idx'] for t in turns]} "
-          f"(0=Q, 1..k=1st..last answer); persons {[t['person'] for t in turns]}.")
-    print(f"  cleaning: question preamble 'Thanks for taking my question, and congrats' STRIPPED; "
-          f"answer lead-in 'Thanks, Jane.' STRIPPED; IR-flow + courtesy + 'do you have questions' DROPPED.")
+    print(
+        f"  colon format -> tags {tags}, answer_idx {[t['answer_idx'] for t in turns]} "
+        f"(0=Q, 1..k=1st..last answer); persons {[t['person'] for t in turns]}."
+    )
+    print(
+        "  cleaning: question preamble 'Thanks for taking my question, and congrats' STRIPPED; "
+        "answer lead-in 'Thanks, Jane.' STRIPPED; IR-flow + courtesy + 'do you have questions' DROPPED."
+    )
     print(f"  multi-line dash format also parsed: Q={td[0]['person']} -> A={td[1]['person']}.")
-    print(f"  table: {len(qa_rows)} qa-turn rows + {len(prep_rows)} prepared rows, each with its own "
-          f"embedding + text + person + tag + exchange_idx + answer_idx + as_of + model/run_at.")
-    print(f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
-          f"{kpi['ec_qa_coherence_mean'].mean():.3f}; answer/question ratio {kpi['ec_qa_answer_ratio'].mean():.2f} "
-          f"(QoQ delta {float(q2['ec_qa_answer_ratio_qq'].iloc[0]):.2f}); QoQ prepared drift "
-          f"2024Q2 {q2['ec_prep_qq_sim'].mean():.3f} (new AI-platform topic added).")
+    print(
+        f"  table: {len(qa_rows)} qa-turn rows + {len(prep_rows)} prepared rows, each with its own "
+        f"embedding + text + person + tag + exchange_idx + answer_idx + as_of + model/run_at."
+    )
+    print(
+        f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
+        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; answer/question ratio {kpi['ec_qa_answer_ratio'].mean():.2f} "
+        f"(QoQ delta {float(q2['ec_qa_answer_ratio_qq'].iloc[0]):.2f}); QoQ prepared drift "
+        f"2024Q2 {q2['ec_prep_qq_sim'].mean():.3f} (new AI-platform topic added)."
+    )
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
 
 
 # HuggingFace-backbone shape: verbatim `content` with "Name:" colon headers, a long CEO remark that
 # ENDS with "we'll open it up for questions", and a Q&A where an exec greets before the (substitute)
 # analyst asks -- the cases that previously dropped the CEO / inverted Q&A.
-_HF_PREP = ("Operator: Good afternoon and welcome to the call. [Operator Instructions] Sir, please go "
-            "ahead. I would like to turn the call over to Mike. Mike Ceo: Thanks Ankur. "
-            + "Revenue grew on strong demand and margins expanded across every region as we executed "
-              "well this quarter. " * 5
-            + "With that, we'll open it up for your questions.")
-_HF_QA = ("Operator: Your first question comes from Doug of Cowen. Please go ahead. "
-          "Mike Ceo: Hi Doug. "
-          "Ryan Sub: Hi, this is Ryan on for Doug. Can you walk through the margin outlook and the "
-          "cash flow trends you expect into next quarter? "
-          "Mike Ceo: Sure. Margins improved and cash flow was strong on solid demand and cost control. "
-          "Bob Cfo: And on cash generation, we expect continued strength across our segments next quarter.")
+_HF_PREP = (
+    "Operator: Good afternoon and welcome to the call. [Operator Instructions] Sir, please go "
+    "ahead. I would like to turn the call over to Mike. Mike Ceo: Thanks Ankur. "
+    + "Revenue grew on strong demand and margins expanded across every region as we executed "
+    "well this quarter. " * 5 + "With that, we'll open it up for your questions."
+)
+_HF_QA = (
+    "Operator: Your first question comes from Doug of Cowen. Please go ahead. "
+    "Mike Ceo: Hi Doug. "
+    "Ryan Sub: Hi, this is Ryan on for Doug. Can you walk through the margin outlook and the "
+    "cash flow trends you expect into next quarter? "
+    "Mike Ceo: Sure. Margins improved and cash flow was strong on solid demand and cost control. "
+    "Bob Cfo: And on cash generation, we expect continued strength across our segments next quarter."
+)
 
 
 def test_hf_style_long_remarks_and_qa_classification():
@@ -244,38 +286,46 @@ def test_hf_style_long_remarks_and_qa_classification():
     assert "margin outlook" in q and "hi doug" not in q, f"question not cleaned: {ex[0]['question']!r}"
 
     # OLD (2007-2010) transcripts head turns with "Name - Firm/Role:" -> must still parse
-    old = ("Operator: Your first question comes from Matthew Dodds - Citigroup.\n"
-           "Matthew Dodds - Citigroup: Can you talk about the gross margin trend and the pricing outlook?\n"
-           "William Weldon - Chairman: Margins improved on favorable mix and cost control this quarter.")
+    old = (
+        "Operator: Your first question comes from Matthew Dodds - Citigroup.\n"
+        "Matthew Dodds - Citigroup: Can you talk about the gross margin trend and the pricing outlook?\n"
+        "William Weldon - Chairman: Margins improved on favorable mix and cost control this quarter."
+    )
     eo = split_qa_exchanges(old)
     assert eo and eo[0]["analyst"] == "Matthew Dodds" and eo[0]["managers"] == ["William Weldon"], eo
     assert "gross margin" in eo[0]["question"].lower()
 
     print("\n=== SANITY CHECK: HuggingFace-shape content ===")
-    print(f"  colon 'Name:' headers parse; long CEO remark ending 'we'll open it up for questions' "
-          f"KEPT -> mgmt={sorted(mgmt)}.")
-    print(f"  exec 'Hi Doug.' after the hand-off is NOT the analyst; ex0 analyst={ex[0]['analyst']!r} "
-          f"-> managers {ex[0]['managers']}; question cleaned to the meaty ask. Validated.")
+    print(f"  colon 'Name:' headers parse; long CEO remark ending 'we'll open it up for questions' KEPT -> mgmt={sorted(mgmt)}.")
+    print(
+        f"  exec 'Hi Doug.' after the hand-off is NOT the analyst; ex0 analyst={ex[0]['analyst']!r} "
+        f"-> managers {ex[0]['managers']}; question cleaned to the meaty ask. Validated."
+    )
 
 
 def test_force_reembed_drops_stale_turns():
     """A re-parse can yield FEWER turns than a prior run cached; a force re-embed must RECONCILE
     (drop the orphaned tail rows) so the table matches the current parse -- not leave stale answers
     that would inflate answer counts / pollute the KPIs."""
-    store = FakeStore(); store.t["earnings_call_sections"] = _sections()
-    ctx = FakeCtx(store); stub = StubClient()
-    embed_earnings_calls(ctx, client=stub)                        # initial embed
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = FakeCtx(store)
+    stub = StubClient()
+    embed_earnings_calls(ctx, client=stub)  # initial embed
     tbl = "earning_calls_embedding"
     n0 = len(store.t[tbl])
-    stale = store.t[tbl].iloc[[0]].copy(); stale["seq"] = 999; stale["text"] = "stale orphan turn"
-    store.t[tbl] = pd.concat([store.t[tbl], stale], ignore_index=True)   # simulate a prior longer parse
+    stale = store.t[tbl].iloc[[0]].copy()
+    stale["seq"] = 999
+    stale["text"] = "stale orphan turn"
+    store.t[tbl] = pd.concat([store.t[tbl], stale], ignore_index=True)  # simulate a prior longer parse
     assert (store.t[tbl]["seq"] == 999).any()
-    embed_earnings_calls(ctx, client=stub, force=True)            # force re-embed -> reconcile
+    embed_earnings_calls(ctx, client=stub, force=True)  # force re-embed -> reconcile
     assert not (store.t[tbl]["seq"] == 999).any(), "orphaned turn must be dropped on force re-embed"
     assert len(store.t[tbl]) == n0, "table matches the current parse exactly after reconcile"
     print("\n=== SANITY CHECK: force re-embed reconcile ===")
-    print(f"  injected 1 orphaned turn (seq=999); force re-embed dropped it -> {len(store.t[tbl])} rows "
-          f"== fresh parse {n0}. Stale turns cannot linger.")
+    print(
+        f"  injected 1 orphaned turn (seq=999); force re-embed dropped it -> {len(store.t[tbl])} rows == fresh parse {n0}. Stale turns cannot linger."
+    )
 
 
 if __name__ == "__main__":

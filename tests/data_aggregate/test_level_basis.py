@@ -14,6 +14,7 @@ because a factor that is 1.0000000000000002 on a ticker that never spun anything
 move every downstream digest and make "this change is targeted" unprovable. So the clean cases
 assert `== 1.0` bit-exactly, not `approx`.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,8 +25,17 @@ import pytest
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.utils.common.level_basis import (
-    LEVEL_SNAP_TOL, NULL_RET_STEP_TOL, _vintage_multiplier, apply_level_bugfix, apply_null_ret,
-    apply_return_seams, apply_split_vintage, describe, level_factor, load_bugfix)
+    LEVEL_SNAP_TOL,
+    NULL_RET_STEP_TOL,
+    _vintage_multiplier,
+    apply_level_bugfix,
+    apply_null_ret,
+    apply_return_seams,
+    apply_split_vintage,
+    describe,
+    level_factor,
+    load_bugfix,
+)
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 
@@ -35,18 +45,16 @@ INDEX = pd.DatetimeIndex(pd.bdate_range("1995-01-02", "2026-12-31"), name="date"
 
 
 def _yf(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
-    return pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": r}
-                         for t, d, r in rows])
+    return pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": r} for t, d, r in rows])
 
 
 def _actions(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:
-    return pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v,
-                          "contraticker": "N/A"} for t, d, a, v in rows])
+    return pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v, "contraticker": "N/A"} for t, d, a, v in rows])
 
 
 def _at(factor: pd.DataFrame, ticker: str, when: str) -> float:
     """`S` for one ticker on the last trading day at or before `when`."""
-    return float(factor[ticker].loc[:pd.Timestamp(when)].iloc[-1])
+    return float(factor[ticker].loc[: pd.Timestamp(when)].iloc[-1])
 
 
 # --------------------------------------------------------------------------- #
@@ -60,20 +68,23 @@ def test_a_ticker_whose_two_sources_agree_is_exactly_one():
     x 2) is only exactly 1.0 if both products are accumulated in the same order, which is why
     `_suffix_factor` builds them right-to-left over dates sorted ascending. `approx` would
     pass on a version of this code that silently moves every AAPL market cap by 1 ulp."""
-    events = [("AAPL", "1987-06-16", 2.0), ("AAPL", "2000-06-21", 2.0),
-              ("AAPL", "2005-02-28", 2.0), ("AAPL", "2014-06-09", 7.0),
-              ("AAPL", "2020-08-31", 4.0)]
+    events = [
+        ("AAPL", "1987-06-16", 2.0),
+        ("AAPL", "2000-06-21", 2.0),
+        ("AAPL", "2005-02-28", 2.0),
+        ("AAPL", "2014-06-09", 7.0),
+        ("AAPL", "2020-08-31", 4.0),
+    ]
     yf = _yf(events)
     genuine = split_events(pd.DataFrame(), yf)
     factor = level_factor(INDEX, ["AAPL"], yf, genuine)
 
     assert (factor["AAPL"].to_numpy() == 1.0).all(), (
-        "a ticker with no spinoff must be BIT-identical to 1.0, not merely close: "
-        f"{sorted(set(factor['AAPL'])) [:5]}")
+        f"a ticker with no spinoff must be BIT-identical to 1.0, not merely close: {sorted(set(factor['AAPL']))[:5]}"
+    )
 
     print("\n=== SANITY CHECK: two agreeing sources ===")
-    print(f"  AAPL, 5 genuine splits in both sources -> S == 1.0 on all "
-          f"{len(factor):,} dates, bit-exactly.")
+    print(f"  AAPL, 5 genuine splits in both sources -> S == 1.0 on all {len(factor):,} dates, bit-exactly.")
     print("  The 89% of the table with no spinoff is untouched by this change. Validated.")
 
 
@@ -86,8 +97,7 @@ def test_no_events_at_all_is_one_everywhere_and_does_not_raise():
     assert list(factor.columns) == ["JNJ", "KO"], "columns are sorted, for determinism"
 
     print("\n=== SANITY CHECK: empty sources ===")
-    print(f"  (empty, empty) -> {factor.shape[0]:,} x {factor.shape[1]} frame of exactly "
-          "1.0, no exception. Validated.")
+    print(f"  (empty, empty) -> {factor.shape[0]:,} x {factor.shape[1]} frame of exactly 1.0, no exception. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -101,25 +111,23 @@ def test_a_yfinance_only_spinoff_factor_becomes_S():
     Measured on the live panel: FDX 2020-12-17 reads `close_split` 235.5036 against Sharadar's
     `price` 292.26, and 292.26 / 235.5036 = 1.2410. Market cap goes $62.425bn -> $77.470bn,
     against Sharadar's $77.470bn."""
-    yf = _yf([("FDX", "1996-11-05", 2.0), ("FDX", "1999-05-07", 2.0),
-              ("FDX", "2026-06-01", 1.241)])
+    yf = _yf([("FDX", "1996-11-05", 2.0), ("FDX", "1999-05-07", 2.0), ("FDX", "2026-06-01", 1.241)])
     genuine = split_events(pd.DataFrame(), yf)
     factor = level_factor(INDEX, ["FDX"], yf, genuine)
 
-    assert sorted(genuine["value"]) == [2.0, 2.0], \
-        f"1.241 must NOT reach the denominator: {genuine.to_dict('records')}"
-    assert _at(factor, "FDX", "1995-06-30") == pytest.approx(1.241), \
-        "the two 2:1 splits cancel; only the spinoff factor is left"
+    assert sorted(genuine["value"]) == [2.0, 2.0], f"1.241 must NOT reach the denominator: {genuine.to_dict('records')}"
+    assert _at(factor, "FDX", "1995-06-30") == pytest.approx(1.241), "the two 2:1 splits cancel; only the spinoff factor is left"
     assert _at(factor, "FDX", "2020-12-17") == pytest.approx(1.241), "the landmark row"
     assert _at(factor, "FDX", "2026-05-29") == pytest.approx(1.241), "the day before"
     assert _at(factor, "FDX", "2026-06-01") == 1.0, "the event date is already restated"
 
     print("\n=== SANITY CHECK: FDX, a yfinance-only spinoff factor ===")
-    print(f"  S = {_at(factor, 'FDX', '2020-12-17'):.4f} before 2026-06-01, "
-          f"{_at(factor, 'FDX', '2026-06-01'):.4f} from it onward.")
-    print(f"  2020-12-17 market cap 235.5036 x 265,070,592 x S = "
-          f"${235.5036 * 265_070_592 * _at(factor, 'FDX', '2020-12-17') / 1e9:.2f}bn "
-          "against Sharadar's $77.47bn. Validated.")
+    print(f"  S = {_at(factor, 'FDX', '2020-12-17'):.4f} before 2026-06-01, {_at(factor, 'FDX', '2026-06-01'):.4f} from it onward.")
+    print(
+        f"  2020-12-17 market cap 235.5036 x 265,070,592 x S = "
+        f"${235.5036 * 265_070_592 * _at(factor, 'FDX', '2020-12-17') / 1e9:.2f}bn "
+        "against Sharadar's $77.47bn. Validated."
+    )
 
 
 def test_stacked_factors_compound_while_a_real_split_cancels():
@@ -133,27 +141,32 @@ def test_stacked_factors_compound_while_a_real_split_cancels():
 
     A set SUBTRACTION would leave the 1:8 reverse split in the numerator and put GE's whole
     pre-2021 history out by 8x. Only the ratio of two products is right."""
-    yf = _yf([("GE", "1997-05-12", 2.0), ("GE", "2000-05-08", 3.0),
-              ("GE", "2019-02-26", 1.04), ("GE", "2021-08-02", 0.125),
-              ("GE", "2023-01-04", 1.281), ("GE", "2024-04-02", 1.253)])
+    yf = _yf(
+        [
+            ("GE", "1997-05-12", 2.0),
+            ("GE", "2000-05-08", 3.0),
+            ("GE", "2019-02-26", 1.04),
+            ("GE", "2021-08-02", 0.125),
+            ("GE", "2023-01-04", 1.281),
+            ("GE", "2024-04-02", 1.253),
+        ]
+    )
     genuine = split_events(pd.DataFrame(), yf)
     factor = level_factor(INDEX, ["GE"], yf, genuine)
 
-    assert sorted(genuine["value"]) == [0.125, 2.0, 3.0], \
-        f"the 1:8 reverse split is a REAL share event: {genuine.to_dict('records')}"
+    assert sorted(genuine["value"]) == [0.125, 2.0, 3.0], f"the 1:8 reverse split is a REAL share event: {genuine.to_dict('records')}"
     assert _at(factor, "GE", "2005-05-06") == pytest.approx(1.04 * 1.281 * 1.253)
-    assert _at(factor, "GE", "2005-05-06") == pytest.approx(1.669297, abs=1e-5), \
-        "the measured GE factor, from before.md"
-    assert _at(factor, "GE", "2021-04-27") == pytest.approx(1.605093, abs=1e-5), \
-        "after 2019 the 1.04 has dropped out -- also measured"
+    assert _at(factor, "GE", "2005-05-06") == pytest.approx(1.669297, abs=1e-5), "the measured GE factor, from before.md"
+    assert _at(factor, "GE", "2021-04-27") == pytest.approx(1.605093, abs=1e-5), "after 2019 the 1.04 has dropped out -- also measured"
     assert _at(factor, "GE", "2024-06-28") == 1.0
 
     print("\n=== SANITY CHECK: GE, three spinoff factors over a real reverse split ===")
-    print(f"  PROD(yfinance) / PROD(genuine) = "
-          f"(2 x 3 x 1.04 x 0.125 x 1.281 x 1.253) / (2 x 3 x 0.125)")
-    print(f"  2005-05-06: {_at(factor, 'GE', '2005-05-06'):.6f} (measured 1.669297); "
-          f"2021-04-27: {_at(factor, 'GE', '2021-04-27'):.6f} (measured 1.605093); "
-          f"2024-06-28: {_at(factor, 'GE', '2024-06-28'):.1f}")
+    print("  PROD(yfinance) / PROD(genuine) = (2 x 3 x 1.04 x 0.125 x 1.281 x 1.253) / (2 x 3 x 0.125)")
+    print(
+        f"  2005-05-06: {_at(factor, 'GE', '2005-05-06'):.6f} (measured 1.669297); "
+        f"2021-04-27: {_at(factor, 'GE', '2021-04-27'):.6f} (measured 1.605093); "
+        f"2024-06-28: {_at(factor, 'GE', '2024-06-28'):.1f}"
+    )
     print("  The 1:8 reverse split cancels instead of leaking an 8x. Validated.")
 
 
@@ -167,29 +180,30 @@ def test_one_date_two_different_values_is_a_ratio_not_a_set_difference():
 
     Note what `split_events` contributes here: it resolves the 91% ratio conflict in favour of
     the split-shaped 0.5, so the DENOMINATOR gets 0.5 while the NUMERATOR keeps 0.9535."""
-    yf = _yf([("HON", "1997-09-16", 2.0), ("HON", "2016-10-03", 1.0053282396702523),
-              ("HON", "2018-10-01", 1.011), ("HON", "2018-10-29", 1.032),
-              ("HON", "2025-10-30", 1.061), ("HON", "2026-06-29", 0.9535)])
-    actions = _actions([("HON", "1997-09-16", "split", 2.0),
-                        ("HON", "2026-06-29", "split", 0.5),
-                        ("HON", "2026-06-29", "spinoff", 1.0)])
+    yf = _yf(
+        [
+            ("HON", "1997-09-16", 2.0),
+            ("HON", "2016-10-03", 1.0053282396702523),
+            ("HON", "2018-10-01", 1.011),
+            ("HON", "2018-10-29", 1.032),
+            ("HON", "2025-10-30", 1.061),
+            ("HON", "2026-06-29", 0.9535),
+        ]
+    )
+    actions = _actions([("HON", "1997-09-16", "split", 2.0), ("HON", "2026-06-29", "split", 0.5), ("HON", "2026-06-29", "spinoff", 1.0)])
     genuine = split_events(actions, yf)
     factor = level_factor(INDEX, ["HON"], yf, genuine)
 
-    assert sorted(genuine["value"]) == [0.5, 2.0], \
-        f"the denominator is the two REAL share events: {genuine.to_dict('records')}"
+    assert sorted(genuine["value"]) == [0.5, 2.0], f"the denominator is the two REAL share events: {genuine.to_dict('records')}"
     s = _at(factor, "HON", "1996-12-31")
     assert s == pytest.approx(2.12228, abs=1e-4), "the measured HON factor"
-    assert s == pytest.approx((2.0 * 1.0053282396702523 * 1.011 * 1.032 * 1.061 * 0.9535)
-                              / (2.0 * 0.5))
+    assert s == pytest.approx((2.0 * 1.0053282396702523 * 1.011 * 1.032 * 1.061 * 0.9535) / (2.0 * 0.5))
     assert 1.0 / s == pytest.approx(0.4712, abs=1e-4), "the measured price leg"
 
     print("\n=== SANITY CHECK: HON, one date in both sources with different values ===")
-    print(f"  PROD(yfinance) = 2 x 1.00533 x 1.011 x 1.032 x 1.061 x 0.9535 = "
-          f"{2.0 * 1.00533 * 1.011 * 1.032 * 1.061 * 0.9535:.5f}")
+    print(f"  PROD(yfinance) = 2 x 1.00533 x 1.011 x 1.032 x 1.061 x 0.9535 = {2.0 * 1.00533 * 1.011 * 1.032 * 1.061 * 0.9535:.5f}")
     print(f"  PROD(genuine)  = 2 x 0.5 = {2.0 * 0.5:.5f}")
-    print(f"  S = {s:.5f}, so 1/S = {1 / s:.4f} -- the measured price leg is 0.4712. "
-          "Validated.")
+    print(f"  S = {s:.5f}, so 1/S = {1 / s:.4f} -- the measured price leg is 0.4712. Validated.")
 
 
 def test_mnst_cancels_and_is_therefore_not_fixed_here():
@@ -221,8 +235,7 @@ def test_float_noise_is_snapped_but_a_real_factor_is_not():
 
     The smallest genuine factor in the universe is HON's 1.00533, five thousand times the
     snap tolerance, so there is no risk of erasing a real adjustment."""
-    yf = _yf([("X", "2010-01-04", 1.0 + LEVEL_SNAP_TOL / 10),
-              ("Y", "2010-01-04", 1.00533)])
+    yf = _yf([("X", "2010-01-04", 1.0 + LEVEL_SNAP_TOL / 10), ("Y", "2010-01-04", 1.00533)])
     factor = level_factor(INDEX, ["X", "Y"], yf, pd.DataFrame())
 
     assert _at(factor, "X", "2005-01-03") == 1.0, "below the tolerance -> snapped"
@@ -230,8 +243,10 @@ def test_float_noise_is_snapped_but_a_real_factor_is_not():
     assert _at(factor, "Y", "2005-01-03") != 1.0
 
     print("\n=== SANITY CHECK: the snap ===")
-    print(f"  1 + {LEVEL_SNAP_TOL / 10:.1e} -> exactly 1.0; 1.00533 (HON's smallest real "
-          f"factor, {0.00533 / LEVEL_SNAP_TOL:.0e}x the tolerance) -> kept.")
+    print(
+        f"  1 + {LEVEL_SNAP_TOL / 10:.1e} -> exactly 1.0; 1.00533 (HON's smallest real "
+        f"factor, {0.00533 / LEVEL_SNAP_TOL:.0e}x the tolerance) -> kept."
+    )
     print("  Noise is erased, signal is not. Validated.")
 
 
@@ -246,16 +261,14 @@ def test_describe_names_the_biggest_factors_by_abs_log():
 
     print("\n=== SANITY CHECK: the log line ===")
     print(f"  {line}")
-    print("  Ranked by |log S|, so the reverse cases are not hidden below the forward ones. "
-          "Validated.")
+    print("  Ranked by |log S|, so the reverse cases are not hidden below the forward ones. Validated.")
 
 
 def test_the_index_and_universe_shape_the_output():
     """The frame must align with the other price frames with no reindex at the call site: a
     row per trading date, a column per universe ticker, even for tickers with no events."""
     idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", "2020-01-10"), name="date")
-    factor = level_factor(idx, ["B", "A"], _yf([("A", "2020-01-08", 2.0)]),
-                          pd.DataFrame())
+    factor = level_factor(idx, ["B", "A"], _yf([("A", "2020-01-08", 2.0)]), pd.DataFrame())
 
     assert factor.index.equals(idx) and list(factor.columns) == ["A", "B"]
     assert factor.index.name == "date" and factor.columns.name == "ticker"
@@ -264,16 +277,14 @@ def test_the_index_and_universe_shape_the_output():
     assert factor.loc[pd.Timestamp("2020-01-08"), "A"] == 1.0
 
     print("\n=== SANITY CHECK: frame shape ===")
-    print(f"  {factor.shape[0]} dates x {factor.shape[1]} tickers, columns sorted "
-          f"{list(factor.columns)}, no NaN, B (no events) all 1.0. Validated.")
+    print(f"  {factor.shape[0]} dates x {factor.shape[1]} tickers, columns sorted {list(factor.columns)}, no NaN, B (no events) all 1.0. Validated.")
 
 
 # --------------------------------------------------------------------------- #
 # the consumption contract -- `pit.daily_market_cap`                          #
 # --------------------------------------------------------------------------- #
 def _one_ticker_history(ticker: str, shares: float) -> pd.DataFrame:
-    return pd.DataFrame({"ticker": [ticker], "as_of": [pd.Timestamp("2019-01-02")],
-                         "sharesOutstanding": [shares]})
+    return pd.DataFrame({"ticker": [ticker], "as_of": [pd.Timestamp("2019-01-02")], "sharesOutstanding": [shares]})
 
 
 def test_market_cap_cannot_be_computed_without_stating_a_basis():
@@ -287,7 +298,7 @@ def test_market_cap_cannot_be_computed_without_stating_a_basis():
     close = pd.DataFrame({"FDX": [235.5036]}, index=pd.DatetimeIndex(["2020-12-17"]))
 
     with pytest.raises(TypeError, match="level_factor"):
-        daily_market_cap(fund, close)              # type: ignore[call-arg]
+        daily_market_cap(fund, close)  # type: ignore[call-arg]
 
     print("\n=== SANITY CHECK: the required-kwarg contract ===")
     print("  daily_market_cap(fund, close) -> TypeError naming `level_factor`.")
@@ -311,8 +322,7 @@ def test_a_unit_factor_is_bit_identical_to_no_factor():
     pd.testing.assert_frame_equal(with_one, without, check_exact=True, check_dtype=True)
 
     print("\n=== SANITY CHECK: S == 1 changes nothing ===")
-    print(f"  {len(idx)} dates x 1 ticker, bit-identical to the pre-S result "
-          f"(check_exact=True).")
+    print(f"  {len(idx)} dates x 1 ticker, bit-identical to the pre-S result (check_exact=True).")
     print("  Every ticker without a spinoff is untouched at the point of use too. Validated.")
 
 
@@ -356,8 +366,7 @@ def test_the_factor_is_aligned_not_assumed():
     assert list(mcap.columns) == ["AAA", "BBB"], "the stray column must not appear"
 
     print("\n=== SANITY CHECK: alignment ===")
-    print(f"  AAA (factor 2.0) -> ${mcap['AAA'].iloc[0]:,.0f}; "
-          f"BBB (no factor) -> ${mcap['BBB'].iloc[0]:,.0f}; ZZZ dropped.")
+    print(f"  AAA (factor 2.0) -> ${mcap['AAA'].iloc[0]:,.0f}; BBB (no factor) -> ${mcap['BBB'].iloc[0]:,.0f}; ZZZ dropped.")
     print("  A missing factor is 1.0, not NaN. Validated.")
 
 
@@ -366,8 +375,7 @@ def test_the_factor_is_aligned_not_assumed():
 # --------------------------------------------------------------------------- #
 #: The five bars Yahoo DID back-adjust for MNST's 2026-08-11 two-for-one, leaving 7,793
 #: others alone. Real dates, read off the live table.
-MNST_ISLANDS = pd.DatetimeIndex(["2026-07-20", "2026-07-21", "2026-07-22",
-                                 "2026-07-31", "2026-08-06"])
+MNST_ISLANDS = pd.DatetimeIndex(["2026-07-20", "2026-07-21", "2026-07-22", "2026-07-31", "2026-08-06"])
 MNST_SPLIT = pd.Timestamp("2026-08-11")
 
 
@@ -392,16 +400,14 @@ def _wide(published: pd.Series) -> dict[str, pd.DataFrame]:
 def _vendor(honest: pd.Series, dates: list[str]) -> pd.DataFrame:
     """Sharadar filing rows carrying the price the stock ACTUALLY traded at."""
     when = pd.DatetimeIndex(dates)
-    return pd.DataFrame({"ticker": "MNST", "date": when,
-                         "price": honest.reindex(when).to_numpy()})
+    return pd.DataFrame({"ticker": "MNST", "date": when, "price": honest.reindex(when).to_numpy()})
 
 
 #: Filing rows on stale bars only, so the observed wedge is a clean 0.5 -- which is what the
 #: live table gives: 0.50000 on all 122 rows from 1996 to 2026-08-07.
 VENDOR_DATES = ["2026-06-05", "2026-06-19", "2026-07-10", "2026-07-24", "2026-08-07"]
 
-MNST_ENTRY = {"split_vintage": {"MNST": [{"before": "2026-08-11", "ratio": 2.0,
-                                          "expect_wedge": 0.5}]}}
+MNST_ENTRY = {"split_vintage": {"MNST": [{"before": "2026-08-11", "ratio": 2.0, "expect_wedge": 0.5}]}}
 
 
 def test_a_split_vintage_mixture_is_put_back_on_one_basis():
@@ -413,17 +419,18 @@ def test_a_split_vintage_mixture_is_put_back_on_one_basis():
     the doubled bars and the five it must leave alone."""
     honest, published = _mnst_shaped()
     wide = _wide(published)
-    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES),
-                                  lambda *a: None)
+    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES), lambda *a: None)
 
     assert applied == 1
     for field in ("close_split", "close_total"):
         assert wide[field]["MNST"].to_numpy() == pytest.approx(honest.to_numpy(), rel=1e-12)
 
     print("\n=== SANITY CHECK: MNST put back on one basis ===")
-    print(f"  published spans {published.min():.2f}..{published.max():.2f} "
-          f"-> repaired {wide['close_split']['MNST'].min():.2f}.."
-          f"{wide['close_split']['MNST'].max():.2f}")
+    print(
+        f"  published spans {published.min():.2f}..{published.max():.2f} "
+        f"-> repaired {wide['close_split']['MNST'].min():.2f}.."
+        f"{wide['close_split']['MNST'].max():.2f}"
+    )
     print(f"  the {len(MNST_ISLANDS)} bars Yahoo had already adjusted were left alone.")
 
 
@@ -460,14 +467,12 @@ def test_a_vintage_entry_whose_defect_is_gone_is_refused():
     stops matching and the entry must NOT fire -- otherwise the repair lands on top of the
     vendor's own correction and halves a correct series."""
     honest, published = _mnst_shaped()
-    wide = _wide(honest)                      # Yahoo has fixed it: published == honest
+    wide = _wide(honest)  # Yahoo has fixed it: published == honest
     logged: list[str] = []
-    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES),
-                                  lambda msg, *a: logged.append(msg % a))
+    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES), lambda msg, *a: logged.append(msg % a))
 
     assert applied == 0
-    assert wide["close_split"]["MNST"].to_numpy() == pytest.approx(honest.to_numpy(),
-                                                                   rel=0, abs=0)
+    assert wide["close_split"]["MNST"].to_numpy() == pytest.approx(honest.to_numpy(), rel=0, abs=0)
     assert any("GONE or CHANGED" in m for m in logged), logged
 
 
@@ -481,8 +486,7 @@ def test_a_return_seam_removes_a_move_that_never_happened():
     step = 27.775 / 70.354
 
     wide = {"close_split": series.to_frame(), "close_total": series.to_frame()}
-    applied = apply_return_seams(wide, {"return_seams": {"JCI": [
-        {"date": "2007-07-02", "step": step}]}}, lambda *a: None)
+    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": step}]}}, lambda *a: None)
 
     assert applied == 1
     repaired = wide["close_split"]["JCI"]
@@ -497,8 +501,7 @@ def test_a_stale_return_seam_is_skipped_rather_than_applied():
     series = pd.Series(70.354, index=idx, name="JCI")
     wide = {"close_split": series.to_frame(), "close_total": series.to_frame()}
     logged: list[str] = []
-    applied = apply_return_seams(wide, {"return_seams": {"JCI": [
-        {"date": "2007-07-02", "step": 0.394789}]}}, lambda m, *a: logged.append(m % a))
+    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": 0.394789}]}}, lambda m, *a: logged.append(m % a))
 
     assert applied == 0
     assert (wide["close_split"]["JCI"].to_numpy() == 70.354).all()
@@ -514,12 +517,12 @@ def test_a_level_wedge_moves_S_and_only_S():
     idx = pd.DatetimeIndex(pd.bdate_range("2014-01-01", "2014-12-31"), name="date")
     before = pd.Timestamp("2014-07-01")
     close = pd.DataFrame({"IP": 40.0}, index=idx)
-    vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(
-        ["2014-03-31", "2014-05-15"]), "price": 40.0 * 1.07078})
+    vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(["2014-03-31", "2014-05-15"]), "price": 40.0 * 1.07078})
     factor = pd.DataFrame({"IP": 1.0}, index=idx)
 
-    out = apply_level_bugfix(factor, {"level_factor": {"IP": {"segments": [
-        {"before": "2014-07-01", "factor": 1.07078}]}}}, vendor, close, lambda *a: None)
+    out = apply_level_bugfix(
+        factor, {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}}, vendor, close, lambda *a: None
+    )
 
     early = out.loc[out.index < before, "IP"].to_numpy()
     assert early == pytest.approx(1.07078)
@@ -532,14 +535,16 @@ def test_a_level_wedge_whose_observation_moved_is_refused():
     gone and the multiply must not happen."""
     idx = pd.DatetimeIndex(pd.bdate_range("2014-01-01", "2014-12-31"), name="date")
     close = pd.DataFrame({"IP": 40.0}, index=idx)
-    vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(
-        ["2014-03-31", "2014-05-15"]), "price": 40.0})
+    vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(["2014-03-31", "2014-05-15"]), "price": 40.0})
     logged: list[str] = []
 
-    out = apply_level_bugfix(pd.DataFrame({"IP": 1.0}, index=idx),
-                             {"level_factor": {"IP": {"segments": [
-                                 {"before": "2014-07-01", "factor": 1.07078}]}}},
-                             vendor, close, lambda m, *a: logged.append(m % a))
+    out = apply_level_bugfix(
+        pd.DataFrame({"IP": 1.0}, index=idx),
+        {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}},
+        vendor,
+        close,
+        lambda m, *a: logged.append(m % a),
+    )
 
     assert (out["IP"] == 1.0).all()
     assert any("GONE or CHANGED" in m for m in logged), logged
@@ -558,8 +563,7 @@ def test_a_multi_segment_wedge_is_a_staircase_not_a_product():
     1.33100 -- which SKIPPED three of the five entries as "gone or changed" while they were
     simply being measured in the wrong place."""
     idx = pd.DatetimeIndex(pd.bdate_range("1995-01-02", "2002-12-31"), name="date")
-    ladder = [("1996-07-12", 1.61051), ("1997-07-11", 1.46410), ("1998-07-13", 1.33100),
-              ("1999-07-12", 1.21000), ("2000-07-12", 1.10000)]
+    ladder = [("1996-07-12", 1.61051), ("1997-07-11", 1.46410), ("1998-07-13", 1.33100), ("1999-07-12", 1.21000), ("2000-07-12", 1.10000)]
     close = pd.DataFrame({"HBAN": 20.0}, index=idx)
 
     # One filing row per quarter, priced at the wedge its own era carries.
@@ -572,19 +576,22 @@ def test_a_multi_segment_wedge_is_a_staircase_not_a_product():
     logged: list[str] = []
     out = apply_level_bugfix(
         pd.DataFrame({"HBAN": 1.0}, index=idx),
-        {"level_factor": {"HBAN": {"segments": [
-            {"before": d, "factor": f} for d, f in ladder]}}},
-        vendor, close, lambda m, *a: logged.append(m % a))
+        {"level_factor": {"HBAN": {"segments": [{"before": d, "factor": f} for d, f in ladder]}}},
+        vendor,
+        close,
+        lambda m, *a: logged.append(m % a),
+    )
 
     assert not any("SKIPPED" in m for m in logged), logged
     for era, (when, expected) in enumerate(ladder):
         low = pd.Timestamp(ladder[era - 1][0]) if era else pd.Timestamp.min
         got = out.loc[(out.index >= low) & (out.index < pd.Timestamp(when)), "HBAN"]
         assert got.to_numpy() == pytest.approx(expected), f"era ending {when}"
-    assert (out.loc[pd.Timestamp(ladder[-1][0]):, "HBAN"] == 1.0).all(), "the wedge closes"
+    assert (out.loc[pd.Timestamp(ladder[-1][0]) :, "HBAN"] == 1.0).all(), "the wedge closes"
 
     print("\n=== SANITY CHECK: HBAN's staircase is absolute, not cumulative ===")
     print(f"  earliest bars x{out['HBAN'].iloc[0]:.5f} (not the 4.17725 a product would give)")
+
 
 # --------------------------------------------------------------------------- #
 # the register file itself                                                    #
@@ -636,8 +643,7 @@ def test_the_shipped_register_is_loadable_and_states_its_evidence():
     n = sum(len(v) for v in blob["null_ret"].values())
     print("\n=== SANITY CHECK: the shipped register states its evidence ===")
     print(f"  sections: {[k for k in blob if not k.startswith('_')]}")
-    print(f"  null_ret: {n} entries over {list(blob['null_ret'])}, every one carrying a "
-          f"re-measurable `expect_ret`. Validated.")
+    print(f"  null_ret: {n} entries over {list(blob['null_ret'])}, every one carrying a re-measurable `expect_ret`. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -676,14 +682,13 @@ def test_a_null_ret_entry_deletes_the_bar_it_registered():
 
     print("\n=== SANITY CHECK: null_ret deletes exactly one cell ===")
     print(f"  DHR {DHR_DATE}: {before.at[pd.Timestamp(DHR_DATE), 'DHR']:+.5f} -> NaN")
-    print(f"  cells changed across the whole {ret.shape[0]}x{ret.shape[1]} frame: "
-          f"{int(moved.to_numpy().sum())}; CTRL bit-identical. Validated.")
+    print(f"  cells changed across the whole {ret.shape[0]}x{ret.shape[1]} frame: {int(moved.to_numpy().sum())}; CTRL bit-identical. Validated.")
 
 
 def test_a_null_ret_entry_whose_defect_is_gone_is_refused():
     """The guard, not the happy path. If Yahoo ever re-bases its own history the bar stops
     matching, and deleting a now-legitimate return would be a fabrication of its own."""
-    ret = _ret_frame(bad=0.012)               # a real +1.2% day where the seam used to be
+    ret = _ret_frame(bad=0.012)  # a real +1.2% day where the seam used to be
     logged: list[str] = []
     applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
 
@@ -701,15 +706,14 @@ def test_a_null_ret_entry_whose_defect_is_gone_is_refused():
 def test_the_null_ret_band_is_wide_enough_for_float_noise_and_no_wider():
     """`NULL_RET_STEP_TOL` is a band on the one-bar STEP `1 + ret`, so its width in RETURN
     space scales with the move. Pin both edges so a future retune is a visible test change."""
-    edge = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 0.9) - 1.0     # just inside
+    edge = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 0.9) - 1.0  # just inside
     outside = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 1.1) - 1.0  # just outside
 
     assert apply_null_ret(_ret_frame(bad=edge), DHR_ENTRY, lambda *a: None) == 1
     assert apply_null_ret(_ret_frame(bad=outside), DHR_ENTRY, lambda *a: None) == 0
 
     print("\n=== SANITY CHECK: the null_ret re-measurement band ===")
-    print(f"  step tolerance {NULL_RET_STEP_TOL:.4f} -> on a {DHR_RET:+.5f} return the band is "
-          f"+/-{(1.0 + DHR_RET) * NULL_RET_STEP_TOL:.5f}")
+    print(f"  step tolerance {NULL_RET_STEP_TOL:.4f} -> on a {DHR_RET:+.5f} return the band is +/-{(1.0 + DHR_RET) * NULL_RET_STEP_TOL:.5f}")
     print(f"  {edge:+.5f} fires, {outside:+.5f} does not. Validated.")
 
 
@@ -721,15 +725,14 @@ def test_a_null_ret_entry_outside_the_build_window_is_skipped():
     assert apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
     assert any("outside this build's window" in m for m in logged), logged
 
-    narrow = _ret_frame().loc[pd.Timestamp("2016-07-06"):]
+    narrow = _ret_frame().loc[pd.Timestamp("2016-07-06") :]
     logged.clear()
     assert apply_null_ret(narrow, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
     assert not narrow.isna().to_numpy().any()
     assert any("outside this build's window" in m for m in logged), logged
 
     print("\n=== SANITY CHECK: null_ret outside the window ===")
-    print("  ticker absent -> skipped; date before the window -> skipped; 0 cells nulled, "
-          "no exception. Validated.")
+    print("  ticker absent -> skipped; date before the window -> skipped; 0 cells nulled, no exception. Validated.")
 
 
 def test_an_already_missing_return_is_not_counted_as_applied():

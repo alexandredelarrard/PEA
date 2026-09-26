@@ -5,9 +5,9 @@ The two are independent cube parts / DAG tasks. This proves the KPI sets are a c
 partition, and that the embedding-only panel (`build_earnings_call_embedding_panel`) emits ONLY the
 embedding KPIs (no tone/uncertainty), sourcing call dates from `sections` (no FinBERT pass needed).
 """
+
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.text import earnings_call_features as ec
@@ -26,23 +26,28 @@ def test_kpi_sets_are_a_clean_partition():
 
 def test_embedding_panel_emits_only_embedding_kpis(monkeypatch):
     # mock the OpenAI-embedding KPI extraction (per ticker/quarter)
-    ekpi = pd.DataFrame({"ticker": ["AAA", "BBB"], "quarter": ["2025Q2", "2025Q2"],
-                         "ec_qa_coherence_mean": [0.82, 0.61], "ec_n_qa": [6.0, 8.0],
-                         "ec_qa_qq_sim": [0.7, 0.5]})
+    ekpi = pd.DataFrame(
+        {
+            "ticker": ["AAA", "BBB"],
+            "quarter": ["2025Q2", "2025Q2"],
+            "ec_qa_coherence_mean": [0.82, 0.61],
+            "ec_n_qa": [6.0, 8.0],
+            "ec_qa_qq_sim": [0.7, 0.5],
+        }
+    )
     monkeypatch.setattr(ec, "build_embedding_kpis", lambda emb: ekpi)
 
-    sections = pd.DataFrame({"ticker": ["AAA", "BBB"], "quarter": ["2025Q2", "2025Q2"],
-                             "as_of": ["2025-05-01", "2025-05-02"], "tag": ["qa", "qa"],
-                             "text": ["x", "y"]})
+    sections = pd.DataFrame(
+        {"ticker": ["AAA", "BBB"], "quarter": ["2025Q2", "2025Q2"], "as_of": ["2025-05-01", "2025-05-02"], "tag": ["qa", "qa"], "text": ["x", "y"]}
+    )
     peers = {"AAA": ["BBB"], "BBB": ["AAA"]}
     idx = pd.bdate_range("2025-04-01", "2025-07-01")
 
-    panel = ec.build_earnings_call_embedding_panel(embeddings=object(), peer_dict=peers,
-                                                   trading_index=idx, sections=sections)
+    panel = ec.build_earnings_call_embedding_panel(embeddings=object(), peer_dict=peers, trading_index=idx, sections=sections)
     assert not panel.empty, "embedding panel should build from the mocked KPIs"
     feat_cols = [c for c in panel.columns if c not in ("date", "ticker")]
     # every emitted feature must derive from an EMBEDDING KPI stem, and NONE from a sentiment one
-    emb_stems = [c[len("ec_"):] for c in ec._EMBEDDING_KPI_COLS]
+    emb_stems = [c[len("ec_") :] for c in ec._EMBEDDING_KPI_COLS]
     sent_stems = ("tone", "uncertainty", "vocab", "length_delta", "qa_gap")
     assert all(any(stem in c for stem in emb_stems) for c in feat_cols), feat_cols
     assert not any(bad in c for c in feat_cols for bad in sent_stems), feat_cols
@@ -61,5 +66,8 @@ def test_embedding_panel_empty_safe():
 
 
 if __name__ == "__main__":
-    import sys, pytest
+    import sys
+
+    import pytest
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

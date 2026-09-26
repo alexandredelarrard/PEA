@@ -150,8 +150,7 @@ def test_the_breadth_share_survives_a_filer_count_jump():
     assert abs(a.iloc[1]["ic_inst_breadth_chg"]) < 1e-9
     print("\n=== SANITY CHECK: D28 breadth share vs filer-count growth ===")
     print(
-        "  A's holder COUNT 5 -> 6 while the universe went 10 -> 12 filers: the share stays "
-        "0.50 and ic_inst_breadth_chg is 0.00, not +1. Validated."
+        "  A's holder COUNT 5 -> 6 while the universe went 10 -> 12 filers: the share stays 0.50 and ic_inst_breadth_chg is 0.00, not +1. Validated."
     )
 
 
@@ -188,7 +187,7 @@ def test_filing_lag_point_in_time():
     assert not (np.isclose(before.dropna(), 0.5)).any(), "13F leaked before filing lag"
     assert np.isclose(after.dropna().iloc[0], 0.5), "13F feature missing after filing lag"
     print("\n=== SANITY CHECK: 45-day filing-lag point-in-time ===")
-    print(f"  Q2 (Jun-30) ic_inst_cluster_buying only visible from {q2_asof.date()} onward, " f"never before. Leak-free. Validated.")
+    print(f"  Q2 (Jun-30) ic_inst_cluster_buying only visible from {q2_asof.date()} onward, never before. Leak-free. Validated.")
 
 
 def _two_quarters(shares_q1: dict, shares_q2: dict) -> pd.DataFrame:
@@ -679,11 +678,11 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
 
     print()
     print("=== SANITY: the shared 13F cleaner on LIVE dtypes ===")
-    print(f"  in : 3 rows, period as {type(rows[0]['period']).__name__}, " f"filing_date as timed Timestamp")
-    print(f"  out: {len(out)} rows after the amendment collapse; " f"AAA shares = {amended:,.0f} (the amendment, not the original)")
-    print(f"  period dtype {out['period'].dtype}, all at midnight; " f"time stripped from filing_date")
+    print(f"  in : 3 rows, period as {type(rows[0]['period']).__name__}, filing_date as timed Timestamp")
+    print(f"  out: {len(out)} rows after the amendment collapse; AAA shares = {amended:,.0f} (the amendment, not the original)")
+    print(f"  period dtype {out['period'].dtype}, all at midnight; time stripped from filing_date")
     print(f"  with `filing_date` projected away -> {len(degraded)} rows, no exception")
-    print("  `to_datetime('2024-05-10 14:32:05', format='%Y-%m-%d') -> NaT` " "while `to_day` -> a real date")
+    print("  `to_datetime('2024-05-10 14:32:05', format='%Y-%m-%d') -> NaT` while `to_day` -> a real date")
     print(
         "  CONCLUSION: one cleaner serves both grains, normalizes the dtypes the DB really "
         "returns, degrades when the optional column is absent, and lets the amendment win. "
@@ -731,7 +730,7 @@ def test_the_band_keeps_on_time_and_moderately_late_filings_and_drops_the_rest()
 
     assert sorted(out["ticker"]) == ["AAA", "BBB", "CCC"]
     print("\n=== SANITY CHECK: the [-45, +60] filing band ===")
-    print(f"  lags -10 / 0 / +60 / +61 / +400 vs the deadline -> kept " f"{sorted(out['ticker'])}. The boundary is inclusive at +60. Validated.")
+    print(f"  lags -10 / 0 / +60 / +61 / +400 vs the deadline -> kept {sorted(out['ticker'])}. The boundary is inclusive at +60. Validated.")
 
 
 def test_the_band_runs_before_the_amendment_dedup_so_an_on_time_original_survives():
@@ -767,7 +766,7 @@ def test_the_early_half_of_the_band_is_non_binding_on_the_live_table():
     )  # filed before the period itself
     assert sorted(out["ticker"]) == ["AAA"]
     print("\n=== SANITY CHECK: the early floor is an assertion, not work ===")
-    print("  -44d kept, -46d dropped. On the live table the drop count is 0 of 23,801,899 " "rows, so this half is non-binding today. Validated.")
+    print("  -44d kept, -46d dropped. On the live table the drop count is 0 of 23,801,899 rows, so this half is non-binding today. Validated.")
 
 
 def test_no_band_and_no_filing_date_both_degrade_instead_of_dropping():
@@ -779,7 +778,7 @@ def test_no_band_and_no_filing_date_both_degrade_instead_of_dropping():
     no_fd = [{k: v for k, v in r.items() if k != "filing_date"} for r in rows]
     assert len(_banded(no_fd)) == 2
     print("\n=== SANITY CHECK: the band degrades ===")
-    print("  band=None -> 2 rows (the elite table's opt-out); no `filing_date` column -> " "2 rows and a logged note, never a raise. Validated.")
+    print("  band=None -> 2 rows (the elite table's opt-out); no `filing_date` column -> 2 rows and a logged note, never a raise. Validated.")
 
 
 # --------------------------------------------------------------------------- #

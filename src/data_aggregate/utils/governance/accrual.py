@@ -45,6 +45,7 @@ Written generically (it takes a key column) so that the day board metrics are re
 director -- D29 says not today -- the same helper serves `age` and `tenure_years` with no
 change.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -52,11 +53,13 @@ import pandas as pd
 
 def _implied_year(obs: pd.DataFrame, value: str, key: str, date: str) -> pd.DataFrame:
     """(key, implied_year) for every observation that carries both a date and a value."""
-    df = pd.DataFrame({
-        "key": obs[key],
-        "year": pd.to_datetime(obs[date], errors="coerce").dt.year,
-        "value": pd.to_numeric(obs[value], errors="coerce"),
-    }).dropna(subset=["key", "year", "value"])
+    df = pd.DataFrame(
+        {
+            "key": obs[key],
+            "year": pd.to_datetime(obs[date], errors="coerce").dt.year,
+            "value": pd.to_numeric(obs[value], errors="coerce"),
+        }
+    ).dropna(subset=["key", "year", "value"])
     df["implied"] = df["year"] - df["value"]
     return df
 
@@ -100,9 +103,14 @@ ANCHOR_OUTLIER_YEARS = 2.0
 ANCHOR_MAX_OUTLIER_SHARE = 0.25
 
 
-def accrual_anchor(obs: pd.DataFrame, value: str, key: str = "pk", date: str = "as_of",
-                   outlier_years: float | None = ANCHOR_OUTLIER_YEARS,
-                   max_outlier_share: float = ANCHOR_MAX_OUTLIER_SHARE) -> pd.Series:
+def accrual_anchor(
+    obs: pd.DataFrame,
+    value: str,
+    key: str = "pk",
+    date: str = "as_of",
+    outlier_years: float | None = ANCHOR_OUTLIER_YEARS,
+    max_outlier_share: float = ANCHOR_MAX_OUTLIER_SHARE,
+) -> pd.Series:
     """Per-entity anchor YEAR implied by every observation of an accruing quantity.
 
     Returns a Series indexed by the entity key. Recompute the quantity at any date `d` as
@@ -136,8 +144,7 @@ def accrual_anchor(obs: pd.DataFrame, value: str, key: str = "pk", date: str = "
     return anchor[share.reindex(anchor.index) <= max_outlier_share]
 
 
-def accrual_dispersion(obs: pd.DataFrame, value: str, key: str = "pk",
-                       date: str = "as_of") -> pd.Series:
+def accrual_dispersion(obs: pd.DataFrame, value: str, key: str = "pk", date: str = "as_of") -> pd.Series:
     """Per-entity spread (max - min) of the implied anchor years — the key-collision alarm.
 
     Indexed like `accrual_anchor`. Entities observed once have a dispersion of 0.0, which is

@@ -46,6 +46,7 @@ EVERY COMBINE HERE IS ONE-TO-ONE, and each states it: `PanelMerger.add` raises o
 key (`concat(axis=1)` takes no `validate=`), the betas merge passes `validate="one_to_one"`,
 and `_load_targets` asserts the targets part's grain before it is used as a join side.
 """
+
 from __future__ import annotations
 
 import gc
@@ -54,13 +55,13 @@ import json
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
 from src.context import Context
+from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
 from src.data_aggregate.utils.common.gics import apply_categorical_codes
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
-from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
 from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
+from src.data_store.schema import Tables
 from src.utils.step import Step
 
 _CHUNK_ROWS = 200_000
@@ -70,7 +71,6 @@ _MIN_TARGET_COVERAGE_PCT = 50.0
 
 
 class StepAssembleCube(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
@@ -88,9 +88,12 @@ class StepAssembleCube(Step):
             # missing part leaves its columns in place, entirely NULL, and the cube's column
             # set still looks perfect -- observed here as 574 == 574 columns with 0 added / 0
             # removed while every f_ic_inst_*/f_ic_super_*/f_ic_insider_*/f_ceo_* value was NULL.
-            self._log.warning("Feature part '%s' is MISSING -> its features will be ALL-NULL in "
-                              "the cube (the column set will still look unchanged). Run its "
-                              "build step, then re-run assemble-cube.", name)
+            self._log.warning(
+                "Feature part '%s' is MISSING -> its features will be ALL-NULL in "
+                "the cube (the column set will still look unchanged). Run its "
+                "build step, then re-run assemble-cube.",
+                name,
+            )
             return None
         df = downcast_float32(normalize_date_col(self._context.store.load(name)))
         return None if df is None or df.empty else df
@@ -107,26 +110,23 @@ class StepAssembleCube(Step):
         # report what was ACTUALLY merged, not how many parts are registered: a missing part
         # silently shrinks the cube's feature set, so the two numbers must not be conflated
         if merged < len(FEATURE_PARTS):
-            self._log.warning("Only %d of %d registered feature parts were merged -> the cube "
-                              "is missing the others' features.", merged, len(FEATURE_PARTS))
-        self._log.info("Merged %d/%d feature parts -> %s rows x %s feature columns",
-                       merged, len(FEATURE_PARTS), len(panel), len(panel.columns) - 2)
+            self._log.warning(
+                "Only %d of %d registered feature parts were merged -> the cube is missing the others' features.", merged, len(FEATURE_PARTS)
+            )
+        self._log.info("Merged %d/%d feature parts -> %s rows x %s feature columns", merged, len(FEATURE_PARTS), len(panel), len(panel.columns) - 2)
         return panel
 
     # ---- the (date, ticker) base ---- #
     def _build_base(self, panel: pd.DataFrame, peers: dict) -> pd.DataFrame:
         betas = self._read_part(Tables.cube_part_betas)
-        base = panel if betas is None else panel.merge(
-            betas, on=["date", "ticker"], how="left", validate="one_to_one")
+        base = panel if betas is None else panel.merge(betas, on=["date", "ticker"], how="left", validate="one_to_one")
         if betas is None:
-            self._log.warning("%s missing -> the cube will carry no beta columns.",
-                              Tables.cube_part_betas)
+            self._log.warning("%s missing -> the cube will carry no beta columns.", Tables.cube_part_betas)
         del betas
         # peers JSON PRECOMPUTED PER TICKER (a few hundred unique strings shared across
         # every row). The old per-row json.dumps built millions of DISTINCT strings -- a
         # large object-column memory hog.
-        peer_json = {t: json.dumps(peers.get(t, {}), ensure_ascii=False)
-                     for t in base["ticker"].unique()}
+        peer_json = {t: json.dumps(peers.get(t, {}), ensure_ascii=False) for t in base["ticker"].unique()}
         base["peers"] = base["ticker"].map(peer_json)
         base = apply_categorical_codes(base, self._context, self._log)
         # index once -> a fast per-slice join below
@@ -143,12 +143,15 @@ class StepAssembleCube(Step):
         if targets is None:
             raise RuntimeError(f"{Tables.cube_part_targets} missing/empty -> run `build-target` first.")
         if "target_horizon" in targets.columns:
-            raise RuntimeError(f"{Tables.cube_part_targets} still carries `target_horizon` -> it is "
-                               f"the OLD LONG part. Re-run `build-target --full` to rewrite it wide.")
+            raise RuntimeError(
+                f"{Tables.cube_part_targets} still carries `target_horizon` -> it is "
+                f"the OLD LONG part. Re-run `build-target --full` to rewrite it wide."
+            )
         dup = int(targets.duplicated(["date", "ticker"]).sum())
         if dup:
-            raise RuntimeError(f"{Tables.cube_part_targets} has {dup} duplicate (date,ticker) rows "
-                               f"-- it must be WIDE by horizon. Re-run `build-target --full`.")
+            raise RuntimeError(
+                f"{Tables.cube_part_targets} has {dup} duplicate (date,ticker) rows -- it must be WIDE by horizon. Re-run `build-target --full`."
+            )
         return targets
 
     def _stream_cube(self, base: pd.DataFrame) -> None:
@@ -162,28 +165,36 @@ class StepAssembleCube(Step):
         total, matched, first = 0, 0, True
         label_cols = list(targets.columns)
         for j in range(0, len(base), _CHUNK_ROWS):
-            chunk = base.iloc[j:j + _CHUNK_ROWS].merge(
-                targets, left_index=True, right_index=True, how="left",
-                validate="one_to_one").reset_index()
+            chunk = base.iloc[j : j + _CHUNK_ROWS].merge(targets, left_index=True, right_index=True, how="left", validate="one_to_one").reset_index()
             if chunk.empty:
                 continue
             matched += int(chunk[label_cols].notna().any(axis=1).sum())
             if first:
-                self._context.store.replace(Tables.cube, chunk)   # clears + creates the schema
+                self._context.store.replace(Tables.cube, chunk)  # clears + creates the schema
                 first = False
             else:
                 self._context.store.bulk_seed(Tables.cube, chunk)  # chunked COPY-append
             total += len(chunk)
             chunk = None
-            gc.collect()              # hand the arrays + COPY buffer back before the next
+            gc.collect()  # hand the arrays + COPY buffer back before the next
         # the one number that surfaces a silently-failed join: a date dtype or ticker-case
         # mismatch leaves the labels entirely NaN and every other check still passes
         cov = 100 * matched / total if total else 0.0
         if cov < _MIN_TARGET_COVERAGE_PCT:
-            self._log.warning("Only %.1f%% of cube rows carry ANY target label (%s/%s) -> the "
-                              "targets join matched almost nothing. Check the (date, ticker) "
-                              "dtypes in %s.", cov, matched, total, Tables.cube_part_targets)
-        self._log.info("Saved cube to DB table '%s' (%s rows x %s columns, %s target columns, "
-                       "%.1f%% label coverage)", Tables.cube, total,
-                       len(base.columns) + len(label_cols) + len(base.index.names),
-                       len(label_cols), cov)
+            self._log.warning(
+                "Only %.1f%% of cube rows carry ANY target label (%s/%s) -> the "
+                "targets join matched almost nothing. Check the (date, ticker) "
+                "dtypes in %s.",
+                cov,
+                matched,
+                total,
+                Tables.cube_part_targets,
+            )
+        self._log.info(
+            "Saved cube to DB table '%s' (%s rows x %s columns, %s target columns, %.1f%% label coverage)",
+            Tables.cube,
+            total,
+            len(base.columns) + len(label_cols) + len(base.index.names),
+            len(label_cols),
+            cov,
+        )

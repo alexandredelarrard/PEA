@@ -6,19 +6,23 @@ convention in test_fetch_8k_13d_edgar.py, so the PRIMARY (structured) + FALLBACK
 (regex carve) extraction logic is exercised without a live
 `Company(ticker).get_filings(...)` call.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_store.schema import Tables
-
 from src.data_extract.utils.structure.fetch_filing_text import (
-    FILING_SECTION_MDA, FILING_SECTION_RISK, FILING_TEXT_MIN_CHARS)
-from src.data_extract.utils.structure.fetch_filing_text import (
-    _filing_sections, _structured_sections, build_ticker_filing_text, extract_item_sections,
+    FILING_SECTION_MDA,
+    FILING_SECTION_RISK,
+    FILING_TEXT_MIN_CHARS,
+    _filing_sections,
+    _structured_sections,
+    build_ticker_filing_text,
+    extract_item_sections,
 )
+from src.data_store.schema import Tables
 
 
 def _pad(text: str, min_chars: int = FILING_TEXT_MIN_CHARS) -> str:
@@ -80,8 +84,7 @@ def _fake_ten_k(risk_factors=None, management_discussion=None):
 
 
 def test_structured_sections_reads_ten_k_named_properties():
-    obj = _fake_ten_k(risk_factors=_pad("structured risk body"),
-                      management_discussion=_pad("structured mda body"))
+    obj = _fake_ten_k(risk_factors=_pad("structured risk body"), management_discussion=_pad("structured mda body"))
     sections = _structured_sections(obj, "10-K")
     assert "structured risk body" in sections[FILING_SECTION_RISK]
     assert "structured mda body" in sections[FILING_SECTION_MDA]
@@ -102,6 +105,7 @@ def test_structured_sections_10q_uses_part_i_item_2():
         def __getitem__(self, key):
             assert key == "Part I, Item 2"
             return _pad("structured 10-Q mda")
+
     sections = _structured_sections(FakeTenQ(), "10-Q")
     assert FILING_SECTION_RISK not in sections
     assert "structured 10-Q mda" in sections[FILING_SECTION_MDA]
@@ -111,18 +115,21 @@ def test_structured_sections_survives_obj_attribute_errors():
     """A TenK whose properties raise (a real edgartools parse edge case) must
     yield an empty dict, not propagate -- the caller then falls back to the
     regex carve on filing.text()."""
+
     class BrokenTenK:
         @property
         def risk_factors(self):
             raise RuntimeError("parser exploded")
+
     assert _structured_sections(BrokenTenK(), "10-K") == {}
 
 
 # --- Combined PRIMARY + FALLBACK ---------------------------------------------- #
-def _fake_filing(*, form="10-K", accession="0001-24-000099", filing_date="2024-03-01",
-                 period_of_report="2023-12-31", obj=None, text=None):
+def _fake_filing(*, form="10-K", accession="0001-24-000099", filing_date="2024-03-01", period_of_report="2023-12-31", obj=None, text=None):
     filing = SimpleNamespace(
-        accession_number=accession, form=form, filing_date=filing_date,
+        accession_number=accession,
+        form=form,
+        filing_date=filing_date,
         period_of_report=period_of_report,
     )
     filing.obj = (lambda: obj) if obj is not None else (lambda: (_ for _ in ()).throw(RuntimeError("no parse")))
@@ -155,7 +162,7 @@ def test_filing_sections_survives_a_totally_unparseable_filing():
     """Both .obj() and .text() failing (a genuinely bad filing) must return an
     empty dict rather than raising -- the caller (build_ticker_filing_text) then
     simply emits zero rows for it."""
-    filing = _fake_filing()   # obj=None -> raises; text=None -> raises
+    filing = _fake_filing()  # obj=None -> raises; text=None -> raises
     assert _filing_sections(filing) == {}
 
 
@@ -172,7 +179,8 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
     )
 
     out = build_ticker_filing_text(
-        "AAPL", "0000320193",
+        "AAPL",
+        "0000320193",
         since=pd.Timestamp("2024-01-01"),
         done_accessions=frozenset({"0001-done"}),
     )[Tables.filing_risk_text]
@@ -182,7 +190,7 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
 
 
 def test_build_ticker_filing_text_returns_no_rows_for_an_unparseable_filing(monkeypatch):
-    filing = _fake_filing(accession="0001-bad")   # obj/text both raise
+    filing = _fake_filing(accession="0001-bad")  # obj/text both raise
     fake_company = SimpleNamespace(get_filings=lambda form: [filing])
     monkeypatch.setattr(
         "edgar.Company",

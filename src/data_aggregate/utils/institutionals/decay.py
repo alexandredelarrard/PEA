@@ -39,10 +39,12 @@ all tickers at once. Two alternatives were rejected:
     loses the early history to floating-point cancellation. The recursion is exact and, at
     ~3,800 iterations over a 500-wide float64 row, still runs in well under a second.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
 from src.data_aggregate.utils.common.data_utils import to_day
 
 
@@ -61,8 +63,7 @@ def snap_to_grid(dates: pd.Series, trading_index: pd.DatetimeIndex) -> pd.Series
         return pd.Series(pd.NaT, index=dates.index)
     pos = idx.searchsorted(d, side="left")
     grid = idx.to_numpy()
-    snapped = np.where(pos < len(idx), grid[np.clip(pos, 0, len(idx) - 1)],
-                       np.datetime64("NaT"))
+    snapped = np.where(pos < len(idx), grid[np.clip(pos, 0, len(idx) - 1)], np.datetime64("NaT"))
     return pd.Series(snapped, index=dates.index)
 
 

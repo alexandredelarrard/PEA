@@ -675,7 +675,7 @@ def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:
 
 def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None, level_factor: pd.DataFrame | None) -> pd.DataFrame | None:
     if shares_out_history is None or shares_out_history.empty or stock_close is None or stock_close.empty:
-        _log.warning("No shares outstanding or close -> the 11 size-scaled insider features " "are skipped.")
+        _log.warning("No shares outstanding or close -> the 11 size-scaled insider features are skipped.")
         return None
     mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
     if mcap.empty:
@@ -702,8 +702,8 @@ def _report_oversized(t: pd.DataFrame, shares_out: pd.DataFrame) -> None:
         return
     top = flagged.head(5)
     _log.warning(
-        "insider: %s transaction(s) above %.0f%% of shares outstanding, kept and " "reported: %s",
+        "insider: %s transaction(s) above %.0f%% of shares outstanding, kept and reported: %s",
         len(flagged),
         100 * FLAG_PCT_SHARES_OUTSTANDING,
-        ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} " f"{r.pct_shares_outstanding:.1%}" for r in top.itertuples()),
+        ", ".join(f"{r.ticker} {r.day:%Y-%m-%d} {r.code} {r.pct_shares_outstanding:.1%}" for r in top.itertuples()),
     )

@@ -1,31 +1,30 @@
 """Tests for the low-SNR-target training changes:
 
-  * IC-based early stopping (eval_metric="ic") -> LightGBM keeps training past a
-    couple of rounds and picks a reproducible best_iteration (RMSE stopped ~1).
-  * ridge linear baseline achieves OOS IC in the same ballpark as LightGBM on a
-    (weak, linear) cross-sectional signal -- the "is the GBDT even worth it?"
-    benchmark.
+* IC-based early stopping (eval_metric="ic") -> LightGBM keeps training past a
+  couple of rounds and picks a reproducible best_iteration (RMSE stopped ~1).
+* ridge linear baseline achieves OOS IC in the same ballpark as LightGBM on a
+  (weak, linear) cross-sectional signal -- the "is the GBDT even worth it?"
+  benchmark.
 """
+
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pandas as pd
 
-import warnings
-
-from src.modelling.long_short.utils import model as ml
 from src.modelling.long_short.utils import baselines
+from src.modelling.long_short.utils import model as ml
 
 
 def test_standardize_no_warning_on_all_nan_column():
     """A feature that is entirely NaN in a fold must not emit numpy
     'Mean of empty slice' / 'Degrees of freedom <= 0' RuntimeWarnings, and its
     standardized column becomes all zeros (contributes nothing)."""
-    X = np.array([[1.0, np.nan, 5.0],
-                  [2.0, np.nan, 6.0],
-                  [3.0, np.nan, 7.0]])
+    X = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, 6.0], [3.0, np.nan, 7.0]])
     with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)   # any RuntimeWarning -> failure
+        warnings.simplefilter("error", RuntimeWarning)  # any RuntimeWarning -> failure
         Xs, mean, std = baselines._standardize(X)
 
     assert np.allclose(Xs[:, 1], 0.0), "all-NaN column should standardize to zeros"
@@ -48,7 +47,7 @@ def _panel(T: int = 300, N: int = 80, K: int = 8, noise: float = 1.5, seed: int 
     for d in dates:
         X = rng.normal(0, 1, (N, K))
         raw = X @ w + rng.normal(0, noise, N)
-        y = pd.Series(raw).rank(pct=True).to_numpy()      # rank target in [0,1]
+        y = pd.Series(raw).rank(pct=True).to_numpy()  # rank target in [0,1]
         block = pd.DataFrame(X, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", tickers)
@@ -61,17 +60,14 @@ def test_ic_early_stopping_does_not_collapse():
     panel, feats = _panel()
     tr, val = ml.temporal_valid_split(panel, train_frac=0.8)
 
-    b = ml.train_ranker(tr, feats, "y", valid_panel=val,
-                        num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
-    b2 = ml.train_ranker(tr, feats, "y", valid_panel=val,
-                         num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
+    b = ml.train_ranker(tr, feats, "y", valid_panel=val, num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
+    b2 = ml.train_ranker(tr, feats, "y", valid_panel=val, num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
 
     assert b.best_iteration > 1, "IC early stopping collapsed to ~1 round"
     assert b.best_iteration == b2.best_iteration, "IC early stopping not reproducible"
 
     print("\n=== SANITY CHECK: IC-based early stopping ===")
-    print(f"  best_iteration={b.best_iteration} (>1, reproducible) -> training no longer "
-          "stops after ~1 RMSE-flat round.")
+    print(f"  best_iteration={b.best_iteration} (>1, reproducible) -> training no longer stops after ~1 RMSE-flat round.")
 
 
 def _cv_ic(panel, feats, fit_fn, n_splits=4, embargo=5):
@@ -91,11 +87,12 @@ def _cv_ic(panel, feats, fit_fn, n_splits=4, embargo=5):
 def test_ridge_baseline_close_to_lightgbm():
     panel, feats = _panel()
 
-    lgb_ic = _cv_ic(panel, feats, lambda tr, val: ml.train_ranker(
-        tr, feats, "y", valid_panel=val, num_boost_round=400,
-        early_stopping_rounds=50, eval_metric="ic"))
-    ridge_ic = _cv_ic(panel, feats, lambda tr, val: baselines.train_ridge(
-        tr, feats, "y", alpha=10.0))
+    lgb_ic = _cv_ic(
+        panel,
+        feats,
+        lambda tr, val: ml.train_ranker(tr, feats, "y", valid_panel=val, num_boost_round=400, early_stopping_rounds=50, eval_metric="ic"),
+    )
+    ridge_ic = _cv_ic(panel, feats, lambda tr, val: baselines.train_ridge(tr, feats, "y", alpha=10.0))
 
     assert lgb_ic > 0 and ridge_ic > 0, "both models should show positive OOS IC on real signal"
     # "close": the ridge baseline is within striking distance of the GBDT
@@ -103,8 +100,7 @@ def test_ridge_baseline_close_to_lightgbm():
     assert ridge_ic >= 0.7 * lgb_ic, "ridge much worse than lgb -> baseline not competitive"
 
     print("\n=== SANITY CHECK: ridge baseline vs LightGBM (OOS IC) ===")
-    print(f"  purged-CV mean IC:  LightGBM={lgb_ic:+.4f}   ridge={ridge_ic:+.4f}   "
-          f"|diff|={abs(ridge_ic - lgb_ic):.4f}")
+    print(f"  purged-CV mean IC:  LightGBM={lgb_ic:+.4f}   ridge={ridge_ic:+.4f}   |diff|={abs(ridge_ic - lgb_ic):.4f}")
     print("  -> the linear baseline is competitive with the GBDT on this target. Validated.")
 
 
@@ -114,14 +110,13 @@ def test_elasticnet_selects_where_ridge_keeps_everything():
     rng = np.random.default_rng(0)
     n, K = 3000, 10
     X = rng.normal(0, 1, (n, K))
-    X[:, 1] = X[:, 0] + rng.normal(0, 0.05, n)        # f1 nearly collinear with f0
-    y = 1.5 * X[:, 0] + rng.normal(0, 1.0, n)          # only the f0/f1 cluster matters
+    X[:, 1] = X[:, 0] + rng.normal(0, 0.05, n)  # f1 nearly collinear with f0
+    y = 1.5 * X[:, 0] + rng.normal(0, 1.0, n)  # only the f0/f1 cluster matters
     feats = [f"f{j}" for j in range(K)]
     panel = pd.DataFrame(X, columns=feats)
     panel["y"] = y
 
-    en = baselines.train_elasticnet(panel, feats, "y", alpha=0.1, l1_ratio=0.7,
-                                    max_iter=3000, tol=1e-9)
+    en = baselines.train_elasticnet(panel, feats, "y", alpha=0.1, l1_ratio=0.7, max_iter=3000, tol=1e-9)
     rg = baselines.train_ridge(panel, feats, "y", alpha=10.0)
 
     en_zeros = int((np.abs(en.coef) < 1e-8).sum())
@@ -134,30 +129,33 @@ def test_elasticnet_selects_where_ridge_keeps_everything():
 
     print("\n=== SANITY CHECK: elastic net selection vs ridge ===")
     print(f"  zero coefficients: elasticnet={en_zeros}/{K}, ridge={rg_zeros}/{K}")
-    print(f"  informative f0/f1 |coef| = {abs(en.coef[0]) + abs(en.coef[1]):.2f} "
-          f"vs noise sum {np.abs(en.coef[2:]).sum():.3f} -> L1 selects, L2 shares. Validated.")
+    print(
+        f"  informative f0/f1 |coef| = {abs(en.coef[0]) + abs(en.coef[1]):.2f} "
+        f"vs noise sum {np.abs(en.coef[2:]).sum():.3f} -> L1 selects, L2 shares. Validated."
+    )
 
 
 def test_elasticnet_baseline_close_to_lightgbm():
     panel, feats = _panel()
 
-    lgb_ic = _cv_ic(panel, feats, lambda tr, val: ml.train_ranker(
-        tr, feats, "y", valid_panel=val, num_boost_round=400,
-        early_stopping_rounds=50, eval_metric="ic"))
-    en_ic = _cv_ic(panel, feats, lambda tr, val: baselines.train_elasticnet(
-        tr, feats, "y", alpha=0.001, l1_ratio=0.5, max_iter=1000))
+    lgb_ic = _cv_ic(
+        panel,
+        feats,
+        lambda tr, val: ml.train_ranker(tr, feats, "y", valid_panel=val, num_boost_round=400, early_stopping_rounds=50, eval_metric="ic"),
+    )
+    en_ic = _cv_ic(panel, feats, lambda tr, val: baselines.train_elasticnet(tr, feats, "y", alpha=0.001, l1_ratio=0.5, max_iter=1000))
 
     assert lgb_ic > 0 and en_ic > 0
     assert abs(en_ic - lgb_ic) < 0.05, f"elasticnet {en_ic:.4f} vs lgb {lgb_ic:.4f} not close"
     assert en_ic >= 0.7 * lgb_ic
 
     print("\n=== SANITY CHECK: elastic-net baseline vs LightGBM (OOS IC) ===")
-    print(f"  purged-CV mean IC:  LightGBM={lgb_ic:+.4f}   elasticnet={en_ic:+.4f}   "
-          f"|diff|={abs(en_ic - lgb_ic):.4f}  -> competitive. Validated.")
+    print(f"  purged-CV mean IC:  LightGBM={lgb_ic:+.4f}   elasticnet={en_ic:+.4f}   |diff|={abs(en_ic - lgb_ic):.4f}  -> competitive. Validated.")
 
 
 class _Const:
     """Model stub with a booster-compatible predict(X) that ignores X."""
+
     def __init__(self, vals):
         self.vals = np.asarray(vals, dtype=float)
 
@@ -168,7 +166,7 @@ class _Const:
 def test_ensemble_predict_is_per_day_average_of_zscores():
     d = pd.Timestamp("2020-01-01")
     panel = pd.DataFrame({"date": [d] * 4, "ticker": list("ABCD"), "f0": [0.0, 0.0, 0.0, 0.0]})
-    up, down = _Const([1, 2, 3, 4]), _Const([4, 3, 2, 1])   # perfectly opposed
+    up, down = _Const([1, 2, 3, 4]), _Const([4, 3, 2, 1])  # perfectly opposed
 
     # two opposed models -> per-day z-scores cancel -> ensemble ~ 0
     # (ensemble_predict returns (blended_score, members) -- take the blended score)
@@ -177,7 +175,8 @@ def test_ensemble_predict_is_per_day_average_of_zscores():
 
     # single model -> just its per-day z-score
     one, _ = ml.ensemble_predict({"a": up}, panel, ["f0"])
-    zu = pd.Series([1.0, 2, 3, 4]); zu = (zu - zu.mean()) / zu.std()
+    zu = pd.Series([1.0, 2, 3, 4])
+    zu = (zu - zu.mean()) / zu.std()
     assert np.allclose(one.to_numpy(), zu.to_numpy(), atol=1e-9)
 
     print("\n=== SANITY CHECK: ensemble_predict ===")
@@ -191,8 +190,7 @@ def _cv_three(panel, feats, n_splits=4, embargo=5):
         if tr.empty or te.empty:
             continue
         sub_tr, sub_val = ml.temporal_valid_split(tr)
-        lgbm = ml.train_ranker(sub_tr, feats, "y", valid_panel=sub_val,
-                               num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
+        lgbm = ml.train_ranker(sub_tr, feats, "y", valid_panel=sub_val, num_boost_round=400, early_stopping_rounds=50, eval_metric="ic")
         en = baselines.train_elasticnet(sub_tr, feats, "y", alpha=0.001, l1_ratio=0.5)
         members = {"lightgbm": lgbm, "elasticnet": en}
         il.append(ml.daily_ic(te, ml.predict(lgbm, te, feats), "y", horizon=1)["mean_ic"])
@@ -212,5 +210,4 @@ def test_ensemble_at_least_matches_average_of_members():
     assert ic_ens >= (ic_lgb + ic_en) / 2 - 0.03
 
     print("\n=== SANITY CHECK: ensemble vs members (OOS IC) ===")
-    print(f"  LightGBM={ic_lgb:+.4f}  elasticnet={ic_en:+.4f}  ENSEMBLE={ic_ens:+.4f} "
-          f"(>= mean of members). Validated.")
+    print(f"  LightGBM={ic_lgb:+.4f}  elasticnet={ic_en:+.4f}  ENSEMBLE={ic_ens:+.4f} (>= mean of members). Validated.")

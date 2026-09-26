@@ -74,11 +74,12 @@ it reads is wrong: `DHR`'s `mom_12_1` sits at rank 0.67 the day before 2016-07-0
 lookback -- a window sitting entirely on one side of the seam is internally consistent and is
 left alone.
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -97,8 +98,6 @@ import pandas as pd
 # `split_events` to `src/utils/` would satisfy the letter of the rule, but it would drag
 # `TranslationReport`, both registers and the whole corroboration rule with it -- a refactor
 # of the extract layer that this plan has no mandate for.
-from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    split_events as genuine_splits)
 
 #: |S - 1| below which the two event sets are the SAME set and the factor is exactly 1.0.
 #: Float noise from multiplying and then dividing the same ratios is ~1e-16; the smallest
@@ -108,8 +107,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 LEVEL_SNAP_TOL = 1e-12
 
 
-def _suffix_factor(events: pd.DataFrame, tickers: Sequence[str],
-                   stamps: np.ndarray) -> dict[str, np.ndarray]:
+def _suffix_factor(events: pd.DataFrame, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
     """Per ticker, `PROD(value : event date > d)` evaluated at every `d` in `stamps`.
 
     A suffix product plus a `searchsorted`, not a loop over events: the products are formed
@@ -137,14 +135,12 @@ def _suffix_factor(events: pd.DataFrame, tickers: Sequence[str],
         suffix[:-1] = np.cumprod(values[::-1])[::-1]
         # `right`: an event dated exactly d restates the bars BEFORE d and leaves d itself
         # alone, matching `field_map.forward_split_factor`'s strict `<`.
-        pos = np.searchsorted(group["date"].to_numpy(dtype="datetime64[ns]"), stamps,
-                              side="right")
+        pos = np.searchsorted(group["date"].to_numpy(dtype="datetime64[ns]"), stamps, side="right")
         out[ticker] = suffix[pos]
     return out
 
 
-def level_factor(index: pd.DatetimeIndex, universe: Sequence[str],
-                 yf_splits: pd.DataFrame, genuine_splits: pd.DataFrame) -> pd.DataFrame:
+def level_factor(index: pd.DatetimeIndex, universe: Sequence[str], yf_splits: pd.DataFrame, genuine_splits: pd.DataFrame) -> pd.DataFrame:
     """`S(d)` as a wide (date x ticker) frame of MULTIPLIERS, 1.0 where nothing applies.
 
     `yf_splits` is `prices_splits` (`ticker`, `date`, `ratio`) -- every factor Yahoo applied
@@ -163,9 +159,8 @@ def level_factor(index: pd.DatetimeIndex, universe: Sequence[str],
 
     stamps = idx.to_numpy(dtype="datetime64[ns]")
     numerator = _suffix_factor(
-        (yf_splits.rename(columns={"ratio": "value"})
-         if yf_splits is not None and "ratio" in yf_splits.columns else yf_splits),
-        columns, stamps)
+        (yf_splits.rename(columns={"ratio": "value"}) if yf_splits is not None and "ratio" in yf_splits.columns else yf_splits), columns, stamps
+    )
     denominator = _suffix_factor(genuine_splits, columns, stamps)
 
     for ticker in set(numerator) | set(denominator):
@@ -197,12 +192,12 @@ def describe(factor: pd.DataFrame, top: int = 10) -> str:
     if not rows or not cells:
         return "level_factor: 1.0 everywhere -- no spinoff factor to undo"
     extreme = factor.where(off).stack(future_stack=True).dropna()
-    ranked = (extreme.groupby(level=1).max().pipe(
-        lambda s: s.reindex(np.log(s).abs().sort_values(ascending=False).index)).head(top))
-    return (f"level_factor: {rows:,} of {cells:,} cells != 1.0 "
-            f"({rows / cells:.2%}) across {tickers} of {factor.shape[1]} tickers; "
-            f"largest |log S|: "
-            + ", ".join(f"{t} x{v:.4f}" for t, v in ranked.items()))
+    ranked = extreme.groupby(level=1).max().pipe(lambda s: s.reindex(np.log(s).abs().sort_values(ascending=False).index)).head(top)
+    return (
+        f"level_factor: {rows:,} of {cells:,} cells != 1.0 "
+        f"({rows / cells:.2%}) across {tickers} of {factor.shape[1]} tickers; "
+        f"largest |log S|: " + ", ".join(f"{t} x{v:.4f}" for t, v in ranked.items())
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -271,14 +266,13 @@ def load_bugfix(config_dir: str | Path) -> dict:
         return {}
     blob = json.loads(path.read_text(encoding="utf-8"))
     if "_APPROVED" not in blob:
-        raise ValueError(f"{path} has no `_APPROVED` block -- refusing to apply a price "
-                         "repair nobody signed off. Add one stating who measured it and how.")
+        raise ValueError(
+            f"{path} has no `_APPROVED` block -- refusing to apply a price repair nobody signed off. Add one stating who measured it and how."
+        )
     return blob
 
 
-def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict,
-                        vendor_price: pd.DataFrame | None,
-                        log: Callable[..., None]) -> int:
+def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict, vendor_price: pd.DataFrame | None, log: Callable[..., None]) -> int:
     """Put a series back on ONE split basis when the vendor left it on two. Returns the
     number of entries applied.
 
@@ -322,20 +316,26 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict,
             ahead = series.index[series.index >= when]
             behind = series.index[series.index < when]
             if not len(ahead) or not len(behind):
-                log("price bugfix: %s split-vintage SKIPPED -- this build's window does not "
-                    "straddle %s, so there is no anchor bar to walk back from",
-                    ticker, when.date())
+                log(
+                    "price bugfix: %s split-vintage SKIPPED -- this build's window does not straddle %s, so there is no anchor bar to walk back from",
+                    ticker,
+                    when.date(),
+                )
                 continue
 
             was = observed_wedge(ticker, when, vendor_price, close)
             if was is None:
-                log("price bugfix: %s split-vintage SKIPPED -- no vendor price before %s, so "
-                    "the defect cannot be re-verified", ticker, when.date())
+                log("price bugfix: %s split-vintage SKIPPED -- no vendor price before %s, so the defect cannot be re-verified", ticker, when.date())
                 continue
             if abs(was / expect - 1.0) > BUGFIX_WEDGE_TOL:
-                log("price bugfix: %s split-vintage SKIPPED at %s -- the defect is GONE or CHANGED: "
+                log(
+                    "price bugfix: %s split-vintage SKIPPED at %s -- the defect is GONE or CHANGED: "
                     "observed wedge %.5f, register expects %.5f. Re-measure the entry.",
-                    ticker, when.date(), was, expect)
+                    ticker,
+                    when.date(),
+                    was,
+                    expect,
+                )
                 continue
 
             multiplier, flips = _vintage_multiplier(series, ahead[0], ratio)
@@ -343,18 +343,28 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict,
 
             applied += 1
             now = observed_wedge(ticker, when, vendor_price, wide["close_split"])
-            log("price bugfix: %s split-vintage REPAIRED across %s (ratio %g) -- %d flip(s), "
-                "%d of %d bar(s) rescaled; wedge %.5f -> %s", ticker, when.date(), ratio,
-                flips, int((multiplier != 1.0).sum()), len(series), was,
-                "%.5f" % now if now is not None else "unmeasurable")
+            log(
+                "price bugfix: %s split-vintage REPAIRED across %s (ratio %g) -- %d flip(s), %d of %d bar(s) rescaled; wedge %.5f -> %s",
+                ticker,
+                when.date(),
+                ratio,
+                flips,
+                int((multiplier != 1.0).sum()),
+                len(series),
+                was,
+                "%.5f" % now if now is not None else "unmeasurable",
+            )
             if now is not None and abs(now - 1.0) > BUGFIX_WEDGE_TOL:
-                log("price bugfix: %s split-vintage did NOT reach parity -- wedge %.5f after "
-                    "the walk. The repair ran; treat the residual as unexplained.", ticker, now)
+                log(
+                    "price bugfix: %s split-vintage did NOT reach parity -- wedge %.5f after "
+                    "the walk. The repair ran; treat the residual as unexplained.",
+                    ticker,
+                    now,
+                )
     return applied
 
 
-def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp,
-                        ratio: float) -> tuple[pd.Series, int]:
+def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp, ratio: float) -> tuple[pd.Series, int]:
     """The per-bar rescaling that puts `series` back on the basis its `anchor` bar is on.
 
     Walking BACKWARDS is what makes this well-posed: the newest bar is the one whose basis we
@@ -373,17 +383,16 @@ def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp,
             out[i] = out[i + 1]
             continue
         step = (values[i + 1] * out[i + 1]) / here
-        if abs(step * ratio - 1.0) < VINTAGE_FLIP_TOL:      # this bar reads `ratio` too HIGH
+        if abs(step * ratio - 1.0) < VINTAGE_FLIP_TOL:  # this bar reads `ratio` too HIGH
             out[i], flips = out[i + 1] / ratio, flips + 1
-        elif abs(step / ratio - 1.0) < VINTAGE_FLIP_TOL:    # ... or `ratio` too LOW
+        elif abs(step / ratio - 1.0) < VINTAGE_FLIP_TOL:  # ... or `ratio` too LOW
             out[i], flips = out[i + 1] * ratio, flips + 1
         else:
             out[i] = out[i + 1]
     return pd.Series(out, index=series.index), flips
 
 
-def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict,
-                       log: Callable[..., None]) -> int:
+def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callable[..., None]) -> int:
     """Repair a discontinuity that is not a price move. Returns the number applied.
 
     A seam is a one-bar ratio the market did not produce -- Yahoo applying an adjustment on
@@ -408,36 +417,41 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict,
             when, expected = pd.Timestamp(entry["date"]), float(entry["step"])
             frame = wide.get("close_split")
             if frame is None or ticker not in frame.columns or when not in frame.index:
-                log("price bugfix: %s %s seam SKIPPED -- outside this build's window",
-                    ticker, when.date())
+                log("price bugfix: %s %s seam SKIPPED -- outside this build's window", ticker, when.date())
                 continue
             series = frame[ticker]
             position = int(series.index.get_loc(when))
             if position == 0:
-                log("price bugfix: %s %s seam SKIPPED -- first bar, no step to measure",
-                    ticker, when.date())
+                log("price bugfix: %s %s seam SKIPPED -- first bar, no step to measure", ticker, when.date())
                 continue
             prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
             if not (np.isfinite(prior) and np.isfinite(here)) or prior <= 0:
-                log("price bugfix: %s %s seam SKIPPED -- no usable bar pair",
-                    ticker, when.date())
+                log("price bugfix: %s %s seam SKIPPED -- no usable bar pair", ticker, when.date())
                 continue
             observed = here / prior
             if abs(observed / expected - 1.0) > BUGFIX_STEP_TOL:
-                log("price bugfix: %s %s seam SKIPPED -- the defect is GONE or CHANGED: "
+                log(
+                    "price bugfix: %s %s seam SKIPPED -- the defect is GONE or CHANGED: "
                     "observed step %.6f, register says %.6f. Re-measure the entry.",
-                    ticker, when.date(), observed, expected)
+                    ticker,
+                    when.date(),
+                    observed,
+                    expected,
+                )
                 continue
             _rescale(wide, ticker, (frame.index < when, observed))
             applied += 1
-            log("price bugfix: %s %s seam REPAIRED -- every bar before it rescaled by %.6f "
-                "(it was a %+.2f%% one-bar 'return' that never happened)",
-                ticker, when.date(), observed, (observed - 1) * 100)
+            log(
+                "price bugfix: %s %s seam REPAIRED -- every bar before it rescaled by %.6f (it was a %+.2f%% one-bar 'return' that never happened)",
+                ticker,
+                when.date(),
+                observed,
+                (observed - 1) * 100,
+            )
     return applied
 
 
-def apply_null_ret(ret: pd.DataFrame, bugfix: dict,
-                   log: Callable[..., None]) -> int:
+def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) -> int:
     """Delete a one-bar return that is fabricated but whose CORRECT value is unknown. Mutates
     `ret` in place and returns the number of entries applied.
 
@@ -469,30 +483,35 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict,
         for entry in entries:
             when, expected = pd.Timestamp(entry["date"]), float(entry["expect_ret"])
             if ticker not in ret.columns or when not in ret.index:
-                log("price bugfix: %s %s null_ret SKIPPED -- outside this build's window",
-                    ticker, when.date())
+                log("price bugfix: %s %s null_ret SKIPPED -- outside this build's window", ticker, when.date())
                 continue
             observed = float(ret.at[when, ticker])
             if not np.isfinite(observed):
-                log("price bugfix: %s %s null_ret SKIPPED -- already not a number",
-                    ticker, when.date())
+                log("price bugfix: %s %s null_ret SKIPPED -- already not a number", ticker, when.date())
                 continue
             # compared as a one-bar STEP, the same quantity `apply_return_seams` compares
             if abs((1.0 + observed) / (1.0 + expected) - 1.0) > NULL_RET_STEP_TOL:
-                log("price bugfix: %s %s null_ret SKIPPED -- the defect is GONE or CHANGED: "
+                log(
+                    "price bugfix: %s %s null_ret SKIPPED -- the defect is GONE or CHANGED: "
                     "observed ret %+.5f, register says %+.5f. Re-measure the entry.",
-                    ticker, when.date(), observed, expected)
+                    ticker,
+                    when.date(),
+                    observed,
+                    expected,
+                )
                 continue
             ret.at[when, ticker] = np.nan
             applied += 1
-            log("price bugfix: %s %s null_ret APPLIED -- a %+.2f%% one-bar 'return' deleted "
-                "(the price legs are left exactly as published)",
-                ticker, when.date(), observed * 100)
+            log(
+                "price bugfix: %s %s null_ret APPLIED -- a %+.2f%% one-bar 'return' deleted (the price legs are left exactly as published)",
+                ticker,
+                when.date(),
+                observed * 100,
+            )
     return applied
 
 
-def measure_seams(close_total: pd.DataFrame, bugfix: dict,
-                  log: Callable[..., None]) -> dict[str, list[pd.Timestamp]]:
+def measure_seams(close_total: pd.DataFrame, bugfix: dict, log: Callable[..., None]) -> dict[str, list[pd.Timestamp]]:
     """The registered `null_ret` dates, RE-MEASURED against this build's own `close_total`, as
     `{ticker: [seam dates]}` for the feature steps to mask their lookback windows over.
 
@@ -514,14 +533,12 @@ def measure_seams(close_total: pd.DataFrame, bugfix: dict,
         for entry in entries:
             when, expected = pd.Timestamp(entry["date"]), float(entry["expect_ret"])
             if ticker not in close_total.columns or when not in close_total.index:
-                log("seam mask: %s %s SKIPPED -- outside this build's window",
-                    ticker, when.date())
+                log("seam mask: %s %s SKIPPED -- outside this build's window", ticker, when.date())
                 continue
             series = close_total[ticker]
             position = int(series.index.get_loc(when))
             if position == 0:
-                log("seam mask: %s %s SKIPPED -- first bar, no step to measure",
-                    ticker, when.date())
+                log("seam mask: %s %s SKIPPED -- first bar, no step to measure", ticker, when.date())
                 continue
             prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
             if not (np.isfinite(prior) and np.isfinite(here)) or prior <= 0:
@@ -530,19 +547,25 @@ def measure_seams(close_total: pd.DataFrame, bugfix: dict,
             observed = here / prior - 1.0
             # the one-bar STEP, the identical quantity `apply_null_ret` compares
             if abs((1.0 + observed) / (1.0 + expected) - 1.0) > NULL_RET_STEP_TOL:
-                log("seam mask: %s %s SKIPPED -- the defect is GONE or CHANGED: observed ret "
-                    "%+.5f, register says %+.5f. Re-measure the entry.",
-                    ticker, when.date(), observed, expected)
+                log(
+                    "seam mask: %s %s SKIPPED -- the defect is GONE or CHANGED: observed ret %+.5f, register says %+.5f. Re-measure the entry.",
+                    ticker,
+                    when.date(),
+                    observed,
+                    expected,
+                )
                 continue
             seams.setdefault(ticker, []).append(when)
-            log("seam mask: %s %s MEASURED -- a %+.2f%% one-bar basis change in close_total; "
-                "every straddling lookback window will be masked",
-                ticker, when.date(), observed * 100)
+            log(
+                "seam mask: %s %s MEASURED -- a %+.2f%% one-bar basis change in close_total; every straddling lookback window will be masked",
+                ticker,
+                when.date(),
+                observed * 100,
+            )
     return seams
 
 
-def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
-                      back: int, skip: int = 0) -> pd.DataFrame:
+def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]], back: int, skip: int = 0) -> pd.DataFrame:
     """NaN the cells of `frame` whose lookback window STRADDLES a measured seam. Returns a copy.
 
     A feature at `t` reads its input over index positions `[t-back, t-skip]`, so it straddles a
@@ -565,15 +588,16 @@ def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
             if when not in out.index:
                 continue
             start = int(out.index.get_loc(when)) + skip
-            stop = int(out.index.get_loc(when)) + back      # exclusive: s+back-1 inclusive
+            stop = int(out.index.get_loc(when)) + back  # exclusive: s+back-1 inclusive
             if stop <= start:
                 continue
-            out.iloc[max(start, 0):stop, column] = np.nan
+            out.iloc[max(start, 0) : stop, column] = np.nan
     return out
 
 
-def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.DataFrame | None,
-                       close_split: pd.DataFrame, log: Callable[..., None]) -> pd.DataFrame:
+def apply_level_bugfix(
+    factor: pd.DataFrame, bugfix: dict, vendor_price: pd.DataFrame | None, close_split: pd.DataFrame, log: Callable[..., None]
+) -> pd.DataFrame:
     """Fold the registered LEVEL wedges into `S`, re-measuring each one first.
 
     These are the cases `S` is structurally BLIND to: Yahoo adjusted the price and its splits
@@ -619,24 +643,33 @@ def apply_level_bugfix(factor: pd.DataFrame, bugfix: dict, vendor_price: pd.Data
             observed = observed_wedge(ticker, before, vendor_price, close_split, since=lower)
             window, lower = (out.index >= lower) & (out.index < before), before
             if observed is None:
-                log("price bugfix: %s < %s SKIPPED -- no vendor price in the segment, so "
-                    "the defect cannot be re-verified", ticker, before.date())
+                log("price bugfix: %s < %s SKIPPED -- no vendor price in the segment, so the defect cannot be re-verified", ticker, before.date())
                 continue
             if abs(observed / claimed - 1.0) > BUGFIX_WEDGE_TOL:
-                log("price bugfix: %s < %s SKIPPED -- the defect is GONE or CHANGED: "
-                    "observed wedge %.5f, register says %.5f. Re-measure the entry.",
-                    ticker, before.date(), observed, claimed)
+                log(
+                    "price bugfix: %s < %s SKIPPED -- the defect is GONE or CHANGED: observed wedge %.5f, register says %.5f. Re-measure the entry.",
+                    ticker,
+                    before.date(),
+                    observed,
+                    claimed,
+                )
                 continue
             out.loc[window, ticker] = out.loc[window, ticker] * claimed
-            log("price bugfix: %s < %s level x%.5f APPLIED to %d bar(s) -- observed wedge "
-                "%.5f (%s)", ticker, before.date(), claimed, int(window.sum()), observed,
-                segment.get("event", "no event recorded"))
+            log(
+                "price bugfix: %s < %s level x%.5f APPLIED to %d bar(s) -- observed wedge %.5f (%s)",
+                ticker,
+                before.date(),
+                claimed,
+                int(window.sum()),
+                observed,
+                segment.get("event", "no event recorded"),
+            )
     return out
 
 
-def observed_wedge(ticker: str, before: pd.Timestamp, vendor_price: pd.DataFrame | None,
-                   close_split: pd.DataFrame, *,
-                   since: pd.Timestamp = pd.Timestamp.min) -> float | None:
+def observed_wedge(
+    ticker: str, before: pd.Timestamp, vendor_price: pd.DataFrame | None, close_split: pd.DataFrame, *, since: pd.Timestamp = pd.Timestamp.min
+) -> float | None:
     """`median(sharadar.price / close_split)` over `[since, before)`, or None if unmeasurable.
 
     The MEDIAN, not the mean: one filing row landing on a stale bar would drag a mean, and
@@ -652,9 +685,7 @@ def observed_wedge(ticker: str, before: pd.Timestamp, vendor_price: pd.DataFrame
     """
     if vendor_price is None or vendor_price.empty or ticker not in close_split.columns:
         return None
-    rows = vendor_price[(vendor_price["ticker"] == ticker)
-                        & (vendor_price["date"] >= since)
-                        & (vendor_price["date"] < before)]
+    rows = vendor_price[(vendor_price["ticker"] == ticker) & (vendor_price["date"] >= since) & (vendor_price["date"] < before)]
     rows = rows[rows["price"] > 0]
     series = close_split[ticker].dropna()
     if rows.empty or series.empty:

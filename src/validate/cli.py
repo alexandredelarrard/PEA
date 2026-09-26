@@ -49,7 +49,7 @@ TABLE_KWARGS = dict(required=True, help="Table to validate, as named in `Tables`
 
 OUT_ARGS = ("-o", "--out")
 OUT_KWARGS = dict(
-    required=True, help="Run directory -- _cache/, _out/ and plots/ are created inside it. " "Use reports/validate/<slug>; NEVER a path under src/."
+    required=True, help="Run directory -- _cache/, _out/ and plots/ are created inside it. Use reports/validate/<slug>; NEVER a path under src/."
 )
 
 
@@ -140,7 +140,7 @@ bounds = _command("bounds", checks.check_bounds, "Declared [lo, hi] per leg; abs
     "catalogue_path",
     default=None,
     type=click.Path(path_type=Path),
-    help="JSON mapping field -> description, or a .py exposing a dict named CATALOGUE. " "Absent -> the check abstains.",
+    help="JSON mapping field -> description, or a .py exposing a dict named CATALOGUE. Absent -> the check abstains.",
 )
 def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config_path: str, catalogue_path: Path | None) -> None:
     _run(checks.check_catalogue, table, out, use_cache, config_path, tickers, catalogue=catalogue_path)
@@ -176,5 +176,5 @@ def insider_parity(
         refresh_replay=refresh_replay,
     )
     json_path, markdown_path = write_reconciliation_report(out, result)
-    click.echo(f"insider parity {result['quarter']}: " f"{'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
+    click.echo(f"insider parity {result['quarter']}: {'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
     sys.exit(0 if result["passed"] else 1)

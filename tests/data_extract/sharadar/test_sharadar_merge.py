@@ -196,12 +196,12 @@ def test_as_of_matches_sec(sources, overlap, sec_periods):
                 no_sec_period.append((ticker, date.date(), shar[date].date(), f"nearest SEC period {nearest.days}d away"))
 
     rate = matched / total
-    print(f"\nas_of agreement over {len(overlap)} overlapping ticker(s): " f"{matched}/{total} = {rate:.2%}")
+    print(f"\nas_of agreement over {len(overlap)} overlapping ticker(s): {matched}/{total} = {rate:.2%}")
     print(f"  SEC events with no Sharadar row on the day : {len(sec_only)}")
-    print(f"  Sharadar events REDATED by the SEC layer   : {len(redated)} " f"(same fiscal period within {PERIOD_TOLERANCE_DAYS}d)")
+    print(f"  Sharadar events REDATED by the SEC layer   : {len(redated)} (same fiscal period within {PERIOD_TOLERANCE_DAYS}d)")
     print(f"  Sharadar events with NO SEC period at all  : {len(no_sec_period)}")
     if redated:
-        print(f"    worst redating lag: {max(r[3] for r in redated)}d; " f"sample {redated[:4]}")
+        print(f"    worst redating lag: {max(r[3] for r in redated)}d; sample {redated[:4]}")
     if no_sec_period:
         print(f"    SEC replay holes  : {no_sec_period}")
 
@@ -246,7 +246,7 @@ def test_sec_block_joins_at_zero_lag(sources, field_map):
     sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
     joined = join_sec_block(shar.drop(columns=sec_owned, errors="ignore"), sec)
     lag = (joined["as_of"] - joined[SEC_AS_OF]).dt.days.dropna()
-    print(f"\nSEC block joined on {len(lag)} of {len(joined)} row(s); " f"lag in days: min {lag.min()}, median {lag.median()}, max {lag.max()}")
+    print(f"\nSEC block joined on {len(lag)} of {len(joined)} row(s); lag in days: min {lag.min()}, median {lag.median()}, max {lag.max()}")
     print(f"rows carried from an EARLIER SEC filing: {int((lag > 0).sum())}")
     assert (lag >= 0).all(), "a SEC row was joined from the FUTURE -- the join reached forward"
 
@@ -285,7 +285,7 @@ def test_stale_sec_snapshot_is_not_carried_forever():
     shar = pd.DataFrame({"ticker": ["AAA", "AAA"], "as_of": pd.to_datetime(["2024-06-30", "2030-06-30"]), "totalRevenue": [10.0, 20.0]})
     sec = pd.DataFrame({"ticker": ["AAA"], "as_of": pd.to_datetime(["2024-06-01"]), "goodwill": [100.0]})
     out = join_sec_block(shar, sec)
-    print(f"\n29 days later -> {out.loc[0, 'goodwill']}; " f"6 years later -> {out.loc[1, 'goodwill']}")
+    print(f"\n29 days later -> {out.loc[0, 'goodwill']}; 6 years later -> {out.loc[1, 'goodwill']}")
     assert out.loc[0, "goodwill"] == 100.0
     assert pd.isna(out.loc[1, "goodwill"]), "a 6-year-old SEC snapshot was carried forward"
 
@@ -312,9 +312,9 @@ def test_column_contract(merged, field_map):
     # someone has to type on purpose. Bump it WITH the change, never to make the test pass --
     # 91 -> 93 was `intangibles` (commit d2ed8a6) plus one sibling.
     assert len(built) == 93, f"the merged contract is {len(built)}, not 93"
-    assert (
-        tuple(Tables.fundamentals_history.read_columns) == declared
-    ), "schema.py's read_columns and the field map state the same contract twice; they differ"
+    assert tuple(Tables.fundamentals_history.read_columns) == declared, (
+        "schema.py's read_columns and the field map state the same contract twice; they differ"
+    )
 
 
 def test_no_amendment_columns(merged):
@@ -342,7 +342,7 @@ def test_value_columns_are_float(context, merged):
     how APA's values once landed in `fundamentals_history_sec` as `'1997000000.0'`.
     """
     wrong = [c for c in merged.columns if c not in NON_VALUE_COLUMNS and merged[c].dtype != np.float64]
-    print(f"\nin-frame: {len(merged.columns) - len(NON_VALUE_COLUMNS)} value column(s); " f"non-float64: {wrong or 'none'}")
+    print(f"\nin-frame: {len(merged.columns) - len(NON_VALUE_COLUMNS)} value column(s); non-float64: {wrong or 'none'}")
     assert not wrong
 
     name = name_of(Tables.fundamentals_history)
@@ -351,7 +351,7 @@ def test_value_columns_are_float(context, merged):
     types = {c["name"]: str(c["type"]) for c in inspect(context.store.engine).get_columns(name)}
     texty = {c: t for c, t in types.items() if c not in NON_VALUE_COLUMNS and any(mark in t.upper() for mark in ("TEXT", "CHAR", "STRING"))}
     print(f"in-DB: {len(types)} column(s); TEXT among the value columns: {texty or 'none'}")
-    print(f"{sec_column('regime')} is {types.get(sec_column('regime'))} -- a LABEL, " f"so it must stay TEXT")
+    print(f"{sec_column('regime')} is {types.get(sec_column('regime'))} -- a LABEL, so it must stay TEXT")
     assert not texty
     assert "TEXT" in str(types.get(sec_column("regime"), "")).upper()
 
@@ -372,13 +372,13 @@ def test_unapproved_override_is_ignored(sources, field_map, tmp_path):
     entry = {"source": "sec", "reason": "test: proposed, not adjudicated", "approved": None}
     write_overrides({ticker: {"totalRevenue": entry}}, ["test register"], config_dir=str(tmp_path))
     loaded = load_overrides(str(tmp_path))
-    print(f"\napproved {len(loaded.approved)} | awaiting decision {len(loaded.pending)}: " f"{sorted(f'{t}/{f}' for t, f in loaded.pending)}")
+    print(f"\napproved {len(loaded.approved)} | awaiting decision {len(loaded.pending)}: {sorted(f'{t}/{f}' for t, f in loaded.pending)}")
     assert not loaded.approved and len(loaded.pending) == 1
 
     base = build_frame(vendor, sec, employees, actions, field_map, Overrides(approved={}, pending={}))
     with_pending = build_frame(vendor, sec, employees, actions, field_map, loaded)
     revenue = base.loc[base["ticker"] == ticker, "totalRevenue"]
-    print(f"{ticker} totalRevenue unchanged on {len(revenue)} row(s): " f"{revenue.head(3).round(0).tolist()}")
+    print(f"{ticker} totalRevenue unchanged on {len(revenue)} row(s): {revenue.head(3).round(0).tolist()}")
     pd.testing.assert_frame_equal(base, with_pending)
 
 
@@ -399,8 +399,7 @@ def test_approved_override_takes_the_sec_value(context, sources, field_map):
     with pytest.raises(RuntimeError, match="the SEC block was not loaded"):
         build_frame(vendor, sec, employees, actions, field_map, overrides)
     print(
-        f"\nan override naming a column the SEC projection omitted RAISES rather than "
-        f"NULLing {ticker} {field} -- the two cannot drift apart silently"
+        f"\nan override naming a column the SEC projection omitted RAISES rather than NULLing {ticker} {field} -- the two cannot drift apart silently"
     )
 
     values = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", field])
@@ -463,7 +462,7 @@ def test_axp_revenue_gap_is_detected(context):
     assert not bool(revenue.loc["JPM", "is_systematic"]), "JPM matched the repo exactly; flagging it means the check compares the wrong things"
     assert revenue.loc["JPM", "n_flagged"] == 0
     found = candidates(gaps)
-    print(f"override candidates over AXP+JPM: " f"{sorted(zip(found['ticker'], found['field'], strict=False))}")
+    print(f"override candidates over AXP+JPM: {sorted(zip(found['ticker'], found['field'], strict=False))}")
 
 
 def test_expected_forks_are_named_not_rediscovered(context, field_map):
@@ -529,7 +528,7 @@ def test_coverage_asymmetry_is_the_design(merged, overlap):
         f"{len(merged)} row(s), {merged.loc[merged['totalAssets'].notna(), 'ticker'].nunique()}"
         f" ticker(s)"
     )
-    print(f"SEC-owned `{regime}`: {int(merged[regime].notna().sum())} row(s), " f"{len(with_regime)} ticker(s) -> {with_regime}")
+    print(f"SEC-owned `{regime}`: {int(merged[regime].notna().sum())} row(s), {len(with_regime)} ticker(s) -> {with_regime}")
     assert set(with_regime) <= set(overlap)
     assert merged["totalAssets"].notna().sum() > merged[regime].notna().sum()
 
@@ -542,7 +541,7 @@ def test_stockholders_equity_incl_nci_is_rederived_at_the_merge(merged, overlap)
     published a column that exists in name only.
     """
     filled = merged[merged["stockholdersEquityInclNci"].notna()]
-    print(f"\nstockholdersEquityInclNci: {len(filled)} of {len(merged)} row(s), " f"{filled['ticker'].nunique()} ticker(s)")
+    print(f"\nstockholdersEquityInclNci: {len(filled)} of {len(merged)} row(s), {filled['ticker'].nunique()} ticker(s)")
     assert not filled.empty, "the merge never re-derived it"
     assert set(filled["ticker"]) <= set(overlap)
     leg = filled["stockholdersEquity"] + filled[sec_column("minorityInterest")]
@@ -555,10 +554,10 @@ def test_employees_is_forward_filled_from_its_own_table(merged):
     no such column at all."""
     employees = sec_column(EMPLOYEES_COLUMN)
     filled = merged[merged[employees].notna()]
-    print(f"\n{employees}: {len(filled)} of {len(merged)} row(s), " f"{filled['ticker'].nunique()} ticker(s)")
+    print(f"\n{employees}: {len(filled)} of {len(merged)} row(s), {filled['ticker'].nunique()} ticker(s)")
     assert not filled.empty
     per_ticker = filled.groupby("ticker")[employees].nunique()
-    print(f"distinct headcounts per ticker (annual disclosure, quarterly rows): " f"min {per_ticker.min()}, max {per_ticker.max()}")
+    print(f"distinct headcounts per ticker (annual disclosure, quarterly rows): min {per_ticker.min()}, max {per_ticker.max()}")
     assert (filled.groupby("ticker").size() > per_ticker).any(), "no ticker repeats a headcount -- the annual value is not reaching the interim rows"
 
 
@@ -572,9 +571,7 @@ def test_cik_cutover_continuity(sources, merged, ticker):
     """
     vendor, *_ = sources
     if ticker not in set(vendor["ticker"]):
-        pytest.skip(
-            f"{ticker} is not in the entitled Sharadar roster (DJIA-30) -- D19's " f"CIK-cutover continuity is UNVERIFIABLE here, not verified"
-        )
+        pytest.skip(f"{ticker} is not in the entitled Sharadar roster (DJIA-30) -- D19's CIK-cutover continuity is UNVERIFIABLE here, not verified")
     rows = merged[merged["ticker"] == ticker].sort_values("as_of")
     print(f"\n{ticker}: {len(rows)} row(s), {rows['as_of'].min()}..{rows['as_of'].max()}")
     assert rows["totalAssets"].notna().sum() > 0

@@ -24,6 +24,7 @@ leg this check is about to call DEAD, CONSTANT or INFINITE off the cache is re-r
 DB in float64 first, in ONE extra pass over just those columns -- typically none of them, and
 never more than a handful. A finding is a claim about the database, not about the snapshot.
 """
+
 from __future__ import annotations
 
 import logging
@@ -79,20 +80,44 @@ def _stats(values: pd.Series, dates: pd.Series | None) -> dict[str, Any]:
         "n_distinct": int(ok.nunique()),
     }
     if len(ok) == 0:
-        out.update({k: None for k in ("min", "p01", "p50", "p99", "p999", "max", "mean", "sd",
-                                      "mad_center", "mad_scale", "n_mad_outliers",
-                                      "first_date", "last_date")})
+        out.update(
+            {
+                k: None
+                for k in (
+                    "min",
+                    "p01",
+                    "p50",
+                    "p99",
+                    "p999",
+                    "max",
+                    "mean",
+                    "sd",
+                    "mad_center",
+                    "mad_scale",
+                    "n_mad_outliers",
+                    "first_date",
+                    "last_date",
+                )
+            }
+        )
         return out
     quantiles = ok.quantile([0.01, 0.5, 0.99, 0.999])
     center, scale = mad_center_scale(ok)
-    out.update({
-        "min": float(ok.min()), "p01": float(quantiles.loc[0.01]),
-        "p50": float(quantiles.loc[0.5]), "p99": float(quantiles.loc[0.99]),
-        "p999": float(quantiles.loc[0.999]), "max": float(ok.max()),
-        "mean": float(ok.mean()), "sd": float(ok.std(ddof=1)) if len(ok) > 1 else 0.0,
-        "mad_center": center, "mad_scale": scale,
-        "n_mad_outliers": count_mad_outliers(ok, threshold=_MAD_THRESHOLD),
-    })
+    out.update(
+        {
+            "min": float(ok.min()),
+            "p01": float(quantiles.loc[0.01]),
+            "p50": float(quantiles.loc[0.5]),
+            "p99": float(quantiles.loc[0.99]),
+            "p999": float(quantiles.loc[0.999]),
+            "max": float(ok.max()),
+            "mean": float(ok.mean()),
+            "sd": float(ok.std(ddof=1)) if len(ok) > 1 else 0.0,
+            "mad_center": center,
+            "mad_scale": scale,
+            "n_mad_outliers": count_mad_outliers(ok, threshold=_MAD_THRESHOLD),
+        }
+    )
     if dates is not None:
         seen = dates[numeric.notna().values]
         out["first_date"] = seen.min() if len(seen) else None
@@ -105,9 +130,16 @@ def _suspect(stats: dict[str, Any]) -> bool:
     return stats["n_ok"] == 0 or stats["n_distinct"] <= 1 or stats["n_inf"] > 0
 
 
-def check_profile(context: Context, table: Table | str, *, config: Any = None,
-                  cache: Any = None, tickers: list[str] | None = None,
-                  group: int = GROUP, **kwargs: Any) -> CheckResult:
+def check_profile(
+    context: Context,
+    table: Table | str,
+    *,
+    config: Any = None,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    group: int = GROUP,
+    **kwargs: Any,
+) -> CheckResult:
     """Per-column distribution over the full table, and the dead/constant/infinite legs."""
     spec = resolve(table)
     if (declined := full_table_only(CHECK, spec.name, tickers)) is not None:
@@ -115,14 +147,19 @@ def check_profile(context: Context, table: Table | str, *, config: Any = None,
     date_col = spec.date_col
     columns = feature_columns(context, spec)
     if not columns:
-        return CheckResult.abstained(CHECK, spec.name,
-                                     "the table has no numeric non-key column to profile")
+        return CheckResult.abstained(CHECK, spec.name, "the table has no numeric non-key column to profile")
 
     from_cache = cache_used(cache, spec)
     if not from_cache and len(columns) > _WIDE:
-        log.warning("profile %s: %d legs = %d full passes over the DB and no snapshot in %s "
-                    "-- run `python -m src validate pull -T %s -o %s` first",
-                    spec.name, len(columns), -(-len(columns) // group), cache, spec.name, cache)
+        log.warning(
+            "profile %s: %d legs = %d full passes over the DB and no snapshot in %s -- run `python -m src validate pull -T %s -o %s` first",
+            spec.name,
+            len(columns),
+            -(-len(columns) // group),
+            cache,
+            spec.name,
+            cache,
+        )
     meta = read_meta(cache) if from_cache else None
     float32_source = from_cache and (meta or {}).get("float_dtype") == "float32"
 
@@ -151,8 +188,7 @@ def check_profile(context: Context, table: Table | str, *, config: Any = None,
     if float32_source:
         suspects = [c for c, s in stats.items() if _suspect(s)]
         if suspects:
-            log.info("profile %s: re-reading %d suspect leg(s) from the DB in float64",
-                     spec.name, len(suspects))
+            log.info("profile %s: re-reading %d suspect leg(s) from the DB in float64", spec.name, len(suspects))
             wanted = ([date_col] + suspects) if date_col else suspects
             frame = read_columns(context, spec, wanted, cache=None)
             dates = as_ts(frame[date_col]) if date_col else None
@@ -170,45 +206,66 @@ def check_profile(context: Context, table: Table | str, *, config: Any = None,
     # `n_distinct == 0` and `n_ok == 0` are the same leg by construction -- `n_distinct`
     # counts finite values -- so a dead leg is filed once, not twice.
     for column in dead[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            10, field=column,
-            observed=f"0 finite values in {stats[column]['n']:,} rows "
-                     f"({stats[column]['n_null']:,} null)",
-            expected="a feature carries values; a column that is null everywhere is a "
-                     "builder that never ran, and it is invisible to every shape test",
-            **{k: stats[column][k] for k in ("n", "n_ok", "n_null", "n_inf")}))
+        findings.append(
+            Finding.at(
+                10,
+                field=column,
+                observed=f"0 finite values in {stats[column]['n']:,} rows ({stats[column]['n_null']:,} null)",
+                expected="a feature carries values; a column that is null everywhere is a "
+                "builder that never ran, and it is invisible to every shape test",
+                **{k: stats[column][k] for k in ("n", "n_ok", "n_null", "n_inf")},
+            )
+        )
 
     for column in constant[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            7, field=column,
-            observed=f"one distinct value ({stats[column]['min']!r}) over "
-                     f"{stats[column]['n_ok']:,} finite rows",
-            expected="a feature varies; a constant column carries no information and will "
-                     "be dropped by any model, silently",
-            value=stats[column]["min"], n_ok=stats[column]["n_ok"]))
+        findings.append(
+            Finding.at(
+                7,
+                field=column,
+                observed=f"one distinct value ({stats[column]['min']!r}) over {stats[column]['n_ok']:,} finite rows",
+                expected="a feature varies; a constant column carries no information and will be dropped by any model, silently",
+                value=stats[column]["min"],
+                n_ok=stats[column]["n_ok"],
+            )
+        )
 
     for column in infinite[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            9, field=column,
-            observed=f"{stats[column]['n_inf']:,} infinite values",
-            expected="finite or null -- an Inf is a division by zero that survived into the "
-                     "table, and it poisons every mean, sd and z-score computed over it",
-            n_inf=stats[column]["n_inf"], n=stats[column]["n"]))
+        findings.append(
+            Finding.at(
+                9,
+                field=column,
+                observed=f"{stats[column]['n_inf']:,} infinite values",
+                expected="finite or null -- an Inf is a division by zero that survived into the "
+                "table, and it poisons every mean, sd and z-score computed over it",
+                n_inf=stats[column]["n_inf"],
+                n=stats[column]["n"],
+            )
+        )
 
-    first_date, last_date = (context.store.bounds(spec) if date_col else (None, None))
-    scope = {"rows": rows, "tickers": n_tickers, "first_date": first_date, "last_date": last_date,
-             "columns": len(columns), "group": group,
-             "source": ("cache(float32)" if float32_source else "cache" if from_cache else "db"),
-             "confirmed_from_db": confirmed}
+    first_date, last_date = context.store.bounds(spec) if date_col else (None, None)
+    scope = {
+        "rows": rows,
+        "tickers": n_tickers,
+        "first_date": first_date,
+        "last_date": last_date,
+        "columns": len(columns),
+        "group": group,
+        "source": ("cache(float32)" if float32_source else "cache" if from_cache else "db"),
+        "confirmed_from_db": confirmed,
+    }
     metrics = {
         "columns": len(columns),
-        "dead": dead, "constant": constant, "infinite": infinite, "skipped_text": text,
+        "dead": dead,
+        "constant": constant,
+        "infinite": infinite,
+        "skipped_text": text,
         # `redundancy` centres on these rather than recomputing 249 means in its own pass.
         "mean": {c: s["mean"] for c, s in stats.items()},
         "stats": stats,
     }
-    reason = ("" if not float32_source or not confirmed else
-              f"{len(confirmed)} leg(s) flagged off the float32 snapshot were re-read from "
-              f"the DB in float64 before filing")
-    return CheckResult.measured(CHECK, spec.name, findings, scope=scope, metrics=metrics,
-                                reason=reason)
+    reason = (
+        ""
+        if not float32_source or not confirmed
+        else f"{len(confirmed)} leg(s) flagged off the float32 snapshot were re-read from the DB in float64 before filing"
+    )
+    return CheckResult.measured(CHECK, spec.name, findings, scope=scope, metrics=metrics, reason=reason)

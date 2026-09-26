@@ -34,6 +34,7 @@ changed:
     are now gated on provenance (`_DISCLOSED_ONLY_DELTAS`);
   * nothing in this module earns a peer leg (`PEER_RELATIVE_FIELDS`).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -41,18 +42,27 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.auditors import (
-    BIG4, canonical_auditor_series, unrecognised_auditor_names,
+    BIG4,
+    canonical_auditor_series,
+    unrecognised_auditor_names,
 )
 from src.data_aggregate.utils.governance.def14a_impute import DELTA_PROVENANCE_COLUMNS
 from src.data_aggregate.utils.governance.staleness import (
-    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+    LEVEL_MAX_AGE_DAYS,
+    expire_event_fields,
+    expire_level_fields,
 )
 
 #: The seven tri-state / boolean provision columns the transition detector runs over. Every one
 #: is stored 1.0 / 0.0 / NULL by `flatten._bnum`, and NULL means the proxy was silent.
 PROVISION_COLUMNS: tuple[str, ...] = (
-    "classified_board", "dual_class_shares", "poison_pill", "majority_voting",
-    "ceo_is_board_chair", "independent_chair", "lead_independent_director",
+    "classified_board",
+    "dual_class_shares",
+    "poison_pill",
+    "majority_voting",
+    "ceo_is_board_chair",
+    "independent_chair",
+    "lead_independent_director",
 )
 
 #: exported flag -> (source column, direction). The detector computes BOTH directions on all
@@ -80,13 +90,21 @@ TRANSITION_FLAGS: dict[str, tuple[str, str]] = {
 }
 
 DETERIORATION_FLAGS: tuple[str, ...] = (
-    "classified_board_added", "poison_pill_added", "dual_class_added",
-    "majority_voting_removed", "ceo_became_board_chair", "independent_chair_lost",
+    "classified_board_added",
+    "poison_pill_added",
+    "dual_class_added",
+    "majority_voting_removed",
+    "ceo_became_board_chair",
+    "independent_chair_lost",
     "lead_independent_director_lost",
 )
 IMPROVEMENT_FLAGS: tuple[str, ...] = (
-    "classified_board_removed", "poison_pill_removed", "majority_voting_added",
-    "ceo_stopped_being_chair", "independent_chair_added", "lead_independent_director_added",
+    "classified_board_removed",
+    "poison_pill_removed",
+    "majority_voting_added",
+    "ceo_stopped_being_chair",
+    "independent_chair_added",
+    "lead_independent_director_added",
 )
 
 #: ⚠ A TRANSITION FLAG THAT NEVER FIRES IS NOT EXPORTED, and this is a measured correction to
@@ -228,9 +246,7 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 #: direction. It ships as an unsigned flag. `sec_8k` DOES carry the 4.01 rows and reading their
 #: narratives is the obvious follow-up; it is not in this plan.
 RAW_FLAG_FIELDS: frozenset[str] = frozenset(
-    set(TRANSITION_FLAGS)
-    | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4",
-       "auditor_tenure_censored", "ceo_is_board_chair"}
+    set(TRANSITION_FLAGS) | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4", "auditor_tenure_censored", "ceo_is_board_chair"}
 )
 
 #: Fields describing an EVENT, which expire 548 days after the filing that disclosed them (D21).
@@ -246,9 +262,15 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
 #: components. `test_provisions_features` asserts that inheritance.
 EVENT_FIELDS: frozenset[str] = frozenset(
     set(TRANSITION_FLAGS)
-    | {"governance_deterioration_count", "governance_improvement_count",
-       "net_governance_change", "board_independence_delta_1y",
-       "board_independence_drop_10pp", "board_busyness_delta_1y", "auditor_changed"}
+    | {
+        "governance_deterioration_count",
+        "governance_improvement_count",
+        "net_governance_change",
+        "board_independence_delta_1y",
+        "board_independence_drop_10pp",
+        "board_busyness_delta_1y",
+        "auditor_changed",
+    }
 )
 
 #: Every field this module can emit -- the exhaustiveness anchor. Phase 4 learned why it is
@@ -256,12 +278,20 @@ EVENT_FIELDS: frozenset[str] = frozenset(
 #: and the two fields that WERE produced sat in neither and silently skipped their expiry.
 ALL_FIELDS: frozenset[str] = frozenset(
     set(TRANSITION_FLAGS)
-    | {"governance_deterioration_count", "governance_improvement_count",
-       "net_governance_change", "board_independence_delta_1y",
-       "board_independence_drop_10pp",
-       "board_busyness", "board_busyness_delta_1y",
-       "ceo_is_board_chair",
-       "auditor_changed", "auditor_tenure", "auditor_tenure_censored", "auditor_is_big4"}
+    | {
+        "governance_deterioration_count",
+        "governance_improvement_count",
+        "net_governance_change",
+        "board_independence_delta_1y",
+        "board_independence_drop_10pp",
+        "board_busyness",
+        "board_busyness_delta_1y",
+        "ceo_is_board_chair",
+        "auditor_changed",
+        "auditor_tenure",
+        "auditor_tenure_censored",
+        "auditor_is_big4",
+    }
 )
 
 #: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on no horizon.
@@ -321,12 +351,14 @@ def _transitions(hist: pd.DataFrame, field: str) -> pd.DataFrame | None:
     if not bool(paired.any()):
         return None
     delta = h[field] - prev
-    out = pd.DataFrame({
-        "ticker": h["ticker"],
-        "as_of": h["as_of"],
-        f"{field}__up": (delta > 0).astype("float64"),
-        f"{field}__down": (delta < 0).astype("float64"),
-    })
+    out = pd.DataFrame(
+        {
+            "ticker": h["ticker"],
+            "as_of": h["as_of"],
+            f"{field}__up": (delta > 0).astype("float64"),
+            f"{field}__down": (delta < 0).astype("float64"),
+        }
+    )
     return out[paired.to_numpy()].reset_index(drop=True)
 
 
@@ -379,12 +411,10 @@ def _annual_delta(hist: pd.DataFrame, field: str, tally: dict[str, int]) -> pd.D
 
     tally[f"{field} delta: adjacent pairs"] = int(paired.sum())
     tally[f"{field} delta: rejected (a leg was interpolated)"] = int((paired & ~clean).sum())
-    tally[f"{field} delta: rejected (gap outside 250-550d)"] = int(
-        (paired & clean & ~annual).sum())
+    tally[f"{field} delta: rejected (gap outside 250-550d)"] = int((paired & clean & ~annual).sum())
     if not bool(keep.any()):
         return None
-    out = pd.DataFrame({"ticker": h["ticker"], "as_of": h["as_of"],
-                        field: (h[field] - prev).where(keep)})
+    out = pd.DataFrame({"ticker": h["ticker"], "as_of": h["as_of"], field: (h[field] - prev).where(keep)})
     return out[keep.to_numpy()].reset_index(drop=True)
 
 
@@ -418,13 +448,14 @@ def _flag_frame(hist: pd.DataFrame, name: str, values: pd.Series) -> pd.DataFram
     it finds that filing by looking `name` up in the history frame it is handed. So every flag
     needs a history whose column is called what the FEATURE is called; this builds it.
     """
-    return pd.DataFrame({"ticker": hist["ticker"].to_numpy(),
-                         "as_of": hist["as_of"].to_numpy(),
-                         name: pd.to_numeric(values, errors="coerce").to_numpy()})
+    return pd.DataFrame(
+        {"ticker": hist["ticker"].to_numpy(), "as_of": hist["as_of"].to_numpy(), name: pd.to_numeric(values, errors="coerce").to_numpy()}
+    )
 
 
-def _expire(frames: dict[str, pd.DataFrame], hist: pd.DataFrame, tally: dict[str, int],
-            sources: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
+def _expire(
+    frames: dict[str, pd.DataFrame], hist: pd.DataFrame, tally: dict[str, int], sources: dict[str, str] | None = None
+) -> dict[str, pd.DataFrame]:
     """BOTH horizons plus the tally lines, which every caller here wants together.
 
     ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Five fields here are
@@ -455,7 +486,9 @@ def _expire(frames: dict[str, pd.DataFrame], hist: pd.DataFrame, tally: dict[str
 # family 8 -- provision transitions                                            #
 # --------------------------------------------------------------------------- #
 def _provision_transitions(
-    hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int],
+    hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    tally: dict[str, int],
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     """(exported flag frames, ALL flag frames incl. the never-fired ones the counts still use).
 
@@ -488,8 +521,7 @@ def _provision_transitions(
     return exported, for_counts
 
 
-def _aggregates(for_counts: dict[str, pd.DataFrame],
-                tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+def _aggregates(for_counts: dict[str, pd.DataFrame], tally: dict[str, int]) -> dict[str, pd.DataFrame]:
     """The two counts and their net. ONE EVENT, ONE POINT -- no estimated weights (GPT §11
     GOV03): the literature has no agreed severity ordering over these provisions, and inventing
     one would bury a judgement inside a number that looks like a count."""
@@ -514,8 +546,7 @@ def _aggregates(for_counts: dict[str, pd.DataFrame],
     return {k: v for k, v in out.items() if v.notna().any().any()}
 
 
-def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                        tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
     """`board_independence_delta_1y` and the -10pp flag derived from it.
 
     `pct_independent_directors` keeps shipping as a LEVEL from `panel.py` (D3); this is
@@ -534,16 +565,14 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # `_DROP_EPS` is what makes an exactly-ten-point drop fire -- see the constant.
     drop = (daily <= _INDEPENDENCE_DROP + _DROP_EPS).astype("float64").where(daily.notna())
     frames = {"board_independence_delta_1y": daily, "board_independence_drop_10pp": drop}
-    capped = _expire(frames, h, tally,
-                     sources={k: "board_independence_delta_1y" for k in frames})
+    capped = _expire(frames, h, tally, sources={k: "board_independence_delta_1y" for k in frames})
     return {k: v for k, v in capped.items() if not v.empty and v.notna().any().any()}
 
 
 # --------------------------------------------------------------------------- #
 # family 9 -- board busyness                                                   #
 # --------------------------------------------------------------------------- #
-def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-              tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
     """`board_busyness` (a level, fill kept) and its delta (disclosed legs only).
 
     ⚠ NO `busy_board = 1` THRESHOLD (GPT §12 closing note). The academic measure is the FRACTION
@@ -564,8 +593,7 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # The LEVEL is expired against its own source column: the feature is called
     # `board_busyness` but the filing discloses `avg_other_public_boards`, and
     # `_expire_family` ages a cell by looking the FEATURE name up in the history frame.
-    out["board_busyness"] = _expire({"board_busyness": level}, hist, tally,
-                                    sources={"board_busyness": field})["board_busyness"]
+    out["board_busyness"] = _expire({"board_busyness": level}, hist, tally, sources={"board_busyness": field})["board_busyness"]
 
     d = _annual_delta(hist, field, tally)
     if d is None:
@@ -575,8 +603,7 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex,
     delta = fundamentals_to_daily(h, "board_busyness_delta_1y", idx)
     if delta.empty or not delta.notna().any().any():
         return out
-    out["board_busyness_delta_1y"] = _expire(
-        {"board_busyness_delta_1y": delta}, h, tally)["board_busyness_delta_1y"]
+    out["board_busyness_delta_1y"] = _expire({"board_busyness_delta_1y": delta}, h, tally)["board_busyness_delta_1y"]
     return out
 
 
@@ -634,29 +661,24 @@ def _auditor_history(hist: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame 
     h["_run"] = g.ngroup().astype("str") + "|" + breaks.groupby(h["ticker"]).cumsum().astype("str")
     start = h.groupby("_run", sort=False)["as_of"].transform("min")
 
-    since = pd.to_numeric(h["auditor_since_year"], errors="coerce") \
-        if "auditor_since_year" in h.columns else pd.Series(np.nan, index=h.index)
+    since = pd.to_numeric(h["auditor_since_year"], errors="coerce") if "auditor_since_year" in h.columns else pd.Series(np.nan, index=h.index)
     lo, hi = _TENURE_YEAR_BAND
     since = since.where(since.between(lo, hi))
-    disclosed_start = pd.to_datetime(
-        since.map(lambda y: f"{int(y):04d}-01-01" if pd.notna(y) else None), errors="coerce")
+    disclosed_start = pd.to_datetime(since.map(lambda y: f"{int(y):04d}-01-01" if pd.notna(y) else None), errors="coerce")
     # Disclosed where it exists, the archive run-length otherwise. `combine_first` keeps the
     # disclosed leg wherever it survived the sanity band.
     tenure_start = disclosed_start.combine_first(start)
     h["auditor_tenure_censored"] = disclosed_start.isna().astype("float64")
-    h["_tenure_start_ord"] = tenure_start.map(
-        lambda t: float(t.toordinal()) if pd.notna(t) else np.nan)
+    h["_tenure_start_ord"] = tenure_start.map(lambda t: float(t.toordinal()) if pd.notna(t) else np.nan)
 
     tally["auditor: filings with a canonical firm"] = len(h)
-    tally["auditor: changes detected (canonical firm)"] = int(
-        h["auditor_changed"].fillna(0.0).sum())
+    tally["auditor: changes detected (canonical firm)"] = int(h["auditor_changed"].fillna(0.0).sum())
     tally["auditor: tenure on the DISCLOSED basis"] = int(disclosed_start.notna().sum())
     tally["auditor: tenure on the CENSORED archive basis"] = int(disclosed_start.isna().sum())
     return h
 
 
-def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                    tally: dict[str, int]) -> dict[str, pd.DataFrame]:
+def _auditor_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) -> dict[str, pd.DataFrame]:
     h = _auditor_history(hist, tally)
     if h is None:
         tally["skipped: no auditor_name -> no auditor block"] = 1
@@ -735,11 +757,9 @@ def provision_fields(
         # Filed under its own name, so it needs no `sources` mapping -- and it is on the LEVEL
         # horizon like the other four: whether the CEO holds the chair is a standing fact, but
         # a standing fact from 2018 is not evidence about today.
-        frames["ceo_is_board_chair"] = _expire(
-            {"ceo_is_board_chair": duality}, def14a, tally)["ceo_is_board_chair"]
+        frames["ceo_is_board_chair"] = _expire({"ceo_is_board_chair": duality}, def14a, tally)["ceo_is_board_chair"]
 
     undeclared = set(frames) - ALL_FIELDS
     if undeclared:
-        raise AssertionError(
-            f"provision fields not declared in ALL_FIELDS: {sorted(undeclared)}")
+        raise AssertionError(f"provision fields not declared in ALL_FIELDS: {sorted(undeclared)}")
     return frames, tally

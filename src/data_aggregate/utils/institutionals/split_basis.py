@@ -32,15 +32,16 @@ NaN: "no split recorded" is the overwhelmingly common case, not missing data.
 `prices_splits.date` being the EFFECTIVE date (the first session that trades on the new basis).
 A quantity dated on the split date is therefore already on the new basis and is not restated.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
 from src.data_aggregate.utils.common.data_utils import to_day
 
 
-def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series,
-                      dates: pd.Series) -> np.ndarray:
+def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd.Series) -> np.ndarray:
     """`PROD(ratio)` over the splits of each ticker with `date <= dates`, aligned to the inputs.
 
     1.0 where the ticker has no split at or before the date (which includes every ticker with
@@ -89,8 +90,7 @@ def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series,
     return out
 
 
-def future_split_factor(splits: pd.DataFrame | None, tickers: pd.Series,
-                        dates: pd.Series) -> np.ndarray:
+def future_split_factor(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd.Series) -> np.ndarray:
     """`PROD(ratio)` over the splits EFFECTIVE AFTER each date -- the factor that restates an
     as-filed quantity onto today's basis: `shares x factor`, `price / factor`.
 
@@ -110,8 +110,7 @@ def future_split_factor(splits: pd.DataFrame | None, tickers: pd.Series,
     if s.empty:
         return np.ones(n, dtype="float64")
     total_by_ticker = s.groupby(s["ticker"].astype(str))["ratio"].prod()
-    total = pd.Series(np.asarray(tickers, dtype=object)).astype(str).map(
-        total_by_ticker).fillna(1.0).to_numpy()
+    total = pd.Series(np.asarray(tickers, dtype=object)).astype(str).map(total_by_ticker).fillna(1.0).to_numpy()
     return total / at
 
 
@@ -140,5 +139,4 @@ def split_adjust_frame(splits: pd.DataFrame | None, frame: pd.DataFrame) -> pd.D
     dates = np.repeat(np.asarray(frame.index), frame.shape[1])
     tickers = np.tile(np.asarray(frame.columns, dtype=object), len(frame.index))
     factor = future_split_factor(splits, pd.Series(tickers), pd.Series(dates))
-    return pd.DataFrame(factor.reshape(len(frame.index), frame.shape[1]),
-                        index=frame.index, columns=frame.columns)
+    return pd.DataFrame(factor.reshape(len(frame.index), frame.shape[1]), index=frame.index, columns=frame.columns)

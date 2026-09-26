@@ -18,33 +18,37 @@ MEMORY: neither pass preloads `earnings_call_sections`. Scoring streams the text
 and the KPIs stream back per ticker. Loading that table whole is precisely what OOM-killed
 this work before, and it is the only reason the two passes can share one step at all.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
+from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames, load_price_frames, load_trading_calendar,
+    PriceFrames,
+    load_price_frames,
+    load_trading_calendar,
 )
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
-    embed_earnings_calls, embedding_kpis_streamed,
+    embed_earnings_calls,
+    embedding_kpis_streamed,
 )
 from src.data_aggregate.utils.text.earnings_call_features import (
-    build_earnings_call_embedding_panel, build_earnings_call_feature_panel,
-    score_earnings_calls, sentiment_kpis_streamed,
+    build_earnings_call_embedding_panel,
+    build_earnings_call_feature_panel,
+    score_earnings_calls,
+    sentiment_kpis_streamed,
 )
-
-from src.context import Context
+from src.data_store.schema import Tables
 from src.utils.step import Step
 
 
 class StepCubeText(Step):
-
     # The price fields this step reads back from `cube_part_prices`. Declared rather than
     # inlined so the projection stays introspectable (see test_part_registry.py).
     _FIELDS = ("close_split",)
@@ -57,18 +61,17 @@ class StepCubeText(Step):
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._store, Tables.cube_part_text, full=full,
-                             warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._store))
+        window = plan_window(self._store, Tables.cube_part_text, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
 
         merger = PanelMerger(self._log)
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
-        merger.add(self._sentiment_panel(frames), "earnings-call sentiment",
-                   "No earnings-call sentiment cache -> sentiment features skipped.")
-        merger.add(self._embedding_panel(frames), "earnings-call embedding",
-                   "No earnings-call embeddings -> embedding features skipped "
-                   "(no transcripts / model or API key absent).")
+        merger.add(self._sentiment_panel(frames), "earnings-call sentiment", "No earnings-call sentiment cache -> sentiment features skipped.")
+        merger.add(
+            self._embedding_panel(frames),
+            "earnings-call embedding",
+            "No earnings-call embeddings -> embedding features skipped (no transcripts / model or API key absent).",
+        )
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames
@@ -81,22 +84,18 @@ class StepCubeText(Step):
         return int(override) if override is not None else self._part.warmup_trading_days
 
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(
-            self._store, peers=load_peers_or_raise(self._context, self._config),
-            fields=self._FIELDS, since=since)
+        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _sentiment_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
-        score_earnings_calls(self._context)                  # lazy, iterative, cache-incremental
-        per_call = sentiment_kpis_streamed(self._context)     # per-ticker stream, bounded memory
+        score_earnings_calls(self._context)  # lazy, iterative, cache-incremental
+        per_call = sentiment_kpis_streamed(self._context)  # per-ticker stream, bounded memory
         if per_call is None or per_call.empty:
             return None
-        return build_earnings_call_feature_panel(
-            None, frames.peers, frames.trading_index, embeddings=None, per_call=per_call)
+        return build_earnings_call_feature_panel(None, frames.peers, frames.trading_index, embeddings=None, per_call=per_call)
 
     def _embedding_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
-        embed_earnings_calls(self._context)                  # lazy, no-op without an API key
-        ekpi, asof = embedding_kpis_streamed(self._context)   # per-ticker stream, bounded memory
+        embed_earnings_calls(self._context)  # lazy, no-op without an API key
+        ekpi, asof = embedding_kpis_streamed(self._context)  # per-ticker stream, bounded memory
         if ekpi is None or ekpi.empty:
             return None
-        return build_earnings_call_embedding_panel(
-            None, frames.peers, frames.trading_index, sections=asof, ekpi=ekpi)
+        return build_earnings_call_embedding_panel(None, frames.peers, frames.trading_index, sections=asof, ekpi=ekpi)

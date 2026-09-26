@@ -72,6 +72,7 @@ Accepted losses, recorded rather than repaired:
     which filing supersedes which; only 14 filings corpus-wide say "preliminary", so
     `mentions_preliminary` resolves 8 of the 17 genuine restatements and no more.
 """
+
 from __future__ import annotations
 
 import logging
@@ -87,6 +88,7 @@ from src.data_extract.utils.structure.votes.flatten import _prepare_frame, _prop
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
 from src.data_store.schema import Table, Tables
+
 # `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
 # owns the model, the keys, the prompts (`prompt_templates/sec8k_votes_*.md`) and the
 # thread pool; the fabrication guard and the role map are this package's business.
@@ -102,8 +104,7 @@ _ITEM = "5.07"
 #: Columns read out of `sec_8k`. A narrow projection is mandatory (AGENTS.md): the table
 #: holds ~197k item rows and `item_text` is the widest column in it, so an unprojected
 #: read would pull every item code's narrative to select 3.4% of them.
-_SOURCE_COLS = ("ticker", "cik", "accession_number", "form", "filing_date",
-                "period_of_report", "is_amendment", "item_text")
+_SOURCE_COLS = ("ticker", "cik", "accession_number", "form", "filing_date", "period_of_report", "is_amendment", "item_text")
 
 #: Concurrent LLM calls, for the same measured reason as the DEF 14A path: the work is pure
 #: network wait on an API that accepts parallel requests, and a serial universe run is not
@@ -121,14 +122,12 @@ def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
     store to categorise a nominee.
     """
     meta = result.task.meta
-    rows, rejected = _proposal_rows(meta["ticker"], meta["filing"], result.parsed,
-                                    meta["text"], meta["roles"], meta["titles"])
+    rows, rejected = _proposal_rows(meta["ticker"], meta["filing"], result.parsed, meta["text"], meta["roles"], meta["titles"])
     tally["rejected"] += rejected
     if not rows:
         # NOT the same as a failure: a 5.07(d) board-response filing correctly yields zero
         # rows. The reason is what separates an accepted loss from a correct empty answer.
-        tally["skips"]["no proposals survived the guard"] = \
-            tally["skips"].get("no proposals survived the guard", 0) + 1
+        tally["skips"]["no proposals survived the guard"] = tally["skips"].get("no proposals survived the guard", 0) + 1
         return {}
     tally["rows"].extend(rows)
     return {Tables.sec_8k_votes: _prepare_frame(rows)}
@@ -157,31 +156,31 @@ def fetch_8k_votes_llm(
     `model` / `cache` default to `config.gpt`; pass an explicit keyword to pin one for
     research without touching config.
     """
-    config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars,
-                                cache=cache)
+    config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars, cache=cache)
     if not context.store.exists(Tables.sec_8k):
-        context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; "
-                            "Item 5.07 votes skipped")
+        context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; Item 5.07 votes skipped")
         return
 
-    source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS),
-                                where={"item": _ITEM, "ticker": list(tickers)})
+    source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
     if source is None or source.empty:
-        context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)",
-                         len(tickers))
+        context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
         return
 
     seen = set(existing_filings(context, Tables.sec_8k_votes))
     todo = source[~source["accession_number"].isin(seen)]
-    context.log.info("Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, "
-                     "%d to read", len(source), source["ticker"].nunique(),
-                     len(source) - len(todo), len(todo))
+    context.log.info(
+        "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",
+        len(source),
+        source["ticker"].nunique(),
+        len(source) - len(todo),
+        len(todo),
+    )
     if todo.empty:
         return
 
     try:
         extractor = LLMExtractor(context, config, action="sec8k_votes", threads=workers)
-    except EnvironmentError as e:
+    except OSError as e:
         context.log.warning("Item 5.07 vote extraction skipped: %s", e)
         return
 
@@ -202,15 +201,18 @@ def fetch_8k_votes_llm(
                 skips[reason] = skips.get(reason, 0) + 1
                 continue
             roles, titles = _role_map(role_source, f.get("period_of_report"))
-            tasks.append(LlmTask(seq=len(tasks), payload=text, schema=Item507Extract,
-                                 table=Tables.sec_8k_votes,
-                                 meta={"ticker": str(ticker), "filing": f, "text": text,
-                                       "roles": roles, "titles": titles}))
+            tasks.append(
+                LlmTask(
+                    seq=len(tasks),
+                    payload=text,
+                    schema=Item507Extract,
+                    table=Tables.sec_8k_votes,
+                    meta={"ticker": str(ticker), "filing": f, "text": text, "roles": roles, "titles": titles},
+                )
+            )
 
         tally: dict = {"rejected": 0, "rows": [], "skips": {}}
-        results = extractor.run_extraction(
-            tasks, flatten=lambda r: _result_frames(r, tally),
-            group_key=lambda t: str(t.meta["ticker"]))
+        results = extractor.run_extraction(tasks, flatten=lambda r: _result_frames(r, tally), group_key=lambda t: str(t.meta["ticker"]))
 
         total_rejected += tally["rejected"]
         for reason, n in tally["skips"].items():
@@ -224,13 +226,12 @@ def fetch_8k_votes_llm(
             total_rows += len(ticker_rows)
             unmatched = sum(r.get("n_nominees_unmatched") or 0 for r in ticker_rows)
             nominees = sum(r.get("n_nominees") or 0 for r in ticker_rows)
-            context.log.info("%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched",
-                             ticker, len(ticker_rows), len(group), int(unmatched), int(nominees))
+            context.log.info(
+                "%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched", ticker, len(ticker_rows), len(group), int(unmatched), int(nominees)
+            )
 
-    context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication "
-                     "guard", total_rows, total_rejected)
+    context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication guard", total_rows, total_rejected)
     for reason, n in sorted(skips.items(), key=lambda kv: -kv[1]):
         # every one of these is a filing that produced NO rows; the reason is what
         # separates an accepted loss from a correct empty answer
         context.log.info("Item 5.07: %d filing(s) skipped — %s", n, reason)
-

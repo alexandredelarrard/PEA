@@ -10,6 +10,7 @@ components without ever inventing a $0 package, `ceo_to_director_pay_ratio` must
 never `inf` on a zero denominator, and the family's coverage must be readable as the 2006
 REGIME STAIRCASE it is rather than as an extraction gap.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -17,8 +18,13 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.governance.director_comp import (
-    ALL_FIELDS, DIRECTOR_COMPONENTS, EVENT_FIELDS, LEVEL_FIELDS, PEER_RELATIVE_FIELDS,
-    director_pay_fields, impute_director_comp,
+    ALL_FIELDS,
+    DIRECTOR_COMPONENTS,
+    EVENT_FIELDS,
+    LEVEL_FIELDS,
+    PEER_RELATIVE_FIELDS,
+    director_pay_fields,
+    impute_director_comp,
 )
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
 from src.data_store.schema import Tables
@@ -29,25 +35,58 @@ IDX = pd.bdate_range("2019-01-01", "2025-06-30")
 def _rows() -> pd.DataFrame:
     """One filing, four directors, each a different branch of the identity."""
     base = {"ticker": "AAA", "accession_number": "AAA-1", "as_of": "2020-05-01"}
-    return pd.DataFrame([
-        # a NULL total with every component -> filled at 300,000
-        {**base, "name": "Full Fill", "total": None, "fees_earned": 100_000.0,
-         "stock_awards": 150_000.0, "option_awards": 20_000.0,
-         "non_equity_incentive": 10_000.0, "pension_change": 5_000.0,
-         "other_compensation": 15_000.0},
-        # a NULL total with ONE component -> min_count=1 fills at that one component
-        {**base, "name": "Part Fill", "total": None, "fees_earned": 80_000.0,
-         "stock_awards": None, "option_awards": None, "non_equity_incentive": None,
-         "pension_change": None, "other_compensation": None},
-        # EVERY component NULL -> must stay NULL, never $0
-        {**base, "name": "All Null", "total": None, "fees_earned": None,
-         "stock_awards": None, "option_awards": None, "non_equity_incentive": None,
-         "pension_change": None, "other_compensation": None},
-        # a filer-STATED total that disagrees with its components -> never overwritten
-        {**base, "name": "Stated", "total": 999_999.0, "fees_earned": 1.0,
-         "stock_awards": 1.0, "option_awards": None, "non_equity_incentive": None,
-         "pension_change": None, "other_compensation": None},
-    ])
+    return pd.DataFrame(
+        [
+            # a NULL total with every component -> filled at 300,000
+            {
+                **base,
+                "name": "Full Fill",
+                "total": None,
+                "fees_earned": 100_000.0,
+                "stock_awards": 150_000.0,
+                "option_awards": 20_000.0,
+                "non_equity_incentive": 10_000.0,
+                "pension_change": 5_000.0,
+                "other_compensation": 15_000.0,
+            },
+            # a NULL total with ONE component -> min_count=1 fills at that one component
+            {
+                **base,
+                "name": "Part Fill",
+                "total": None,
+                "fees_earned": 80_000.0,
+                "stock_awards": None,
+                "option_awards": None,
+                "non_equity_incentive": None,
+                "pension_change": None,
+                "other_compensation": None,
+            },
+            # EVERY component NULL -> must stay NULL, never $0
+            {
+                **base,
+                "name": "All Null",
+                "total": None,
+                "fees_earned": None,
+                "stock_awards": None,
+                "option_awards": None,
+                "non_equity_incentive": None,
+                "pension_change": None,
+                "other_compensation": None,
+            },
+            # a filer-STATED total that disagrees with its components -> never overwritten
+            {
+                **base,
+                "name": "Stated",
+                "total": 999_999.0,
+                "fees_earned": 1.0,
+                "stock_awards": 1.0,
+                "option_awards": None,
+                "non_equity_incentive": None,
+                "pension_change": None,
+                "other_compensation": None,
+            },
+        ]
+    )
 
 
 def test_the_402k_identity_fills_from_components_and_leaves_an_all_null_row_null():
@@ -59,8 +98,7 @@ def test_the_402k_identity_fills_from_components_and_leaves_an_all_null_row_null
     assert by.loc["Full Fill", "total"] == pytest.approx(300_000.0)
     assert by.loc["Part Fill", "total"] == pytest.approx(80_000.0)
     assert pd.isna(by.loc["All Null", "total"]), "an all-NULL row became a $0 pay package"
-    assert by.loc["Stated", "total"] == pytest.approx(999_999.0), \
-        "a filer-stated total was overwritten by its own components"
+    assert by.loc["Stated", "total"] == pytest.approx(999_999.0), "a filer-stated total was overwritten by its own components"
     assert by.loc["Stated", "total_imputed"] == 0.0
     assert by.loc[["Full Fill", "Part Fill"], "total_imputed"].tolist() == [1.0, 1.0]
     assert stats["total = sum(components)"] == 2
@@ -72,8 +110,10 @@ def test_the_402k_identity_fills_from_components_and_leaves_an_all_null_row_null
     print(f"  one component only    -> {by.loc['Part Fill', 'total']:,.0f} (min_count=1)")
     print(f"  no component at all   -> {by.loc['All Null', 'total']} (NOT $0)")
     print(f"  filer-stated 999,999 vs components 2 -> {by.loc['Stated', 'total']:,.0f} (kept)")
-    print("  CONCLUSION: SIX components, the first `fees_earned` and not `salary`; the identity "
-          "is non-destructive and an unknown row stays unknown. Validated.")
+    print(
+        "  CONCLUSION: SIX components, the first `fees_earned` and not `salary`; the identity "
+        "is non-destructive and an unknown row stays unknown. Validated."
+    )
 
 
 def test_the_shares_are_board_level_sums_not_means_of_ratios():
@@ -81,17 +121,22 @@ def test_the_shares_are_board_level_sums_not_means_of_ratios():
     per-director ratios lets that one row move the board's equity share by ten points;
     `sum(stock) / sum(total)` is the share of the board's whole pay BILL that came as equity,
     which is the quantity the alignment argument is about."""
-    base = {"ticker": "BBB", "accession_number": "BBB-1", "as_of": "2020-05-01",
-            "option_awards": None, "non_equity_incentive": None, "pension_change": None,
-            "other_compensation": None}
-    df = pd.DataFrame([
-        {**base, "name": "Veteran A", "total": 300_000.0, "fees_earned": 100_000.0,
-         "stock_awards": 200_000.0},
-        {**base, "name": "Veteran B", "total": 300_000.0, "fees_earned": 100_000.0,
-         "stock_awards": 200_000.0},
-        {**base, "name": "Joined March", "total": 20_000.0, "fees_earned": 20_000.0,
-         "stock_awards": 0.0},
-    ])
+    base = {
+        "ticker": "BBB",
+        "accession_number": "BBB-1",
+        "as_of": "2020-05-01",
+        "option_awards": None,
+        "non_equity_incentive": None,
+        "pension_change": None,
+        "other_compensation": None,
+    }
+    df = pd.DataFrame(
+        [
+            {**base, "name": "Veteran A", "total": 300_000.0, "fees_earned": 100_000.0, "stock_awards": 200_000.0},
+            {**base, "name": "Veteran B", "total": 300_000.0, "fees_earned": 100_000.0, "stock_awards": 200_000.0},
+            {**base, "name": "Joined March", "total": 20_000.0, "fees_earned": 20_000.0, "stock_awards": 0.0},
+        ]
+    )
     frames, _ = director_pay_fields(df, None, IDX)
     equity = float(frames["director_equity_pay_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
     cash = float(frames["director_cash_fee_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
@@ -101,12 +146,10 @@ def test_the_shares_are_board_level_sums_not_means_of_ratios():
     assert equity + cash == pytest.approx(1.0), "the two shares must exhaust this pay bill"
     mean_of_ratios = np.mean([200 / 300, 200 / 300, 0.0])
     print("\n=== SANITY CHECK: the two pay-MIX shares ===")
-    print(f"  board sums: stock 400,000 / fees 220,000 / total 620,000")
+    print("  board sums: stock 400,000 / fees 220,000 / total 620,000")
     print(f"  equity share {equity:.4f}, cash share {cash:.4f}, sum {equity + cash:.4f}")
-    print(f"  a MEAN OF RATIOS would say {mean_of_ratios:.4f} -- "
-          f"{abs(equity - mean_of_ratios) * 100:.1f}pp away, driven by one part-year director")
-    print("  CONCLUSION: the shares are board-level sums, so a pro-rated joiner cannot move "
-          "them. Validated.")
+    print(f"  a MEAN OF RATIOS would say {mean_of_ratios:.4f} -- {abs(equity - mean_of_ratios) * 100:.1f}pp away, driven by one part-year director")
+    print("  CONCLUSION: the shares are board-level sums, so a pro-rated joiner cannot move them. Validated.")
 
 
 def test_the_ceo_ratio_is_NaN_and_never_inf_on_a_zero_denominator():
@@ -114,31 +157,52 @@ def test_the_ceo_ratio_is_NaN_and_never_inf_on_a_zero_denominator():
     free. `inf` would then propagate through the winsorization as the largest value in the
     cross-section -- a parse failure encoded as the most extreme governance signal in the index.
     """
-    base = {"option_awards": None, "non_equity_incentive": None, "pension_change": None,
-            "other_compensation": None, "stock_awards": None}
-    dc = pd.DataFrame([
-        {**base, "ticker": "ZERO", "accession_number": "Z-1", "as_of": "2020-05-01",
-         "name": "Free A", "total": 0.0, "fees_earned": 0.0},
-        {**base, "ticker": "ZERO", "accession_number": "Z-1", "as_of": "2020-05-01",
-         "name": "Free B", "total": 0.0, "fees_earned": 0.0},
-        {**base, "ticker": "GOOD", "accession_number": "G-1", "as_of": "2020-05-01",
-         "name": "Paid A", "total": 200_000.0, "fees_earned": 200_000.0},
-        {**base, "ticker": "GOOD", "accession_number": "G-1", "as_of": "2020-05-01",
-         "name": "Paid B", "total": 300_000.0, "fees_earned": 300_000.0},
-        # ZERO's LATER filing is normal, so the ticker keeps a column and the zero-denominator
-        # year has to be NaN *inside* it -- a stronger check than the column simply being absent.
-        {**base, "ticker": "ZERO", "accession_number": "Z-2", "as_of": "2022-05-01",
-         "name": "Free A", "total": 150_000.0, "fees_earned": 150_000.0},
-    ])
-    parent = pd.DataFrame([
-        {"ticker": "ZERO", "as_of": "2020-05-01", "ceo_total_comp": 10_000_000.0},
-        {"ticker": "ZERO", "as_of": "2022-05-01", "ceo_total_comp": 10_000_000.0},
-        {"ticker": "GOOD", "as_of": "2020-05-01", "ceo_total_comp": 10_000_000.0},
-    ])
+    base = {"option_awards": None, "non_equity_incentive": None, "pension_change": None, "other_compensation": None, "stock_awards": None}
+    dc = pd.DataFrame(
+        [
+            {**base, "ticker": "ZERO", "accession_number": "Z-1", "as_of": "2020-05-01", "name": "Free A", "total": 0.0, "fees_earned": 0.0},
+            {**base, "ticker": "ZERO", "accession_number": "Z-1", "as_of": "2020-05-01", "name": "Free B", "total": 0.0, "fees_earned": 0.0},
+            {
+                **base,
+                "ticker": "GOOD",
+                "accession_number": "G-1",
+                "as_of": "2020-05-01",
+                "name": "Paid A",
+                "total": 200_000.0,
+                "fees_earned": 200_000.0,
+            },
+            {
+                **base,
+                "ticker": "GOOD",
+                "accession_number": "G-1",
+                "as_of": "2020-05-01",
+                "name": "Paid B",
+                "total": 300_000.0,
+                "fees_earned": 300_000.0,
+            },
+            # ZERO's LATER filing is normal, so the ticker keeps a column and the zero-denominator
+            # year has to be NaN *inside* it -- a stronger check than the column simply being absent.
+            {
+                **base,
+                "ticker": "ZERO",
+                "accession_number": "Z-2",
+                "as_of": "2022-05-01",
+                "name": "Free A",
+                "total": 150_000.0,
+                "fees_earned": 150_000.0,
+            },
+        ]
+    )
+    parent = pd.DataFrame(
+        [
+            {"ticker": "ZERO", "as_of": "2020-05-01", "ceo_total_comp": 10_000_000.0},
+            {"ticker": "ZERO", "as_of": "2022-05-01", "ceo_total_comp": 10_000_000.0},
+            {"ticker": "GOOD", "as_of": "2020-05-01", "ceo_total_comp": 10_000_000.0},
+        ]
+    )
     frames, tally = director_pay_fields(dc, parent, IDX)
     r = frames["ceo_to_director_pay_ratio"]
-    zero_2020, zero_2022 = float(r.loc[pd.Timestamp("2020-06-01"), "ZERO"]), \
-        float(r.loc[pd.Timestamp("2022-06-01"), "ZERO"])
+    zero_2020, zero_2022 = float(r.loc[pd.Timestamp("2020-06-01"), "ZERO"]), float(r.loc[pd.Timestamp("2022-06-01"), "ZERO"])
     assert np.isnan(zero_2020), f"a zero median produced {zero_2020}"
     assert not np.isinf(zero_2020)
     assert zero_2022 == pytest.approx(10_000_000 / 150_000), "the LATER, valid year was lost"
@@ -151,14 +215,10 @@ def test_the_ceo_ratio_is_NaN_and_never_inf_on_a_zero_denominator():
 
     print("\n=== SANITY CHECK: ceo_to_director_pay_ratio's denominator ===")
     print(f"  median director pay 0 -> ratio {zero_2020} (NaN, not inf)")
-    print(f"  the same ticker's next, valid filing -> {zero_2022:.1f}x (the year is rejected, "
-          "not the ticker)")
-    print(f"  median 250,000 vs a $10M CEO -> "
-          f"{float(r.loc[pd.Timestamp('2020-06-01'), 'GOOD']):.1f}x")
-    print(f"  log_median_director_pay on the zero year: "
-          f"{lg.loc[pd.Timestamp('2020-06-01'), 'ZERO']}")
-    print("  CONCLUSION: both the ratio and the log guard at > 0 and leave a parse failure "
-          "unknown rather than extreme. Validated.")
+    print(f"  the same ticker's next, valid filing -> {zero_2022:.1f}x (the year is rejected, not the ticker)")
+    print(f"  median 250,000 vs a $10M CEO -> {float(r.loc[pd.Timestamp('2020-06-01'), 'GOOD']):.1f}x")
+    print(f"  log_median_director_pay on the zero year: {lg.loc[pd.Timestamp('2020-06-01'), 'ZERO']}")
+    print("  CONCLUSION: both the ratio and the log guard at > 0 and leave a parse failure unknown rather than extreme. Validated.")
 
 
 def test_the_encoding_and_expiry_contracts():
@@ -193,15 +253,11 @@ def test_the_encoding_and_expiry_contracts():
     consultant; the pay LEVEL (6.84%) and the CEO RATIO (5.16%) are not, and ship raw.
     """
     assert EVENT_FIELDS == frozenset(), "director pay was declared an event"
-    assert LEVEL_FIELDS == ALL_FIELDS, \
-        "a director-pay field is on neither horizon -- that is the phase-3 defect's own shape"
-    assert PEER_RELATIVE_FIELDS == {"director_cash_fee_pct", "director_equity_pay_pct"}, \
-        "the peer-leg set changed without a re-measured sector share"
+    assert LEVEL_FIELDS == ALL_FIELDS, "a director-pay field is on neither horizon -- that is the phase-3 defect's own shape"
+    assert PEER_RELATIVE_FIELDS == {"director_cash_fee_pct", "director_equity_pay_pct"}, "the peer-leg set changed without a re-measured sector share"
     assert PEER_RELATIVE_FIELDS < ALL_FIELDS
-    assert "ceo_to_director_pay_ratio" not in PEER_RELATIVE_FIELDS, \
-        "a ratio whose absolute level is the thesis was peer-centred"
-    assert ALL_FIELDS == {"log_median_director_pay", "director_equity_pay_pct",
-                          "director_cash_fee_pct", "ceo_to_director_pay_ratio"}
+    assert "ceo_to_director_pay_ratio" not in PEER_RELATIVE_FIELDS, "a ratio whose absolute level is the thesis was peer-centred"
+    assert ALL_FIELDS == {"log_median_director_pay", "director_equity_pay_pct", "director_cash_fee_pct", "ceo_to_director_pay_ratio"}
 
     frames, tally = director_pay_fields(_rows(), None, IDX)
     fee = frames["director_cash_fee_pct"]["AAA"]
@@ -210,29 +266,26 @@ def test_the_encoding_and_expiry_contracts():
 
     inside = fee[(age >= 0) & (age <= LEVEL_MAX_AGE_DAYS)]
     outside = fee[age > LEVEL_MAX_AGE_DAYS]
-    assert inside.notna().all(), \
-        f"{int(inside.isna().sum())} cell(s) INSIDE the level horizon were expired"
-    assert outside.notna().sum() == 0, \
-        f"{int(outside.notna().sum())} cell(s) survived past {LEVEL_MAX_AGE_DAYS} days"
+    assert inside.notna().all(), f"{int(inside.isna().sum())} cell(s) INSIDE the level horizon were expired"
+    assert outside.notna().sum() == 0, f"{int(outside.notna().sum())} cell(s) survived past {LEVEL_MAX_AGE_DAYS} days"
     assert len(inside) and len(outside), "the fixture no longer spans the horizon"
 
-    expired = next((v for k, v in tally.items()
-                    if k.startswith(f"expired >{LEVEL_MAX_AGE_DAYS}d: director_cash_fee_pct")
-                    and "of non-null" not in k), 0)
-    assert expired == len(outside), \
-        f"the tally says {expired} expired cells, the frame shows {len(outside)}"
+    expired = next(
+        (v for k, v in tally.items() if k.startswith(f"expired >{LEVEL_MAX_AGE_DAYS}d: director_cash_fee_pct") and "of non-null" not in k), 0
+    )
+    assert expired == len(outside), f"the tally says {expired} expired cells, the frame shows {len(outside)}"
 
     print("\n=== SANITY CHECK: the director-pay encoding + expiry contracts ===")
     print(f"  ALL_FIELDS = {sorted(ALL_FIELDS)}")
-    print(f"  EVENT_FIELDS = {set(EVENT_FIELDS) or '{} (all levels)'} ; "
-          f"LEVEL_FIELDS = all {len(LEVEL_FIELDS)} ; "
-          f"PEER_RELATIVE_FIELDS = {sorted(PEER_RELATIVE_FIELDS)}")
+    print(
+        f"  EVENT_FIELDS = {set(EVENT_FIELDS) or '{} (all levels)'} ; "
+        f"LEVEL_FIELDS = all {len(LEVEL_FIELDS)} ; "
+        f"PEER_RELATIVE_FIELDS = {sorted(PEER_RELATIVE_FIELDS)}"
+    )
     print(f"  one 2020-05-01 filing, index {fee.index[0].date()} .. {fee.index[-1].date()}")
     print(f"  <= {LEVEL_MAX_AGE_DAYS}d after it: {len(inside):>4} cells, all reported")
-    print(f"  >  {LEVEL_MAX_AGE_DAYS}d after it: {len(outside):>4} cells, all expired "
-          f"(tally agrees: {expired})")
-    print("  CONCLUSION: four fields, all LEVELS, all on the 1,095-day level horizon rather "
-          "than on no horizon at all. Validated.")
+    print(f"  >  {LEVEL_MAX_AGE_DAYS}d after it: {len(outside):>4} cells, all expired (tally agrees: {expired})")
+    print("  CONCLUSION: four fields, all LEVELS, all on the 1,095-day level horizon rather than on no horizon at all. Validated.")
 
 
 def test_the_real_director_comp_readout():
@@ -244,10 +297,11 @@ def test_the_real_director_comp_readout():
     """
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         dc = ctx.store.load(Tables.def14a_director_comp)
         parent = ctx.store.load(Tables.def14a_llm)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_director_comp not reachable ({e})")
     if dc is None or dc.empty or parent is None or parent.empty:
         pytest.skip("def14a tables empty")
@@ -271,23 +325,20 @@ def test_the_real_director_comp_readout():
 
     zero = sorted(set(parent["ticker"]) - set(dc["ticker"]))
     print("\n=== SANITY CHECK: def14a_director_comp, live ===")
-    print(f"  {len(dc):,} rows / {dc['ticker'].nunique()} tickers / "
-          f"{dc['accession_number'].nunique():,} filings")
-    print(f"  total coverage {before:.1%} -> {after:.1%} "
-          f"(+{stats['total = sum(components)']:,} by the six-component identity)")
+    print(f"  {len(dc):,} rows / {dc['ticker'].nunique()} tickers / {dc['accession_number'].nunique():,} filings")
+    print(f"  total coverage {before:.1%} -> {after:.1%} (+{stats['total = sum(components)']:,} by the six-component identity)")
     print("  the REGIME staircase (kind A -- prose, never a date filter):")
     for lo, hi in eras:
         sel = p[(p["as_of"].dt.year >= lo) & (p["as_of"].dt.year <= hi)]
         if len(sel):
-            print(f"    {lo}-{str(hi)[2:]}: {sel['_has'].mean():6.1%}  "
-                  f"({int(sel['_has'].sum()):,} of {len(sel):,} proxies)")
+            print(f"    {lo}-{str(hi)[2:]}: {sel['_has'].mean():6.1%}  ({int(sel['_has'].sum()):,} of {len(sel):,} proxies)")
     print("  the four features, per filing:")
     for name in sorted(ALL_FIELDS):
         n = tally[f"{name}: filings"]
-        print(f"    {name:28s} {n:6,} filings  "
-              f"{int(frames[name].notna().any().sum()):3d} tickers")
-    print(f"  per-TICKER (a parser defect): {dc['ticker'].nunique()} of {parent['ticker'].nunique()} -- ZERO "
-          f"rows for {zero}")
-    print("  CONCLUSION: the family is ~90% covered in the era the model trades, the pre-2006 "
-          "sparsity is the disclosure regime and not a defect, and the six missing tickers ARE "
-          "an Item 402(k) parser defect that this phase reports rather than absorbs. Validated.")
+        print(f"    {name:28s} {n:6,} filings  {int(frames[name].notna().any().sum()):3d} tickers")
+    print(f"  per-TICKER (a parser defect): {dc['ticker'].nunique()} of {parent['ticker'].nunique()} -- ZERO rows for {zero}")
+    print(
+        "  CONCLUSION: the family is ~90% covered in the era the model trades, the pre-2006 "
+        "sparsity is the disclosure regime and not a defect, and the six missing tickers ARE "
+        "an Item 402(k) parser defect that this phase reports rather than absorbs. Validated."
+    )

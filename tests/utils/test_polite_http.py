@@ -4,6 +4,7 @@ Shared anti-429 HTTP toolkit (src/utils/polite_http.py) used by the earnings-cal
 retry + backoff honouring Retry-After, a PER-HOST run-wide slowdown ratcheted on 429 (so one
 host's throttle can't slow another), get_text/get_json, and the BYO-proxy env resolver.
 """
+
 from __future__ import annotations
 
 import types
@@ -34,8 +35,10 @@ def test_http_get_honours_retry_after_and_ratchets_host_pace(monkeypatch):
     assert ph.pace_mult("https://www.fool.com/y") > 1.0, "429 must ratchet the host's pace"
 
     print("\n=== SANITY CHECK: polite_http 429 handling ===")
-    print(f"  429 -> honoured Retry-After ({waits[0]:.1f}s), ratcheted fool.com pace to "
-          f"x{ph.pace_mult('https://www.fool.com/y'):.1f}, then 200 on retry.")
+    print(
+        f"  429 -> honoured Retry-After ({waits[0]:.1f}s), ratcheted fool.com pace to "
+        f"x{ph.pace_mult('https://www.fool.com/y'):.1f}, then 200 on retry."
+    )
 
 
 def test_pace_is_per_host(monkeypatch):
@@ -44,9 +47,11 @@ def test_pace_is_per_host(monkeypatch):
     ph.note_throttle("https://api-a.com/y")
     assert ph.pace_mult("https://api-a.com/z") > 1.0, "throttled host should be slowed"
     assert ph.pace_mult("https://api-b.com/z") == 1.0, "a different host must NOT be slowed"
-    print("  per-host isolation: api-a slowed to "
-          f"x{ph.pace_mult('https://api-a.com/z'):.1f}, api-b still x1.0 (Google's throttle "
-          "won't slow Wikimedia). Validated.")
+    print(
+        "  per-host isolation: api-a slowed to "
+        f"x{ph.pace_mult('https://api-a.com/z'):.1f}, api-b still x1.0 (Google's throttle "
+        "won't slow Wikimedia). Validated."
+    )
 
 
 def test_get_text_json_and_terminal_none(monkeypatch):
@@ -88,8 +93,10 @@ def test_ssl_failure_is_explained_once_per_host(monkeypatch, caplog):
     assert any("huggingface.co" in w for w in warns), "a second host must still be reported"
 
     print("\n=== SANITY CHECK: SSL failure diagnostics ===")
-    print(f"  2 failing calls to api.roic.ai -> 1 WARNING naming configure_corporate_ca(); "
-          f"a different host still reported. {len(warns)} warnings total. Validated.")
+    print(
+        f"  2 failing calls to api.roic.ai -> 1 WARNING naming configure_corporate_ca(); "
+        f"a different host still reported. {len(warns)} warnings total. Validated."
+    )
 
 
 def test_non_ssl_transport_error_is_not_misreported_as_a_ca_problem(monkeypatch, caplog):
@@ -98,22 +105,18 @@ def test_non_ssl_transport_error_is_not_misreported_as_a_ca_problem(monkeypatch,
     import requests as _rq
 
     ph._CA_HINT_HOSTS.clear()
-    monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(
-        get=lambda *a, **k: (_ for _ in ()).throw(_rq.exceptions.Timeout("timed out"))))
+    monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(get=lambda *a, **k: (_ for _ in ()).throw(_rq.exceptions.Timeout("timed out"))))
 
     with caplog.at_level("WARNING", logger=ph.logger.name):
         assert ph._raw_get("https://api-timeout.com/x", impersonate=False) is None
 
-    assert not [r for r in caplog.records if r.levelname == "WARNING"], \
-        "a timeout must not raise a TLS warning"
+    assert not [r for r in caplog.records if r.levelname == "WARNING"], "a timeout must not raise a TLS warning"
     assert "api-timeout.com" not in ph._CA_HINT_HOSTS
     assert ph._is_ssl_error(_rq.exceptions.Timeout("timed out")) is False
     # curl_cffi 0.15.0 reports TLS problems as a GENERIC exception -> matched on the message
-    assert ph._is_ssl_error(Exception("curl: (60) SSL certificate problem: unable to get "
-                                      "local issuer certificate")) is True
+    assert ph._is_ssl_error(Exception("curl: (60) SSL certificate problem: unable to get local issuer certificate")) is True
 
-    print("  timeout -> no TLS warning (stays DEBUG); curl_cffi's generic `curl: (60) SSL "
-          "certificate problem` still classified as TLS. Validated.")
+    print("  timeout -> no TLS warning (stays DEBUG); curl_cffi's generic `curl: (60) SSL certificate problem` still classified as TLS. Validated.")
 
 
 def test_resolve_proxy_env(monkeypatch):
@@ -122,13 +125,15 @@ def test_resolve_proxy_env(monkeypatch):
     assert ph.resolve_proxy() is None
     monkeypatch.setenv("PEA_SCRAPE_PROXY", "http://corp-proxy:8080")
     assert ph.resolve_proxy() == {"http": "http://corp-proxy:8080", "https": "http://corp-proxy:8080"}
-    print("  resolve_proxy: None without env; {'http','https'} from PEA_SCRAPE_PROXY. "
-          "BYO-proxy shared by all extractors. Validated.")
+    print("  resolve_proxy: None without env; {'http','https'} from PEA_SCRAPE_PROXY. BYO-proxy shared by all extractors. Validated.")
 
 
 if __name__ == "__main__":
     import types
-    mp = types.SimpleNamespace(setattr=lambda o, n, v: setattr(o, n, v),
-                               setenv=lambda k, v: __import__("os").environ.__setitem__(k, v),
-                               delenv=lambda k, raising=True: __import__("os").environ.pop(k, None))
+
+    mp = types.SimpleNamespace(
+        setattr=lambda o, n, v: setattr(o, n, v),
+        setenv=lambda k, v: __import__("os").environ.__setitem__(k, v),
+        delenv=lambda k, raising=True: __import__("os").environ.pop(k, None),
+    )
     test_pace_is_per_host(mp)

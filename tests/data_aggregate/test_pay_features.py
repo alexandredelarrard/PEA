@@ -12,6 +12,7 @@ correlation would not pin down:
     gap of ZERO -- the test that fails if either leg reverts to a percentage change;
   * the severity products are ONE-SIDED.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -33,8 +34,7 @@ from src.data_aggregate.utils.governance.pay_features import (
 # Ends well past 2023-04-01 + 548d (= 2024-10-01), so the expiry horizon is actually
 # CROSSED inside the index -- otherwise the expiry assertion below passes vacuously.
 IDX = pd.date_range("2020-01-01", "2025-06-30", freq="B")
-PEERS = {t: {p: 1.0 for p in ("AAA", "BBB", "CCC", "DDD") if p != t}
-         for t in ("AAA", "BBB", "CCC", "DDD")}
+PEERS = {t: {p: 1.0 for p in ("AAA", "BBB", "CCC", "DDD") if p != t} for t in ("AAA", "BBB", "CCC", "DDD")}
 
 
 def _def14a() -> pd.DataFrame:
@@ -48,20 +48,19 @@ def _def14a() -> pd.DataFrame:
     rows = [
         # (ticker, as_of, comp, name)
         ("AAA", "2021-04-01", 10e6, "Timothy D. Cook"),
-        ("AAA", "2022-04-01", 12e6, "Tim Cook"),          # +20%, SAME person
-        ("AAA", "2023-04-01", 15e6, "Timothy Cook"),      # +25%, same person again
+        ("AAA", "2022-04-01", 12e6, "Tim Cook"),  # +20%, SAME person
+        ("AAA", "2023-04-01", 15e6, "Timothy Cook"),  # +25%, same person again
         ("BBB", "2021-04-01", 8e6, "Alice Smith"),
-        ("BBB", "2022-04-01", 20e6, "Bob Jones"),         # turnover -> growth NaN
-        ("BBB", "2023-04-01", 22e6, "Bob Jones"),         # +10%, computable
+        ("BBB", "2022-04-01", 20e6, "Bob Jones"),  # turnover -> growth NaN
+        ("BBB", "2023-04-01", 22e6, "Bob Jones"),  # +10%, computable
         ("CCC", "2021-04-01", 5e6, "Carol White"),
-        ("CCC", "2023-04-01", 9e6, "Carol White"),        # 2022 MISSING -> NaN
+        ("CCC", "2023-04-01", 9e6, "Carol White"),  # 2022 MISSING -> NaN
         ("DDD", "2021-04-01", 6e6, "Dan Brown"),
-        ("DDD", "2022-04-01", 7e6, None),                 # unknown -> NaN both ways
+        ("DDD", "2022-04-01", 7e6, None),  # unknown -> NaN both ways
     ]
-    return pd.DataFrame([
-        {"ticker": t, "accession_number": f"{t}-{d[:4]}", "as_of": pd.Timestamp(d),
-         "ceo_total_comp": c, "ceo_name_proxy": n}
-        for t, d, c, n in rows])
+    return pd.DataFrame(
+        [{"ticker": t, "accession_number": f"{t}-{d[:4]}", "as_of": pd.Timestamp(d), "ceo_total_comp": c, "ceo_name_proxy": n} for t, d, c, n in rows]
+    )
 
 
 def _exec_comp() -> pd.DataFrame:
@@ -76,19 +75,41 @@ def _exec_comp() -> pd.DataFrame:
     # placeholder names like "Exec 0".."Exec 6" would all key to `exec|e` and collapse into
     # ONE deputy -- a fixture artefact that would silently exercise the 3-NEO floor instead of
     # the top-five sum.
-    neos = [("Timothy Cook", 9e6), ("Luca Maestri", 5e6), ("Katherine Adams", 4e6),
-            ("Deirdre O'Brien", 3e6), ("Jeff Williams", 2e6), ("Greg Joswiak", 1e6),
-            ("Sabih Khan", 0.5e6)]                        # top five sum to 23e6
+    neos = [
+        ("Timothy Cook", 9e6),
+        ("Luca Maestri", 5e6),
+        ("Katherine Adams", 4e6),
+        ("Deirdre O'Brien", 3e6),
+        ("Jeff Williams", 2e6),
+        ("Greg Joswiak", 1e6),
+        ("Sabih Khan", 0.5e6),
+    ]  # top five sum to 23e6
     for name, pay in neos:
         for fy, mult in ((2022, 1.0), (2021, 0.5)):
-            rows.append({"ticker": "AAA", "accession_number": "AAA-2023",
-                         "as_of": pd.Timestamp("2023-04-01"), "name": name,
-                         "fiscal_year": fy, "total": pay * mult, "reconciles": 1.0})
+            rows.append(
+                {
+                    "ticker": "AAA",
+                    "accession_number": "AAA-2023",
+                    "as_of": pd.Timestamp("2023-04-01"),
+                    "name": name,
+                    "fiscal_year": fy,
+                    "total": pay * mult,
+                    "reconciles": 1.0,
+                }
+            )
     # BBB's 2023 filing carries only TWO NEOs -> below the 3-NEO floor -> rejected entirely
     for name in ("Bob Jones", "Nadia Farrell"):
-        rows.append({"ticker": "BBB", "accession_number": "BBB-2023",
-                     "as_of": pd.Timestamp("2023-04-01"), "name": name,
-                     "fiscal_year": 2022, "total": 11e6, "reconciles": 1.0})
+        rows.append(
+            {
+                "ticker": "BBB",
+                "accession_number": "BBB-2023",
+                "as_of": pd.Timestamp("2023-04-01"),
+                "name": name,
+                "fiscal_year": 2022,
+                "total": 11e6,
+                "reconciles": 1.0,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -116,10 +137,8 @@ def test_turnover_guard_and_the_missing_year():
     assert tally["CEO turnovers detected"] == 1
 
     print("\n=== SANITY CHECK: the CEO turnover guard ===")
-    print(f"  3 spellings of one CEO -> growth kept: log(1.20)={np.log(1.2):.4f} and "
-          f"log(1.25)={np.log(1.25):.4f}; a real change -> NaN + flag 1.0.")
-    print(f"  a MISSING proxy year -> NaN (not a 2y change relabelled 1y): "
-          f"{tally['growth nulled: filings not ~1y apart']} such pair rejected.")
+    print(f"  3 spellings of one CEO -> growth kept: log(1.20)={np.log(1.2):.4f} and log(1.25)={np.log(1.25):.4f}; a real change -> NaN + flag 1.0.")
+    print(f"  a MISSING proxy year -> NaN (not a 2y change relabelled 1y): {tally['growth nulled: filings not ~1y apart']} such pair rejected.")
     print("  an unknown name -> NaN on BOTH the growth and the flag. Validated.")
 
 
@@ -145,10 +164,11 @@ def test_exact_pay_slice_latest_fiscal_year_and_the_floors():
     assert t2["CPS slices rejected (outside (0, 1])"] == 1
 
     print("\n=== SANITY CHECK: the exact CEO Pay Slice ===")
-    print(f"  top five of the LATEST fiscal year = $23.0M (both years would be $34.5M); "
-          f"slice = {sl['ceo_pay_slice'].iloc[0]:.3f}.")
-    print(f"  the 2-NEO filing is rejected by the {tally['CPS filings rejected (< 3 NEOs)']}-"
-          f"filing floor; a slice > 1 is rejected and counted, not clipped. Validated.")
+    print(f"  top five of the LATEST fiscal year = $23.0M (both years would be $34.5M); slice = {sl['ceo_pay_slice'].iloc[0]:.3f}.")
+    print(
+        f"  the 2-NEO filing is rejected by the {tally['CPS filings rejected (< 3 NEOs)']}-"
+        f"filing floor; a slice > 1 is rejected and counted, not clipped. Validated."
+    )
 
 
 def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
@@ -156,9 +176,12 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
     gap must be 0. It reads -0.018 if the revenue leg stays a percentage change -- small here,
     but 31pp on a doubled package, and always in the direction that invents misalignment."""
     d14 = _def14a()
-    fund = pd.DataFrame([
-        {"ticker": "AAA", "as_of": pd.Timestamp(f"{y}-12-31"), "totalRevenue": rev}
-        for y, rev in ((2020, 1000.0), (2021, 1000.0), (2022, 1200.0), (2023, 1440.0))])
+    fund = pd.DataFrame(
+        [
+            {"ticker": "AAA", "as_of": pd.Timestamp(f"{y}-12-31"), "totalRevenue": rev}
+            for y, rev in ((2020, 1000.0), (2021, 1000.0), (2022, 1200.0), (2023, 1440.0))
+        ]
+    )
     F, tally = pay_fields(d14, None, fund, None, PEERS, IDX)
 
     assert "pay_revenue_gap" in F
@@ -179,10 +202,8 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
     assert tally["skipped: no close_total -> no return-based misalignment"] == 1
 
     print("\n=== SANITY CHECK: pay-vs-performance basis and severity ===")
-    print(f"  +20% pay vs +20% revenue -> gap {gap:+.9f} (log on BOTH legs; a pct revenue leg "
-          f"would read {np.log(1.2) - 0.2:+.4f}).")
-    print(f"  severity is one-sided: pay -30% into perf -40% -> {sev.iloc[0, 0]:.2f}, "
-          f"pay +30% into perf -40% -> {sev.iloc[1, 0]:.2f}.")
+    print(f"  +20% pay vs +20% revenue -> gap {gap:+.9f} (log on BOTH legs; a pct revenue leg would read {np.log(1.2) - 0.2:+.4f}).")
+    print(f"  severity is one-sided: pay -30% into perf -40% -> {sev.iloc[0, 0]:.2f}, pay +30% into perf -40% -> {sev.iloc[1, 0]:.2f}.")
     print("  absent close_total, the return family is skipped and the revenue one survives.")
     print("  CONCLUSION: both legs share a basis and the products are one-sided. Validated.")
 
@@ -210,8 +231,7 @@ def test_the_encoding_and_expiry_contracts():
     # neither -- unclassified as a flag and skipped by the 548-day expiry.
     assert EVENT_FIELDS <= ALL_FIELDS, f"dead names: {sorted(EVENT_FIELDS - ALL_FIELDS)}"
     assert RAW_FLAG_FIELDS <= ALL_FIELDS, f"dead names: {sorted(RAW_FLAG_FIELDS - ALL_FIELDS)}"
-    assert ALL_FIELDS - EVENT_FIELDS == {"log_ceo_total_comp", "ceo_pay_slice"}, (
-        "every field except the two standing levels must expire")
+    assert ALL_FIELDS - EVENT_FIELDS == {"log_ceo_total_comp", "ceo_pay_slice"}, "every field except the two standing levels must expire"
 
     F, _ = pay_fields(_def14a(), _exec_comp(), None, None, PEERS, IDX)
     built = set(F)
@@ -226,8 +246,10 @@ def test_the_encoding_and_expiry_contracts():
     assert pd.isna(F["ceo_comp_growth_1y"].loc[IDX[-1], "AAA"]), "growth must expire at 548d"
 
     print("\n=== SANITY CHECK: encoding + 548-day expiry ===")
-    print(f"  {len(PEER_RELATIVE_FIELDS)} peer-encoded fields (the plan expected 2; both "
-          f"failed at 2.4% / 4.1% peer R^2 against a 7.7% floor), {len(RAW_FLAG_FIELDS)} raw "
-          f"flags, {len(EVENT_FIELDS)} event fields.")
+    print(
+        f"  {len(PEER_RELATIVE_FIELDS)} peer-encoded fields (the plan expected 2; both "
+        f"failed at 2.4% / 4.1% peer R^2 against a 7.7% floor), {len(RAW_FLAG_FIELDS)} raw "
+        f"flags, {len(EVENT_FIELDS)} event fields."
+    )
     print("  the pay LEVEL survives past 548d (a standing fact); the GROWTH expires.")
     print("  CONCLUSION: every pay field ships raw; only standing facts outlive 548d.")

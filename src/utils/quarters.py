@@ -12,6 +12,7 @@ Lives in `src/utils/` because three unrelated subfolders need it -- the Sharadar
 check, the Sharadar completeness gate and the earnings-call gap scan -- and `src/` subfolders
 must not import from one another.
 """
+
 from __future__ import annotations
 
 import pandas as pd

@@ -6,6 +6,7 @@ Audit evidence that motivated these (measured on `employees_history`, 6,766 rows
 48% of tickers showed >3x spread across their own headcount history, 121 tickers >10x,
 6.3% of year-over-year transitions were >2x or <0.5x, 39 rows were exactly 100.
 """
+
 from __future__ import annotations
 
 from src.data_extract.utils.common.edgar_extract import extract_employee_count
@@ -19,12 +20,10 @@ def test_full_time_part_time_split_is_summed():
     between N1 and 'and'), so the forward pattern matched the SECOND number and CF was
     stored as 100 employees for every year 2012-2019 (it reports 3,000/2,700/2,800 from
     2020, when the phrasing changed)."""
-    txt = ("As of December 31, 2011, we employed approximately 2,400 full-time and "
-           "100 part-time employees.")
+    txt = "As of December 31, 2011, we employed approximately 2,400 full-time and 100 part-time employees."
     assert extract_employee_count(txt) == 2_500
     # the same shape with the parts reversed must also sum
-    assert extract_employee_count(
-        "We had 500 part-time and 9,500 full-time employees.") == 10_000
+    assert extract_employee_count("We had 500 part-time and 9,500 full-time employees.") == 10_000
 
 
 def test_company_named_subject_beats_a_divestiture_subset():
@@ -34,10 +33,12 @@ def test_company_named_subject_beats_a_divestiture_subset():
     approximately 226,000 full-time employees' scored 4, and first-found won -> 800.
     Two independent repairs make the real total win: the subject-agnostic '<name> had'
     context bonus, and a larger-value tie-break."""
-    txt = ("The divestiture included all remaining businesses, as well as approximately "
-           "800 employees. Under our management at December 31, 2025, Citi had "
-           "approximately 226,000 full-time employees, compared to approximately "
-           "229,000 at December 31, 2024.")
+    txt = (
+        "The divestiture included all remaining businesses, as well as approximately "
+        "800 employees. Under our management at December 31, 2025, Citi had "
+        "approximately 226,000 full-time employees, compared to approximately "
+        "229,000 at December 31, 2024."
+    )
     assert extract_employee_count(txt) == 226_000
 
 
@@ -45,13 +46,14 @@ def test_workers_compensation_reserve_table_is_not_a_headcount():
     """WRB 10-K. The noun 'workers' matched 'workers' compensation' — an insurance
     RESERVE line in $thousands — giving a stored headcount of 4,502,942 for a company
     with ~8,000 staff. With no genuine headcount sentence in reach, the answer is None."""
-    txt = ("Losses and loss adjustment expenses, net of reinsurance $ 8,289,106 "
-           "professional liability 673,774 1,582,133 workers' compensation (1) "
-           "1,103,703 760,075 2,255,907")
+    txt = (
+        "Losses and loss adjustment expenses, net of reinsurance $ 8,289,106 "
+        "professional liability 673,774 1,582,133 workers' compensation (1) "
+        "1,103,703 760,075 2,255,907"
+    )
     assert extract_employee_count(txt) is None
     # the plain noun still works when it really is a workforce
-    assert extract_employee_count(
-        "At year end we had approximately 52,000 full-time workers.") == 52_000
+    assert extract_employee_count("At year end we had approximately 52,000 full-time workers.") == 52_000
 
 
 def test_service_territory_population_loses_to_the_real_headcount():
@@ -62,43 +64,50 @@ def test_service_territory_population_loses_to_the_real_headcount():
     Two repairs: 'population' is a subset/no-go context, and the qualifier separator now
     bridges the slash in 'full time/permanent' so the true sentence produces a candidate
     at all (previously it produced none, leaving the population figure unopposed)."""
-    txt = ("AES Indiana serves an area of 3,000 square miles with an estimated "
-           "population of approximately 982,000 people. As of December 31, 2025, we had "
-           "8,336 full time/permanent employees.")
+    txt = (
+        "AES Indiana serves an area of 3,000 square miles with an estimated "
+        "population of approximately 982,000 people. As of December 31, 2025, we had "
+        "8,336 full time/permanent employees."
+    )
     assert extract_employee_count(txt) == 8_336
 
 
 def test_all_candidates_penalised_yields_none_not_a_known_bad_number():
     """A NULL the caller skips beats a number already known to come from a money table."""
     assert extract_employee_count("The 401(k) plan held $205,000 for employees.") is None
-    assert extract_employee_count(
-        "Restricted stock of $1,250,000 was granted to employees.") is None
+    assert extract_employee_count("Restricted stock of $1,250,000 was granted to employees.") is None
 
 
 def test_audit_regression_suite_prints_conclusion():
     """One table covering every audit case plus the phrasings that already worked, so a
     future change cannot fix one failure mode by breaking another."""
     cases = [
-        ("CF 2012      split full/part-time", 2_500,
-         "As of December 31, 2011, we employed approximately 2,400 full-time and 100 part-time employees."),
-        ("C 2026       divestiture subset", 226_000,
-         "as well as approximately 800 employees. Citi had approximately 226,000 full-time employees."),
-        ("WRB 2026     workers' comp table", None,
-         "professional liability 673,774 1,582,133 workers' compensation (1) 1,103,703 2,255,907"),
-        ("AES 2026     territory population", 8_336,
-         "an estimated population of approximately 982,000 people. we had 8,336 full time/permanent employees."),
-        ("AMZN         qualifiers, no split", 1_541_000,
-         "we employed approximately 1,541,000 full-time and part-time employees."),
-        ("KO           two-year comparative", 65_900,
-         "our Company had approximately 65,900 and 69,700 employees, respectively."),
-        ("MCD          number after noun", 205_000,
-         "The number of Company employees was approximately 205,000 as of year-end."),
-        ("XOM          thousand multiplier", 62_300,
-         "The number of regular employees was 62.3, 63.0, and 64.0 thousand at years ended 2022, 2021, 2020."),
-        ("NSC          bare table row", 30_456,
-         "The following table shows the average number of employees 30,456 29,482 30,103."),
-        ("union subset must lose", 130_000,
-         "we had approximately 130,000 employees worldwide. Approximately 400 employees were covered by collective bargaining."),
+        (
+            "CF 2012      split full/part-time",
+            2_500,
+            "As of December 31, 2011, we employed approximately 2,400 full-time and 100 part-time employees.",
+        ),
+        ("C 2026       divestiture subset", 226_000, "as well as approximately 800 employees. Citi had approximately 226,000 full-time employees."),
+        ("WRB 2026     workers' comp table", None, "professional liability 673,774 1,582,133 workers' compensation (1) 1,103,703 2,255,907"),
+        (
+            "AES 2026     territory population",
+            8_336,
+            "an estimated population of approximately 982,000 people. we had 8,336 full time/permanent employees.",
+        ),
+        ("AMZN         qualifiers, no split", 1_541_000, "we employed approximately 1,541,000 full-time and part-time employees."),
+        ("KO           two-year comparative", 65_900, "our Company had approximately 65,900 and 69,700 employees, respectively."),
+        ("MCD          number after noun", 205_000, "The number of Company employees was approximately 205,000 as of year-end."),
+        (
+            "XOM          thousand multiplier",
+            62_300,
+            "The number of regular employees was 62.3, 63.0, and 64.0 thousand at years ended 2022, 2021, 2020.",
+        ),
+        ("NSC          bare table row", 30_456, "The following table shows the average number of employees 30,456 29,482 30,103."),
+        (
+            "union subset must lose",
+            130_000,
+            "we had approximately 130,000 employees worldwide. Approximately 400 employees were covered by collective bargaining.",
+        ),
     ]
     print("\n=== SANITY CHECK: employee headcount extraction (audit regressions) ===")
     for label, expected, txt in cases:
@@ -120,22 +129,24 @@ def test_headcount_continuity_guard():
 
     Anchored on the MEDIAN so one bad reading cannot reject the correct rows after it —
     WRB's stored 4,502,942 would otherwise have poisoned every later year."""
-    from src.data_extract.utils.fundamentals.fundamentals_employees import (
-        history_by_ticker, is_continuous,
-    )
     import pandas as pd
 
+    from src.data_extract.utils.fundamentals.fundamentals_employees import (
+        history_by_ticker,
+        is_continuous,
+    )
+
     cases = [
-        ("first filing, no anchor",             5_000,     [],                              True),
-        ("CSGP 2.3M vs ~1,100 history",         2_300_000, [1000, 1100, 1155, 1200],         False),
-        ("CF 100 vs ~2,800 history",            100,       [2700, 2800, 2900, 3000],         False),
-        ("normal growth",                       3_000,     [2700, 2800, 2900],               True),
-        ("transformative merger 2.5x",          7_000,     [2700, 2800, 2900],               True),
-        ("5x boundary kept",                    14_000,    [2700, 2800, 2900],               True),
-        ("6x rejected",                         17_400,    [2700, 2800, 2900],               False),
-        ("one-third layoff kept",               950,       [2700, 2800, 2900],               True),
-        ("collapse to a tenth rejected",        280,       [2700, 2800, 2900],               False),
-        ("median resists one poisoned row",     2_900,     [4_502_942, 6537, 7000, 7356],    True),
+        ("first filing, no anchor", 5_000, [], True),
+        ("CSGP 2.3M vs ~1,100 history", 2_300_000, [1000, 1100, 1155, 1200], False),
+        ("CF 100 vs ~2,800 history", 100, [2700, 2800, 2900, 3000], False),
+        ("normal growth", 3_000, [2700, 2800, 2900], True),
+        ("transformative merger 2.5x", 7_000, [2700, 2800, 2900], True),
+        ("5x boundary kept", 14_000, [2700, 2800, 2900], True),
+        ("6x rejected", 17_400, [2700, 2800, 2900], False),
+        ("one-third layoff kept", 950, [2700, 2800, 2900], True),
+        ("collapse to a tenth rejected", 280, [2700, 2800, 2900], False),
+        ("median resists one poisoned row", 2_900, [4_502_942, 6537, 7000, 7356], True),
     ]
     print("\n=== SANITY CHECK: headcount continuity guard ===")
     for label, count, history, expected in cases:
@@ -145,9 +156,7 @@ def test_headcount_continuity_guard():
 
     # the anchor is built in FILING-DATE order, not DB row order, and is now seeded
     # from the `employees` rows of `fundamentals_facts` (ticker/filing_date/value)
-    df = pd.DataFrame({"ticker": ["A", "A", "B"],
-                       "filing_date": ["2022-01-01", "2021-01-01", "2020-01-01"],
-                       "value": [200.0, 100.0, 50.0]})
+    df = pd.DataFrame({"ticker": ["A", "A", "B"], "filing_date": ["2022-01-01", "2021-01-01", "2020-01-01"], "value": [200.0, 100.0, 50.0]})
     assert history_by_ticker(df) == {"A": [100, 200], "B": [50]}
     assert history_by_ticker(None) == {} and history_by_ticker(pd.DataFrame()) == {}
     print("  History anchor is filing-date ordered; empty input is safe. Validated.")

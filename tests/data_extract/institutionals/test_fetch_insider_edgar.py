@@ -57,8 +57,7 @@ def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch)
         }
     ]
     print(
-        "SANITY: a successful AAA scan with zero new filings wrote no transaction sentinel "
-        "but advanced AAA's explicit coverage through 2026-09-22."
+        "SANITY: a successful AAA scan with zero new filings wrote no transaction sentinel but advanced AAA's explicit coverage through 2026-09-22."
     )
 
 
@@ -85,7 +84,7 @@ def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
     assert len(live) == 1
     assert live.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
     assert live.iloc[0]["accession_number"] == _Filing.accession_number
-    print("SANITY: listing the same accession twice produced one live PK row and retained the " "16:05 EDGAR acceptance timestamp.")
+    print("SANITY: listing the same accession twice produced one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
 
 
 def test_live_audit_clocks_are_timestamps_not_dates():
@@ -111,7 +110,7 @@ def test_live_audit_clocks_are_timestamps_not_dates():
     assert live_types["fetched_at"] == "TIMESTAMP"
     assert coverage_types["complete_through"] == "DATE"
     assert coverage_types["updated_at"] == "TIMESTAMP"
-    print("SANITY: filing acceptance/fetch/update clocks retain intraday TIMESTAMP precision; " "only the inclusive coverage frontier is a DATE.")
+    print("SANITY: filing acceptance/fetch/update clocks retain intraday TIMESTAMP precision; only the inclusive coverage frontier is a DATE.")
 
 
 def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
@@ -128,7 +127,7 @@ def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
 
     def download(url: str) -> str:
         family = next(form for form in feeds if f"type={form}&" in url)
-        return '<feed xmlns="http://www.w3.org/2005/Atom">' f"{feeds[family]}</feed>"
+        return f'<feed xmlns="http://www.w3.org/2005/Atom">{feeds[family]}</feed>'
 
     monkeypatch.setattr(module, "download_text", download)
     filings = module.ownership_filings(
@@ -141,6 +140,5 @@ def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
     assert [filing.accession_number for filing in filings] == ["0001182379-26-000004"]
     assert filings[0].cik == 1494877
     print(
-        "SANITY: issuer ownership discovery retains a Form 4 submitted under its reporting "
-        "owner's accession CIK and filters a prefix-matched 424B2."
+        "SANITY: issuer ownership discovery retains a Form 4 submitted under its reporting owner's accession CIK and filters a prefix-matched 424B2."
     )

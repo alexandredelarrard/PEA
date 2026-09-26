@@ -31,13 +31,17 @@ VALUE, and a reason code spelled the same as a method value would carry no infor
 the row does not already have: every unresolved resolution reaches
 `fundamentals_facts` with a more specific code than "no route" already attached.
 """
+
 from __future__ import annotations
 
 from src.data_extract.utils.fundamentals.periods import (
-    AMBIGUOUS_DURATION, DERIVED_BASIS_MISMATCH, DERIVED_SIGN_IMPLAUSIBLE,
-    INSUFFICIENT_QUARTERS, SPLIT_BASIS_MISMATCH)
-from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    INCOMPLETE_ROLL_UP, NO_USABLE_PERIOD, PARTIAL_LEAF_SUM, SEGMENT_ONLY_CONCEPT)
+    AMBIGUOUS_DURATION,
+    DERIVED_BASIS_MISMATCH,
+    DERIVED_SIGN_IMPLAUSIBLE,
+    INSUFFICIENT_QUARTERS,
+    SPLIT_BASIS_MISMATCH,
+)
+from src.data_extract.utils.fundamentals.xbrl_linkbase import INCOMPLETE_ROLL_UP, NO_USABLE_PERIOD, PARTIAL_LEAF_SUM, SEGMENT_ONLY_CONCEPT
 
 # --------------------------------------------------------------- absence codes ---
 
@@ -165,24 +169,41 @@ FAILED_HARD_GUARD = "failed_hard_guard"
 # ------------------------------------------------------------------ the closed set ---
 
 #: Codes that describe a value that IS present. Everything else means the cell is NULL.
-IS_QUALIFIER: frozenset[str] = frozenset({
-    PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD, REGIME_BREAK,
-    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, DERIVED_FALLBACK})
+IS_QUALIFIER: frozenset[str] = frozenset(
+    {PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD, REGIME_BREAK, DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, DERIVED_FALLBACK}
+)
 
 #: Every legal `dc_code`. A code outside this set is a typo, and a typo in a reason code is
 #: worse than no code at all: the null-gate's `LEFT JOIN` still finds a row, so the cell
 #: reads as explained while nothing can interpret the explanation. `build_history` asserts
 #: membership on every row it writes.
-ALL_CODES: frozenset[str] = frozenset({
-    # periods.py
-    INSUFFICIENT_QUARTERS, SPLIT_BASIS_MISMATCH, AMBIGUOUS_DURATION,
-    DERIVED_BASIS_MISMATCH, DERIVED_SIGN_IMPLAUSIBLE,
-    # xbrl_linkbase.py / the facts layer
-    INCOMPLETE_ROLL_UP, PARTIAL_LEAF_SUM, NO_USABLE_PERIOD, SEGMENT_ONLY_CONCEPT,
-    NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL, ZERO_ONLY_RETAINED, BASIS_EX_IPRD,
-    # the history build
-    NOT_APPLICABLE_FOR_REGIME, NOT_APPLICABLE, COMBINED_INTO, REGIME_BREAK,
-    DERIVED_IDENTITY, DERIVED_IDENTITY_NCI_ZERO, STALE_TTM, DERIVED_FALLBACK,
-    # Phase 5b
-    FAILED_HARD_GUARD,
-})
+ALL_CODES: frozenset[str] = frozenset(
+    {
+        # periods.py
+        INSUFFICIENT_QUARTERS,
+        SPLIT_BASIS_MISMATCH,
+        AMBIGUOUS_DURATION,
+        DERIVED_BASIS_MISMATCH,
+        DERIVED_SIGN_IMPLAUSIBLE,
+        # xbrl_linkbase.py / the facts layer
+        INCOMPLETE_ROLL_UP,
+        PARTIAL_LEAF_SUM,
+        NO_USABLE_PERIOD,
+        SEGMENT_ONLY_CONCEPT,
+        NOT_DISCLOSED,
+        PERIOD_INTERSECTION_PARTIAL,
+        ZERO_ONLY_RETAINED,
+        BASIS_EX_IPRD,
+        # the history build
+        NOT_APPLICABLE_FOR_REGIME,
+        NOT_APPLICABLE,
+        COMBINED_INTO,
+        REGIME_BREAK,
+        DERIVED_IDENTITY,
+        DERIVED_IDENTITY_NCI_ZERO,
+        STALE_TTM,
+        DERIVED_FALLBACK,
+        # Phase 5b
+        FAILED_HARD_GUARD,
+    }
+)

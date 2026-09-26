@@ -37,6 +37,7 @@ Read-only; touches no table.
 
     "$PY" scripts/spinoff_level_baseline.py [--out DIR] [--tag before]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,11 +53,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.validate.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
+
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import get_config_context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 from src.data_store.schema import Tables
-from src.validate.prices import (MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel)
 
 #: Names with a spinoff in their history and no `sharadar_actions` row to explain it -- the
 #: cohort the whole plan exists for. Each one's `S` is a yfinance-only price factor.
@@ -86,8 +88,7 @@ DEFAULT_OUT = ROOT / "reports/planning/active-tasks/2026-09-01-spinoff-level-bas
 # --------------------------------------------------------------------------- #
 # the reference implementation of S(d)                                        #
 # --------------------------------------------------------------------------- #
-def level_factor(tickers: pd.Series, dates: pd.Series, yf_splits: pd.DataFrame,
-                 genuine: pd.DataFrame) -> pd.Series:
+def level_factor(tickers: pd.Series, dates: pd.Series, yf_splits: pd.DataFrame, genuine: pd.DataFrame) -> pd.Series:
     """`S(d)` per row: the price adjustment Yahoo applied that the share count did not.
 
     THE REFERENCE. `src/data_aggregate/utils/common/level_basis.py` computes the same thing
@@ -110,7 +111,7 @@ def level_factor(tickers: pd.Series, dates: pd.Series, yf_splits: pd.DataFrame,
             if not np.isfinite(value) or value <= 0:
                 continue
             hit = (tick == str(event["ticker"])) & (stamps < pd.Timestamp(event["date"]))
-            factor.loc[hit] = factor.loc[hit] * (value ** power)
+            factor.loc[hit] = factor.loc[hit] * (value**power)
 
     # Snap, so a ticker whose two event sets AGREE is bit-identical to today rather than
     # 1.0000000000000002 -- which is what makes the control cohort's digests comparable.
@@ -147,8 +148,9 @@ def load_events(store) -> tuple[pd.DataFrame, pd.DataFrame]:
     yf = _as_ns(yf, "date").dropna(subset=["ratio"])
     yf = yf[yf["ratio"] > 0]
 
-    actions = store.load(Tables.sharadar_actions, columns=["ticker", "date", "action", "value"],
-                         where={"action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]})
+    actions = store.load(
+        Tables.sharadar_actions, columns=["ticker", "date", "action", "value"], where={"action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
+    )
     actions = _as_ns(actions, "date")
     return yf, split_events(actions, yf)
 
@@ -165,27 +167,31 @@ def invariant_rates(panel: pd.DataFrame) -> dict:
     fault" for a month."""
     out = {}
     for name, ref, tol, legs in (
-            ("market_cap_identity", "marketcap", MCAP_TOLERANCE,
-             ["close_split", "sharesOutstanding", "marketcap"]),
-            ("price_vintage", "price", PRICE_TOLERANCE, ["close_split", "price"])):
+        ("market_cap_identity", "marketcap", MCAP_TOLERANCE, ["close_split", "sharesOutstanding", "marketcap"]),
+        ("price_vintage", "price", PRICE_TOLERANCE, ["close_split", "price"]),
+    ):
         frame = panel.dropna(subset=legs + ["level_factor"])
         frame = frame[frame[ref] > 0]
         if frame.empty:
             out[name] = {"rows": 0}
             continue
-        raw = frame["close_split"] * frame.get("sharesOutstanding", 1.0) / frame[ref] \
-            if name == "market_cap_identity" else frame["close_split"] / frame[ref]
+        raw = (
+            frame["close_split"] * frame.get("sharesOutstanding", 1.0) / frame[ref]
+            if name == "market_cap_identity"
+            else frame["close_split"] / frame[ref]
+        )
         adj = raw * frame["level_factor"]
         raw_ok, adj_ok = (raw - 1).abs() <= tol, (adj - 1).abs() <= tol
         out[name] = {
             "rows": int(len(frame)),
-            "raw_pass": int(raw_ok.sum()), "raw_rate": round(float(raw_ok.mean()), 4),
-            "adj_pass": int(adj_ok.sum()), "adj_rate": round(float(adj_ok.mean()), 4),
+            "raw_pass": int(raw_ok.sum()),
+            "raw_rate": round(float(raw_ok.mean()), 4),
+            "adj_pass": int(adj_ok.sum()),
+            "adj_rate": round(float(adj_ok.mean()), 4),
             # The number the plan promises to keep at <=1: rows the fix BREAKS. A fix that
             # lifts the aggregate while quietly failing rows that used to pass is not a fix.
             "newly_failing": int((raw_ok & ~adj_ok).sum()),
-            "newly_failing_tickers": sorted(frame.loc[raw_ok & ~adj_ok, "ticker"]
-                                            .astype(str).unique().tolist())[:20],
+            "newly_failing_tickers": sorted(frame.loc[raw_ok & ~adj_ok, "ticker"].astype(str).unique().tolist())[:20],
             "newly_passing": int((~raw_ok & adj_ok).sum()),
         }
     return out
@@ -197,17 +203,13 @@ def residual_clusters(panel: pd.DataFrame, top: int = 20) -> dict:
     The plan names four out-of-scope clusters (MNST, V, the stock-dividend names, the as-of
     join noise). A FIFTH appearing here means something in the plan is wrong, so this table
     is the falsifier rather than a decoration."""
-    frame = panel.dropna(subset=["close_split", "sharesOutstanding", "marketcap",
-                                 "level_factor"])
+    frame = panel.dropna(subset=["close_split", "sharesOutstanding", "marketcap", "level_factor"])
     frame = frame[frame["marketcap"] > 0]
-    ratio = (frame["close_split"] * frame["sharesOutstanding"] * frame["level_factor"]
-             / frame["marketcap"])
+    ratio = frame["close_split"] * frame["sharesOutstanding"] * frame["level_factor"] / frame["marketcap"]
     bad = frame[(ratio - 1).abs() > MCAP_TOLERANCE].assign(ratio=ratio)
-    counts = bad.groupby("ticker").agg(rows=("ratio", "size"),
-                                       median_ratio=("ratio", "median"))
+    counts = bad.groupby("ticker").agg(rows=("ratio", "size"), median_ratio=("ratio", "median"))
     counts = counts.sort_values("rows", ascending=False).head(top)
-    return {str(t): {"rows": int(r.rows), "median_ratio": round(float(r.median_ratio), 4)}
-            for t, r in counts.iterrows()}
+    return {str(t): {"rows": int(r.rows), "median_ratio": round(float(r.median_ratio), 4)} for t, r in counts.iterrows()}
 
 
 def cohort_factors(panel: pd.DataFrame) -> dict:
@@ -243,8 +245,7 @@ def market_cap_table(panel: pd.DataFrame) -> dict:
     way."""
     out: dict[str, list[dict]] = {}
     for ticker in ("FDX", "GE", "DD", "T", "HPQ", "EXC", "RTX"):
-        rows = panel[panel["ticker"] == ticker].dropna(
-            subset=["close_split", "sharesOutstanding", "marketcap", "level_factor"])
+        rows = panel[panel["ticker"] == ticker].dropna(subset=["close_split", "sharesOutstanding", "marketcap", "level_factor"])
         rows = rows[rows["marketcap"] > 0].sort_values("date")
         picks = []
         for when in MCAP_SAMPLE_DATES:
@@ -253,15 +254,18 @@ def market_cap_table(panel: pd.DataFrame) -> dict:
                 continue
             r = hit.iloc[-1]
             ours = float(r["close_split"] * r["sharesOutstanding"])
-            picks.append({
-                "asked": when, "date": str(pd.Timestamp(r["date"]).date()),
-                "S": round(float(r["level_factor"]), 6),
-                "ours_bn": round(ours / 1e9, 3),
-                "fixed_bn": round(ours * float(r["level_factor"]) / 1e9, 3),
-                "sharadar_bn": round(float(r["marketcap"]) / 1e9, 3),
-                "err_today": round(ours / float(r["marketcap"]) - 1.0, 4),
-                "err_fixed": round(ours * float(r["level_factor"])
-                                   / float(r["marketcap"]) - 1.0, 4)})
+            picks.append(
+                {
+                    "asked": when,
+                    "date": str(pd.Timestamp(r["date"]).date()),
+                    "S": round(float(r["level_factor"]), 6),
+                    "ours_bn": round(ours / 1e9, 3),
+                    "fixed_bn": round(ours * float(r["level_factor"]) / 1e9, 3),
+                    "sharadar_bn": round(float(r["marketcap"]) / 1e9, 3),
+                    "err_today": round(ours / float(r["marketcap"]) - 1.0, 4),
+                    "err_fixed": round(ours * float(r["level_factor"]) / float(r["marketcap"]) - 1.0, 4),
+                }
+            )
         out[ticker] = picks
     return out
 
@@ -269,20 +273,22 @@ def market_cap_table(panel: pd.DataFrame) -> dict:
 def fdx_landmark(panel: pd.DataFrame) -> dict:
     """The plan's headline row, verbatim: FDX at its 2020-12-17 filing. $62.4bn today,
     $77.5bn after. If this one number does not move, nothing else in the report matters."""
-    rows = panel[(panel["ticker"] == "FDX")
-                 & (panel["date"] == pd.Timestamp("2020-12-17"))]
+    rows = panel[(panel["ticker"] == "FDX") & (panel["date"] == pd.Timestamp("2020-12-17"))]
     if rows.empty:
         return {"found": False}
     r = rows.iloc[0]
     ours = float(r["close_split"] * r["sharesOutstanding"])
-    return {"found": True, "date": "2020-12-17",
-            "close_split": round(float(r["close_split"]), 4),
-            "sharadar_price": round(float(r["price"]), 4),
-            "shares": int(r["sharesOutstanding"]),
-            "S": round(float(r["level_factor"]), 6),
-            "ours_bn": round(ours / 1e9, 3),
-            "fixed_bn": round(ours * float(r["level_factor"]) / 1e9, 3),
-            "sharadar_bn": round(float(r["marketcap"]) / 1e9, 3)}
+    return {
+        "found": True,
+        "date": "2020-12-17",
+        "close_split": round(float(r["close_split"]), 4),
+        "sharadar_price": round(float(r["price"]), 4),
+        "shares": int(r["sharesOutstanding"]),
+        "S": round(float(r["level_factor"]), 6),
+        "ours_bn": round(ours / 1e9, 3),
+        "fixed_bn": round(ours * float(r["level_factor"]) / 1e9, 3),
+        "sharadar_bn": round(float(r["marketcap"]) / 1e9, 3),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +307,7 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
     means they do not.
     """
     div = store.load(Tables.dividends, columns=["ticker", "date", "dividends"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals,
-                        columns=["ticker", "date", "dimension", "dps", "price"],
-                        where={"dimension": "ART"})
+    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "dps", "price"], where={"dimension": "ART"})
     if div is None or div.empty or vendor is None or vendor.empty:
         return {"skipped": "prices_dividends or the ART dimension is empty"}
     div = _as_ns(div, "date")
@@ -313,8 +317,7 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
     # TTM per share at each filing date: the ex-date sum over the preceding 365 days, which
     # is what `_ttm_dividends`' 252-bar rolling window approximates on the trading grid.
     px = panel[["ticker", "date", "close_split", "level_factor"]].dropna()
-    keys = px.merge(vendor[["ticker", "date", "dps", "price"]], on=["ticker", "date"],
-                    how="inner")
+    keys = px.merge(vendor[["ticker", "date", "dps", "price"]], on=["ticker", "date"], how="inner")
     if keys.empty:
         return {"skipped": "no (ticker, date) overlap between the panel and the ART frame"}
 
@@ -325,16 +328,14 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
         if g is None:
             ttm.append(np.nan)
             continue
-        window = g[(g["date"] > row.date - pd.Timedelta(days=TTM_DAYS))
-                   & (g["date"] <= row.date)]
+        window = g[(g["date"] > row.date - pd.Timedelta(days=TTM_DAYS)) & (g["date"] <= row.date)]
         ttm.append(float(window["dividends"].sum()) if not window.empty else np.nan)
     keys["ttm_ps"] = ttm
     keys = keys[keys["ttm_ps"] > 0]
     keys["ours"] = keys["ttm_ps"] / keys["close_split"]
     keys["theirs"] = keys["dps"] / keys["price"]
     keys["ratio"] = keys["ours"] / keys["theirs"]
-    return _cohort_verdict(keys, "dividend_yield (yfinance ttm_ps/close_split) / "
-                                 "(sharadar dps/price)")
+    return _cohort_verdict(keys, "dividend_yield (yfinance ttm_ps/close_split) / (sharadar dps/price)")
 
 
 def earnings_leg_question(store, panel: pd.DataFrame) -> dict:
@@ -353,17 +354,14 @@ def earnings_leg_question(store, panel: pd.DataFrame) -> dict:
     which is why the test reads the MEDIAN and the affected-vs-unaffected DIFFERENCE rather
     than an agreement rate.
     """
-    earn = store.load(Tables.earnings_surprises,
-                      columns=["ticker", "earnings_date", "eps_actual"], optional=True)
-    vendor = store.load(Tables.sharadar_fundamentals,
-                        columns=["ticker", "date", "dimension", "epsdil"],
-                        where={"dimension": "ARQ"})
+    earn = store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
+    vendor = store.load(Tables.sharadar_fundamentals, columns=["ticker", "date", "dimension", "epsdil"], where={"dimension": "ARQ"})
     if earn is None or earn.empty:
         return {"skipped": "earnings_surprises is empty"}
     earn = _as_ns(earn, "earnings_date").rename(columns={"earnings_date": "date"})
     earn = earn.dropna(subset=["eps_actual"])
     vendor = _as_ns(vendor, "date")
-    vendor = vendor[vendor["epsdil"] > 0.05]   # a near-zero or negative EPS makes it noise
+    vendor = vendor[vendor["epsdil"] > 0.05]  # a near-zero or negative EPS makes it noise
 
     base = panel[["ticker", "date", "close_split", "price", "level_factor"]].dropna()
     base = base[base["price"] > 0].drop_duplicates(subset=["ticker", "date"])
@@ -372,15 +370,14 @@ def earnings_leg_question(store, panel: pd.DataFrame) -> dict:
     # The earnings date and the filing date are the same event a few days apart, so the
     # earnings row is carried ONTO the filing row rather than the other way round -- the
     # filing row is where both a price and a share count exist.
-    j = pd.merge_asof(base.sort_values("date"), earn.sort_values("date"),
-                      on="date", by="ticker", direction="nearest",
-                      tolerance=pd.Timedelta(days=10)).dropna(subset=["eps_actual"])
+    j = pd.merge_asof(
+        base.sort_values("date"), earn.sort_values("date"), on="date", by="ticker", direction="nearest", tolerance=pd.Timedelta(days=10)
+    ).dropna(subset=["eps_actual"])
     j = j[j["eps_actual"] > 0.05]
     if j.empty:
         return {"skipped": "no earnings row could be matched to a Sharadar quarter"}
     j["ratio"] = (j["eps_actual"] / j["close_split"]) / (j["epsdil"] / j["price"])
-    return _cohort_verdict(j, "fwd/trailing EPS yield (yfinance eps / close_split) / "
-                              "(sharadar epsdil / price)")
+    return _cohort_verdict(j, "fwd/trailing EPS yield (yfinance eps / close_split) / (sharadar epsdil / price)")
 
 
 def _cohort_verdict(frame: pd.DataFrame, what: str) -> dict:
@@ -415,33 +412,42 @@ def _cohort_verdict(frame: pd.DataFrame, what: str) -> dict:
         if s.empty:
             stats[name] = {"n": 0}
             continue
-        stats[name] = {"n": int(s.size), "median": round(float(s.median()), 4),
-                       "p25": round(float(s.quantile(0.25)), 4),
-                       "p75": round(float(s.quantile(0.75)), 4),
-                       "within_2pct": round(float(((s - 1).abs() < 0.02).mean()), 4)}
+        stats[name] = {
+            "n": int(s.size),
+            "median": round(float(s.median()), 4),
+            "p25": round(float(s.quantile(0.25)), 4),
+            "p75": round(float(s.quantile(0.75)), 4),
+            "within_2pct": round(float(((s - 1).abs() < 0.02).mean()), 4),
+        }
 
     hit = frame[cohorts["strongly_affected"]]
     detail = {"n": int(len(hit))}
-    verdict = (f"INDETERMINATE -- only {len(hit)} rows with |S-1| > {STRONG_FACTOR:.0%}, "
-               "too few to separate the hypotheses")
+    verdict = f"INDETERMINATE -- only {len(hit)} rows with |S-1| > {STRONG_FACTOR:.0%}, too few to separate the hypotheses"
     if len(hit) >= MIN_VERDICT_ROWS:
         d_cancel = float(np.abs(np.log(hit["ratio"])).median())
         d_broken = float(np.abs(np.log(hit["ratio"] / hit["level_factor"])).median())
-        detail |= {"median_S": round(float(hit["level_factor"].median()), 4),
-                   "median_ratio": round(float(hit["ratio"].median()), 4),
-                   "dist_to_1": round(d_cancel, 4), "dist_to_S": round(d_broken, 4)}
+        detail |= {
+            "median_S": round(float(hit["level_factor"].median()), 4),
+            "median_ratio": round(float(hit["ratio"].median()), 4),
+            "dist_to_1": round(d_cancel, 4),
+            "dist_to_S": round(d_broken, 4),
+        }
         if d_cancel < d_broken:
-            verdict = (f"LEGS CANCEL -- on the {len(hit):,} strongly-affected rows the ratio "
-                       f"sits {d_broken / max(d_cancel, 1e-9):.1f}x closer to 1.0 than to S "
-                       f"(median ratio {detail['median_ratio']} vs median S "
-                       f"{detail['median_S']}). The vendor back-adjusted BOTH legs. "
-                       "NO CHANGE NEEDED.")
+            verdict = (
+                f"LEGS CANCEL -- on the {len(hit):,} strongly-affected rows the ratio "
+                f"sits {d_broken / max(d_cancel, 1e-9):.1f}x closer to 1.0 than to S "
+                f"(median ratio {detail['median_ratio']} vs median S "
+                f"{detail['median_S']}). The vendor back-adjusted BOTH legs. "
+                "NO CHANGE NEEDED."
+            )
         else:
-            verdict = (f"LEGS DO NOT CANCEL -- on the {len(hit):,} strongly-affected rows the "
-                       f"ratio sits {d_cancel / max(d_broken, 1e-9):.1f}x closer to S than to "
-                       f"1.0 (median ratio {detail['median_ratio']} vs median S "
-                       f"{detail['median_S']}). This consumer IS distorted and needs the "
-                       "level factor.")
+            verdict = (
+                f"LEGS DO NOT CANCEL -- on the {len(hit):,} strongly-affected rows the "
+                f"ratio sits {d_cancel / max(d_broken, 1e-9):.1f}x closer to S than to "
+                f"1.0 (median ratio {detail['median_ratio']} vs median S "
+                f"{detail['median_S']}). This consumer IS distorted and needs the "
+                "level factor."
+            )
     return {"what": what, "cohorts": stats, "discriminator": detail, "verdict": verdict}
 
 
@@ -468,19 +474,19 @@ def cross_sectional_impact(panel: pd.DataFrame, buckets: int = 10) -> dict:
         return {"rows": 0}
 
     def bucket(column: str) -> pd.Series:
-        return frame.groupby("as_of")[column].transform(
-            lambda s: pd.qcut(s.rank(method="first"), buckets, labels=False))
+        return frame.groupby("as_of")[column].transform(lambda s: pd.qcut(s.rank(method="first"), buckets, labels=False))
 
     moved = bucket("before") != bucket("after")
     hit = frame["level_factor"] != 1.0
-    return {"rows": int(len(frame)), "buckets": buckets,
-            "changed_bucket": int(moved.sum()),
-            "changed_share": round(float(moved.mean()), 4),
-            "affected_rows": int(hit.sum()),
-            "changed_share_among_affected": (
-                round(float(moved[hit].mean()), 4) if hit.any() else 0.0),
-            "changed_share_among_unaffected": (
-                round(float(moved[~hit].mean()), 4) if (~hit).any() else 0.0)}
+    return {
+        "rows": int(len(frame)),
+        "buckets": buckets,
+        "changed_bucket": int(moved.sum()),
+        "changed_share": round(float(moved.mean()), 4),
+        "affected_rows": int(hit.sum()),
+        "changed_share_among_affected": (round(float(moved[hit].mean()), 4) if hit.any() else 0.0),
+        "changed_share_among_unaffected": (round(float(moved[~hit].mean()), 4) if (~hit).any() else 0.0),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -497,41 +503,40 @@ def return_controls(store) -> dict:
     px = _as_ns(px, "date").sort_values(["ticker", "date"])
     ret = px.groupby("ticker")["close_total"].pct_change(fill_method=None)
 
-    out = {"source": "prices",
-           "rows": int(len(px)),
-           "close_total_digest": _digest(px["close_total"]),
-           "ret_from_close_total_digest": _digest(ret)}
+    out = {"source": "prices", "rows": int(len(px)), "close_total_digest": _digest(px["close_total"]), "ret_from_close_total_digest": _digest(ret)}
 
     probe = store.load(Tables.cube_part_prices, limit=1, optional=True)
     have = set(probe.columns) if probe is not None else set()
     part_cols = [c for c in ("close_split", "close_total", "ret", "volume") if c in have]
     if part_cols:
         part = store.load(Tables.cube_part_prices, columns=["ticker", "date"] + part_cols)
-        out["cube_part_prices"] = {"rows": int(len(part)),
-                                   "columns": sorted(have),
-                                   **{f"{c}_digest": _digest(part[c]) for c in part_cols}}
+        out["cube_part_prices"] = {"rows": int(len(part)), "columns": sorted(have), **{f"{c}_digest": _digest(part[c]) for c in part_cols}}
     else:
-        out["cube_part_prices"] = {"stale": True, "columns": sorted(have),
-                                   "note": "no close_split/close_total/ret column yet -- the "
-                                           "part table predates the 2026-09-01 basis fix"}
+        out["cube_part_prices"] = {
+            "stale": True,
+            "columns": sorted(have),
+            "note": "no close_split/close_total/ret column yet -- the part table predates the 2026-09-01 basis fix",
+        }
     return out
 
 
-def factor_population(panel: pd.DataFrame, yf: pd.DataFrame,
-                      genuine: pd.DataFrame) -> dict:
+def factor_population(panel: pd.DataFrame, yf: pd.DataFrame, genuine: pd.DataFrame) -> dict:
     """How much of the table `S` touches, and the biggest factors. `top` is ranked by
     `|log S|` so a 0.5 and a 2.0 are equally interesting."""
     s = panel[["ticker", "level_factor"]].dropna()
     off = s[s["level_factor"] != 1.0]
     per_ticker = off.groupby("ticker")["level_factor"].max()
-    ranked = per_ticker.reindex(per_ticker.map(lambda v: abs(np.log(v)))
-                                .sort_values(ascending=False).index).head(15)
-    return {"panel_rows": int(len(s)), "rows_off_one": int(len(off)),
-            "share_off_one": round(float(len(off) / len(s)), 4) if len(s) else 0.0,
-            "tickers_off_one": int(off["ticker"].nunique()),
-            "panel_tickers": int(s["ticker"].nunique()),
-            "yf_split_rows": int(len(yf)), "genuine_split_rows": int(len(genuine)),
-            "top_by_abs_log_S": {str(t): round(float(v), 6) for t, v in ranked.items()}}
+    ranked = per_ticker.reindex(per_ticker.map(lambda v: abs(np.log(v))).sort_values(ascending=False).index).head(15)
+    return {
+        "panel_rows": int(len(s)),
+        "rows_off_one": int(len(off)),
+        "share_off_one": round(float(len(off) / len(s)), 4) if len(s) else 0.0,
+        "tickers_off_one": int(off["ticker"].nunique()),
+        "panel_tickers": int(s["ticker"].nunique()),
+        "yf_split_rows": int(len(yf)),
+        "genuine_split_rows": int(len(genuine)),
+        "top_by_abs_log_S": {str(t): round(float(v), 6) for t, v in ranked.items()},
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -539,67 +544,93 @@ def factor_population(panel: pd.DataFrame, yf: pd.DataFrame,
 # --------------------------------------------------------------------------- #
 def to_markdown(blob: dict) -> str:
     env, inv = blob["env"], blob["invariants"]
-    L = [f"# Spinoff level-basis baseline -- `{blob['tag']}`", "",
-         f"Generated {blob['generated_utc']} from the live `pea` database by "
-         "`scripts/spinoff_level_baseline.py`.", "",
-         "`S(d) = PROD(prices_splits.ratio after d) / PROD(split_events(...).value after d)` "
-         "-- the price adjustment Yahoo applied that the share count did not.", "",
-         f"**Environment**: {env['panel_rows']:,} joined filing rows / "
-         f"{env['panel_tickers']} tickers; {env['yf_split_rows']} yfinance split rows, "
-         f"{env['genuine_split_rows']} genuine ones.", "",
-         "## invariants -- raw vs S-adjusted", "",
-         "| invariant | rows | raw pass | S-adjusted pass | newly passing | newly FAILING |",
-         "|---|---|---|---|---|---|"]
+    L = [
+        f"# Spinoff level-basis baseline -- `{blob['tag']}`",
+        "",
+        f"Generated {blob['generated_utc']} from the live `pea` database by `scripts/spinoff_level_baseline.py`.",
+        "",
+        "`S(d) = PROD(prices_splits.ratio after d) / PROD(split_events(...).value after d)` "
+        "-- the price adjustment Yahoo applied that the share count did not.",
+        "",
+        f"**Environment**: {env['panel_rows']:,} joined filing rows / "
+        f"{env['panel_tickers']} tickers; {env['yf_split_rows']} yfinance split rows, "
+        f"{env['genuine_split_rows']} genuine ones.",
+        "",
+        "## invariants -- raw vs S-adjusted",
+        "",
+        "| invariant | rows | raw pass | S-adjusted pass | newly passing | newly FAILING |",
+        "|---|---|---|---|---|---|",
+    ]
     for name, v in inv.items():
         if not v.get("rows"):
             continue
-        L.append(f"| `{name}` | {v['rows']:,} | {v['raw_rate']:.2%} | {v['adj_rate']:.2%} "
-                 f"| +{v['newly_passing']:,} | {v['newly_failing']} "
-                 f"({', '.join(v['newly_failing_tickers']) or 'none'}) |")
+        L.append(
+            f"| `{name}` | {v['rows']:,} | {v['raw_rate']:.2%} | {v['adj_rate']:.2%} "
+            f"| +{v['newly_passing']:,} | {v['newly_failing']} "
+            f"({', '.join(v['newly_failing_tickers']) or 'none'}) |"
+        )
 
     f = blob["fdx_landmark"]
     if f.get("found"):
-        L += ["", "## FDX 2020-12-17 -- the landmark row", "",
-              f"`close_split` {f['close_split']}, Sharadar `price` {f['sharadar_price']}, "
-              f"S = {f['S']}, shares {f['shares']:,}.", "",
-              f"| ours today | ours x S | Sharadar |", "|---|---|---|",
-              f"| ${f['ours_bn']}bn | **${f['fixed_bn']}bn** | ${f['sharadar_bn']}bn |"]
+        L += [
+            "",
+            "## FDX 2020-12-17 -- the landmark row",
+            "",
+            f"`close_split` {f['close_split']}, Sharadar `price` {f['sharadar_price']}, S = {f['S']}, shares {f['shares']:,}.",
+            "",
+            "| ours today | ours x S | Sharadar |",
+            "|---|---|---|",
+            f"| ${f['ours_bn']}bn | **${f['fixed_bn']}bn** | ${f['sharadar_bn']}bn |",
+        ]
 
-    L += ["", "## market cap vs Sharadar, spinoff cohort", "",
-          "| ticker | date | S | ours ($bn) | ours x S | Sharadar | err today | err fixed |",
-          "|---|---|---|---|---|---|---|---|"]
+    L += [
+        "",
+        "## market cap vs Sharadar, spinoff cohort",
+        "",
+        "| ticker | date | S | ours ($bn) | ours x S | Sharadar | err today | err fixed |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for ticker, picks in blob["market_cap_table"].items():
         for p in picks:
-            L.append(f"| {ticker} | {p['date']} | {p['S']} | {p['ours_bn']} "
-                     f"| {p['fixed_bn']} | {p['sharadar_bn']} | {p['err_today']:.2%} "
-                     f"| {p['err_fixed']:.2%} |")
+            L.append(
+                f"| {ticker} | {p['date']} | {p['S']} | {p['ours_bn']} "
+                f"| {p['fixed_bn']} | {p['sharadar_bn']} | {p['err_today']:.2%} "
+                f"| {p['err_fixed']:.2%} |"
+            )
 
     L += ["", "## per-ticker S", ""]
     for label, block in blob["cohort_factors"].items():
-        L += [f"### {label} cohort", "",
-              "| ticker | rows | rows S!=1 | min S | max S | exactly 1.0 |",
-              "|---|---|---|---|---|---|"]
+        L += [f"### {label} cohort", "", "| ticker | rows | rows S!=1 | min S | max S | exactly 1.0 |", "|---|---|---|---|---|---|"]
         for t, v in block.items():
             if not v.get("rows"):
                 L.append(f"| {t} | 0 | - | - | - | - |")
                 continue
-            L.append(f"| {t} | {v['rows']} | {v['rows_not_one']} | {v['min']} | {v['max']} "
-                     f"| {'YES' if v['exactly_one'] else '**NO**'} |")
+            L.append(f"| {t} | {v['rows']} | {v['rows_not_one']} | {v['min']} | {v['max']} | {'YES' if v['exactly_one'] else '**NO**'} |")
         L.append("")
 
     p = blob["factor_population"]
-    L += ["## how much S touches", "",
-          f"{p['rows_off_one']:,} of {p['panel_rows']:,} panel rows ({p['share_off_one']:.2%}) "
-          f"across {p['tickers_off_one']} of {p['panel_tickers']} tickers.", "",
-          "| ticker | max S |", "|---|---|"]
+    L += [
+        "## how much S touches",
+        "",
+        f"{p['rows_off_one']:,} of {p['panel_rows']:,} panel rows ({p['share_off_one']:.2%}) "
+        f"across {p['tickers_off_one']} of {p['panel_tickers']} tickers.",
+        "",
+        "| ticker | max S |",
+        "|---|---|",
+    ]
     L += [f"| {t} | {v} |" for t, v in p["top_by_abs_log_S"].items()]
 
-    L += ["", "## residual after S -- invariant 1's biggest remaining clusters", "",
-          "The plan scopes out four: MNST, V, the stock-dividend names (APA/HBAN/ORCL) and "
-          "the as-of join noise. **A fifth here means the plan is wrong.**", "",
-          "| ticker | rows | median ratio |", "|---|---|---|"]
-    L += [f"| {t} | {v['rows']} | {v['median_ratio']} |"
-          for t, v in blob["residual_clusters"].items()]
+    L += [
+        "",
+        "## residual after S -- invariant 1's biggest remaining clusters",
+        "",
+        "The plan scopes out four: MNST, V, the stock-dividend names (APA/HBAN/ORCL) and "
+        "the as-of join noise. **A fifth here means the plan is wrong.**",
+        "",
+        "| ticker | rows | median ratio |",
+        "|---|---|---|",
+    ]
+    L += [f"| {t} | {v['rows']} | {v['median_ratio']} |" for t, v in blob["residual_clusters"].items()]
 
     L += ["", "## the two open questions", ""]
     for key in ("dividend_leg", "earnings_leg"):
@@ -607,42 +638,52 @@ def to_markdown(blob: dict) -> str:
         if q.get("skipped"):
             L += [f"### `{key}` -- SKIPPED: {q['skipped']}", ""]
             continue
-        L += [f"### `{key}` -- {q['what']}", "",
-              f"**{q['verdict']}**", "",
-              f"discriminator on the rows with `|S-1| > {STRONG_FACTOR:.0%}`: "
-              f"`{q['discriminator']}`", "",
-              "| cohort | n | median | p25 | p75 | within 2% of 1.0 |",
-              "|---|---|---|---|---|---|"]
+        L += [
+            f"### `{key}` -- {q['what']}",
+            "",
+            f"**{q['verdict']}**",
+            "",
+            f"discriminator on the rows with `|S-1| > {STRONG_FACTOR:.0%}`: `{q['discriminator']}`",
+            "",
+            "| cohort | n | median | p25 | p75 | within 2% of 1.0 |",
+            "|---|---|---|---|---|---|",
+        ]
         for c, v in q["cohorts"].items():
             if not v.get("n"):
                 L.append(f"| {c} | 0 | - | - | - | - |")
                 continue
-            L.append(f"| {c} | {v['n']:,} | {v['median']} | {v['p25']} | {v['p75']} "
-                     f"| {v['within_2pct']:.2%} |")
+            L.append(f"| {c} | {v['n']:,} | {v['median']} | {v['p25']} | {v['p75']} | {v['within_2pct']:.2%} |")
         L.append("")
 
     x = blob["cross_sectional_impact"]
     if x.get("rows"):
-        L += ["", "## cross-sectional impact -- what the MODEL sees", "",
-              f"A cross-sectional model reads a name's RANK, not its level. Of "
-              f"{x['rows']:,} scored rows, **{x['changed_bucket']:,} "
-              f"({x['changed_share']:.2%})** change size decile once `S` is applied: "
-              f"**{x['changed_share_among_affected']:.2%}** of the {x['affected_rows']:,} "
-              f"rows with `S != 1`, and {x['changed_share_among_unaffected']:.2%} of the "
-              f"rest (which move only because their peers did).", ""]
+        L += [
+            "",
+            "## cross-sectional impact -- what the MODEL sees",
+            "",
+            f"A cross-sectional model reads a name's RANK, not its level. Of "
+            f"{x['rows']:,} scored rows, **{x['changed_bucket']:,} "
+            f"({x['changed_share']:.2%})** change size decile once `S` is applied: "
+            f"**{x['changed_share_among_affected']:.2%}** of the {x['affected_rows']:,} "
+            f"rows with `S != 1`, and {x['changed_share_among_unaffected']:.2%} of the "
+            f"rest (which move only because their peers did).",
+            "",
+        ]
 
     c = blob["return_controls"]
-    L += ["## return controls -- MUST NOT MOVE", "",
-          "| digest | value |", "|---|---|",
-          f"| `prices.close_total` | `{c['close_total_digest']}` |",
-          f"| `ret` from `close_total` | `{c['ret_from_close_total_digest']}` |"]
+    L += [
+        "## return controls -- MUST NOT MOVE",
+        "",
+        "| digest | value |",
+        "|---|---|",
+        f"| `prices.close_total` | `{c['close_total_digest']}` |",
+        f"| `ret` from `close_total` | `{c['ret_from_close_total_digest']}` |",
+    ]
     part = c["cube_part_prices"]
     if part.get("stale"):
-        L += [f"", f"> `cube_part_prices` is a build behind -- columns "
-                   f"`{', '.join(part['columns'])}`. {part['note']}.", ""]
+        L += ["", f"> `cube_part_prices` is a build behind -- columns `{', '.join(part['columns'])}`. {part['note']}.", ""]
     else:
-        L += [f"| `cube_part_prices.{k[:-7]}` | `{v}` |"
-              for k, v in part.items() if k.endswith("_digest")]
+        L += [f"| `cube_part_prices.{k[:-7]}` | `{v}` |" for k, v in part.items() if k.endswith("_digest")]
     return "\n".join(L) + "\n"
 
 
@@ -664,10 +705,12 @@ def main() -> None:
         # The ONLY nondeterministic field. Every measurement below must be byte-identical
         # across two runs of the same code against the same tables.
         "generated_utc": pd.Timestamp.now("UTC").strftime("%Y-%m-%d %H:%M:%SZ"),
-        "env": {"panel_rows": int(len(panel)),
-                "panel_tickers": int(panel["ticker"].nunique()),
-                "yf_split_rows": int(len(yf)),
-                "genuine_split_rows": int(len(genuine))},
+        "env": {
+            "panel_rows": int(len(panel)),
+            "panel_tickers": int(panel["ticker"].nunique()),
+            "yf_split_rows": int(len(yf)),
+            "genuine_split_rows": int(len(genuine)),
+        },
         "invariants": invariant_rates(panel),
         "fdx_landmark": fdx_landmark(panel),
         "market_cap_table": market_cap_table(panel),
@@ -691,23 +734,20 @@ def main() -> None:
     dirty = [t for t, x in ctrl.items() if x.get("rows") and not x["exactly_one"]]
 
     print(f"\nwrote {out / (args.tag + '.json')} and {out / (args.tag + '.md')}")
-    print(f"invariant 1  raw {m['raw_rate']:.2%} -> S-adjusted {m['adj_rate']:.2%}  "
-          f"(+{m['newly_passing']:,} pass, {m['newly_failing']} newly FAIL)")
-    print(f"invariant 2  raw {v['raw_rate']:.2%} -> S-adjusted {v['adj_rate']:.2%}  "
-          f"(+{v['newly_passing']:,} pass, {v['newly_failing']} newly FAIL)")
-    print(f"S != 1 on {blob['factor_population']['rows_off_one']:,} rows / "
-          f"{blob['factor_population']['tickers_off_one']} tickers")
-    print(f"FDX 2020-12-17: ${blob['fdx_landmark'].get('ours_bn')}bn today -> "
-          f"${blob['fdx_landmark'].get('fixed_bn')}bn fixed, "
-          f"Sharadar ${blob['fdx_landmark'].get('sharadar_bn')}bn")
+    print(f"invariant 1  raw {m['raw_rate']:.2%} -> S-adjusted {m['adj_rate']:.2%}  (+{m['newly_passing']:,} pass, {m['newly_failing']} newly FAIL)")
+    print(f"invariant 2  raw {v['raw_rate']:.2%} -> S-adjusted {v['adj_rate']:.2%}  (+{v['newly_passing']:,} pass, {v['newly_failing']} newly FAIL)")
+    print(f"S != 1 on {blob['factor_population']['rows_off_one']:,} rows / {blob['factor_population']['tickers_off_one']} tickers")
+    print(
+        f"FDX 2020-12-17: ${blob['fdx_landmark'].get('ours_bn')}bn today -> "
+        f"${blob['fdx_landmark'].get('fixed_bn')}bn fixed, "
+        f"Sharadar ${blob['fdx_landmark'].get('sharadar_bn')}bn"
+    )
     print(f"\ndividend_leg: {blob['dividend_leg'].get('verdict', blob['dividend_leg'])}")
     print(f"earnings_leg: {blob['earnings_leg'].get('verdict', blob['earnings_leg'])}")
     if dirty:
-        print(f"\n[FAIL] control cohort has S != 1.0 on {dirty} -- the snap is broken and "
-              "the change is NOT targeted. STOP.")
+        print(f"\n[FAIL] control cohort has S != 1.0 on {dirty} -- the snap is broken and the change is NOT targeted. STOP.")
     else:
-        print(f"\n[OK] S == 1.0 exactly on all {len(ctrl)} control tickers "
-              "-- the factor is confined to the spinoff names.")
+        print(f"\n[OK] S == 1.0 exactly on all {len(ctrl)} control tickers -- the factor is confined to the spinoff names.")
 
 
 if __name__ == "__main__":

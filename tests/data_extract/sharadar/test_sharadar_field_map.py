@@ -187,7 +187,7 @@ def test_every_history_column_is_mapped(field_map):
     print(f"unmapped         : {unmapped or 'none'}")
     print(f"by kind          : {kinds}")
     print(f"SEC-owned (D18)  : {len(field_map.sec_owned)} -> {field_map.sec_owned}")
-    print(f"permanently NULL : " f"{sorted(n for n, s in field_map.columns.items() if s.kind == 'null')}")
+    print(f"permanently NULL : {sorted(n for n, s in field_map.columns.items() if s.kind == 'null')}")
     assert not unmapped
     assert len(field_map.sec_owned) == 15, "D18 declares exactly 15 SEC-owned columns"
 
@@ -238,7 +238,7 @@ def test_every_correction_states_its_evidence(field_map):
     print()
     for name, by_ticker in field_map.corrections.items():
         for ticker, entry in by_ticker.items():
-            print(f"{name}/{ticker:5s} {entry['action']:17s} " f"evidence: {entry['evidence'][:90]}...")
+            print(f"{name}/{ticker:5s} {entry['action']:17s} evidence: {entry['evidence'][:90]}...")
             assert entry["evidence"].strip()
     assert field_map.corrections, "the register is not empty -- phase 2 found three defects"
 
@@ -259,18 +259,16 @@ def test_capex_sign_is_flipped(vendor_arq, translated):
         vendor_arq[["ticker", "date", "capex", "ncfo", "fcf"]].rename(columns={"capex": "capex_vendor"}), on=["ticker", "date"]
     )
     aapl = merged[(merged["ticker"] == "AAPL") & merged["capex"].notna()].iloc[0]
-    print(f"\nAAPL {aapl['date']}: vendor capex {aapl['capex_vendor']:,.0f} -> " f"repo capex {aapl['capex']:,.0f}")
+    print(f"\nAAPL {aapl['date']}: vendor capex {aapl['capex_vendor']:,.0f} -> repo capex {aapl['capex']:,.0f}")
     assert aapl["capex_vendor"] < 0 < aapl["capex"]
     assert aapl["capex"] == -aapl["capex_vendor"]
 
     identity = aapl["fcf"] - (aapl["ncfo"] - aapl["capex"])
-    print(
-        f"AAPL freeCashflow identity: fcf {aapl['fcf']:,.0f} == ncfo {aapl['ncfo']:,.0f} " f"- capex {aapl['capex']:,.0f} ? residual {identity:,.2f}"
-    )
+    print(f"AAPL freeCashflow identity: fcf {aapl['fcf']:,.0f} == ncfo {aapl['ncfo']:,.0f} - capex {aapl['capex']:,.0f} ? residual {identity:,.2f}")
     assert abs(identity) <= 1.0
 
     positive = merged[merged["capex_vendor"] > 0]
-    print(f"vendor rows with a POSITIVE capex: {len(positive)} " f"({sorted(positive['ticker'].unique())}) -> all NULL in the repo frame")
+    print(f"vendor rows with a POSITIVE capex: {len(positive)} ({sorted(positive['ticker'].unique())}) -> all NULL in the repo frame")
     print(f"sign-guard NULLs reported: {report.negation_nulled}")
     assert positive["capex"].isna().all()
     assert (frame["capex"].dropna() >= 0).all(), "the repo column is non_negative"
@@ -305,7 +303,7 @@ def test_ebitda_is_top_down(ttm):
     frame = ttm[["ticker", "date", "ebitda", "operatingIncome", "depAmort", "netIncome", "incomeTaxExpense", "interestExpense"]].copy()
     computed = frame.dropna(subset=["ebitda", "operatingIncome", "depAmort"])
     residual = (computed["ebitda"] - (computed["operatingIncome"] + computed["depAmort"])).abs().max()
-    print(f"\nebitda == operatingIncome + depAmort on {len(computed)} TTM rows; " f"max residual {residual:,.2f}")
+    print(f"\nebitda == operatingIncome + depAmort on {len(computed)} TTM rows; max residual {residual:,.2f}")
     assert residual <= 1.0
 
     gap = frame.dropna().copy()
@@ -343,7 +341,7 @@ def test_debt_to_equity_is_not_vendor_de(context, ttm):
     print(f"\nrows compared: {len(gap)} | median debtToEquity/de = {gap['ratio'].median():.3f}")
     print(gap[["ticker", "date", "debtToEquity", "de", "totalDebt", "liabilities", "equity"]].head(5).to_string(index=False))
     vendor_is_liabilities = (gap["de"] - gap["liabilities"] / gap["equity"]).abs() / gap["de"].abs() < 0.01
-    print(f"`de` reproduces liabilities/equity on {int(vendor_is_liabilities.sum())} of " f"{len(gap)} rows -- it is NOT a debt ratio")
+    print(f"`de` reproduces liabilities/equity on {int(vendor_is_liabilities.sum())} of {len(gap)} rows -- it is NOT a debt ratio")
     assert (gap["debtToEquity"] != gap["de"]).mean() > 0.9
 
 
@@ -361,13 +359,13 @@ def test_epsdiluted_is_derived_not_vendor_epsdil(vendor_arq, ttm):
     wedge = int((vendor["netinccmn"] != vendor["consolinc"]).sum())
     print(f"\nvendor rows with a diluted count: {len(vendor)}")
     for name in ("netinccmn", "netinc", "consolinc"):
-        print(f"  epsdil == {name}/shareswadil on " f"{int(vendor[f'matches_{name}'].sum())} rows")
-    print(f"  netinccmn != consolinc on {wedge} rows " f"({wedge / len(vendor):.1%}) -- the basis wedge the direct map would import")
+        print(f"  epsdil == {name}/shareswadil on {int(vendor[f'matches_{name}'].sum())} rows")
+    print(f"  netinccmn != consolinc on {wedge} rows ({wedge / len(vendor):.1%}) -- the basis wedge the direct map would import")
     assert vendor["matches_netinccmn"].sum() > vendor["matches_consolinc"].sum(), "epsdil sits closer to netinccmn than to the repo's consolinc basis"
 
     computed = ttm[["epsDiluted", "netIncome", "dilutedShares"]].dropna()
     residual = (computed["epsDiluted"] - computed["netIncome"] / computed["dilutedShares"]).abs().max()
-    print(f"repo epsDiluted == netIncome / dilutedShares on {len(computed)} TTM rows; " f"max residual {residual:.6f}")
+    print(f"repo epsDiluted == netIncome / dilutedShares on {len(computed)} TTM rows; max residual {residual:.6f}")
     assert residual <= 1e-6
 
 
@@ -410,7 +408,7 @@ def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, tran
     print(f"splits rejected: {report.splits_rejected}")
     print(f"cells de-adjusted: {report.split_deadjusted}")
     print(joined.head(8).to_string(index=False))
-    print(f"ratio to the SEC cover page over {len(joined)} row(s): " f"min {joined['ratio'].min():.5f}, max {joined['ratio'].max():.5f}")
+    print(f"ratio to the SEC cover page over {len(joined)} row(s): min {joined['ratio'].min():.5f}, max {joined['ratio'].max():.5f}")
     assert not joined.empty
     assert ((joined["ratio"] - 1.0).abs() <= VENDOR_ROUNDING).all()
 
@@ -430,7 +428,7 @@ def test_a_spinoff_priced_split_row_is_kept(actions):
     report = TranslationReport()
     kept = split_events(actions, report=report)
     hon = kept[kept["ticker"] == "HON"]
-    print(f"\nsplit rows in `sharadar_actions`: " f"{int((actions['action'] == 'split').sum())}")
+    print(f"\nsplit rows in `sharadar_actions`: {int((actions['action'] == 'split').sum())}")
     print(f"HON events kept: {hon.to_dict('records')}")
     assert not hon.empty, "the real 1-for-2 reverse split must survive the union"
     assert 0.5 in set(hon["value"]), "and it must be kept at the SPLIT ratio 0.5, not yfinance's price factor 0.9535"
@@ -460,7 +458,7 @@ def test_hon_continuity_proves_nothing_about_the_split(vendor_arq):
     print("Continuous -- as it would be either way, because the column is RESTATED.")
     print("The split is real; `sharesbas` simply cannot see it. Validated.")
     assert abs(step - 1.0) < 0.05, (
-        "if this ever DID step, the column would no longer be retroactively restated and " "the whole de-adjustment would need re-deriving"
+        "if this ever DID step, the column would no longer be retroactively restated and the whole de-adjustment would need re-deriving"
     )
 
 
@@ -498,7 +496,7 @@ def test_the_ebt_minus_ebit_identity_is_a_tautology(vendor_arq):
     """
     frame = vendor_arq[["ticker", "ebt", "ebit", "intexp"]].dropna()
     holds = ((frame["ebt"] - frame["ebit"]) + frame["intexp"]).abs() <= 1.0
-    print(f"\n`ebt - ebit == -intexp` holds on {int(holds.sum())} of {len(frame)} ARQ rows " f"across {frame['ticker'].nunique()} tickers")
+    print(f"\n`ebt - ebit == -intexp` holds on {int(holds.sum())} of {len(frame)} ARQ rows across {frame['ticker'].nunique()} tickers")
     print("=> a TAUTOLOGY (Sharadar defines ebit = ebt + intexp), not evidence of any basis")
     assert holds.all()
 
@@ -540,7 +538,7 @@ def test_a_gap_in_the_quarters_refuses_the_window(field_map):
     built_whole = build_ttm(translate(whole, field_map), field_map)
     built_gapped = build_ttm(translate(gapped, field_map), field_map)
     print(f"\n4 consecutive quarters -> TTM {built_whole['totalRevenue'].iloc[-1]}")
-    print(f"4 rows with Q3 missing -> TTM {built_gapped['totalRevenue'].iloc[-1]} " f"(expected NULL, not 1200.0)")
+    print(f"4 rows with Q3 missing -> TTM {built_gapped['totalRevenue'].iloc[-1]} (expected NULL, not 1200.0)")
     assert built_whole["totalRevenue"].iloc[-1] == 1000.0
     assert pd.isna(built_gapped["totalRevenue"].iloc[-1])
 
@@ -607,7 +605,7 @@ def test_dedup_keeps_the_earliest_filing(field_map):
     built = build_ttm(translate(pd.concat([clean, restated], ignore_index=True), field_map), field_map)
     print("\nQ2 filed 200.0, then RESTATED to 999.0 four days later")
     print(f"revenue_q at Q2 : {built['revenue_q'].iloc[1]} (expected 200.0, the ORIGINAL)")
-    print(f"TTM at Q4       : {built['totalRevenue'].iloc[3]} " f"(expected 1000.0, not the 1799.0 the restatement would give)")
+    print(f"TTM at Q4       : {built['totalRevenue'].iloc[3]} (expected 1000.0, not the 1799.0 the restatement would give)")
     assert built["revenue_q"].iloc[1] == 200.0
     assert built["totalRevenue"].iloc[3] == 1000.0
 
@@ -626,7 +624,7 @@ def test_two_real_quarters_on_one_calendardate_both_survive(field_map):
     collision["date"] = collision["date"] - pd.Timedelta(days=20)
     collision["revenue"] = 250.0  # a DIFFERENT quarter, same normalisation
     built = build_ttm(translate(pd.concat([frame, collision], ignore_index=True), field_map), field_map)
-    print(f"\ntwo real quarters sharing calendardate " f"{pd.Timestamp(frame['calendardate'].iloc[1]).date()}")
+    print(f"\ntwo real quarters sharing calendardate {pd.Timestamp(frame['calendardate'].iloc[1]).date()}")
     print(f"rows out       : {len(built)} (expected 5 -- BOTH survive)")
     print(f"revenue_q      : {sorted(built['revenue_q'].dropna().tolist())}")
     print("both 200.0 and 250.0 are present -- keying on calendardate would have dropped one")
@@ -651,8 +649,8 @@ def test_span_guard_nulls_a_spliced_window(field_map, caplog):
         built = build_ttm(translate(frame, field_map), field_map)
     span = (pd.to_datetime(frame["reportperiod"].iloc[3]) - pd.to_datetime(frame["reportperiod"].iloc[0])).days
     tripped = [r for r in caplog.records if "do not span" in r.getMessage()]
-    print(f"\n4 CONSECUTIVE calendar quarters, reportperiod span {span} days " f"(band {TTM_SPAN_DAYS})")
-    print(f"TTM at the 4th row : {built['totalRevenue'].iloc[3]} " f"(expected NULL, not the 1000.0 contiguity alone would give)")
+    print(f"\n4 CONSECUTIVE calendar quarters, reportperiod span {span} days (band {TTM_SPAN_DAYS})")
+    print(f"TTM at the 4th row : {built['totalRevenue'].iloc[3]} (expected NULL, not the 1000.0 contiguity alone would give)")
     print(f"warning logged     : {bool(tripped)} -- the tripwire must not be silent")
     assert pd.isna(built["totalRevenue"].iloc[3])
     assert tripped, "the span refusal was silent"
@@ -683,7 +681,7 @@ def test_off_calendar_filers_have_a_ttm_line(context, field_map, actions):
     print("  -> every one of them clears 60 whole windows; none is empty.")
     for ticker in wanted:
         assert whole.get(ticker, 0) > 60, f"{ticker} has {whole.get(ticker, 0)} whole windows"
-    assert drift.max() > 45, "no filer here drifts past the old cap -- this test would pass " "with the cap still in place and proves nothing"
+    assert drift.max() > 45, "no filer here drifts past the old cap -- this test would pass with the cap still in place and proves nothing"
 
 
 def test_zero_rules_propagate_into_derived(field_map):
@@ -703,10 +701,10 @@ def test_zero_rules_propagate_into_derived(field_map):
     frame = build_ttm(translate(four_quarters("TEST", values), field_map), field_map)
     last = frame.iloc[-1]
     print(f"\nintexp quarters {values['intexp']} (one zero, ruled `null`)")
-    print(f"  -> interestExpense TTM {last['interestExpense']} " f"(expected NULL, NOT the 15.0 a kept zero would give)")
+    print(f"  -> interestExpense TTM {last['interestExpense']} (expected NULL, NOT the 15.0 a kept zero would give)")
     print(f"inventory quarters {values['inventory']} (period end is the zero)")
     print(f"  -> inventory {last['inventory']} (expected NULL, not 0.0)")
-    print(f"grossMargins {last['grossMargins']} (expected 0.4 -- an unaffected column still " f"computes)")
+    print(f"grossMargins {last['grossMargins']} (expected 0.4 -- an unaffected column still computes)")
     assert pd.isna(last["interestExpense"])
     assert pd.isna(last["inventory"])
     assert last["grossMargins"] == pytest.approx(0.4)
@@ -737,7 +735,7 @@ def test_a_zero_denominator_is_null_not_infinity(field_map):
     ratios = {n: out[n].iloc[0] for n in ("profitMargins", "returnOnEquity", "grossMargins", "effectiveTaxRate", "optionOverhang", "epsDiluted")}
     print(f"\nzero-denominator ratios: {ratios}")
     print(f"cash (a SUM, both legs present): {out['cash'].iloc[0]} (expected 3.0)")
-    print(f"stockholdersEquityInclNci with a NaN NCI leg: " f"{out['stockholdersEquityInclNci'].iloc[0]} (expected NaN, not 0.0)")
+    print(f"stockholdersEquityInclNci with a NaN NCI leg: {out['stockholdersEquityInclNci'].iloc[0]} (expected NaN, not 0.0)")
     assert all(pd.isna(v) for v in ratios.values())
     assert not np.isinf(out[list(ratios)].to_numpy(dtype="float64")).any()
     assert out["cash"].iloc[0] == 3.0
@@ -827,28 +825,28 @@ def test_coverage_of_the_built_frame(ttm, field_map, translated):
     cold_start = 3 * tickers
     print(f"\n{report.summary()}")
     print(f"\nrows out: {len(ttm)} over {tickers} ticker(s)")
-    print(f"cold-start upper bound        : {len(ttm) - cold_start} " f"(= rows - 3 per ticker)")
+    print(f"cold-start upper bound        : {len(ttm) - cold_start} (= rows - 3 per ticker)")
     print(f"windows with 4 whole quarters : {int(whole.sum())}")
-    print(f"  refused, labels not contiguous : {int((~contiguous).sum()) - cold_start} " f"beyond the cold start")
-    print(f"  refused, span outside {TTM_SPAN_DAYS} : " f"{int((contiguous & ~span.between(*TTM_SPAN_DAYS)).sum())}")
+    print(f"  refused, labels not contiguous : {int((~contiguous).sum()) - cold_start} beyond the cold start")
+    print(f"  refused, span outside {TTM_SPAN_DAYS} : {int((contiguous & ~span.between(*TTM_SPAN_DAYS)).sum())}")
     print(f"basis census: {census}")
     print(coverage[coverage["basis"].isin([DURATION, INSTANT, MEAN])].nsmallest(8, "pct_non_null").to_string(index=False))
     print(f"totalRevenue non-null: {int(ttm['totalRevenue'].notna().sum())}")
-    print(f"totalAssets  non-null: {int(ttm['totalAssets'].notna().sum())} " f"(an instant needs no window)")
-    print(f"SEC-owned columns are all NULL until phase 4 merges them: " f"{all(ttm[n].isna().all() for n in field_map.sec_owned)}")
+    print(f"totalAssets  non-null: {int(ttm['totalAssets'].notna().sum())} (an instant needs no window)")
+    print(f"SEC-owned columns are all NULL until phase 4 merges them: {all(ttm[n].isna().all() for n in field_map.sec_owned)}")
     # The load-bearing direction: a FILLED duration cell must have had a whole window. The
     # converse is not an equality -- a whole window whose four quarters include one NaN
     # `revenue` (zero-ruled, corrected, or never delivered) legitimately sums to NaN, which is
     # 220 further rows here. Asserting equality would fail on the vendor's gaps.
     spliced = ttm["totalRevenue"].notna() & ~whole
-    print(f"whole windows that still sum to NULL (a NaN quarter inside): " f"{int((whole & ttm['totalRevenue'].isna()).sum())}")
+    print(f"whole windows that still sum to NULL (a NaN quarter inside): {int((whole & ttm['totalRevenue'].isna()).sum())}")
     assert not spliced.any(), (
         f"{int(spliced.sum())} row(s) carry a trailing-twelve `totalRevenue` WITHOUT four "
         f"contiguous quarters spanning a year -- a 15-month number wearing a 12-month label: "
         f"{ttm.loc[spliced, ['ticker', 'date']].head(8).to_dict('records')}"
     )
     assert int(ttm["totalRevenue"].notna().sum()) <= len(ttm) - cold_start, (
-        "more windows than the cold start allows -- a ticker's first three quarters were " "filled from another issuer's rows"
+        "more windows than the cold start allows -- a ticker's first three quarters were filled from another issuer's rows"
     )
     assert all(ttm[n].isna().all() for n in field_map.sec_owned)
     assert census.get(MEAN) == 2, "only the two weighted-average share counts are averaged"
@@ -867,8 +865,7 @@ def test_diluted_share_count_gaps_are_the_vendors(vendor_arq, ttm):
     print(f"\ntickers missing a diluted share count: {len(gaps)}")
     print(gaps.to_string())
     print(
-        f"dilutedShares non-null {int(ttm['dilutedShares'].notna().sum())} vs "
-        f"basicShares {int(ttm['basicShares'].notna().sum())} of {len(ttm)} rows"
+        f"dilutedShares non-null {int(ttm['dilutedShares'].notna().sum())} vs basicShares {int(ttm['basicShares'].notna().sum())} of {len(ttm)} rows"
     )
     assert int(ttm["dilutedShares"].notna().sum()) <= int(ttm["basicShares"].notna().sum())
 
@@ -910,14 +907,14 @@ def test_a_ttm_window_straddling_a_split_stays_on_one_basis(field_map):
     pit_after = built.loc[~pre, "sharesOutstandingPit"].dropna()
     assert (pit_before == 100.0).all(), f"PIT pre-split must be as-filed 100, {list(pit_before)}"
     assert (pit_after == 200.0).all(), f"PIT post-split must be 200, got {list(pit_after)}"
-    assert not (
-        (built["sharesOutstandingPit"] > 100.0) & (built["sharesOutstandingPit"] < 200.0)
-    ).any(), "a value between the two bases means the window averaged across the split"
+    assert not ((built["sharesOutstandingPit"] > 100.0) & (built["sharesOutstandingPit"] < 200.0)).any(), (
+        "a value between the two bases means the window averaged across the split"
+    )
 
     for column in ("sharesOutstanding", "dilutedShares", "basicShares"):
         vendor = built[column].dropna()
         assert (vendor == 200.0).all(), (
-            f"{column} must stay on the VENDOR basis (200) so the split factor cancels " f"against close_split; got {sorted(set(vendor))}"
+            f"{column} must stay on the VENDOR basis (200) so the split factor cancels against close_split; got {sorted(set(vendor))}"
         )
 
     print(
@@ -959,7 +956,7 @@ def test_post_split_share_counts_are_not_a_hybrid_basis(ttm, actions):
     )
     out_of_band = (rows["ratio"] <= 0.5) | (rows["ratio"] >= 1.5)
 
-    print(f"\ndilutedShares / sharesOutstanding over {len(rows)} row(s): " f"min {rows['ratio'].min():.3f}, max {rows['ratio'].max():.3f}")
+    print(f"\ndilutedShares / sharesOutstanding over {len(rows)} row(s): min {rows['ratio'].min():.3f}, max {rows['ratio'].max():.3f}")
     print(f"windows straddling a split : {int(straddles.sum())}")
     print(
         f"out of [0.5, 1.5]          : {int(out_of_band.sum())} "
@@ -989,4 +986,4 @@ def test_post_split_share_counts_are_not_a_hybrid_basis(ttm, actions):
         f"{HYBRID_BASIS_RESIDUAL:.1%} ceiling. Splits are ruled out above, so this is the "
         f"`sharesbas` multi-class basis -- measure it before widening this."
     )
-    print("  CONCLUSION: no split-straddling window mixes two bases; the residual is the " "vendor's multi-class `sharesbas`, bounded. Validated.")
+    print("  CONCLUSION: no split-straddling window mixes two bases; the residual is the vendor's multi-class `sharesbas`, bounded. Validated.")

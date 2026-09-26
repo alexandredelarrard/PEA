@@ -10,6 +10,7 @@ absence means "needs its whole history" on `prices` (a new ticker) but "will nev
 have a row" on `dividends` (a non-payer). Getting it wrong on `dividends` pins
 every run to the full window forever.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -21,24 +22,30 @@ from src.data_extract.utils.common.incremental import resume_since
 
 def _seed(store) -> None:
     """AAA current through 2024-06-03, BBB stale since 2024-01-05."""
-    store.replace("prices", pd.DataFrame({
-        "ticker": ["AAA", "AAA", "BBB"],
-        "date": pd.to_datetime(["2024-05-01", "2024-06-03", "2024-01-05"]),
-        "close": [1.0, 2.0, 3.0],
-    }))
+    store.replace(
+        "prices",
+        pd.DataFrame(
+            {
+                "ticker": ["AAA", "AAA", "BBB"],
+                "date": pd.to_datetime(["2024-05-01", "2024-06-03", "2024-01-05"]),
+                "close": [1.0, 2.0, 3.0],
+            }
+        ),
+    )
 
 
 def test_max_date_by_is_one_grouped_query(sqlite_store):
     _seed(sqlite_store)
     frontier = sqlite_store.max_date_by("prices", "ticker", "date")
 
-    assert frontier == {"AAA": pd.Timestamp("2024-06-03"),
-                        "BBB": pd.Timestamp("2024-01-05")}
+    assert frontier == {"AAA": pd.Timestamp("2024-06-03"), "BBB": pd.Timestamp("2024-01-05")}
     # absent table / column -> empty dict, the "nothing stored yet" contract
     assert sqlite_store.max_date_by("no_such_table", "ticker", "date") == {}
     print("\n=== SANITY CHECK: grouped max-date query ===")
-    print(f"  max_date_by(prices) -> {({k: str(v.date()) for k, v in frontier.items()})}; "
-          "missing table -> {}. One GROUP BY, no table read. Validated.")
+    print(
+        f"  max_date_by(prices) -> { ({k: str(v.date()) for k, v in frontier.items()}) }; "
+        "missing table -> {}. One GROUP BY, no table read. Validated."
+    )
 
 
 def test_resume_since_takes_the_oldest_frontier(sqlite_store):
@@ -46,7 +53,7 @@ def test_resume_since_takes_the_oldest_frontier(sqlite_store):
     ctx = SimpleNamespace(store=sqlite_store)
 
     since = resume_since(ctx, "prices", ["AAA", "BBB"], years_history=15)
-    assert since == pd.Timestamp("2024-01-05"), since   # the laggard sets the window
+    assert since == pd.Timestamp("2024-01-05"), since  # the laggard sets the window
 
     # asking only about the current ticker moves the window forward
     assert resume_since(ctx, "prices", ["AAA"], years_history=15) == pd.Timestamp("2024-06-03")
@@ -62,11 +69,9 @@ def test_missing_ticker_pulls_back_only_when_include_missing(sqlite_store):
     # prices semantics: an unseen ticker genuinely needs its full history
     assert resume_since(ctx, "prices", ["AAA", "NEW"], years_history=15) == history_start
     # dividends semantics: a never-payer must NOT drag the window back forever
-    assert resume_since(ctx, "prices", ["AAA", "NEW"], years_history=15,
-                        include_missing=False) == pd.Timestamp("2024-06-03")
+    assert resume_since(ctx, "prices", ["AAA", "NEW"], years_history=15, include_missing=False) == pd.Timestamp("2024-06-03")
     print("\n=== SANITY CHECK: include_missing ===")
-    print(f"  unseen ticker: include_missing=True -> {history_start.date()} (full backfill); "
-          "False -> 2024-06-03 (never-payers ignored). Validated.")
+    print(f"  unseen ticker: include_missing=True -> {history_start.date()} (full backfill); False -> 2024-06-03 (never-payers ignored). Validated.")
 
 
 def test_window_never_predates_years_history(sqlite_store):
@@ -79,8 +84,7 @@ def test_window_never_predates_years_history(sqlite_store):
     since = resume_since(ctx, "prices", ["AAA", "BBB"], years_history=1)
     assert since == history_start, since
     print("\n=== SANITY CHECK: window clamp ===")
-    print(f"  BBB last traded 2024-01-05 but years_history=1 -> since={since.date()} "
-          "(clamped, never older than the configured window). Validated.")
+    print(f"  BBB last traded 2024-01-05 but years_history=1 -> since={since.date()} (clamped, never older than the configured window). Validated.")
 
 
 def test_cold_table_falls_back_to_full_history(sqlite_store):

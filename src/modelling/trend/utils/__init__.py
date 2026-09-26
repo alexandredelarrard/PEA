@@ -1,4 +1,5 @@
 """Multi-asset time-series-momentum (trend) sleeve utilities."""
+
 from src.modelling.trend.utils.trend_signal import (
     apply_class_budget,
     carry_forecast,

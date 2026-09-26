@@ -19,6 +19,7 @@ Nothing here asserts a fill RATE — the table is a report, not a contract. What
 is the invariant that makes the report meaningful: impute never lowers coverage, and no era
 column is fabricated.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -29,11 +30,24 @@ from src.data_aggregate.utils.governance.def14a_impute import CARRY_LEVELS, impu
 #: The fields §1.2 tabulates — the ones the governance families read, plus the three whose
 #: coverage is a REGIME staircase rather than an extraction gap (kind A).
 _REPORTED = [
-    "avg_other_public_boards", "majority_voting", "lead_independent_director",
-    "say_on_pay_support_pct", "insider_ownership_pct", "ceo_total_comp", "ceo_is_founder",
-    "ceo_since_year", "pct_independent_directors", "poison_pill", "independent_chair",
-    "avg_board_tenure", "ceo_is_board_chair", "ceo_name_proxy", "ceo_age", "ceo_salary",
-    "ceo_pay_ratio", "board_size",
+    "avg_other_public_boards",
+    "majority_voting",
+    "lead_independent_director",
+    "say_on_pay_support_pct",
+    "insider_ownership_pct",
+    "ceo_total_comp",
+    "ceo_is_founder",
+    "ceo_since_year",
+    "pct_independent_directors",
+    "poison_pill",
+    "independent_chair",
+    "avg_board_tenure",
+    "ceo_is_board_chair",
+    "ceo_name_proxy",
+    "ceo_age",
+    "ceo_salary",
+    "ceo_pay_ratio",
+    "board_size",
 ]
 #: The two fields whose DELTA is a feature and whose level is filled anyway (D23).
 _DELTA_SOURCES = ["avg_other_public_boards", "say_on_pay_support_pct"]
@@ -42,9 +56,10 @@ _DELTA_SOURCES = ["avg_other_public_boards", "say_on_pay_support_pct"]
 def _load():
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
@@ -62,8 +77,9 @@ def test_impute_coverage_table():
         if f not in raw.columns:
             continue
         before, after = raw[f].notna(), imp[f].notna()
-        rows.append((f, before.mean(), after.mean(), int(after.sum()) - int(before.sum()),
-                     float(modern[f].notna().mean()), int(modern[f].isna().sum())))
+        rows.append(
+            (f, before.mean(), after.mean(), int(after.sum()) - int(before.sum()), float(modern[f].notna().mean()), int(modern[f].isna().sum()))
+        )
 
     assert rows, "not one reported field is present in def14a_llm"
     for f, b, a, rec, _, _ in rows:
@@ -71,15 +87,16 @@ def test_impute_coverage_table():
         assert rec >= 0, f"{f}: negative recovery"
 
     print("\n=== SANITY CHECK: DEF 14A coverage, raw -> imputed (regenerated) ===")
-    print(f"  {len(raw)} rows, {raw['ticker'].nunique()} tickers, "
-          f"{pd.to_datetime(raw['as_of']).min().date()} -> "
-          f"{pd.to_datetime(raw['as_of']).max().date()}")
-    print(f"  {'field':<28} {'raw':>7} {'imputed':>8} {'recovered':>10} "
-          f"{'modern':>7} {'holes':>7}")
+    print(
+        f"  {len(raw)} rows, {raw['ticker'].nunique()} tickers, "
+        f"{pd.to_datetime(raw['as_of']).min().date()} -> "
+        f"{pd.to_datetime(raw['as_of']).max().date()}"
+    )
+    print(f"  {'field':<28} {'raw':>7} {'imputed':>8} {'recovered':>10} {'modern':>7} {'holes':>7}")
     for f, b, a, rec, m, holes in sorted(rows, key=lambda r: -r[3]):
         print(f"  {f:<28} {b:>6.1%} {a:>8.1%} {rec:>+10,} {m:>7.1%} {holes:>7,}")
     top = sorted(stats.items(), key=lambda kv: -kv[1])[:9]
-    print(f"  top rules: " + " · ".join(f"{k} {v}" for k, v in top))
+    print("  top rules: " + " · ".join(f"{k} {v}" for k, v in top))
     print("  CONCLUSION: in the MODERN era (>=2011) the fields the governance families need")
     print("  are 88-100% filled after impute. The low RAW rates on the pre-regime fields are")
     print("  kind A (the disclosure did not exist), not extraction failure, and are left NaN.")
@@ -105,12 +122,11 @@ def test_d23_fill_artifact_share():
         assert f in CARRY_LEVELS, f"{f} is no longer filled — D23's premise changed"
         raw_present = raw.set_index(key)[f].notna()
         d = imp[key + ["as_of", f]].copy()
-        d["_imp"] = d[f].notna() & ~pd.MultiIndex.from_frame(d[key]).map(
-            raw_present).fillna(False).to_numpy()
+        d["_imp"] = d[f].notna() & ~pd.MultiIndex.from_frame(d[key]).map(raw_present).fillna(False).to_numpy()
         d = d.sort_values(["ticker", "as_of"])
         g = d.groupby("ticker", sort=False)
         prev_val, prev_imp = g[f].shift(1), g["_imp"].shift(1)
-        pair = d[f].notna() & prev_val.notna()              # a computable YoY delta
+        pair = d[f].notna() & prev_val.notna()  # a computable YoY delta
         tainted = pair & (d["_imp"] | prev_imp.fillna(False))
         n, t = int(pair.sum()), int(tainted.sum())
         reported.append((f, n, t))

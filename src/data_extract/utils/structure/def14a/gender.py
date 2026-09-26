@@ -24,6 +24,7 @@ IDEMPOTENT: the consensus is recomputed from `gender_basis`, and a value is neve
 a weaker basis, so a second run is a no-op. That matters because the pass runs at the end of
 every extraction, and DEF 14A is a yearly filing -- an incremental day adds ~0 rows.
 """
+
 from __future__ import annotations
 
 import logging
@@ -87,7 +88,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     resolved: dict[str, tuple[str, str]] = {}
     for key, grp in out[out["person_key"].notna()].groupby("person_key"):
-        known = grp[grp["_gender"].notna()]   # notna() covers None AND pd.NA
+        known = grp[grp["_gender"].notna()]  # notna() covers None AND pd.NA
         if known.empty:
             continue
         best_rank = known["_rank"].max()
@@ -157,31 +158,38 @@ def recompute_parent_gender(directors: pd.DataFrame) -> pd.DataFrame:
     untouched.
     """
     if directors.empty:
-        return pd.DataFrame(columns=["ticker", "accession_number",
-                                     "pct_female_directors", "pct_gender_stated"])
+        return pd.DataFrame(columns=["ticker", "accession_number", "pct_female_directors", "pct_gender_stated"])
     d = directors[directors["gender"].notna()].copy()
     if d.empty:
-        return pd.DataFrame(columns=["ticker", "accession_number",
-                                     "pct_female_directors", "pct_gender_stated"])
+        return pd.DataFrame(columns=["ticker", "accession_number", "pct_female_directors", "pct_gender_stated"])
     d["_female"] = d["gender"].map(lambda g: bool(_norm(g) or "") and _norm(g).startswith("f"))
-    d["_evidence"] = d["gender_basis"].map(
-        lambda b: BASIS_RANK.get(_norm(b), -1) >= EVIDENCE_RANK)
-    out = d.groupby(["ticker", "accession_number"]).agg(
-        pct_female_directors=("_female", lambda s: round(float(s.mean()), 3)),
-        pct_gender_stated=("_evidence", lambda s: round(float(s.mean()), 3)),
-    ).reset_index()
+    d["_evidence"] = d["gender_basis"].map(lambda b: BASIS_RANK.get(_norm(b), -1) >= EVIDENCE_RANK)
+    out = (
+        d.groupby(["ticker", "accession_number"])
+        .agg(
+            pct_female_directors=("_female", lambda s: round(float(s.mean()), 3)),
+            pct_gender_stated=("_evidence", lambda s: round(float(s.mean()), 3)),
+        )
+        .reset_index()
+    )
     return out
 
 
 def log_consensus(log, stats: dict, before: dict, after: dict) -> None:
     """Print the evidence that the upgrade worked. `overturned == 0` on real data means the name
     key matched nobody across filings, which is a mechanism failure, not a clean result."""
-    log.info("gender consensus: %d rows -> %d distinct people | filled %d, overturned %d, "
-             "unchanged %d, unkeyable %d",
-             stats["rows"], stats["people"], stats["filled"], stats["overturned"],
-             stats["unchanged"], stats["unmatched_rows"])
+    log.info(
+        "gender consensus: %d rows -> %d distinct people | filled %d, overturned %d, unchanged %d, unkeyable %d",
+        stats["rows"],
+        stats["people"],
+        stats["filled"],
+        stats["overturned"],
+        stats["unchanged"],
+        stats["unmatched_rows"],
+    )
     log.info("gender_basis before: %s", before or "-")
     log.info("gender_basis after:  %s", after or "-")
     if stats["people"] and not stats["overturned"] and not stats["filled"]:
-        log.warning("gender consensus changed NOTHING across %d people -- if this persists the "
-                    "person key is matching nobody across filings", stats["people"])
+        log.warning(
+            "gender consensus changed NOTHING across %d people -- if this persists the person key is matching nobody across filings", stats["people"]
+        )

@@ -14,6 +14,7 @@ The three properties that make it safe to feed a pay-slice denominator:
 Plus the number the exact top-5 CPS actually depends on: how many filings carry five NEO
 totals before and after the repair.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -24,24 +25,25 @@ from src.data_aggregate.utils.governance.def14a_impute import EXEC_COMPONENTS, i
 
 
 def _row(ticker: str, name: str, fy: int, total=np.nan, **comp) -> dict:
-    r = {"ticker": ticker, "accession_number": f"{ticker}-{fy}", "as_of": f"{fy}-04-01",
-         "name": name, "fiscal_year": fy, "total": total}
+    r = {"ticker": ticker, "accession_number": f"{ticker}-{fy}", "as_of": f"{fy}-04-01", "name": name, "fiscal_year": fy, "total": total}
     r.update({c: comp.get(c, np.nan) for c in EXEC_COMPONENTS})
     return r
 
 
 def test_exec_comp_rules_synthetic():
     """Fill from components, keep an all-NULL row NULL, never overwrite a stated total."""
-    df = pd.DataFrame([
-        # 1. every component present, total NULL -> filled with the sum (7 x 1000 = 7000)
-        _row("AAA", "Alice", 2020, **{c: 1000.0 for c in EXEC_COMPONENTS}),
-        # 2. a PARTIAL row: three components, total NULL -> filled with 600 (min_count=1)
-        _row("AAA", "Bob", 2020, salary=100.0, bonus=200.0, stock_awards=300.0),
-        # 3. every component NULL, total NULL -> STAYS NULL. Never 0.0.
-        _row("AAA", "Carol", 2020),
-        # 4. a stated total that DISAGREES with its components -> preserved, untouched
-        _row("BBB", "Dave", 2021, total=999_999.0, salary=1.0, bonus=2.0),
-    ])
+    df = pd.DataFrame(
+        [
+            # 1. every component present, total NULL -> filled with the sum (7 x 1000 = 7000)
+            _row("AAA", "Alice", 2020, **{c: 1000.0 for c in EXEC_COMPONENTS}),
+            # 2. a PARTIAL row: three components, total NULL -> filled with 600 (min_count=1)
+            _row("AAA", "Bob", 2020, salary=100.0, bonus=200.0, stock_awards=300.0),
+            # 3. every component NULL, total NULL -> STAYS NULL. Never 0.0.
+            _row("AAA", "Carol", 2020),
+            # 4. a stated total that DISAGREES with its components -> preserved, untouched
+            _row("BBB", "Dave", 2021, total=999_999.0, salary=1.0, bonus=2.0),
+        ]
+    )
     out, stats = impute_exec_comp(df)
 
     assert out.loc[0, "total"] == pytest.approx(7000.0)
@@ -65,9 +67,10 @@ def test_exec_comp_real_data_and_neo_bar():
     """Live table: non-destructive, and the filing counts the exact top-5 CPS depends on."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_executive_comp")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_executive_comp not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_executive_comp empty")
@@ -76,12 +79,9 @@ def test_exec_comp_real_data_and_neo_bar():
 
     # --- non-destructive: not one stated total moved ---
     present = raw["total"].notna()
-    overwritten = int((~np.isclose(raw.loc[present, "total"].to_numpy(),
-                                   out.loc[present, "total"].to_numpy(),
-                                   equal_nan=True)).sum())
+    overwritten = int((~np.isclose(raw.loc[present, "total"].to_numpy(), out.loc[present, "total"].to_numpy(), equal_nan=True)).sum())
     assert overwritten == 0, f"{overwritten} filer-stated totals overwritten"
-    assert not (out.loc[present, "total_imputed"] > 0).any(), \
-        "total_imputed stamped on a row whose total the filer stated"
+    assert not (out.loc[present, "total_imputed"] > 0).any(), "total_imputed stamped on a row whose total the filer stated"
 
     # --- the identity's credibility where it is checkable ---
     rec = pd.to_numeric(raw.get("reconciles"), errors="coerce")
@@ -115,20 +115,16 @@ def test_exec_comp_real_data_and_neo_bar():
     assert fa5 > fb5, "the repair did not widen the 5-NEO population on the fiscal-year grain"
 
     print("\n=== SANITY CHECK: impute_exec_comp (real def14a_executive_comp) ===")
-    print(f"  rows={len(raw)}  tickers={raw['ticker'].nunique()}  filings={n_filings}"
-          f"  filing-years={n_fy}")
+    print(f"  rows={len(raw)}  tickers={raw['ticker'].nunique()}  filings={n_filings}  filing-years={n_fy}")
     print(f"  total stated by the filer : {stats['total stated by the filer']}")
     print(f"  total = sum(components)   : {stats['total = sum(components)']} filled")
     print(f"  still NULL (no component) : {stats['total still NULL (no component at all)']}")
-    print(f"  `reconciles`==1 where both sides present: {rec_rate:.1%} "
-          f"({int(checkable.sum())} rows checkable)")
+    print(f"  `reconciles`==1 where both sides present: {rec_rate:.1%} ({int(checkable.sum())} rows checkable)")
     print(f"  present totals overwritten: {overwritten}  <- the non-destructive invariant")
-    print(f"  per ACCESSION (the plan's grain), distinct NEOs:")
-    print(f"     >=5 totals: {b5} -> {a5}  ({a5 - b5:+d}, {(a5 / b5 - 1) * 100:+.0f}%)"
-          f"   [plan: 8,026 -> 10,695]")
-    print(f"     >=3 totals: {b3} -> {a3}  ({a3 - b3:+d}) of {n_filings}"
-          f"   [plan: 8,422 -> 11,232]")
-    print(f"  per ACCESSION x FISCAL YEAR (what a pay slice actually divides by):")
+    print("  per ACCESSION (the plan's grain), distinct NEOs:")
+    print(f"     >=5 totals: {b5} -> {a5}  ({a5 - b5:+d}, {(a5 / b5 - 1) * 100:+.0f}%)   [plan: 8,026 -> 10,695]")
+    print(f"     >=3 totals: {b3} -> {a3}  ({a3 - b3:+d}) of {n_filings}   [plan: 8,422 -> 11,232]")
+    print("  per ACCESSION x FISCAL YEAR (what a pay slice actually divides by):")
     print(f"     >=5 totals: {fb5} -> {fa5}  ({fa5 - fb5:+d}, {(fa5 / fb5 - 1) * 100:+.0f}%)")
     print(f"     >=3 totals: {fb3} -> {fa3}  ({fa3 - fb3:+d}) of {n_fy}")
     print("  CONCLUSION: the exact top-5 pay slice becomes computable on a materially wider")

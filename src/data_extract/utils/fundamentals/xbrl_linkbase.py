@@ -107,6 +107,7 @@ Cost: ``calculation_linkbase()`` measured at **0.003-0.006 s** against ``xbrl()`
 1.4-5.8 s on the same filing -- ~0.1%. Effectively free on a substrate already paid for,
 which is what makes reading it per filing affordable.
 """
+
 from __future__ import annotations
 
 import re
@@ -139,9 +140,7 @@ STATEMENTS_MENUCAT = "Statements"
 #:     of the other words and look exactly like face statements. They are PARENT-ONLY, so
 #:     admitting them would silently mix unconsolidated numbers into consolidated fields --
 #:     the one failure mode nothing downstream could catch. PGR and AFL both ship one.
-NON_STATEMENT_ROLE = re.compile(
-    r"detail|disclosure|polic|parenthetical|schedule|tables?$|uncategor|highlight",
-    re.IGNORECASE)
+NON_STATEMENT_ROLE = re.compile(r"detail|disclosure|polic|parenthetical|schedule|tables?$|uncategor|highlight", re.IGNORECASE)
 
 #: A role URI that names the SEGMENT-INFORMATION note. A strict subset of
 #: `NON_STATEMENT_ROLE`, and separated from it because the two carry different verdicts: an
@@ -222,8 +221,7 @@ SEGMENT_ONLY_CONCEPT = "segment_only_concept"
 NO_USABLE_PERIOD = "no_usable_period"
 
 #: Routes where the FILER'S OWN declared structure chose the concept.
-LINKBASE_METHODS: frozenset[str] = frozenset(
-    {LINKBASE_TOTAL, LINKBASE_ROOT, LINKBASE_SUM, STATEMENT_LEAF_SUM})
+LINKBASE_METHODS: frozenset[str] = frozenset({LINKBASE_TOTAL, LINKBASE_ROOT, LINKBASE_SUM, STATEMENT_LEAF_SUM})
 
 #: `roll_up.anchor_role` values -> the role-URI pattern that names that statement. An
 #: EXCLUSION-free positive test is safe here in a way it is not for `NON_STATEMENT_ROLE`,
@@ -254,47 +252,49 @@ REVENUE_ANCHORS: tuple[str, ...] = (
 #: Concepts that are never a revenue top line even when they sit where one would, because
 #: they are non-operating or disposal items a filer parks under the same pretax subtotal
 #: (measured on MAA, whose pretax node has four positive children).
-NOT_A_TOP_LINE: frozenset[str] = frozenset({
-    "OtherNonoperatingIncomeExpense",
-    "NonoperatingIncomeExpense",
-    "GainLossOnSaleOfPropertyPlantEquipment",
-    "GainLossOnSalesOfAssetsAndAssetImpairmentCharges",
-    "IncomeLossFromEquityMethodInvestments",
-    "InvestmentIncomeInterest",
-    # Added after the post-3c re-sweep, each one measured:
-    #   VRT 2018-2020 (17 rows) -- the GS Acquisition Holdings SPAC shell's only income is
-    #   its trust account's dividends. Genuine, but it is not revenue, and letting it win
-    #   is what stopped `zero_only_retained` from keeping the correct 0.
-    "InvestmentIncomeDividend",
-    #   ETN 2012 (2 rows) -- an unrealised FX line under the pretax node, resolving revenue
-    #   to -$149 for a company with a $16 bn top line.
-    "ForeignCurrencyTransactionGainLossUnrealized",
-    #   GS 2019 (4 rows) -- a bank/broker EXPENSE subtotal that sits legitimately on
-    #   `ConsolidatedStatementsOfEarnings`, so no role or period test can reject it. The
-    #   bank regime bans it as a CANDIDATE; this bans it as a discovered ROOT, which is
-    #   regime-independent -- GS is `broker_dealer`, not `bank`.
-    "NoninterestExpense",
-    # Added 2026-08-23 by the 52-ticker out-of-sample sweep -- a PRE-EXISTING defect that
-    # the in-sample roster could not see, since AXP is out-of-sample only. AXP's 2009-2011
-    # linkbases declare these as parentless roots WITH CHILDREN on an income-statement role,
-    # and `discover_root`'s widest-aggregation ranking duly took them: **15 rows of revenue
-    # at $0.09-$3.40 and 8 rows at AXP's net income**, 23 in all. Every other route-2
-    # discovery across the 52 tickers is a genuine revenue line, so this is the whole
-    # population.
-    #
-    # A per-share amount can ALSO be excluded by its unit, and `entity_scope` now does that
-    # -- but only for the 5 rows whose `unit_ref` says so. `unit_ref` is a filer-authored ID
-    # (`Unit12`, `u000`, `U_iso4217USD`), so the unit oracle cannot carry this and the name
-    # list must. A BOTTOM line is monetary and no unit test could ever reject it at all.
-    "EarningsPerShareBasic",
-    "EarningsPerShareDiluted",
-    "EarningsPerShareBasicAndDiluted",
-    "IncomeLossFromContinuingOperationsPerBasicShare",
-    "IncomeLossFromContinuingOperationsPerDilutedShare",
-    "NetIncomeLoss",
-    "ProfitLoss",
-    "NetIncomeLossAvailableToCommonStockholdersBasic",
-})
+NOT_A_TOP_LINE: frozenset[str] = frozenset(
+    {
+        "OtherNonoperatingIncomeExpense",
+        "NonoperatingIncomeExpense",
+        "GainLossOnSaleOfPropertyPlantEquipment",
+        "GainLossOnSalesOfAssetsAndAssetImpairmentCharges",
+        "IncomeLossFromEquityMethodInvestments",
+        "InvestmentIncomeInterest",
+        # Added after the post-3c re-sweep, each one measured:
+        #   VRT 2018-2020 (17 rows) -- the GS Acquisition Holdings SPAC shell's only income is
+        #   its trust account's dividends. Genuine, but it is not revenue, and letting it win
+        #   is what stopped `zero_only_retained` from keeping the correct 0.
+        "InvestmentIncomeDividend",
+        #   ETN 2012 (2 rows) -- an unrealised FX line under the pretax node, resolving revenue
+        #   to -$149 for a company with a $16 bn top line.
+        "ForeignCurrencyTransactionGainLossUnrealized",
+        #   GS 2019 (4 rows) -- a bank/broker EXPENSE subtotal that sits legitimately on
+        #   `ConsolidatedStatementsOfEarnings`, so no role or period test can reject it. The
+        #   bank regime bans it as a CANDIDATE; this bans it as a discovered ROOT, which is
+        #   regime-independent -- GS is `broker_dealer`, not `bank`.
+        "NoninterestExpense",
+        # Added 2026-08-23 by the 52-ticker out-of-sample sweep -- a PRE-EXISTING defect that
+        # the in-sample roster could not see, since AXP is out-of-sample only. AXP's 2009-2011
+        # linkbases declare these as parentless roots WITH CHILDREN on an income-statement role,
+        # and `discover_root`'s widest-aggregation ranking duly took them: **15 rows of revenue
+        # at $0.09-$3.40 and 8 rows at AXP's net income**, 23 in all. Every other route-2
+        # discovery across the 52 tickers is a genuine revenue line, so this is the whole
+        # population.
+        #
+        # A per-share amount can ALSO be excluded by its unit, and `entity_scope` now does that
+        # -- but only for the 5 rows whose `unit_ref` says so. `unit_ref` is a filer-authored ID
+        # (`Unit12`, `u000`, `U_iso4217USD`), so the unit oracle cannot carry this and the name
+        # list must. A BOTTOM line is monetary and no unit test could ever reject it at all.
+        "EarningsPerShareBasic",
+        "EarningsPerShareDiluted",
+        "EarningsPerShareBasicAndDiluted",
+        "IncomeLossFromContinuingOperationsPerBasicShare",
+        "IncomeLossFromContinuingOperationsPerDilutedShare",
+        "NetIncomeLoss",
+        "ProfitLoss",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -404,8 +404,7 @@ class Resolution:
         APA's revenue. Legitimate -- it is the filer's declared total and its components
         are standard -- but worth carrying, because an extension total cannot be compared
         element-for-element with another filer's."""
-        return bool(self.concept and ":" in self.concept
-                    and not self.concept.startswith("us-gaap:"))
+        return bool(self.concept and ":" in self.concept and not self.concept.startswith("us-gaap:"))
 
     @property
     def source_concept(self) -> str | None:
@@ -419,8 +418,7 @@ class Resolution:
 
 #: The columns `statement_arcs` and `calculation_arcs` guarantee, so a filing with no
 #: linkbase returns an empty frame of the right SHAPE rather than one nothing can index.
-ARC_COLUMNS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy",
-               "weight", "role_uri", "menucat", "is_abstract", ARC_FILTER]
+ARC_COLUMNS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy", "weight", "role_uri", "menucat", "is_abstract", ARC_FILTER]
 
 
 def calculation_arcs(xbrl) -> pd.DataFrame:
@@ -435,7 +433,7 @@ def calculation_arcs(xbrl) -> pd.DataFrame:
     """
     try:
         arcs = xbrl.calculation_linkbase()
-    except Exception:                                   # noqa: BLE001 -- absent linkbase
+    except Exception:  # noqa: BLE001 -- absent linkbase
         return pd.DataFrame(columns=ARC_COLUMNS)
     if arcs is None or arcs.empty:
         return pd.DataFrame(columns=ARC_COLUMNS)
@@ -468,8 +466,7 @@ def segment_only_concepts(arcs: pd.DataFrame) -> frozenset[str]:
     roles: dict[str, set[str]] = {}
     for concept, role in zip(arcs["concept"], arcs["role_uri"]):
         roles.setdefault(bare(str(concept)), set()).add(str(role))
-    return frozenset(concept for concept, seen in roles.items()
-                     if seen and all(SEGMENT_ROLE.search(role) for role in seen))
+    return frozenset(concept for concept, seen in roles.items() if seen and all(SEGMENT_ROLE.search(role) for role in seen))
 
 
 def statement_arcs(xbrl, arcs: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -509,18 +506,14 @@ def statement_arcs(xbrl, arcs: pd.DataFrame | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=ARC_COLUMNS)
 
     empty = pd.Series(False, index=arcs.index)
-    by_menucat = (arcs["menucat"] == STATEMENTS_MENUCAT
-                  if "menucat" in arcs.columns else empty)
-    by_role = (~arcs["role_uri"].astype(str).str.contains(NON_STATEMENT_ROLE)
-               if "role_uri" in arcs.columns else empty)
+    by_menucat = arcs["menucat"] == STATEMENTS_MENUCAT if "menucat" in arcs.columns else empty
+    by_role = ~arcs["role_uri"].astype(str).str.contains(NON_STATEMENT_ROLE) if "role_uri" in arcs.columns else empty
 
     keep = by_menucat | by_role
     if not keep.any():
         return pd.DataFrame(columns=ARC_COLUMNS)
     out = arcs[keep].copy()
-    out[ARC_FILTER] = [
-        "both" if m and r else ("menucat" if m else "role_uri")
-        for m, r in zip(by_menucat[keep], by_role[keep])]
+    out[ARC_FILTER] = ["both" if m and r else ("menucat" if m else "role_uri") for m, r in zip(by_menucat[keep], by_role[keep])]
     return out.reset_index(drop=True)
 
 
@@ -554,8 +547,7 @@ class ArcGraph:
         out: dict[str, list[tuple[str, float]]] = {}
         if self.arcs.empty:
             return out
-        for parent, concept, weight in zip(self.arcs["parent_concept"],
-                                           self.arcs["concept"], self.arcs["weight"]):
+        for parent, concept, weight in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"]):
             out.setdefault(str(parent), []).append((str(concept), float(weight)))
         return out
 
@@ -573,13 +565,9 @@ class ArcGraph:
         out: dict[str, list[tuple[str, float, str]]] = {}
         if self.arcs.empty:
             return out
-        roles = (self.arcs["role_uri"] if "role_uri" in self.arcs.columns
-                 else pd.Series("", index=self.arcs.index))
-        for parent, concept, weight, role in zip(
-                self.arcs["parent_concept"], self.arcs["concept"],
-                self.arcs["weight"], roles):
-            out.setdefault(str(parent), []).append(
-                (str(concept), float(weight), str(role)))
+        roles = self.arcs["role_uri"] if "role_uri" in self.arcs.columns else pd.Series("", index=self.arcs.index)
+        for parent, concept, weight, role in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"], roles):
+            out.setdefault(str(parent), []).append((str(concept), float(weight), str(role)))
         return out
 
     @cached_property
@@ -654,8 +642,7 @@ class ArcGraph:
     def children_of(self, concept: str) -> list[tuple[str, float]]:
         return self._children.get(concept, [])
 
-    def children_on_role(self, concept: str,
-                         role: re.Pattern[str]) -> list[tuple[str, float, str]]:
+    def children_on_role(self, concept: str, role: re.Pattern[str]) -> list[tuple[str, float, str]]:
         """Every arc beneath `concept` ON A ROLE matching `role`, NOT de-duplicated.
 
         Deliberately un-deduplicated, because a duplicate here is signed: NEE declares
@@ -665,9 +652,7 @@ class ArcGraph:
         3b's guard 2 reads. `_leaf_sum` filters by sign FIRST and de-duplicates after, so
         the surviving arc is the one whose direction is the field's.
         """
-        return [(child, weight, arc_role)
-                for child, weight, arc_role in self._children_with_role.get(concept, [])
-                if role.search(arc_role)]
+        return [(child, weight, arc_role) for child, weight, arc_role in self._children_with_role.get(concept, []) if role.search(arc_role)]
 
     def parent_of(self, concept: str) -> str | None:
         return self._parents.get(concept)
@@ -693,8 +678,7 @@ class ArcGraph:
         roll-up. A revenue block can legitimately hang like this: DTE declares
         `OperatingIncomeLoss <- -1 CostsAndExpenses` and simply omits the revenue arc, so
         `RegulatedAndUnregulatedOperatingRevenue` has children but no parent."""
-        return [(node, kids) for node, kids in self._children.items()
-                if kids and self.parent_of(node) is None]
+        return [(node, kids) for node, kids in self._children.items() if kids and self.parent_of(node) is None]
 
     def has_descendant(self, concept: str, descendant: str) -> bool:
         """Does the filer declare `descendant` anywhere BENEATH `concept`?
@@ -726,8 +710,9 @@ class ArcGraph:
         return any(child == sibling for child, _ in self.children_of(parent))
 
 
-def sibling_leg(graph: ArcGraph, concept: str, legs: frozenset[str] | set[str],
-                available: frozenset[str], magnitudes: dict[str, float]) -> str | None:
+def sibling_leg(
+    graph: ArcGraph, concept: str, legs: frozenset[str] | set[str], available: frozenset[str], magnitudes: dict[str, float]
+) -> str | None:
     """The field's own declared roll-up LEG that proves `concept` is not this field's
     total -- or None, which is the overwhelmingly common answer.
 
@@ -792,7 +777,7 @@ def sibling_leg(graph: ArcGraph, concept: str, legs: frozenset[str] | set[str],
         if leg_peak is None or leg not in available:
             continue
         if leg_peak <= total_peak:
-            continue                                    # a real superset -- AAPL, SWKS
+            continue  # a real superset -- AAPL, SWKS
         if graph.has_sibling(concept, leg) and not graph.has_descendant(concept, leg):
             return leg
     return None
@@ -844,8 +829,7 @@ def _candidates(spec: FieldSpec, regime: str | None) -> list[str]:
 ONLY_WHEN_DESCENDANT = "declared_descendant"
 
 
-def _resolve_subtractions(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
-                          concept: str | None) -> tuple[str, ...]:
+def _resolve_subtractions(spec: FieldSpec, graph: ArcGraph, available: frozenset[str], concept: str | None) -> tuple[str, ...]:
     """The `total_adjustment.subtract` concepts that actually apply to this filing.
 
     A field declaring `_only_when` is asking the LINKBASE, not the tag, whether the amount
@@ -932,14 +916,15 @@ def is_income_statement_role(role: str | None) -> bool:
     """Does this role URI name the statement a revenue top line lives on?"""
     if not role:
         return False
-    return (bool(INCOME_STATEMENT_ROLE.search(role))
-            and not NOT_INCOME_STATEMENT_ROLE.search(role))
+    return bool(INCOME_STATEMENT_ROLE.search(role)) and not NOT_INCOME_STATEMENT_ROLE.search(role)
 
 
-def discover_root(graph: ArcGraph, available: frozenset[str],
-                  banned: frozenset[str] = frozenset(),
-                  duration_concepts: frozenset[str] | None = None,
-                  ) -> tuple[str, str] | None:
+def discover_root(
+    graph: ArcGraph,
+    available: frozenset[str],
+    banned: frozenset[str] = frozenset(),
+    duration_concepts: frozenset[str] | None = None,
+) -> tuple[str, str] | None:
     """Find the filer's own revenue top line from the statement STRUCTURE alone.
 
     Returns `(concept, anchor)` in BARE names, or None. Two structural signatures, tried
@@ -970,8 +955,7 @@ def discover_root(graph: ArcGraph, available: frozenset[str],
     for anchor in REVENUE_ANCHORS:
         if not graph.knows(anchor):
             continue
-        picks = [child for child, weight in graph.children_of(anchor)
-                 if weight > 0 and child in available and child not in excluded]
+        picks = [child for child, weight in graph.children_of(anchor) if weight > 0 and child in available and child not in excluded]
         if len(picks) == 1:
             return picks[0], anchor
         if len(picks) > 1:
@@ -1001,9 +985,9 @@ def discover_root(graph: ArcGraph, available: frozenset[str],
         if not all(weight > 0 for _, weight in kids):
             continue
         if duration_concepts is not None and node not in duration_concepts:
-            continue                                    # kills the 34 balance-sheet rows
+            continue  # kills the 34 balance-sheet rows
         if not is_income_statement_role(graph.role_of(node)):
-            continue                                    # kills cash-flow / OCI roots
+            continue  # kills cash-flow / OCI roots
         survivors.append((node, kids))
     if survivors:
         # Deterministic ORDER, replacing the arc-order lottery: the widest aggregation on
@@ -1014,14 +998,19 @@ def discover_root(graph: ArcGraph, available: frozenset[str],
     return None
 
 
-def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
-                  catalogue: Catalogue, regime: str | None = None,
-                  duration_concepts: frozenset[str] | None = None,
-                  zero_only: frozenset[str] = frozenset(),
-                  magnitudes: dict[str, float] | None = None,
-                  ticker: str | None = None,
-                  prefer_structure: bool = True,
-                  segment_only: frozenset[str] = frozenset()) -> Resolution:
+def resolve_field(
+    spec: FieldSpec,
+    graph: ArcGraph,
+    available: frozenset[str],
+    catalogue: Catalogue,
+    regime: str | None = None,
+    duration_concepts: frozenset[str] | None = None,
+    zero_only: frozenset[str] = frozenset(),
+    magnitudes: dict[str, float] | None = None,
+    ticker: str | None = None,
+    prefer_structure: bool = True,
+    segment_only: frozenset[str] = frozenset(),
+) -> Resolution:
     """Decide how `spec` resolves for one filing, in TWO passes over the zero guard.
 
     The candidate list is built ONCE here and threaded through every pass: it is a property
@@ -1074,9 +1063,19 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     withheld = frozenset(bare(c) for c in candidates) & segment_only
     available = available - segment_only
 
-    strict = _resolve_once(spec, graph, available - zero_only, available, catalogue,
-                           regime, duration_concepts, magnitudes=magnitudes, ticker=ticker,
-                           prefer_structure=prefer_structure, candidates=candidates)
+    strict = _resolve_once(
+        spec,
+        graph,
+        available - zero_only,
+        available,
+        catalogue,
+        regime,
+        duration_concepts,
+        magnitudes=magnitudes,
+        ticker=ticker,
+        prefer_structure=prefer_structure,
+        candidates=candidates,
+    )
     if strict.resolved:
         return _stamp_basis(spec, _segment_stamp(strict, withheld))
 
@@ -1085,25 +1084,42 @@ def resolve_field(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     # while a zero-in-every-period fact is usually a tagging artefact. So if both guards
     # are the reason a field has no answer, prefer the narrow number to the zero.
     if strict.role_rejected:
-        relaxed = _resolve_once(spec, graph, available - zero_only, available, catalogue,
-                                regime, duration_concepts, magnitudes=magnitudes,
-                                ticker=ticker, prefer_structure=False,
-                                candidates=candidates)
+        relaxed = _resolve_once(
+            spec,
+            graph,
+            available - zero_only,
+            available,
+            catalogue,
+            regime,
+            duration_concepts,
+            magnitudes=magnitudes,
+            ticker=ticker,
+            prefer_structure=False,
+            candidates=candidates,
+        )
         if relaxed.resolved:
             # Carry the strict pass's ledger through, so the row says BOTH what was
             # withheld and that it had to be put back -- either half alone is unreadable.
-            return _stamp_basis(spec, _segment_stamp(
-                replace(relaxed, role_only_retained=True,
-                        role_rejected=strict.role_rejected), withheld))
+            return _stamp_basis(spec, _segment_stamp(replace(relaxed, role_only_retained=True, role_rejected=strict.role_rejected), withheld))
 
     if not zero_only:
         return _segment_stamp(strict, withheld)
-    retry = _resolve_once(spec, graph, available, available, catalogue, regime,
-                          duration_concepts, magnitudes=magnitudes, ticker=ticker,
-                          prefer_structure=False, candidates=candidates)
-    return (_stamp_basis(spec, _segment_stamp(replace(retry, zero_only_retained=True),
-                                              withheld))
-            if retry.resolved else _segment_stamp(strict, withheld))
+    retry = _resolve_once(
+        spec,
+        graph,
+        available,
+        available,
+        catalogue,
+        regime,
+        duration_concepts,
+        magnitudes=magnitudes,
+        ticker=ticker,
+        prefer_structure=False,
+        candidates=candidates,
+    )
+    return (
+        _stamp_basis(spec, _segment_stamp(replace(retry, zero_only_retained=True), withheld)) if retry.resolved else _segment_stamp(strict, withheld)
+    )
 
 
 def _segment_stamp(resolution: Resolution, withheld: frozenset[str]) -> Resolution:
@@ -1118,8 +1134,7 @@ def _segment_stamp(resolution: Resolution, withheld: frozenset[str]) -> Resoluti
     if not withheld:
         return resolution
     resolution = replace(resolution, segment_rejected=tuple(sorted(withheld)))
-    return (resolution if resolution.resolved
-            else replace(resolution, dc_code=SEGMENT_ONLY_CONCEPT))
+    return resolution if resolution.resolved else replace(resolution, dc_code=SEGMENT_ONLY_CONCEPT)
 
 
 def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:
@@ -1139,13 +1154,19 @@ def _stamp_basis(spec: FieldSpec, resolution: Resolution) -> Resolution:
     return replace(resolution, basis_qualifier=code) if code else resolution
 
 
-def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
-                  available: frozenset[str], catalogue: Catalogue,
-                  regime: str | None = None,
-                  duration_concepts: frozenset[str] | None = None,
-                  magnitudes: dict[str, float] | None = None,
-                  ticker: str | None = None, prefer_structure: bool = True,
-                  candidates: list[str] | None = None) -> Resolution:
+def _resolve_once(
+    spec: FieldSpec,
+    graph: ArcGraph,
+    usable: frozenset[str],
+    available: frozenset[str],
+    catalogue: Catalogue,
+    regime: str | None = None,
+    duration_concepts: frozenset[str] | None = None,
+    magnitudes: dict[str, float] | None = None,
+    ticker: str | None = None,
+    prefer_structure: bool = True,
+    candidates: list[str] | None = None,
+) -> Resolution:
     """One resolution pass.
 
     `candidates` is `_candidates(spec, regime)`, handed down by `resolve_field` so the three
@@ -1169,8 +1190,7 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
     regime_block = spec.raw.get("regimes", {}).get(regime or "", {})
     if "dc_code" in regime_block:
         # The regime declares the field meaningless -- bank capex, and bank FCF behind it.
-        return Resolution(field=spec.name, method=UNRESOLVED,
-                          dc_code=regime_block["dc_code"])
+        return Resolution(field=spec.name, method=UNRESOLVED, dc_code=regime_block["dc_code"])
 
     candidates = _candidates(spec, regime) if candidates is None else candidates
     # bare()d to match `_candidates`, which bares its own copy. Left namespaced, a
@@ -1211,8 +1231,8 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
     # 48 fields that declare no `roll_up.any_of` and carry no `by_ticker` leaf register
     # entry. Only `capex`, `costOfRevenue` and `depAmort` get past it.
     leaves, leaf_refusal, leaf_provenance = _leaf_sum(
-        spec, graph, available, regime,
-        *catalogue.filer_leaves(ticker, spec.name), candidates=candidates)
+        spec, graph, available, regime, *catalogue.filer_leaves(ticker, spec.name), candidates=candidates
+    )
 
     # Candidates withheld by the note-role test. Carried onto whatever route does answer, so
     # the guard's blast radius is measurable rather than invisible. Declared before
@@ -1221,7 +1241,9 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
 
     def _leaf_resolution(withheld: tuple[str, ...] = ()) -> Resolution:
         return Resolution(
-            field=spec.name, method=STATEMENT_LEAF_SUM, children=leaves,
+            field=spec.name,
+            method=STATEMENT_LEAF_SUM,
+            children=leaves,
             # BOTH read off the winning arc, not off the concept. `graph.role_of` and
             # `parent_of` answer across ALL roles and take the first arc, so for UNP's
             # `Depreciation` they return the income statement's `CostsAndExpenses` -- which
@@ -1229,7 +1251,9 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
             anchor=leaf_provenance[0] if leaf_provenance else None,
             role_uri=leaf_provenance[1] if leaf_provenance else None,
             subtract=_resolve_subtractions(spec, graph, available, None),
-            role_rejected=tuple(rejected), undeclared_rejected=withheld)
+            role_rejected=tuple(rejected),
+            undeclared_rejected=withheld,
+        )
 
     for candidate in (c for c in candidates if bare(c) not in legs):
         name = bare(candidate)
@@ -1240,8 +1264,7 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
             continue
         declared = graph.knows(name)
         if prefer_structure and not declared and leaves:
-            return _leaf_resolution(
-                (candidate if ":" in candidate else qualify(name, "us-gaap"),))
+            return _leaf_resolution((candidate if ":" in candidate else qualify(name, "us-gaap"),))
         # Declared -- but declared BESIDE this field's own leg AND reported smaller than
         # it, which is the filer's structure and the filer's arithmetic agreeing that its
         # "total" is another leaf. Route 3b's sum of the declared lines is the field.
@@ -1250,17 +1273,15 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
         if prefer_structure and declared and leaves:
             beside = sibling_leg(graph, name, legs, available, magnitudes or {})
             if beside is not None:
-                return replace(
-                    _leaf_resolution(),
-                    sibling_rejected=((graph.qualified(name), graph.qualified(beside)),))
+                return replace(_leaf_resolution(), sibling_rejected=((graph.qualified(name), graph.qualified(beside)),))
         return Resolution(
             field=spec.name,
             method=LINKBASE_TOTAL if declared else TAG_PRIMARY,
-            concept=(graph.qualified(name) if declared
-                     else (candidate if ":" in candidate else qualify(name, "us-gaap"))),
+            concept=(graph.qualified(name) if declared else (candidate if ":" in candidate else qualify(name, "us-gaap"))),
             role_uri=graph.role_of(name) if declared else None,
             subtract=_resolve_subtractions(spec, graph, available, name),
-            role_rejected=tuple(rejected))
+            role_rejected=tuple(rejected),
+        )
 
     # ---- 2. structural discovery, for the fields that opt in (today: totalRevenue).
     #         This is the APA / DTE repair -- see the module docstring.
@@ -1269,29 +1290,34 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
         if found:
             concept, anchor = found
             return Resolution(
-                field=spec.name, method=LINKBASE_ROOT, concept=graph.qualified(concept),
-                anchor=anchor, role_uri=graph.role_of(concept),
+                field=spec.name,
+                method=LINKBASE_ROOT,
+                concept=graph.qualified(concept),
+                anchor=anchor,
+                role_uri=graph.role_of(concept),
                 subtract=_resolve_subtractions(spec, graph, available, concept),
-                role_rejected=tuple(rejected))
+                role_rejected=tuple(rejected),
+            )
 
     # ---- 3. no total reported, but the filer declares the legs. Sum them with weights.
     #         This is the `shortTermDebt` fix: `LongTermDebtCurrent` and
     #         `ShortTermBorrowings` are disjoint legs of `DebtCurrent`, and keeping only
     #         one discarded the LARGER leg in 54.4% of the 2,017 cells tagging both.
-    concept_children = [bare(c) for c in spec.roll_up(regime)
-                        if c not in catalogue.fields]
+    concept_children = [bare(c) for c in spec.roll_up(regime) if c not in catalogue.fields]
     if concept_children:
         # The weights are only meaningful against THIS field's own total -- see
         # `_linkbase_weights`.
-        totals = {bare(c) for c in
-                  [spec.total_concept(regime), *spec.fallback_concepts(regime)] if c}
+        totals = {bare(c) for c in [spec.total_concept(regime), *spec.fallback_concepts(regime)] if c}
         weighted = _linkbase_weights(graph, concept_children, available, totals)
         if weighted:
             return Resolution(
-                field=spec.name, method=LINKBASE_SUM, children=weighted,
+                field=spec.name,
+                method=LINKBASE_SUM,
+                children=weighted,
                 role_uri=graph.role_of(weighted[0][0]),
                 subtract=_resolve_subtractions(spec, graph, available, None),
-                role_rejected=tuple(rejected))
+                role_rejected=tuple(rejected),
+            )
 
     # ---- 3b. the field's constituent STATEMENT LINES, summed. `capex` and `depAmort`:
     #          FASB's own roll-up has ~7 members and every filer reports a different
@@ -1304,9 +1330,7 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
     #         completes this once those fields are resolved.
     component_fields = tuple(c for c in spec.roll_up(regime) if c in catalogue.fields)
     if component_fields:
-        return Resolution(field=spec.name, method=FIELD_SUM,
-                          component_fields=component_fields,
-                          role_rejected=tuple(rejected))
+        return Resolution(field=spec.name, method=FIELD_SUM, component_fields=component_fields, role_rejected=tuple(rejected))
 
     # ---- 5. no linkbase (or none covering this concept): the priority list, used only
     #         where it is genuinely the best available evidence.
@@ -1325,9 +1349,12 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
             # against the other four routes' output.
             concept = candidate if ":" in candidate else qualify(candidate, "us-gaap")
             return Resolution(
-                field=spec.name, method=TAG_FALLBACK, concept=concept,
+                field=spec.name,
+                method=TAG_FALLBACK,
+                concept=concept,
                 subtract=_resolve_subtractions(spec, graph, available, name),
-                role_rejected=tuple(rejected))
+                role_rejected=tuple(rejected),
+            )
 
     # Nothing answered. Prefer the MOST SPECIFIC reason available, in descending order of
     # what it tells a reader:
@@ -1342,10 +1369,11 @@ def _resolve_once(spec: FieldSpec, graph: ArcGraph, usable: frozenset[str],
     #     the ABSENCE, not to the field.
     #   * `not_disclosed` -- the honest default.
     return Resolution(
-        field=spec.name, method=UNRESOLVED,
-        dc_code=(leaf_refusal or regime_block.get("dc_code_when_absent")
-                 or "not_disclosed"),
-        role_rejected=tuple(rejected))
+        field=spec.name,
+        method=UNRESOLVED,
+        dc_code=(leaf_refusal or regime_block.get("dc_code_when_absent") or "not_disclosed"),
+        role_rejected=tuple(rejected),
+    )
 
 
 def _roll_up(spec: FieldSpec, regime: str | None) -> dict:
@@ -1361,12 +1389,15 @@ def _roll_up(spec: FieldSpec, regime: str | None) -> dict:
     return dict(block.get("roll_up") or spec.raw.get("roll_up") or {})
 
 
-def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
-              regime: str | None, filer_leaves: tuple[tuple[str, ...], ...],
-              filer_not_leaves: frozenset[str],
-              candidates: list[str] | None = None,
-              ) -> tuple[tuple[tuple[str, float], ...], str | None,
-                         tuple[str, str] | None]:
+def _leaf_sum(
+    spec: FieldSpec,
+    graph: ArcGraph,
+    available: frozenset[str],
+    regime: str | None,
+    filer_leaves: tuple[tuple[str, ...], ...],
+    filer_not_leaves: frozenset[str],
+    candidates: list[str] | None = None,
+) -> tuple[tuple[tuple[str, float], ...], str | None, tuple[str, str] | None]:
     """Route 3b: sum the field's constituent STATEMENT LINES, chosen from the filer's own
     calculation linkbase.
 
@@ -1450,8 +1481,7 @@ def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     if not groups or not anchors or role is None:
         return (), None, None
 
-    declared = [(anchor, *pair) for anchor in anchors
-                for pair in graph.children_on_role(bare(anchor), role)]
+    declared = [(anchor, *pair) for anchor in anchors for pair in graph.children_on_role(bare(anchor), role)]
     if not declared:
         return (), None, None
     want = 1.0 if float(roll_up.get("leaf_weight", -1.0)) >= 0 else -1.0
@@ -1470,8 +1500,7 @@ def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
     # capex. So a `never_use` entry does NOT disqualify a leaf; it is only consulted as
     # evidence that the concept is a KNOWN one, i.e. not an unclassifiable sibling.
     classified |= {bare(c) for c in spec.never_use(regime)}
-    classified |= {bare(c) for c in (candidates if candidates is not None
-                                     else _candidates(spec, regime))}
+    classified |= {bare(c) for c in (candidates if candidates is not None else _candidates(spec, regime))}
 
     # Weight 1.0, not the filer's declared one, because `_materialise` MULTIPLIES what it
     # is given and the declared weight is an admission test rather than a coefficient: a
@@ -1483,22 +1512,22 @@ def _leaf_sum(spec: FieldSpec, graph: ArcGraph, available: frozenset[str],
             name = bare(concept)
             if name in aligned and name in available:
                 picked.append((name, 1.0))
-                break                                   # first reported alternative only
+                break  # first reported alternative only
     if not picked:
         return (), None, None
 
-    unclassified = sorted(
-        name for name in aligned
-        if name not in classified and graph.taxonomy_of(name) != "us-gaap"
-        and name in available)
+    unclassified = sorted(name for name in aligned if name not in classified and graph.taxonomy_of(name) != "us-gaap" and name in available)
     if unclassified:
         return (), PARTIAL_LEAF_SUM, None
     return tuple(picked), None, aligned[picked[0][0]][1:]
 
 
-def _linkbase_weights(graph: ArcGraph, children: list[str], available: frozenset[str],
-                      totals: frozenset[str] | set[str] = frozenset(),
-                      ) -> tuple[tuple[str, float], ...]:
+def _linkbase_weights(
+    graph: ArcGraph,
+    children: list[str],
+    available: frozenset[str],
+    totals: frozenset[str] | set[str] = frozenset(),
+) -> tuple[tuple[str, float], ...]:
     """Pair each declared child with the weight the FILER gave it -- but ONLY where that
     weight is about this field.
 

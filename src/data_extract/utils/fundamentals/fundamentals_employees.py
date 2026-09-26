@@ -24,6 +24,7 @@ the meta sidecar and the annual-cadence gate. The fundamentals fetcher already s
 accessions present in `fundamentals_facts`, so a re-run never re-opens a 10-K it has
 parsed -- the same incremental property, from one mechanism instead of two.
 """
+
 from __future__ import annotations
 
 import logging
@@ -165,10 +166,9 @@ def employee_fact_frame(
 
     try:
         count = extract_employee_count(filing_body_text(filing))
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         if log:
-            log.warning("employees: %s %s text fetch/parse failed (%s)",
-                        getattr(filing, "accession_number", "?"), filing.form, e)
+            log.warning("employees: %s %s text fetch/parse failed (%s)", getattr(filing, "accession_number", "?"), filing.form, e)
         return None
     if count is None:
         return None
@@ -177,20 +177,26 @@ def employee_fact_frame(
     if not is_continuous(count, accepted):
         if log:
             log.warning(
-                "employees: %s %s headcount %d is discontinuous with its own history "
-                "(median %d) -- dropped as a parse artifact",
-                getattr(filing, "accession_number", "?"), filing.form, count,
-                sorted(accepted)[len(accepted) // 2])
+                "employees: %s %s headcount %d is discontinuous with its own history (median %d) -- dropped as a parse artifact",
+                getattr(filing, "accession_number", "?"),
+                filing.form,
+                count,
+                sorted(accepted)[len(accepted) // 2],
+            )
         return None
 
-    return pd.DataFrame([{
-        "field": EMPLOYEES_FIELD,
-        "value": float(count),
-        "unit": EMPLOYEES_UNIT,
-        "period_start": pd.NaT,
-        "period_end": pd.Timestamp(reported).normalize(),
-        "period_type": "instant",
-        "fiscal_year": None,
-        "fiscal_period": None,
-        "source_tag": EMPLOYEES_SOURCE_TAG,
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "field": EMPLOYEES_FIELD,
+                "value": float(count),
+                "unit": EMPLOYEES_UNIT,
+                "period_start": pd.NaT,
+                "period_end": pd.Timestamp(reported).normalize(),
+                "period_type": "instant",
+                "fiscal_year": None,
+                "fiscal_period": None,
+                "source_tag": EMPLOYEES_SOURCE_TAG,
+            }
+        ]
+    )

@@ -207,7 +207,7 @@ def test_panel_columns_match_the_emission_map():
         elif mode == "raw+peers":
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
-    assert emitted == expected, f"missing {sorted(expected - emitted)}; " f"undeclared {sorted(emitted - expected)}"
+    assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
     for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d_xs", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
     # the three bounded ratios stay in [0, 1]
@@ -286,4 +286,4 @@ def test_coverage_above_one_is_nulled_as_a_physical_impossibility():
     assert np.isnan(cov.loc[last, "REUSED"]), "3.0x the tape is impossible and must be NaN"
     assert not (cov == 1.0).any().any(), "nulled, never clipped to 1.0"
     print("\n=== SANITY CHECK: coverage ceiling ===")
-    print(f"  GOOD reads {cov.loc[last, 'GOOD']:.2f}; a ticker whose RegSHO volume is 3x the " f"tape reads NaN rather than 3.0. Validated.")
+    print(f"  GOOD reads {cov.loc[last, 'GOOD']:.2f}; a ticker whose RegSHO volume is 3x the tape reads NaN rather than 3.0. Validated.")

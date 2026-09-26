@@ -41,6 +41,7 @@ equalities that are not in the database. The count is only worth having if it is
 1e-9 the accumulation has lost precision somewhere, and every number in the result is suspect.
 That is reported as an abstain with the offending pair named, never as a finding.
 """
+
 from __future__ import annotations
 
 import json
@@ -75,8 +76,7 @@ _MAX_FINDINGS = 40
 _MIN_PAIRWISE_N = 100
 
 
-def _means(context: Context, table: Any, columns: list[str], out: str | Path | None,
-           chunksize: int) -> tuple[np.ndarray, str]:
+def _means(context: Context, table: Any, columns: list[str], out: str | Path | None, chunksize: int) -> tuple[np.ndarray, str]:
     """Centring constants for the accumulation -- see the module docstring.
 
     `profile` already computed these over the same table, so a run that profiled first pays
@@ -85,8 +85,7 @@ def _means(context: Context, table: Any, columns: list[str], out: str | Path | N
     if out is not None:
         path = Path(out) / OUT_DIR / "profile.json"
         if path.exists():
-            means = (json.loads(path.read_text(encoding="utf-8"))
-                     .get("metrics", {}).get("mean") or {})
+            means = json.loads(path.read_text(encoding="utf-8")).get("metrics", {}).get("mean") or {}
             if all(means.get(c) is not None for c in columns):
                 return np.array([float(means[c]) for c in columns], dtype="float64"), str(path)
 
@@ -100,12 +99,10 @@ def _means(context: Context, table: Any, columns: list[str], out: str | Path | N
     return np.divide(total, count, out=np.zeros_like(total), where=count > 0), "streamed pass"
 
 
-def _accumulate(context: Context, table: Any, columns: list[str], centre: np.ndarray,
-                chunksize: int) -> dict[str, np.ndarray]:
+def _accumulate(context: Context, table: Any, columns: list[str], centre: np.ndarray, chunksize: int) -> dict[str, np.ndarray]:
     """The four co-moment matrices plus the exact-equality counts, in one pass."""
     width = len(columns)
-    acc = {name: np.zeros((width, width), dtype="float64")
-           for name in ("n", "sx", "sxx", "sxy")}
+    acc = {name: np.zeros((width, width), dtype="float64") for name in ("n", "sx", "sxx", "sxy")}
     acc["eq"] = np.zeros((width, width), dtype="float64")
     rows = 0
     for chunk in context.store.iter_load(table, columns=columns, chunksize=chunksize):
@@ -141,10 +138,18 @@ def _correlations(acc: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     return r, n
 
 
-def check_redundancy(context: Context, table: Table | str, *, config: DictConfig,
-                     cache: Any = None, tickers: list[str] | None = None,
-                     threshold: float | None = None, out: str | Path | None = None,
-                     chunksize: int = CHUNK_ROWS, **kwargs: Any) -> CheckResult:
+def check_redundancy(
+    context: Context,
+    table: Table | str,
+    *,
+    config: DictConfig,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    threshold: float | None = None,
+    out: str | Path | None = None,
+    chunksize: int = CHUNK_ROWS,
+    **kwargs: Any,
+) -> CheckResult:
     """Every pair's pairwise-complete Pearson r and exact-equality count, in one pass."""
     spec_t = resolve(table)
     if (declined := full_table_only(CHECK, spec_t.name, tickers)) is not None:
@@ -152,9 +157,7 @@ def check_redundancy(context: Context, table: Table | str, *, config: DictConfig
     spec = load_spec(config, spec_t, redundancy_r=threshold)
     columns = feature_columns(context, spec_t)
     if len(columns) < 2:
-        return CheckResult.abstained(
-            CHECK, spec_t.name,
-            f"{len(columns)} numeric leg(s) -- a pair needs two")
+        return CheckResult.abstained(CHECK, spec_t.name, f"{len(columns)} numeric leg(s) -- a pair needs two")
 
     centre, centre_source = _means(context, spec_t, columns, out or cache, chunksize)
     acc = _accumulate(context, spec_t, columns, centre, chunksize)
@@ -169,10 +172,12 @@ def check_redundancy(context: Context, table: Table | str, *, config: DictConfig
         flat = np.where(finite, np.abs(r), -np.inf).argmax()
         i, j = divmod(int(flat), len(columns))
         return CheckResult.abstained(
-            CHECK, spec_t.name,
+            CHECK,
+            spec_t.name,
             f"the accumulation produced |r| = {abs(r[i, j]):.12f} for "
             f"({columns[i]}, {columns[j]}), which is impossible -- the co-moment sums have "
-            f"lost precision and every number in this matrix is suspect")
+            f"lost precision and every number in this matrix is suspect",
+        )
 
     upper = np.triu(np.ones_like(r, dtype=bool), k=1)
     candidates = upper & finite & (np.abs(r) >= spec.redundancy_r) & (n >= _MIN_PAIRWISE_N)
@@ -185,46 +190,63 @@ def check_redundancy(context: Context, table: Table | str, *, config: DictConfig
         identical = int(acc["eq"][i, j]) == shared
         # Which leg survives: the one with more non-null coverage, and on a tie the shorter
         # name, which in this repo is the base leg rather than a derived view of it.
-        keep, drop = ((columns[i], columns[j]) if (n_ok[i], -len(columns[i]))
-                      >= (n_ok[j], -len(columns[j])) else (columns[j], columns[i]))
-        pairs.append({"a": columns[i], "b": columns[j], "r": float(r[i, j]),
-                      "n": shared, "exact_equal": int(acc["eq"][i, j]),
-                      "identical": identical, "keep": keep, "drop": drop,
-                      "n_ok_a": int(n_ok[i]), "n_ok_b": int(n_ok[j]),
-                      "n_ok_keep": int(n_ok[i] if keep == columns[i] else n_ok[j])})
+        keep, drop = (columns[i], columns[j]) if (n_ok[i], -len(columns[i])) >= (n_ok[j], -len(columns[j])) else (columns[j], columns[i])
+        pairs.append(
+            {
+                "a": columns[i],
+                "b": columns[j],
+                "r": float(r[i, j]),
+                "n": shared,
+                "exact_equal": int(acc["eq"][i, j]),
+                "identical": identical,
+                "keep": keep,
+                "drop": drop,
+                "n_ok_a": int(n_ok[i]),
+                "n_ok_b": int(n_ok[j]),
+                "n_ok_keep": int(n_ok[i] if keep == columns[i] else n_ok[j]),
+            }
+        )
     pairs.sort(key=lambda p: (not p["identical"], -abs(p["r"])))
 
     findings: list[Finding] = []
     for pair in pairs[:_MAX_FINDINGS]:
         if pair["identical"]:
-            score, observed = 10, (f"identical on all {pair['n']:,} rows where both are "
-                                   f"present (r = {pair['r']:.6f})")
+            score, observed = 10, (f"identical on all {pair['n']:,} rows where both are present (r = {pair['r']:.6f})")
         elif abs(pair["r"]) >= 0.999:
-            score, observed = 8, (f"r = {pair['r']:.6f} over {pair['n']:,} shared rows, "
-                                  f"{pair['exact_equal']:,} of them exactly equal")
+            score, observed = 8, (f"r = {pair['r']:.6f} over {pair['n']:,} shared rows, {pair['exact_equal']:,} of them exactly equal")
         else:
             score, observed = 6, (f"r = {pair['r']:.6f} over {pair['n']:,} shared rows")
-        findings.append(Finding.at(
-            score, field=pair["drop"],
-            observed=f"{pair['a']} ~ {pair['b']}: {observed}",
-            expected=f"|r| < {spec.redundancy_r} between two legs that claim to measure "
-                     f"different things. Keep `{pair['keep']}` ({pair['n_ok_keep']:,} "
-                     f"non-null) and drop `{pair['drop']}` -- UNLESS the two are related by "
-                     f"an accounting identity (`ebt - ebit == -intexp` is one), in which case "
-                     f"the correlation is a tautology and the defect is that both were built "
-                     f"as features",
-            **pair))
+        findings.append(
+            Finding.at(
+                score,
+                field=pair["drop"],
+                observed=f"{pair['a']} ~ {pair['b']}: {observed}",
+                expected=f"|r| < {spec.redundancy_r} between two legs that claim to measure "
+                f"different things. Keep `{pair['keep']}` ({pair['n_ok_keep']:,} "
+                f"non-null) and drop `{pair['drop']}` -- UNLESS the two are related by "
+                f"an accounting identity (`ebt - ebit == -intexp` is one), in which case "
+                f"the correlation is a tautology and the defect is that both were built "
+                f"as features",
+                **pair,
+            )
+        )
 
-    scope = {"rows": rows, "tickers": None, "legs": len(columns),
-             "pairs": int(upper.sum()), "threshold": spec.redundancy_r,
-             "min_pairwise_n": _MIN_PAIRWISE_N, "centred_on": centre_source,
-             "source": "db(float64)"}
+    scope = {
+        "rows": rows,
+        "tickers": None,
+        "legs": len(columns),
+        "pairs": int(upper.sum()),
+        "threshold": spec.redundancy_r,
+        "min_pairwise_n": _MIN_PAIRWISE_N,
+        "centred_on": centre_source,
+        "source": "db(float64)",
+    }
     metrics = {
-        "legs": len(columns), "pairs_tested": int((upper & finite).sum()),
+        "legs": len(columns),
+        "pairs_tested": int((upper & finite).sum()),
         "pairs_over_threshold": len(pairs),
         "identical_pairs": sum(1 for p in pairs if p["identical"]),
         "top_pairs": pairs[:100],
-        "max_abs_r": (float(np.nanmax(np.abs(np.where(upper & finite, r, np.nan))))
-                      if (upper & finite).any() else None),
+        "max_abs_r": (float(np.nanmax(np.abs(np.where(upper & finite, r, np.nan)))) if (upper & finite).any() else None),
     }
     return CheckResult.measured(CHECK, spec_t.name, findings, scope=scope, metrics=metrics)

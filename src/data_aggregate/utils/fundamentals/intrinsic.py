@@ -21,10 +21,11 @@ as NaN) -- a business burning cash has no meaningful cash-flow intrinsic value.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily, daily_market_cap
+from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 
 
 def two_stage_dcf(
@@ -75,12 +76,12 @@ def intrinsic_value_daily(
       * yield      : total / market cap  ( >1 => cheaper than intrinsic )
     `yield` and `per_share` require `close`; `total` is always returned.
     """
-    base_fcf = fundamentals_to_daily(fund_hist, "freeCashflow", idx)   # TTM, PIT
+    base_fcf = fundamentals_to_daily(fund_hist, "freeCashflow", idx)  # TTM, PIT
     if base_fcf.empty:
         return {}
     rev_growth = fundamentals_to_daily(fund_hist, "revenueGrowth", idx)
     g = rev_growth.reindex_like(base_fcf).clip(growth_floor, growth_cap)
-    g = g.fillna(terminal_growth)                                      # no growth info -> conservative
+    g = g.fillna(terminal_growth)  # no growth info -> conservative
 
     total = two_stage_dcf(base_fcf, g, discount_rate, terminal_growth, years)
     out = {"total": total}

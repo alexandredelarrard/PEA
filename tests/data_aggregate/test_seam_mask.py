@@ -19,19 +19,17 @@ failure, because the entire claim of this change is that the window arithmetic i
 window sitting wholly on one side of the seam is internally consistent and must survive
 untouched, which is the property that makes this a mask and not a ticker blacklist.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.level_basis import (
-    NULL_RET_STEP_TOL, mask_seam_windows, measure_seams)
-from src.data_aggregate.utils.common.prices import (
-    MOMENTUM_SEAM_WINDOW, momentum_characteristic)
+from src.data_aggregate.utils.common.level_basis import NULL_RET_STEP_TOL, mask_seam_windows, measure_seams
+from src.data_aggregate.utils.common.prices import MOMENTUM_SEAM_WINDOW, momentum_characteristic
 from src.data_aggregate.utils.common.xs import xs_rank_pct
-from src.data_aggregate.utils.momentum.features import (
-    SEAM_EWMA_SPAN_MULTIPLE, SEAM_WINDOWS, build_feature_panel, compute_raw_features)
+from src.data_aggregate.utils.momentum.features import SEAM_EWMA_SPAN_MULTIPLE, SEAM_WINDOWS, build_feature_panel, compute_raw_features
 
 #: DHR's registered event -- the largest of the six. `close_total` re-bases at the FTV spinoff
 #: and `pct_change()` reads the seam between the two bases as a +61.218% return.
@@ -52,7 +50,7 @@ def _base(index: pd.DatetimeIndex) -> np.ndarray:
     """A positive series with real two-sided variation, so no feature is NaN for want of
     dispersion (a flat series makes RSI undefined and every MA ratio exactly 0)."""
     i = np.arange(index.size, dtype="float64")
-    return 100.0 * (1.0003 ** i) * (1.0 + 0.01 * np.sin(i))
+    return 100.0 * (1.0003**i) * (1.0 + 0.01 * np.sin(i))
 
 
 def _frames(seam: bool = True, step: float = SEAM_RET) -> dict[str, pd.DataFrame]:
@@ -67,12 +65,12 @@ def _frames(seam: bool = True, step: float = SEAM_RET) -> dict[str, pd.DataFrame
     close = pd.DataFrame({t: base.copy() for t in TICKERS}, index=index)
     if seam:
         col = close["SEAM"].to_numpy().copy()
-        col[SEAM_POS] = col[SEAM_POS - 1]          # flatten the bar's real move
+        col[SEAM_POS] = col[SEAM_POS - 1]  # flatten the bar's real move
         col[SEAM_POS:] = col[SEAM_POS:] * (1.0 + step)
         close["SEAM"] = col
     return {
         "close_total": close,
-        "close_split": close.copy(),               # the DD / LDOS / VTR shape: both legs step
+        "close_split": close.copy(),  # the DD / LDOS / VTR shape: both legs step
         "open": close.shift(1).bfill() * 0.999,
         "high": close * 1.01,
         "low": close * 0.99,
@@ -87,9 +85,15 @@ def _register(date: pd.Timestamp, expect: float = SEAM_RET) -> dict:
 
 def _raw(frames: dict, seams: dict | None) -> dict:
     return compute_raw_features(
-        frames["close_total"], frames["open"], frames["sector_ret"],
-        close_split=frames["close_split"], high=frames["high"], low=frames["low"],
-        volume=frames["volume"], seams=seams)
+        frames["close_total"],
+        frames["open"],
+        frames["sector_ret"],
+        close_split=frames["close_split"],
+        high=frames["high"],
+        low=frames["low"],
+        volume=frames["volume"],
+        seams=seams,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -111,8 +115,7 @@ def test_the_masked_span_is_exactly_the_straddling_window(back, skip):
     assert out["CTRL2"].equals(frame["CTRL2"])
 
     print(f"\n=== SANITY CHECK: mask span for (back={back}, skip={skip}) ===")
-    print(f"  masked positions {masked[0]}..{masked[-1]} = [s+{skip}, s+{back - 1}] "
-          f"({masked.size} bars); CTRL/CTRL2 bit-identical. Validated.")
+    print(f"  masked positions {masked[0]}..{masked[-1]} = [s+{skip}, s+{back - 1}] ({masked.size} bars); CTRL/CTRL2 bit-identical. Validated.")
 
 
 def test_a_seam_outside_the_frame_and_an_absent_ticker_are_no_ops():
@@ -129,8 +132,7 @@ def test_a_seam_outside_the_frame_and_an_absent_ticker_are_no_ops():
     assert frame.iloc[0, 0] == 1.0
 
     print("\n=== SANITY CHECK: no-op cases ===")
-    print("  seam off-calendar, unknown ticker and empty dict all return the frame "
-          "unchanged, as a copy. Validated.")
+    print("  seam off-calendar, unknown ticker and empty dict all return the frame unchanged, as a copy. Validated.")
 
 
 def test_the_mask_runs_off_the_end_of_the_frame_without_raising():
@@ -143,8 +145,7 @@ def test_the_mask_runs_off_the_end_of_the_frame_without_raising():
     masked = np.flatnonzero(out["SEAM"].isna().to_numpy())
     assert masked.tolist() == list(range(N_BARS - 10 + 21, N_BARS))
     print("\n=== SANITY CHECK: mask clipped at the frame edge ===")
-    print(f"  seam at bar {N_BARS - 10} of {N_BARS}: masked {masked.size} bars to the end, "
-          "no raise. Validated.")
+    print(f"  seam at bar {N_BARS - 10} of {N_BARS}: masked {masked.size} bars to the end, no raise. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -154,15 +155,13 @@ def test_a_registered_seam_is_measured_on_close_total():
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     logged: list[str] = []
-    seams = measure_seams(frames["close_total"], _register(when),
-                          lambda m, *a: logged.append(m % a))
+    seams = measure_seams(frames["close_total"], _register(when), lambda m, *a: logged.append(m % a))
 
     assert seams == {"SEAM": [when]}
     assert any("MEASURED" in m for m in logged), logged
 
     print("\n=== SANITY CHECK: measure_seams reads close_total, not ret ===")
-    print(f"  SEAM {when.date()}: +{SEAM_RET * 100:.2f}% one-bar basis change measured from "
-          "close_total. Validated.")
+    print(f"  SEAM {when.date()}: +{SEAM_RET * 100:.2f}% one-bar basis change measured from close_total. Validated.")
 
 
 def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total():
@@ -172,7 +171,7 @@ def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total()
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     ret = frames["close_total"].pct_change(fill_method=None)
-    ret.at[when, "SEAM"] = np.nan                 # what apply_null_ret already did upstream
+    ret.at[when, "SEAM"] = np.nan  # what apply_null_ret already did upstream
 
     logged: list[str] = []
     on_ret = measure_seams(ret, _register(when), lambda m, *a: logged.append(m % a))
@@ -183,25 +182,22 @@ def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total()
     assert any("SKIPPED" in m for m in logged), logged
 
     print("\n=== SANITY CHECK: ret is already nulled, close_total is not ===")
-    print(f"  measured on ret -> {on_ret} (mask would be a no-op); "
-          f"measured on close_total -> 1 seam. Validated.")
+    print(f"  measured on ret -> {on_ret} (mask would be a no-op); measured on close_total -> 1 seam. Validated.")
 
 
 def test_a_seam_whose_defect_is_gone_is_skipped_and_logged():
     """The stale-register contract, inherited from `apply_null_ret`: an entry whose observed
     step no longer matches is never masked on faith."""
-    frames = _frames(step=0.012)                  # a real +1.2% day where the seam used to be
+    frames = _frames(step=0.012)  # a real +1.2% day where the seam used to be
     when = frames["close_total"].index[SEAM_POS]
     logged: list[str] = []
-    seams = measure_seams(frames["close_total"], _register(when),
-                          lambda m, *a: logged.append(m % a))
+    seams = measure_seams(frames["close_total"], _register(when), lambda m, *a: logged.append(m % a))
 
     assert seams == {}
     assert any("GONE or CHANGED" in m for m in logged), logged
 
     print("\n=== SANITY CHECK: a stale seam entry is refused ===")
-    print(f"  register expects {SEAM_RET:+.5f}, observed +0.01200 -> SKIPPED, nothing masked. "
-          "Validated.")
+    print(f"  register expects {SEAM_RET:+.5f}, observed +0.01200 -> SKIPPED, nothing masked. Validated.")
 
 
 def test_the_seam_band_is_wide_enough_for_float_noise_and_no_wider():
@@ -213,15 +209,13 @@ def test_the_seam_band_is_wide_enough_for_float_noise_and_no_wider():
     when = index[SEAM_POS]
 
     inside = measure_seams(_frames(step=edge)["close_total"], _register(when), lambda *a: None)
-    refused = measure_seams(_frames(step=outside)["close_total"], _register(when),
-                            lambda *a: None)
+    refused = measure_seams(_frames(step=outside)["close_total"], _register(when), lambda *a: None)
 
     assert inside == {"SEAM": [when]}
     assert refused == {}
 
     print("\n=== SANITY CHECK: the seam re-measurement band ===")
-    print(f"  tol {NULL_RET_STEP_TOL:.4f} of the STEP: {edge:+.5f} matches, "
-          f"{outside:+.5f} refused. Validated.")
+    print(f"  tol {NULL_RET_STEP_TOL:.4f} of the STEP: {edge:+.5f} matches, {outside:+.5f} refused. Validated.")
 
 
 def test_a_seam_outside_the_loaded_window_is_skipped():
@@ -229,19 +223,17 @@ def test_a_seam_outside_the_loaded_window_is_skipped():
     mask a date it never loaded."""
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
-    narrow = frames["close_total"].iloc[SEAM_POS + 5:]
+    narrow = frames["close_total"].iloc[SEAM_POS + 5 :]
 
     logged: list[str] = []
     assert measure_seams(narrow, _register(when), lambda m, *a: logged.append(m % a)) == {}
     assert any("outside this build's window" in m for m in logged), logged
 
     first_bar = frames["close_total"].iloc[:1]
-    assert measure_seams(first_bar, _register(frames["close_total"].index[0]),
-                         lambda *a: None) == {}
+    assert measure_seams(first_bar, _register(frames["close_total"].index[0]), lambda *a: None) == {}
 
     print("\n=== SANITY CHECK: seams outside the window ===")
-    print("  window starting after the seam -> SKIPPED; a seam on the frame's first bar has "
-          "no step to measure -> SKIPPED. Validated.")
+    print("  window starting after the seam -> SKIPPED; a seam on the frame's first bar has no step to measure -> SKIPPED. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -260,12 +252,11 @@ def test_momentum_characteristic_masks_s21_to_s251_and_nothing_else():
     assert MOMENTUM_SEAM_WINDOW == (252, 21)
     # everything outside the span, and every other ticker, is bit-identical
     assert masked["CTRL"].equals(plain["CTRL"])
-    outside = np.r_[0:SEAM_POS + 21, SEAM_POS + 252:N_BARS]
+    outside = np.r_[0 : SEAM_POS + 21, SEAM_POS + 252 : N_BARS]
     assert masked["SEAM"].iloc[outside].equals(plain["SEAM"].iloc[outside])
 
     print("\n=== SANITY CHECK: momentum_characteristic seam mask ===")
-    print(f"  masked bars {newly[0]}..{newly[-1]} = [s+21, s+251] ({newly.size} bars); "
-          "outside the span and on CTRL, bit-identical. Validated.")
+    print(f"  masked bars {newly[0]}..{newly[-1]} = [s+21, s+251] ({newly.size} bars); outside the span and on CTRL, bit-identical. Validated.")
 
 
 def test_seams_none_is_bit_identical_to_the_pre_mask_behaviour():
@@ -273,10 +264,8 @@ def test_seams_none_is_bit_identical_to_the_pre_mask_behaviour():
     frames = _frames()
     close = frames["close_total"]
 
-    assert momentum_characteristic(close).equals(
-        momentum_characteristic(close, seams=None))
-    assert momentum_characteristic(close).equals(
-        close.shift(21) / close.shift(252) - 1.0)
+    assert momentum_characteristic(close).equals(momentum_characteristic(close, seams=None))
+    assert momentum_characteristic(close).equals(close.shift(21) / close.shift(252) - 1.0)
 
     a, b = _raw(frames, None), _raw(frames, {})
     assert set(a) == set(b)
@@ -284,8 +273,9 @@ def test_seams_none_is_bit_identical_to_the_pre_mask_behaviour():
         assert a[name].equals(b[name]), name
 
     print("\n=== SANITY CHECK: seams=None back-compat ===")
-    print(f"  {len(a)} raw features bit-identical between seams=None and seams={{}}; "
-          "momentum_characteristic reproduces the bare expression. Validated.")
+    print(
+        f"  {len(a)} raw features bit-identical between seams=None and seams={{}}; momentum_characteristic reproduces the bare expression. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -300,14 +290,10 @@ def test_every_seam_window_feature_is_masked_over_exactly_its_own_lookback():
     lines = []
     for name, (back, skip) in SEAM_WINDOWS.items():
         assert name in plain, f"{name} is in SEAM_WINDOWS but not produced"
-        newly = np.flatnonzero(
-            (masked[name]["SEAM"].isna() & plain[name]["SEAM"].notna()).to_numpy())
+        newly = np.flatnonzero((masked[name]["SEAM"].isna() & plain[name]["SEAM"].notna()).to_numpy())
         expected = list(range(SEAM_POS + skip, SEAM_POS + back))
-        assert newly.tolist() == expected, (
-            f"{name}: masked {newly.tolist()[:3]}..{newly.tolist()[-3:]}, "
-            f"expected s+{skip}..s+{back - 1}")
-        lines.append(f"  {name:<14} (back={back:>3}, skip={skip}) -> "
-                     f"s+{skip}..s+{back - 1} = {newly.size} bars")
+        assert newly.tolist() == expected, f"{name}: masked {newly.tolist()[:3]}..{newly.tolist()[-3:]}, expected s+{skip}..s+{back - 1}"
+        lines.append(f"  {name:<14} (back={back:>3}, skip={skip}) -> s+{skip}..s+{back - 1} = {newly.size} bars")
 
     # the features NOT in SEAM_WINDOWS must be bit-identical, seam ticker included
     untouched = [n for n in plain if n not in SEAM_WINDOWS]
@@ -316,8 +302,10 @@ def test_every_seam_window_feature_is_masked_over_exactly_its_own_lookback():
 
     print("\n=== SANITY CHECK: per-feature seam spans ===")
     print("\n".join(lines))
-    print(f"  {len(untouched)} unmasked features bit-identical (ret-derived, seasonal and the "
-          f"whole volume family): {', '.join(sorted(untouched))}. Validated.")
+    print(
+        f"  {len(untouched)} unmasked features bit-identical (ret-derived, seasonal and the "
+        f"whole volume family): {', '.join(sorted(untouched))}. Validated."
+    )
 
 
 def test_the_control_tickers_never_move():
@@ -348,9 +336,11 @@ def test_the_ewma_multiple_is_what_the_technical_windows_are_built_from():
     assert weight_wilder < 0.05 and weight_macd < 0.01
 
     print("\n=== SANITY CHECK: the EWMA cut-off is a decay argument ===")
-    print(f"  at {SEAM_EWMA_SPAN_MULTIPLE} spans the seam bar's residual weight is "
-          f"{weight_wilder:.2%} (Wilder n=14) and {weight_macd:.2%} (MACD slow span 26). "
-          "Validated.")
+    print(
+        f"  at {SEAM_EWMA_SPAN_MULTIPLE} spans the seam bar's residual weight is "
+        f"{weight_wilder:.2%} (Wilder n=14) and {weight_macd:.2%} (MACD slow span 26). "
+        "Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -366,11 +356,10 @@ def test_the_mask_lands_before_ranking_so_other_names_ranks_are_unaffected():
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     seams = {"SEAM": [when]}
-    affected = frames["close_total"].index[SEAM_POS + 21:SEAM_POS + 252]
+    affected = frames["close_total"].index[SEAM_POS + 21 : SEAM_POS + 252]
 
     masked = _raw(frames, seams)
-    dropped = _raw({k: (v.drop(columns=["SEAM"]) if "SEAM" in v.columns else v)
-                    for k, v in frames.items()}, None)
+    dropped = _raw({k: (v.drop(columns=["SEAM"]) if "SEAM" in v.columns else v) for k, v in frames.items()}, None)
 
     with_seam = xs_rank_pct(masked["mom_12_1"]).loc[affected, ["CTRL", "CTRL2"]]
     without = xs_rank_pct(dropped["mom_12_1"]).loc[affected, ["CTRL", "CTRL2"]]
@@ -381,10 +370,13 @@ def test_the_mask_lands_before_ranking_so_other_names_ranks_are_unaffected():
     assert not naive.equals(without)
 
     print("\n=== SANITY CHECK: mask precedes the cross-sectional rank ===")
-    print(f"  over {len(affected)} affected dates, CTRL/CTRL2 mom_12_1 ranks with the seam "
-          "MASKED == their ranks with the seam ticker dropped entirely.")
-    print(f"  unmasked, the same ranks differ (e.g. {naive.iloc[0, 0]:.4f} vs "
-          f"{without.iloc[0, 0]:.4f}) -- the fabricated value had displaced them. Validated.")
+    print(
+        f"  over {len(affected)} affected dates, CTRL/CTRL2 mom_12_1 ranks with the seam MASKED == their ranks with the seam ticker dropped entirely."
+    )
+    print(
+        f"  unmasked, the same ranks differ (e.g. {naive.iloc[0, 0]:.4f} vs "
+        f"{without.iloc[0, 0]:.4f}) -- the fabricated value had displaced them. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -396,22 +388,24 @@ def test_an_incremental_window_masks_the_same_trading_DAYS_not_the_same_position
     frames = _frames()
     close = frames["close_total"]
     when = close.index[SEAM_POS]
-    cut = SEAM_POS - 40                            # a window that starts INSIDE the warm-up
+    cut = SEAM_POS - 40  # a window that starts INSIDE the warm-up
 
     full = momentum_characteristic(close, seams={"SEAM": [when]})
     trimmed = momentum_characteristic(close.iloc[cut:], seams={"SEAM": [when]})
 
     full_masked = set(full.index[full["SEAM"].isna()])
     trimmed_masked = set(trimmed.index[trimmed["SEAM"].isna()])
-    span = set(close.index[SEAM_POS + 21:SEAM_POS + 252])
+    span = set(close.index[SEAM_POS + 21 : SEAM_POS + 252])
     # inside the trimmed window the two agree exactly on the seam span
     assert trimmed_masked & span == span
     assert full_masked & span == span
 
     print("\n=== SANITY CHECK: the mask is date-stable under trimming ===")
-    print(f"  window trimmed to start {SEAM_POS - cut} bars before the seam: all "
-          f"{len(span)} dates of [s+21, s+251] masked in BOTH the full and the trimmed "
-          "build. Validated.")
+    print(
+        f"  window trimmed to start {SEAM_POS - cut} bars before the seam: all "
+        f"{len(span)} dates of [s+21, s+251] masked in BOTH the full and the trimmed "
+        "build. Validated."
+    )
 
 
 def test_every_part_warmup_exceeds_the_longest_mask_reach():
@@ -432,9 +426,11 @@ def test_every_part_warmup_exceeds_the_longest_mask_reach():
     assert targets > reach, (targets, reach)
 
     print("\n=== SANITY CHECK: warm-up exceeds the mask reach ===")
-    print(f"  longest mask reach s+{reach} (mom_12_1); cube_part_momentum warm-up "
-          f"{momentum} trading days, cube_part_targets {targets}. A seam before the load "
-          "start cannot contaminate an emitted row. Validated.")
+    print(
+        f"  longest mask reach s+{reach} (mom_12_1); cube_part_momentum warm-up "
+        f"{momentum} trading days, cube_part_targets {targets}. A seam before the load "
+        "start cannot contaminate an emitted row. Validated."
+    )
 
 
 def test_the_stored_panel_carries_the_mask_through_build_feature_panel():
@@ -442,17 +438,23 @@ def test_the_stored_panel_carries_the_mask_through_build_feature_panel():
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     panel = build_feature_panel(
-        frames["close_total"], frames["open"], frames["sector_ret"], method="rank",
-        high=frames["high"], low=frames["low"], volume=frames["volume"],
-        close_split=frames["close_split"], seams={"SEAM": [when]})
+        frames["close_total"],
+        frames["open"],
+        frames["sector_ret"],
+        method="rank",
+        high=frames["high"],
+        low=frames["low"],
+        volume=frames["volume"],
+        close_split=frames["close_split"],
+        seams={"SEAM": [when]},
+    )
 
     seam_rows = panel[panel["ticker"] == "SEAM"].set_index("date").sort_index()
-    span = frames["close_total"].index[SEAM_POS + 21:SEAM_POS + 252]
+    span = frames["close_total"].index[SEAM_POS + 21 : SEAM_POS + 252]
     assert seam_rows.loc[span, "mom_12_1"].isna().all()
     # the bar either side of the span still carries a value
     assert pd.notna(seam_rows.loc[frames["close_total"].index[SEAM_POS + 20], "mom_12_1"])
     assert pd.notna(seam_rows.loc[frames["close_total"].index[SEAM_POS + 252], "mom_12_1"])
 
     print("\n=== SANITY CHECK: the mask survives into the stored long panel ===")
-    print(f"  SEAM mom_12_1 is NaN for all {len(span)} bars in [s+21, s+251] and non-null at "
-          "s+20 and s+252. Validated.")
+    print(f"  SEAM mom_12_1 is NaN for all {len(span)} bars in [s+21, s+251] and non-null at s+20 and s+252. Validated.")

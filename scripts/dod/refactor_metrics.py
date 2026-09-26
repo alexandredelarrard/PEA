@@ -279,7 +279,7 @@ def build_gates(touched: list[str], tests: list[str], root: Path, sha: str, per_
                 "G4",
                 "public API stable or call sites updated",
                 not still,
-                "; ".join(still) if still else f"removed {len(removed)}, no dangling reference: " f"{', '.join(removed[:4])}",
+                "; ".join(still) if still else f"removed {len(removed)}, no dangling reference: {', '.join(removed[:4])}",
             )
         )
     else:
@@ -294,7 +294,7 @@ def build_gates(touched: list[str], tests: list[str], root: Path, sha: str, per_
                 "G5",
                 "docs moved with the code",
                 bool(touched_doc),
-                f"{len(touched_src)} src file(s); docs touched: " f"{', '.join(touched_doc) if touched_doc else 'NONE'}",
+                f"{len(touched_src)} src file(s); docs touched: {', '.join(touched_doc) if touched_doc else 'NONE'}",
             )
         )
     else:
@@ -308,7 +308,7 @@ def build_gates(touched: list[str], tests: list[str], root: Path, sha: str, per_
     ]
     gates.append(Gate("G6", "docstring lines did not shrink", not shrunk, "; ".join(shrunk) if shrunk else "no touched file lost docstring lines"))
     if shrunk:
-        evidence["g6_note"] = "A shrink is ALLOWED but must be justified in §5 -- say which " "docstring you removed and why it was not load-bearing."
+        evidence["g6_note"] = "A shrink is ALLOWED but must be justified in §5 -- say which docstring you removed and why it was not load-bearing."
 
     # ---- G7: AGENTS.md budget -------------------------------------------- #
     agents = root / "AGENTS.md"
@@ -387,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     up = link_prefix(report_path("REFACTOR", args.slug, root=root), root)
     metrics_md = "\n\n".join(
         [
-            "_Observations only — no verdicts. LOC is never a target (see " f"[coding standards]({up}wiki/guides/coding-standards.md))._",
+            f"_Observations only — no verdicts. LOC is never a target (see [coding standards]({up}wiki/guides/coding-standards.md))._",
             "**Per touched Python file**",
             metrics_table(metrics_rows, ["file", "status", "loc_before", "loc_after", "code", "docstring", "comment", "public_api"]),
             "**Totals**",
@@ -405,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         [
             f"- baseline: `{sha[:12]}`" if sha != "unknown" else "- baseline: unknown",
             f"- tests run: {', '.join(tests) if tests else 'none'}",
-            f"- non-Python files touched ({len(non_py)}): " f"{', '.join(non_py[:12]) if non_py else 'none'}",
+            f"- non-Python files touched ({len(non_py)}): {', '.join(non_py[:12]) if non_py else 'none'}",
         ]
         + ([f"- {k}: {v}" for k, v in evidence.items()])
     )
@@ -416,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
             + (", ".join(f"`{p}`" for p in touched[:20]) or "none")
             + (f" … +{len(touched) - 20} more" if len(touched) > 20 else ""),
             "",
-            f"**Sample scope:** whole repository working tree vs `{sha[:12]}` " f"(a refactor's scope is the diff, not a data sample).",
+            f"**Sample scope:** whole repository working tree vs `{sha[:12]}` (a refactor's scope is the diff, not a data sample).",
         ]
     )
 

@@ -735,9 +735,9 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     assert not wrong, f"{len(wrong)} group(s) resolved against the reviewed verdict: {wrong}"
 
     print("\n=== SANITY CHECK: all 102 flagged groups ===")
-    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  " "genuine predecessors, retained by entity_lineage")
-    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  " "relabelled onto the universe ticker that owns them")
-    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  " "another company -- quarantined")
+    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  genuine predecessors, retained by entity_lineage")
+    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  relabelled onto the universe ticker that owns them")
+    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  another company -- quarantined")
     print("  OK: every one of the 102 matches the verdict read from the issuer name")
     print("  -> A register-only cut would have deleted the 25,635 KEEP rows.")
 
@@ -797,6 +797,6 @@ def test_no_live_entity_holds_two_universe_tickers(live):
     assert len(live.ticker_by_entity) == len(live.roster_cik) == 500
 
     print("\n=== SANITY CHECK: one entity per universe ticker ===")
-    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, " "0 collisions")
+    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, 0 collisions")
     print("  OK: no entity can relabel one universe ticker's rows onto another")
     print("  -> load_identity would have raised before returning if it could.")

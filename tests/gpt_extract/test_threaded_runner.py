@@ -6,6 +6,7 @@ structural rule that a worker never touches the store.
 
 All synthetic, all through a `StubProvider`: no network, no key, no spend.
 """
+
 from __future__ import annotations
 
 import threading
@@ -31,7 +32,7 @@ class RecordingStore:
         self.saves.append((str(table), len(df)))
         return len(df)
 
-    def __getattr__(self, item):                 # any other access is recorded too
+    def __getattr__(self, item):  # any other access is recorded too
         self.threads.add(threading.current_thread().name)
         raise AttributeError(item)
 
@@ -42,16 +43,14 @@ def _runner(monkeypatch, n_threads=4, keys=("k1",), provider_factory=None, store
     for i, key in enumerate(keys):
         monkeypatch.setenv(f"OPENAI_API_KEY{'' if i == 0 else f'_{i}'}", key)
 
-    runner = LLMExtractor(fake_context(store), gpt_config(), action="def14a",
-                          threads=n_threads)
+    runner = LLMExtractor(fake_context(store), gpt_config(), action="def14a", threads=n_threads)
     factory = provider_factory or (lambda methode=None, key_index=None: StubProvider())
     monkeypatch.setattr(runner, "initialize_client", factory)
     return runner
 
 
 def _tasks(n: int, payload=lambda i: f"payload-{i}") -> list[LlmTask]:
-    return [LlmTask(seq=i, payload=payload(i), schema=Answer, table=Tables.def14a_llm,
-                    meta={"ticker": f"T{i % 3}"}) for i in range(n)]
+    return [LlmTask(seq=i, payload=payload(i), schema=Answer, table=Tables.def14a_llm, meta={"ticker": f"T{i % 3}"}) for i in range(n)]
 
 
 # --------------------------------------------------------------------------- #
@@ -76,8 +75,7 @@ def test_results_come_back_in_submission_order(monkeypatch):
             completed.append(payload)
             return super().parse(schema, system, user)
 
-    runner = _runner(monkeypatch, n_threads=n,
-                     provider_factory=lambda methode=None, key_index=None: Sleeper())
+    runner = _runner(monkeypatch, n_threads=n, provider_factory=lambda methode=None, key_index=None: Sleeper())
     for task in _tasks(n):
         runner.submit(task)
     results = runner.run()
@@ -85,8 +83,7 @@ def test_results_come_back_in_submission_order(monkeypatch):
     assert [r.seq for r in results] == list(range(n))
     assert all(r.ok for r in results)
     assert len(completed) == n
-    assert completed == [f"payload-{i}" for i in reversed(range(n))], \
-        f"the stub must complete in REVERSE order or ordering is untested: {completed}"
+    assert completed == [f"payload-{i}" for i in reversed(range(n))], f"the stub must complete in REVERSE order or ordering is untested: {completed}"
 
     print("\n=== SANITY: submission ordering ===")
     print(f"  completion order {completed}")
@@ -98,9 +95,7 @@ def test_results_come_back_in_submission_order(monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_one_failing_task_does_not_lose_the_others(monkeypatch):
     """A dead worker with tasks still queued is a hang; a failure must become a result."""
-    runner = _runner(monkeypatch, n_threads=4,
-                     provider_factory=lambda methode=None, key_index=None:
-                     StubProvider(fail_on=("payload-3",)))
+    runner = _runner(monkeypatch, n_threads=4, provider_factory=lambda methode=None, key_index=None: StubProvider(fail_on=("payload-3",)))
     for task in _tasks(10):
         runner.submit(task)
     results = runner.run()
@@ -112,26 +107,22 @@ def test_one_failing_task_does_not_lose_the_others(monkeypatch):
     assert sum(r.ok for r in results) == 9
 
     print("\n=== SANITY: failure isolation ===")
-    print(f"  task 3 of 10 raised -> 9 parsed + 1 error ({failed[0].error!r}); "
-          "the run terminated. Validated.")
+    print(f"  task 3 of 10 raised -> 9 parsed + 1 error ({failed[0].error!r}); the run terminated. Validated.")
 
 
 def test_a_raising_task_returns_its_client_to_the_queue(monkeypatch):
     """The deadlock guard: the client goes back in `finally`, or every worker ends up
     blocked on an empty client queue."""
-    runner = _runner(monkeypatch, n_threads=2,
-                     provider_factory=lambda methode=None, key_index=None:
-                     StubProvider(fail_on=("payload-0", "payload-1")))
+    runner = _runner(monkeypatch, n_threads=2, provider_factory=lambda methode=None, key_index=None: StubProvider(fail_on=("payload-0", "payload-1")))
     for task in _tasks(6):
         runner.submit(task)
-    results = runner.run()                       # must not hang
+    results = runner.run()  # must not hang
 
     assert len(results) == 6
     assert runner._clients.qsize() == 2, "both clients must be back in the queue"
 
     print("\n=== SANITY: client returned on failure ===")
-    print(f"  2 raising tasks, {runner._clients.qsize()} clients back in the queue, "
-          "run terminated. Validated.")
+    print(f"  2 raising tasks, {runner._clients.qsize()} clients back in the queue, run terminated. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +147,7 @@ def test_saves_happen_once_per_group(monkeypatch):
     """One save per ticker per table -- an interrupted run then costs at most one ticker."""
     store = RecordingStore()
     runner = _runner(monkeypatch, n_threads=4, store=store)
-    tasks = [LlmTask(seq=i, payload=f"p{i}", schema=Answer, table=Tables.def14a_llm,
-                     meta={"ticker": f"T{i // 5}"}) for i in range(15)]
+    tasks = [LlmTask(seq=i, payload=f"p{i}", schema=Answer, table=Tables.def14a_llm, meta={"ticker": f"T{i // 5}"}) for i in range(15)]
 
     runner.run_extraction(tasks, group_key=lambda t: str(t.meta["ticker"]))
 
@@ -165,8 +155,7 @@ def test_saves_happen_once_per_group(monkeypatch):
     assert [n for _, n in store.saves] == [5, 5, 5]
 
     print("\n=== SANITY: one save per group ===")
-    print(f"  3 tickers x 5 filings -> {len(store.saves)} saves of {[n for _, n in store.saves]} "
-          "rows. Validated.")
+    print(f"  3 tickers x 5 filings -> {len(store.saves)} saves of {[n for _, n in store.saves]} rows. Validated.")
 
 
 def test_the_default_flatten_writes_one_row_per_result(monkeypatch):
@@ -186,8 +175,7 @@ def test_a_fanout_flatten_writes_every_table(monkeypatch):
     runner = _runner(monkeypatch, n_threads=2, store=store)
 
     def flatten(result: LlmResult):
-        return {Tables.def14a_llm: pd.DataFrame([{"a": 1}]),
-                Tables.def14a_directors: pd.DataFrame([{"b": 1}, {"b": 2}])}
+        return {Tables.def14a_llm: pd.DataFrame([{"a": 1}]), Tables.def14a_directors: pd.DataFrame([{"b": 1}, {"b": 2}])}
 
     runner.run_extraction(_tasks(3), flatten=flatten)
 
@@ -210,8 +198,7 @@ def test_clients_rotate_over_every_key(monkeypatch):
         seen.append(key_index)
         return StubProvider(api_key=f"k{key_index}")
 
-    runner = _runner(monkeypatch, n_threads=12, keys=("k1", "k2", "k3"),
-                     provider_factory=factory)
+    runner = _runner(monkeypatch, n_threads=12, keys=("k1", "k2", "k3"), provider_factory=factory)
     for task in _tasks(24):
         runner.submit(task)
     runner.run()
@@ -244,12 +231,10 @@ def test_the_client_queue_does_not_grow_when_the_extracter_is_reused(monkeypatch
     the client queue up each run instead of refilling it would leak a slot per worker per
     ticker, and rebuilding the providers would throw away warm connections."""
     built = []
-    runner = _runner(monkeypatch, n_threads=4,
-                     provider_factory=lambda methode=None, key_index=None:
-                     built.append(key_index) or StubProvider())
+    runner = _runner(monkeypatch, n_threads=4, provider_factory=lambda methode=None, key_index=None: built.append(key_index) or StubProvider())
 
     sizes = []
-    for _ in range(5):                                # five "tickers"
+    for _ in range(5):  # five "tickers"
         for task in _tasks(6):
             runner.submit(task)
         runner.run()
@@ -259,8 +244,7 @@ def test_the_client_queue_does_not_grow_when_the_extracter_is_reused(monkeypatch
     assert len(built) == 1, f"providers rebuilt {len(built)} times instead of once"
 
     print("\n=== SANITY: extracter reuse ===")
-    print(f"  5 consecutive runs -> client queue stays {sizes}; providers built "
-          f"{len(built)}x (connections stay warm). Validated.")
+    print(f"  5 consecutive runs -> client queue stays {sizes}; providers built {len(built)}x (connections stay warm). Validated.")
 
 
 def test_saves_are_ordered_by_the_flatten(monkeypatch):
@@ -270,13 +254,14 @@ def test_saves_are_ordered_by_the_flatten(monkeypatch):
     runner = _runner(monkeypatch, n_threads=2, store=store)
 
     def flatten(result: LlmResult):
-        return {Tables.def14a_directors: pd.DataFrame([{"b": 1}]),      # child FIRST
-                Tables.def14a_llm: pd.DataFrame([{"a": 1}])}            # parent LAST
+        return {
+            Tables.def14a_directors: pd.DataFrame([{"b": 1}]),  # child FIRST
+            Tables.def14a_llm: pd.DataFrame([{"a": 1}]),
+        }  # parent LAST
 
     runner.run_extraction(_tasks(2), flatten=flatten)
 
-    assert [name for name, _ in store.saves] == [str(Tables.def14a_directors),
-                                                 str(Tables.def14a_llm)]
+    assert [name for name, _ in store.saves] == [str(Tables.def14a_directors), str(Tables.def14a_llm)]
 
     print("\n=== SANITY: save ordering ===")
     print(f"  flatten yielded child-then-parent -> saved {[n for n, _ in store.saves]}. Validated.")
@@ -292,7 +277,6 @@ def test_an_empty_task_list_is_not_an_error(monkeypatch):
 
 
 if __name__ == "__main__":
-    import types
 
     class _Cfg:
         pass

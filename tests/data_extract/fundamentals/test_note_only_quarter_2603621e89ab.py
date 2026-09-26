@@ -144,13 +144,11 @@ def test_orcl_full_years_in_quarterly_contexts_survived_the_field_local_rule():
     before = _periods(_ORCL_REVENUES, REVENUES)
 
     assert _quarter_ends(before) == {"2020-05-31", "2021-05-31", "2022-05-31"}
-    assert not [
-        p for p in before.values() if p["duration_type"] == ANNUAL
-    ], "the premise: ORCL publishes no annual-window `Revenues` in these filings"
-    assert _drop_note_only_quarter(before, form="10-K") == before
-    print(
-        "field-local rule: all 3 mislabelled years kept -- 0 of 9 rows caught, which is " "the defect the docstring's 'ORCL 9' claimed to have fixed"
+    assert not [p for p in before.values() if p["duration_type"] == ANNUAL], (
+        "the premise: ORCL publishes no annual-window `Revenues` in these filings"
     )
+    assert _drop_note_only_quarter(before, form="10-K") == before
+    print("field-local rule: all 3 mislabelled years kept -- 0 of 9 rows caught, which is the defect the docstring's 'ORCL 9' claimed to have fixed")
 
 
 @pytest.mark.parametrize("form", ["10-K", "10-K/A"])
@@ -167,7 +165,7 @@ def test_the_filings_own_calendar_refuses_all_three(form):
 
     assert _quarter_ends(after) == set(), "a full year is not a fourth quarter"
     assert after == {}, "nothing else was in `Revenues` to keep"
-    print(f"{form}: 3 mislabelled years refused ($39,068M/$40,479M/$42,440M); true Q4 FY2022 " f"is $11,840M by FY-YTD9, not $42,440M")
+    print(f"{form}: 3 mislabelled years refused ($39,068M/$40,479M/$42,440M); true Q4 FY2022 is $11,840M by FY-YTD9, not $42,440M")
 
 
 def test_the_annual_windows_of_other_fields_are_left_alone():
@@ -231,7 +229,7 @@ def test_asc270_table_survives_a_filing_wide_calendar():
 
     assert after == before, "four siblings in FY2022 is a series, not a sentence"
     assert _quarter_ends(after) == {"2021-08-31", "2021-11-30", "2022-02-28", "2022-05-31"}
-    print("ASC 270: all 4 real FY2022 quarters kept against the filing-wide calendar, " "including the true Q4 of $11,840M")
+    print("ASC 270: all 4 real FY2022 quarters kept against the filing-wide calendar, including the true Q4 of $11,840M")
 
 
 def test_fallback_is_scoped_to_fields_with_no_annual_of_their_own():
@@ -255,7 +253,7 @@ def test_fallback_is_scoped_to_fields_with_no_annual_of_their_own():
 
     assert "2020-05-31" in _quarter_ends(after), "FY2020 is outside this field's own calendar, so the wider one must not reach it"
     assert "2022-05-31" not in _quarter_ends(after), "the field's own FY2022 window still judges its own lone quarter"
-    print("scoping: the field's own calendar judges FY2022 and the filing's does NOT reach " "FY2020 -- 9 rows, not 16")
+    print("scoping: the field's own calendar judges FY2022 and the filing's does NOT reach FY2020 -- 9 rows, not 16")
 
 
 def test_a_10q_is_still_gated_out():

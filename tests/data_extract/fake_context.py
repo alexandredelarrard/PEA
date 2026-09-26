@@ -9,6 +9,7 @@ The real `configs/paths.yml` is loaded rather than a hand-written stub so the fi
 ONE place: a test that pinned its own copy would keep passing after the config moved the file,
 while the pipeline wrote somewhere else entirely.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

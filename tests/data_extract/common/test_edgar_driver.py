@@ -133,7 +133,7 @@ def _patch_registrants(monkeypatch, by_cik: dict, cutover=None):
     an `int` CIK for each segment.
     """
     monkeypatch.setattr("edgar.Company", lambda x: types.SimpleNamespace(get_filings=lambda form: by_cik.get(x, [])))
-    monkeypatch.setattr("src.data_extract.utils.common.registrant.load_registrants", lambda *a, **k: ({"XOM": cutover} if cutover else {}))
+    monkeypatch.setattr("src.data_extract.utils.common.registrant.load_registrants", lambda *a, **k: {"XOM": cutover} if cutover else {})
 
 
 def test_new_filings_unions_the_successor_registrant(monkeypatch):
@@ -262,7 +262,7 @@ def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, s
     assert get_entry(ctx, _T_MAIN)["ticker_count"] == 1
 
     print("\n=== SANITY CHECK: driver multi-table save + manifest ===")
-    print("  main + child rows saved; all 3 declared tables recorded, including the one no " "ticker produced rows for (rows_added=0). Validated.")
+    print("  main + child rows saved; all 3 declared tables recorded, including the one no ticker produced rows for (rows_added=0). Validated.")
 
 
 def test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists(tmp_path, sqlite_store, monkeypatch):
@@ -398,11 +398,9 @@ def test_run_edgar_fetch_reraises_a_programming_error_instead_of_warning(tmp_pat
 
     print("\n=== SANITY CHECK: driver re-raises a programming error ===")
     print(
-        f"  build raised NameError -> run_edgar_fetch propagated it; "
-        f"warnings logged: {len(ctx.warnings)}, manifest entry: "
-        f"{get_entry(ctx, _T_MAIN)}."
+        f"  build raised NameError -> run_edgar_fetch propagated it; warnings logged: {len(ctx.warnings)}, manifest entry: {get_entry(ctx, _T_MAIN)}."
     )
-    print("  -> A repo defect now FAILS the run; a bad ticker (RuntimeError, test above) " "is still isolated.")
+    print("  -> A repo defect now FAILS the run; a bad ticker (RuntimeError, test above) is still isolated.")
 
 
 def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(tmp_path, sqlite_store, monkeypatch):
@@ -430,7 +428,7 @@ def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(tmp_p
     assert get_entry(ctx, _T_MAIN)["rows_added"] == 0
 
     print("\n=== SANITY CHECK: driver survives a save failure ===")
-    print("  save to driver_main raised; driver_child still saved and the pool completed " "instead of aborting. Validated.")
+    print("  save to driver_main raised; driver_child still saved and the pool completed instead of aborting. Validated.")
 
 
 def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_store, monkeypatch):
@@ -493,7 +491,7 @@ def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, s
     assert not sqlite_store.exists(_T_EMPTY)
     assert any("coverage not advanced" in warning for warning in ctx.warnings)
     print("\n=== SANITY CHECK: explicit coverage commits last ===")
-    print("  the transaction save failed, so the completion row was withheld and the ticker " "remains visibly stale. Validated.")
+    print("  the transaction save failed, so the completion row was withheld and the ticker remains visibly stale. Validated.")
 
 
 def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path, sqlite_store, monkeypatch):
@@ -514,7 +512,7 @@ def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path,
     assert seen["done"] == frozenset({"already-stored"})
 
     print("\n=== SANITY CHECK: driver window + dedup wiring ===")
-    print(f"  cold manifest -> since={seen['since'].date()} (15y back); " f"done_accessions read from the table: {sorted(seen['done'])}. Validated.")
+    print(f"  cold manifest -> since={seen['since'].date()} (15y back); done_accessions read from the table: {sorted(seen['done'])}. Validated.")
 
 
 def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, monkeypatch):
@@ -529,4 +527,4 @@ def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, mon
     assert not sqlite_store.exists(_T_CHILD)  # not declared -> not written
 
     print("\n=== SANITY CHECK: driver ignores an undeclared table ===")
-    print("  build returned driver_child but only driver_main was declared -> child not " "written (it would never get a manifest entry). Validated.")
+    print("  build returned driver_child but only driver_main was declared -> child not written (it would never get a manifest entry). Validated.")

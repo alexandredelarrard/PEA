@@ -14,17 +14,17 @@ of its wide logic (the `if "equity_tr" in d.columns` guards, `pct_change`,
 Lives in src/utils/ because it is read from `data_aggregate`, `modelling`, `strategies` and
 `portfolio` alike, and those must not import each other.
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import pandas as pd
 
 from src.data_store.schema import Tables
 
 
-def load_macro_wide(store, series: Sequence[str] | None = None,
-                    since=None) -> pd.DataFrame | None:
+def load_macro_wide(store, series: Sequence[str] | None = None, since=None) -> pd.DataFrame | None:
     """`prices_macro` -> wide frame with `date` as a COLUMN and one column per series.
 
     Returns None (not an empty frame) when the table is missing or empty, which is the
@@ -39,8 +39,7 @@ def load_macro_wide(store, series: Sequence[str] | None = None,
     windowed read silently nulls the first row of every change column.
     """
     where = {"ticker": [str(s) for s in series]} if series else None
-    long = store.load(Tables.prices_macro, columns=["date", "ticker", "close"],
-                      where=where, since=since, optional=True)
+    long = store.load(Tables.prices_macro, columns=["date", "ticker", "close"], where=where, since=since, optional=True)
     if long is None or long.empty:
         return None
 

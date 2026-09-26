@@ -1,7 +1,7 @@
 """Sanity checks for LightGBM monotone constraint wiring."""
+
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
@@ -13,20 +13,24 @@ from src.modelling.long_short.utils.model import (
 
 
 def test_parse_monotone_feature_map_list_and_dict_formats():
-    list_cfg = OmegaConf.create({
-        "features": [
-            {"f_employee_growth_xs": 1},
-            {"f_sga_growth_xs": -1},
-            {"f_fwd_eps_yield_xs": 1},
-        ]
-    })
-    dict_cfg = OmegaConf.create({
-        "features": {
-            "f_employee_growth_xs": 1,
-            "f_sga_growth_xs": -1,
-            "f_fwd_eps_yield_xs": 1,
+    list_cfg = OmegaConf.create(
+        {
+            "features": [
+                {"f_employee_growth_xs": 1},
+                {"f_sga_growth_xs": -1},
+                {"f_fwd_eps_yield_xs": 1},
+            ]
         }
-    })
+    )
+    dict_cfg = OmegaConf.create(
+        {
+            "features": {
+                "f_employee_growth_xs": 1,
+                "f_sga_growth_xs": -1,
+                "f_fwd_eps_yield_xs": 1,
+            }
+        }
+    )
 
     expected = {
         "f_employee_growth_xs": 1,
@@ -51,14 +55,16 @@ def test_train_ranker_passes_monotone_constraints_to_lightgbm():
     rows = []
     for d in dates:
         for i, ticker in enumerate(["AAA", "BBB", "CCC"]):
-            rows.append({
-                "date": d,
-                "ticker": ticker,
-                "f_employee_growth_xs": float(i),
-                "f_sga_growth_xs": float(2 - i),
-                "f_fwd_eps_yield_xs": float(i) / 10.0,
-                "y": float(i) / 2.0,
-            })
+            rows.append(
+                {
+                    "date": d,
+                    "ticker": ticker,
+                    "f_employee_growth_xs": float(i),
+                    "f_sga_growth_xs": float(2 - i),
+                    "f_fwd_eps_yield_xs": float(i) / 10.0,
+                    "y": float(i) / 2.0,
+                }
+            )
     panel = pd.DataFrame(rows)
     feats = ["f_employee_growth_xs", "f_sga_growth_xs", "f_fwd_eps_yield_xs"]
     constraints = [1, -1, 1]

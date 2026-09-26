@@ -11,6 +11,7 @@ exists to stop. Deciding VTRS needs those two counted apart.
 (2020-03-29 -> 2020-03-31) is a change of MEANING -- 52/53-week fiscal calendar vs calendar
 quarter-end -- and not obviously a repair in either direction.
 """
+
 from __future__ import annotations
 
 import sys
@@ -49,9 +50,15 @@ def main() -> None:
 
     notnull = d[d["stored"].notna()].copy()
     notnull["shape"] = notnull.apply(
-        lambda r: ("fiscal_end/date" if "fiscal" in str(r["column"]) or "date" in str(r["column"])
-                   else "zero-fill repaired" if is_zero(r["stored"])
-                   else "REAL VALUE MOVED"), axis=1)
+        lambda r: (
+            "fiscal_end/date"
+            if "fiscal" in str(r["column"]) or "date" in str(r["column"])
+            else "zero-fill repaired"
+            if is_zero(r["stored"])
+            else "REAL VALUE MOVED"
+        ),
+        axis=1,
+    )
 
     print(f"\n=== {ticker}: {len(d)} drifting cell(s) over {d['as_of'].nunique()} row(s) ===")
     print(f"  stored NULL (a fill)        : {int(d['stored'].isna().sum())}")

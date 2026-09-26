@@ -98,9 +98,9 @@ def measure(store, identity, table, name: str, blind: frozenset[str]) -> pd.Data
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     df["date"] = pd.to_datetime(df["date"])
     print(f"\n=== {name} ===")
-    print(f"  {len(df):,} rows, {df['ticker'].nunique()} ticker(s), " f"{df['date'].min().date()} -> {df['date'].max().date()}")
+    print(f"  {len(df):,} rows, {df['ticker'].nunique()} ticker(s), {df['date'].min().date()} -> {df['date'].max().date()}")
     below = int((df["date"] < TENURE_FLOOR).sum())
-    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {TENURE_FLOOR.date()} " "tenure floor and are structurally unresolvable (D7)")
+    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {TENURE_FLOOR.date()} tenure floor and are structurally unresolvable (D7)")
 
     # One verdict per (ticker, date) is still ~1M lookups; the tape is one row per pair
     # already, so this is the grain and there is nothing to dedupe.
@@ -140,7 +140,7 @@ def main() -> None:
     # The D19 allow-list IS the tenure-blind list: every entry on it is a ticker whose roster
     # CIK and whose filings name different entities, with a written reading of why.
     blind = frozenset(load_d19_allowlist(CONFIG_DIR))
-    print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: " f"{', '.join(sorted(blind))}")
+    print(f"\n  {len(blind)} tenure-blind ticker(s) from the D19 allow-list: {', '.join(sorted(blind))}")
     OUT.mkdir(parents=True, exist_ok=True)
     summary = []
     for table, name in TABLES:

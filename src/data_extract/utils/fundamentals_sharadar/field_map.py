@@ -175,11 +175,11 @@ class TranslationReport:
         return "\n".join(
             [
                 f"rows in                 : {self.rows_in}",
-                f"zero-rule NULLs         : {sum(self.zero_nulled.values())} " f"over {len(self.zero_nulled)} field(s) {self.zero_nulled or '{}'}",
-                f"correction NULLs        : {sum(self.corrected.values())} " f"{self.corrected or '{}'}",
-                f"sign-guard NULLs        : {sum(self.negation_nulled.values())} " f"{self.negation_nulled or '{}'}",
-                f"declared-sign NULLs     : {sum(self.sign_nulled.values())} " f"{self.sign_nulled or '{}'}",
-                f"split de-adjusted cells : {sum(self.split_deadjusted.values())} " f"{self.split_deadjusted or '{}'}",
+                f"zero-rule NULLs         : {sum(self.zero_nulled.values())} over {len(self.zero_nulled)} field(s) {self.zero_nulled or '{}'}",
+                f"correction NULLs        : {sum(self.corrected.values())} {self.corrected or '{}'}",
+                f"sign-guard NULLs        : {sum(self.negation_nulled.values())} {self.negation_nulled or '{}'}",
+                f"declared-sign NULLs     : {sum(self.sign_nulled.values())} {self.sign_nulled or '{}'}",
+                f"split de-adjusted cells : {sum(self.split_deadjusted.values())} {self.split_deadjusted or '{}'}",
                 f"splits applied          : {self.splits_applied or 'none'}",
                 f"splits rejected         : {self.splits_rejected or 'none'}",
             ]
@@ -219,10 +219,10 @@ def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
     rules = {name: block["rule"] for name, block in _entries(raw).items()}
     missing = sorted(SHARADAR_ZERO_FILLED_FIELDS - set(rules))
     if missing:
-        raise RuntimeError(f"{path} has no rule for {len(missing)} zero-filled field(s): " f"{missing}")
+        raise RuntimeError(f"{path} has no rule for {len(missing)} zero-filled field(s): {missing}")
     unknown = sorted(set(rules.values()) - {"null", "keep"})
     if unknown:
-        raise RuntimeError(f"{path} uses unknown rule(s) {unknown}; only `null` and `keep` " f"exist")
+        raise RuntimeError(f"{path} uses unknown rule(s) {unknown}; only `null` and `keep` exist")
     return rules
 
 
@@ -235,7 +235,7 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
     """
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_CORRECTIONS_FILENAME
     if not path.exists():
-        raise FileNotFoundError(f"{path} is missing; the field map refuses to run without " f"the correction register (phase-3 §0)")
+        raise FileNotFoundError(f"{path} is missing; the field map refuses to run without the correction register (phase-3 §0)")
     raw = json.loads(path.read_text(encoding="utf-8"))
     _require_approval(raw, path)
     register = _entries(raw)
@@ -244,10 +244,10 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
             where = f"{path}: {field}/{ticker}"
             action = entry.get("action")
             if action not in SHARADAR_CORRECTION_ACTIONS:
-                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed " f"to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
+                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
             for key in ("reason", "evidence"):
                 if not str(entry.get(key, "")).strip():
-                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what " f"was measured or which filing was read.")
+                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what was measured or which filing was read.")
     return register
 
 
@@ -271,11 +271,11 @@ def _spec_from(name: str, entry: dict, *, catalogue, path: Path, basis: str | No
     """One JSON entry -> a validated `ColumnSpec`."""
     kind = entry.get("kind")
     if kind not in SHARADAR_MAP_KINDS:
-        raise RuntimeError(f"{path}: {name} has kind {kind!r}; the vocabulary is closed to " f"{sorted(SHARADAR_MAP_KINDS)}")
+        raise RuntimeError(f"{path}: {name} has kind {kind!r}; the vocabulary is closed to {sorted(SHARADAR_MAP_KINDS)}")
     source = entry.get("from")
     split_basis = entry.get("split_basis")
     if split_basis is not None and split_basis not in SHARADAR_MAP_SPLIT_BASES:
-        raise RuntimeError(f"{path}: {name} has split_basis {split_basis!r}; expected one of " f"{sorted(SHARADAR_MAP_SPLIT_BASES)}")
+        raise RuntimeError(f"{path}: {name} has split_basis {split_basis!r}; expected one of {sorted(SHARADAR_MAP_SPLIT_BASES)}")
     negate = entry.get("negate")
     if negate is not None and negate != SHARADAR_NEGATE_IF_NON_POSITIVE:
         raise RuntimeError(
@@ -287,14 +287,14 @@ def _spec_from(name: str, entry: dict, *, catalogue, path: Path, basis: str | No
 
     if kind == "direct":
         if source not in set(SHARADAR_SF1_COLUMNS):
-            raise RuntimeError(f"{path}: {name} maps from {source!r}, which SF1 does not " f"deliver ({len(SHARADAR_SF1_COLUMNS)} columns)")
+            raise RuntimeError(f"{path}: {name} maps from {source!r}, which SF1 does not deliver ({len(SHARADAR_SF1_COLUMNS)} columns)")
         return ColumnSpec(
             name=name, kind=kind, source=source, negate=negate, split_basis=split_basis, basis=basis or _basis_for(name, source, catalogue)
         )
     if kind == "derived":
         op = entry.get("op")
         if op not in SHARADAR_MAP_OPS:
-            raise RuntimeError(f"{path}: {name} has op {op!r}; the vocabulary is closed to " f"{sorted(SHARADAR_MAP_OPS)}")
+            raise RuntimeError(f"{path}: {name} has op {op!r}; the vocabulary is closed to {sorted(SHARADAR_MAP_OPS)}")
         inputs = tuple(entry.get("inputs", ()))
         formula = entry.get("formula")
         _assert_formula_matches(name, op, inputs, formula, path)
@@ -320,7 +320,7 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
     if expected is None:
         raise RuntimeError(f"{path}: {name} op {op!r} has the wrong arity for inputs {inputs}")
     if formula != expected:
-        raise RuntimeError(f"{path}: {name} declares formula {formula!r} but `op`/`inputs` " f"compute {expected!r}")
+        raise RuntimeError(f"{path}: {name} declares formula {formula!r} but `op`/`inputs` compute {expected!r}")
 
 
 def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
@@ -363,17 +363,17 @@ def _field_map_at(config_dir: str) -> FieldMap:
 
     unmapped = [n for n in HISTORY_STATEMENT_ORDER if n not in columns]
     if unmapped:
-        raise RuntimeError(f"{path} leaves {len(unmapped)} contract column(s) unmapped: " f"{unmapped}")
+        raise RuntimeError(f"{path} leaves {len(unmapped)} contract column(s) unmapped: {unmapped}")
     stray = sorted(set(columns) - set(HISTORY_STATEMENT_ORDER))
     if stray:
-        raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. " f"A column beyond the 60 belongs in `added_columns`.")
+        raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. A column beyond the 60 belongs in `added_columns`.")
     # ⚠ Checked on the SOURCE, not on the emitted name. An extra is now keyed by its vendor
     # column and emitted under a repo one, so testing the OUTPUT against `SHARADAR_SF1_COLUMNS`
     # would reject every correctly renamed extra and accept a `to` that shadows a contract
     # column -- exactly backwards on both counts.
     for name, spec in extras.items():
         if spec.source not in set(SHARADAR_SF1_COLUMNS):
-            raise RuntimeError(f"{path}: extra {name!r} reads {spec.source!r}, which is not an " f"SF1 column")
+            raise RuntimeError(f"{path}: extra {name!r} reads {spec.source!r}, which is not an SF1 column")
         if name in set(HISTORY_STATEMENT_ORDER) or name in columns or name in added:
             raise RuntimeError(
                 f"{path}: extra {spec.source!r} renames to {name!r}, which is "
@@ -381,7 +381,7 @@ def _field_map_at(config_dir: str) -> FieldMap:
                 f"column and the later one would win silently."
             )
         if spec.basis not in (DURATION, INSTANT):
-            raise RuntimeError(f"{path}: extra {name!r} has basis {spec.basis!r}; expected " f"{DURATION!r} or {INSTANT!r}")
+            raise RuntimeError(f"{path}: extra {name!r} has basis {spec.basis!r}; expected {DURATION!r} or {INSTANT!r}")
         if spec.negate is not None and spec.negate != SHARADAR_NEGATE_IF_NON_POSITIVE:
             raise RuntimeError(
                 f"{path}: extra {name!r} has negate {spec.negate!r}; the only "
@@ -390,7 +390,7 @@ def _field_map_at(config_dir: str) -> FieldMap:
             )
     collisions = sorted(n for n in extras if sum(1 for e in raw["extras"].values() if e["to"] == n) > 1)
     if collisions:
-        raise RuntimeError(f"{path}: {collisions} is the `to` of more than one extra; the " f"dict would silently keep only the last.")
+        raise RuntimeError(f"{path}: {collisions} is the `to` of more than one extra; the dict would silently keep only the last.")
 
     field_map = FieldMap(
         columns=columns,
@@ -412,7 +412,7 @@ def _assert_derived_inputs_resolve(field_map: FieldMap, path: Path) -> None:
     for name, spec in derived.items():
         for source in spec.inputs:
             if source not in outputs:
-                raise RuntimeError(f"{path}: {name} reads {source!r}, which the map does not " f"produce")
+                raise RuntimeError(f"{path}: {name} reads {source!r}, which the map does not produce")
             if source in derived:
                 raise RuntimeError(
                     f"{path}: {name} reads the derived column {source!r}. "
@@ -436,7 +436,7 @@ def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *, report: Tran
     """
     ungoverned = sorted((SHARADAR_ZERO_FILLED_FIELDS & set(frame.columns)) - set(rules))
     if ungoverned:
-        raise RuntimeError(f"no zero rule for {ungoverned}; every zero-filled field in the " f"frame needs one")
+        raise RuntimeError(f"no zero rule for {ungoverned}; every zero-filled field in the frame needs one")
     out = frame.copy()
     for name, rule in rules.items():
         if rule != "null" or name not in out.columns:
@@ -621,7 +621,7 @@ def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *
                 "ticker": row["ticker"],
                 "date": row["date"],
                 "value": float(row["value"]),
-                "label": f"{row['ticker']} {pd.Timestamp(row['date']).date()} " f"x{row['value']}",
+                "label": f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']}",
             }
             for _, row in candidates.iterrows()
         ]
@@ -656,7 +656,7 @@ def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
     if not hit:
         return
     log.warning(
-        "%d split(s) co-dated with a spinoff are now KEPT (the veto that dropped " "them was wrong -- see `split_events`): %s",
+        "%d split(s) co-dated with a spinoff are now KEPT (the veto that dropped them was wrong -- see `split_events`): %s",
         len(hit),
         ", ".join(sorted(hit)),
     )
@@ -742,9 +742,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
             kept_yf += 1
         else:
             if report is not None:
-                report.splits_rejected.append(
-                    f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} " "(yfinance-only, not split-shaped)"
-                )
+                report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
             continue
         events.append({"ticker": row["ticker"], "date": row["date"], "value": value})
 
@@ -762,12 +760,12 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
 
     if uncorroborated:
         log.warning(
-            "%d split event(s) in sharadar_actions but NOT in yfinance, kept because " "the ratio is split-shaped -- review: %s",
+            "%d split event(s) in sharadar_actions but NOT in yfinance, kept because the ratio is split-shaped -- review: %s",
             len(uncorroborated),
             ", ".join(uncorroborated),
         )
     if conflicts:
-        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: " "%s", len(conflicts), "; ".join(conflicts))
+        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
         if report is not None:
             report.splits_rejected.extend(conflicts)
 
@@ -847,7 +845,7 @@ def deadjust_splits(
     splits = split_events(actions, yf_splits, report=report)
     if splits.empty:
         log.warning(
-            "no genuine split events available -- the share block stays on Sharadar's " "retroactively adjusted basis, which is NOT point-in-time"
+            "no genuine split events available -- the share block stays on Sharadar's retroactively adjusted basis, which is NOT point-in-time"
         )
         return frame
     out = frame.copy()
@@ -952,7 +950,7 @@ def _null_if_negative(values: pd.Series, name: str, report: TranslationReport) -
         values[violations] = np.nan
         report.sign_nulled[name] = report.sign_nulled.get(name, 0) + count
         log.warning(
-            "%s: %d cell(s) are negative in a column declared non_negative -- NULLed " "(a net-basis or Q4-by-subtraction figure, not a gross one)",
+            "%s: %d cell(s) are negative in a column declared non_negative -- NULLed (a net-basis or Q4-by-subtraction figure, not a gross one)",
             name,
             count,
         )
@@ -973,7 +971,7 @@ def _negate_if_non_positive(values: pd.Series, name: str, report: TranslationRep
     if count:
         out[violations] = np.nan
         report.negation_nulled[name] = report.negation_nulled.get(name, 0) + count
-        log.warning("%s: %d row(s) violate Sharadar's sign convention and were NULLed rather " "than flipped into a negative", name, count)
+        log.warning("%s: %d row(s) violate Sharadar's sign convention and were NULLed rather than flipped into a negative", name, count)
     return out
 
 

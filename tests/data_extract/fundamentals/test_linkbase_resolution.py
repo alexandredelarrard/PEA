@@ -140,7 +140,7 @@ def test_a_partial_leg_set_yields_no_value_rather_than_a_wrong_one():
 
     assert resolution.method != LINKBASE_SUM
     print("\n=== SANITY CHECK: partial roll-up refused ===")
-    print(f"  only one of two legs reported -> route {resolution.method}, " f"concept {resolution.concept}")
+    print(f"  only one of two legs reported -> route {resolution.method}, concept {resolution.concept}")
     print("  OK: No partial sum was emitted.")
 
 
@@ -160,7 +160,7 @@ def test_negative_weights_are_preserved():
     assert kids["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"] == -1.0
     assert not graph.is_pure_aggregation("PropertyPlantAndEquipmentNet") if hasattr(graph, "is_pure_aggregation") else True
     print("\n=== SANITY CHECK: contra-account weight ===")
-    print(f"  accumulated depreciation arc weight = " f"{kids['AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment']}")
+    print(f"  accumulated depreciation arc weight = {kids['AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment']}")
     print("  OK: Sign preserved.")
 
 
@@ -168,7 +168,7 @@ def test_root_discovery_finds_an_extension_total_under_a_standard_subtotal():
     """The APA shape, synthetically: the filer's revenue total is a COMPANY EXTENSION, so
     no candidate list can name it, but the linkbase declares it under a standard pretax
     subtotal."""
-    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
+    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
     graph = ArcGraph(
         _arcs(
             [
@@ -192,7 +192,7 @@ def test_root_discovery_finds_an_extension_total_under_a_standard_subtotal():
 def test_root_discovery_never_returns_a_margin_subtotal():
     """DTE declares `IncomeLoss...BeforeIncomeTaxes <- +1 OperatingIncomeLoss`. Without
     excluding the anchors themselves, the operating MARGIN would be stored as revenue."""
-    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
+    pretax = "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
     graph = ArcGraph(
         _arcs(
             [
@@ -252,7 +252,7 @@ def test_never_use_concepts_can_never_resolve_a_field():
     assert resolution.dc_code is not None
     assert resolution.method == UNRESOLVED
     print("\n=== SANITY CHECK: never_use enforced ===")
-    print(f"  MAA's IPR&D-tagged capex offered as the only candidate -> " f"dc_code={resolution.dc_code}")
+    print(f"  MAA's IPR&D-tagged capex offered as the only candidate -> dc_code={resolution.dc_code}")
     print("  OK: Refused. A REIT is not booked as an R&D spender.")
 
 
@@ -341,7 +341,7 @@ def test_statement_arcs_is_the_union_of_menucat_and_the_role_test():
     print("\n=== SANITY CHECK: 3c.1 arc filter is a union ===")
     for concept, test in kept.items():
         print(f"  kept {concept:<24s} by {test}")
-    print("  dropped: singular ...Detail, DisclosureIncomeTaxes, " "ScheduleII parent-only balance sheet")
+    print("  dropped: singular ...Detail, DisclosureIncomeTaxes, ScheduleII parent-only balance sheet")
     print("  OK: neither test alone keeps all three; the Schedule II role is excluded.")
 
 
@@ -423,8 +423,8 @@ def test_a_zero_in_every_period_loses_to_a_real_number_but_survives_alone():
     assert etn.concept == "us-gaap:SalesRevenueNet" and not etn.zero_only_retained
     assert vrt.concept == "us-gaap:Revenues" and vrt.zero_only_retained
     print("\n=== SANITY CHECK: 3c.3 genuine zero vs tagging artefact ===")
-    print(f"  ETN shape (a real top line exists)  -> {etn.concept}, " f"retained={etn.zero_only_retained}")
-    print(f"  VRT shape (the zero is all there is) -> {vrt.concept}, " f"retained={vrt.zero_only_retained}")
+    print(f"  ETN shape (a real top line exists)  -> {etn.concept}, retained={etn.zero_only_retained}")
+    print(f"  VRT shape (the zero is all there is) -> {vrt.concept}, retained={vrt.zero_only_retained}")
     print("  OK: the artefact is skipped, the real zero is kept and flagged.")
 
 
@@ -649,7 +649,7 @@ def test_each_regime_resolves_to_the_concept_its_filer_declares(resolved_regimes
     for ticker, _, expected in _REGIME_CASES:
         got = resolved_regimes[ticker]
         resolution = got["resolution"]
-        print(f"  {ticker:7s} {str(got['regime']):13s} {resolution.method:16s} " f"{resolution.concept}")
+        print(f"  {ticker:7s} {str(got['regime']):13s} {resolution.method:16s} {resolution.concept}")
         if resolution.concept != expected:
             failures.append(f"{ticker}: expected {expected}, got {resolution.concept}")
         if got["regime"] != _EXPECTED_REGIME[ticker]:
@@ -686,9 +686,9 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     print(f"  accession      : {got['accession']}")
     print(f"  resolved       : {resolution.concept} (extension={resolution.is_extension})")
     print(f"  anchor         : {resolution.anchor}")
-    print(f"  values         : {[f'${v/1e9:.3f}B' for v in sorted(values, reverse=True)]}")
+    print(f"  values         : {[f'${v / 1e9:.3f}B' for v in sorted(values, reverse=True)]}")
     print(f"  refused        : {len(refused)} period(s)")
-    print(f"  us-gaap:Revenues undimensioned? " f"{'Revenues' in got['available']}  <- the old resolver's target")
+    print(f"  us-gaap:Revenues undimensioned? {'Revenues' in got['available']}  <- the old resolver's target")
     print("  OK: Non-zero, non-null, and sourced from the filer's own declared total.")
 
 
@@ -748,9 +748,9 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
     for method, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         note = "  (not a route -- dc_code says why)" if method == UNRESOLVED else ""
         print(f"  {method:16s} {n:3d}{note}")
-    print(f"  genuine tag_fallback = {fallback:.1%} of {total} resolved " f"(plan gate: >20% means re-examine)")
+    print(f"  genuine tag_fallback = {fallback:.1%} of {total} resolved (plan gate: >20% means re-examine)")
     assert fallback <= 0.20, (
-        f"tag_fallback {fallback:.1%} exceeds the plan's 20% gate -- the linkbase premise " "needs re-examining before the full rebuild"
+        f"tag_fallback {fallback:.1%} exceeds the plan's 20% gate -- the linkbase premise needs re-examining before the full rebuild"
     )
     print("  OK: the filer's own structure carries the totals.")
 
@@ -815,7 +815,7 @@ def test_axp_carries_one_rule_9_04_basis_across_the_asc_606_break(axp_revenue):
         block = rows[(rows.field == "totalRevenue") & rows.value.notna() & (rows.duration_type == "annual")].sort_values("period_end")
         assert not block.empty, f"AXP {year}: no annual revenue at all -- the ban nulled it"
         for row in block.tail(3).itertuples():
-            print(f"  {year} 10-K  {str(row.period_end)[:10]}  " f"{row.value / 1e6:>10,.0f}M  {row.resolution_method:14s} " f"{row.source_concept}")
+            print(f"  {year} 10-K  {str(row.period_end)[:10]}  {row.value / 1e6:>10,.0f}M  {row.resolution_method:14s} {row.source_concept}")
             assert banned not in str(row.source_concept), f"AXP {str(row.period_end)[:10]} still resolves post-provision"
             # A $30-70bn issuer. The post-provision element runs ~$2bn lower, so this band
             # only catches a collapse to a leg or to nothing, which is what the ban risked.

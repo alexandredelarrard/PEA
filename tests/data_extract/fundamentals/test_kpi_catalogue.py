@@ -13,6 +13,7 @@ real artifact, and checking anything else would prove nothing. What is enforced:
      overrides name real regimes, and the exception register names real fields.
   5. The measured absence register is internally consistent with its own rule.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,9 @@ from pathlib import Path
 import pytest
 
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    INPUT_TIER, UNVERIFIED, load_catalogue,
+    INPUT_TIER,
+    UNVERIFIED,
+    load_catalogue,
 )
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
@@ -29,8 +32,7 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
 # tests/data_extract/<area>/ layout) and the hard index silently repointed this at
 # tests/configs/ -- 8 tests then errored with "KPI catalogue file missing", which reads
 # as a config bug rather than a moved file.
-_ROOT = next(p for p in Path(__file__).resolve().parents
-             if (p / "pyproject.toml").exists())
+_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 CONFIG_DIR = str(_ROOT / "configs")
 #: Where the three JSONs actually live, for the raw-text checks that bypass the loader.
 CATALOGUE_DIR = Path(CONFIG_DIR) / "fundamentals"
@@ -77,8 +79,7 @@ def test_tier_census_matches_the_contract(cat):
     for tier in sorted(EXPECTED_TIER_COUNTS):
         label = "inputs" if tier == INPUT_TIER else f"tier {tier}"
         print(f"  {label:8} {actual[tier]:2d}: {', '.join(cat.by_tier(tier))}")
-    print(f"  scored {len(cat.scored_fields)} | inputs {len(cat.input_fields)} | "
-          f"extracted {len(cat.extracted_fields)}")
+    print(f"  scored {len(cat.scored_fields)} | inputs {len(cat.input_fields)} | extracted {len(cat.extracted_fields)}")
 
 
 def test_no_field_appears_in_two_tiers(cat):
@@ -90,8 +91,7 @@ def test_no_field_appears_in_two_tiers(cat):
         occurrences = text.count(f'\n  "{name}":')
         assert occurrences == 1, f"{name} is declared {occurrences} times at the top level"
 
-    print(f"\n[catalogue] all {len(raw)} top-level keys are unique in the file TEXT, "
-          "so none was silently overwritten by the JSON parser")
+    print(f"\n[catalogue] all {len(raw)} top-level keys are unique in the file TEXT, so none was silently overwritten by the JSON parser")
 
 
 def test_every_authority_is_sourced_or_explicitly_unverified(cat):
@@ -102,22 +102,37 @@ def test_every_authority_is_sourced_or_explicitly_unverified(cat):
     A second research pass closed all 17 originally-UNVERIFIED fields against FASB's own
     2025 taxonomy files and eCFR Reg S-X, so `EXPECTED_UNVERIFIED` is now empty and this
     test's job flips: it guards against a REGRESSION back to the placeholder."""
-    primary_markers = ("FASB", "Reg S-X", "Rule 5-0", "ASC ", "ASU ", "17 CFR", "C&DI",
-                       "Regulation", "Item 10(e)", "Compustat", "dei:", "linkbase",
-                       "Measured", "measured", "edgartools GH", "us-gaap", "eCFR")
+    primary_markers = (
+        "FASB",
+        "Reg S-X",
+        "Rule 5-0",
+        "ASC ",
+        "ASU ",
+        "17 CFR",
+        "C&DI",
+        "Regulation",
+        "Item 10(e)",
+        "Compustat",
+        "dei:",
+        "linkbase",
+        "Measured",
+        "measured",
+        "edgartools GH",
+        "us-gaap",
+        "eCFR",
+    )
+
     def cites_a_source(spec) -> bool:
         return any(m in spec.authority for m in primary_markers)
 
     inherited = [n for n, s in cat.fields.items() if s.authority_inherits_from]
     unsourced = [
-        name for name, spec in cat.fields.items()
-        if spec.authority != UNVERIFIED
-        and not cites_a_source(spec)
-        and not spec.authority_inherits_from
+        name for name, spec in cat.fields.items() if spec.authority != UNVERIFIED and not cites_a_source(spec) and not spec.authority_inherits_from
     ]
     assert not unsourced, (
         f"{len(unsourced)} field(s) have an `authority` that cites no primary source, does "
-        f"not inherit one, and is not marked {UNVERIFIED}: {unsourced}")
+        f"not inherit one, and is not marked {UNVERIFIED}: {unsourced}"
+    )
 
     # An inherited authority must bottom out in a field that IS sourced, or the chain is
     # decorative. UNVERIFIED parents are permitted but must be reported, not hidden.
@@ -138,28 +153,30 @@ def test_every_authority_is_sourced_or_explicitly_unverified(cat):
     assert set(unverified) == EXPECTED_UNVERIFIED, (
         f"the UNVERIFIED set moved. expected {sorted(EXPECTED_UNVERIFIED) or 'none'}, got "
         f"{unverified}. Closing one is good news -- shrink EXPECTED_UNVERIFIED. Adding one "
-        "needs a matching entry in the plan's Open items.")
+        "needs a matching entry in the plan's Open items."
+    )
 
     caveated = [n for n, s in cat.fields.items() if s.raw.get("authority_caveat")]
     sourced = len(cat.fields) - len(unverified) - len(inherited)
     print("\n=== SANITY CHECK: authority completeness ===")
-    print(f"  {len(cat.fields)} fields: {sourced} cite a primary source directly, "
-          f"{len(inherited)} inherit one, {len(unverified)} are {UNVERIFIED}")
-    print(f"  {len(caveated)} carry an authority_caveat -- VERIFIED, but with one sub-claim a "
-          "notch weaker (an ASC paragraph number is primary while its prose could only be")
-    print(f"    read in a secondary reproduction, asc.fasb.org being login-walled): "
-          f"{', '.join(caveated)}")
+    print(f"  {len(cat.fields)} fields: {sourced} cite a primary source directly, {len(inherited)} inherit one, {len(unverified)} are {UNVERIFIED}")
+    print(
+        f"  {len(caveated)} carry an authority_caveat -- VERIFIED, but with one sub-claim a "
+        "notch weaker (an ASC paragraph number is primary while its prose could only be"
+    )
+    print(f"    read in a secondary reproduction, asc.fasb.org being login-walled): {', '.join(caveated)}")
     if inherited_from_unverified:
-        print(f"  inherit from an UNVERIFIED parent ({len(inherited_from_unverified)}): "
-              f"{'; '.join(inherited_from_unverified)}")
-    print(f"  All 17 fields Phase 2 shipped as {UNVERIFIED} are now closed against FASB's own "
-          "2025 taxonomy (doc/ref/label linkbases + schema) and eCFR Reg S-X. Validated.")
+        print(f"  inherit from an UNVERIFIED parent ({len(inherited_from_unverified)}): {'; '.join(inherited_from_unverified)}")
+    print(
+        f"  All 17 fields Phase 2 shipped as {UNVERIFIED} are now closed against FASB's own "
+        "2025 taxonomy (doc/ref/label linkbases + schema) and eCFR Reg S-X. Validated."
+    )
 
 
 def test_cross_references_resolve(cat):
     """`roll_up` on a FIELD names concepts; `roll_up` on a derived/aggregate field and the
     `components` / `feeds` keys name FIELDS. A typo in either is a silent no-op."""
-    names = cat.all_column_names        # extracted fields PLUS the computed columns
+    names = cat.all_column_names  # extracted fields PLUS the computed columns
     problems: list[str] = []
     for name, spec in cat.fields.items():
         for key in ("components", "feeds"):
@@ -169,32 +186,30 @@ def test_cross_references_resolve(cat):
     assert not problems, "\n".join(problems)
 
     # Every tier-0 input must say which field it feeds, or it has no reason to be carried.
-    orphans = [n for n in cat.input_fields
-               if not cat.field(n).raw.get("feeds")]
+    orphans = [n for n in cat.input_fields if not cat.field(n).raw.get("feeds")]
     assert not orphans, f"calculation input(s) that feed nothing: {orphans}"
 
-    print(f"\n[catalogue] every `components`/`feeds` reference resolves; "
-          f"all {len(cat.input_fields)} calculation inputs declare what they feed")
+    print(f"\n[catalogue] every `components`/`feeds` reference resolves; all {len(cat.input_fields)} calculation inputs declare what they feed")
 
 
 def test_derived_fields_declare_their_formula(cat):
     derived = [n for n, s in cat.fields.items() if s.kind in ("derived", "ratio")]
     for name in derived:
         assert cat.field(name).raw.get("derived_from"), f"{name}: no derived_from"
-        assert not cat.field(name).raw.get("fallback_concepts"), \
-            f"{name} is {cat.field(name).kind} but declares fallback_concepts"
+        assert not cat.field(name).raw.get("fallback_concepts"), f"{name} is {cat.field(name).kind} but declares fallback_concepts"
 
     extracted_without_route = [
-        n for n, s in cat.fields.items()
-        if s.is_extracted and not (s.fallback_concepts() or s.total_concept()
-                                   or s.raw.get("source") or s.raw.get("roll_up"))
+        n
+        for n, s in cat.fields.items()
+        if s.is_extracted and not (s.fallback_concepts() or s.total_concept() or s.raw.get("source") or s.raw.get("roll_up"))
     ]
-    assert not extracted_without_route, \
-        f"extracted field(s) with no way to resolve them: {extracted_without_route}"
+    assert not extracted_without_route, f"extracted field(s) with no way to resolve them: {extracted_without_route}"
 
-    print(f"\n[catalogue] {len(derived)} derived/ratio fields carry a formula and no "
-          f"concept list; every one of the {len(cat.extracted_fields)} extracted fields "
-          "has a resolution route")
+    print(
+        f"\n[catalogue] {len(derived)} derived/ratio fields carry a formula and no "
+        f"concept list; every one of the {len(cat.extracted_fields)} extracted fields "
+        "has a resolution route"
+    )
 
 
 def test_regime_overrides_and_exceptions_name_real_regimes(cat):
@@ -213,35 +228,34 @@ def test_regime_overrides_and_exceptions_name_real_regimes(cat):
             # visible, argued exception rather than a quiet loosening of the rule.
             reason = cell.get("override_reason", "")
             if len(reason) < 80:
-                violations.append(f"{regime}.{field}: expected_absent at rate {rate} "
-                                  "with no adequate override_reason")
+                violations.append(f"{regime}.{field}: expected_absent at rate {rate} with no adequate override_reason")
             else:
                 overrides.append(f"{regime}.{field} (rate {rate})")
     assert not violations, (
         "the register's stated rule is expected_absent only at rate >= "
-        f"{EXPECTED_ABSENT_MIN_RATE} unless override_reason argues otherwise: "
-        + "; ".join(violations))
+        f"{EXPECTED_ABSENT_MIN_RATE} unless override_reason argues otherwise: " + "; ".join(violations)
+    )
 
     print("\n=== SANITY CHECK: regimes + expected absence ===")
     print(f"  {len(cat.regime_names)} regimes: {', '.join(cat.regime_names)}")
-    print(f"  {len(cat.force_regime_by_sub_industry)} sub-industries force a regime "
-          "(the verified GICS traps):")
+    print(f"  {len(cat.force_regime_by_sub_industry)} sub-industries force a regime (the verified GICS traps):")
     for si, regime in sorted(cat.force_regime_by_sub_industry.items()):
         print(f"    {si:45} -> {regime}")
-    structural = sum(1 for b in cat.regime_exceptions.values()
-                     for c in b.values() if c.get("expected_absent"))
-    print(f"  {structural} (regime, field) cells are structurally excused at a measured "
-          f"absence rate >= {EXPECTED_ABSENT_MIN_RATE}")
-    print(f"  {len(overrides)} argued exception(s) below that bar: "
-          f"{', '.join(overrides) or 'none'}")
-    print(f"  bank/insurer currentAssets absence: "
-          f"{cat.measured_absent_rate('bank', 'currentAssets'):.0%} / "
-          f"{cat.measured_absent_rate('insurer', 'currentAssets'):.0%} -- structural, per "
-          "17 CFR 210.1-02(bb)(1)(i)")
-    print(f"  utility/energy currentAssets absence: "
-          f"{cat.measured_absent_rate('utility', 'currentAssets'):.0%} / "
-          f"{cat.measured_absent_rate('energy', 'currentAssets'):.0%} -- they DO file "
-          "classified balance sheets, so absence there stays a finding. Validated.")
+    structural = sum(1 for b in cat.regime_exceptions.values() for c in b.values() if c.get("expected_absent"))
+    print(f"  {structural} (regime, field) cells are structurally excused at a measured absence rate >= {EXPECTED_ABSENT_MIN_RATE}")
+    print(f"  {len(overrides)} argued exception(s) below that bar: {', '.join(overrides) or 'none'}")
+    print(
+        f"  bank/insurer currentAssets absence: "
+        f"{cat.measured_absent_rate('bank', 'currentAssets'):.0%} / "
+        f"{cat.measured_absent_rate('insurer', 'currentAssets'):.0%} -- structural, per "
+        "17 CFR 210.1-02(bb)(1)(i)"
+    )
+    print(
+        f"  utility/energy currentAssets absence: "
+        f"{cat.measured_absent_rate('utility', 'currentAssets'):.0%} / "
+        f"{cat.measured_absent_rate('energy', 'currentAssets'):.0%} -- they DO file "
+        "classified balance sheets, so absence there stays a finding. Validated."
+    )
 
 
 def test_the_measured_traps_are_encoded(cat):
@@ -288,16 +302,13 @@ def test_the_measured_traps_are_encoded(cat):
     # ppeNet, but only where the linkbase says it is folded IN rather than shown beside.
     ppe = cat.field("ppeNet")
     assert ppe.raw["total_adjustment"]["subtract"] == ["FinanceLeaseRightOfUseAsset"]
-    assert ppe.raw["total_adjustment"]["_only_when"], \
-        "the ROU subtraction must state its linkbase condition, or it double-removes"
+    assert ppe.raw["total_adjustment"]["_only_when"], "the ROU subtraction must state its linkbase condition, or it double-removes"
 
     # research part 2, Open item #2 -> option (b): a caption-anchored bank branch built from
     # Reg S-X 9-04 captions 6/7/8, NOT from InterestExpenseBorrowings (2 of 14 tickers).
     ie = cat.field("interestExpense")
     assert ie.total_concept("bank") == "InterestExpenseOperating"
-    assert ie.roll_up("bank") == ["InterestExpenseDeposits",
-                                  "InterestExpenseShortTermBorrowings",
-                                  "InterestExpenseLongTermDebt"]
+    assert ie.roll_up("bank") == ["InterestExpenseDeposits", "InterestExpenseShortTermBorrowings", "InterestExpenseLongTermDebt"]
     assert "InterestExpenseBorrowings" not in ie.roll_up("bank")
     assert "InterestExpenseDebt" in ie.never_use("bank")
     # InterestExpense is retained SECOND for banks: it is the only element covering 2011-2024.

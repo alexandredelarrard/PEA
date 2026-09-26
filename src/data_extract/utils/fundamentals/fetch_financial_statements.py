@@ -23,6 +23,7 @@ detail from the Financial Statement AND Notes sets is already wired -- separatel
 `fetch_financial_notes.py` (`notes_num` / `notes_text`).
 
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,13 +35,19 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, quarter_periods,
+    cache_dir,
+    ensure_zip,
+    quarter_periods,
 )
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.registrant import drop_rows_outside_segment
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, bulk_ingested_quarters, load_processed_universe,
-    save_processed_universe, cik_to_ticker)
+    bulk_ingested_quarters,
+    cik_to_ticker,
+    load_cik_mapping,
+    load_processed_universe,
+    save_processed_universe,
+)
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -50,23 +57,24 @@ _CHUNK = 500_000
 # Curated defined-benefit pension tags. The first is the recognized NET deficit
 # (balance-sheet, the debt-like obligation that feeds the cube's pension overhang);
 # the rest add coverage / detail where filers report them. Extend freely.
-_PENSION_TAGS = frozenset({
-    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
-    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesCurrent",
-    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilities",
-    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
-    "LiabilityPensionAndOtherPostretirementAndPostemploymentBenefitPlansNoncurrent",
-    "DefinedBenefitPlanFundedStatusOfPlanAmount",
-    "DefinedBenefitPlanBenefitObligation",
-    "DefinedBenefitPlanFairValueOfPlanAssets",
-    "DefinedBenefitPlanAccumulatedBenefitObligation",
-})
-_OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value",
-             "adsh", "filed", "form", "fy", "fp", "quarter"]
+_PENSION_TAGS = frozenset(
+    {
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesCurrent",
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilities",
+        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
+        "LiabilityPensionAndOtherPostretirementAndPostemploymentBenefitPlansNoncurrent",
+        "DefinedBenefitPlanFundedStatusOfPlanAmount",
+        "DefinedBenefitPlanBenefitObligation",
+        "DefinedBenefitPlanFairValueOfPlanAssets",
+        "DefinedBenefitPlanAccumulatedBenefitObligation",
+    }
+)
+_OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value", "adsh", "filed", "form", "fy", "fp", "quarter"]
 
-SEC_FINSTMT_URL_TEMPLATE = (
-    "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip")
-SEC_FINSTMT_FIRST_YEAR = 2009  
+SEC_FINSTMT_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
+SEC_FINSTMT_FIRST_YEAR = 2009
+
 
 # --------------------------------------------------------------------------- #
 # Pure parse (unit-tested)                                                       #
@@ -77,28 +85,31 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     seg = num.get("segments", pd.Series("", index=num.index)).astype("string").fillna("").str.strip()
     coreg = num.get("coreg", pd.Series("", index=num.index)).astype("string").fillna("").str.strip()
-    n = pd.DataFrame({
-        "adsh": num["adsh"],
-        "tag": num["tag"],
-        "ddate": pd.to_datetime(num["ddate"], format="%Y%m%d", errors="coerce"),
-        "qtrs": pd.to_numeric(num["qtrs"], errors="coerce"),
-        "uom": num["uom"],
-        "value": pd.to_numeric(num["value"], errors="coerce"),
-    })
+    n = pd.DataFrame(
+        {
+            "adsh": num["adsh"],
+            "tag": num["tag"],
+            "ddate": pd.to_datetime(num["ddate"], format="%Y%m%d", errors="coerce"),
+            "qtrs": pd.to_numeric(num["qtrs"], errors="coerce"),
+            "uom": num["uom"],
+            "value": pd.to_numeric(num["value"], errors="coerce"),
+        }
+    )
     # pension tags only (defensive: real path pre-filters, but keep the join pure),
     # consolidated parent-company fact only (drop dimensional members / co-registrants)
-    n = n[n["tag"].isin(_PENSION_TAGS) & (seg == "") & (coreg == "")].dropna(
-        subset=["value", "ddate"])
+    n = n[n["tag"].isin(_PENSION_TAGS) & (seg == "") & (coreg == "")].dropna(subset=["value", "ddate"])
     if n.empty:
         return pd.DataFrame()
-    s = pd.DataFrame({
-        "adsh": sub["adsh"],
-        "cik": sub["cik"].astype("string").str.zfill(10),
-        "form": sub.get("form"),
-        "fy": sub.get("fy"),
-        "fp": sub.get("fp"),
-        "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
-    })
+    s = pd.DataFrame(
+        {
+            "adsh": sub["adsh"],
+            "cik": sub["cik"].astype("string").str.zfill(10),
+            "form": sub.get("form"),
+            "fy": sub.get("fy"),
+            "fp": sub.get("fp"),
+            "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
+        }
+    )
     return n.merge(s, on="adsh", how="inner")
 
 
@@ -115,13 +126,16 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
             names = {n.lower(): n for n in z.namelist()}
             if "sub.txt" not in names or "num.txt" not in names:
                 return None
-            sub = pd.read_csv(z.open(names["sub.txt"]), sep="\t", dtype=str, low_memory=False,
-                              usecols=lambda c: c in ("adsh", "cik", "name", "form",
-                                                      "period", "fy", "fp", "filed"))
+            sub = pd.read_csv(
+                z.open(names["sub.txt"]),
+                sep="\t",
+                dtype=str,
+                low_memory=False,
+                usecols=lambda c: c in ("adsh", "cik", "name", "form", "period", "fy", "fp", "filed"),
+            )
             keep: list[pd.DataFrame] = []
             with z.open(names["num.txt"]) as fh:
-                for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False,
-                                         chunksize=_CHUNK):
+                for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False, chunksize=_CHUNK):
                     m = chunk["tag"].isin(_PENSION_TAGS)
                     if m.any():
                         keep.append(chunk.loc[m])
@@ -133,8 +147,7 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
     return _join_pension(num, sub)
 
 
-def fetch_financial_statements(context: Context, tickers: list[str],
-                               years_history: int = 15, reparse: bool = False) -> int:
+def fetch_financial_statements(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the Financial Statement Data Sets over `years_history`,
     extract pension facts for the universe, upsert to `pension_facts`. Returns the
     number of rows upserted.
@@ -152,24 +165,21 @@ def fetch_financial_statements(context: Context, tickers: list[str],
     """
 
     cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap) 
+    cik2tkr = cik_to_ticker(cikmap)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
 
     done_q = bulk_ingested_quarters(context.store, Tables.pension_facts)
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.pension_facts)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.pension_facts)  # empty once converged
     if new_tickers:
-        logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters",
-                    len(new_tickers))
+        logger.info("finstmt: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
     if reparse:
         logger.info("finstmt: --reparse -> re-reading every cached quarter (no re-download)")
 
     saved = 0
-    for q in tqdm(quarter_periods(years_history +1, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
+    for q in tqdm(quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
         if q in done_q and not new_tickers and not reparse:
             continue
-        path = ensure_zip(context, cache / f"{q}.zip",
-                          SEC_FINSTMT_URL_TEMPLATE.format(quarter=q),
-                          label=f"finstmt {q}", log=logger)
+        path = ensure_zip(context, cache / f"{q}.zip", SEC_FINSTMT_URL_TEMPLATE.format(quarter=q), label=f"finstmt {q}", log=logger)
         if path is None:
             continue
         facts = _read_pension_facts(path)
@@ -179,18 +189,15 @@ def fetch_financial_statements(context: Context, tickers: list[str],
         facts = facts[facts["ticker"].isin(tickers)]
         # `pension_facts` is CONSOLIDATING: a predecessor CIK resolves to the ticker, but only
         # for the dates that registrant actually owned. See `FORM_POLICY`.
-        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker",
-                                          filed_col="filed")
+        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker", filed_col="filed")
         if facts.empty:
             continue
         # keep the latest-filed value per (cik, tag, period-end, duration)
-        facts = (facts.sort_values("filed")
-                 .drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last"))
+        facts = facts.sort_values("filed").drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last")
         facts["quarter"] = q
         saved += context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
-    save_processed_universe(cache, Tables.pension_facts, tickers)   # so a converged re-run skips
-    logger.info("pension_facts: upserted %d rows (%d quarters scanned)",
-                   saved, len(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR)))
+    save_processed_universe(cache, Tables.pension_facts, tickers)  # so a converged re-run skips
+    logger.info("pension_facts: upserted %d rows (%d quarters scanned)", saved, len(quarter_periods(years_history, SEC_FINSTMT_FIRST_YEAR)))
     record_run(context, Tables.pension_facts, len(tickers), saved)
     return saved

@@ -22,7 +22,7 @@ class RobustJSONParser:
 
         try:
             return self.parser.parse(text)
-        except Exception as e:
+        except Exception:
             # Try to clean the string
             cleaned = self._sanitize_json_output(text)
             try:

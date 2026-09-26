@@ -132,7 +132,7 @@ def seed_universe(config_path: str, refresh: bool) -> None:
     suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
     for row in suspect:
         context.log.warning(
-            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — " "verify the company ID against EDGAR",
+            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — verify the company ID against EDGAR",
             row["ticker"],
             row["cik"],
             ", ".join(row["filing_tables_checked"]),
@@ -245,7 +245,7 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     "--seed",
     is_flag=True,
     default=False,
-    help="ONE-OFF: also replay the 13 committed web.archive.org captures " "(2013-2026) so the roster has a history to be point-in-time about.",
+    help="ONE-OFF: also replay the 13 committed web.archive.org captures (2013-2026) so the roster has a history to be point-in-time about.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
     _, context = _ctx(config_path)
@@ -325,7 +325,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
                 Tables.fundamentals_employees,
             ):
                 context.store.delete(table, {"ticker": ticker})
-        context.log.warning("fundamentals: --rebuild deleted all four tables for %d " "ticker(s); every filing will be refetched", len(names))
+        context.log.warning("fundamentals: --rebuild deleted all four tables for %d ticker(s); every filing will be refetched", len(names))
     fetch_fundamentals_sec(context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history))
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
@@ -342,7 +342,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 # is limited by patience, Sharadar by subscription tier (D3).
 @cli.command(
     name="fundamentals-sharadar",
-    help="The whole Sharadar producer in dependency order: tickers -> SF1 " "fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
+    help="The whole Sharadar producer in dependency order: tickers -> SF1 fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -360,7 +360,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> 
 
 @cli.command(
     name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category) -> " "sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
+    help="Sharadar entity dimension (permaticker, currency, category) -> sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
@@ -368,9 +368,7 @@ def sharadar_tickers(config_path: str) -> None:
     fetch_sharadar_tickers(context)
 
 
-@cli.command(
-    name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, " "relations) -> sharadar_actions."
-)
+@cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_actions(config_path: str, full: bool) -> None:
@@ -380,8 +378,7 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 
 @cli.command(
     name="sharadar-sp500",
-    help="S&P 500 membership events (added / removed / historical, from 1992) -> "
-    "sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
+    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -465,15 +462,14 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the " "daily EDGAR tail.")
+@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the daily EDGAR tail.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(
     "--reparse",
     is_flag=True,
     default=False,
-    help="Re-read every cached quarter even when already ingested. For a PARSE "
-    "change (a new column), not a data change -- nothing is re-downloaded.",
+    help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(
     "--live-full",
@@ -563,7 +559,7 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> No
     fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
 
 
-@cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). " "No download — reads sec_8k.")
+@cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
@@ -632,7 +628,7 @@ def google_trends(config_path: str, tickers: str | None) -> None:
 
 
 @cli.command(
-    help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + " "Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
+    help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

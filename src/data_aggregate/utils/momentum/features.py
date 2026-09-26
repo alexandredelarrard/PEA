@@ -77,6 +77,7 @@ side of the trade and it is 21-43 bars on two tickers.
 """
 
 from __future__ import annotations
+
 import logging
 
 import numpy as np
@@ -123,24 +124,24 @@ SEAM_EWMA_SPAN_MULTIPLE = 3
 #: `SEAM_EWMA_SPAN_MULTIPLE x span + 1` for the same reason.
 #: Verified against the live panel at `DHR`/2016-07-05 -- see `mask_seam_windows`.
 SEAM_WINDOWS: dict[str, tuple[int, int]] = {
-    "mom_12_1":      (252, 21),   # close.shift(21) / close.shift(252)
-    "rev_5":         (5, 0),
-    "rev_21":        (21, 0),
-    "ma_ratio_50":   (49, 0),     # rolling(50) covers t-49..t
-    "ma_ratio_200":  (199, 0),
-    "high_prox_252": (251, 0),    # rolling(252) max -- the seam RAISES the max
-    "peer_mom_63":   (63, 0),
-    "macd":          (79, 1),     # 3 x the slow EWMA span (26), + the .shift(1)
-    "macd_hist":     (79, 1),
-    "rsi_14":        (43, 1),     # 3 x Wilder's n=14, + the .shift(1)
+    "mom_12_1": (252, 21),  # close.shift(21) / close.shift(252)
+    "rev_5": (5, 0),
+    "rev_21": (21, 0),
+    "ma_ratio_50": (49, 0),  # rolling(50) covers t-49..t
+    "ma_ratio_200": (199, 0),
+    "high_prox_252": (251, 0),  # rolling(252) max -- the seam RAISES the max
+    "peer_mom_63": (63, 0),
+    "macd": (79, 1),  # 3 x the slow EWMA span (26), + the .shift(1)
+    "macd_hist": (79, 1),
+    "rsi_14": (43, 1),  # 3 x Wilder's n=14, + the .shift(1)
     # the `close_split` family. It shares no basis with `close_total`, but the seam is in BOTH
     # legs at DD / LDOS / VTR (the full step, identically) and partly at CNP (+6.06% against
     # close_total's +17.83%); only DHR and ETN are clean, being back-adjusted by the
     # `prices_splits` ratio. Masked on the close_total-measured dates anyway, so ~21-43 bars
     # are over-masked at those two -- the conservative side, and cheap.
-    "atr_14":        (43, 1),
-    "gap_21":        (21, 0),     # rolling(21) mean of open / close_split.shift(1) - 1
-    "range_21":      (21, 0),     # rolling(21) mean of |close_split - open| / open
+    "atr_14": (43, 1),
+    "gap_21": (21, 0),  # rolling(21) mean of open / close_split.shift(1) - 1
+    "range_21": (21, 0),  # rolling(21) mean of |close_split - open| / open
 }
 
 
@@ -179,7 +180,8 @@ def _atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, n: int = 14
     tr3 = (low - prev_close).abs()
     true_range = pd.DataFrame(
         np.maximum(np.maximum(tr1.to_numpy(), tr2.to_numpy()), tr3.to_numpy()),
-        index=close.index, columns=close.columns,
+        index=close.index,
+        columns=close.columns,
     )
     atr = true_range.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
     denom = close.where(close > 0)
@@ -227,8 +229,7 @@ def compute_raw_features(
     own lookback -- see the module docstring for which families are covered and which are
     deliberately not. `None` means no mask and reproduces the pre-mask frames bit-for-bit.
     """
-    ret = (close_total.pct_change(fill_method=None) if returns is None
-           else returns.reindex_like(close_total))
+    ret = close_total.pct_change(fill_method=None) if returns is None else returns.reindex_like(close_total)
     # `open`, `high` and `low` come back SPLIT-ADJUSTED ONLY, so anything subtracting one of
     # them from a close must use `close_split`. Pairing them with `close_total` mixes bases
     # inside a single subtraction -- a NEW bug, introduced by the two-column fix rather than
@@ -300,19 +301,17 @@ def compute_raw_features(
         volume = volume.reindex_like(close_total)
         # `None` -> 1.0, so the synthetic fingerprint harness and every test that has no
         # factor to give are bit-identical to the pre-`S` result rather than skipped.
-        lvl = (1.0 if level_factor is None
-               else level_factor.reindex_like(close_total).fillna(1.0))
+        lvl = 1.0 if level_factor is None else level_factor.reindex_like(close_total).fillna(1.0)
         # `split`, not `close_total`: dollar volume is a LEVEL x a share count, and both
         # carry the same SPLIT restatement so it cancels. On the total-return basis the
         # dollars traded would be depressed by every later dividend.
 
         # ⚠ Spinoff reduce price and backfilled, but vol does not
         # lvl is the factor to apply to volume to represent the spinoff shares added
-        dollar_vol = split * volume * lvl                  # daily $ traded
+        dollar_vol = split * volume * lvl  # daily $ traded
 
         # Liquidity/size proxy: log average daily dollar volume (63d).
-        feats["dollar_volume_63"] = sanitize(
-            np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
+        feats["dollar_volume_63"] = sanitize(np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
         # Amihud (2002) illiquidity = mean(|ret| / $volume). HIGHER = more illiquid
         # (illiquidity premium).
         #
@@ -348,8 +347,7 @@ def compute_raw_features(
         feats["volume_trend_63"] = sanitize(np.log(v63 / v252.where(v252 > 0)))
         # Volume dispersion (coefficient of variation, 63d) -> lumpy/event-driven
         # trading vs steady flow.
-        feats["volume_cv_63"] = sanitize(
-            volume.rolling(63, min_periods=20).std() / v63.where(v63 > 0))
+        feats["volume_cv_63"] = sanitize(volume.rolling(63, min_periods=20).std() / v63.where(v63 > 0))
 
     # ---- Cross-sectional SEASONALITY at the forecast target t+h (Heston-Sadka) ----
     # A calendar dummy (month of t+h) is identical for every stock on a date -> it
@@ -369,8 +367,7 @@ def compute_raw_features(
             cnt = finite.sum(axis=0)
             ssum = np.where(finite, prior, 0.0).sum(axis=0)
             seasonal = np.where(cnt > 0, ssum / np.maximum(cnt, 1), np.nan)
-            feats[f"seasonal_h{h}"] = sanitize(
-                pd.DataFrame(seasonal, index=close_total.index, columns=close_total.columns))
+            feats[f"seasonal_h{h}"] = sanitize(pd.DataFrame(seasonal, index=close_total.index, columns=close_total.columns))
 
     # ---- Technical indicators, LAGGED one day (exclude t -> no leakage) ----
     macd_norm, macd_hist = _macd(close_total)
@@ -439,8 +436,11 @@ def _null_thin_cross_sections(raw: dict[str, pd.DataFrame]) -> dict[str, pd.Data
             "%s: cross-section too thin on %d date(s) -> NULLED rather than ranked (%s%s). A "
             "percentile drawn from a fraction of the universe is not comparable to one drawn "
             "from all of it.",
-            name, len(dates), ", ".join(str(d.date()) for d in dates[:5]),
-            ", ..." if len(dates) > 5 else "")
+            name,
+            len(dates),
+            ", ".join(str(d.date()) for d in dates[:5]),
+            ", ..." if len(dates) > 5 else "",
+        )
         raw[name] = f.mask(thin[name], axis=0)
     return raw
 
@@ -479,10 +479,19 @@ def build_feature_panel(
     The thin-cross-section guard sits in the same gap, and for the same reason -- see
     `_null_thin_cross_sections`.
     """
-    raw = compute_raw_features(close_total, open, sector_returns, close_split=close_split,
-                               high=high, low=low, volume=volume,
-                               seasonal_horizons=seasonal_horizons, returns=returns,
-                               level_factor=level_factor, seams=seams)
+    raw = compute_raw_features(
+        close_total,
+        open,
+        sector_returns,
+        close_split=close_split,
+        high=high,
+        low=low,
+        volume=volume,
+        seasonal_horizons=seasonal_horizons,
+        returns=returns,
+        level_factor=level_factor,
+        seams=seams,
+    )
     raw = _null_thin_cross_sections(raw)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 

@@ -12,6 +12,7 @@ be tested offline at all.
 These are grep-level assertions on purpose: an import-level check would pass on a module that
 holds a raw SQL string, and the point is that the strings are gone too.
 """
+
 from __future__ import annotations
 
 import ast
@@ -22,20 +23,20 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 STORE_PKG = SRC / "data_store"
-ENGINE_FACTORY = SRC / "utils" / "db.py"      # creates the Engine; hands it to DataStore
+ENGINE_FACTORY = SRC / "utils" / "db.py"  # creates the Engine; hands it to DataStore
 
 # `text(` is deliberately absent here: it collides with read_text/write_text/_participants_text.
 # Importing sqlalchemy at all is the tighter test, and it is what actually gates SQL access.
-_SQLALCHEMY_IMPORT = re.compile(r"^\s*(?:from\s+sqlalchemy[\w.]*\s+import|import\s+sqlalchemy)",
-                                re.MULTILINE)
-_RAW_SQL_CALL = re.compile(r"\bread_sql\b|\.to_sql\(|\bengine\.connect\(|\braw_connection\(|"
-                           r"\bstore\.engine\b|\binformation_schema\b")
+_SQLALCHEMY_IMPORT = re.compile(r"^\s*(?:from\s+sqlalchemy[\w.]*\s+import|import\s+sqlalchemy)", re.MULTILINE)
+_RAW_SQL_CALL = re.compile(
+    r"\bread_sql\b|\.to_sql\(|\bengine\.connect\(|\braw_connection\(|"
+    r"\bstore\.engine\b|\binformation_schema\b"
+)
 
 
 def _modules():
     """Every `src/` module that is not the store package or the engine factory."""
-    return [p for p in SRC.rglob("*.py")
-            if STORE_PKG not in p.parents and p != ENGINE_FACTORY]
+    return [p for p in SRC.rglob("*.py") if STORE_PKG not in p.parents and p != ENGINE_FACTORY]
 
 
 def code_only(text: str) -> str:
@@ -59,18 +60,16 @@ def code_only(text: str) -> str:
         return text
 
     lines = text.splitlines()
-    blank: set[int] = set()                      # 1-indexed source lines to drop
+    blank: set[int] = set()  # 1-indexed source lines to drop
 
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                                 ast.AsyncFunctionDef)):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         body = getattr(node, "body", None)
         if not body:
             continue
         first = body[0]
-        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
-                and isinstance(first.value.value, str)):
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
             blank.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
 
     # ⚠ TRUNCATE at the comment column, never blank the whole line: `x = read_sql(q)  # why`
@@ -89,18 +88,17 @@ def code_only(text: str) -> str:
         if i in blank:
             out.append("")
         elif i in cut:
-            out.append(line[:cut[i]])
+            out.append(line[: cut[i]])
         else:
             out.append(line)
     return "\n".join(out)
 
 
 def test_only_the_store_package_imports_sqlalchemy():
-    offenders = [str(p.relative_to(SRC)) for p in _modules()
-                 if _SQLALCHEMY_IMPORT.search(p.read_text(encoding="utf-8"))]
+    offenders = [str(p.relative_to(SRC)) for p in _modules() if _SQLALCHEMY_IMPORT.search(p.read_text(encoding="utf-8"))]
     assert not offenders, (
-        f"{len(offenders)} module(s) outside src/data_store/ import sqlalchemy directly; route "
-        f"the read through `context.store` instead: {offenders}")
+        f"{len(offenders)} module(s) outside src/data_store/ import sqlalchemy directly; route the read through `context.store` instead: {offenders}"
+    )
 
 
 def test_no_module_outside_the_store_issues_raw_sql():
@@ -117,14 +115,12 @@ def test_the_scan_still_catches_real_raw_sql():
     does it", and a narrowing that went too far would silently un-gate the boundary -- so pin
     both directions on synthetic sources."""
     caught = 'import pandas as pd\ndf = pd.read_sql("SELECT 1", store.engine)\n'
-    inline = 'df = pd.read_sql(q, con)  # a comment must not hide this\n'
+    inline = "df = pd.read_sql(q, con)  # a comment must not hide this\n"
     literal = 'QUERY = "SELECT column_name FROM information_schema.columns"\n'
-    prose_only = ('"""An information_schema match on %pension% returns nothing."""\n'
-                  "VALUE = 1\n")
+    prose_only = '"""An information_schema match on %pension% returns nothing."""\nVALUE = 1\n'
     commented = "# df = pd.read_sql(q, con)\nVALUE = 1\n"
 
-    for label, src in (("read_sql call", caught), ("call with inline comment", inline),
-                       ("raw SQL string literal", literal)):
+    for label, src in (("read_sql call", caught), ("call with inline comment", inline), ("raw SQL string literal", literal)):
         assert _RAW_SQL_CALL.search(code_only(src)), f"{label} must still be caught"
     for label, src in (("docstring prose", prose_only), ("commented-out code", commented)):
         assert not _RAW_SQL_CALL.search(code_only(src)), f"{label} must NOT be flagged"
@@ -147,8 +143,7 @@ def test_store_surface_covers_every_capability_the_bypasses_needed():
         "row_count": "SELECT COUNT(*) (PartStore.row_count)",
         "bounds": "SELECT MIN(q), MAX(q) (fetch_hf_transcripts)",
         "max_date": "SELECT MAX(date) (PartStore.max_date, fetch_short_interest)",
-        "distinct": "SELECT DISTINCT [ORDER BY .. LIMIT] (sec_utils, bulk_cache, step_train, "
-                    "earnings-call streamers)",
+        "distinct": "SELECT DISTINCT [ORDER BY .. LIMIT] (sec_utils, bulk_cache, step_train, earnings-call streamers)",
         "load": "WHERE / IN / IS NOT NULL / date >= x / date <= y / projection",
         "iter_load": "server-side cursor over the 574-column cube",
         "save": "upsert on the registry PK",
@@ -163,7 +158,11 @@ def test_store_surface_covers_every_capability_the_bypasses_needed():
     assert not missing, f"DataStore lost capabilities the bypasses needed: {missing}"
 
     print("\n=== SANITY CHECK: one SQL boundary ===")
-    print(f"  {len(_modules())} modules scanned outside src/data_store/: 0 import sqlalchemy, "
-          f"0 use read_sql/to_sql/engine.connect/raw_connection/store.engine/information_schema.")
-    print(f"  DataStore exposes all {len(required)} capabilities the 11 former bypasses needed, so "
-          "no call site has a reason to reach past the facade. Validated.")
+    print(
+        f"  {len(_modules())} modules scanned outside src/data_store/: 0 import sqlalchemy, "
+        f"0 use read_sql/to_sql/engine.connect/raw_connection/store.engine/information_schema."
+    )
+    print(
+        f"  DataStore exposes all {len(required)} capabilities the 11 former bypasses needed, so "
+        "no call site has a reason to reach past the facade. Validated."
+    )

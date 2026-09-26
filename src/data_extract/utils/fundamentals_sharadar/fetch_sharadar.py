@@ -26,21 +26,24 @@ ARY max 2025-10-31 vs ticker-wide 2026-07-31; JPM 2026-02-13 vs 2026-08-06; HD 2
 REPROCESSING stamp, not a per-row change stamp (AAPL 2026-07-31 vs GS 2026-08-04), so a
 Sharadar restatement is picked up by `-F/--full`, not by an incremental run.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import (
-    DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
-)
+from src.constants.constants import DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
 from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_store.schema import Table, Tables
 from src.data_extract.utils.fundamentals_sharadar.client import (
-    NotEntitled, canonical_symbols, cast_value_columns, coerce_date_columns, sharadar_get,
+    NotEntitled,
+    canonical_symbols,
+    cast_value_columns,
+    coerce_date_columns,
+    sharadar_get,
     vendor_symbol,
 )
+from src.data_store.schema import Table, Tables
 from src.utils.polite_http import sleep_pace
 
 # The AS-REPORTED dimensions only. Sharadar also publishes MRQ/MRY/MRT ("most recent
@@ -54,6 +57,7 @@ SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
 # event measured 1992-01-02), so the cold pull is a single request. There is no years-history
 # knob for it for that reason.
 SHARADAR_SP500_FIRST_DATE = "1990-01-01"
+
 
 def _pace(context: Context) -> float:
     return float(context.config.data_extract.sharadar_request_pace)
@@ -78,14 +82,14 @@ def _usd_roster(context: Context) -> dict[str, str]:
     Raises if the dimension is empty: the USD assertion (D20) cannot be enforced without it,
     and writing unasserted rows is exactly the failure this guard exists to prevent.
     """
-    frame = context.store.load(Tables.sharadar_tickers,
-                               columns=["ticker", "currency", "isdelisted"])
+    frame = context.store.load(Tables.sharadar_tickers, columns=["ticker", "currency", "isdelisted"])
     if frame is None or frame.empty:
         raise RuntimeError(
             f"{Tables.sharadar_tickers} is empty -- run the tickers fetch first. The "
             f"fundamentals fetch reads `currency` from it to assert USD (D20), and only 8 "
             f"of Sharadar's money columns are USD-converted, so a non-USD row mixes units "
-            f"INSIDE ITSELF.")
+            f"INSIDE ITSELF."
+        )
     frame = frame.assign(_live=(frame["isdelisted"].astype(str).str.upper() != "Y"))
     frame = frame.sort_values("_live", ascending=False).drop_duplicates("ticker")
     return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str)))
@@ -101,19 +105,20 @@ def fetch_sharadar_tickers(context: Context) -> None:
     whole dimension is ~17.8k rows, and `isdelisted` / `lastquarter` MUTATE, so an
     append-only view of it would go stale silently.
     """
-    frame = sharadar_get(context, "tickers", keep_default_na=False,
-                         **{"table": "fundamentals"})
+    frame = sharadar_get(context, "tickers", keep_default_na=False, **{"table": "fundamentals"})
     if frame is None or frame.empty:
-        context.log.warning("Sharadar tickers: no rows returned; %s left unchanged",
-                            Tables.sharadar_tickers)
+        context.log.warning("Sharadar tickers: no rows returned; %s left unchanged", Tables.sharadar_tickers)
         return
     frame = coerce_date_columns(frame, Tables.sharadar_tickers.date_type_cols)
     frame["permaticker"] = pd.to_numeric(frame["permaticker"], errors="coerce").astype("Int64")
     written = context.store.save(Tables.sharadar_tickers, frame)
-    context.log.info("Sharadar tickers: %d rows -> %s (%d USD, %d non-USD)",
-                     written, Tables.sharadar_tickers,
-                     int((frame["currency"] == "USD").sum()),
-                     int((frame["currency"] != "USD").sum()))
+    context.log.info(
+        "Sharadar tickers: %d rows -> %s (%d USD, %d non-USD)",
+        written,
+        Tables.sharadar_tickers,
+        int((frame["currency"] == "USD").sum()),
+        int((frame["currency"] != "USD").sum()),
+    )
     # Market-wide (a full refresh of the whole dimension, not scoped to our universe) --
     # `ticker_count=0` records that rather than the ~17.8k SF1-covered rows.
     record_run(context, Tables.sharadar_tickers, 0, written, is_full_rescan=True)
@@ -122,8 +127,7 @@ def fetch_sharadar_tickers(context: Context) -> None:
 # --------------------------------------------------------------------------- #
 # 2. fundamentals (SF1)                                                        #
 # --------------------------------------------------------------------------- #
-def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
-                                years_history: int, full: bool = False) -> None:
+def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_history: int, full: bool = False) -> None:
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`.
 
     One request per (ticker, dimension). A ticker the subscription does not cover costs
@@ -132,9 +136,14 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
     currencies = _usd_roster(context)
     resume = context.store.max_date_by(Tables.sharadar_fundamentals, "ticker")
     pace = _pace(context)
-    context.log.info("Sharadar SF1: %d ticker(s) x %d dimension(s); %d already have stored "
-                     "rows (full=%s, window=%dy)", len(tickers), len(SHARADAR_DIMENSIONS),
-                     len(resume), full, years_history)
+    context.log.info(
+        "Sharadar SF1: %d ticker(s) x %d dimension(s); %d already have stored rows (full=%s, window=%dy)",
+        len(tickers),
+        len(SHARADAR_DIMENSIONS),
+        len(resume),
+        full,
+        years_history,
+    )
 
     entitled: list[str] = []
     denied: list[str] = []
@@ -152,9 +161,13 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
             # USD-converted, so the row would mix units inside itself and no downstream
             # consumer could unmix them.
             non_usd.append(ticker)
-            context.log.warning("Sharadar SF1: %s reports in %s, not USD -- NOT WRITTEN. "
-                                "Only 8 SF1 columns are USD-converted, so the row would mix "
-                                "units within itself (D20).", ticker, currency)
+            context.log.warning(
+                "Sharadar SF1: %s reports in %s, not USD -- NOT WRITTEN. "
+                "Only 8 SF1 columns are USD-converted, so the row would mix "
+                "units within itself (D20).",
+                ticker,
+                currency,
+            )
             continue
 
         since = _since(resume.get(ticker), years_history, full)
@@ -162,9 +175,14 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
         try:
             for dimension in SHARADAR_DIMENSIONS:
                 page = sharadar_get(
-                    context, "fundamentals", expect_columns=SHARADAR_SF1_COLUMNS,
-                    ticker=symbol, dimension=dimension, sort="date.asc",
-                    **{"date.gte": since})
+                    context,
+                    "fundamentals",
+                    expect_columns=SHARADAR_SF1_COLUMNS,
+                    ticker=symbol,
+                    dimension=dimension,
+                    sort="date.asc",
+                    **{"date.gte": since},
+                )
                 if page is not None and not page.empty:
                     frames.append(page)
                 sleep_pace(pace, SHARADAR_BASE_URL)
@@ -189,31 +207,31 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *,
         frame = coerce_date_columns(frame, Tables.sharadar_fundamentals.date_type_cols)
         total_rows += context.store.save(Tables.sharadar_fundamentals, frame)
 
-    context.log.info("Sharadar SF1: %d entitled, %d not entitled (403); %d rows written to %s",
-                     len(entitled), len(denied), total_rows, Tables.sharadar_fundamentals)
+    context.log.info(
+        "Sharadar SF1: %d entitled, %d not entitled (403); %d rows written to %s",
+        len(entitled),
+        len(denied),
+        total_rows,
+        Tables.sharadar_fundamentals,
+    )
     record_run(context, Tables.sharadar_fundamentals, len(tickers), total_rows, is_full_rescan=full)
     if denied:
-        context.log.info("Sharadar SF1: not entitled -> %s",
-                         ", ".join(denied[:20]) + (" ..." if len(denied) > 20 else ""))
+        context.log.info("Sharadar SF1: not entitled -> %s", ", ".join(denied[:20]) + (" ..." if len(denied) > 20 else ""))
     if non_usd:
-        context.log.warning("Sharadar SF1: %d non-USD filer(s) skipped -> %s",
-                            len(non_usd), ", ".join(non_usd))
+        context.log.warning("Sharadar SF1: %d non-USD filer(s) skipped -> %s", len(non_usd), ", ".join(non_usd))
 
 
 # --------------------------------------------------------------------------- #
 # 3. actions / 4. sp500 -- market-wide, resumed on the table's global max date  #
 # --------------------------------------------------------------------------- #
-def _fetch_dated_table(context: Context, table: Table, endpoint: str,
-                       since: str, *, full: bool = False) -> None:
+def _fetch_dated_table(context: Context, table: Table, endpoint: str, since: str, *, full: bool = False) -> None:
     """Shared body for the two market-wide, date-resumed side tables."""
-    frame = sharadar_get(context, endpoint, keep_default_na=False,
-                         sort="date.asc", **{"date.gte": since})
+    frame = sharadar_get(context, endpoint, keep_default_na=False, sort="date.asc", **{"date.gte": since})
     if frame is None:
         context.log.warning("Sharadar %s: request failed; %s left unchanged", endpoint, table)
         return
     if frame.empty:
-        context.log.info("Sharadar %s: no rows since %s; %s already current",
-                         endpoint, since, table)
+        context.log.info("Sharadar %s: no rows since %s; %s already current", endpoint, since, table)
         return
     frame = coerce_date_columns(frame, table.date_type_cols)
     # Share classes to the repo's spelling. These two tables are market-wide, so there is
@@ -225,15 +243,12 @@ def _fetch_dated_table(context: Context, table: Table, endpoint: str,
     if "value" in frame.columns:
         frame["value"] = pd.to_numeric(frame["value"], errors="coerce").astype("float64")
     written = context.store.save(table, frame)
-    context.log.info("Sharadar %s: %d row(s) since %s -> %s (actions: %s)",
-                     endpoint, written, since, table,
-                     frame["action"].value_counts().to_dict())
+    context.log.info("Sharadar %s: %d row(s) since %s -> %s (actions: %s)", endpoint, written, since, table, frame["action"].value_counts().to_dict())
     # Market-wide (one request covers every ticker), so ticker_count=0.
     record_run(context, table, 0, written, is_full_rescan=full)
 
 
-def fetch_sharadar_actions(context: Context, *, years_history: int,
-                           full: bool = False) -> None:
+def fetch_sharadar_actions(context: Context, *, years_history: int, full: bool = False) -> None:
     """Corporate actions -> `sharadar_actions`. Market-wide, so resume is the table's GLOBAL
     max date: one request covers every ticker, and a per-ticker frontier would only re-pull
     days already held."""
@@ -248,6 +263,5 @@ def fetch_sharadar_sp500(context: Context, *, full: bool = False) -> None:
     fix needs 1992 onward), and the whole table is ~3.3k rows, so the cold pull is one request.
     """
     stored_max = context.store.max_date(Tables.sharadar_sp500)
-    since = (SHARADAR_SP500_FIRST_DATE if full or stored_max is None
-             else (stored_max + pd.Timedelta(days=1)).strftime(DATE_FORMAT))
+    since = SHARADAR_SP500_FIRST_DATE if full or stored_max is None else (stored_max + pd.Timedelta(days=1)).strftime(DATE_FORMAT)
     _fetch_dated_table(context, Tables.sharadar_sp500, "sp500", since, full=full)

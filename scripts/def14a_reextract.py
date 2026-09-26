@@ -34,6 +34,7 @@ Usage:
     rtk "$PY" scripts/def14a_reextract.py --scope dual-class --limit 20        # price + list
     rtk "$PY" scripts/def14a_reextract.py --scope dual-class --limit 20 --write
 """
+
 from __future__ import annotations
 
 import argparse
@@ -111,9 +112,9 @@ SCOPES = {
 }
 SCOPES["both"] = f"""
     SELECT ticker, accession_number, min(as_of) AS as_of FROM (
-        ({SCOPES['dual-class'].replace('ORDER  BY ticker, as_of', '')})
+        ({SCOPES["dual-class"].replace("ORDER  BY ticker, as_of", "")})
         UNION
-        ({SCOPES['no-director-comp'].replace('ORDER  BY l.ticker, l.as_of', '')})
+        ({SCOPES["no-director-comp"].replace("ORDER  BY l.ticker, l.as_of", "")})
     ) u GROUP BY ticker, accession_number ORDER BY ticker, as_of
 """
 
@@ -127,8 +128,7 @@ def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:
         if not accs:
             raise SystemExit("--scope accessions needs --accessions A,B,C")
         quoted = ", ".join(f"'{a}'" for a in accs)
-        sql = ("SELECT ticker, accession_number, as_of::date AS as_of FROM def14a_llm "
-               f"WHERE accession_number IN ({quoted}) ORDER BY ticker, as_of")
+        sql = f"SELECT ticker, accession_number, as_of::date AS as_of FROM def14a_llm WHERE accession_number IN ({quoted}) ORDER BY ticker, as_of"
     else:
         sql = SCOPES[args.scope]
 
@@ -144,14 +144,11 @@ def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:
         # ⚠ `groupby().head()`, NOT `groupby().apply(head)`. The apply form DROPS the grouping
         # column from the result on current pandas, so `work['ticker']` raised a bare
         # `KeyError: 'ticker'` from the summary print -- after the scope query had already run.
-        work = work.groupby("ticker", as_index=False, sort=False) \
-                   .head(max(1, args.per_ticker)) \
-                   .head(args.limit)
+        work = work.groupby("ticker", as_index=False, sort=False).head(max(1, args.per_ticker)).head(args.limit)
     return work.reset_index(drop=True)
 
 
-def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str,
-                      want: set[str]) -> list[tuple[str, dict]]:
+def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str, want: set[str]) -> list[tuple[str, dict]]:
     """Fetch + carve this ticker's target filings on THIS thread; `(payload, meta)` per readable
     one.
 
@@ -165,17 +162,15 @@ def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str,
         # The SAME listing call production makes, so `doc_url` / `txt_url` are the production
         # URLs. `years` is the full configured window: a target accession can be 20 years old
         # and a manifest-shaped window would simply not list it.
-        filings = list_filings(ctx, cik, DEF14A_FORMS,
-                               ctx.config.data_extract.years_history, company)
-    except Exception as e:                              # noqa: BLE001 -- one ticker, not the run
+        filings = list_filings(ctx, cik, DEF14A_FORMS, ctx.config.data_extract.years_history, company)
+    except Exception as e:  # noqa: BLE001 -- one ticker, not the run
         logger.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
         return []
 
     todo = filings[filings["accession_number"].isin(want)]
     missing = want - set(todo["accession_number"])
     if missing:
-        logger.warning("%s: %d target accession(s) not in the EDGAR listing: %s",
-                       ticker, len(missing), sorted(missing)[:3])
+        logger.warning("%s: %d target accession(s) not in the EDGAR listing: %s", ticker, len(missing), sorted(missing)[:3])
 
     out: list[tuple[str, dict]] = []
     for _, f in todo.iterrows():
@@ -226,11 +221,10 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
             n = ctx.store.delete(table, {"accession_number": accs})
             if n:
                 logger.info("cleared %d row(s) from %s (backed up)", n, table.name)
-        tasks = [LlmTask(seq=i, payload=payload, schema=Def14AExtract,
-                         table=Tables.def14a_llm, meta=meta)
-                 for i, (payload, meta) in enumerate(pending)]
-        results = extractor.run_extraction(tasks, flatten=_result_frames,
-                                           group_key=lambda t: str(t.meta["ticker"]))
+        tasks = [
+            LlmTask(seq=i, payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta=meta) for i, (payload, meta) in enumerate(pending)
+        ]
+        results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
         n_ok = sum(1 for x in results if x.ok)
         logger.info("batch: %d/%d filing(s) re-extracted", n_ok, len(tasks))
         return n_ok, len(results) - n_ok
@@ -247,8 +241,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
             a, b = flush(batch)
             ok, failed = ok + a, failed + b
             batch = []
-            logger.info("progress: %d ticker(s) resolved, %d filing(s) done, %d failed",
-                        done_tickers, ok, failed)
+            logger.info("progress: %d ticker(s) resolved, %d filing(s) done, %d failed", done_tickers, ok, failed)
 
     a, b = flush(batch)
     return ok + a, failed + b
@@ -263,8 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--accessions", default=None, help="comma-separated, with --scope accessions")
     ap.add_argument("--tickers", default=None, help="restrict the scope to these tickers")
     ap.add_argument("--limit", type=int, default=0, help="cap the filing count (a sample)")
-    ap.add_argument("--per-ticker", type=int, default=1,
-                    help="with --limit, filings per ticker before filling (default 1)")
+    ap.add_argument("--per-ticker", type=int, default=1, help="with --limit, filings per ticker before filling (default 1)")
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--model", default=None, help="pin a model without touching config")
     ap.add_argument("--write", action="store_true", help="SPEND MONEY and write the rows")
@@ -278,8 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"tickers         {work['ticker'].nunique()}")
     if len(work):
         print(f"as_of span      {work['as_of'].min()} .. {work['as_of'].max()}")
-    print(f"estimated cost  ${len(work) * USD_PER_FILING:,.2f} "
-          f"at ${USD_PER_FILING}/filing (measured)")
+    print(f"estimated cost  ${len(work) * USD_PER_FILING:,.2f} at ${USD_PER_FILING}/filing (measured)")
     if not len(work):
         return 0
 

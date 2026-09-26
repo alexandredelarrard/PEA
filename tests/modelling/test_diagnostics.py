@@ -6,15 +6,18 @@ per-horizon importance table, OOS IC-over-time curve) and that optional deps
 (`shap`, an .xlsx engine) degrade gracefully -- the importance table falls back
 to CSV and SHAP is skipped without failing the run.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.modelling.long_short.utils.model import (
-    train_ranker, predict, purged_wf_splits,
-)
 from src.modelling.long_short.utils import diagnostics
+from src.modelling.long_short.utils.model import (
+    predict,
+    purged_wf_splits,
+    train_ranker,
+)
 
 
 def _panel(n_days: int = 120, n_tickers: int = 60, n_feats: int = 6, seed: int = 0):
@@ -43,10 +46,7 @@ def _oos_predictions(panel, feats):
             continue
         b = train_ranker(tr, feats, "y", num_boost_round=30)
         p = predict(b, te, feats)
-        frames.append(pd.DataFrame({"date": te["date"].to_numpy(),
-                                    "ticker": te["ticker"].to_numpy(),
-                                    "pred": p.to_numpy(),
-                                    "y": te["y"].to_numpy()}))
+        frames.append(pd.DataFrame({"date": te["date"].to_numpy(), "ticker": te["ticker"].to_numpy(), "pred": p.to_numpy(), "y": te["y"].to_numpy()}))
     return pd.concat(frames, ignore_index=True)
 
 
@@ -64,8 +64,7 @@ def test_partial_dependence_and_ic_series():
     assert len(ic) > 0 and ic.index.is_monotonic_increasing
 
     print("\n=== SANITY CHECK: PDP + daily IC series ===")
-    print(f"  PDP over {len(grid)} grid points; daily IC series over {len(ic)} days "
-          f"(mean={ic.mean():+.4f}). Validated.")
+    print(f"  PDP over {len(grid)} grid points; daily IC series over {len(ic)} days (mean={ic.mean():+.4f}). Validated.")
 
 
 def test_run_diagnostics_layout(tmp_path):
@@ -75,9 +74,16 @@ def test_run_diagnostics_layout(tmp_path):
     top_n = 5
 
     summary = diagnostics.save_horizon_diagnostics(
-        horizon=5, booster=model, panel=panel, feature_cols=feats,
-        out_dir=tmp_path / "h5", oos_predictions=oos, label_name="y",
-        top_n=top_n, shap_sample=500, pdp_grid=12,
+        horizon=5,
+        booster=model,
+        panel=panel,
+        feature_cols=feats,
+        out_dir=tmp_path / "h5",
+        oos_predictions=oos,
+        label_name="y",
+        top_n=top_n,
+        shap_sample=500,
+        pdp_grid=12,
     )
 
     hdir = tmp_path / "h5"
@@ -94,14 +100,19 @@ def test_run_diagnostics_layout(tmp_path):
     # top-level orchestrator across horizons
     run_dir = tmp_path / "run"
     diagnostics.save_run_diagnostics(
-        run_dir, {5: model, 10: model}, {5: panel, 10: panel}, feats,
-        {5: oos, 10: oos}, label_name="y", top_n=top_n, shap_sample=500, pdp_grid=12,
+        run_dir,
+        {5: model, 10: model},
+        {5: panel, 10: panel},
+        feats,
+        {5: oos, 10: oos},
+        label_name="y",
+        top_n=top_n,
+        shap_sample=500,
+        pdp_grid=12,
     )
     assert (run_dir / "h5" / "pdp").is_dir() and (run_dir / "h10" / "pdp").is_dir()
 
     imp_kind = "xlsx" if (hdir / "feature_importance.xlsx").exists() else "csv (fallback)"
     print("\n=== SANITY CHECK: per-horizon diagnostics layout ===")
-    print(f"  h5/: {len(pdp_files)} PDP PNGs, ic_over_time.png+csv ({len(ic_csv)} days), "
-          f"feature_importance.{imp_kind}")
-    print(f"  shap_available={summary['shap_available']} (skipped cleanly if shap absent); "
-          f"run/ has h5 + h10 subfolders. Validated.")
+    print(f"  h5/: {len(pdp_files)} PDP PNGs, ic_over_time.png+csv ({len(ic_csv)} days), feature_importance.{imp_kind}")
+    print(f"  shap_available={summary['shap_available']} (skipped cleanly if shap absent); run/ has h5 + h10 subfolders. Validated.")

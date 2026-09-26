@@ -163,7 +163,7 @@ def test_profile_finds_the_dead_constant_and_infinite_legs(sqlite_store, capsys)
         f_good=lambda i, t: float(i) + (0.5 if t == "BBB" else 0.0),
         f_dead=lambda i, t: None,
         f_const=lambda i, t: 1.0,
-        f_inf=lambda i, t: (np.inf if i == 3 else float(i)),
+        f_inf=lambda i, t: np.inf if i == 3 else float(i),
     )
     sqlite_store.save(PART, frame)
     context = _Ctx(sqlite_store, _config())
@@ -195,7 +195,7 @@ def test_profile_finds_the_dead_constant_and_infinite_legs(sqlite_store, capsys)
 # --------------------------------------------------------------------------------------- #
 def test_bounds_abstains_undeclared_and_names_the_worst_violation(sqlite_store, capsys):
     """Exit 3 with no declaration; with one, the count AND one (ticker, date, value)."""
-    frame = _panel(["AAA", "BBB"], f_pct=lambda i, t: (140.0 if (t == "BBB" and i == 11) else -3.0 if (t == "AAA" and i == 2) else float(i)))
+    frame = _panel(["AAA", "BBB"], f_pct=lambda i, t: 140.0 if (t == "BBB" and i == 11) else -3.0 if (t == "AAA" and i == 2) else float(i))
     sqlite_store.save(PART, frame)
     context = _Ctx(sqlite_store, _config())
 
@@ -414,7 +414,7 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
     conditional = _panel(
         ["SMCI"],
         f_ic_sig_insider_age_days=lambda i, t: 200.0 if 6 <= i < 12 else 10.0,
-        f_ic_sig_insider_price_vs_buy=lambda i, t: (np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i)),
+        f_ic_sig_insider_price_vs_buy=lambda i, t: np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i),
         f_ic_shortvol_ratio_5d=lambda i, t: np.nan if 15 <= i < 21 else float(i),
         f_ic_shortvol_ratio_20d=lambda i, t: np.nan if 15 <= i < 24 else float(i),
     )

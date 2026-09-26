@@ -4,6 +4,7 @@ SHAP explainability for LightGBM rankers.
 Computes SHAP values on a held-out CV fold, saves feature importance and
 partial-dependence-style plots for the top features.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -94,17 +95,20 @@ def save_shap_analysis(
     shap_values, x = _compute_shap(booster, panel, feature_cols)
 
     shap_imp = pd.Series(
-        np.abs(shap_values).mean(axis=0), index=feature_cols,
+        np.abs(shap_values).mean(axis=0),
+        index=feature_cols,
     ).sort_values(ascending=False)
     gain_imp = pd.Series(ml.feature_importance(booster, feature_cols)).sort_values(
         ascending=False,
     )
 
-    imp_df = pd.DataFrame({
-        "feature": shap_imp.index,
-        "shap_mean_abs": shap_imp.values,
-        "lgbm_gain": [gain_imp.get(f, np.nan) for f in shap_imp.index],
-    })
+    imp_df = pd.DataFrame(
+        {
+            "feature": shap_imp.index,
+            "shap_mean_abs": shap_imp.values,
+            "lgbm_gain": [gain_imp.get(f, np.nan) for f in shap_imp.index],
+        }
+    )
     imp_df.to_csv(out_dir / f"{prefix}shap_feature_importance.csv", index=False)
 
     fig, ax = plt.subplots(figsize=(10, max(6, top_n * 0.35)))
@@ -133,7 +137,7 @@ def save_shap_analysis(
     for ax, feat in zip(np.atleast_1d(axes).flatten(), top_features):
         _plot_dependence(ax, feat, x, shap_values, feature_cols)
         ax.set_title(feat, fontsize=9)
-    for ax in np.atleast_1d(axes).flatten()[len(top_features):]:
+    for ax in np.atleast_1d(axes).flatten()[len(top_features) :]:
         ax.axis("off")
 
     dep_title = f"SHAP partial dependence — top {top_n} (last CV fold)"

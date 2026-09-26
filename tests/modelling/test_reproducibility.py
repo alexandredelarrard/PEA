@@ -8,18 +8,21 @@ Two independent guarantees are checked:
     seed + deterministic + force_row_wise params. Without them, multithreaded
     LightGBM drifts and early stopping flips between 1800 and ~1 round.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.modelling.long_short.utils.model import (
-    train_ranker, predict, purged_wf_splits, temporal_valid_split,
+    predict,
+    purged_wf_splits,
+    temporal_valid_split,
+    train_ranker,
 )
 
 
-def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8,
-                 seed: int = 0) -> pd.DataFrame:
+def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8, seed: int = 0) -> pd.DataFrame:
     """A realistic-shaped ranking panel: daily cross-sections, rank label in
     [0,1] driven by a few features plus noise. Big enough that multithreaded
     training would drift if it were not made deterministic."""
@@ -30,7 +33,7 @@ def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8,
     for d in dates:
         X = rng.normal(size=(n_tickers, n_feats))
         sig = X[:, 0] * 0.5 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
-        y = sig.argsort().argsort() / (n_tickers - 1)          # rank -> [0,1]
+        y = sig.argsort().argsort() / (n_tickers - 1)  # rank -> [0,1]
         block = pd.DataFrame(X, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", [f"T{i:03d}" for i in range(n_tickers)])
@@ -50,8 +53,10 @@ def test_purged_wf_splits_is_deterministic():
         assert np.array_equal(te1, te2)
 
     print("\n=== SANITY CHECK: CV fold composition is deterministic ===")
-    print(f"  {len(f1)} folds identical across two calls (train/test day arrays equal). "
-          "Fold composition is NOT a source of run-to-run difference. Validated.")
+    print(
+        f"  {len(f1)} folds identical across two calls (train/test day arrays equal). "
+        "Fold composition is NOT a source of run-to-run difference. Validated."
+    )
 
 
 def test_train_ranker_reproducible_no_validation():
@@ -67,8 +72,9 @@ def test_train_ranker_reproducible_no_validation():
     assert b1.model_to_string() == b2.model_to_string(), "model dumps differ"
 
     print("\n=== SANITY CHECK: training is bit-for-bit reproducible ===")
-    print(f"  two trainings on identical data -> identical predictions "
-          f"(max abs diff={np.abs(p1 - p2).max():.2e}) and identical model dump. Validated.")
+    print(
+        f"  two trainings on identical data -> identical predictions (max abs diff={np.abs(p1 - p2).max():.2e}) and identical model dump. Validated."
+    )
 
 
 def test_early_stopping_best_iteration_stable():
@@ -84,5 +90,4 @@ def test_early_stopping_best_iteration_stable():
     assert np.array_equal(v1, v2)
 
     print("\n=== SANITY CHECK: early stopping is reproducible ===")
-    print(f"  best_iteration identical on rerun (={b1.best_iteration}); "
-          "no more 'sometimes 1800, sometimes 1' drift. Validated.")
+    print(f"  best_iteration identical on rerun (={b1.best_iteration}); no more 'sometimes 1800, sometimes 1' drift. Validated.")

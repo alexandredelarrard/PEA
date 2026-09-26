@@ -6,16 +6,19 @@ Token accounting for an extraction run: what was sent, what came back, and what 
 The API reports token counts per response and nothing captured them for a long time, so a
 backfill's real bill could only be estimated after the fact.
 """
+
 from __future__ import annotations
 
 import threading
-from typing import Mapping
+from collections.abc import Mapping
 
 #: gpt-5-mini list price per 1M tokens: fresh input / cached input / output.
 PRICE_IN, PRICE_CACHED_IN, PRICE_OUT = 0.25, 0.025, 2.00
 
 DEFAULT_PRICES: dict[str, float] = {
-    "input": PRICE_IN, "cached_input": PRICE_CACHED_IN, "output": PRICE_OUT,
+    "input": PRICE_IN,
+    "cached_input": PRICE_CACHED_IN,
+    "output": PRICE_OUT,
 }
 
 
@@ -35,7 +38,10 @@ class UsageTracker:
     def __init__(self) -> None:
         self.last: dict[str, int] | None = None
         self.totals: dict[str, int] = {
-            "calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0,
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_input_tokens": 0,
         }
         self._lock = threading.Lock()
 
@@ -65,9 +71,7 @@ class UsageTracker:
         p = dict(DEFAULT_PRICES) | dict(prices or {})
         t = self.totals
         fresh = max(t["input_tokens"] - t["cached_input_tokens"], 0)
-        return (fresh * p["input"]
-                + t["cached_input_tokens"] * p["cached_input"]
-                + t["output_tokens"] * p["output"]) / 1e6
+        return (fresh * p["input"] + t["cached_input_tokens"] * p["cached_input"] + t["output_tokens"] * p["output"]) / 1e6
 
     @property
     def cached_share(self) -> float:

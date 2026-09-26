@@ -38,24 +38,36 @@ and from the `ceo_age` accrual, and none of those has a "source age" -- they rea
 write to. The fixture therefore omits every identity PARTNER, so a cell that goes from NaN to a
 value can only have been carried, and its source age is exactly measurable.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.data_aggregate.utils.governance import def14a_impute
 from src.data_aggregate.utils.governance.def14a_impute import (
-    CARRY_FORBIDDEN, CARRY_LEVELS, CARRY_MAX_DAYS, FLAGS, IDENTITY_GATED_CARRY, impute_def14a,
+    CARRY_FORBIDDEN,
+    CARRY_LEVELS,
+    CARRY_MAX_DAYS,
+    FLAGS,
+    IDENTITY_GATED_CARRY,
+    impute_def14a,
 )
 from src.data_aggregate.utils.governance.directors import fill_director_attributes
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, horizon_for
 
 #: Columns the fixture carries. Every one is in `CARRY_LEVELS`, `IDENTITY_GATED_CARRY` or
 #: `FLAGS`; none is half of an identity `_reconcile_rows` could satisfy instead.
-_CARRIED = ["insider_ownership_pct", "pct_independent_directors", "avg_other_public_boards",
-            "say_on_pay_support_pct", "poison_pill", "majority_voting", "independent_chair",
-            "ceo_salary"]
+_CARRIED = [
+    "insider_ownership_pct",
+    "pct_independent_directors",
+    "avg_other_public_boards",
+    "say_on_pay_support_pct",
+    "poison_pill",
+    "majority_voting",
+    "independent_chair",
+    "ceo_salary",
+]
 
 #: `(ticker, filing dates, the index of the row that DISCLOSES a value)`. Everything else is a
 #: gap, so each ticker states one gap width in days.
@@ -65,7 +77,7 @@ _CARRIED = ["insider_ownership_pct", "pct_independent_directors", "avg_other_pub
 _ARCHIVES: dict[str, tuple[list[str], list[int]]] = {
     "FRESH": (["2019-05-01", "2020-05-01", "2021-05-01"], [0, 2]),
     "STALE": (["2010-05-01", "2019-05-01"], [0]),
-    "EDGE":  (["2019-05-01", "2022-04-30"], [0]),          # 2019-05-01 -> 2022-04-30 = 1,095 d
+    "EDGE": (["2019-05-01", "2022-04-30"], [0]),  # 2019-05-01 -> 2022-04-30 = 1,095 d
 }
 
 
@@ -73,18 +85,14 @@ def _parent() -> pd.DataFrame:
     rows: list[dict] = []
     for ticker, (dates, disclosed) in _ARCHIVES.items():
         for i, d in enumerate(dates):
-            row = {"ticker": ticker, "accession_number": f"{ticker}-{i}", "as_of": d,
-                   "ceo_name_proxy": f"{ticker} Chief"}
+            row = {"ticker": ticker, "accession_number": f"{ticker}-{i}", "as_of": d, "ceo_name_proxy": f"{ticker} Chief"}
             for col in _CARRIED:
-                row[col] = (0.5 if col not in ("poison_pill", "majority_voting",
-                                               "independent_chair") else 1.0) \
-                    if i in disclosed else np.nan
+                row[col] = (0.5 if col not in ("poison_pill", "majority_voting", "independent_chair") else 1.0) if i in disclosed else np.nan
             rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _source_age_days(raw: pd.DataFrame, filled: pd.DataFrame, col: str,
-                     key: list[str], group: str) -> pd.Series:
+def _source_age_days(raw: pd.DataFrame, filled: pd.DataFrame, col: str, key: list[str], group: str) -> pd.Series:
     """For each row, `as_of - as_of of the last row whose RAW `col` was disclosed`, in days.
 
     The same payload trick `_carry` and `expire_stale` both use: carry the source DATE forward
@@ -101,8 +109,7 @@ def _source_age_days(raw: pd.DataFrame, filled: pd.DataFrame, col: str,
     return age.reindex(pd.MultiIndex.from_frame(f[key]))
 
 
-def _carried_cells(raw: pd.DataFrame, filled: pd.DataFrame, col: str,
-                   key: list[str], group: str) -> pd.Series:
+def _carried_cells(raw: pd.DataFrame, filled: pd.DataFrame, col: str, key: list[str], group: str) -> pd.Series:
     """The source ages of the cells this fill actually WROTE (NaN before, a value after)."""
     r = raw.set_index(pd.MultiIndex.from_frame(raw[key]))[col]
     f = filled.set_index(pd.MultiIndex.from_frame(filled[key]))[col]
@@ -121,13 +128,15 @@ def test_the_carry_cap_can_never_exceed_the_staleness_horizon():
         f"CARRY_MAX_DAYS={CARRY_MAX_DAYS} exceeds LEVEL_MAX_AGE_DAYS={LEVEL_MAX_AGE_DAYS}. The "
         "imputer would then write values that `expire_stale` believes are fresh, because it "
         "dates a filled cell by the row it landed on. Raise the horizon or lower the cap; they "
-        "cannot disagree.")
+        "cannot disagree."
+    )
     strictest = min(horizon_for(f) for f in ("board_size", "f_sop_dissent"))
     print("\n=== SANITY CHECK: the cap versus the clock ===")
-    print(f"  CARRY_MAX_DAYS={CARRY_MAX_DAYS} <= LEVEL_MAX_AGE_DAYS={LEVEL_MAX_AGE_DAYS} "
-          f"(the event horizon is {strictest}d, and nothing here is carried onto it)")
-    print("  SANITY CHECK: no carried value can outlive the horizon that is supposed to "
-          "expire it.")
+    print(
+        f"  CARRY_MAX_DAYS={CARRY_MAX_DAYS} <= LEVEL_MAX_AGE_DAYS={LEVEL_MAX_AGE_DAYS} "
+        f"(the event horizon is {strictest}d, and nothing here is carried onto it)"
+    )
+    print("  SANITY CHECK: no carried value can outlive the horizon that is supposed to expire it.")
 
 
 def test_no_carried_cell_is_older_than_the_cap():
@@ -136,8 +145,7 @@ def test_no_carried_cell_is_older_than_the_cap():
     filled, stats = impute_def14a(raw.copy())
     key, group = ["ticker", "accession_number"], "ticker"
 
-    fields = [c for c in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY) + FLAGS
-              if c in raw.columns and c not in CARRY_FORBIDDEN]
+    fields = [c for c in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY) + FLAGS if c in raw.columns and c not in CARRY_FORBIDDEN]
     violations: dict[str, list[int]] = {}
     filled_ages: dict[str, list[int]] = {}
     for col in fields:
@@ -152,13 +160,16 @@ def test_no_carried_cell_is_older_than_the_cap():
         print(f"  {col:<28} filled at ages (days): {filled_ages[col] or 'nothing filled'}")
     assert not violations, (
         f"a carry wrote a value older than CARRY_MAX_DAYS={CARRY_MAX_DAYS}: {violations}. "
-        "`expire_stale` cannot see this -- it dates the cell to the row it landed on.")
+        "`expire_stale` cannot see this -- it dates the cell to the row it landed on."
+    )
     # the fixture must actually exercise the rule, or the assertion above is vacuous
     assert any(filled_ages[c] for c in fields), "nothing was filled; the fixture proves nothing"
     assert stats, "the imputer reported no work at all"
-    print(f"  SANITY CHECK: {sum(len(v) for v in filled_ages.values())} cells carried across "
-          f"{len(fields)} fields, every one of them sourced within {CARRY_MAX_DAYS} days; the "
-          "3,287-day STALE gap was refused.")
+    print(
+        f"  SANITY CHECK: {sum(len(v) for v in filled_ages.values())} cells carried across "
+        f"{len(fields)} fields, every one of them sourced within {CARRY_MAX_DAYS} days; the "
+        "3,287-day STALE gap was refused."
+    )
 
 
 def test_the_invariant_is_load_bearing_and_not_vacuous(monkeypatch):
@@ -169,18 +180,20 @@ def test_the_invariant_is_load_bearing_and_not_vacuous(monkeypatch):
     raw = _parent()
     monkeypatch.setattr(def14a_impute, "CARRY_MAX_DAYS", 20_000)
     filled, _ = impute_def14a(raw.copy())
-    ages = _carried_cells(raw, filled, "insider_ownership_pct",
-                          ["ticker", "accession_number"], "ticker").dropna()
+    ages = _carried_cells(raw, filled, "insider_ownership_pct", ["ticker", "accession_number"], "ticker").dropna()
     oldest = int(ages.max()) if len(ages) else 0
 
     print("\n=== SANITY CHECK: the guard removed ===")
-    print(f"  with CARRY_MAX_DAYS=20,000 the oldest carried source is {oldest} days "
-          f"({oldest / 365.25:.1f} years) -- versus a {LEVEL_MAX_AGE_DAYS}-day horizon")
+    print(
+        f"  with CARRY_MAX_DAYS=20,000 the oldest carried source is {oldest} days "
+        f"({oldest / 365.25:.1f} years) -- versus a {LEVEL_MAX_AGE_DAYS}-day horizon"
+    )
     assert oldest > LEVEL_MAX_AGE_DAYS, (
-        "raising the cap did not produce a cell older than the horizon; the fixture no longer "
-        "contains a gap wide enough to test the rule")
-    print("  SANITY CHECK: the cap is the only thing preventing a 9-year-old observation from "
-          "being dated to the row it lands on and reading as fresh.")
+        "raising the cap did not produce a cell older than the horizon; the fixture no longer contains a gap wide enough to test the rule"
+    )
+    print(
+        "  SANITY CHECK: the cap is the only thing preventing a 9-year-old observation from being dated to the row it lands on and reading as fresh."
+    )
 
 
 def test_no_child_fill_is_older_than_the_cap():
@@ -192,10 +205,18 @@ def test_no_child_fill_is_older_than_the_cap():
     parent's, and it is why the child fill needs the SAME cap rather than a rule of its own.
     """
     dates = ["2010-05-01", "2019-05-01", "2020-05-01"]
-    rows = [{"ticker": "STALE", "accession_number": f"S-{i}", "as_of": d, "name": "Rip Winkle",
-             "age": 55 + (i * 5), "tenure_years": 10 + i,
-             "other_public_company_boards": 2.0 if i in (0, 2) else np.nan}
-            for i, d in enumerate(dates)]
+    rows = [
+        {
+            "ticker": "STALE",
+            "accession_number": f"S-{i}",
+            "as_of": d,
+            "name": "Rip Winkle",
+            "age": 55 + (i * 5),
+            "tenure_years": 10 + i,
+            "other_public_company_boards": 2.0 if i in (0, 2) else np.nan,
+        }
+        for i, d in enumerate(dates)
+    ]
     raw = pd.DataFrame(rows)
     filled, _ = fill_director_attributes(raw.copy())
     key, group = ["ticker", "accession_number", "name"], "name"
@@ -203,11 +224,13 @@ def test_no_child_fill_is_older_than_the_cap():
     over = sorted(int(a) for a in ages if a > CARRY_MAX_DAYS)
 
     print("\n=== SANITY CHECK: the child grain's fill ages ===")
-    print(f"  Rip Winkle discloses 2 boards in 2010, is silent in 2019, discloses 2 again in "
-          f"2020. Cells filled at ages (days): {sorted(int(a) for a in ages) or 'none'}")
+    print(
+        f"  Rip Winkle discloses 2 boards in 2010, is silent in 2019, discloses 2 again in "
+        f"2020. Cells filled at ages (days): {sorted(int(a) for a in ages) or 'none'}"
+    )
     assert not over, (
         f"the child fill wrote a value sourced {over} days back, past CARRY_MAX_DAYS="
         f"{CARRY_MAX_DAYS}. An agreement gate has no age bound: it only asks whether the two "
-        "sides match, never how far apart they are.")
-    print(f"  SANITY CHECK: no child cell is filled from an observation older than "
-          f"{CARRY_MAX_DAYS} days.")
+        "sides match, never how far apart they are."
+    )
+    print(f"  SANITY CHECK: no child cell is filled from an observation older than {CARRY_MAX_DAYS} days.")

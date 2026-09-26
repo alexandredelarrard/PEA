@@ -1,6 +1,7 @@
 """DEF 14A LLM: the incremental up-to-date check must be per-TICKER (not date+count),
 and the new board-technology-maturity fields must flatten into the output row.
 """
+
 from __future__ import annotations
 
 import types
@@ -10,22 +11,19 @@ from types import SimpleNamespace
 import pandas as pd
 from sqlalchemy import create_engine
 
-from src.data_store.store import DataStore
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, GovernanceProfile
 from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date
 from src.data_extract.utils.structure.def14a.flatten import _flatten
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, GovernanceProfile
+from src.data_store.store import DataStore
 from tests.data_extract.fake_context import extract_config
 
 
 def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
-    ds.save("def14a_llm", pd.DataFrame([
-        {"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers
-    ]))
-    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path},
-                               config=extract_config())
+    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
+    ds.save("def14a_llm", pd.DataFrame([{"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers]))
+    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config=extract_config())
     if write_meta_today:
         record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
     return ctx
@@ -44,8 +42,10 @@ def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
     assert _is_up_to_date(ctx2, ["AAPL", "MSFT"]) is False
 
     print("\n=== SANITY: DEF 14A incremental is per-ticker ===")
-    print("  all requested present -> skip; a missing ticker (NVDA) -> NOT skipped "
-          "(re-processes it); no meta -> re-scan. date+count bug fixed. Validated.")
+    print(
+        "  all requested present -> skip; a missing ticker (NVDA) -> NOT skipped "
+        "(re-processes it); no meta -> re-scan. date+count bug fixed. Validated."
+    )
 
 
 def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
@@ -55,29 +55,40 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     so a HOLE in the middle (2023 here) is filled while the present years (2022,
     2024) are skipped. Uses an in-memory SQLite store (no Postgres)."""
     import logging
-    from omegaconf import OmegaConf
+
     from src.data_extract.utils.structure.def14a import fetch as mod
 
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
-    ds.save("def14a_llm", pd.DataFrame([                       # 2022 + 2024 present; 2023 is a HOLE
-        {"ticker": "ZZ", "accession_number": "a2022", "as_of": "2022-04-01"},
-        {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
-    ]))
-    ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
-                                paths={"DATA_STORE": tmp_path},
-                                config=extract_config(data_extract={"years_history": 15}))
+    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
+    ds.save(
+        "def14a_llm",
+        pd.DataFrame(
+            [  # 2022 + 2024 present; 2023 is a HOLE
+                {"ticker": "ZZ", "accession_number": "a2022", "as_of": "2022-04-01"},
+                {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
+            ]
+        ),
+    )
+    ctx = types.SimpleNamespace(
+        store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
+    )
 
     listed_since, extracted = [], []
 
-    def _fake_list(context, cik, forms, years, company_name="", since=None,
-                   cache_dir=None):        # mirrors edgar_fillings.list_filings EXACTLY
-                                           # -- a stale stub binds `since` positionally
-        listed_since.append(since)                            # must be None now (full window)
-        return pd.DataFrame([
-            {"accession_number": a, "doc_url": f"http://x/{a}", "filing_date": pd.Timestamp(d),
-             "period_of_report": "2000-12-31", "form": "DEF 14A"}
-            for a, d in [("a2022", "2022-04-01"), ("a2023", "2023-04-01"),
-                         ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]])
+    def _fake_list(context, cik, forms, years, company_name="", since=None, cache_dir=None):  # mirrors edgar_fillings.list_filings EXACTLY
+        # -- a stale stub binds `since` positionally
+        listed_since.append(since)  # must be None now (full window)
+        return pd.DataFrame(
+            [
+                {
+                    "accession_number": a,
+                    "doc_url": f"http://x/{a}",
+                    "filing_date": pd.Timestamp(d),
+                    "period_of_report": "2000-12-31",
+                    "form": "DEF 14A",
+                }
+                for a, d in [("a2022", "2022-04-01"), ("a2023", "2023-04-01"), ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]
+            ]
+        )
 
     class _FakeLLM:
         """Stands in for the whole extracter: records which accessions became LLM tasks,
@@ -86,6 +97,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
         The frame is written with a STRING `as_of` because this test runs on SQLite, whose
         driver cannot bind a pandas Timestamp.
         """
+
         def __init__(self, context, config, action=None, threads=None, methodes=None):
             self._context = context
 
@@ -95,21 +107,17 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
             for t in tasks:
                 f = t.meta["filing"]
                 extracted.append(f["accession_number"])
-                rows.append({"ticker": t.meta["ticker"],
-                             "accession_number": f["accession_number"],
-                             "as_of": f["filing_date"], "def14a_json": "{}"})
+                rows.append({"ticker": t.meta["ticker"], "accession_number": f["accession_number"], "as_of": f["filing_date"], "def14a_json": "{}"})
             if rows:
                 df = pd.DataFrame(rows)
                 df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
                 self._context.store.save("def14a_llm", df)
-            return [SimpleNamespace(ok=True, task=t, parsed=object(), error=None)
-                    for t in tasks]
+            return [SimpleNamespace(ok=True, task=t, parsed=object(), error=None) for t in tasks]
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame(
-        {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
     mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
@@ -120,8 +128,10 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     assert accs == {"a2022", "a2023", "a2024", "a2025"}
 
     print("\n=== SANITY: DEF 14A gap-filling incremental ===")
-    print(f"  had 2022+2024, listed full window (since={listed_since[0]}) -> LLM ran ONLY on the "
-          f"missing {sorted(set(extracted))} (2023 hole + new 2025); 2 present skipped. Validated.")
+    print(
+        f"  had 2022+2024, listed full window (since={listed_since[0]}) -> LLM ran ONLY on the "
+        f"missing {sorted(set(extracted))} (2023 hole + new 2025); 2 present skipped. Validated."
+    )
 
 
 def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
@@ -131,35 +141,38 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
     This is the narrow-window counterpart to the full-rescan case exercised by
     `test_gap_fill_lists_full_window_and_skips_present` above."""
     import logging
-    from omegaconf import OmegaConf
+
     from src.data_extract.utils.common.run_manifest import record_run
     from src.data_extract.utils.structure.def14a import fetch as mod
 
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path/'d.db'}"))
-    ds.save("def14a_llm", pd.DataFrame([
-        {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
-    ]))
-    ctx = types.SimpleNamespace(store=ds, log=logging.getLogger("t"),
-                                paths={"DATA_STORE": tmp_path},
-                                config=extract_config(data_extract={"years_history": 15}))
+    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
+    ds.save(
+        "def14a_llm",
+        pd.DataFrame(
+            [
+                {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
+            ]
+        ),
+    )
+    ctx = types.SimpleNamespace(
+        store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
+    )
     # A prior run 10 days ago, one ticker -- same ticker count as this run, and well
     # inside the (default 30-day) self-heal window, so `manifest_window` must return
     # the narrow cutoff, not the full-rescan fallback.
     last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True,
-               run_date=last_run)
+    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True, run_date=last_run)
 
     listed_since = []
 
-    def _fake_list(context, cik, forms, years, company_name="", since=None,
-                   cache_dir=None):        # mirrors edgar_fillings.list_filings EXACTLY
-                                           # -- a stale stub binds `since` positionally
+    def _fake_list(context, cik, forms, years, company_name="", since=None, cache_dir=None):  # mirrors edgar_fillings.list_filings EXACTLY
+        # -- a stale stub binds `since` positionally
         listed_since.append(since)
-        return pd.DataFrame(columns=["accession_number", "doc_url", "filing_date",
-                                     "period_of_report", "form"])
+        return pd.DataFrame(columns=["accession_number", "doc_url", "filing_date", "period_of_report", "form"])
 
     class _FakeLLM:
         """This ticker lists no filings, so the extracter is built and never used."""
+
         def __init__(self, context, config, action=None, threads=None, methodes=None):
             pass
 
@@ -168,20 +181,20 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame(
-        {"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
     mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
 
     # list_filings' own `since` is STRICTLY AFTER the date passed, so the manifest's
     # last run date (inclusive) is passed as (last_run - 1 day).
-    assert listed_since == [last_run - pd.Timedelta(days=1)], (
-        f"routine rerun must narrow to the manifest cutoff, got {listed_since}")
+    assert listed_since == [last_run - pd.Timedelta(days=1)], f"routine rerun must narrow to the manifest cutoff, got {listed_since}"
 
     print("\n=== SANITY: DEF 14A manifest narrows the window on a routine rerun ===")
-    print(f"  prior run {last_run.date()}, same ticker count, rescan not due -> "
-          f"listed since={listed_since[0]} (inclusive of the prior run date). Validated.")
+    print(
+        f"  prior run {last_run.date()}, same ticker count, rescan not due -> "
+        f"listed since={listed_since[0]} (inclusive of the prior run date). Validated."
+    )
 
 
 def test_flatten_surfaces_the_auditor_block():
@@ -194,15 +207,21 @@ def test_flatten_surfaces_the_auditor_block():
     is present in 98% of documents and was the WORST column in the retired edgar table at 2.05%
     fill."""
     extract = Def14AExtract(
-        company_name="ACME", fiscal_year=2024,
+        company_name="ACME",
+        fiscal_year=2024,
         governance=GovernanceProfile(
-            board_size=10, auditor_name="Ernst & Young LLP", auditor_since_year=1934,
-            auditor_fees_usd=12_000_000.0, audit_fees_audit_usd=9_000_000.0,
-            audit_fees_audit_related_usd=1_000_000.0, audit_fees_tax_usd=1_500_000.0,
-            audit_fees_other_usd=500_000.0, auditor_fees_prior_usd=11_000_000.0),
+            board_size=10,
+            auditor_name="Ernst & Young LLP",
+            auditor_since_year=1934,
+            auditor_fees_usd=12_000_000.0,
+            audit_fees_audit_usd=9_000_000.0,
+            audit_fees_audit_related_usd=1_000_000.0,
+            audit_fees_tax_usd=1_500_000.0,
+            audit_fees_other_usd=500_000.0,
+            auditor_fees_prior_usd=11_000_000.0,
+        ),
     )
-    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
-                        "period_of_report": "2023-12-31", "accession_number": "a1"})
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"), "period_of_report": "2023-12-31", "accession_number": "a1"})
     row = _flatten("ACME", filing, extract)
     assert row["auditor_name"] == "Ernst & Young LLP"
     assert row["auditor_since_year"] == 1934
@@ -219,7 +238,6 @@ def test_flatten_surfaces_the_auditor_block():
     assert empty["audit_fees_audit"] is None
 
     print("\n=== SANITY: auditor block flattens; technology fields are gone ===")
-    print("  auditor_name='Ernst & Young LLP', since=1934, fees=12,000,000 split "
-          "9.0M/1.0M/1.5M/0.5M, prior=11,000,000; absent -> null.")
+    print("  auditor_name='Ernst & Young LLP', since=1934, fees=12,000,000 split 9.0M/1.0M/1.5M/0.5M, prior=11,000,000; absent -> null.")
     print("  n_technology_directors / pct_technology_directors / technology_committee are")
     print("  absent from the flatten -- they were an opinion, not an extraction. Validated.")

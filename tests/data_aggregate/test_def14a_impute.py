@@ -10,6 +10,7 @@ The LLM extraction leaves gaps in `def14a_llm`; the cube deduces them at read ti
      leaving leading/trailing gaps untouched.
 STRICTLY non-destructive: a value is written only where it is currently NaN.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,36 +27,67 @@ def _row(ticker: str, as_of: str, **kw) -> dict:
 
 
 def test_impute_rules_synthetic():
-    df = pd.DataFrame([
-        # --- CEO pay identity: total missing, all 6 components present -> deduce total
-        _row("AAA", "2020-04-01", ceo_salary=1_000_000, ceo_bonus=0, ceo_stock_awards=5_000_000,
-             ceo_option_awards=2_000_000, ceo_non_equity_incentive=3_000_000, ceo_all_other_comp=200_000,
-             ceo_total_comp=np.nan, board_size=10, n_directors=np.nan),
-        # --- single missing component (option_awards) -> deduce = total - others
-        _row("AAA", "2021-04-01", ceo_salary=1_000_000, ceo_bonus=0, ceo_stock_awards=5_000_000,
-             ceo_option_awards=np.nan, ceo_non_equity_incentive=3_000_000, ceo_all_other_comp=200_000,
-             ceo_total_comp=11_200_000, board_size=10, n_directors=10),
-        # --- non-destructive: total present but != sum(components) (pension gap) -> keep as-is
-        _row("AAA", "2022-04-01", ceo_salary=1_000_000, ceo_bonus=0, ceo_stock_awards=5_000_000,
-             ceo_option_awards=2_000_000, ceo_non_equity_incentive=3_000_000, ceo_all_other_comp=200_000,
-             ceo_total_comp=99_000_000, board_size=10, n_directors=10),
-        # --- board consistency: n_directors missing, board_size present -> deduce n_directors
-        _row("BBB", "2020-04-01", board_size=12, n_directors=np.nan),
-        # --- pay ratio: total + ratio present, median missing -> deduce median
-        _row("BBB", "2021-04-01", board_size=12, ceo_total_comp=12_000_000, ceo_pay_ratio=200,
-             median_employee_pay=np.nan),
-        # --- temporal gap: CCC board_size 9 -> NaN -> 11. The gap CARRIES 9, it does not
-        # interpolate to 10: the 11 is not knowable on 2020-04-01. ceo_is_founder carries too.
-        _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0),
-        _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-        _row("CCC", "2021-04-01", board_size=11, ceo_is_founder=1.0),
-        # --- the TRAILING gap is now filled, from 2021 and within the carry cap. The old
-        # interior-only rule left it NaN, which is the live/backtest asymmetry this closed.
-        _row("CCC", "2022-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-        # --- a LEADING gap stays NaN: there is nothing behind it to carry
-        _row("DDD", "2019-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-        _row("DDD", "2020-04-01", board_size=7, ceo_is_founder=0.0),
-    ])
+    df = pd.DataFrame(
+        [
+            # --- CEO pay identity: total missing, all 6 components present -> deduce total
+            _row(
+                "AAA",
+                "2020-04-01",
+                ceo_salary=1_000_000,
+                ceo_bonus=0,
+                ceo_stock_awards=5_000_000,
+                ceo_option_awards=2_000_000,
+                ceo_non_equity_incentive=3_000_000,
+                ceo_all_other_comp=200_000,
+                ceo_total_comp=np.nan,
+                board_size=10,
+                n_directors=np.nan,
+            ),
+            # --- single missing component (option_awards) -> deduce = total - others
+            _row(
+                "AAA",
+                "2021-04-01",
+                ceo_salary=1_000_000,
+                ceo_bonus=0,
+                ceo_stock_awards=5_000_000,
+                ceo_option_awards=np.nan,
+                ceo_non_equity_incentive=3_000_000,
+                ceo_all_other_comp=200_000,
+                ceo_total_comp=11_200_000,
+                board_size=10,
+                n_directors=10,
+            ),
+            # --- non-destructive: total present but != sum(components) (pension gap) -> keep as-is
+            _row(
+                "AAA",
+                "2022-04-01",
+                ceo_salary=1_000_000,
+                ceo_bonus=0,
+                ceo_stock_awards=5_000_000,
+                ceo_option_awards=2_000_000,
+                ceo_non_equity_incentive=3_000_000,
+                ceo_all_other_comp=200_000,
+                ceo_total_comp=99_000_000,
+                board_size=10,
+                n_directors=10,
+            ),
+            # --- board consistency: n_directors missing, board_size present -> deduce n_directors
+            _row("BBB", "2020-04-01", board_size=12, n_directors=np.nan),
+            # --- pay ratio: total + ratio present, median missing -> deduce median
+            _row("BBB", "2021-04-01", board_size=12, ceo_total_comp=12_000_000, ceo_pay_ratio=200, median_employee_pay=np.nan),
+            # --- temporal gap: CCC board_size 9 -> NaN -> 11. The gap CARRIES 9, it does not
+            # interpolate to 10: the 11 is not knowable on 2020-04-01. ceo_is_founder carries too.
+            _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0),
+            _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan),
+            _row("CCC", "2021-04-01", board_size=11, ceo_is_founder=1.0),
+            # --- the TRAILING gap is now filled, from 2021 and within the carry cap. The old
+            # interior-only rule left it NaN, which is the live/backtest asymmetry this closed.
+            _row("CCC", "2022-04-01", board_size=np.nan, ceo_is_founder=np.nan),
+            # --- a LEADING gap stays NaN: there is nothing behind it to carry
+            _row("DDD", "2019-04-01", board_size=np.nan, ceo_is_founder=np.nan),
+            _row("DDD", "2020-04-01", board_size=7, ceo_is_founder=0.0),
+        ]
+    )
     raw = df.copy()
     out, stats = impute_def14a(df)
     out = out.set_index(["ticker", "as_of"])
@@ -87,8 +119,8 @@ def test_impute_rules_synthetic():
     assert pd.isna(out.loc[("DDD", pd.Timestamp("2019-04-01")), "ceo_is_founder"])
 
     # global non-destructiveness: every originally-present cell is byte-for-byte unchanged
-    r = raw.set_index(["ticker", "as_of"]); r.index = r.index.set_levels(
-        pd.to_datetime(r.index.levels[1]), level=1)
+    r = raw.set_index(["ticker", "as_of"])
+    r.index = r.index.set_levels(pd.to_datetime(r.index.levels[1]), level=1)
     changed = 0
     for c in [x for x in r.columns if x != "accession_number"]:
         pres = r[c].notna()
@@ -110,9 +142,10 @@ def test_impute_real_data_nondestructive():
     """Run on the live def14a_llm: prove non-destructiveness + report what gets recovered."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
@@ -127,8 +160,7 @@ def test_impute_real_data_nondestructive():
     for c in num:
         pres = a[c].notna()
         if pres.any():
-            overwritten += int((~np.isclose(a.loc[pres, c].values, b.loc[pres, c].values,
-                                            equal_nan=True)).sum())
+            overwritten += int((~np.isclose(a.loc[pres, c].values, b.loc[pres, c].values, equal_nan=True)).sum())
         filled += int((a[c].isna() & b[c].notna()).sum())
     assert overwritten == 0, f"{overwritten} present numeric cells overwritten"
 
@@ -140,8 +172,9 @@ def test_impute_real_data_nondestructive():
     print(f"  cells filled = {filled}  |  present cells overwritten = {overwritten}")
     print(f"  mean numeric-missing: {miss_before:.1f}% -> {miss_after:.1f}%")
     print(f"  top rules: {top}")
-    print("  CONCLUSION: deductions recover real gaps clean-on-read WITHOUT mutating any "
-          "extracted value; the raw def14a_llm table is left untouched.")
+    print(
+        "  CONCLUSION: deductions recover real gaps clean-on-read WITHOUT mutating any extracted value; the raw def14a_llm table is left untouched."
+    )
 
 
 if __name__ == "__main__":

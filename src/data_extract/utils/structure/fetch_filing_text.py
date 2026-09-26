@@ -26,13 +26,12 @@ from src.data_extract.utils.common.edgar_driver import filed_by, new_filings, ru
 from src.data_store.schema import Table, Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
-FILING_SECTION_RISK = "risk_factors"       # 10-K Item 1A
-FILING_SECTION_MDA = "mda"                 # 10-K Item 7 / 10-Q Item 2
-FILING_TEXT_MIN_CHARS = 1500               # below this a "section" is a TOC/cross-ref stub
+FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
+FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
+FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
 
-_MAX_CHARS = 300_000                       # cap a stored section (risk factors can be enormous)
-_COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report",
-        "section", "text", "n_words"]
+_MAX_CHARS = 300_000  # cap a stored section (risk factors can be enormous)
+_COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report", "section", "text", "n_words"]
 
 # --- Item markers (content-anchored; `N\b` never matches "NA" — no word boundary in "7a"/"1a").
 # The apostrophe in "management's" is matched with \W (any non-word), NOT a literal quote: EDGAR HTML
@@ -44,16 +43,14 @@ _SEP = r"[\.\:\)\s–—-]{0,8}"
 # Item 2 (Properties). Without 1C/the title, a filer lacking Item 1B had NO end -> the span over-ran
 # to end-of-document (the PTC bug).
 _RISK_START = re.compile(rf"item{_SEP}1a\b{_SEP}risk\s+factors", re.I)
-_RISK_END = re.compile(
-    rf"item{_SEP}1b\b|item{_SEP}1c\b|unresolved\s+staff\s+comments|item{_SEP}2\b{_SEP}propert", re.I)
+_RISK_END = re.compile(rf"item{_SEP}1b\b|item{_SEP}1c\b|unresolved\s+staff\s+comments|item{_SEP}2\b{_SEP}propert", re.I)
 # MD&A start — 10-K "Item 7 + management", 10-Q "Item 2 + management" (stops before the apostrophe).
 _MDA_START_10K = re.compile(rf"item{_SEP}7\b{_SEP}management", re.I)
 _MDA_START_10Q = re.compile(rf"item{_SEP}2\b{_SEP}management", re.I)
 # FALLBACK start (both forms): the standalone MD&A TITLE, for filers that print it WITHOUT the item
 # prefix. Allows an optional inserted word — combined multi-registrant filers (e.g. Entergy) title it
 # "Management's FINANCIAL Discussion and Analysis".
-_MDA_START_ALT = re.compile(
-    r"management\W{0,3}(?:s\W{1,3})?(?:financial\W{1,3})?discussion\W{1,3}and\W{1,3}analysis", re.I)
+_MDA_START_ALT = re.compile(r"management\W{0,3}(?:s\W{1,3})?(?:financial\W{1,3})?discussion\W{1,3}and\W{1,3}analysis", re.I)
 # MD&A end — PREFER the true next section (10-K: Item 7A / 10-Q: Item 3, both "Quantitative and
 # Qualitative Disclosures") over the financial-statements item, so an intro cross-ref to the latter
 # can't truncate the body. Fallbacks: 10-K Item 8 (Financial Statements); 10-Q Item 4 (Controls) /
@@ -77,13 +74,12 @@ def _first_end(text: str, s: int, end_re: re.Pattern) -> int | None:
     in its TOC and page headers, so a full rescan per candidate start was quadratic."""
     for m in end_re.finditer(text, s):
         x = m.start()
-        if x > s and not _XREF_END.search(text[max(0, x - 25):x]):
+        if x > s and not _XREF_END.search(text[max(0, x - 25) : x]):
             return x
     return None
 
 
-def _best_span(text: str, start_re: re.Pattern, min_chars: int,
-               end_primary: re.Pattern, end_fallback: re.Pattern | None = None) -> str | None:
+def _best_span(text: str, start_re: re.Pattern, min_chars: int, end_primary: re.Pattern, end_fallback: re.Pattern | None = None) -> str | None:
     """The LONGEST body between a real start HEADING and the next real end HEADING. The start skips
     cross-references; the end prefers `end_primary` (the true next section) and only uses
     `end_fallback` when no primary end follows the start. None if no span reaches `min_chars`.
@@ -94,8 +90,8 @@ def _best_span(text: str, start_re: re.Pattern, min_chars: int,
     `text` for any filing containing e.g. U+0130."""
     best_s = best_e = 0
     for m in start_re.finditer(text):
-        if _XREF_START.search(text[max(0, m.start() - 25):m.start()]):
-            continue                                   # a pointer to the section, not the heading
+        if _XREF_START.search(text[max(0, m.start() - 25) : m.start()]):
+            continue  # a pointer to the section, not the heading
         s = m.end()
         e = _first_end(text, s, end_primary)
         if e is None and end_fallback is not None:
@@ -131,12 +127,12 @@ def extract_item_sections(text: str, form: str) -> dict[str, str]:
     end_fall = _MDA_END_10K_FALL if is_10k else _MDA_END_10Q_FALL
 
     out: dict[str, str] = {}
-    if is_10k:                                         # substantive annual risk factors
+    if is_10k:  # substantive annual risk factors
         rf = _best_span(text, _RISK_START, FILING_TEXT_MIN_CHARS, _RISK_END)
         if rf:
             out[FILING_SECTION_RISK] = rf
     md = _best_span(text, mda_start, FILING_TEXT_MIN_CHARS, end_pri, end_fall)
-    if md is None:                                     # fallback: title-only MD&A heading
+    if md is None:  # fallback: title-only MD&A heading
         md = _best_span(text, _MDA_START_ALT, FILING_TEXT_MIN_CHARS, end_pri, end_fall)
     if md:
         out[FILING_SECTION_MDA] = md
@@ -157,7 +153,7 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
             mda = obj.management_discussion
         else:
             mda = obj["Part I, Item 2"]
-    except Exception:                                   # noqa: BLE001 -- best-effort only
+    except Exception:  # noqa: BLE001 -- best-effort only
         return out
     if mda and len(mda) >= FILING_TEXT_MIN_CHARS:
         out[FILING_SECTION_MDA] = mda[:_MAX_CHARS]
@@ -168,18 +164,17 @@ def _filing_sections(filing) -> dict[str, str]:
     """PRIMARY (structured `filing.obj()`) + FALLBACK (regex carve over `filing.text()` for
     whichever section the structured parse missed) — see module docstring."""
     form = filing.form
-    needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") \
-        else {FILING_SECTION_MDA}
+    needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
     try:
         obj = filing.obj()
-    except Exception:                                   # noqa: BLE001 -- best-effort only
+    except Exception:  # noqa: BLE001 -- best-effort only
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
     missing = needed - sections.keys()
     if missing:
         try:
             text = filing.text()
-        except Exception:                               # noqa: BLE001 -- best-effort only
+        except Exception:  # noqa: BLE001 -- best-effort only
             text = None
         if text:
             fallback = extract_item_sections(text, form)
@@ -189,26 +184,36 @@ def _filing_sections(filing) -> dict[str, str]:
     return sections
 
 
-def build_ticker_filing_text(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                             done_accessions: frozenset[str] = frozenset(),
-                             ) -> dict[Table, pd.DataFrame]:
+def build_ticker_filing_text(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+) -> dict[Table, pd.DataFrame]:
     rows: list[dict] = []
     for f in new_filings(ticker, FILING_TEXT_FORMS, since, done_accessions):
         filed = pd.Timestamp(f.filing_date).normalize()
         for section, body in _filing_sections(f).items():
-            rows.append({
-                # The CIK that FILED it -- see `edgar_driver.filed_by`. `FILING_TEXT_FORMS`
-                # is SPLIT, so each row's registrant is unambiguous and worth recording.
-                "ticker": ticker, "cik": filed_by(f, cik),
-                "accession_number": f.accession_number,
-                "form": str(f.form), "filed": filed,
-                "period_of_report": f.period_of_report,
-                "section": section, "text": body, "n_words": len(body.split()),
-            })
+            rows.append(
+                {
+                    # The CIK that FILED it -- see `edgar_driver.filed_by`. `FILING_TEXT_FORMS`
+                    # is SPLIT, so each row's registrant is unambiguous and worth recording.
+                    "ticker": ticker,
+                    "cik": filed_by(f, cik),
+                    "accession_number": f.accession_number,
+                    "form": str(f.form),
+                    "filed": filed,
+                    "period_of_report": f.period_of_report,
+                    "section": section,
+                    "text": body,
+                    "n_words": len(body.split()),
+                }
+            )
     return {Tables.filing_risk_text: pd.DataFrame(rows, columns=_COLS)}
 
 
 def fetch_filing_text(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history,
-                    tables=(Tables.filing_risk_text,), build=build_ticker_filing_text,
-                    desc="10-K/10-Q text (edgartools)")
+    run_edgar_fetch(
+        context, tickers, years_history, tables=(Tables.filing_risk_text,), build=build_ticker_filing_text, desc="10-K/10-Q text (edgartools)"
+    )

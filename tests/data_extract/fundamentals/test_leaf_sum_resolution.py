@@ -162,7 +162,7 @@ def test_a_note_level_leaf_is_refused_because_of_its_role():
 
     assert resolution.method != STATEMENT_LEAF_SUM
     print("\n=== SANITY CHECK: role guard ===")
-    print(f"  a note-role `Depreciation` -> route {resolution.method}, " f"concept {resolution.concept}")
+    print(f"  a note-role `Depreciation` -> route {resolution.method}, concept {resolution.concept}")
     print("  OK: Route 3b declined. Admitting it is a -31.6% answer on AAPL.")
 
 
@@ -187,7 +187,7 @@ def test_the_declared_weight_sign_excludes_a_contra_in_the_same_node():
     assert resolution.method == STATEMENT_LEAF_SUM
     assert [c for c, _ in resolution.children] == ["Depreciation"]
     print("\n=== SANITY CHECK: weight-sign guard ===")
-    print(f"  a -1.0 accretion contra beside a +1.0 depreciation -> " f"summed {[c for c, _ in resolution.children]}")
+    print(f"  a -1.0 accretion contra beside a +1.0 depreciation -> summed {[c for c, _ in resolution.children]}")
     print("  OK: The contra was excluded by its SIGN, not by its name.")
 
 
@@ -243,7 +243,7 @@ def test_an_unclassifiable_extension_sibling_refuses_the_sum():
 
     assert resolution.method != STATEMENT_LEAF_SUM
     print("\n=== SANITY CHECK: partial-leaf guard ===")
-    print(f"  an unregistered `acme:` sibling -> route {resolution.method}, " f"dc_code {resolution.dc_code}")
+    print(f"  an unregistered `acme:` sibling -> route {resolution.method}, dc_code {resolution.dc_code}")
     print("  OK: No short sum emitted.")
 
 
@@ -324,7 +324,7 @@ def test_a_registered_extension_leaf_completes_the_sum():
     assert [c for c, _ in resolution.children] == ["PlantAndEquipmentExpendituresUtility", "PlantAndEquipmentExpendituresNonUtility"]
     print("\n=== SANITY CHECK: the per-filer extension register ===")
     print(f"  summed {[c for c, _ in resolution.children]}")
-    print("  OK: `dte:ConsolidationOfVIES` is registered NOT a leaf, so it neither joins " "the sum nor refuses it.")
+    print("  OK: `dte:ConsolidationOfVIES` is registered NOT a leaf, so it neither joins the sum nor refuses it.")
 
 
 def test_the_same_graph_without_the_register_refuses():
@@ -352,7 +352,7 @@ def test_the_same_graph_without_the_register_refuses():
     assert len(with_register.children) == 2
     assert without.method != STATEMENT_LEAF_SUM
     print("\n=== SANITY CHECK: option A vs option B on one graph ===")
-    print(f"  registered   : {with_register.method}, " f"{[c for c, _ in with_register.children]}")
+    print(f"  registered   : {with_register.method}, {[c for c, _ in with_register.children]}")
     print(f"  unregistered : {without.method}, concept {without.concept}")
     print("  OK: Without a per-filer declaration the standard half is refused, not halved.")
 
@@ -382,7 +382,7 @@ def test_a_declared_but_unreported_extension_does_not_refuse():
     assert [c for c, _ in resolution.children] == ["PlantAndEquipmentExpendituresUtility"]
     print("\n=== SANITY CHECK: an unreported sibling is not a partial-leaf risk ===")
     print(f"  summed {[c for c, _ in resolution.children]}")
-    print("  OK: Relaxing the dimensional filter to 'fix' capex would store the " "SUBSIDIARY's number, 17% low and entirely plausible.")
+    print("  OK: Relaxing the dimensional filter to 'fix' capex would store the SUBSIDIARY's number, 17% low and entirely plausible.")
 
 
 def test_a_declared_total_still_beats_the_leaf_sum():
@@ -506,7 +506,7 @@ def test_the_register_never_contradicts_itself():
             assert entry.get("verified"), f"{ticker}/{field} has no verified date"
     n_leaf = sum(1 for b in CATALOGUE.ticker_exceptions.values() for e in b.values() if e.get("leaves"))
     print("\n=== SANITY CHECK: the extension register ===")
-    print(f"  {len(CATALOGUE.ticker_exceptions)} filers, {n_leaf} with declared leaves, " "all carrying evidence")
+    print(f"  {len(CATALOGUE.ticker_exceptions)} filers, {n_leaf} with declared leaves, all carrying evidence")
     print("  OK: No concept is both a leaf and not a leaf.")
 
 
@@ -596,12 +596,12 @@ def test_the_latest_10k_reproduces_the_filers_own_figure(latest_rows, ticker, gi
         pytest.skip(
             f"{ticker} {field}: the pinned FY {period} is no longer in the latest 10-K, "
             f"which now carries "
-            f"{[(str(p.date()), f'{v/1e6:,.1f}M') for p, v in zip(blk.period_end, blk.value, strict=False)]}"
+            f"{[(str(p.date()), f'{v / 1e6:,.1f}M') for p, v in zip(blk.period_end, blk.value, strict=False)]}"
             f" -- re-pin _GROUND_TRUTH against one of those"
         )
     got, method = float(want.iloc[-1].value), want.iloc[-1].resolution_method
-    assert abs(got - expected) / expected < 0.005, f"{ticker} {field} FY{period}: {got:,.0f} vs expected {expected:,.0f} " f"(via {method})"
-    print(f"\n  {ticker:6s} {field:9s} FY{period} {got/1e6:>10,.1f}M  via {method}")
+    assert abs(got - expected) / expected < 0.005, f"{ticker} {field} FY{period}: {got:,.0f} vs expected {expected:,.0f} (via {method})"
+    print(f"\n  {ticker:6s} {field:9s} FY{period} {got / 1e6:>10,.1f}M  via {method}")
 
 
 def test_aapl_and_vlo_keep_the_aggregate_and_never_the_note_leaf(latest_rows):

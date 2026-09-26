@@ -46,6 +46,7 @@ incremental build is correct -- L7 in `validate institutionals` is. And a group 
 without anything noticing: the beneficial-ownership panel had no entry until 2026-09-12, which
 is why nothing flagged `HOLDER_ACTIVE_DAYS = 378` as the part's longest bounded look-back.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -67,6 +68,7 @@ class CubePart:
     Note `kind` here is aggregation semantics (it drives `FEATURE_PARTS` and the status gate's
     `never_behind` set) -- NOT `Table.kind`, which is DDL grouping.
     """
+
     table: Table
     command: str
     kind: PartKind
@@ -86,23 +88,34 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # not a look-back: it keeps a year of context in `get_trading_days`'s interior-calendar
     # -hole warning, which is a diagnostic over history.
     CubePart(Tables.cube_part_prices, "build-prices", "prices", 520),
-
     # style momentum shift(252) + beta window(126); the forward horizon is added at the call
     # site, because targets look FORWARD and recent NaN labels MATURE between runs.
     CubePart(Tables.cube_part_targets, "build-target", "targets", 390),
     CubePart(Tables.cube_part_betas, "build-target", "betas", 390),
-
-    CubePart(Tables.cube_part_fundamentals, "build-fundamentals", "features", 1320,
-             (("fundamental", 1260),      # _self_history_z rolling(1260)
-              ("dividend", 1260),         # 5y payout growth shift(5 * 252)
-              ("employee", 252),          # YoY headcount / rev-per-employee shift(252)
-              ("sector", 0),              # _yearly_lag over the FULL fundamentals history
-              ("earnings", 0))),          # trailing-4Q rolling over REPORTED quarters
-    CubePart(Tables.cube_part_momentum, "build-momentum", "features", 1320,
-             (("price", 1260),)),         # seasonal_h*: close.shift(252 * seasonal_years=5)
-    CubePart(Tables.cube_part_text, "build-text", "features", 130,
-             (("earnings_call_sentiment", 0),   # QoQ over reported quarters
-              ("earnings_call_embedding", 0))),  # QoQ embedding drift
+    CubePart(
+        Tables.cube_part_fundamentals,
+        "build-fundamentals",
+        "features",
+        1320,
+        (
+            ("fundamental", 1260),  # _self_history_z rolling(1260)
+            ("dividend", 1260),  # 5y payout growth shift(5 * 252)
+            ("employee", 252),  # YoY headcount / rev-per-employee shift(252)
+            ("sector", 0),  # _yearly_lag over the FULL fundamentals history
+            ("earnings", 0),
+        ),
+    ),  # trailing-4Q rolling over REPORTED quarters
+    CubePart(Tables.cube_part_momentum, "build-momentum", "features", 1320, (("price", 1260),)),  # seasonal_h*: close.shift(252 * seasonal_years=5)
+    CubePart(
+        Tables.cube_part_text,
+        "build-text",
+        "features",
+        130,
+        (
+            ("earnings_call_sentiment", 0),  # QoQ over reported quarters
+            ("earnings_call_embedding", 0),
+        ),
+    ),  # QoQ embedding drift
     # ⚠ 160 -> 390, and the two families that forced it are the ones Phase 2.5/2.6 added:
     #   * `short_flow` 322 -- a 252-day self-history z, then a 30-day persistence count on top
     #     of it, then the 40-day FTD publication shift. Its predecessor entry (103) described
@@ -113,19 +126,26 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # 252-day look-back plus the ~130-day buffer a trailing recompute needs to reproduce the
     # rolling statistic at the window's oldest rewritten date. `test_part_registry.py` asserts
     # every warm-up covers its members, so this is enforced rather than remembered.
-    CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 390,
-             (("short_flow", 322),        # z252 + persistence(30) + FTD shift(40)
-              # `ownership_features.HOLDER_ACTIVE_DAYS`: both the 13G holder ffill(limit=)
-              # and the rolling distinct-filer denominator. The LONGEST bounded look-back in
-              # the part, and it was MISSING from this tuple entirely -- which is why
-              # `test_part_registry.py` stayed green while the panel it describes was the one
-              # `f_ic_bo_new_holder` went wrong in.
-              ("ownership", 378),
-              ("conditioning", 252),      # capped max-drawdown / run-up since the last buy
-              ("institutional", 0),       # QoQ vs the prior 13F period
-              ("superinvestor", 0),
-              ("cross_source", 126),      # trailing distinct-ACTOR window
-              ("insider", 0))),           # rolling('180D') over the FULL transaction calendar
+    CubePart(
+        Tables.cube_part_institutionals,
+        "build-institutionals",
+        "features",
+        390,
+        (
+            ("short_flow", 322),  # z252 + persistence(30) + FTD shift(40)
+            # `ownership_features.HOLDER_ACTIVE_DAYS`: both the 13G holder ffill(limit=)
+            # and the rolling distinct-filer denominator. The LONGEST bounded look-back in
+            # the part, and it was MISSING from this tuple entirely -- which is why
+            # `test_part_registry.py` stayed green while the panel it describes was the one
+            # `f_ic_bo_new_holder` went wrong in.
+            ("ownership", 378),
+            ("conditioning", 252),  # capped max-drawdown / run-up since the last buy
+            ("institutional", 0),  # QoQ vs the prior 13F period
+            ("superinvestor", 0),
+            ("cross_source", 126),  # trailing distinct-ACTOR window
+            ("insider", 0),
+        ),
+    ),  # rolling('180D') over the FULL transaction calendar
     # Governance sources are all FILING-space (annual proxies, 8-K vote records), so every YoY
     # delta needs no grid warm-up at all. TWO legs bind on the daily grid, and the longer one
     # decides:
@@ -143,8 +163,7 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     # better statistic -- a day-weighted mean of an annual series weights each proxy by how long
     # it happened to stay current. It would change the measured values, so it needs its
     # sign-stability screen re-run before it ships.
-    CubePart(Tables.cube_part_governance, "build-governance", "features", 1260,
-             (("governance", 1260),)),
+    CubePart(Tables.cube_part_governance, "build-governance", "features", 1260, (("governance", 1260),)),
 )
 
 FEATURE_PARTS: tuple[CubePart, ...] = tuple(p for p in CUBE_PARTS if p.kind == "features")
@@ -154,8 +173,7 @@ PART_BY_NAME: dict[str, CubePart] = {p.name: p for p in CUBE_PARTS}
 # the ordered CLI sub-commands the DAG chains (deduplicated, registry order preserved)
 PART_COMMANDS: tuple[str, ...] = tuple(dict.fromkeys(p.command for p in CUBE_PARTS))
 # downstream tables reported alongside the parts by the status gate
-TERMINAL_TABLES: tuple[Table, ...] = (Tables.cube, Tables.predictions, Tables.cube_signal,
-                                      Tables.predictions_latest)
+TERMINAL_TABLES: tuple[Table, ...] = (Tables.cube, Tables.predictions, Tables.cube_signal, Tables.predictions_latest)
 
 
 def part_for(table: Table | str) -> CubePart:

@@ -329,10 +329,7 @@ def write_report(
             SECTION_EVIDENCE,
             evidence_md,
             SECTION_REGRESSIONS,
-            f"{TODO_MARKER}\n"
-            f"- \n"
-            f"<!-- At least one bullet. If genuinely nothing: "
-            f"`{EMPTY_SECTION_5_PREFIX} <{MIN_CHECKED_CHARS}+ chars>` -->",
+            f"{TODO_MARKER}\n- \n<!-- At least one bullet. If genuinely nothing: `{EMPTY_SECTION_5_PREFIX} <{MIN_CHECKED_CHARS}+ chars>` -->",
             SECTION_NEXT,
             f"{TODO_MARKER}\n- ",
             metrics_block(full_payload),
@@ -355,7 +352,7 @@ def announce(path: Path, gates: list[Gate]) -> None:
     # ASCII only: this console is cp1252, where a printed "§" raises/garbles. The report FILE
     # is written as UTF-8 and does use the section sign.
     print(f"\nDoD report -> {shown}")
-    print(f"  gates: {sum(g.passed is True for g in gates)} pass, " f"{len(failed)} fail, {sum(g.passed is None for g in gates)} n/a")
+    print(f"  gates: {sum(g.passed is True for g in gates)} pass, {len(failed)} fail, {sum(g.passed is None for g in gates)} n/a")
     if failed:
-        print(f"  FAILING: {', '.join(failed)} -- the work is NOT done until these pass " f"or section 5 explains why they stand.")
-    print("  NOW EDIT section 1 (what was asked), section 5 (regressions/gaps) and " "section 6 (next actions). Do not touch the dod-metrics block.")
+        print(f"  FAILING: {', '.join(failed)} -- the work is NOT done until these pass or section 5 explains why they stand.")
+    print("  NOW EDIT section 1 (what was asked), section 5 (regressions/gaps) and section 6 (next actions). Do not touch the dod-metrics block.")

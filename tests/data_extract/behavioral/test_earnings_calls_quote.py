@@ -86,7 +86,7 @@ def test_quote_discovery_filters_and_merges(tmp_path, monkeypatch):
         "  since-filter drops pre-2025 (AAA 2024Q2); ticker-filter drops the foreign BBB link on "
         "AAA's page; NYSE fallback found BBB after nasdaq 404. Merged to transcript_index.json."
     )
-    print("  CONCLUSION: (ticker,quarter) -> exact MF URL via the quote page, uncapped, since a " "cutoff. Validated.")
+    print("  CONCLUSION: (ticker,quarter) -> exact MF URL via the quote page, uncapped, since a cutoff. Validated.")
 
 
 def test_quote_discovery_live(tmp_path):
@@ -105,13 +105,13 @@ def test_quote_discovery_live(tmp_path):
     for r in idx.values():
         by_tkr.setdefault(r["ticker"], []).append(r["quarter"])
     floor = mq._since_floor_index("2025-01-01")
-    assert all(
-        mq._quarter_index(*mq._parse_quarter(d["quarter"])) >= floor for d in idx.values()
-    ), "quarter-floor filter leaked pre-floor fiscal quarters"
+    assert all(mq._quarter_index(*mq._parse_quarter(d["quarter"])) >= floor for d in idx.values()), (
+        "quarter-floor filter leaked pre-floor fiscal quarters"
+    )
     print("\n=== SANITY CHECK: quote-page discovery on REAL MF pages ===")
     for t, qs in sorted(by_tkr.items()):
         print(f"  {t}: {sorted(set(qs), reverse=True)}")
-    print(f"  {len(idx)} transcript URLs >= {mq._index_to_quarter(floor)} across {len(by_tkr)} " "tickers, uncapped. Validated.")
+    print(f"  {len(idx)} transcript URLs >= {mq._index_to_quarter(floor)} across {len(by_tkr)} tickers, uncapped. Validated.")
 
 
 def _idx_to_tuple(idx: int) -> tuple[int, int]:
@@ -164,8 +164,8 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     print("\n=== SANITY CHECK: HF-aware + local-folder gap (429 fix) ===")
     print(f"  latest expected quarter today = {end_q}")
     print(
-        f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{mq._index_to_quarter(end_idx-1)} but "
-        f"{end_q}.html on disk -> skipped | BBB HF@{mq._index_to_quarter(end_idx-2)} -> fetched"
+        f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{mq._index_to_quarter(end_idx - 1)} but "
+        f"{end_q}.html on disk -> skipped | BBB HF@{mq._index_to_quarter(end_idx - 2)} -> fetched"
     )
     print(f"  requests made: {[u.split('/quote/')[-1].rstrip('/') for u in calls]}")
     print(

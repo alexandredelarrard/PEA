@@ -260,7 +260,7 @@ def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeInd
         return None
     if col not in def14a_hist.columns:
         if tally is not None:
-            tally[f"⚠ domain gate on {field} lost its discriminator ({col}) " f"-> applied unconditionally"] = 1
+            tally[f"⚠ domain gate on {field} lost its discriminator ({col}) -> applied unconditionally"] = 1
         return None
     qualifying = def14a_hist[def14a_hist[field].notna()] if field in def14a_hist.columns else def14a_hist
     if qualifying.empty:
@@ -301,7 +301,7 @@ def _gate(frame: pd.DataFrame, field: str, tally: dict[str, int] | None, conditi
         bad &= condition.reindex(index=frame.index, columns=frame.columns) == 1
     n_bad = int(bad.to_numpy().sum())
     if n_bad and tally is not None:
-        tally[f"domain-gated: {field} outside " f"{'[' if lo_inclusive else '('}{lo:g}, {hi:g}]"] = n_bad
+        tally[f"domain-gated: {field} outside {'[' if lo_inclusive else '('}{lo:g}, {hi:g}]"] = n_bad
         tally[f"domain-gated: {field} tickers"] = int(bad.any(axis=0).sum())
     return frame.mask(bad)
 

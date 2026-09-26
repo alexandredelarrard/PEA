@@ -24,7 +24,7 @@ The repository includes a Streamlit dashboard and a broad set of operational scr
 
 - Run [app/app.py](../../app/app.py) with Streamlit for the dashboard.
 - [main.py](../../main.py) constructs a context and selected steps but leaves execution calls commented until explicitly enabled.
-- Individual files under [scripts](../../scripts/) expose command-line `main()` functions where applicable.
+- Individual files under `scripts/` expose command-line `main()` functions where applicable.
 
 ## Key files
 
@@ -32,7 +32,8 @@ The repository includes a Streamlit dashboard and a broad set of operational scr
 - [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) renders [sql/schema.sql](../../sql/schema.sql) from the registry.
 - [scripts/dod/data_profile.py](../../scripts/dod/data_profile.py), [scripts/dod/modelling_report.py](../../scripts/dod/modelling_report.py), and [scripts/dod/refactor_metrics.py](../../scripts/dod/refactor_metrics.py) produce completion evidence.
 - [scripts/cube_feature_catalogue.py](../../scripts/cube_feature_catalogue.py), [scripts/cube_governance_catalogue.py](../../scripts/cube_governance_catalogue.py), and [scripts/cube_institutionals_catalogue.py](../../scripts/cube_institutionals_catalogue.py) maintain feature inventories.
-- Registrant, identity, and DEF 14A research scripts remain isolated under [scripts](../../scripts/).
+- [prove_insider_outliers.py](../../scripts/prove_insider_outliers.py) reconstructs the pre-screen insider tape and runs the real institutional insider builder with a fresh conditioning sink while disabling the live overlay, so its before/after comparison differs only in the substituted bulk input.
+- Registrant, identity, and DEF 14A research scripts remain isolated under `scripts/`.
 
 ## Dependencies
 

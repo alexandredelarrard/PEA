@@ -25,13 +25,15 @@ tags:
 
 - `StepBuildCube.run()` and `cube_parts_status()` in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
 - Eight part commands plus status in [data_aggregate/cli.py](../../src/data_aggregate/cli.py).
-- Sub-step classes in [data_aggregate/transformers](../../src/data_aggregate/transformers/).
+- Domain sub-step classes live under `src/data_aggregate/transformers`; [step_cube_prices.py](../../src/data_aggregate/transformers/step_cube_prices.py) and [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) show the shared orchestration contract.
+- `StepCubeInstitutionals.run()` and `build_panel()` in [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) are the institutional part's persistence and in-memory panel entry points.
 
 ## Key files
 
 - [parts.py](../../src/data_aggregate/utils/common/parts.py) is the single part registry.
 - [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans refresh windows and writes inclusive tails.
 - [price_frames.py](../../src/data_aggregate/utils/common/price_frames.py), [pit.py](../../src/data_aggregate/utils/common/pit.py), [panel.py](../../src/data_aggregate/utils/common/panel.py), and [xs.py](../../src/data_aggregate/utils/common/xs.py) hold shared contracts.
+- [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) keeps the ordered institutional merge and persistence contract; [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py) owns projected and universe-scoped reads, [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py) resolves completeness boundaries, and [sink.py](../../src/data_aggregate/utils/institutionals/sink.py) carries source events and availability into the two derived panels.
 - [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) left-joins wide targets onto the feature-led base and writes chunks.
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns windows, targets, feature settings, and output switches.
 

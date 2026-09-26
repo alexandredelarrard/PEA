@@ -23,6 +23,7 @@ Configuration dates are only outer bounds; they do not fill missing cells or pro
 - Availability configuration: [configs/data.yml](../../configs/data.yml)
 - Validation declarations: [configs/validate.yml](../../configs/validate.yml)
 - Availability utilities: [availability.py](../../src/data_aggregate/utils/institutionals/availability.py)
+- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), including all-ticker live insider coverage and complete-universe 13D/13G manifest checks
 - Conditioning sink: [sink.py](../../src/data_aggregate/utils/institutionals/sink.py)
 - Leakage checks: [validate/checks/leakage.py](../../src/validate/checks/leakage.py)
 - Source constraints: [data sources](../reference/data-sources.md)

@@ -41,7 +41,7 @@ sequenceDiagram
 1. `StepBuildCube` in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) runs the price-basis gate unless explicitly skipped.
 2. [parts.py](../../src/data_aggregate/utils/common/parts.py) supplies each part's table, command, kind, warm-up, and binding look-backs.
 3. [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans a full build or inclusive trailing refresh.
-4. Domain builders load projected source columns and emit one panel at the date/ticker grain.
+4. Domain builders load projected source columns and emit one panel at the date/ticker grain. The institutional builder reads through [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py), resolves observed-zero boundaries through [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), and runs 13F, superinvestor, insider, short-flow, ownership, conditioning, then cross-source panels in that explicit order with one shared [conditioning sink](../../src/data_aggregate/utils/institutionals/sink.py).
 5. [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) merges feature parts, betas, peers, and GICS metadata, then left-joins wide targets.
 6. The first output chunk replaces the cube and later chunks use `bulk_seed`.
 

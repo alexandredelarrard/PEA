@@ -46,8 +46,9 @@ optional = true
 apache-airflow = { version = ">=2.10,<3.0", python = ">=3.9,<3.13" }
 
 [tool.poetry.group.dev.dependencies]
-ruff = "^0.16.5"
-pyright = "^1.1.411"
+ruff = "^0.16.9"
+pyright = "^1.1.414"
+pandas-stubs = "3.0.5.260914"
 
 [[tool.poetry.source]]
 name = "pytorch"

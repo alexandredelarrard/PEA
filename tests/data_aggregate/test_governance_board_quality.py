@@ -79,7 +79,7 @@ def test_turnover_counts_one_arrival_on_a_five_seat_board_and_zero_in_a_quiet_ye
     print("  CONCLUSION: 1/5 on the change year, a measured 0.0 on the quiet one, NaN before any comparison exists. Validated.")
 
 
-def test_turnover_keys_on_person_key_so_a_RESPELLING_is_not_churn():
+def test_turnover_keys_on_person_key_so_a_respelling_is_not_churn():
     """The measured reason for the key (module header): under the filed name a respelling reads
     as one departure AND one arrival, and on the live table that inflates mean turnover from
     10.47% to 14.18%. Here the same person is spelled two ways across one year."""
@@ -107,7 +107,7 @@ def test_turnover_keys_on_person_key_so_a_RESPELLING_is_not_churn():
     )
 
 
-def test_overboarded_counts_over_REPORTING_directors_not_board_size():
+def test_overboarded_counts_over_reporting_directors_not_board_size():
     """The denominator is the whole point. A ten-seat board where only four directors report
     their other seats, two of them over the ISS trigger, is 50% overboarded AMONG THOSE WHO
     REPORT -- and 20% only if the reporting rate is silently multiplied in."""
@@ -141,7 +141,7 @@ def test_overboarded_counts_over_REPORTING_directors_not_board_size():
     )
 
 
-def test_a_dispersion_is_computed_on_the_FILED_column():
+def test_a_dispersion_is_computed_on_the_filed_column():
     """§3.4's guard, stated as an equality rather than as an intention.
 
     The child fill accrues 20,210 ages on the live table. If `board_age_dispersion` read the

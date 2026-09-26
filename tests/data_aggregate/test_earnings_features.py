@@ -35,18 +35,18 @@ def test_realized_features_are_point_in_time():
     hist = _synth_earnings()
     idx = pd.bdate_range("2019-04-01", "2019-12-31")
     close = pd.DataFrame({"AAA": 50.0}, index=idx)
-    F = _derived_earnings_fields(hist, idx, close)
+    f = _derived_earnings_fields(hist, idx, close)
 
     before_first = pd.Timestamp("2019-04-15")  # before any report
     after_first = pd.Timestamp("2019-06-03")  # after the 2019-05-01 report
 
     # surprise is unknown before the first report, known after it
-    assert np.isnan(F["eps_surprise_last"].loc[before_first, "AAA"])
-    assert abs(F["eps_surprise_last"].loc[after_first, "AAA"] - 20.0) < 1e-9
+    assert np.isnan(f["eps_surprise_last"].loc[before_first, "AAA"])
+    assert abs(f["eps_surprise_last"].loc[after_first, "AAA"] - 20.0) < 1e-9
 
     print("\n=== SANITY CHECK: realized surprise is point-in-time ===")
     print(
-        f"  surprise NaN before first report, = {F['eps_surprise_last'].loc[after_first, 'AAA']:.1f}% after it (beat). No look-ahead on the actual."
+        f"  surprise NaN before first report, = {f['eps_surprise_last'].loc[after_first, 'AAA']:.1f}% after it (beat). No look-ahead on the actual."
     )
 
 
@@ -54,18 +54,18 @@ def test_forward_eps_yield_and_expected_growth_math():
     hist = _synth_earnings()
     idx = pd.bdate_range("2019-04-01", "2019-12-31")
     close = pd.DataFrame({"AAA": 50.0}, index=idx)
-    F = _derived_earnings_fields(hist, idx, close)
+    f = _derived_earnings_fields(hist, idx, close)
 
     # Between the Aug and Nov reports, the forward estimate is the Nov one (1.30).
     d = pd.Timestamp("2019-10-01")
-    assert abs(F["fwd_eps_yield"].loc[d, "AAA"] - 1.30 / 50.0) < 1e-9
+    assert abs(f["fwd_eps_yield"].loc[d, "AAA"] - 1.30 / 50.0) < 1e-9
     # expected growth = fwd estimate (1.30) / last reported actual (Aug: 1.05) - 1
-    assert abs(F["eps_expectation_growth"].loc[d, "AAA"] - (1.30 / 1.05 - 1)) < 1e-9
+    assert abs(f["eps_expectation_growth"].loc[d, "AAA"] - (1.30 / 1.05 - 1)) < 1e-9
 
     print("\n=== SANITY CHECK: forward EPS yield & expected growth ===")
     print(
-        f"  fwd E/P = 1.30/50 = {F['fwd_eps_yield'].loc[d, 'AAA']:.4f}; "
-        f"expected growth = 1.30/1.05-1 = {F['eps_expectation_growth'].loc[d, 'AAA']:+.2%}."
+        f"  fwd E/P = 1.30/50 = {f['fwd_eps_yield'].loc[d, 'AAA']:.4f}; "
+        f"expected growth = 1.30/1.05-1 = {f['eps_expectation_growth'].loc[d, 'AAA']:+.2%}."
     )
 
 
@@ -89,12 +89,12 @@ def test_ntm_forward_earnings_yield():
     assert abs(ntm.loc[d, "A"] - (1.5 + 1.2 + 1.3 + 1.4)) < 1e-9  # est(Q+1) + last 3 actuals = 5.4
     assert abs(ttm.loc[d, "A"] - (1.1 + 1.2 + 1.3 + 1.4)) < 1e-9  # trailing 4 actuals = 5.0
 
-    F = _derived_earnings_fields(hist, idx, close)
-    assert abs(F["forward_earnings_yield"].loc[d, "A"] - 5.4 / 100.0) < 1e-9
+    f = _derived_earnings_fields(hist, idx, close)
+    assert abs(f["forward_earnings_yield"].loc[d, "A"] - 5.4 / 100.0) < 1e-9
     print("\n=== SANITY CHECK: NTM forward-earnings yield ===")
     print(
         f"  NTM EPS = 1.5 est + (1.2+1.3+1.4) actuals = {ntm.loc[d, 'A']:.1f}; TTM = {ttm.loc[d, 'A']:.1f}; "
-        f"forward_earnings_yield = 5.4/100 = {F['forward_earnings_yield'].loc[d, 'A']:.4f} "
+        f"forward_earnings_yield = 5.4/100 = {f['forward_earnings_yield'].loc[d, 'A']:.4f} "
         f"(= 1/forward P/E, leak-free). Validated."
     )
 
@@ -107,12 +107,12 @@ def test_forward_feature_does_not_leak_reported_actual():
     bumped = _synth_earnings()
     bumped.loc[1, "eps_actual"] = 5.00  # blow up the Aug REPORTED actual
 
-    Fb = _derived_earnings_fields(base, idx, close)
-    Fp = _derived_earnings_fields(bumped, idx, close)
+    fb = _derived_earnings_fields(base, idx, close)
+    fp = _derived_earnings_fields(bumped, idx, close)
 
     # a day BEFORE the Aug report: the forward EPS yield must be identical
     d = pd.Timestamp("2019-07-15")
-    v1, v2 = Fb["fwd_eps_yield"].loc[d, "AAA"], Fp["fwd_eps_yield"].loc[d, "AAA"]
+    v1, v2 = fb["fwd_eps_yield"].loc[d, "AAA"], fp["fwd_eps_yield"].loc[d, "AAA"]
     assert (np.isnan(v1) and np.isnan(v2)) or abs(v1 - v2) < 1e-12
 
     print("\n=== SANITY CHECK: forward EPS does not leak the actual ===")

@@ -64,7 +64,7 @@ def _row(ticker, cik, filing, field="totalRevenue", period_end="2014-12-31"):
     }
 
 
-def test_each_row_carries_the_cik_that_FILED_it_not_the_roster(patched):
+def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
     """The regression. `filing_cik` was `cutover.cik_for(filing.filing_date)` -> NameError on
     the FIRST filing of the FIRST ticker."""
     pre = _filing("0001-pre", "0001288776", "2014-04-24")  # Google Inc, pre-boundary
@@ -87,7 +87,7 @@ def test_a_ticker_with_no_register_entry_still_stamps_a_cik(patched):
     assert list(out["cik"]) == ["0000320193"]
 
 
-def test_the_dedup_overlap_guard_CANNOT_FIRE(patched):
+def test_the_dedup_overlap_guard_cannot_fire(patched):
     """The second stale site -- and writing this test showed the guard is unfalsifiable.
 
     It compares `accession_number.nunique()` before and after `drop_duplicates(subset=PK)`,

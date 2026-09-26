@@ -58,7 +58,7 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
     cache rows (tone probs + word count + uncertainty ratio). Pure given `engine`."""
     probs = engine.score_texts(rows["text"].tolist())
     out = []
-    for r, p in zip(rows.itertuples(index=False), probs):
+    for r, p in zip(rows.itertuples(index=False), probs, strict=False):
         if p is None:  # blank section -> no tone
             continue
         out.append(
@@ -92,7 +92,7 @@ def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, sections
             g = context.store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tkr, "tag": list(tags)}, optional=True)
             if g is None:
                 continue
-        g = g[[(q, tag) in pairs for q, tag in zip(g["quarter"], g["tag"])]]
+        g = g[[(q, tag) in pairs for q, tag in zip(g["quarter"], g["tag"], strict=False)]]
         if not g.empty:
             yield tkr, g
 

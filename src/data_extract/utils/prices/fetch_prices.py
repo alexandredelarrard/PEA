@@ -159,7 +159,7 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
     if prices is None or prices.empty or "ticker" not in prices.columns:
         return prices
     drop = pd.Series(False, index=prices.index)
-    for ticker, group in prices.groupby("ticker", sort=False):
+    for _ticker, group in prices.groupby("ticker", sort=False):
         cutoff = _prelisting_cutoff(group)
         if cutoff is not None:
             drop.loc[group.index[group["date"] <= cutoff]] = True
@@ -307,7 +307,11 @@ def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
 
     splits = splits.copy()
     splits["date"] = pd.to_datetime(splits["date"])
-    stale = {ticker for ticker, event in zip(splits["ticker"], splits["date"]) if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])}
+    stale = {
+        ticker
+        for ticker, event in zip(splits["ticker"], splits["date"], strict=False)
+        if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])
+    }
     return sorted(stale)
 
 

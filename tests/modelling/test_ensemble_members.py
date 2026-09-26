@@ -27,22 +27,22 @@ class _LinearMock:
         self.noise = noise
         self.seed = seed
 
-    def predict(self, X):
-        X = np.asarray(X, float)
-        out = X @ self.w
+    def predict(self, x):
+        x = np.asarray(x, float)
+        out = x @ self.w
         if self.noise:
             out = out + np.random.default_rng(self.seed).normal(0, self.noise, len(out))
         return out
 
 
-def _panel(T: int = 40, N: int = 30, seed: int = 1):
+def _panel(t: int = 40, n: int = 30, seed: int = 1):
     rng = np.random.default_rng(seed)
-    dates = np.repeat(pd.bdate_range("2021-01-01", periods=T), N)
-    tickers = np.tile([f"T{i:02d}" for i in range(N)], T)
-    f0 = rng.normal(0, 1, T * N)
-    f1 = rng.normal(0, 1, T * N)
+    dates = np.repeat(pd.bdate_range("2021-01-01", periods=t), n)
+    tickers = np.tile([f"T{i:02d}" for i in range(n)], t)
+    f0 = rng.normal(0, 1, t * n)
+    f1 = rng.normal(0, 1, t * n)
     # label correlates with f0 (so a model that reads f0 has real IC)
-    y = f0 + rng.normal(0, 1.0, T * N)
+    y = f0 + rng.normal(0, 1.0, t * n)
     return pd.DataFrame({"date": dates, "ticker": tickers, "f0": f0, "f1": f1, "y": y})
 
 
@@ -59,7 +59,7 @@ def test_ensemble_returns_members_and_blend_is_their_mean():
 
     # members keyed by model name, aligned to panel
     assert set(members) == {"elasticnet", "lightgbm"}
-    for name, s in members.items():
+    for _name, s in members.items():
         assert isinstance(s, pd.Series) and len(s) == len(panel)
         assert s.index.equals(panel.index)
 

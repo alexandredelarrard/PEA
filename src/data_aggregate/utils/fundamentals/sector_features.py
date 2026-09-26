@@ -178,7 +178,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     ebitda = g("ebitda")
     ni = g("netIncome")
     ocf = g("operatingCashFlow")
-    cogs = g("costOfRevenue")
+    g("costOfRevenue")
     oper_income = g("operatingIncome")
     depamort = g("depAmort")
     capex = g("capex")

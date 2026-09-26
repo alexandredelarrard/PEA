@@ -24,7 +24,7 @@ def _row(t, days_from_today, actual):
 
 
 def test_plan_fetch_uses_forward_date():
-    FULL = 24
+    full = 24
     existing = pd.DataFrame(
         [
             _row("B", -60, 1.0),
@@ -37,9 +37,9 @@ def test_plan_fetch_uses_forward_date():
         columns=_COLS,
     )
 
-    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], existing, full_limit=FULL, refetch_window_days=95))
+    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], existing, full_limit=full, refetch_window_days=95))
 
-    assert plan.get("A") == FULL, "unseen ticker -> full pull"
+    assert plan.get("A") == full, "unseen ticker -> full pull"
     assert "B" not in plan, "next earnings still in the future -> skip"
     assert plan.get("C") == _RECENT_LIMIT, "forward date passed -> re-pull"
     assert plan.get("D") == _RECENT_LIMIT, "no forward date + stale beyond window -> re-pull"

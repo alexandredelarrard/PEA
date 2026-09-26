@@ -34,10 +34,10 @@ def _synth_panel(n_days: int = 120, n_tickers: int = 70, n_feats: int = 6, seed:
     feats = [f"f{j}" for j in range(n_feats)]
     frames = []
     for d in dates:
-        X = rng.normal(size=(n_tickers, n_feats))
-        sig = X[:, 0] * 0.5 + X[:, 1] * 0.3 + rng.normal(scale=0.5, size=n_tickers)
+        x = rng.normal(size=(n_tickers, n_feats))
+        sig = x[:, 0] * 0.5 + x[:, 1] * 0.3 + rng.normal(scale=0.5, size=n_tickers)
         y = sig.argsort().argsort() / (n_tickers - 1)
-        block = pd.DataFrame(X, columns=feats)
+        block = pd.DataFrame(x, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", [f"T{i:03d}" for i in range(n_tickers)])
         block.insert(0, "date", d)

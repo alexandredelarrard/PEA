@@ -136,7 +136,7 @@ def test_price_leg_stores_closes_untransformed(monkeypatch):
     raw = pd.concat(
         [
             pd.DataFrame({"date": idx, "ticker": sym, "close_total": [c, c + 1.0, c + 2.0], "volume": 1.0})
-            for sym, c in zip(MACRO_PRICE_SERIES, [100.0, 200.0, 300.0, 400.0, 500.0])
+            for sym, c in zip(MACRO_PRICE_SERIES, [100.0, 200.0, 300.0, 400.0, 500.0], strict=False)
         ],
         ignore_index=True,
     )
@@ -174,7 +174,7 @@ def test_to_long_drops_nan_and_is_one_row_per_series_date():
 
 
 if __name__ == "__main__":
-    test_fill_short_gaps_mean_and_week_guard()
+    test_fill_short_gaps_carries_forward_and_keeps_the_week_guard()
     test_derived_spreads_are_exact_differences()
     test_derive_skips_a_series_it_cannot_build()
     test_fx_comes_from_fred_already_usd_per_eur()

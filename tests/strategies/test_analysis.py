@@ -10,7 +10,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.portfolio.analysis import analyze_portfolio
 from src.strategies.analysis.common import daily_ic, rolling_pairwise_corr
+from src.strategies.analysis.long_book_analysis import analyze_long_book
+from src.strategies.analysis.ls_analysis import analyze_ls
 
 
 def test_rolling_pairwise_corr_survives_misaligned_calendar():
@@ -28,11 +31,6 @@ def test_rolling_pairwise_corr_survives_misaligned_calendar():
     assert avg.dropna().shape[0] > 100
     print("\n=== SANITY CHECK: pairwise-corr calendar robustness ===")
     print(f"  all {len(pair_corr)} pairs (incl. 10%-sparse ls_equity) have rolling corr. Validated.")
-
-
-from src.portfolio.analysis import analyze_portfolio
-from src.strategies.analysis.long_book_analysis import analyze_long_book
-from src.strategies.analysis.ls_analysis import analyze_ls
 
 
 def test_daily_ic_detects_a_predictive_signal():

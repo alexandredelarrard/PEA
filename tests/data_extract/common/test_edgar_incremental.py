@@ -42,7 +42,7 @@ def _submissions(forms_dates):
 # --------------------------------------------------------------------------- #
 # 1. list_filings `since` = incremental window                                 #
 # --------------------------------------------------------------------------- #
-def test_list_filings_since_filters_to_after_D(monkeypatch):
+def test_list_filings_since_filters_to_after_d(monkeypatch):
     import src.data_extract.utils.common.edgar_fillings as ef
 
     payload = _submissions(

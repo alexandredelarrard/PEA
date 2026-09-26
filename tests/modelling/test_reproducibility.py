@@ -31,10 +31,10 @@ def _synth_panel(n_days: int = 150, n_tickers: int = 80, n_feats: int = 8, seed:
     feats = [f"f{j}" for j in range(n_feats)]
     frames = []
     for d in dates:
-        X = rng.normal(size=(n_tickers, n_feats))
-        sig = X[:, 0] * 0.5 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
+        x = rng.normal(size=(n_tickers, n_feats))
+        sig = x[:, 0] * 0.5 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
         y = sig.argsort().argsort() / (n_tickers - 1)  # rank -> [0,1]
-        block = pd.DataFrame(X, columns=feats)
+        block = pd.DataFrame(x, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", [f"T{i:03d}" for i in range(n_tickers)])
         block.insert(0, "date", d)
@@ -48,7 +48,7 @@ def test_purged_wf_splits_is_deterministic():
     f2 = list(purged_wf_splits(dates, n_splits=5, embargo=20))
 
     assert len(f1) == len(f2) and len(f1) > 0
-    for (tr1, te1), (tr2, te2) in zip(f1, f2):
+    for (tr1, te1), (tr2, te2) in zip(f1, f2, strict=False):
         assert np.array_equal(tr1, tr2)
         assert np.array_equal(te1, te2)
 

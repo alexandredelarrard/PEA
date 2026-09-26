@@ -212,7 +212,7 @@ def _expand_daily(events: pd.DataFrame, end: pd.Timestamp, group_keys: list[str]
         r = t.reindex(idx)
         r[_SUPER_LEVEL_COLS] = r[_SUPER_LEVEL_COLS].ffill()
         r[_SUPER_FLOW_COLS] = r[_SUPER_FLOW_COLS].fillna(0.0)
-        for name, value in zip(group_keys, key if isinstance(key, tuple) else (key,)):
+        for name, value in zip(group_keys, key if isinstance(key, tuple) else (key,), strict=False):
             r[name] = value
         out.append(r.rename_axis("as_of").reset_index())
     return pd.concat(out, ignore_index=True)

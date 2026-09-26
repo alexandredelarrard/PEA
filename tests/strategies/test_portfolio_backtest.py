@@ -25,14 +25,14 @@ def test_sleeve_blend_nan_aware_and_global_vol_target():
     ls.iloc[400:] = rng.normal(0.0004, 0.005, len(idx) - 400)  # L/S joins late (OOS start)
     rets = pd.DataFrame({"ls_equity": ls, "long_book": long_book, "trend_cta": trend})
 
-    W = base_weights(rets, window=63, scheme="erc", rebalance_freq=21, cov_mode="ewma", cov_halflife=63)
-    early = W.iloc[200]
+    w = base_weights(rets, window=63, scheme="erc", rebalance_freq=21, cov_mode="ewma", cov_halflife=63)
+    early = w.iloc[200]
     assert not (early["ls_equity"] > 1e-6), "L/S must carry ~no weight before it has history"
     assert abs(early[["long_book", "trend_cta"]].sum() - 1.0) < 1e-6, "live sleeves sum to 1"
-    late = W.iloc[880]
+    late = w.iloc[880]
     assert (late[["ls_equity", "long_book", "trend_cta"]] > 0).all(), "all 3 weighted once L/S is live"
 
-    blended = blend_to_vol_target(rets, W, portfolio_vol_target=0.10, vol_window=63, max_leverage=2.0)
+    blended = blend_to_vol_target(rets, w, portfolio_vol_target=0.10, vol_window=63, max_leverage=2.0)
     net = blended["ret"].dropna()
     assert np.isfinite(net).all() and len(net) > 800
     vol = float(net.std() * np.sqrt(252))

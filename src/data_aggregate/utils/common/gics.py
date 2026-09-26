@@ -46,7 +46,7 @@ def load_gics_maps(context: Context) -> dict[str, dict[str, str]]:
     maps: dict[str, dict[str, str]] = {}
     for col in GICS_COLUMNS:
         if not ref.empty and col in ref.columns:
-            maps[col] = {str(t): str(g) for t, g in zip(ref["ticker"], ref[col]) if pd.notna(g) and str(g).strip()}
+            maps[col] = {str(t): str(g) for t, g in zip(ref["ticker"], ref[col], strict=False) if pd.notna(g) and str(g).strip()}
     return maps
 
 
@@ -85,7 +85,7 @@ def apply_categorical_codes(df: pd.DataFrame, context: Context, log: logging.Log
         if ref is None or col not in ref.columns:
             log.warning("%s has no '%s' -> categorical skipped", Tables.sp500_tickers, col)
             continue
-        m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string")))
+        m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string"), strict=False))
         cats = df["ticker"].astype(str).map(m).astype("category")
         df[col] = cats.cat.codes.astype("int16")  # unknown / NaN -> -1
         log.info("Added categorical '%s' (%d categories)", col, cats.cat.categories.size)

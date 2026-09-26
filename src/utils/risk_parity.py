@@ -153,7 +153,7 @@ def base_weights(
     idx = rets.index
     reb = np.zeros(len(idx), dtype=bool)
     reb[:: max(1, int(rebalance_freq))] = True
-    W = pd.DataFrame(index=idx, columns=rets.columns, dtype=float)
+    weights = pd.DataFrame(index=idx, columns=rets.columns, dtype=float)
     for pos, t in enumerate(idx):
         if not reb[pos]:
             continue
@@ -176,8 +176,8 @@ def base_weights(
             w = inv / inv.sum() if inv.sum() > 0 else np.full(len(cols), 1.0 / len(cols))
         else:
             raise ValueError(f"unknown scheme '{scheme}' (use erc | inverse_vol)")
-        W.loc[t, cols] = w
-    return W.ffill()
+        weights.loc[t, cols] = w
+    return weights.ffill()
 
 
 # --------------------------------------------------------------------------- #

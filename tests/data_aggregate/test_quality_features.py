@@ -62,16 +62,16 @@ def test_sbc_to_buyback_reads_net_issuance_as_a_signed_line():
         # BUYER repurchased 100 (negative = outflow); ISSUER raised 100 (positive)
         "equityIssuanceNet": _const({"BUYER": -100, "ISSUER": 100}),
     }
-    F = _da_realism_fields(_mock(frames))
+    f = _da_realism_fields(_mock(frames))
     last = IDX[-1]
-    assert abs(F["sbc_to_buyback"].loc[last, "BUYER"] - 0.5) < 1e-9
+    assert abs(f["sbc_to_buyback"].loc[last, "BUYER"] - 0.5) < 1e-9
     # the issuer bought back NOTHING -> the ratio is undefined, never 0.5
-    assert np.isnan(F["sbc_to_buyback"].loc[last, "ISSUER"])
+    assert np.isnan(f["sbc_to_buyback"].loc[last, "ISSUER"])
 
     print("\n=== SANITY CHECK: sbc_to_buyback on NET ISSUANCE ===")
     print(
         f"  BUYER equityIssuanceNet=-100 -> 100 repurchased, SBC 50 -> ratio "
-        f"{F['sbc_to_buyback'].loc[last, 'BUYER']:.2f} (buyback covers 2x the SBC)."
+        f"{f['sbc_to_buyback'].loc[last, 'BUYER']:.2f} (buyback covers 2x the SBC)."
     )
     print("  ISSUER equityIssuanceNet=+100 (a RAISE) -> repurchases floored to 0 -> NaN, not the 0.50 an .abs() would have fabricated. Validated.")
 
@@ -168,14 +168,14 @@ def test_forensic_days_and_offbs_leverage():
         "ebitda": _const({"X": 150}),
     }
     get = _mock(frames)
-    F = _forensic_fields(get, IDX)
+    f = _forensic_fields(get, IDX)
     last = IDX[-1]
     dso, dpo, dio = 200 / 1000 * 365, 150 / 600 * 365, 100 / 600 * 365
-    assert abs(F["dso"].loc[last, "X"] - dso) < 1e-6
-    assert abs(F["dpo"].loc[last, "X"] - dpo) < 1e-6
-    assert abs(F["dio"].loc[last, "X"] - dio) < 1e-6
-    assert abs(F["cash_conversion_cycle"].loc[last, "X"] - (dso + dio - dpo)) < 1e-6
-    assert "net_debt_incl_offbs_to_ebitda" not in F  # deleted duplicate
+    assert abs(f["dso"].loc[last, "X"] - dso) < 1e-6
+    assert abs(f["dpo"].loc[last, "X"] - dpo) < 1e-6
+    assert abs(f["dio"].loc[last, "X"] - dio) < 1e-6
+    assert abs(f["cash_conversion_cycle"].loc[last, "X"] - (dso + dio - dpo)) < 1e-6
+    assert "net_debt_incl_offbs_to_ebitda" not in f  # deleted duplicate
 
     # the off-BS arithmetic itself, asserted where it now lives: recognized net deficit 30
     # is debt-like and is passed in, the way `_derived_fields` passes it from `_pension_pool`
@@ -210,22 +210,22 @@ def test_digestion_roic_wedge_on_combined_intangibles():
         "intangibles": _const({"X": 250}),  # goodwill + other, COMBINED
         "totalAssets": _const({"X": 1000}),
     }
-    F = _digestion_fields(_mock(frames), pd.DataFrame(), IDX, 4)
+    f = _digestion_fields(_mock(frames), pd.DataFrame(), IDX, 4)
     last = IDX[-1]
     # NOPAT = 200*(1-0.25)=150 ; IC = 500+200-100 = 600 ; roic_incl = 0.25
-    assert abs(F["roic_incl_intangibles"].loc[last, "X"] - 0.25) < 1e-6
+    assert abs(f["roic_incl_intangibles"].loc[last, "X"] - 0.25) < 1e-6
     # IC ex intangibles = 600-250 = 350 ; roic_ex = 150/350
-    assert abs(F["roic_ex_intangibles"].loc[last, "X"] - 150 / 350) < 1e-6
+    assert abs(f["roic_ex_intangibles"].loc[last, "X"] - 150 / 350) < 1e-6
     # the wedge must be NON-ZERO and negative: acquisitions dilute returns
-    assert F["intangibles_roic_drag"].loc[last, "X"] < -1e-6
-    assert abs(F["intangibles_to_assets"].loc[last, "X"] - 0.25) < 1e-6
-    assert abs(F["intangibles_to_equity"].loc[last, "X"] - 0.50) < 1e-6
+    assert f["intangibles_roic_drag"].loc[last, "X"] < -1e-6
+    assert abs(f["intangibles_to_assets"].loc[last, "X"] - 0.25) < 1e-6
+    assert abs(f["intangibles_to_equity"].loc[last, "X"] - 0.50) < 1e-6
 
     print("\n=== SANITY CHECK: #3 M&A digestion on combined intangibles ===")
     print(
-        f"  ROIC incl intangibles = {F['roic_incl_intangibles'].loc[last, 'X']:.3f} "
-        f"vs ex = {F['roic_ex_intangibles'].loc[last, 'X']:.3f} "
-        f"-> drag {F['intangibles_roic_drag'].loc[last, 'X']:+.3f} (non-zero, so the "
+        f"  ROIC incl intangibles = {f['roic_incl_intangibles'].loc[last, 'X']:.3f} "
+        f"vs ex = {f['roic_ex_intangibles'].loc[last, 'X']:.3f} "
+        f"-> drag {f['intangibles_roic_drag'].loc[last, 'X']:+.3f} (non-zero, so the "
         f"deduction is real); intangibles = 25% of assets, 50% of equity. Validated."
     )
 
@@ -264,13 +264,13 @@ def test_pension_adjusted_ev_and_overhang_leverage():
             },
         ]
     )
-    F = _derived_fields(fh, idx, close, pension_facts=pension_facts)
+    f = _derived_fields(fh, idx, close, pension_facts=pension_facts)
     d = idx[-1]
-    assert abs(F["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
-    assert abs(F["pension_overhang_leverage"].loc[d, "P"] - 80.0 / 500.0) < 1e-9  # 0.16
+    assert abs(f["pension_retirement_liability"].loc[d, "P"] - 80.0) < 1e-6
+    assert abs(f["pension_overhang_leverage"].loc[d, "P"] - 80.0 / 500.0) < 1e-9  # 0.16
     # True EV = 500 mcap + 200 debt + 80 pension - 10 cash = 770 ; ebitda_to_ev = 50/770
-    assert abs(F["ebitda_to_ev"].loc[d, "P"] - 50.0 / 770.0) < 1e-6
-    assert F["ebitda_to_ev"].loc[d, "P"] < 50.0 / 690.0  # lower than EV without the pension add
+    assert abs(f["ebitda_to_ev"].loc[d, "P"] - 50.0 / 770.0) < 1e-6
+    assert f["ebitda_to_ev"].loc[d, "P"] < 50.0 / 690.0  # lower than EV without the pension add
 
     print("\n=== SANITY CHECK: pension-adjusted EV + overhang leverage ===")
     print(
@@ -297,18 +297,18 @@ def test_operating_margin_5y_trend_and_refinancing_risk():
                 "sharesOutstanding": 100.0,
             }
         )
-    F = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"M": 10.0}, index=idx))
+    f = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"M": 10.0}, index=idx))
     d = idx[-1]
     # refinancing risk = ST debt / (cash + positive FCF) = 200 / (50+50) = 2.0
-    assert abs(F["refinancing_risk"].loc[d, "M"] - 2.0) < 1e-9
+    assert abs(f["refinancing_risk"].loc[d, "M"] - 2.0) < 1e-9
     # operating margin expanded materially over ~5y (now ~0.22 vs ~0.12 five years back)
-    assert "operating_margin_5y_chg" in F
-    assert F["operating_margin_5y_chg"].loc[d, "M"] > 0.05
+    assert "operating_margin_5y_chg" in f
+    assert f["operating_margin_5y_chg"].loc[d, "M"] > 0.05
 
     print("\n=== SANITY CHECK: 5y margin trend + refinancing risk ===")
     print(
-        f"  operating_margin_5y_chg={F['operating_margin_5y_chg'].loc[d, 'M']:+.3f} (>0.05, "
-        f"structural expansion); refinancing_risk={F['refinancing_risk'].loc[d, 'M']:.2f} "
+        f"  operating_margin_5y_chg={f['operating_margin_5y_chg'].loc[d, 'M']:+.3f} (>0.05, "
+        f"structural expansion); refinancing_risk={f['refinancing_risk'].loc[d, 'M']:.2f} "
         f"(200 ST debt / 100 liquidity = 2.0x). Validated."
     )
 
@@ -344,20 +344,20 @@ def test_pension_footnote_features_from_notes_num():
             {"ticker": "U", "tag": "DefinedBenefitPlanBenefitObligation", "ddate": "2019-09-30", "qtrs": 4, "value": 99.0, "filed": "2019-11-15"},
         ]
     )
-    F = _derived_fields(fh, idx, close, notes_num=notes_num)
+    f = _derived_fields(fh, idx, close, notes_num=notes_num)
     d = idx[-1]
-    assert abs(F["pension_funded_ratio"].loc[d, "U"] - 0.6) < 1e-9  # 600 / 1000
-    assert abs(F["pbo_to_mcap"].loc[d, "U"] - 1000.0 / 500.0) < 1e-9  # 2.0
-    assert "pension_underfunding_to_mcap" not in F  # deleted duplicate
+    assert abs(f["pension_funded_ratio"].loc[d, "U"] - 0.6) < 1e-9  # 600 / 1000
+    assert abs(f["pbo_to_mcap"].loc[d, "U"] - 1000.0 / 500.0) < 1e-9  # 2.0
+    assert "pension_underfunding_to_mcap" not in f  # deleted duplicate
     # footnote deficit (1000-600=400) fills the recognized pension deficit + EV:
-    assert abs(F["pension_retirement_liability"].loc[d, "U"] - 400.0) < 1e-6
-    assert abs(F["pension_overhang_leverage"].loc[d, "U"] - 400.0 / 500.0) < 1e-9
+    assert abs(f["pension_retirement_liability"].loc[d, "U"] - 400.0) < 1e-6
+    assert abs(f["pension_overhang_leverage"].loc[d, "U"] - 400.0 / 500.0) < 1e-9
     # True EV = 500 mcap + 200 debt + 400 pension - 10 cash = 1090
-    assert abs(F["ebitda_to_ev"].loc[d, "U"] - 50.0 / 1090.0) < 1e-6
+    assert abs(f["ebitda_to_ev"].loc[d, "U"] - 50.0 / 1090.0) < 1e-6
 
     # absent notes_num -> footnote features simply don't appear (no crash)
-    F0 = _derived_fields(fh, idx, close)
-    assert "pension_funded_ratio" not in F0 and "pbo_to_mcap" not in F0
+    f0 = _derived_fields(fh, idx, close)
+    assert "pension_funded_ratio" not in f0 and "pbo_to_mcap" not in f0
 
     print("\n=== SANITY CHECK: pension FOOTNOTE features (notes_num) ===")
     print(
@@ -430,23 +430,23 @@ def test_bank_cash_is_not_netted_from_ev_but_still_ratios_into_cash_to_debt():
     fh = pd.DataFrame([{"ticker": "BANKX", "industry_group": "Banks", **base}, {"ticker": "TECHY", "industry_group": "Software & Services", **base}])
     idx = pd.bdate_range("2020-01-02", periods=30)
     close = pd.DataFrame({"BANKX": 5.0, "TECHY": 5.0}, index=idx)  # mcap = 500 each
-    F = _derived_fields(fh, idx, close)
+    f = _derived_fields(fh, idx, close)
     d = idx[-1]
 
     # TECHY nets its cash: EV = 500 mcap + 200 debt - 300 cash = 400
-    assert abs(F["ebitda_to_ev"].loc[d, "TECHY"] - 50.0 / 400.0) < 1e-9
+    assert abs(f["ebitda_to_ev"].loc[d, "TECHY"] - 50.0 / 400.0) < 1e-9
     # BANKX does NOT: EV = 500 + 200 = 700, identical to holding no cash at all
-    assert abs(F["ebitda_to_ev"].loc[d, "BANKX"] - 50.0 / 700.0) < 1e-9
-    assert F["ebitda_to_ev"].loc[d, "BANKX"] < F["ebitda_to_ev"].loc[d, "TECHY"]
+    assert abs(f["ebitda_to_ev"].loc[d, "BANKX"] - 50.0 / 700.0) < 1e-9
+    assert f["ebitda_to_ev"].loc[d, "BANKX"] < f["ebitda_to_ev"].loc[d, "TECHY"]
     # ...but the RATIO is identical for both — the bank keeps its liquidity cushion
-    assert abs(F["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9
-    assert abs(F["cash_to_debt"].loc[d, "TECHY"] - 1.5) < 1e-9
+    assert abs(f["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9
+    assert abs(f["cash_to_debt"].loc[d, "TECHY"] - 1.5) < 1e-9
 
     print("\n=== SANITY CHECK: bank cash is gated out of NETTING, not out of RATIOS ===")
     print(
         f"  same balance sheet, different GICS group: EV(TECHY)=400 -> ebitda_to_ev "
-        f"{F['ebitda_to_ev'].loc[d, 'TECHY']:.4f}; EV(BANKX)=700 (cash NOT netted) -> "
-        f"{F['ebitda_to_ev'].loc[d, 'BANKX']:.4f}. cash_to_debt is 1.50 for BOTH — the "
+        f"{f['ebitda_to_ev'].loc[d, 'TECHY']:.4f}; EV(BANKX)=700 (cash NOT netted) -> "
+        f"{f['ebitda_to_ev'].loc[d, 'BANKX']:.4f}. cash_to_debt is 1.50 for BOTH — the "
         f"widening fix still reaches the bank. Validated."
     )
 
@@ -496,28 +496,28 @@ def test_distress_debt_prefers_the_reconciled_total_debt_column():
             ),
         ]
     )
-    F = _derived_fields(fh, idx, close)
+    f = _derived_fields(fh, idx, close)
     d = idx[-1]
 
     # BOTH get the feature, and both get the same value: 300 / 200
-    assert abs(F["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9, "a leg-less filer still has no debt denominator"
-    assert abs(F["cash_to_debt"].loc[d, "MFG"] - 1.5) < 1e-9
+    assert abs(f["cash_to_debt"].loc[d, "BANKX"] - 1.5) < 1e-9, "a leg-less filer still has no debt denominator"
+    assert abs(f["cash_to_debt"].loc[d, "MFG"] - 1.5) < 1e-9
     # the leg-reporting filer is UNCHANGED -- this is a coverage fix, not a re-basing
-    assert abs(F["net_debt_to_ebitda"].loc[d, "MFG"] - (200.0 - 300.0) / 50.0) < 1e-9
-    assert abs(F["net_debt_to_ebitda"].loc[d, "BANKX"] - 200.0 / 50.0) < 1e-9, (
+    assert abs(f["net_debt_to_ebitda"].loc[d, "MFG"] - (200.0 - 300.0) / 50.0) < 1e-9
+    assert abs(f["net_debt_to_ebitda"].loc[d, "BANKX"] - 200.0 / 50.0) < 1e-9, (
         "BANKX is a bank: its cash must NOT be netted (D1c), so net debt is the gross 200"
     )
 
     print("\n=== SANITY CHECK: distress debt uses the reconciled totalDebt ===")
     print(
         f"  BANKX reports NO longTermDebt/shortTermDebt (unclassified balance sheet) yet "
-        f"cash_to_debt={F['cash_to_debt'].loc[d, 'BANKX']:.2f} — it used to be NaN."
+        f"cash_to_debt={f['cash_to_debt'].loc[d, 'BANKX']:.2f} — it used to be NaN."
     )
-    print(f"  MFG reports both legs summing to the same 200 -> identical {F['cash_to_debt'].loc[d, 'MFG']:.2f}: coverage gained, no value re-based.")
+    print(f"  MFG reports both legs summing to the same 200 -> identical {f['cash_to_debt'].loc[d, 'MFG']:.2f}: coverage gained, no value re-based.")
     print(
         f"  And D1c still holds: net_debt_to_ebitda is "
-        f"{F['net_debt_to_ebitda'].loc[d, 'BANKX']:.1f}x for the bank (cash NOT netted) "
-        f"vs {F['net_debt_to_ebitda'].loc[d, 'MFG']:.1f}x for the manufacturer. Validated."
+        f"{f['net_debt_to_ebitda'].loc[d, 'BANKX']:.1f}x for the bank (cash NOT netted) "
+        f"vs {f['net_debt_to_ebitda'].loc[d, 'MFG']:.1f}x for the manufacturer. Validated."
     )
 
 
@@ -542,12 +542,12 @@ def test_pension_has_exactly_two_sources_no_fundamentals_history_column():
     with_col = _derived_fields(pd.DataFrame([{**base, "pensionDeficit": 80.0}]), idx, close)
 
     # no pension source at all -> no pension features, with or without the phantom column
-    for F in (without, with_col):
-        assert "pension_retirement_liability" not in F
-        assert "pension_overhang_leverage" not in F
+    for f in (without, with_col):
+        assert "pension_retirement_liability" not in f
+        assert "pension_overhang_leverage" not in f
     # and EV is pension-free either way: 500 mcap + 200 debt - 10 cash = 690
-    for F in (without, with_col):
-        assert abs(F["ebitda_to_ev"].loc[idx[-1], "Z"] - 50.0 / 690.0) < 1e-9
+    for f in (without, with_col):
+        assert abs(f["ebitda_to_ev"].loc[idx[-1], "Z"] - 50.0 / 690.0) < 1e-9
 
     print("\n=== SANITY CHECK: pension pool has exactly TWO sources ===")
     print(

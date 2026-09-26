@@ -29,6 +29,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -220,7 +223,7 @@ def render_strategy_tabs(step: StepPortfolio):
     if not names:
         return
     tabs = st.tabs([SLEEVE_INFO.get(n, (n, ""))[0] for n in names])
-    for tab, n in zip(tabs, names):
+    for tab, n in zip(tabs, names, strict=False):
         with tab:
             res = step.results[n]
             title, blurb = SLEEVE_INFO.get(n, (n, ""))
@@ -236,7 +239,7 @@ def render_strategy_tabs(step: StepPortfolio):
             if an:
                 st.markdown("**Analysis KPIs**")
                 fmt = {
-                    k: (f"{v:.3f}" if isinstance(v, (int, float)) and np.isfinite(v) else "—")
+                    k: (f"{v:.3f}" if isinstance(v, int | float) and np.isfinite(v) else "—")
                     for k, v in an.items()
                     if not isinstance(v, pd.DataFrame)
                 }

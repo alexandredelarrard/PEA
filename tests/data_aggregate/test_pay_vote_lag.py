@@ -53,7 +53,7 @@ def test_the_prior_year_leg_is_nan_when_the_prior_year_is_missing():
         ]
     )
     lag = prior_annual_leg(hist, "v")
-    at = dict(zip(zip(hist["ticker"], hist["as_of"].dt.year), lag))
+    at = dict(zip(zip(hist["ticker"], hist["as_of"].dt.year, strict=False), lag, strict=False))
 
     # 1. consecutive years pair up, and carry the PRIOR year's value -- not this year's
     assert at[("AAA", 2022)] == pytest.approx(0.90)

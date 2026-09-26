@@ -654,7 +654,7 @@ def test_the_label_is_normalised_on_the_row_and_proposal_seq_is_independent_of_i
 def _ddl_columns(table: str) -> list[str]:
     """Column names declared for `table` in sql/schema.sql, in declaration order."""
     sql = (pathlib.Path(__file__).resolve().parents[3] / "sql" / "schema.sql").read_text(encoding="utf-8")
-    m = re.search(r'CREATE TABLE IF NOT EXISTS "%s" \((.*?)\n\);' % re.escape(table), sql, re.S)
+    m = re.search(rf'CREATE TABLE IF NOT EXISTS "{re.escape(table)}" \((.*?)\n\);', sql, re.S)
     assert m, f"{table}: no CREATE TABLE block in sql/schema.sql"
     return re.findall(r'^\s+"([a-z0-9_]+)"\s', m.group(1), re.M)
 

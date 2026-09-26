@@ -17,18 +17,18 @@ import pandas as pd
 from src.data_aggregate.utils.target.targets import compute_epsilon, forward_compound
 
 
-def _setup(horizon=20, gap_at=100, T=150):
-    dates = pd.bdate_range("2021-01-04", periods=T)
+def _setup(horizon=20, gap_at=100, t=150):
+    dates = pd.bdate_range("2021-01-04", periods=t)
     tickers = ["A", "B", "C"]
     rng = np.random.default_rng(0)
 
-    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (T, 3)), axis=0), index=dates, columns=tickers)
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (t, 3)), axis=0), index=dates, columns=tickers)
 
     # shared factor panel: market + oil; oil has an INTERIOR one-day gap
     factor = pd.DataFrame(
         {
-            "market": rng.normal(0, 0.01, T),
-            "oil": rng.normal(0, 0.02, T),
+            "market": rng.normal(0, 0.01, t),
+            "oil": rng.normal(0, 0.02, t),
         },
         index=dates,
     )

@@ -41,7 +41,7 @@ DEF14A_TABLES = ("def14a_llm", "def14a_executive_comp", "def14a_director_comp", 
 def _ddl_columns(table: str) -> list[str]:
     """Column names declared for `table` in sql/schema.sql, in declaration order."""
     sql = SCHEMA_SQL.read_text(encoding="utf-8")
-    m = re.search(r'CREATE TABLE IF NOT EXISTS "%s" \((.*?)\n\);' % re.escape(table), sql, re.S)
+    m = re.search(rf'CREATE TABLE IF NOT EXISTS "{re.escape(table)}" \((.*?)\n\);', sql, re.S)
     assert m, f"{table}: no CREATE TABLE block found in sql/schema.sql"
     return re.findall(r'^\s+"([a-z0-9_]+)"\s', m.group(1), re.M)
 

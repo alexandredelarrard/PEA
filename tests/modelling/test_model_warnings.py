@@ -63,14 +63,14 @@ def test_ensemble_predict_constant_member_no_warning():
     class _Const:  # all-zero-coef linear -> constant
         feature_names = ["f1"]
 
-        def predict(self, X):  # noqa: N802
-            return np.zeros(len(X))
+        def predict(self, x):  # noqa: N802
+            return np.zeros(len(x))
 
     class _Vary:
         feature_names = ["f1"]
 
-        def predict(self, X):  # noqa: N802
-            return np.asarray(X["f1"], dtype=float)
+        def predict(self, x):  # noqa: N802
+            return np.asarray(x["f1"], dtype=float)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)

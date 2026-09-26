@@ -145,7 +145,7 @@ def _participants_text(structured) -> str:
     """Distinct non-operator speakers (management + analysts), role-prefix stripped,
     order-preserved — the reliable participants list `structured_content` gives us."""
     seen: list[str] = []
-    for turn in structured if isinstance(structured, (list, tuple)) else []:
+    for turn in structured if isinstance(structured, list | tuple) else []:
         s = _clean_speaker(turn.get("speaker", "") if isinstance(turn, dict) else "")
         if s and s.lower() != "operator" and s not in seen:
             seen.append(s)

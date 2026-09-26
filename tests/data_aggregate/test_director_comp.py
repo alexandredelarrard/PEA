@@ -152,7 +152,7 @@ def test_the_shares_are_board_level_sums_not_means_of_ratios():
     print("  CONCLUSION: the shares are board-level sums, so a pro-rated joiner cannot move them. Validated.")
 
 
-def test_the_ceo_ratio_is_NaN_and_never_inf_on_a_zero_denominator():
+def test_the_ceo_ratio_is_nan_and_never_inf_on_a_zero_denominator():
     """A board whose disclosed median pay is 0 is a parse failure, not a board that works for
     free. `inf` would then propagate through the winsorization as the largest value in the
     cross-section -- a parse failure encoded as the most extreme governance signal in the index.

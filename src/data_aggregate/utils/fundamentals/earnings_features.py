@@ -161,7 +161,7 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, close: p
     spinoff and the legs there really do cancel.
     """
     df = _prep(hist)
-    F: dict[str, pd.DataFrame] = {}
+    features: dict[str, pd.DataFrame] = {}
 
     fwd_eps = _forward_to_daily(df, "eps_estimate", idx)
     last_actual = _realized_to_daily(df, "eps_actual", idx)
@@ -170,23 +170,23 @@ def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, close: p
         price = price.mul(level_factor.reindex_like(price).fillna(1.0))
 
     if not fwd_eps.empty:
-        F["fwd_eps_yield"] = ratio(fwd_eps, price)  # next-quarter forward E/P
+        features["fwd_eps_yield"] = ratio(fwd_eps, price)  # next-quarter forward E/P
         if not last_actual.empty:
-            F["eps_expectation_growth"] = ratio(fwd_eps, last_actual, positive_den=True) - 1.0
+            features["eps_expectation_growth"] = ratio(fwd_eps, last_actual, positive_den=True) - 1.0
 
     # NTM (annual, forward-rolled) forward-earnings yield = 1 / forward P/E -- the
     # historical, backtestable replacement for the yfinance forwardPE snapshot.
     ntm_eps, _ = _ntm_ttm_from_prepped(df, idx)
     if not ntm_eps.empty and ntm_eps.notna().any().any():
-        F["forward_earnings_yield"] = ratio(ntm_eps, price)  # NTM E/P (higher = cheaper)
+        features["forward_earnings_yield"] = ratio(ntm_eps, price)  # NTM E/P (higher = cheaper)
 
     last_surprise = _realized_to_daily(df, "surprise_pct", idx)
     if not last_surprise.empty:
-        F["eps_surprise_last"] = last_surprise
+        features["eps_surprise_last"] = last_surprise
     avg_surprise = _reported_rolling_to_daily(df, "surprise_pct", idx, SURPRISE_WINDOW)
     if not avg_surprise.empty:
-        F["eps_surprise_4q_avg"] = avg_surprise
-    return F
+        features["eps_surprise_4q_avg"] = avg_surprise
+    return features
 
 
 def build_earnings_feature_panel(

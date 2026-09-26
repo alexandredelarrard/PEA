@@ -50,4 +50,4 @@ def assert_valid_url(ctx, param, value):
     try:
         assert "https://" in value
     except ValueError:
-        raise click.BadParameter("URL to crawl must be on the format of https://XXXX.com")
+        raise click.BadParameter("URL to crawl must be on the format of https://XXXX.com") from None

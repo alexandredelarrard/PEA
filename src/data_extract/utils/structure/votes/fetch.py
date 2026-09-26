@@ -212,7 +212,11 @@ def fetch_8k_votes_llm(
             )
 
         tally: dict = {"rejected": 0, "rows": [], "skips": {}}
-        results = extractor.run_extraction(tasks, flatten=lambda r: _result_frames(r, tally), group_key=lambda t: str(t.meta["ticker"]))
+        results = extractor.run_extraction(
+            tasks,
+            flatten=lambda r, tally=tally: _result_frames(r, tally),
+            group_key=lambda t: str(t.meta["ticker"]),
+        )
 
         total_rejected += tally["rejected"]
         for reason, n in tally["skips"].items():

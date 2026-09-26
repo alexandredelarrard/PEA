@@ -291,7 +291,7 @@ def _fmt(v) -> str:
         return f"{v:,.4f}".rstrip("0").rstrip(".") if abs(v) < 1000 else f"{v:,.1f}"
     if isinstance(v, dict):
         return ", ".join(f"{k}={v[k]}" for k in sorted(v))
-    if isinstance(v, (list, tuple)):
+    if isinstance(v, list | tuple):
         return ", ".join(map(str, v)) or "-"
     return f"{v:,}" if isinstance(v, int) else str(v)
 
@@ -301,12 +301,14 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame], bas
     reports `-` and PENDING rather than a spurious FAIL."""
     b_llm, n_llm = base["def14a_llm"], new["def14a_llm"]
     # same-accession population for every fill comparison
-    shared = (set(b_llm.get("accession_number", pd.Series(dtype=str))) & set(n_llm.get("accession_number", pd.Series(dtype=str)))) or None
+    (set(b_llm.get("accession_number", pd.Series(dtype=str))) & set(n_llm.get("accession_number", pd.Series(dtype=str)))) or None
 
     b_null, n_null = _pct_fully_null(b_llm, "2001-01-01"), _pct_fully_null(n_llm, "2001-01-01")
     b_sop, n_sop = _low_say_on_pay(b_llm), _low_say_on_pay(n_llm)
     b_gender = _gender_metrics(b_llm, base["def14a_directors"])
     n_gender = _gender_metrics(n_llm, new["def14a_directors"])
+    baseline_female_fill = b_gender.get("pct_female_fill")
+    baseline_women_count_agrees = b_gender.get("pct_women_count_agrees")
 
     def pct(x):
         return None if x is None else round(100 * x, 2)
@@ -408,10 +410,10 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame], bas
         dict(
             id="G12",
             name="pct_female_directors fill",
-            base=pct(b_gender.get("pct_female_fill")),
+            base=pct(baseline_female_fill),
             new=pct(n_gender.get("pct_female_fill")),
             req="must not fall",
-            check=lambda v, b=b_gender.get("pct_female_fill"): b is None or v >= 100 * b - 1e-9,
+            check=lambda v: baseline_female_fill is None or v >= 100 * baseline_female_fill - 1e-9,
         ),
         dict(
             id="G13",
@@ -424,10 +426,10 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame], bas
         dict(
             id="G14",
             name="% of filings where n_women_directors_vs_inferred == 0",
-            base=pct(b_gender.get("pct_women_count_agrees")),
+            base=pct(baseline_women_count_agrees),
             new=pct(n_gender.get("pct_women_count_agrees")),
             req="> baseline",
-            check=lambda v, b=b_gender.get("pct_women_count_agrees"): b is None or v > 100 * b,
+            check=lambda v: baseline_women_count_agrees is None or v > 100 * baseline_women_count_agrees,
         ),
     ]
     for g in gates:

@@ -187,7 +187,7 @@ def test_as_of_never_precedes_fiscal_end_unit():
         starts = ["2020-01-01", "2020-04-01", "2020-07-01", "2020-10-01"]
         filings = ["2020-04-30", "2020-07-30", "2020-10-29", "2020-11-02" if filed_early else "2021-02-24"]
         dur, inst = [], []
-        for s, e, f in zip(starts, ends, filings):
+        for s, e, f in zip(starts, ends, filings, strict=False):
             dur.append({"start": s, "end": e, "val": 1_000_000_000, "filed": f, "form": "10-Q"})
             inst.append({"end": e, "val": 5_000_000_000, "filed": f, "form": "10-Q"})
         usd = {"units": {"USD": dur}}

@@ -53,6 +53,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.validate.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
@@ -544,7 +547,7 @@ def factor_population(panel: pd.DataFrame, yf: pd.DataFrame, genuine: pd.DataFra
 # --------------------------------------------------------------------------- #
 def to_markdown(blob: dict) -> str:
     env, inv = blob["env"], blob["invariants"]
-    L = [
+    lines = [
         f"# Spinoff level-basis baseline -- `{blob['tag']}`",
         "",
         f"Generated {blob['generated_utc']} from the live `pea` database by `scripts/spinoff_level_baseline.py`.",
@@ -564,7 +567,7 @@ def to_markdown(blob: dict) -> str:
     for name, v in inv.items():
         if not v.get("rows"):
             continue
-        L.append(
+        lines.append(
             f"| `{name}` | {v['rows']:,} | {v['raw_rate']:.2%} | {v['adj_rate']:.2%} "
             f"| +{v['newly_passing']:,} | {v['newly_failing']} "
             f"({', '.join(v['newly_failing_tickers']) or 'none'}) |"
@@ -572,7 +575,7 @@ def to_markdown(blob: dict) -> str:
 
     f = blob["fdx_landmark"]
     if f.get("found"):
-        L += [
+        lines += [
             "",
             "## FDX 2020-12-17 -- the landmark row",
             "",
@@ -583,7 +586,7 @@ def to_markdown(blob: dict) -> str:
             f"| ${f['ours_bn']}bn | **${f['fixed_bn']}bn** | ${f['sharadar_bn']}bn |",
         ]
 
-    L += [
+    lines += [
         "",
         "## market cap vs Sharadar, spinoff cohort",
         "",
@@ -592,24 +595,24 @@ def to_markdown(blob: dict) -> str:
     ]
     for ticker, picks in blob["market_cap_table"].items():
         for p in picks:
-            L.append(
+            lines.append(
                 f"| {ticker} | {p['date']} | {p['S']} | {p['ours_bn']} "
                 f"| {p['fixed_bn']} | {p['sharadar_bn']} | {p['err_today']:.2%} "
                 f"| {p['err_fixed']:.2%} |"
             )
 
-    L += ["", "## per-ticker S", ""]
+    lines += ["", "## per-ticker S", ""]
     for label, block in blob["cohort_factors"].items():
-        L += [f"### {label} cohort", "", "| ticker | rows | rows S!=1 | min S | max S | exactly 1.0 |", "|---|---|---|---|---|---|"]
+        lines += [f"### {label} cohort", "", "| ticker | rows | rows S!=1 | min S | max S | exactly 1.0 |", "|---|---|---|---|---|---|"]
         for t, v in block.items():
             if not v.get("rows"):
-                L.append(f"| {t} | 0 | - | - | - | - |")
+                lines.append(f"| {t} | 0 | - | - | - | - |")
                 continue
-            L.append(f"| {t} | {v['rows']} | {v['rows_not_one']} | {v['min']} | {v['max']} | {'YES' if v['exactly_one'] else '**NO**'} |")
-        L.append("")
+            lines.append(f"| {t} | {v['rows']} | {v['rows_not_one']} | {v['min']} | {v['max']} | {'YES' if v['exactly_one'] else '**NO**'} |")
+        lines.append("")
 
     p = blob["factor_population"]
-    L += [
+    lines += [
         "## how much S touches",
         "",
         f"{p['rows_off_one']:,} of {p['panel_rows']:,} panel rows ({p['share_off_one']:.2%}) "
@@ -618,9 +621,9 @@ def to_markdown(blob: dict) -> str:
         "| ticker | max S |",
         "|---|---|",
     ]
-    L += [f"| {t} | {v} |" for t, v in p["top_by_abs_log_S"].items()]
+    lines += [f"| {t} | {v} |" for t, v in p["top_by_abs_log_S"].items()]
 
-    L += [
+    lines += [
         "",
         "## residual after S -- invariant 1's biggest remaining clusters",
         "",
@@ -630,15 +633,15 @@ def to_markdown(blob: dict) -> str:
         "| ticker | rows | median ratio |",
         "|---|---|---|",
     ]
-    L += [f"| {t} | {v['rows']} | {v['median_ratio']} |" for t, v in blob["residual_clusters"].items()]
+    lines += [f"| {t} | {v['rows']} | {v['median_ratio']} |" for t, v in blob["residual_clusters"].items()]
 
-    L += ["", "## the two open questions", ""]
+    lines += ["", "## the two open questions", ""]
     for key in ("dividend_leg", "earnings_leg"):
         q = blob[key]
         if q.get("skipped"):
-            L += [f"### `{key}` -- SKIPPED: {q['skipped']}", ""]
+            lines += [f"### `{key}` -- SKIPPED: {q['skipped']}", ""]
             continue
-        L += [
+        lines += [
             f"### `{key}` -- {q['what']}",
             "",
             f"**{q['verdict']}**",
@@ -650,14 +653,14 @@ def to_markdown(blob: dict) -> str:
         ]
         for c, v in q["cohorts"].items():
             if not v.get("n"):
-                L.append(f"| {c} | 0 | - | - | - | - |")
+                lines.append(f"| {c} | 0 | - | - | - | - |")
                 continue
-            L.append(f"| {c} | {v['n']:,} | {v['median']} | {v['p25']} | {v['p75']} | {v['within_2pct']:.2%} |")
-        L.append("")
+            lines.append(f"| {c} | {v['n']:,} | {v['median']} | {v['p25']} | {v['p75']} | {v['within_2pct']:.2%} |")
+        lines.append("")
 
     x = blob["cross_sectional_impact"]
     if x.get("rows"):
-        L += [
+        lines += [
             "",
             "## cross-sectional impact -- what the MODEL sees",
             "",
@@ -671,7 +674,7 @@ def to_markdown(blob: dict) -> str:
         ]
 
     c = blob["return_controls"]
-    L += [
+    lines += [
         "## return controls -- MUST NOT MOVE",
         "",
         "| digest | value |",
@@ -681,10 +684,10 @@ def to_markdown(blob: dict) -> str:
     ]
     part = c["cube_part_prices"]
     if part.get("stale"):
-        L += ["", f"> `cube_part_prices` is a build behind -- columns `{', '.join(part['columns'])}`. {part['note']}.", ""]
+        lines += ["", f"> `cube_part_prices` is a build behind -- columns `{', '.join(part['columns'])}`. {part['note']}.", ""]
     else:
-        L += [f"| `cube_part_prices.{k[:-7]}` | `{v}` |" for k, v in part.items() if k.endswith("_digest")]
-    return "\n".join(L) + "\n"
+        lines += [f"| `cube_part_prices.{k[:-7]}` | `{v}` |" for k, v in part.items() if k.endswith("_digest")]
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:

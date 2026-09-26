@@ -82,7 +82,7 @@ def allocation_backtest(
     cash_ret = cash_ret.reindex(rets.index).fillna(0.0)
 
     score = risk_on_score(rets, vix) if (risk_on or lev_responsive) else None
-    W = base_weights(
+    weights = base_weights(
         rets,
         vol_window,
         scheme,
@@ -97,13 +97,13 @@ def allocation_backtest(
     if trend_enabled:
         prices = (1.0 + rets.fillna(0.0)).cumprod()
         scale = trend_scale_long_only(prices, list(trend_lookbacks), trend_vol_window, trend_scheme, trend_floor, trend_cap)
-        scale = scale.reindex_like(W).fillna(1.0).clip(lower=0.0, upper=1.0)
+        scale = scale.reindex_like(weights).fillna(1.0).clip(lower=0.0, upper=1.0)
     else:
-        scale = pd.DataFrame(1.0, index=W.index, columns=W.columns)
-    w_risky = (W * scale).fillna(0.0)  # sum <= 1; remainder -> cash
+        scale = pd.DataFrame(1.0, index=weights.index, columns=weights.columns)
+    w_risky = (weights * scale).fillna(0.0)  # sum <= 1; remainder -> cash
 
     # global vol target; target the BASE book's vol when lever_on='base' so trend-to-cash de-risks
-    book = W.fillna(0.0) if lever_on == "base" else w_risky
+    book = weights.fillna(0.0) if lever_on == "base" else w_risky
     held0 = book.shift(1)
     pre_ret = (held0 * rets).sum(axis=1) + (1.0 - held0.sum(axis=1)) * cash_ret
     if vol_mode == "ewma":

@@ -159,7 +159,7 @@ def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dic
     """
     if cikmap.empty or "ticker" not in cikmap.columns:
         return {}
-    out = {str(c): str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
+    out = {str(c): str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"], strict=False)}
     universe = set(out.values())
     for ticker, entry in load_registrants(config_dir).items():
         if ticker.upper() not in universe:

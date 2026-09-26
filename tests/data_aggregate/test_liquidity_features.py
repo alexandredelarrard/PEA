@@ -14,16 +14,16 @@ from src.data_aggregate.utils.momentum.features import build_feature_panel, comp
 _LIQ = ["dollar_volume_63", "amihud_63", "rel_volume_5_63"]
 
 
-def _synth(T=260, N=25, seed=0):
-    dates = pd.bdate_range("2022-01-03", periods=T)
-    tickers = [f"S{i:02d}" for i in range(N)]
+def _synth(t=260, n=25, seed=0):
+    dates = pd.bdate_range("2022-01-03", periods=t)
+    tickers = [f"S{i:02d}" for i in range(n)]
     rng = np.random.default_rng(seed)
-    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.015, (T, N)), axis=0), index=dates, columns=tickers)
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.015, (t, n)), axis=0), index=dates, columns=tickers)
     open_ = close.shift(1).fillna(close.iloc[0])
     # volume: each stock a different base level -> a clear liquidity ranking
-    base = np.linspace(1e5, 1e7, N)
-    volume = pd.DataFrame(base[None, :] * rng.lognormal(0, 0.3, (T, N)), index=dates, columns=tickers)
-    sector = pd.DataFrame(rng.normal(0, 0.01, (T, N)), index=dates, columns=tickers)
+    base = np.linspace(1e5, 1e7, n)
+    volume = pd.DataFrame(base[None, :] * rng.lognormal(0, 0.3, (t, n)), index=dates, columns=tickers)
+    sector = pd.DataFrame(rng.normal(0, 0.01, (t, n)), index=dates, columns=tickers)
     return dates, tickers, close, open_, volume, sector
 
 

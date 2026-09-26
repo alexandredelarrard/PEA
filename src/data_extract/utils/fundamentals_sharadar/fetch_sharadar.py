@@ -36,7 +36,7 @@ from src.constants.constants import DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1
 from src.context import Context
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals_sharadar.client import (
-    NotEntitled,
+    NotEntitledError,
     canonical_symbols,
     cast_value_columns,
     coerce_date_columns,
@@ -92,7 +92,7 @@ def _usd_roster(context: Context) -> dict[str, str]:
         )
     frame = frame.assign(_live=(frame["isdelisted"].astype(str).str.upper() != "Y"))
     frame = frame.sort_values("_live", ascending=False).drop_duplicates("ticker")
-    return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str)))
+    return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str), strict=False))
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +131,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_h
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`.
 
     One request per (ticker, dimension). A ticker the subscription does not cover costs
-    exactly ONE request and is counted, not retried -- see `client.NotEntitled`.
+    exactly ONE request and is counted, not retried -- see `client.NotEntitledError`.
     """
     currencies = _usd_roster(context)
     resume = context.store.max_date_by(Tables.sharadar_fundamentals, "ticker")
@@ -186,7 +186,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_h
                 if page is not None and not page.empty:
                     frames.append(page)
                 sleep_pace(pace, SHARADAR_BASE_URL)
-        except NotEntitled:
+        except NotEntitledError:
             denied.append(ticker)
             continue
 

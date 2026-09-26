@@ -43,6 +43,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
@@ -208,7 +211,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     # The Phase-0 filing index only covers the 22 tickers that HAD a cached proxy, so XOM is
     # absent from it; resolve CIKs the way the pipeline does instead of from that artifact.
     cik_df = load_cik_mapping(context, tickers)
-    cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str)))
+    cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str), strict=False))
 
     rows: list[dict] = []
     for t in tickers[: limit or len(tickers)]:

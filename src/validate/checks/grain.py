@@ -92,7 +92,10 @@ def check_grain(
     findings: list[Finding] = []
     if duplicated:
         counts = frame[frame.duplicated(subset=keys, keep=False)].groupby(keys, dropna=False).size().sort_values(ascending=False)
-        examples = [{**dict(zip(keys, key if isinstance(key, tuple) else (key,))), "rows": int(n)} for key, n in counts.head(_MAX_EXAMPLES).items()]
+        examples = [
+            {**dict(zip(keys, key if isinstance(key, tuple) else (key,), strict=False)), "rows": int(n)}
+            for key, n in counts.head(_MAX_EXAMPLES).items()
+        ]
         findings.append(
             Finding.at(
                 10,

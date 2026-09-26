@@ -197,11 +197,11 @@ def _para(s, st) -> Paragraph:
     return Paragraph(_text(s, mono_size=max(5.5, st.fontSize - 0.6)), st)
 
 
-def _simple_table(header: list[str], rows: list[list], widths: list[float], S: dict, aligns: dict[int, str] | None = None) -> Table:
+def _simple_table(header: list[str], rows: list[list], widths: list[float], styles: dict, aligns: dict[int, str] | None = None) -> Table:
     right = {i for i, a in (aligns or {}).items() if a == "RIGHT"}
-    body = [[_para(h, S["thr" if i in right else "th"]) for i, h in enumerate(header)]]
+    body = [[_para(h, styles["thr" if i in right else "th"]) for i, h in enumerate(header)]]
     for r in rows:
-        body.append([c if isinstance(c, Paragraph) else _para(c, S["cellr" if i in right else "cell"]) for i, c in enumerate(r)])
+        body.append([c if isinstance(c, Paragraph) else _para(c, styles["cellr" if i in right else "cell"]) for i, c in enumerate(r)])
     t = Table(body, colWidths=widths, repeatRows=1, hAlign="LEFT")
     t.setStyle(_grid())
     return t
@@ -214,7 +214,7 @@ _FEAT_COLS = ["feature", "views", "null", "peer-z p1 / p50 / p99", "@clip", "wha
 _FEAT_W = [96, 62, 34, 80, 32, 244, 300, 274]
 
 
-def _feature_tables(rows, S: dict) -> list:
+def _feature_tables(rows, styles: dict) -> list:
     """One table per family.
 
     THE FAMILY NAME IS ROW 0 OF THE TABLE, not a heading above it, and `repeatRows=2` carries
@@ -226,19 +226,19 @@ def _feature_tables(rows, S: dict) -> list:
     widths = [w * scale for w in _FEAT_W]
     ncol = len(_FEAT_COLS)
     for fam, items in rows:
-        band = [Paragraph(_text(fam), S["famcell"])] + [""] * (ncol - 1)
-        body = [band, [_para(h, S["thr" if h in ("null", "@clip") else "th"]) for h in _FEAT_COLS]]
+        band = [Paragraph(_text(fam), styles["famcell"])] + [""] * (ncol - 1)
+        body = [band, [_para(h, styles["thr" if h in ("null", "@clip") else "th"]) for h in _FEAT_COLS]]
         for x in items:
             body.append(
                 [
-                    _para(x["characteristic"], S["cellm"]),
-                    _para(x["views"], S["cell"]),
-                    _para(x["null"], S["cellr"]),
-                    _para(x["dist"], S["cellm"]),
-                    _para(x["clip"], S["cellr"]),
-                    _para(x["what"], S["cell"]),
-                    _para(x["why"], S["cell"]),
-                    _para(x["tail"], S["cell"]),
+                    _para(x["characteristic"], styles["cellm"]),
+                    _para(x["views"], styles["cell"]),
+                    _para(x["null"], styles["cellr"]),
+                    _para(x["dist"], styles["cellm"]),
+                    _para(x["clip"], styles["cellr"]),
+                    _para(x["what"], styles["cell"]),
+                    _para(x["why"], styles["cell"]),
+                    _para(x["tail"], styles["cell"]),
                 ]
             )
         t = Table(body, colWidths=widths, repeatRows=2, hAlign="LEFT")
@@ -274,7 +274,7 @@ def _footer(canvas, doc) -> None:
 def render(out_path: Path, meta: dict, feature_rows: list, narrative) -> Path:
     """Build the PDF. `narrative` is the module holding the hand-written sections."""
     _register_fonts()
-    S = _styles()
+    styles = _styles()
     doc = SimpleDocTemplate(
         str(out_path),
         pagesize=PAGE,
@@ -288,34 +288,34 @@ def render(out_path: Path, meta: dict, feature_rows: list, narrative) -> Path:
     )
 
     story: list = [
-        Paragraph(_text("`cube_part_fundamentals` — per-feature evidence", mono_size=17), S["title"]),
-        _para(meta["subtitle"], S["subtitle"]),
+        Paragraph(_text("`cube_part_fundamentals` — per-feature evidence", mono_size=17), styles["title"]),
+        _para(meta["subtitle"], styles["subtitle"]),
     ]
     for block in narrative.opening(meta):
-        story += _block(block, S)
+        story += _block(block, styles)
 
     story.append(PageBreak())
-    story.append(Paragraph(_text("2. Feature-by-feature evidence"), S["h1"]))
-    story.append(_para(meta["table_lede"], S["body"]))
-    story += _feature_tables(feature_rows, S)
+    story.append(Paragraph(_text("2. Feature-by-feature evidence"), styles["h1"]))
+    story.append(_para(meta["table_lede"], styles["body"]))
+    story += _feature_tables(feature_rows, styles)
 
     story.append(PageBreak())
     for block in narrative.closing(meta):
-        story += _block(block, S)
+        story += _block(block, styles)
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return out_path
 
 
-def _block(block: tuple, S: dict) -> list:
+def _block(block: tuple, styles: dict) -> list:
     """(kind, payload) -> flowables. Kinds: h1, h2, p, table, spacer, pagebreak."""
     kind = block[0]
     if kind == "h1":
-        return [Paragraph(_text(block[1]), S["h1"])]
+        return [Paragraph(_text(block[1]), styles["h1"])]
     if kind == "h2":
-        return [Paragraph(_text(block[1]), S["h2"])]
+        return [Paragraph(_text(block[1]), styles["h2"])]
     if kind == "p":
-        return [_para(block[1], S["body"])]
+        return [_para(block[1], styles["body"])]
     if kind == "spacer":
         return [Spacer(1, block[1])]
     if kind == "pagebreak":
@@ -324,7 +324,7 @@ def _block(block: tuple, S: dict) -> list:
         _, header, rows, weights, aligns = block
         total = sum(weights)
         widths = [USABLE * w / total for w in weights]
-        t = _simple_table(header, rows, widths, S, aligns)
+        t = _simple_table(header, rows, widths, styles, aligns)
         # only SHORT tables are held together. A 12-row table of prose is taller than the
         # space usually left on a page, so `KeepTogether` pushed it whole and left half a
         # page blank; it has a repeating header, so splitting it costs the reader nothing.

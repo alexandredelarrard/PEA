@@ -69,7 +69,7 @@ class LongShortStrategy(Strategy):
         if tk is None:
             return {}
         col = "industry_group" if "industry_group" in tk.columns else "sector" if "sector" in tk.columns else None
-        return dict(zip(tk["ticker"], tk[col])) if col else {}
+        return dict(zip(tk["ticker"], tk[col], strict=False)) if col else {}
 
     def simulate(self):
         c, inp = self._cfg, self._inputs

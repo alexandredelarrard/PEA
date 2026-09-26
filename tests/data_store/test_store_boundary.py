@@ -63,7 +63,7 @@ def code_only(text: str) -> str:
     blank: set[int] = set()  # 1-indexed source lines to drop
 
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         body = getattr(node, "body", None)
         if not body:

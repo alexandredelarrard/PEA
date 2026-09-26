@@ -14,19 +14,19 @@ import pandas as pd
 from src.strategies.utils.strategies_opt import simulate_portfolio_opt
 
 
-def _synth(seed: int = 0, T: int = 300, N: int = 60):
+def _synth(seed: int = 0, t: int = 300, n: int = 60):
     rng = np.random.default_rng(seed)
-    dates = pd.bdate_range("2020-01-01", periods=T)
-    tickers = [f"T{i:02d}" for i in range(N)]
-    betas = rng.uniform(0.5, 1.5, N)
-    mkt = rng.normal(0.0004, 0.010, T)
-    idio = rng.normal(0.0, 0.015, (T, N))
+    dates = pd.bdate_range("2020-01-01", periods=t)
+    tickers = [f"T{i:02d}" for i in range(n)]
+    betas = rng.uniform(0.5, 1.5, n)
+    mkt = rng.normal(0.0004, 0.010, t)
+    idio = rng.normal(0.0, 0.015, (t, n))
     stock = betas[None, :] * mkt[:, None] + idio
     stock_ret = pd.DataFrame(stock, index=dates, columns=tickers)
     spy_ret = pd.Series(mkt, index=dates)
-    sig = np.full((T, N), np.nan)
-    for t in range(T - 1):
-        sig[t] = idio[t + 1] + rng.normal(0, 0.02, N)  # noisy predictor of next idio
+    sig = np.full((t, n), np.nan)
+    for day in range(t - 1):
+        sig[day] = idio[day + 1] + rng.normal(0, 0.02, n)  # noisy predictor of next idio
     return pd.DataFrame(sig, index=dates, columns=tickers), stock_ret, spy_ret
 
 
@@ -151,11 +151,11 @@ def test_degenerate_signal_warns(caplog=None):
     rather than silently return a flat curve."""
     import logging
 
-    T, N = 120, 40
-    dates = pd.bdate_range("2020-01-01", periods=T)
-    tickers = [f"T{i:02d}" for i in range(N)]
-    stock_ret = pd.DataFrame(np.random.default_rng(0).normal(0, 0.01, (T, N)), index=dates, columns=tickers)
-    spy_ret = pd.Series(np.random.default_rng(1).normal(0, 0.01, T), index=dates)
+    t, n = 120, 40
+    dates = pd.bdate_range("2020-01-01", periods=t)
+    tickers = [f"T{i:02d}" for i in range(n)]
+    stock_ret = pd.DataFrame(np.random.default_rng(0).normal(0, 0.01, (t, n)), index=dates, columns=tickers)
+    spy_ret = pd.Series(np.random.default_rng(1).normal(0, 0.01, t), index=dates)
     flat_sig = pd.DataFrame(1.0, index=dates, columns=tickers)  # zero dispersion
 
     logger = logging.getLogger("src.strategies.utils.strategies_opt")

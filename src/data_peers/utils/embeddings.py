@@ -90,7 +90,7 @@ def fetch_business_descriptions(
     if store is not None:
         df = store.load("ticker_descriptions", optional=True)
         if df is not None:
-            cached = dict(zip(df["ticker"], df["description"]))
+            cached = dict(zip(df["ticker"], df["description"], strict=False))
 
     missing = [t for t in tickers if force or t not in cached]
     if missing:
@@ -177,7 +177,7 @@ def get_openai_embeddings(
     if todo:
         logger.info("Embedding %d new tickers (OpenAI); %d already cached.", len(todo), len(cached))
         vectors = embed_texts([descriptions[t] for t in todo], model=model, batch_size=batch_size, max_chars=max_chars, client=client)
-        for t, vec in zip(todo, vectors):  # embed_texts preserves order
+        for t, vec in zip(todo, vectors, strict=False):  # embed_texts preserves order
             new[t] = np.asarray(vec, dtype="float64")
     else:
         logger.info("All %d embeddings already cached - no OpenAI calls.", len(descriptions))

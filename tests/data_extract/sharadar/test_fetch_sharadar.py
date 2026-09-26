@@ -22,7 +22,7 @@ from src.constants.constants import (
 )
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
 from src.data_extract.utils.fundamentals_sharadar.client import (
-    NotEntitled,
+    NotEntitledError,
     canonical_symbols,
     cast_value_columns,
     sharadar_get,
@@ -216,7 +216,7 @@ def test_not_entitled_is_not_a_retry_storm(context, monkeypatch):
     monkeypatch.setattr(client_mod, "http_get", lambda url, **kwargs: (retries.append(url), None)[1])
 
     started = time.time()
-    with pytest.raises(NotEntitled) as raised:
+    with pytest.raises(NotEntitledError) as raised:
         sharadar_get(context, "fundamentals", ticker="ANY", dimension="ARQ", sort="date.asc", **{"date.gte": "2021-01-01"})
     elapsed = time.time() - started
 

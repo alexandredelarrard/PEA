@@ -287,7 +287,7 @@ def test_plan_window_refresh_arithmetic():
     assert w.since == CAL[LAST_POS - refresh - warmup]
     # the oldest rewritten date still gets the FULL warm-up behind it
     assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
-    print("\n=== SANITY CHECK: plan_window(refresh=%d) ===" % refresh)
+    print(f"\n=== SANITY CHECK: plan_window(refresh={refresh}) ===")
     print(f"  last={w.last.date()}  refresh_from={w.refresh_from.date()}  since={w.since.date()}")
     print(
         f"  warm-up behind the OLDEST rewritten date = {warmup} trading days (not "

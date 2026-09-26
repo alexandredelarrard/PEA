@@ -32,7 +32,7 @@ R = TypeVar("R")
 DEFAULT_WORKERS = 8  # network-bound; edgartools' own client caps ~9 req/sec globally
 
 
-def run_per_ticker(cik_map: pd.DataFrame, worker: Callable[[str, str], R], desc: str, max_workers: int = DEFAULT_WORKERS) -> list[R]:
+def run_per_ticker[R](cik_map: pd.DataFrame, worker: Callable[[str, str], R], desc: str, max_workers: int = DEFAULT_WORKERS) -> list[R]:
     """Call `worker(ticker, cik)` for every row of `cik_map` on a bounded thread
     pool (I/O-bound EDGAR walk -- see module docstring), driving one shared
     tqdm bar. Returns results in COMPLETION order, not `cik_map`'s row order --

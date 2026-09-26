@@ -44,7 +44,7 @@ def _parse_openfigi(results: list[dict], cusips: list[str]) -> dict[str, str]:
     """Align OpenFIGI's per-job results to the input CUSIPs -> {cusip: ticker}.
     Jobs with a warning / no data are skipped. Pure."""
     out: dict[str, str] = {}
-    for cusip, job in zip(cusips, results or []):
+    for cusip, job in zip(cusips, results or [], strict=False):
         data = (job or {}).get("data") or []
         if data and data[0].get("ticker"):
             out[cusip] = str(data[0]["ticker"]).replace("/", "-")

@@ -25,7 +25,7 @@ from src.strategies.utils.replication import replicate_superinvestors
 from src.strategies.utils.superinvestors import _aggregate_superinvestors
 from src.utils.macro import load_macro_series
 from src.utils.risk_parity import series_metrics
-from src.utils.superinvestor_roster import roster_as_of
+from src.utils.superinvestor_roster import roster_as_of, roster_map_as_of
 
 # A name the cohort has exited must be gone, not merely small. The only legitimate residual is
 # a position that briefly cannot be sold (no price that day), so the bar is float noise, not a
@@ -95,7 +95,7 @@ class SuperInvestorsStrategy(Strategy):
             if bool(c.get("per_cik_analysis", False)):
                 # the pooled book averages away the fact that its managers disagree -- replay
                 # each one as its own portfolio to see who actually carries the sleeve
-                roster = _load_superinvestor_roster(self._context)
+                roster = roster_map_as_of(self._context)
                 per_cik = _aggregate_superinvestors(raw_funds, end=end, by_cik=True)
                 spy = self._benchmark_returns(pd.DatetimeIndex(per_cik["as_of"].unique()).sort_values())
                 summary = analyze_super_investors_by_cik(
@@ -154,14 +154,14 @@ class SuperInvestorsStrategy(Strategy):
         the same rows twice -- once pooled, once `by_cik` -- and `sec13f_hr` is a 21.7M-row
         table, so reading it (and the whole `prices` table) a second time is the expensive part."""
         store = self._context.store
-        _FUNDS_COLS = ["cik", "ticker", "filing_date", "period", "shares", "value_usd"]
+        funds_cols = ["cik", "ticker", "filing_date", "period", "shares", "value_usd"]
 
         roster_ciks = roster_as_of(self._context)
         if not roster_ciks:
             raise RuntimeError(
                 f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager -- run `data_extract superinvestors --seed`."
             )
-        df_funds = store.load(Tables.sec13f_hr, columns=_FUNDS_COLS, where={"cik": roster_ciks})
+        df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": roster_ciks})
         # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return

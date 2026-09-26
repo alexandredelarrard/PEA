@@ -853,7 +853,7 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
     bounds = pd.Series(ends)
     # side='left' puts a quarter ending exactly ON a year end into that year, where Q4 lives.
     slot = bounds.searchsorted(out["period_end"].values, side="left")
-    for position, index in zip(slot, out.index):
+    for position, index in zip(slot, out.index, strict=False):
         if position >= len(ends):
             continue
         year_start, year_end = starts[position], ends[position]
@@ -974,7 +974,7 @@ def _window_is_contiguous(window: pd.DataFrame) -> bool:
     summing them produces a number that looks entirely reasonable."""
     starts = list(window["period_start"])
     ends = list(window["period_end"])
-    for previous_end, next_start in zip(ends, starts[1:]):
+    for previous_end, next_start in zip(ends, starts[1:], strict=False):
         if abs((pd.Timestamp(next_start) - pd.Timestamp(previous_end)).days) > 1:
             return False
     span = (pd.Timestamp(ends[-1]) - pd.Timestamp(starts[0])).days

@@ -223,7 +223,7 @@ def _ic_eval_factory(val_dates: np.ndarray, val_label: np.ndarray, min_names: in
     def _feval(preds, _data):
         preds = np.asarray(preds, dtype=float)
         ics = []
-        for idx, yr in zip(groups, y_ranks):
+        for idx, yr in zip(groups, y_ranks, strict=False):
             if len(idx) > min_names:
                 pr = pd.Series(preds[idx]).rank().to_numpy()
                 if pr.std() > 0 and yr.std() > 0:
@@ -380,20 +380,20 @@ def ensemble_predict(models: dict, panel: pd.DataFrame, feats: list):
     return blended, members
 
 
-def _pairwise_corr(M: np.ndarray) -> np.ndarray:
-    """Correlation matrix of the columns of M, computed pairwise-complete (ignores
+def _pairwise_corr(matrix: np.ndarray) -> np.ndarray:
+    """Correlation matrix of the columns of ``matrix``, computed pairwise-complete (ignores
     rows where either column is NaN) so horizons with different coverage still get
     a valid off-diagonal. Degenerate pairs (constant / too few obs) -> 0."""
-    n = M.shape[1]
-    C = np.eye(n)
+    n = matrix.shape[1]
+    corr = np.eye(n)
     for i in range(n):
         for j in range(i + 1, n):
-            a, b = M[:, i], M[:, j]
+            a, b = matrix[:, i], matrix[:, j]
             m = np.isfinite(a) & np.isfinite(b)
             if m.sum() > 2 and a[m].std() > 0 and b[m].std() > 0:
                 c = float(np.corrcoef(a[m], b[m])[0, 1])
-                C[i, j] = C[j, i] = c if np.isfinite(c) else 0.0
-    return C
+                corr[i, j] = corr[j, i] = c if np.isfinite(c) else 0.0
+    return corr
 
 
 def optimal_forecast_weights(signals: dict[int, np.ndarray], ir: dict[int, float], shrink: float = 0.5) -> dict[int, float]:
@@ -430,11 +430,11 @@ def optimal_forecast_weights(signals: dict[int, np.ndarray], ir: dict[int, float
     if mu.sum() <= 0:
         return {h: 1.0 / n for h in hs}
 
-    M = np.column_stack([np.asarray(signals[h], float) for h in hs])
-    C = _pairwise_corr(M)
-    C = (1.0 - shrink) * C + shrink * np.eye(n)
+    matrix = np.column_stack([np.asarray(signals[h], float) for h in hs])
+    corr = _pairwise_corr(matrix)
+    corr = (1.0 - shrink) * corr + shrink * np.eye(n)
     try:
-        w = np.linalg.solve(C, mu)
+        w = np.linalg.solve(corr, mu)
     except np.linalg.LinAlgError:
         w = mu.copy()
     w = np.clip(w, 0.0, None)
@@ -447,7 +447,7 @@ def optimal_forecast_weights(signals: dict[int, np.ndarray], ir: dict[int, float
 def feature_importance(booster, feats: list) -> dict[str, float]:
     """LightGBM gain importance keyed by feature name."""
     gains = booster.feature_importance(importance_type="gain")
-    return dict(zip(feats, gains))
+    return dict(zip(feats, gains, strict=False))
 
 
 def temporal_valid_split(

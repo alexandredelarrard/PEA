@@ -36,6 +36,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_store.schema import Tables
 
@@ -331,7 +334,7 @@ def mnst_window(prices: pd.DataFrame) -> list[dict]:
     """The live corruption, verbatim: MNST split ~2026-07-20 and the table interleaves the
     two bases because nothing ever re-pulls history."""
     w = prices[(prices["ticker"] == "MNST") & prices["date"].between("2026-07-15", "2026-08-15")].sort_values("date")
-    return [{"date": d.strftime("%Y-%m-%d"), "close": round(float(c), 4)} for d, c in zip(w["date"], w["close"])]
+    return [{"date": d.strftime("%Y-%m-%d"), "close": round(float(c), 4)} for d, c in zip(w["date"], w["close"], strict=False)]
 
 
 # --------------------------------------------------------------------------- #
@@ -339,7 +342,7 @@ def mnst_window(prices: pd.DataFrame) -> list[dict]:
 # --------------------------------------------------------------------------- #
 def to_markdown(blob: dict) -> str:
     env = blob["env"]
-    L = [
+    lines = [
         f"# Basis baseline -- `{blob['tag']}`",
         "",
         f"Generated {blob['generated_utc']} from the live `pea` database by `scripts/basis_baseline.py`.",
@@ -356,12 +359,12 @@ def to_markdown(blob: dict) -> str:
         "",
     ]
 
-    L += ["## mcap error by year", "", "| year | n | median | p05 | min | rows off >10% |", "|---|---|---|---|---|---|"]
+    lines += ["## mcap error by year", "", "| year | n | median | p05 | min | rows off >10% |", "|---|---|---|---|---|---|"]
     for y, v in sorted(blob["mcap_error_by_year"].items()):
         if int(y) in REPORT_YEARS:
-            L.append(f"| {y} | {v['n']} | {v['median']} | {v['p05']} | {v['min']} | {v['off_by_10pct']} |")
+            lines.append(f"| {y} | {v['n']} | {v['median']} | {v['p05']} | {v['min']} | {v['off_by_10pct']} |")
 
-    L += [
+    lines += [
         "",
         "## error decomposition -- `mcap_error = split_part x dividend_part`",
         "",
@@ -372,23 +375,25 @@ def to_markdown(blob: dict) -> str:
     ]
     for y, v in sorted(blob["error_decomposition"].items()):
         if int(y) in REPORT_YEARS:
-            L.append(f"| {y} | {v['n']} | {v['split_part']} | {v['dividend_part']} | {v['product']} | {v['mcap_error']} | {v['residual']} |")
+            lines.append(f"| {y} | {v['n']} | {v['split_part']} | {v['dividend_part']} | {v['product']} | {v['mcap_error']} | {v['residual']} |")
 
     c = blob["split_part_cohorts"]
     labels = {"lt_1": "`split_part < 1` (a split WILL occur)", "eq_1": "`split_part == 1`", "gt_1": "`split_part > 1` (reverse split will occur)"}
-    L += ["", "## split_part cohorts -- the leak test", "", "| cohort | n | mean fwd 12m | median |", "|---|---|---|---|"]
-    L += [f"| {labels[k]} | {c[k]['n']} | {c[k]['mean_fwd_12m']:.2%} | {c[k]['median_fwd_12m']:.2%} |" for k in ("lt_1", "eq_1", "gt_1") if k in c]
+    lines += ["", "## split_part cohorts -- the leak test", "", "| cohort | n | mean fwd 12m | median |", "|---|---|---|---|"]
+    lines += [
+        f"| {labels[k]} | {c[k]['n']} | {c[k]['mean_fwd_12m']:.2%} | {c[k]['median_fwd_12m']:.2%} |" for k in ("lt_1", "eq_1", "gt_1") if k in c
+    ]
 
-    L += ["", "## dividend_part quintiles (cross-sectional)", "", "| quintile | n | mean dividend_part | mean fwd 12m |", "|---|---|---|---|"]
+    lines += ["", "## dividend_part quintiles (cross-sectional)", "", "| quintile | n | mean dividend_part | mean fwd 12m |", "|---|---|---|---|"]
     for q, v in sorted(blob["dividend_part_quintiles"].items()):
-        L.append(f"| {q} | {v['n']} | {v['mean_dividend_part']} | {v['mean_fwd_12m']:.2%} |")
+        lines.append(f"| {q} | {v['n']} | {v['mean_dividend_part']} | {v['mean_fwd_12m']:.2%} |")
 
-    L += ["", "## combined mcap_error quintiles (the U-shape)", "", "| quintile | n | mean fwd 12m |", "|---|---|---|"]
+    lines += ["", "## combined mcap_error quintiles (the U-shape)", "", "| quintile | n | mean fwd 12m |", "|---|---|---|"]
     for q, v in sorted(blob["combined_error_quintiles"].items()):
-        L.append(f"| {q} | {v['n']} | {v['mean_fwd_12m']:.2%} |")
+        lines.append(f"| {q} | {v['n']} | {v['mean_fwd_12m']:.2%} |")
 
     d = blob["deadjusted_rows"]
-    L += [
+    lines += [
         "",
         "## de-adjusted rows",
         "",
@@ -401,7 +406,7 @@ def to_markdown(blob: dict) -> str:
 
     s = blob["sec_cover_page_agreement"]
     if s.get("rows"):
-        L += [
+        lines += [
             "",
             "## SEC cover-page agreement",
             "",
@@ -412,10 +417,10 @@ def to_markdown(blob: dict) -> str:
             "| ticker | bad rows | median ratio merged/SEC |",
             "|---|---|---|",
         ]
-        L += [f"| {t} | {v['bad_rows']} | {v['median_ratio']} |" for t, v in s["failing"].items()]
+        lines += [f"| {t} | {v['bad_rows']} | {v['median_ratio']} |" for t, v in s["failing"].items()]
 
     sp = blob["spike_revert_scan"]
-    L += [
+    lines += [
         "",
         "## spike-and-revert scan",
         "",
@@ -424,12 +429,12 @@ def to_markdown(blob: dict) -> str:
         "| ticker | date | ret | revert gap |",
         "|---|---|---|---|",
     ]
-    L += [f"| {e['ticker']} | {e['date']} | {e['ret']:.2%} | {e['revert_gap']:.2%} |" for e in sp["events"]]
+    lines += [f"| {e['ticker']} | {e['date']} | {e['ret']:.2%} | {e['revert_gap']:.2%} |" for e in sp["events"]]
 
-    L += ["", "## MNST 2026-07-15 -> 2026-08-15", "", "| date | close |", "|---|---|"]
-    L += [f"| {r['date']} | {r['close']} |" for r in blob["mnst_window"]]
+    lines += ["", "## MNST 2026-07-15 -> 2026-08-15", "", "| date | close |", "|---|---|"]
+    lines += [f"| {r['date']} | {r['close']} |" for r in blob["mnst_window"]]
 
-    L += [
+    lines += [
         "",
         "## control digests",
         "",
@@ -439,7 +444,7 @@ def to_markdown(blob: dict) -> str:
         f"| `option_overhang_digest` | `{blob['option_overhang_digest']}` | **P3** |",
         "",
     ]
-    return "\n".join(L)
+    return "\n".join(lines)
 
 
 def main() -> None:

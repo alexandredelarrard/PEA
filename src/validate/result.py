@@ -58,9 +58,9 @@ def jsonable(value: Any) -> Any:
     has still measured nothing anybody can read."""
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [jsonable(v) for v in value]
-    if isinstance(value, (pd.Timestamp, dt.datetime, dt.date)):
+    if isinstance(value, pd.Timestamp | dt.datetime | dt.date):
         return value.isoformat()
     if isinstance(value, pd.Timedelta):
         return str(value)
@@ -70,7 +70,7 @@ def jsonable(value: Any) -> Any:
         # JSON has no NaN/Infinity; `null` is the only honest encoding and `allow_nan=False`
         # would abort the write instead.
         return None
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
     return str(value)
 

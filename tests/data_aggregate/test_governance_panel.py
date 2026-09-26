@@ -273,27 +273,27 @@ def _fundamentals() -> pd.DataFrame:
 
 def test_governance_fields_pay_growth_and_misalignment():
     idx = pd.date_range("2023-01-02", "2026-07-01", freq="B")
-    F = _governance_fields(_def14a(), idx, _fundamentals())
+    f = _governance_fields(_def14a(), idx, _fundamentals())
 
-    assert "ceo_pay_growth" in F and "ceo_pay_vs_revenue_growth" in F
+    assert "ceo_pay_growth" in f and "ceo_pay_vs_revenue_growth" in f
     for name in ("ceo_pay_ratio", "pct_independent_directors", "pct_female_directors", "avg_board_tenure", "insider_ownership_pct", "board_size"):
-        assert name in F, f"missing level field {name}"
+        assert name in f, f"missing level field {name}"
     # ⚠ `founder_ceo` is NOT here any more: it is a 1/0 flag and now ships RAW via
     # `_def14a_raw_fields`, because both peer encodings were degenerate on a binary (the peer z
     # of a Bernoulli draw over ~7 peers survived on 239 tickers / 32% of cells).
-    assert "founder_ceo" not in F, "a binary must not be peer-panelled"
+    assert "founder_ceo" not in f, "a binary must not be peer-panelled"
     # `say_on_pay_support` left with it, for the same reason in a different shape: 0.60 support
     # is a near-revolt at any firm in any sector, so the absolute fraction IS the signal.
-    assert "say_on_pay_support" not in F, "an absolute fraction must not be peer-panelled"
-    R = _def14a_raw_fields(_def14a(), idx)
-    assert R["say_on_pay_support"]["AAA"].dropna().iloc[-1] == pytest.approx(0.92)
-    assert R["founder_ceo"]["AAA"].dropna().iloc[-1] == 1.0
-    assert R["founder_ceo"]["BBB"].dropna().iloc[-1] == 0.0
+    assert "say_on_pay_support" not in f, "an absolute fraction must not be peer-panelled"
+    r = _def14a_raw_fields(_def14a(), idx)
+    assert r["say_on_pay_support"]["AAA"].dropna().iloc[-1] == pytest.approx(0.92)
+    assert r["founder_ceo"]["AAA"].dropna().iloc[-1] == 1.0
+    assert r["founder_ceo"]["BBB"].dropna().iloc[-1] == 0.0
 
     # CEO tenure accrues by CALENDAR year (not a stale as_of snapshot): AAA CEO since
     # 2010 -> 15y on a 2025 date and 16y on a 2026 date; CCC (since 2005) outranks DDD (2022).
-    assert "ceo_tenure" in F
-    ten = F["ceo_tenure"]
+    assert "ceo_tenure" in f
+    ten = f["ceo_tenure"]
     aaa_2025 = ten.loc[ten.index.year == 2025, "AAA"].dropna()
     aaa_2026 = ten.loc[ten.index.year == 2026, "AAA"].dropna()
     assert aaa_2025.iloc[-1] == pytest.approx(2025 - 2010)  # 15
@@ -302,10 +302,10 @@ def test_governance_fields_pay_growth_and_misalignment():
     assert ten.loc[last, "CCC"] > ten.loc[last, "DDD"]  # 2005 vs 2022 start
 
     # CEO pay grew ~20%/yr; the latest observed pay_growth should be ~0.20
-    pay_g = F["ceo_pay_growth"]["AAA"].dropna()
+    pay_g = f["ceo_pay_growth"]["AAA"].dropna()
     assert pay_g.iloc[-1] == pytest.approx(0.20, abs=1e-6)
     # misalignment = pay growth (~20%) - revenue TTM growth (~12%) -> clearly positive
-    mis = F["ceo_pay_vs_revenue_growth"]["AAA"].dropna()
+    mis = f["ceo_pay_vs_revenue_growth"]["AAA"].dropna()
     assert mis.iloc[-1] > 0.05
 
     print("\n=== SANITY CHECK: governance pay dynamics + CEO tenure ===")

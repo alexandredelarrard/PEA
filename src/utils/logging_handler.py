@@ -70,7 +70,7 @@ class MakeFileHandler(logging.FileHandler):
 
 
 @contextmanager
-def all_loggingLdisabled(highest_level=logging.CRITICAL):
+def all_logging_disabled(highest_level=logging.CRITICAL):
     previous_level = logging.root.manager.disable
 
     logging.disable(highest_level)

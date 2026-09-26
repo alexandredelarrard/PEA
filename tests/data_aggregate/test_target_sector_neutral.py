@@ -162,7 +162,10 @@ def test_sector_beta_actually_changes_epsilon():
     # and it REMOVES exposure rather than merely perturbing it. Compare against the
     # FORWARD-compounded basket -- the object actually subtracted -- not the daily one.
     fwd_sector = forward_compound(sector_excess, 20)
-    flat = lambda d: d.where(both).to_numpy().ravel()
+
+    def flat(d):
+        return d.where(both).to_numpy().ravel()
+
     keep = ~(np.isnan(flat(with_sector)) | np.isnan(flat(fwd_sector)))
     corr_with = abs(np.corrcoef(flat(with_sector)[keep], flat(fwd_sector)[keep])[0, 1])
     corr_without = abs(np.corrcoef(flat(without)[keep], flat(fwd_sector)[keep])[0, 1])

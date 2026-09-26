@@ -42,7 +42,7 @@ def test_lost_century_is_lifted_into_the_filing_century():
     assert got == ["2015-11-23", "2024-02-01", "2013-06-02"], got
     assert (out["transaction_date"] <= out["filing_date"]).all()
     print("\n=== SANITY CHECK: lost century repaired ===")
-    for a, b in zip(["0015-11-23", "0024-02-01", "0013-06-02"], got):
+    for a, b in zip(["0015-11-23", "0024-02-01", "0013-06-02"], got, strict=False):
         print(f"  {a} -> {b}")
     print("  century taken from the filing date; every result <= its filing. Validated.")
 

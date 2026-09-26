@@ -248,9 +248,9 @@ def save_ic_curve(oos: pd.DataFrame, label_name: str, out_dir: Path, horizon, ro
 # --------------------------------------------------------------------------- #
 def _jsonable(value):
     """numpy scalars / NaN -> plain JSON (NaN is not valid JSON; emit null)."""
-    if isinstance(value, (np.integer,)):
+    if isinstance(value, np.integer):
         return int(value)
-    if isinstance(value, (np.floating, float)):
+    if isinstance(value, np.floating | float):
         return None if not np.isfinite(float(value)) else float(value)
     return value
 

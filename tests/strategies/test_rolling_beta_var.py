@@ -16,15 +16,15 @@ import pandas as pd
 from src.strategies.utils.strategies_opt import rolling_beta_var, simulate_portfolio_opt
 
 
-def _gappy(T=300, N=30, seed=0):
-    dates = pd.bdate_range("2023-01-02", periods=T)
-    tickers = [f"S{i:02d}" for i in range(N)]
+def _gappy(t=300, n=30, seed=0):
+    dates = pd.bdate_range("2023-01-02", periods=t)
+    tickers = [f"S{i:02d}" for i in range(n)]
     rng = np.random.default_rng(seed)
-    spy = pd.Series(rng.normal(0, 0.01, T), index=dates)
-    stock = pd.DataFrame(rng.normal(0, 0.02, (T, N)), index=dates, columns=tickers)
+    spy = pd.Series(rng.normal(0, 0.01, t), index=dates)
+    stock = pd.DataFrame(rng.normal(0, 0.02, (t, n)), index=dates, columns=tickers)
     stock.iloc[0] = np.nan  # pct_change leading NaN
-    for j in range(N):  # scattered per-name gaps
-        stock.iloc[rng.choice(T, size=3, replace=False), j] = np.nan
+    for j in range(n):  # scattered per-name gaps
+        stock.iloc[rng.choice(t, size=3, replace=False), j] = np.nan
     return dates, tickers, stock, spy
 
 

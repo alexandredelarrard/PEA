@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 import pandas as pd
 
 from src.constants.constants import MACRO_ALL_SERIES, MACRO_MARKET_SERIES

@@ -187,7 +187,7 @@ def test_no_prompt_literals_remain_in_data_extract():
     for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:  # module level only
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if not isinstance(node, ast.Assign | ast.AnnAssign):
                 continue
             value = node.value
             if isinstance(value, ast.Constant) and isinstance(value.value, str) and len(value.value) > 200:

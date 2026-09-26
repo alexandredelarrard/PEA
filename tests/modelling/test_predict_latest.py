@@ -99,8 +99,8 @@ class _StubModel:
     def __init__(self, weight: float = 1.0):
         self._w = weight
 
-    def predict(self, X):
-        return np.asarray(X["f_a"], dtype="float64") * self._w
+    def predict(self, x):
+        return np.asarray(x["f_a"], dtype="float64") * self._w
 
 
 class _SpyStore:

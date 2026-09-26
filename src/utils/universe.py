@@ -88,7 +88,7 @@ def unverified_ciks(context: Context) -> list[dict]:
     priced = _tickers("prices")
 
     out: list[dict] = []
-    for raw_t, raw_c in zip(df["ticker"], df["cik"]):
+    for raw_t, raw_c in zip(df["ticker"], df["cik"], strict=False):
         ticker = str(raw_t).strip().upper()
         if not ticker or ticker in filed:
             continue

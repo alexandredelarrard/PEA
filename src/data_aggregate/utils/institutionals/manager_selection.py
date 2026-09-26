@@ -201,7 +201,7 @@ def eligibility(state: pd.DataFrame, roster_at: Callable[[pd.Timestamp], set[str
     st = state.sort_values(["cik", "period"]).copy()
     st["n_prior"] = st.groupby("cik").cumcount()
     listed = {p: roster_at(pd.Timestamp(p)) for p in st["period"].unique()}
-    on_roster = np.fromiter((c in listed[p] for c, p in zip(st["cik"], st["period"])), dtype=bool, count=len(st))
+    on_roster = np.fromiter((c in listed[p] for c, p in zip(st["cik"], st["period"], strict=False)), dtype=bool, count=len(st))
     npos = pd.to_numeric(st.get("n_index_positions", pd.Series(0, index=st.index)), errors="coerce").fillna(0)
     ok = pd.Series(
         on_roster & (st["n_prior"] >= min_quarters).to_numpy() & (npos >= min_positions).to_numpy(),

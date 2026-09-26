@@ -114,7 +114,7 @@ def take_before() -> None:
     print(f"  distinct accessions {m['accessions']:>12,}")
     print(f"  distinct tickers    {m['tickers']:>12,}")
     for k, v in m["diag"].items():
-        print(f"  {k:<20}{v:>12,.0f}" if isinstance(v, (int, float)) else f"  {k:<20}{v}")
+        print(f"  {k:<20}{v:>12,.0f}" if isinstance(v, int | float) else f"  {k:<20}{v}")
     print(f"\n  written to {out}/")
 
 

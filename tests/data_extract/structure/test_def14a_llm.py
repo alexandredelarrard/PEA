@@ -507,7 +507,7 @@ def test_llm_extractor_real_apple():
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)
-    model = ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
+    ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
 
     filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
     if filings.empty:
@@ -551,22 +551,22 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"DB not reachable: {e}")
 
-    TICKER, ACC = "ZZTEST", "9999999999-99-999999"
+    ticker, acc = "ZZTEST", "9999999999-99-999999"
 
     def _cleanup():
         if ctx.store.exists("def14a_llm"):
             with ctx.store.engine.begin() as c:
-                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": TICKER})
+                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
 
     _cleanup()
     try:
         captured: dict = {}
-        _FakeExtractor = _stub_extractor_cls(captured)  # no OPENAI key needed
+        _fakeextractor = _stub_extractor_cls(captured)  # no OPENAI key needed
 
         filings = pd.DataFrame(
             [
                 {
-                    "accession_number": ACC,
+                    "accession_number": acc,
                     "doc_url": "http://example/def14a.htm",
                     "filing_date": pd.Timestamp("2024-04-01"),
                     "period_of_report": "2023-12-31",
@@ -578,22 +578,22 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         class _Resp:
             text = "<html>proxy statement</html>"
 
-        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [TICKER], "cik": ["0000000000"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
 
         assert captured["schema"] is Def14AExtract, captured
         assert "SUMMARY COMPENSATION TABLE" in captured["system"]  # the .md prompt is used
 
         back = ctx.store.load("def14a_llm")
-        row = back[back["ticker"] == TICKER]
+        row = back[back["ticker"] == ticker]
         assert len(row) == 1, "row not found in def14a_llm table"
         r = row.iloc[0]
-        assert r["accession_number"] == ACC
+        assert r["accession_number"] == acc
         assert int(r["n_directors"]) == 3
         assert float(r["ceo_salary"]) == 850_000.0
         assert int(r["ceo_age"]) == 58
@@ -631,25 +631,25 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         pytest.skip(f"DB not reachable: {e}")
 
     # 2022 + 2024 already stored; 2023 is a HOLE in the middle; a NEW 2025 also appears
-    TICKER = "ZZINC"
-    A22, A23, A24, A25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y % 100}{y % 100}-{y}11" for y in (1, 2, 3, 4))
-    have_years = {"2022": A22, "2024": A24}
-    gap_years = {"2023": A23, "2025": A25}  # the two MISSING filings to fill
+    ticker = "ZZINC"
+    a22, a23, a24, a25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y % 100}{y % 100}-{y}11" for y in (1, 2, 3, 4))
+    have_years = {"2022": a22, "2024": a24}
+    gap_years = {"2023": a23, "2025": a25}  # the two MISSING filings to fill
 
     def _cleanup():
         if ctx.store.exists("def14a_llm"):
             with ctx.store.engine.begin() as c:
-                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": TICKER})
+                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
 
     _cleanup()
     try:
         for yr, acc in have_years.items():
             ctx.store.save(
                 mod.Tables.def14a_llm,
-                mod._prepare_frame([_seed_row(TICKER, acc, pd.Timestamp(f"{yr}-04-01"))], tuple(mod._NUMERIC_COLS), ["ticker", "accession_number"]),
+                mod._prepare_frame([_seed_row(ticker, acc, pd.Timestamp(f"{yr}-04-01"))], tuple(mod._NUMERIC_COLS), ["ticker", "accession_number"]),
             )
         captured: dict = {"since_seen": [], "extracted": []}
-        _FakeExtractor = _stub_extractor_cls(captured)
+        _fakeextractor = _stub_extractor_cls(captured)
 
         def _fake_list_filings(context, cik, forms, years, company="", since=None):
             captured["since_seen"].append(since)  # must be None now (full window)
@@ -671,19 +671,19 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
             text = "<html>proxy</html>"
 
         # which accessions actually reach the LLM is recorded by the stub extractor
-        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
 
         # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
         assert captured["since_seen"] == [None]
         assert set(captured["extracted"]) == set(gap_years.values()), captured["extracted"]
         back = ctx.store.load("def14a_llm")
-        accs = set(back[back["ticker"] == TICKER]["accession_number"])
+        accs = set(back[back["ticker"] == ticker]["accession_number"])
         assert accs == set(have_years.values()) | set(gap_years.values()), accs
 
         print("\n=== SANITY CHECK: DEF 14A gap-filling incremental ===")

@@ -473,7 +473,7 @@ def embed_earnings_calls(
         turns = prep_turns + qa_turns
         if not turns:
             continue
-        V = embed_texts([t["text"] for t in turns], model=model, client=client)
+        vectors = embed_texts([t["text"] for t in turns], model=model, client=client)
         rows = [
             {
                 "ticker": tkr,
@@ -486,7 +486,7 @@ def embed_earnings_calls(
                 "person": t["person"],
                 "text": t["text"],
                 "as_of": aod,
-                "embedding": [float(x) for x in V[i]],
+                "embedding": [float(x) for x in vectors[i]],
                 "model": model,
                 "run_at": run_at,
             }
@@ -538,13 +538,13 @@ def _pooled_section_vectors(turns: pd.DataFrame, section: str) -> pd.DataFrame:
 def _qq_similarity(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
     """Per (ticker, quarter): cosine(this call's POOLED section vector, the PRIOR call's), in
     call order. NaN on a ticker's first call."""
-    P = _pooled_section_vectors(turns, section)
-    if P.empty:
+    pooled = _pooled_section_vectors(turns, section)
+    if pooled.empty:
         return pd.DataFrame(columns=["ticker", "quarter", name])
-    P["as_of"] = pd.to_datetime(P["as_of"])
-    P = P.sort_values(["ticker", "as_of"])
+    pooled["as_of"] = pd.to_datetime(pooled["as_of"])
+    pooled = pooled.sort_values(["ticker", "as_of"])
     out = []
-    for tkr, grp in P.groupby("ticker", sort=False):
+    for tkr, grp in pooled.groupby("ticker", sort=False):
         prev = None
         for r in grp.itertuples(index=False):
             v = r.vec

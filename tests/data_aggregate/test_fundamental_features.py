@@ -76,28 +76,28 @@ def test_regime_masks_earnings_metrics_but_keeps_robust_ones():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    f = _derived_fields(fund, idx, close)
     d = idx[-1]
 
     # profitable AAA -> earnings/fcf/ebitda yields defined
-    assert np.isfinite(F["earnings_yield"].loc[d, "AAA"])
-    assert np.isfinite(F["fcf_yield"].loc[d, "AAA"])
+    assert np.isfinite(f["earnings_yield"].loc[d, "AAA"])
+    assert np.isfinite(f["fcf_yield"].loc[d, "AAA"])
     # loss-making ZZZ -> those are masked to NaN (a negative E/P is not "cheap")
-    assert np.isnan(F["earnings_yield"].loc[d, "ZZZ"])
-    assert np.isnan(F["fcf_yield"].loc[d, "ZZZ"])
-    assert np.isnan(F["ebitda_to_ev"].loc[d, "ZZZ"])  # EBITDA<0
-    assert np.isnan(F["book_yield"].loc[d, "ZZZ"])  # equity<0
+    assert np.isnan(f["earnings_yield"].loc[d, "ZZZ"])
+    assert np.isnan(f["fcf_yield"].loc[d, "ZZZ"])
+    assert np.isnan(f["ebitda_to_ev"].loc[d, "ZZZ"])  # EBITDA<0
+    assert np.isnan(f["book_yield"].loc[d, "ZZZ"])  # equity<0
     # but regime-ROBUST metrics stay valid for BOTH firms
-    assert np.isfinite(F["sales_yield"].loc[d, "ZZZ"])  # revenue always +
+    assert np.isfinite(f["sales_yield"].loc[d, "ZZZ"])  # revenue always +
     # gross_profitability = grossMargins*revenue/assets = 0.55*80/120
-    assert abs(F["gross_profitability"].loc[d, "ZZZ"] - 0.55 * 80.0 / 120.0) < 1e-9
-    assert abs(F["gross_profitability"].loc[d, "AAA"] - 0.40 * 100.0 / 200.0) < 1e-9
+    assert abs(f["gross_profitability"].loc[d, "ZZZ"] - 0.55 * 80.0 / 120.0) < 1e-9
+    assert abs(f["gross_profitability"].loc[d, "AAA"] - 0.40 * 100.0 / 200.0) < 1e-9
 
     print("\n=== SANITY CHECK: regime masking ===")
     print("  loss-maker ZZZ: earnings/fcf/ebitda/book yields -> NaN (undefined/non-monotone);")
     print(
-        f"  robust metrics kept: sales_yield={F['sales_yield'].loc[d, 'ZZZ']:.4f}, "
-        f"gross_profitability={F['gross_profitability'].loc[d, 'ZZZ']:.4f}. Validated."
+        f"  robust metrics kept: sales_yield={f['sales_yield'].loc[d, 'ZZZ']:.4f}, "
+        f"gross_profitability={f['gross_profitability'].loc[d, 'ZZZ']:.4f}. Validated."
     )
 
 
@@ -122,23 +122,23 @@ def test_loss_intensity_carries_what_the_earnings_mask_discards():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    f = _derived_fields(fund, idx, close)
     d = idx[-1]
 
-    assert "loss_intensity" in F
+    assert "loss_intensity" in f
     # ZZZ: netIncome -30, shares 2000 x price 1.0 -> mcap 2000 -> 30/2000 = 0.015, POSITIVE
-    assert abs(F["loss_intensity"].loc[d, "ZZZ"] - 30.0 / 2000.0) < 1e-9
-    assert F["loss_intensity"].loc[d, "ZZZ"] > 0, "the house convention for *_intensity"
+    assert abs(f["loss_intensity"].loc[d, "ZZZ"] - 30.0 / 2000.0) < 1e-9
+    assert f["loss_intensity"].loc[d, "ZZZ"] > 0, "the house convention for *_intensity"
     # AAA is profitable -> NaN, not 0
-    assert np.isnan(F["loss_intensity"].loc[d, "AAA"])
+    assert np.isnan(f["loss_intensity"].loc[d, "AAA"])
     # and the two columns are exactly complementary: never both defined, never both null
-    both = F["earnings_yield"].loc[d].notna() & F["loss_intensity"].loc[d].notna()
+    both = f["earnings_yield"].loc[d].notna() & f["loss_intensity"].loc[d].notna()
     assert not both.any(), "a name cannot be both profitable and loss-making"
 
     print("\n=== SANITY CHECK: loss_intensity ===")
     print(
         f"  ZZZ loses 30 on a 2000 market cap -> loss_intensity="
-        f"{F['loss_intensity'].loc[d, 'ZZZ']:.4f} (positive magnitude), while its "
+        f"{f['loss_intensity'].loc[d, 'ZZZ']:.4f} (positive magnitude), while its "
         f"earnings_yield stays NaN. AAA (profitable) -> NaN, not 0."
     )
     print(
@@ -150,16 +150,16 @@ def test_loss_intensity_carries_what_the_earnings_mask_discards():
 def test_regime_state_flags_exact_and_raw():
     fund = _synth_mixed_regime()
     idx = pd.bdate_range("2020-03-02", periods=3)
-    F = _derived_fields(fund, idx, close=None)
+    f = _derived_fields(fund, idx, close=None)
     d = idx[-1]
 
-    assert F["profitable"].loc[d, "AAA"] == 1.0 and F["profitable"].loc[d, "ZZZ"] == 0.0
-    assert F["fcf_positive"].loc[d, "AAA"] == 1.0 and F["fcf_positive"].loc[d, "ZZZ"] == 0.0
-    assert F["negative_equity"].loc[d, "AAA"] == 0.0 and F["negative_equity"].loc[d, "ZZZ"] == 1.0
-    assert F["hyper_growth"].loc[d, "AAA"] == 0.0 and F["hyper_growth"].loc[d, "ZZZ"] == 1.0  # 0.60 > 0.25
+    assert f["profitable"].loc[d, "AAA"] == 1.0 and f["profitable"].loc[d, "ZZZ"] == 0.0
+    assert f["fcf_positive"].loc[d, "AAA"] == 1.0 and f["fcf_positive"].loc[d, "ZZZ"] == 0.0
+    assert f["negative_equity"].loc[d, "AAA"] == 0.0 and f["negative_equity"].loc[d, "ZZZ"] == 1.0
+    assert f["hyper_growth"].loc[d, "AAA"] == 0.0 and f["hyper_growth"].loc[d, "ZZZ"] == 1.0  # 0.60 > 0.25
 
     # flags enter the panel RAW as `f_<flag>` (not peer-standardized _vs_peers/_xs)
-    state = build_state_panel({k: F[k] for k in ("profitable", "fcf_positive", "negative_equity", "hyper_growth")})
+    state = build_state_panel({k: f[k] for k in ("profitable", "fcf_positive", "negative_equity", "hyper_growth")})
     assert {"f_profitable", "f_fcf_positive", "f_negative_equity", "f_hyper_growth"}.issubset(state.columns)
     assert not any(c.endswith(("_vs_peers", "_xs")) for c in state.columns)
 
@@ -329,37 +329,37 @@ def test_derived_valuation_and_dilution_exact():
     # constant price so market cap = shares * price is easy to reason about
     close = pd.DataFrame({"AAA": 2.0, "BBB": 3.0}, index=idx)
 
-    F = _derived_fields(fund, idx, close)
+    f = _derived_fields(fund, idx, close)
     d = idx[-1]
 
     # AAA 2020: revenue120, ni15, equity60, fcf12, shares1100, price2 -> mcap=2200
-    assert abs(F["earnings_yield"].loc[d, "AAA"] - 15.0 / 2200) < 1e-9
-    assert abs(F["sales_yield"].loc[d, "AAA"] - 120.0 / 2200) < 1e-9
-    assert abs(F["book_yield"].loc[d, "AAA"] - 60.0 / 2200) < 1e-9
-    assert abs(F["fcf_yield"].loc[d, "AAA"] - 12.0 / 2200) < 1e-9
-    assert abs(F["fcf_margin"].loc[d, "AAA"] - 12.0 / 120) < 1e-9
-    assert abs(F["rd_intensity"].loc[d, "AAA"] - 7.0 / 120) < 1e-9
+    assert abs(f["earnings_yield"].loc[d, "AAA"] - 15.0 / 2200) < 1e-9
+    assert abs(f["sales_yield"].loc[d, "AAA"] - 120.0 / 2200) < 1e-9
+    assert abs(f["book_yield"].loc[d, "AAA"] - 60.0 / 2200) < 1e-9
+    assert abs(f["fcf_yield"].loc[d, "AAA"] - 12.0 / 2200) < 1e-9
+    assert abs(f["fcf_margin"].loc[d, "AAA"] - 12.0 / 120) < 1e-9
+    assert abs(f["rd_intensity"].loc[d, "AAA"] - 7.0 / 120) < 1e-9
     # dilution: shares 1000 -> 1100 = +10%
-    assert abs(F["shares_growth"].loc[d, "AAA"] - 0.10) < 1e-9
+    assert abs(f["shares_growth"].loc[d, "AAA"] - 0.10) < 1e-9
     # EV/EBITDA yield: EV = mcap + debt(d2e*equity=0.6*60=36) = 2236; ebitda 26
-    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2236) < 1e-6
+    assert abs(f["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2236) < 1e-6
     # FCF/EV yield on the SAME EV (fcf 12) -> the new cross-sector cash-valuation yield
-    assert abs(F["fcf_to_ev"].loc[d, "AAA"] - 12.0 / 2236) < 1e-6
+    assert abs(f["fcf_to_ev"].loc[d, "AAA"] - 12.0 / 2236) < 1e-6
 
     print("\n=== SANITY CHECK: derived valuation / dilution / R&D ===")
     print(
-        f"  AAA E/P={F['earnings_yield'].loc[d, 'AAA']:.5f}  S/P={F['sales_yield'].loc[d, 'AAA']:.5f}"
-        f"  EBITDA/EV={F['ebitda_to_ev'].loc[d, 'AAA']:.5f}"
+        f"  AAA E/P={f['earnings_yield'].loc[d, 'AAA']:.5f}  S/P={f['sales_yield'].loc[d, 'AAA']:.5f}"
+        f"  EBITDA/EV={f['ebitda_to_ev'].loc[d, 'AAA']:.5f}"
     )
-    print(f"  R&D intensity={F['rd_intensity'].loc[d, 'AAA']:.4f}  shares growth={F['shares_growth'].loc[d, 'AAA']:.2%}  -> all match hand calc.")
+    print(f"  R&D intensity={f['rd_intensity'].loc[d, 'AAA']:.4f}  shares growth={f['shares_growth'].loc[d, 'AAA']:.2%}  -> all match hand calc.")
 
 
 def test_valuation_skipped_without_close():
     fund = _synth_fundamentals()
     idx = pd.bdate_range("2020-03-01", periods=5)
-    F = _derived_fields(fund, idx, close=None)
-    assert "earnings_yield" not in F  # needs a price
-    assert "grossMargins" in F  # raw ratios still built
+    f = _derived_fields(fund, idx, close=None)
+    assert "earnings_yield" not in f  # needs a price
+    assert "grossMargins" in f  # raw ratios still built
     print("\n=== SANITY CHECK: valuation gracefully skipped without prices ===")
     print("  no close -> no valuation yields, but raw ratios still produced.")
 
@@ -432,7 +432,10 @@ def test_headline_feature_signs_make_sense(fundamental_panel, real_pipeline):
     decided, inconclusive = {}, {}
     for f, want in available.items():
         sub = df[["date", f, "target"]].dropna()
-        ic = sub.groupby("date").apply(lambda g: spearmanr(g[f], g["target"]).statistic if g[f].nunique() > 2 else np.nan, include_groups=False)
+        ic = sub.groupby("date").apply(
+            lambda g, feature=f: spearmanr(g[feature], g["target"]).statistic if g[feature].nunique() > 2 else np.nan,
+            include_groups=False,
+        )
         mic = float(np.nanmean(ic))
         (decided if abs(mic) >= _IC_NOISE_FLOOR else inconclusive)[f] = (mic, want)
 
@@ -463,43 +466,43 @@ def test_yearly_ttm_features_computed_correctly():
     )
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    F = _derived_fields(fund, idx, close=None)
+    f = _derived_fields(fund, idx, close=None)
 
     # ---- y_rev_growth ----
-    assert "y_rev_growth" in F, "y_rev_growth missing from _derived_fields"
+    assert "y_rev_growth" in f, "y_rev_growth missing from _derived_fields"
     before_2020 = pd.Timestamp("2020-01-15")
-    assert np.isnan(F["y_rev_growth"].loc[before_2020, "AAA"]), "y_rev_growth must be NaN before the second filing"
+    assert np.isnan(f["y_rev_growth"].loc[before_2020, "AAA"]), "y_rev_growth must be NaN before the second filing"
     after_2020 = pd.Timestamp("2020-03-02")  # Monday, in bdate_range
-    assert abs(F["y_rev_growth"].loc[after_2020, "AAA"] - 0.20) < 1e-9, (
-        f"expected +20% revenue growth, got {F['y_rev_growth'].loc[after_2020, 'AAA']}"
+    assert abs(f["y_rev_growth"].loc[after_2020, "AAA"] - 0.20) < 1e-9, (
+        f"expected +20% revenue growth, got {f['y_rev_growth'].loc[after_2020, 'AAA']}"
     )
 
     # ---- y_rev_growth_accel: change in YoY from period 2->3 ----
-    assert "y_rev_growth_accel" in F, "y_rev_growth_accel missing"
+    assert "y_rev_growth_accel" in f, "y_rev_growth_accel missing"
     after_2021 = pd.Timestamp("2021-03-01")
     # 2020 YoY = 20%, 2021 YoY = 132/120-1 = 10% -> accel = 10% - 20% = -10%
-    assert abs(F["y_rev_growth_accel"].loc[after_2021, "AAA"] - (-0.10)) < 1e-9, (
-        f"expected accel=-10%, got {F['y_rev_growth_accel'].loc[after_2021, 'AAA']}"
+    assert abs(f["y_rev_growth_accel"].loc[after_2021, "AAA"] - (-0.10)) < 1e-9, (
+        f"expected accel=-10%, got {f['y_rev_growth_accel'].loc[after_2021, 'AAA']}"
     )
 
     # ---- y_earnings_growth ----
-    assert "y_earnings_growth" in F, "y_earnings_growth missing"
-    assert abs(F["y_earnings_growth"].loc[after_2020, "AAA"] - 0.50) < 1e-9, (
-        f"expected +50% earnings growth, got {F['y_earnings_growth'].loc[after_2020, 'AAA']}"
+    assert "y_earnings_growth" in f, "y_earnings_growth missing"
+    assert abs(f["y_earnings_growth"].loc[after_2020, "AAA"] - 0.50) < 1e-9, (
+        f"expected +50% earnings growth, got {f['y_earnings_growth'].loc[after_2020, 'AAA']}"
     )
 
     # ---- y_margin_vs_ttm: YoY diff in profitMargins ----
-    assert "y_margin_vs_ttm" in F, "y_margin_vs_ttm missing"
+    assert "y_margin_vs_ttm" in f, "y_margin_vs_ttm missing"
     expected_margin_chg = round(0.125 - 0.10, 9)
-    assert abs(F["y_margin_vs_ttm"].loc[after_2020, "AAA"] - expected_margin_chg) < 1e-9, (
-        f"expected margin chg={expected_margin_chg}, got {F['y_margin_vs_ttm'].loc[after_2020, 'AAA']}"
+    assert abs(f["y_margin_vs_ttm"].loc[after_2020, "AAA"] - expected_margin_chg) < 1e-9, (
+        f"expected margin chg={expected_margin_chg}, got {f['y_margin_vs_ttm'].loc[after_2020, 'AAA']}"
     )
 
     print("\n=== SANITY CHECK: yearly-TTM momentum features ===")
-    print(f"  y_rev_growth    2020={F['y_rev_growth'].loc[after_2020, 'AAA']:.2%} (expected +20%)")
-    print(f"  y_rev_growth_accel 2021={F['y_rev_growth_accel'].loc[after_2021, 'AAA']:.2%} (expected -10%)")
-    print(f"  y_earnings_growth 2020={F['y_earnings_growth'].loc[after_2020, 'AAA']:.2%} (expected +50%)")
-    print(f"  y_margin_vs_ttm 2020={F['y_margin_vs_ttm'].loc[after_2020, 'AAA']:.4f} (expected +0.025)")
+    print(f"  y_rev_growth    2020={f['y_rev_growth'].loc[after_2020, 'AAA']:.2%} (expected +20%)")
+    print(f"  y_rev_growth_accel 2021={f['y_rev_growth_accel'].loc[after_2021, 'AAA']:.2%} (expected -10%)")
+    print(f"  y_earnings_growth 2020={f['y_earnings_growth'].loc[after_2020, 'AAA']:.2%} (expected +50%)")
+    print(f"  y_margin_vs_ttm 2020={f['y_margin_vs_ttm'].loc[after_2020, 'AAA']:.4f} (expected +0.025)")
     print("  All NaN before second filing, correct values after -> strictly point-in-time. Validated.")
 
 
@@ -597,52 +600,52 @@ def _synth_fundamentals_rich():
 def test_distress_sga_ma_sbc_features_exact():
     fund = _synth_fundamentals_rich()
     idx = pd.bdate_range("2019-01-01", "2020-06-01")
-    F = _derived_fields(fund, idx, close=None)  # no close -> valuation skipped, rest built
+    f = _derived_fields(fund, idx, close=None)  # no close -> valuation skipped, rest built
 
     d = pd.Timestamp("2020-03-02")  # after the 2020-02-03 filing (uses y2 values)
 
     # ---- distress / solvency ----
     # net debt = (ltd 50 + std 10) - cash 25 = 35 ; / ebitda 30 = 1.1667
-    assert abs(F["net_debt_to_ebitda"].loc[d, "AAA"] - 35.0 / 30.0) < 1e-9
-    assert abs(F["interest_coverage"].loc[d, "AAA"] - 30.0 / 6.0) < 1e-9  # ebitda/interest
-    assert abs(F["current_ratio"].loc[d, "AAA"] - 66.0 / 33.0) < 1e-9  # 2.0
-    assert abs(F["cash_to_debt"].loc[d, "AAA"] - 25.0 / 60.0) < 1e-9
+    assert abs(f["net_debt_to_ebitda"].loc[d, "AAA"] - 35.0 / 30.0) < 1e-9
+    assert abs(f["interest_coverage"].loc[d, "AAA"] - 30.0 / 6.0) < 1e-9  # ebitda/interest
+    assert abs(f["current_ratio"].loc[d, "AAA"] - 66.0 / 33.0) < 1e-9  # 2.0
+    assert abs(f["cash_to_debt"].loc[d, "AAA"] - 25.0 / 60.0) < 1e-9
 
     # ---- S&M efficiency ----
-    assert abs(F["sga_intensity"].loc[d, "AAA"] - 22.0 / 120.0) < 1e-9
-    assert abs(F["sga_growth"].loc[d, "AAA"] - (22.0 / 20.0 - 1.0)) < 1e-9  # +10%
+    assert abs(f["sga_intensity"].loc[d, "AAA"] - 22.0 / 120.0) < 1e-9
+    assert abs(f["sga_growth"].loc[d, "AAA"] - (22.0 / 20.0 - 1.0)) < 1e-9  # +10%
     # operating leverage = rev growth (20%) - SG&A growth (10%) = +10%
-    assert abs(F["operating_leverage"].loc[d, "AAA"] - 0.10) < 1e-9
+    assert abs(f["operating_leverage"].loc[d, "AAA"] - 0.10) < 1e-9
 
     # ---- M&A ----
-    assert abs(F["acquisition_intensity"].loc[d, "AAA"] - 12.0 / 240.0) < 1e-9  # acq/assets
-    assert abs(F["intangibles_growth"].loc[d, "AAA"] - (30.0 / 15.0 - 1.0)) < 1e-9  # +100%
+    assert abs(f["acquisition_intensity"].loc[d, "AAA"] - 12.0 / 240.0) < 1e-9  # acq/assets
+    assert abs(f["intangibles_growth"].loc[d, "AAA"] - (30.0 / 15.0 - 1.0)) < 1e-9  # +100%
 
     # ---- SBC ----
-    assert abs(F["sbc_intensity"].loc[d, "AAA"] - 6.0 / 120.0) < 1e-9
-    assert abs(F["sbc_to_ocf"].loc[d, "AAA"] - 6.0 / 24.0) < 1e-9
+    assert abs(f["sbc_intensity"].loc[d, "AAA"] - 6.0 / 120.0) < 1e-9
+    assert abs(f["sbc_to_ocf"].loc[d, "AAA"] - 6.0 / 24.0) < 1e-9
 
     # ---- point-in-time: growth features NaN before the second filing ----
     before = pd.Timestamp("2019-06-03")
-    assert np.isnan(F["intangibles_growth"].loc[before, "AAA"]), "intangibles_growth leaked"
-    assert np.isnan(F["operating_leverage"].loc[before, "AAA"]), "operating_leverage leaked"
+    assert np.isnan(f["intangibles_growth"].loc[before, "AAA"]), "intangibles_growth leaked"
+    assert np.isnan(f["operating_leverage"].loc[before, "AAA"]), "operating_leverage leaked"
     # level ratios use the y1 filing before y2 is public (still no look-ahead)
-    assert abs(F["net_debt_to_ebitda"].loc[before, "AAA"] - (40.0 + 10.0 - 20.0) / 25.0) < 1e-9
+    assert abs(f["net_debt_to_ebitda"].loc[before, "AAA"] - (40.0 + 10.0 - 20.0) / 25.0) < 1e-9
 
     print("\n=== SANITY CHECK: distress / S&M / M&A / SBC ===")
     print(
-        f"  net_debt/EBITDA={F['net_debt_to_ebitda'].loc[d, 'AAA']:.3f}  "
-        f"interest_cov={F['interest_coverage'].loc[d, 'AAA']:.1f}x  "
-        f"current={F['current_ratio'].loc[d, 'AAA']:.1f}  "
-        f"cash/debt={F['cash_to_debt'].loc[d, 'AAA']:.3f}"
+        f"  net_debt/EBITDA={f['net_debt_to_ebitda'].loc[d, 'AAA']:.3f}  "
+        f"interest_cov={f['interest_coverage'].loc[d, 'AAA']:.1f}x  "
+        f"current={f['current_ratio'].loc[d, 'AAA']:.1f}  "
+        f"cash/debt={f['cash_to_debt'].loc[d, 'AAA']:.3f}"
     )
     print(
-        f"  sga_intensity={F['sga_intensity'].loc[d, 'AAA']:.3f}  "
-        f"op_leverage={F['operating_leverage'].loc[d, 'AAA']:+.2%}  "
-        f"acq_intensity={F['acquisition_intensity'].loc[d, 'AAA']:.3f}  "
-        f"intangibles_growth={F['intangibles_growth'].loc[d, 'AAA']:+.0%}"
+        f"  sga_intensity={f['sga_intensity'].loc[d, 'AAA']:.3f}  "
+        f"op_leverage={f['operating_leverage'].loc[d, 'AAA']:+.2%}  "
+        f"acq_intensity={f['acquisition_intensity'].loc[d, 'AAA']:.3f}  "
+        f"intangibles_growth={f['intangibles_growth'].loc[d, 'AAA']:+.0%}"
     )
-    print(f"  sbc_intensity={F['sbc_intensity'].loc[d, 'AAA']:.3f}  sbc/OCF={F['sbc_to_ocf'].loc[d, 'AAA']:.2f}")
+    print(f"  sbc_intensity={f['sbc_intensity'].loc[d, 'AAA']:.3f}  sbc/OCF={f['sbc_to_ocf'].loc[d, 'AAA']:.2f}")
     print("  All ratios match hand calc; growth NaN before 2nd filing -> point-in-time. Validated.")
 
 
@@ -707,22 +710,22 @@ def test_accruals_and_profitability_passthrough_exact():
         ]
     )
     idx = pd.bdate_range("2020-03-01", periods=3)  # after the 2020 filing
-    F = _derived_fields(fund, idx, close=None)
+    f = _derived_fields(fund, idx, close=None)
     d = idx[-1]
 
     # accruals = (netIncome - freeCashflow) / revenue = (15 - 12)/120
-    assert abs(F["accruals"].loc[d, "AAA"] - (15.0 - 12.0) / 120.0) < 1e-9
+    assert abs(f["accruals"].loc[d, "AAA"] - (15.0 - 12.0) / 120.0) < 1e-9
     # raw ratios pass straight through from the fiscal history (latest public value)
-    assert abs(F["profitMargins"].loc[d, "AAA"] - 0.125) < 1e-9
-    assert abs(F["operatingMargins"].loc[d, "AAA"] - 0.20) < 1e-9
-    assert abs(F["returnOnEquity"].loc[d, "AAA"] - 0.25) < 1e-9
-    assert abs(F["debtToEquity"].loc[d, "AAA"] - 0.6) < 1e-9
+    assert abs(f["profitMargins"].loc[d, "AAA"] - 0.125) < 1e-9
+    assert abs(f["operatingMargins"].loc[d, "AAA"] - 0.20) < 1e-9
+    assert abs(f["returnOnEquity"].loc[d, "AAA"] - 0.25) < 1e-9
+    assert abs(f["debtToEquity"].loc[d, "AAA"] - 0.6) < 1e-9
 
     print("\n=== SANITY CHECK: accruals + profitability pass-through ===")
     print(
-        f"  accruals=(15-12)/120={F['accruals'].loc[d, 'AAA']:.4f}; "
-        f"profitMargins={F['profitMargins'].loc[d, 'AAA']}, ROE={F['returnOnEquity'].loc[d, 'AAA']}, "
-        f"D/E={F['debtToEquity'].loc[d, 'AAA']} -> exact."
+        f"  accruals=(15-12)/120={f['accruals'].loc[d, 'AAA']:.4f}; "
+        f"profitMargins={f['profitMargins'].loc[d, 'AAA']}, ROE={f['returnOnEquity'].loc[d, 'AAA']}, "
+        f"D/E={f['debtToEquity'].loc[d, 'AAA']} -> exact."
     )
 
 
@@ -882,31 +885,31 @@ def test_valuation_engine_kpis_exact():
     )
     idx = pd.bdate_range("2021-03-01", periods=3)
     close = pd.DataFrame({t: 2.0 for t in ("GEN", "REI", "OIL")}, index=idx)
-    F = _derived_fields(fund, idx, close)  # annual history -> yoy_periods default 1
+    f = _derived_fields(fund, idx, close)  # annual history -> yoy_periods default 1
     d = idx[-1]
 
     # GEN: PE = 200 mcap / 15 NI = 13.33; growth 50%, div yield 2% -> PEGY = 13.33/52
-    assert F["pegy"].loc[d, "GEN"] == pytest.approx((200 / 15) / (50 + 2), rel=1e-6)
+    assert f["pegy"].loc[d, "GEN"] == pytest.approx((200 / 15) / (50 + 2), rel=1e-6)
     # operating leverage elasticity = %ΔOI (50%) / %ΔRev (20%) = 2.5
-    assert F["operating_leverage_elasticity"].loc[d, "GEN"] == pytest.approx(2.5, rel=1e-6)
+    assert f["operating_leverage_elasticity"].loc[d, "GEN"] == pytest.approx(2.5, rel=1e-6)
     # Altman Z = 1.2*.2 + 1.4*.25 + 3.3*.09 + 0.6*2.0 + 1.0*.6 = 2.687
-    assert F["altman_z"].loc[d, "GEN"] == pytest.approx(2.687, abs=1e-3)
+    assert f["altman_z"].loc[d, "GEN"] == pytest.approx(2.687, abs=1e-3)
     # REIT: FFO = netIncome 50 + D&A 100 = 150 -> ffo_yield 150/200 = 0.75. The NAREIT
     # disposal-gain and impairment adjustments are NOT subtracted: SF1 carries neither tag.
-    assert F["ffo_yield"].loc[d, "REI"] == pytest.approx(150 / 200)
+    assert f["ffo_yield"].loc[d, "REI"] == pytest.approx(150 / 200)
     # GICS gating: the FFO yield exists only for the equity-REIT group
-    assert np.isnan(F["ffo_yield"].loc[d, "OIL"])
+    assert np.isnan(f["ffo_yield"].loc[d, "OIL"])
     # the two features that reduced to `ebitda_to_ev` on this substrate are GONE, not NaN --
     # an all-NaN column would read downstream as "this REIT has no cap rate"
     for gone in ("implied_cap_rate", "ebitdax_to_ev", "net_debt_to_ebitdare"):
-        assert gone not in F, f"{gone} is back: it is `ebitda_to_ev` under a sector mask"
+        assert gone not in f, f"{gone} is back: it is `ebitda_to_ev` under a sector mask"
 
     print("\n=== SANITY CHECK: valuation-engine KPIs ===")
     print(
-        f"  GEN PEGY={F['pegy'].loc[d, 'GEN']:.3f} op_lev_elasticity={F['operating_leverage_elasticity'].loc[d, 'GEN']:.2f} "
-        f"AltmanZ={F['altman_z'].loc[d, 'GEN']:.3f}"
+        f"  GEN PEGY={f['pegy'].loc[d, 'GEN']:.3f} op_lev_elasticity={f['operating_leverage_elasticity'].loc[d, 'GEN']:.2f} "
+        f"AltmanZ={f['altman_z'].loc[d, 'GEN']:.3f}"
     )
-    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d, 'REI']:.3f} (D&A leg only), NaN for the non-REIT OIL -> GICS-gated.")
+    print(f"  REIT ffo_yield={f['ffo_yield'].loc[d, 'REI']:.3f} (D&A leg only), NaN for the non-REIT OIL -> GICS-gated.")
     print(
         "  implied_cap_rate / ebitdax_to_ev / net_debt_to_ebitdare are ABSENT: each reduced "
         "to a sector-masked `ebitda_to_ev` once its add-back leg proved missing. Validated."
@@ -932,14 +935,14 @@ def test_pegy_uses_projected_eps_growth():
     d = idx[-1]
 
     # with projected growth: PE = mcap(1000)/NI(50)=20; growth = 5.4/5.0-1 = 8%; div yield 0.2%
-    F_proj = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
-    assert F_proj["pegy"].loc[d, "A"] == pytest.approx(20 / (8 + 0.2), rel=1e-3)
+    f_proj = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
+    assert f_proj["pegy"].loc[d, "A"] == pytest.approx(20 / (8 + 0.2), rel=1e-3)
     # without earnings: single fundamentals row -> TTM growth undefined -> PEGY NaN (fallback path)
-    F_ttm = _derived_fields(fund, idx, close, yoy_periods=4)
-    assert "pegy" not in F_ttm or np.isnan(F_ttm["pegy"].loc[d, "A"])
+    f_ttm = _derived_fields(fund, idx, close, yoy_periods=4)
+    assert "pegy" not in f_ttm or np.isnan(f_ttm["pegy"].loc[d, "A"])
 
     print("\n=== SANITY CHECK: PEGY uses projected EPS growth ===")
-    print(f"  projected growth 8% -> PEGY = 20/(8+0.2) = {F_proj['pegy'].loc[d, 'A']:.3f}; TTM fallback undefined here (single filing). Validated.")
+    print(f"  projected growth 8% -> PEGY = 20/(8+0.2) = {f_proj['pegy'].loc[d, 'A']:.3f}; TTM fallback undefined here (single filing). Validated.")
 
 
 def test_true_enterprise_value_fully_diluted():
@@ -985,25 +988,25 @@ def test_true_enterprise_value_fully_diluted():
     )
     idx = pd.bdate_range("2020-03-02", periods=3)
     close = pd.DataFrame({"AAA": 2.0}, index=idx)
-    F = _derived_fields(fund, idx, close)
+    f = _derived_fields(fund, idx, close)
     d = idx[-1]
 
     # EV = FD mcap (1100*2=2200) + debt(50) + leases(10) + minority(5) - cash(25)
     ev = 1100 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0  # = 2240
-    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / ev) < 1e-9
-    assert abs(F["fcf_to_ev"].loc[d, "AAA"] - 12.0 / ev) < 1e-9
+    assert abs(f["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / ev) < 1e-9
+    assert abs(f["fcf_to_ev"].loc[d, "AAA"] - 12.0 / ev) < 1e-9
     # THE REGRESSION GUARD: the old, double-counting EV was 2225. It must not come back.
-    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2225.0) > 1e-9, "short-term investments are being subtracted twice again"
+    assert abs(f["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / 2225.0) > 1e-9, "short-term investments are being subtracted twice again"
     # uses DILUTED (2200) not basic (2000) for the equity value
     ev_basic = 1000 * 2.0 + 50.0 + 10.0 + 5.0 - 25.0
     assert abs(ev - ev_basic) == 200.0
     # SBC=6 is present but excluded: EV would be 2246 if SBC were added -> assert it is NOT
-    assert abs(F["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / (ev + 6.0)) > 1e-9
+    assert abs(f["ebitda_to_ev"].loc[d, "AAA"] - 26.0 / (ev + 6.0)) > 1e-9
 
     print("\n=== SANITY CHECK: True (fully-diluted) enterprise value ===")
     print(
         f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash = {ev:.0f}; "
-        f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d, 'AAA']:.5f}; "
+        f"EBITDA/EV = 26/{ev:.0f} = {f['ebitda_to_ev'].loc[d, 'AAA']:.5f}; "
         f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares; SBC excluded; short-term "
         f"investments counted ONCE (the old EV was 2225 and double-counted them). Exact."
     )

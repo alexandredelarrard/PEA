@@ -464,7 +464,7 @@ def segment_only_concepts(arcs: pd.DataFrame) -> frozenset[str]:
     if arcs.empty or "role_uri" not in arcs.columns or "concept" not in arcs.columns:
         return frozenset()
     roles: dict[str, set[str]] = {}
-    for concept, role in zip(arcs["concept"], arcs["role_uri"]):
+    for concept, role in zip(arcs["concept"], arcs["role_uri"], strict=False):
         roles.setdefault(bare(str(concept)), set()).add(str(role))
     return frozenset(concept for concept, seen in roles.items() if seen and all(SEGMENT_ROLE.search(role) for role in seen))
 
@@ -513,7 +513,7 @@ def statement_arcs(xbrl, arcs: pd.DataFrame | None = None) -> pd.DataFrame:
     if not keep.any():
         return pd.DataFrame(columns=ARC_COLUMNS)
     out = arcs[keep].copy()
-    out[ARC_FILTER] = ["both" if m and r else ("menucat" if m else "role_uri") for m, r in zip(by_menucat[keep], by_role[keep])]
+    out[ARC_FILTER] = ["both" if m and r else ("menucat" if m else "role_uri") for m, r in zip(by_menucat[keep], by_role[keep], strict=False)]
     return out.reset_index(drop=True)
 
 
@@ -547,7 +547,7 @@ class ArcGraph:
         out: dict[str, list[tuple[str, float]]] = {}
         if self.arcs.empty:
             return out
-        for parent, concept, weight in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"]):
+        for parent, concept, weight in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"], strict=False):
             out.setdefault(str(parent), []).append((str(concept), float(weight)))
         return out
 
@@ -566,7 +566,7 @@ class ArcGraph:
         if self.arcs.empty:
             return out
         roles = self.arcs["role_uri"] if "role_uri" in self.arcs.columns else pd.Series("", index=self.arcs.index)
-        for parent, concept, weight, role in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"], roles):
+        for parent, concept, weight, role in zip(self.arcs["parent_concept"], self.arcs["concept"], self.arcs["weight"], roles, strict=False):
             out.setdefault(str(parent), []).append((str(concept), float(weight), str(role)))
         return out
 
@@ -578,7 +578,7 @@ class ArcGraph:
         out: dict[str, str] = {}
         if self.arcs.empty:
             return out
-        for concept, parent in zip(self.arcs["concept"], self.arcs["parent_concept"]):
+        for concept, parent in zip(self.arcs["concept"], self.arcs["parent_concept"], strict=False):
             out.setdefault(str(concept), str(parent))
         return out
 
@@ -587,9 +587,9 @@ class ArcGraph:
         out: dict[str, str] = {}
         if self.arcs.empty:
             return out
-        for concept, taxonomy in zip(self.arcs["concept"], self.arcs["concept_taxonomy"]):
+        for concept, taxonomy in zip(self.arcs["concept"], self.arcs["concept_taxonomy"], strict=False):
             out.setdefault(str(concept), str(taxonomy))
-        for parent, taxonomy in zip(self.arcs["parent_concept"], self.arcs["parent_taxonomy"]):
+        for parent, taxonomy in zip(self.arcs["parent_concept"], self.arcs["parent_taxonomy"], strict=False):
             out.setdefault(str(parent), str(taxonomy))
         return out
 
@@ -606,9 +606,9 @@ class ArcGraph:
         out: dict[str, str] = {}
         if self.arcs.empty or "role_uri" not in self.arcs.columns:
             return out
-        for concept, role in zip(self.arcs["concept"], self.arcs["role_uri"]):
+        for concept, role in zip(self.arcs["concept"], self.arcs["role_uri"], strict=False):
             out.setdefault(str(concept), str(role))
-        for parent, role in zip(self.arcs["parent_concept"], self.arcs["role_uri"]):
+        for parent, role in zip(self.arcs["parent_concept"], self.arcs["role_uri"], strict=False):
             out.setdefault(str(parent), str(role))
         return out
 
@@ -627,7 +627,7 @@ class ArcGraph:
         if self.arcs.empty or "role_uri" not in self.arcs.columns:
             return {}
         for column in ("concept", "parent_concept"):
-            for concept, role in zip(self.arcs[column], self.arcs["role_uri"]):
+            for concept, role in zip(self.arcs[column], self.arcs["role_uri"], strict=False):
                 out.setdefault(str(concept), set()).add(str(role))
         return {concept: frozenset(roles) for concept, roles in out.items()}
 

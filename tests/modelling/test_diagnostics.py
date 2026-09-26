@@ -26,10 +26,10 @@ def _panel(n_days: int = 120, n_tickers: int = 60, n_feats: int = 6, seed: int =
     feats = [f"f{j}" for j in range(n_feats)]
     frames = []
     for d in dates:
-        X = rng.normal(size=(n_tickers, n_feats))
-        sig = X[:, 0] * 0.6 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
+        x = rng.normal(size=(n_tickers, n_feats))
+        sig = x[:, 0] * 0.6 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
         y = sig.argsort().argsort() / (n_tickers - 1)
-        block = pd.DataFrame(X, columns=feats)
+        block = pd.DataFrame(x, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", [f"T{i:03d}" for i in range(n_tickers)])
         block.insert(0, "date", d)
@@ -53,9 +53,9 @@ def _oos_predictions(panel, feats):
 def test_partial_dependence_and_ic_series():
     panel, feats = _panel(seed=1)
     model = train_ranker(panel, feats, "y", num_boost_round=40)
-    X = panel[feats].to_numpy("float32")
+    x = panel[feats].to_numpy("float32")
 
-    grid, means = diagnostics.partial_dependence(model, X, 0, grid_points=15, sample=500)
+    grid, means = diagnostics.partial_dependence(model, x, 0, grid_points=15, sample=500)
     assert grid is not None and len(grid) == len(means) >= 2
 
     oos = panel[["date", "ticker", "y"]].copy()

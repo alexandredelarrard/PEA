@@ -273,7 +273,7 @@ def test_academic_post_nominals_do_not_become_the_surname():
     mixed = ["Scott Gottlieb, M.D.", "Susan Hockfield, Ph.D.", "Susanne Schaffert, Ph.D."]
     keys = [person_key(n) for n in mixed]
     print("\n=== SANITY: credentialed names key on the surname ===")
-    for n, k in zip(mixed, keys):
+    for n, k in zip(mixed, keys, strict=False):
         print(f"  {k:<20} <- {n}")
     print("  Old behaviour keyed all three as 'd|s' -- one male and two female directors sharing")
     print("  a single consensus key.")
@@ -370,7 +370,7 @@ def test_consensus_prints_conclusion():
     assert out[out["name"] == "R. Williams"].iloc[0]["gender"] == "male"
 
 
-def test_a_populated_section_with_zero_director_rows_is_logged_as_a_RECALL_failure(caplog):
+def test_a_populated_section_with_zero_director_rows_is_logged_as_a_recall_failure(caplog):
     """⚠ THE CHECK WHOSE ABSENCE LET 1,097 FILINGS FAIL SILENTLY, across 272 companies —
     12.45% of every post-2007 proxy yielding zero Item 402(k) rows, with IBM, WMB and LNT at
     20 of 20 filings each and nothing anywhere saying so. `n_director_comp_rows` was written to

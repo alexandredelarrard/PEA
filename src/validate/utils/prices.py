@@ -355,7 +355,7 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
     known: set[tuple[str, pd.Timestamp]] = set()
     if splits is not None and not splits.empty:
         splits = _as_ns(splits, "date")
-        for ticker, when in zip(splits["ticker"], splits["date"]):
+        for ticker, when in zip(splits["ticker"], splits["date"], strict=False):
             for offset in range(-SPLIT_MATCH_DAYS, SPLIT_MATCH_DAYS + 1):
                 known.add((str(ticker), when + pd.Timedelta(days=offset)))
 

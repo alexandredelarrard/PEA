@@ -54,7 +54,7 @@ def get_sp500_tickers(context: Context) -> None:
         df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
 
     # GICS industry group (24) from sub-industry, sector fallback -> sector neutrality
-    df["industry_group"] = [industry_group(s, sec) for s, sec in zip(df["sub_industry"], df["sector"])]
+    df["industry_group"] = [industry_group(s, sec) for s, sec in zip(df["sub_industry"], df["sector"], strict=False)]
     df = _dedupe_share_classes(df)
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"] if c in df.columns]

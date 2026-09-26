@@ -103,7 +103,7 @@ def test_no_events_at_all_is_one_everywhere_and_does_not_raise():
 # --------------------------------------------------------------------------- #
 # the positive cases -- each a measured factor                                #
 # --------------------------------------------------------------------------- #
-def test_a_yfinance_only_spinoff_factor_becomes_S():
+def test_a_yfinance_only_spinoff_factor_becomes_s():
     """FDX, verbatim from `prices_splits`: two genuine 2:1 splits and x1.241 on 2026-06-01
     (the FedEx Freight separation). `sharadar_actions` has NO row for the last one, and 1.241
     is not split-shaped, so it stays in the numerator alone.
@@ -508,7 +508,7 @@ def test_a_stale_return_seam_is_skipped_rather_than_applied():
     assert any("GONE or CHANGED" in m for m in logged), logged
 
 
-def test_a_level_wedge_moves_S_and_only_S():
+def test_a_level_wedge_moves_s_and_only_s():
     """IP's shape: Yahoo back-adjusted smoothly for a spinoff and published no feed row, so
     the RETURNS are already right and only the LEVEL is short.
 

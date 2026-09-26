@@ -358,12 +358,12 @@ def _reconciles(row: dict, components: tuple[str, ...]) -> float | None:
     not an unattributable gap, and filling it would overwrite a real column.
     """
     total = row.get("total")
-    if total is None or not isinstance(total, (int, float)):
+    if total is None or not isinstance(total, int | float):
         return None
     parts = [row.get(c) for c in components]
-    if not any(isinstance(v, (int, float)) for v in parts):
+    if not any(isinstance(v, int | float) for v in parts):
         return None
-    summed = sum(float(v) for v in parts if isinstance(v, (int, float)))
+    summed = sum(float(v) for v in parts if isinstance(v, int | float))
     return 1.0 if abs(float(total) - summed) <= _RECONCILE_TOLERANCE_USD else 0.0
 
 

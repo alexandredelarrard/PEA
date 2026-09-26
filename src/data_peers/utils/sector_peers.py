@@ -120,11 +120,11 @@ def cosine_similarity_matrix(embeddings: pd.DataFrame) -> pd.DataFrame:
     embeddings: index = ticker, columns = embedding dimensions.
     Returns a symmetric DataFrame (ticker x ticker) in [-1, 1].
     """
-    X = embeddings.to_numpy(dtype="float64")
-    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    matrix = embeddings.to_numpy(dtype="float64")
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     norms[norms == 0] = np.nan
-    Xn = X / norms
-    sim = Xn @ Xn.T
+    normalized = matrix / norms
+    sim = normalized @ normalized.T
     return pd.DataFrame(sim, index=embeddings.index, columns=embeddings.index)
 
 

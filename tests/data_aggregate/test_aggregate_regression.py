@@ -325,7 +325,7 @@ def _fp(columns: dict[str, str], rows: int = 10) -> dict:
     }
 
 
-def test_the_gate_reports_a_set_change_AND_a_value_change_together():
+def test_the_gate_reports_a_set_change_and_a_value_change_together():
     """A run that BOTH gains/loses an output AND moves a value must report both, not the first.
 
     This is the regression that made the guard worthless: every phase of the governance plan

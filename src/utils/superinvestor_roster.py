@@ -86,7 +86,7 @@ def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
     if snap is None:
         return {}
     out: dict[str, str] = {}
-    for code, name, raw in snap.sort_values("dataroma_code")[["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
+    for _code, name, raw in snap.sort_values("dataroma_code")[["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
         if (cik := pad_cik(raw)) and cik not in out:
             out[cik] = str(name)
     return out

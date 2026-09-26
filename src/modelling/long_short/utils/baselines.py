@@ -42,51 +42,53 @@ class LinearModel:
         self.feature_names = list(feature_names)
         self.kind = kind
 
-    def predict(self, X) -> np.ndarray:
-        X = np.asarray(X, dtype=float)
-        Xs = np.nan_to_num((X - self.mean) / self.std, nan=0.0)
-        return Xs @ self.coef + self.intercept
+    def predict(self, features) -> np.ndarray:
+        features = np.asarray(features, dtype=float)
+        standardized = np.nan_to_num((features - self.mean) / self.std, nan=0.0)
+        return standardized @ self.coef + self.intercept
 
 
-def _standardize(X: np.ndarray):
+def _standardize(features: np.ndarray):
     """Column-standardize, tolerant of ALL-NaN columns (a feature with no
     coverage in a fold) -- computed without np.nanmean/np.nanstd so it never
     emits 'Mean of empty slice' / 'Degrees of freedom <= 0' RuntimeWarnings.
     An all-NaN or constant column gets mean 0, std 1 -> becomes all zeros after
     NaN-imputation, i.e. contributes nothing (correct)."""
-    X = np.asarray(X, dtype=float)
-    finite = np.isfinite(X)
+    features = np.asarray(features, dtype=float)
+    finite = np.isfinite(features)
     n = finite.sum(axis=0)
     safe_n = np.where(n > 0, n, 1)
-    filled = np.where(finite, X, 0.0)
+    filled = np.where(finite, features, 0.0)
     mean = filled.sum(axis=0) / safe_n
     mean = np.where(n > 0, mean, 0.0)
-    var = np.where(finite, (X - mean) ** 2, 0.0).sum(axis=0) / safe_n
+    var = np.where(finite, (features - mean) ** 2, 0.0).sum(axis=0) / safe_n
     std = np.sqrt(var)
     std = np.where(np.isfinite(std) & (std > 0), std, 1.0)
-    Xs = np.nan_to_num((X - mean) / std, nan=0.0)
-    return Xs, mean, std
+    standardized = np.nan_to_num((features - mean) / std, nan=0.0)
+    return standardized, mean, std
 
 
 def train_ridge(panel: pd.DataFrame, feats: list, label_name: str = "y", alpha: float = 10.0, half_life_years: float | None = None) -> LinearModel:
     """Closed-form (optionally time-decay weighted) ridge on standardized features:
     coef = (Xs' W Xs + alpha I)^-1 Xs' W (y - y_bar)."""
-    X = panel[feats].to_numpy(dtype=float)
+    features = panel[feats].to_numpy(dtype=float)
     y = panel[label_name].to_numpy(dtype=float)
-    Xs, mean, std = _standardize(X)
+    standardized, mean, std = _standardize(features)
 
     w = time_decay_weights(panel["date"], half_life_years).astype(float) if half_life_years is not None else np.ones(len(y))
     y_bar = float(np.average(y, weights=w))
     yc = y - y_bar
 
-    XtW = Xs.T * w
-    A = XtW @ Xs + float(alpha) * np.eye(Xs.shape[1])
-    b = XtW @ yc
-    coef = np.linalg.solve(A, b)
+    weighted_transpose = standardized.T * w
+    system = weighted_transpose @ standardized + float(alpha) * np.eye(standardized.shape[1])
+    b = weighted_transpose @ yc
+    coef = np.linalg.solve(system, b)
     return LinearModel(coef, y_bar, mean, std, feats, "ridge")
 
 
-def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray, lam: float, l1_ratio: float, max_iter: int, tol: float) -> np.ndarray:
+def _enet_coordinate_descent(
+    standardized: np.ndarray, y: np.ndarray, w: np.ndarray, lam: float, l1_ratio: float, max_iter: int, tol: float
+) -> np.ndarray:
     """Weighted elastic-net via cyclic coordinate descent (glmnet-style) on the
     objective
         (1/2sw) Σ w_i (y_i - Xs_i·β)^2 + lam*[ l1_ratio*||β||_1 + (1-l1_ratio)/2*||β||_2^2 ].
@@ -96,9 +98,9 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray, lam: 
     shares weight smoothly across a correlated cluster instead of picking one
     arbitrarily -- the reason elastic net beats pure lasso (and pure ridge) when
     features are collinear."""
-    n, k = Xs.shape
+    n, k = standardized.shape
     sw = float(w.sum())
-    z = np.array([float((w * Xs[:, j] ** 2).sum() / sw) for j in range(k)])
+    z = np.array([float((w * standardized[:, j] ** 2).sum() / sw) for j in range(k)])
     z = np.where(z > 0, z, 1.0)
     l1, l2 = lam * l1_ratio, lam * (1.0 - l1_ratio)
 
@@ -108,7 +110,7 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray, lam: 
         max_step = 0.0
         for j in range(k):
             bj = beta[j]
-            rho = float((w * Xs[:, j] * r).sum() / sw) + bj * z[j]
+            rho = float((w * standardized[:, j] * r).sum() / sw) + bj * z[j]
             if rho > l1:
                 nj = (rho - l1) / (z[j] + l2)
             elif rho < -l1:
@@ -116,7 +118,7 @@ def _enet_coordinate_descent(Xs: np.ndarray, y: np.ndarray, w: np.ndarray, lam: 
             else:
                 nj = 0.0
             if nj != bj:
-                r += Xs[:, j] * (bj - nj)  # keep residual in sync
+                r += standardized[:, j] * (bj - nj)  # keep residual in sync
                 beta[j] = nj
                 max_step = max(max_step, abs(nj - bj))
         if max_step < tol:
@@ -138,12 +140,12 @@ def train_elasticnet(
     dependency. `alpha` is the overall penalty on the normalized (1/2n) loss
     (glmnet scale, so ~1e-4..1e-1), `l1_ratio` the L1 fraction (0 = ridge,
     1 = lasso)."""
-    X = panel[feats].to_numpy(dtype=float)
+    features = panel[feats].to_numpy(dtype=float)
     y = panel[label_name].to_numpy(dtype=float)
-    Xs, mean, std = _standardize(X)
+    standardized, mean, std = _standardize(features)
     w = time_decay_weights(panel["date"], half_life_years).astype(float) if half_life_years is not None else np.ones(len(y))
     y_bar = float(np.average(y, weights=w))
-    coef = _enet_coordinate_descent(Xs, y - y_bar, w, float(alpha), float(l1_ratio), int(max_iter), float(tol))
+    coef = _enet_coordinate_descent(standardized, y - y_bar, w, float(alpha), float(l1_ratio), int(max_iter), float(tol))
     # Guard the silent-degeneracy failure mode: if `alpha` is too high for the
     # target's scale, every feature's gradient |rho| falls below the L1 threshold
     # (alpha*l1_ratio) and ALL coefficients soft-threshold to exactly zero -> the
@@ -181,4 +183,4 @@ def train_linear(
 
 def linear_importance(model: LinearModel) -> dict:
     """|coefficient| per feature (features are standardized, so comparable)."""
-    return dict(zip(model.feature_names, np.abs(model.coef)))
+    return dict(zip(model.feature_names, np.abs(model.coef), strict=False))

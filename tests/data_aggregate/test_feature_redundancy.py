@@ -140,7 +140,7 @@ def test_no_two_features_are_the_same_signal(feature_frames):
 
     offenders = []
     seen = set()
-    for a, b in zip(*np.where(corr.to_numpy() >= CORRELATION_CEILING)):
+    for a, b in zip(*np.where(corr.to_numpy() >= CORRELATION_CEILING), strict=False):
         pair = tuple(sorted((mat.columns[a], mat.columns[b])))
         if pair in seen:
             continue

@@ -62,7 +62,7 @@ def test_a_co_ceo_cell_keys_to_the_first_person_listed():
     assert split_co_names(np.nan) == []
 
     print("\n=== SANITY CHECK: co-CEO cells (D28) ===")
-    for cell, expected in cases:
+    for cell, _expected in cases:
         print(f"  {cell:<36} -> {ceo_identity(cell)}  (names: {split_co_names(cell)})")
     print("  'Richard Anderson' -> anderson|r  (' and ' did NOT fire inside the surname)")
     print(
@@ -343,9 +343,9 @@ def test_the_ceo_to_neo_cross_table_match_measured_on_the_live_archive():
     p = p.join(raw_sets.rename("neo_raw"), on=key).join(key_sets.rename("neo_key"), on=key)
     p = p[p["neo_raw"].notna()]  # filings whose SCT was extracted at all
 
-    hit_raw = int(sum(c in s for c, s in zip(p["ceo_name_proxy"], p["neo_raw"])))
+    hit_raw = int(sum(c in s for c, s in zip(p["ceo_name_proxy"], p["neo_raw"], strict=False)))
     ident = p["ceo_name_proxy"].astype(object).map(ceo_identity)
-    hit_key = int(sum(k is not None and k in s for k, s in zip(ident, p["neo_key"])))
+    hit_key = int(sum(k is not None and k in s for k, s in zip(ident, p["neo_key"], strict=False)))
 
     assert hit_key > hit_raw, "reconciling must find MORE of the CEOs, never fewer"
     assert hit_key / len(p) > 0.90, "a sub-90% match would mean the key is failing, not helping"
@@ -440,4 +440,4 @@ if __name__ == "__main__":
     test_the_forward_carry_gates_on_identity_and_refuses_the_name_outright()
     test_normalisation_measured_on_the_live_archive()
     test_the_turnover_guards_true_cost_on_computable_pay_pairs()
-    test_the_identity_gap_fill_measured_on_the_live_archive()
+    test_the_price_of_refusing_the_name_carry_measured_on_the_live_archive()

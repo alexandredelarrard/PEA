@@ -36,6 +36,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from scripts.gpt_refactor_smoke_prep import SMOKE_TICKERS
 from src.context import get_config_context
 from src.data_store.schema import Tables
@@ -214,7 +217,7 @@ def _spot_pre_2001(parent: pd.DataFrame) -> None:
     body = [c for c in sub.columns if c not in ("ticker", "as_of", "period", "accession_number", "def14a_json")]
     filled = sub[body].notna().sum(axis=1)
     print(f"    {len(sub)} row(s); non-null fields per row: min {filled.min()}, median {int(filled.median())}, max {filled.max()} (of {len(body)})")
-    for (_, r), n in zip(sub.iterrows(), filled):
+    for (_, r), n in zip(sub.iterrows(), filled, strict=False):
         print(
             f"      {str(r['as_of'])[:10]}  {r['accession_number']}  {n:>2} fields  ceo={r.get('ceo_name_proxy')}  directors={r.get('n_directors')}"
         )

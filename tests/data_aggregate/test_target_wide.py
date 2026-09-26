@@ -58,7 +58,10 @@ def test_target_column_and_regex_round_trip():
 def test_labels_to_wide_columns_and_unique_keys():
     dates = pd.bdate_range("2020-01-01", periods=4)
     tkrs = ["AAA", "BBB", "CCC"]
-    mk = lambda v: _grid(dates, tkrs, [v] * len(dates))
+
+    def mk(v):
+        return _grid(dates, tkrs, [v] * len(dates))
+
     labels = {30: {"rank": mk([0.2, 0.5, 0.8]), "zscore": mk([-1.0, 0.0, 1.0])}, 90: {"rank": mk([0.1, 0.4, 0.9]), "zscore": mk([-2.0, 0.1, 1.5])}}
 
     wide = labels_to_wide(labels)
@@ -83,7 +86,10 @@ def test_labels_to_wide_column_count_matches_grid():
     exactly 2 key columns + 9 target columns."""
     dates = pd.bdate_range("2020-01-01", periods=2)
     tkrs = ["AAA", "BBB"]
-    mk = lambda: _grid(dates, tkrs, np.arange(4, dtype=float).reshape(2, 2))
+
+    def mk():
+        return _grid(dates, tkrs, np.arange(4, dtype=float).reshape(2, 2))
+
     labels = {h: {lab: mk() for lab in ("rank", "zscore", "epsilon")} for h in (30, 60, 90)}
 
     wide = labels_to_wide(labels)
@@ -135,7 +141,7 @@ def test_only_all_nan_rows_are_dropped():
     # (date[2], BBB) has h30 only -> kept.
 
     wide = labels_to_wide({30: {"rank": h30}, 90: {"rank": h90}})
-    keys = set(zip(wide["date"], wide["ticker"]))
+    keys = set(zip(wide["date"], wide["ticker"], strict=False))
 
     assert (dates[1], "AAA") not in keys, "all-NaN row should be dropped"
     assert (dates[2], "AAA") in keys and (dates[2], "BBB") in keys

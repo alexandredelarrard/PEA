@@ -106,7 +106,7 @@ def _rows(pairs) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 
-def test_a_trane_row_filed_under_IR_is_relabelled_to_TT_not_quarantined(identity):
+def test_a_trane_row_filed_under_ir_is_relabelled_to_tt_not_quarantined(identity):
     """The headline defect -- 2,075 rows of Trane Technologies insider trading sitting in
     `IR`'s panel -- and ⚠ THE OUTCOME IS A RELABEL, NOT A REJECTION.
 
@@ -124,7 +124,7 @@ def test_a_trane_row_filed_under_IR_is_relabelled_to_TT_not_quarantined(identity
     print(f"  Trane CIK {TRANE} claimed IR -> relabelled to TT. Not kept, not lost: moved.")
 
 
-def test_a_coresite_row_filed_under_COR_is_rejected_with_both_entity_ids(identity):
+def test_a_coresite_row_filed_under_cor_is_rejected_with_both_entity_ids(identity):
     """The rejection shape: CoreSite Realty held `COR` until 2021 and its entity holds NO
     universe ticker, so there is nowhere for its 1,207 rows to go but the quarantine."""
     kept, rejected = _filter_universe(_rows([("COR", CORESITE)]), UNIVERSE, identity)
@@ -144,7 +144,7 @@ def test_a_coresite_row_filed_under_COR_is_rejected_with_both_entity_ids(identit
     )
 
 
-def test_a_dupont_E_I_row_filed_under_DD_is_kept(identity):
+def test_a_dupont_e_i_row_filed_under_dd_is_kept(identity):
     """The case a fail-closed rule would destroy: 3,422 rows of genuine predecessor history.
     Same entity, different CIK -- which is exactly what `entity_lineage` exists to say."""
     kept, rejected = _filter_universe(_rows([("DD", DUPONT_EI)]), UNIVERSE, identity)
@@ -155,7 +155,7 @@ def test_a_dupont_E_I_row_filed_under_DD_is_kept(identity):
     print(f"  DuPont E I {DUPONT_EI} kept under DD: predecessor history is not symbol reuse.")
 
 
-def test_an_amerisourcebergen_row_filed_as_ABC_is_admitted_as_COR(identity):
+def test_an_amerisourcebergen_row_filed_as_abc_is_admitted_as_cor(identity):
     """⚠ THE ADMIT CASE, and the reason this change is not purely subtractive. `ABC` is not a
     universe ticker, so the symbol path dropped the row outright; the CIK path resolves it to
     the ticker its own entity holds today. Measured live: 2,275 rows come back this way."""
@@ -229,7 +229,7 @@ def test_the_partition_is_disjoint_and_loses_no_in_scope_row(identity):
     print(f"  {len(frame)} rows in -> {len(kept)} kept + {len(rejected)} quarantined, disjoint; 1 unrelated filer dropped rather than quarantined.")
 
 
-def test_the_quarantine_frame_stores_the_CLAIMED_ticker(identity):
+def test_the_quarantine_frame_stores_the_claimed_ticker(identity):
     """⚠ `_to_quarantine` overwrites `ticker` with the claim on purpose. A NULL there would
     lose the only evidence of what the old screen believed, and the resolved side survives as
     an entity id, which no downstream join can mistake for a tradable symbol."""

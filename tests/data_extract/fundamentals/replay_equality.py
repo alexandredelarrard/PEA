@@ -214,9 +214,9 @@ def _cell_diffs(before: pd.DataFrame, after: pd.DataFrame) -> list[tuple]:
     out.extend((as_of, "<row>", "present", "missing") for as_of in only_before)
     out.extend((as_of, "<row>", "missing", "present") for as_of in only_after)
     shared = left.index.intersection(right.index)
-    l, r = left.loc[shared], right.loc[shared]
-    for column in l.columns:
-        a, b = l[column], r[column]
+    left_shared, right_shared = left.loc[shared], right.loc[shared]
+    for column in left_shared.columns:
+        a, b = left_shared[column], right_shared[column]
         both_na = a.isna() & b.isna()
         changed = ~both_na & ((a.isna() != b.isna()) | (a != b))
         out.extend((as_of, column, a.loc[as_of], b.loc[as_of]) for as_of in a.index[changed])

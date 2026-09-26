@@ -134,7 +134,7 @@ def save_shap_analysis(
     ncols = 4
     nrows = int(np.ceil(top_n / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3.2 * nrows))
-    for ax, feat in zip(np.atleast_1d(axes).flatten(), top_features):
+    for ax, feat in zip(np.atleast_1d(axes).flatten(), top_features, strict=False):
         _plot_dependence(ax, feat, x, shap_values, feature_cols)
         ax.set_title(feat, fontsize=9)
     for ax in np.atleast_1d(axes).flatten()[len(top_features) :]:

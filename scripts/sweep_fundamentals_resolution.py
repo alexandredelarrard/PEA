@@ -105,6 +105,7 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None, cutovers: dict | Non
 
     company = Company(ticker)
     cik = str(getattr(company, "cik", "")).zfill(10)
+    cutover = cutovers.get(ticker) if cutovers is not None else None
     filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=None, done_accessions=frozenset(), registrants=cutovers)
     frames: list[pd.DataFrame] = []
     for filing in filings:

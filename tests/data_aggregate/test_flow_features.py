@@ -19,18 +19,18 @@ from src.data_aggregate.utils.momentum.features import build_feature_panel, comp
 _FLOW = ["signed_vol_63", "volume_trend_63", "volume_cv_63"]
 
 
-def _synth(years=3, N=8, seed=0):
-    T = years * 252
-    dates = pd.bdate_range("2021-01-04", periods=T)
-    tickers = [f"S{i}" for i in range(N)]
+def _synth(years=3, n=8, seed=0):
+    t = years * 252
+    dates = pd.bdate_range("2021-01-04", periods=t)
+    tickers = [f"S{i}" for i in range(n)]
     rng = np.random.default_rng(seed)
-    ret = pd.DataFrame(rng.normal(0.0003, 0.015, (T, N)), index=dates, columns=tickers)
+    ret = pd.DataFrame(rng.normal(0.0003, 0.015, (t, n)), index=dates, columns=tickers)
     # S0 = a big YTD loser (persistent negative drift) -> tax-loss candidate
-    ret["S0"] = rng.normal(-0.004, 0.015, T)
+    ret["S0"] = rng.normal(-0.004, 0.015, t)
     close = 100 * (1 + ret).cumprod()
     open_ = close.shift(1).bfill()
     # volume: put MORE volume on up-days for S1 (accumulation), down-days for S2
-    volume = pd.DataFrame(rng.uniform(1e6, 2e6, (T, N)), index=dates, columns=tickers)
+    volume = pd.DataFrame(rng.uniform(1e6, 2e6, (t, n)), index=dates, columns=tickers)
     up = ret > 0
     volume["S1"] = volume["S1"] * np.where(up["S1"], 3.0, 1.0)
     volume["S2"] = volume["S2"] * np.where(up["S2"], 1.0, 3.0)

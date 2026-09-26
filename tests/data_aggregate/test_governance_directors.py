@@ -214,7 +214,7 @@ def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one()
     )
 
 
-def test_the_accrual_anchor_reaches_an_EDGE_gap():
+def test_the_accrual_anchor_reaches_an_edge_gap():
     """D38. An age is a CLOCK: `interpolate(limit_area="inside")` refuses a leading gap by
     design, and for a clock that refusal is wrong -- an age before the first disclosed one is
     `first_age - elapsed_years`, which is arithmetic, not an estimate."""

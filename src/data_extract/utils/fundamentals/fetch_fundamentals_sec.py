@@ -124,7 +124,7 @@ def _period_frame(facts: pd.DataFrame) -> pd.DataFrame:
     out["period_start"] = start
     out["period_end"] = end
     out["period_days"] = (end - start).dt.days
-    out["duration_type"] = [period_shape(str(pt), d) for pt, d in zip(out.get("period_type", ""), out["period_days"])]
+    out["duration_type"] = [period_shape(str(pt), d) for pt, d in zip(out.get("period_type", ""), out["period_days"], strict=False)]
     out["_bare"] = [scope.bare_concept(c) for c in out["concept"]]
     return out
 

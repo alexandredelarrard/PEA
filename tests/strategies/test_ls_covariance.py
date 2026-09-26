@@ -34,9 +34,9 @@ def test_cov_downweights_correlated_cluster():
     beta = np.zeros(4)
     sig2 = 4e-4
     var = np.full(4, sig2)
-    R = np.eye(4)
-    R[0, 1] = R[1, 0] = 0.9
-    cov = sig2 * R
+    r = np.eye(4)
+    r[0, 1] = r[1, 0] = 0.9
+    cov = sig2 * r
     w_diag = optimize_day(alpha, beta, var, beta_neutral=False, pos_cap=None, cov=None)
     w_cov = optimize_day(alpha, beta, var, beta_neutral=False, pos_cap=None, cov=cov)
 
@@ -51,21 +51,21 @@ def test_cov_downweights_correlated_cluster():
 
 def test_shrunk_cov_pd_even_when_n_gt_t():
     rng = np.random.default_rng(1)
-    T, N = 40, 120  # N > T -> sample cov singular
-    resid = rng.normal(0, 0.02, (T, N))
-    idio = rng.uniform(1e-4, 5e-4, N)
-    Sig = shrunk_idio_cov(resid, idio, shrink=0.5)
-    assert Sig.shape == (N, N)
-    assert np.min(np.linalg.eigvalsh(Sig)) > 0, "shrunk covariance must be positive-definite"
+    t, n = 40, 120  # N > T -> sample cov singular
+    resid = rng.normal(0, 0.02, (t, n))
+    idio = rng.uniform(1e-4, 5e-4, n)
+    sig = shrunk_idio_cov(resid, idio, shrink=0.5)
+    assert sig.shape == (n, n)
+    assert np.min(np.linalg.eigvalsh(sig)) > 0, "shrunk covariance must be positive-definite"
     # shrink=1 -> diagonal target (up to the tiny ridge)
-    Sig1 = shrunk_idio_cov(resid, idio, shrink=1.0)
-    assert np.allclose(np.diag(Sig1), idio, atol=1e-8) and np.allclose(Sig1 - np.diag(np.diag(Sig1)), 0, atol=1e-8)
+    sig1 = shrunk_idio_cov(resid, idio, shrink=1.0)
+    assert np.allclose(np.diag(sig1), idio, atol=1e-8) and np.allclose(sig1 - np.diag(np.diag(sig1)), 0, atol=1e-8)
     # vol_target_scale uses wᵀΣw when cov given
-    w = rng.normal(0, 1, N)
-    s = vol_target_scale(w.copy(), idio, 0.10, gross_cap=1e9, cov=Sig)
+    w = rng.normal(0, 1, n)
+    s = vol_target_scale(w.copy(), idio, 0.10, gross_cap=1e9, cov=sig)
     assert np.isfinite(s).all()
     print("\n=== SANITY CHECK: shrunk covariance PD (N>T) ===")
-    print(f"  N={N} > T={T}: min eigenvalue = {np.min(np.linalg.eigvalsh(Sig)):.2e} > 0; shrink=1 → diagonal. Validated.")
+    print(f"  N={n} > T={t}: min eigenvalue = {np.min(np.linalg.eigvalsh(sig)):.2e} > 0; shrink=1 → diagonal. Validated.")
 
 
 if __name__ == "__main__":

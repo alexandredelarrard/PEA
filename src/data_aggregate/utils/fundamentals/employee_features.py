@@ -43,23 +43,23 @@ def _employee_fields(
     fundamentals: pd.DataFrame | None,
 ) -> dict:
     """Daily wide frames (date x ticker), point-in-time from each filing `as_of`."""
-    F: dict[str, pd.DataFrame] = {}
+    features: dict[str, pd.DataFrame] = {}
 
     employees = fundamentals_to_daily(employees_hist, _HEADCOUNT_FIELD, idx)
     if employees.empty or not employees.notna().any().any():
-        return F
+        return features
 
     # year-over-year headcount growth (past vs past -> leak-free)
     emp_growth = employees / employees.shift(_YOY_TRADING_DAYS) - 1.0
     if emp_growth.notna().any().any():
-        F["employee_growth"] = emp_growth
+        features["employee_growth"] = emp_growth
 
     # revenue per employee = TTM revenue / employees (both historical, PIT)
     if fundamentals is not None:
         revenue = fundamentals_to_daily(fundamentals, "totalRevenue", idx)
         rev_per_emp = ratio(revenue, employees, positive_den=True)
         if not rev_per_emp.empty and rev_per_emp.notna().any().any():
-            F["revenue_per_employee"] = rev_per_emp
+            features["revenue_per_employee"] = rev_per_emp
             # YoY GROWTH in revenue-per-employee: is revenue outgrowing headcount
             # (productivity rising, operating leverage) or just scaling linearly with
             # the people pool (flat rev/employee)? Past-vs-past -> leak-free.
@@ -68,16 +68,16 @@ def _employee_fields(
             # "IndexError: pop index out of range" on an inf+NaN mixed frame (pandas 3.x)
             rpe_growth = rpe_growth.replace([np.inf, -np.inf], np.nan)
             if rpe_growth.notna().any().any():
-                F["revenue_per_employee_growth"] = rpe_growth
+                features["revenue_per_employee_growth"] = rpe_growth
         # headcount elasticity to revenue (M&A DIGESTION #3): %Δemployees / %Δrevenue.
         # <1 = revenue outgrowing the people pool (scale / synergies captured); ~1 =
         # headcount scaling 1:1 with (often acquired) revenue -> integration not landing.
-        if "employee_growth" in F:
+        if "employee_growth" in features:
             rev_growth = revenue / revenue.shift(_YOY_TRADING_DAYS) - 1.0
-            el = ratio(F["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
+            el = ratio(features["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
             if not el.empty and el.notna().any().any():
-                F["headcount_elasticity"] = el
-    return F
+                features["headcount_elasticity"] = el
+    return features
 
 
 def build_employee_feature_panel(

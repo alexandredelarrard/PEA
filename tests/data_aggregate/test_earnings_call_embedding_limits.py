@@ -85,7 +85,7 @@ def test_embedding_limits_print_conclusion():
     embed_texts(["z" * n for n in lengths], client=client)
     print("\n=== SANITY CHECK: earnings-call embedding input limits ===")
     print(f"  cap: 8,000 chars -> {EMBEDDING_MAX_CHARS:,} chars (model accepts 8,191 TOKENS ~= 29k chars)")
-    for n, s in zip(lengths, client.sent):
+    for n, s in zip(lengths, client.sent, strict=False):
         verdict = "whole" if len(s) == n else f"cut to {len(s):,}"
         print(f"    {n:>7,} chars -> {verdict}")
         assert len(s) == min(n, EMBEDDING_MAX_CHARS)

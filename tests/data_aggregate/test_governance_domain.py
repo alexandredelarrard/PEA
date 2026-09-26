@@ -119,9 +119,9 @@ def _proxy(**overrides) -> pd.DataFrame:
 )
 def test_measured_breach_is_blanked(src, name, bad_value, label):
     """The breach goes NaN for the offending ticker and ONLY for that ticker."""
-    F = _governance_fields(_proxy(**{src: bad_value}), IDX, None, {})
-    assert name in F, f"{name} vanished entirely -- the gate must blank cells, not fields"
-    frame = F[name]
+    f = _governance_fields(_proxy(**{src: bad_value}), IDX, None, {})
+    assert name in f, f"{name} vanished entirely -- the gate must blank cells, not fields"
+    frame = f[name]
     assert frame["BAD"].isna().all(), f"{label}: {bad_value} survived the gate"
     assert frame.loc[COVERED, "GOOD"].notna().all(), f"{label}: the gate leaked onto the control ticker"
 
@@ -132,9 +132,9 @@ def test_say_on_pay_support_is_gated_on_the_raw_path():
     The bound fires on 0 cells in production today; it is here to catch a percent-vs-fraction
     regression on the one RAW fraction in the panel.
     """
-    R = _def14a_raw_fields(_proxy(say_on_pay_support_pct=94.0), IDX, {})
-    assert R["say_on_pay_support"]["BAD"].isna().all()
-    assert R["say_on_pay_support"].loc[COVERED, "GOOD"].notna().all()
+    r = _def14a_raw_fields(_proxy(say_on_pay_support_pct=94.0), IDX, {})
+    assert r["say_on_pay_support"]["BAD"].isna().all()
+    assert r["say_on_pay_support"].loc[COVERED, "GOOD"].notna().all()
 
 
 # --------------------------------------------------------------------------- #
@@ -183,15 +183,15 @@ def test_a_well_paid_ceo_is_not_cut_by_the_1e5_bar():
     """
     # The realistic top of the distribution, plus TSLA's outlier, all survive.
     for ratio in (183.0, 1_965.0, 6_474.0, 18_043.0, 99_999.0):
-        F = _governance_fields(_proxy(ceo_pay_ratio=ratio), IDX, None, {})
-        kept = F["ceo_pay_ratio"].loc[COVERED, "BAD"]
+        f = _governance_fields(_proxy(ceo_pay_ratio=ratio), IDX, None, {})
+        kept = f["ceo_pay_ratio"].loc[COVERED, "BAD"]
         assert kept.notna().all(), f"the 1e5 bar cut a legitimate ratio of {ratio:,.0f}"
         assert (kept == ratio).all()
     # No pay LEVEL is bounded, so a $50M CEO total passes through untouched.
     assert not {"ceo_total_comp", "median_employee_pay", "log_ceo_total_comp", "log_median_director_pay"} & set(_DOMAIN)
 
 
-def test_zero_ceo_pay_ratio_is_KEPT():
+def test_zero_ceo_pay_ratio_is_kept():
     """⚠ A $0 CEO PAY RATIO IS REAL, and a first cut of this gate blanked it.
 
     Every one of the 1,064 cells at exactly 0 is **TSLA**. Its proxies report Musk's
@@ -207,8 +207,8 @@ def test_zero_ceo_pay_ratio_is_KEPT():
     salary against a 0 total — need the total compared against its components or its
     neighbours, which is the phase-2 sanity step, not a range check.
     """
-    F = _governance_fields(_proxy(ceo_pay_ratio=0.0), IDX, None, {})
-    kept = F["ceo_pay_ratio"].loc[COVERED, "BAD"]
+    f = _governance_fields(_proxy(ceo_pay_ratio=0.0), IDX, None, {})
+    kept = f["ceo_pay_ratio"].loc[COVERED, "BAD"]
     assert kept.notna().all(), "TSLA's genuine 0 pay ratio was blanked"
     assert (kept == 0.0).all()
 
@@ -222,8 +222,8 @@ def test_sub_one_pay_ratio_survives_on_purpose():
     The ratio is not the broken leg. Raising the lower bound to 1.0 would blank 6,558 cells and
     HIDE the leg that is broken, which phase 2 repairs at source.
     """
-    F = _governance_fields(_proxy(ceo_pay_ratio=8.64e-06), IDX, None, {})
-    assert F["ceo_pay_ratio"].loc[COVERED, "BAD"].notna().all()
+    f = _governance_fields(_proxy(ceo_pay_ratio=8.64e-06), IDX, None, {})
+    assert f["ceo_pay_ratio"].loc[COVERED, "BAD"].notna().all()
 
 
 # --------------------------------------------------------------------------- #
@@ -239,8 +239,8 @@ def test_insider_ownership_bound_applies_only_to_dual_class():
     hist = _proxy(insider_ownership_pct=0.91)
     hist["dual_class_shares"] = [1.0, 0.0]  # GOOD is dual-class, BAD (the "LVS") is not
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"].loc[COVERED, "BAD"].notna().all(), "the single-class 0.91 was blanked -- LVS 2005 is a real value"
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"].loc[COVERED, "BAD"].notna().all(), "the single-class 0.91 was blanked -- LVS 2005 is a real value"
     assert not [k for k in tally if k.startswith("domain-gated: insider_ownership_pct")]
 
 
@@ -249,13 +249,13 @@ def test_insider_ownership_bound_fires_on_a_dual_class_filer():
     hist = _proxy(insider_ownership_pct=0.998)
     hist["dual_class_shares"] = [0.0, 1.0]  # only BAD is dual-class
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"]["BAD"].isna().all()
-    assert F["insider_ownership_pct"].loc[COVERED, "GOOD"].notna().all()
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"]["BAD"].isna().all()
+    assert f["insider_ownership_pct"].loc[COVERED, "GOOD"].notna().all()
     assert tally["domain-gated: insider_ownership_pct tickers"] == 1
 
 
-def test_economic_ownership_is_COMPUTED_from_the_filed_share_count():
+def test_economic_ownership_is_computed_from_the_filed_share_count():
     """⚠ THE FIX FOR D12, and it is arithmetic on two filed numbers rather than an extraction.
 
     For a dual-class filer the economic percentage is **not a disclosed fact**. Alphabet's 2026
@@ -408,8 +408,8 @@ def test_insider_ownership_bound_fails_closed_without_the_discriminator():
     hist = _proxy(insider_ownership_pct=0.998)
     assert "dual_class_shares" not in hist.columns
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"]["BAD"].isna().all()
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"]["BAD"].isna().all()
     # ...and it SAYS SO. A missing discriminator is a regression, not a normal state: the
     # column is in production today because `def14a_llm` declares no `read_columns` in the
     # registry and loads in full. If that ever changes, the build log has to
@@ -440,8 +440,8 @@ def test_condition_follows_the_value_across_a_stale_forward_fill():
             {"ticker": "GOOD", "as_of": pd.Timestamp("2012-01-03"), "insider_ownership_pct": 0.012, "dual_class_shares": 0.0},
         ]
     )
-    F = _governance_fields(hist, IDX, None, {})
-    got = F["insider_ownership_pct"]
+    f = _governance_fields(hist, IDX, None, {})
+    got = f["insider_ownership_pct"]
     stale = IDX[IDX >= pd.Timestamp("2012-06-01")]
     assert got.loc[stale, "UHS"].isna().all(), "the stale 0.996 leaked: the condition came from a filing that did not supply the value"
     assert got["UHS"].isna().all()
@@ -528,7 +528,7 @@ def test_director_equity_share_is_blanked_not_clipped():
     assert tally["director_equity_pay_pct: blanked outside [0, 1]"] == 1
 
 
-def test_ceo_to_director_ratio_rejects_only_a_NEGATIVE_numerator():
+def test_ceo_to_director_ratio_rejects_only_a_negative_numerator():
     """EQT 2009 extracts `ceo_total_comp = -8,920,166` against a $649,036 salary.
 
     Negative pay is impossible, so it is rejected. ⚠ ZERO IS NOT: TSLA reports a genuine $0
@@ -670,8 +670,8 @@ def test_the_domain_gate_also_corroborates_across_the_history():
         ]
     )
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    own = F["insider_ownership_pct"]["BAD"]
+    f = _governance_fields(hist, IDX, None, tally)
+    own = f["insider_ownership_pct"]["BAD"]
     after = own.loc[own.index >= AS_OF]
     assert after.isna().all(), "0.974 reached the panel: the band gate trusted the same flag that the extraction defect had already corrupted"
     before = own.loc[own.index < AS_OF].dropna()

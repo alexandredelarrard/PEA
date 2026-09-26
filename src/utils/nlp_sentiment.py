@@ -142,7 +142,7 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
         w = [1.0] * len(rows)
         tot = float(len(rows))
     out = [0.0] * n
-    for row, wi in zip(rows, w):
+    for row, wi in zip(rows, w, strict=False):
         for j in range(n):
             out[j] += wi * row[j]
     return [v / tot for v in out]
@@ -230,7 +230,7 @@ class SentimentEngine:
         # 3) length-weighted aggregate per doc
         per_doc_rows: dict[int, list[list[float]]] = {}
         per_doc_w: dict[int, list[float]] = {}
-        for row, di, wt in zip(scored, owner, weights):
+        for row, di, wt in zip(scored, owner, weights, strict=False):
             per_doc_rows.setdefault(di, []).append([row["pos"], row["neg"], row["neu"]])
             per_doc_w.setdefault(di, []).append(float(wt))
         out: list[dict[str, float] | None] = []

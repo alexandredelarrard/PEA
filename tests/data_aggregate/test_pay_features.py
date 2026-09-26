@@ -182,13 +182,13 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
             for y, rev in ((2020, 1000.0), (2021, 1000.0), (2022, 1200.0), (2023, 1440.0))
         ]
     )
-    F, tally = pay_fields(d14, None, fund, None, PEERS, IDX)
+    f, tally = pay_fields(d14, None, fund, None, PEERS, IDX)
 
-    assert "pay_revenue_gap" in F
+    assert "pay_revenue_gap" in f
     # AAA: pay +20% over 2022, revenue +20% over the same year -> gap 0 on a log basis
-    gap = F["pay_revenue_gap"].loc["2023-01-03", "AAA"]
+    gap = f["pay_revenue_gap"].loc["2023-01-03", "AAA"]
     assert gap == pytest.approx(0.0, abs=1e-9), f"log/pct basis mismatch: gap={gap}"
-    assert F["pay_up_revenue_down"].loc["2023-01-03", "AAA"] == 0.0
+    assert f["pay_up_revenue_down"].loc["2023-01-03", "AAA"] == 0.0
 
     # one-sided severity: pay FALLING while performance falls is not a governance failure
     pay = pd.DataFrame({"AAA": [-0.30, 0.30]}, index=IDX[:2])
@@ -198,7 +198,7 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
     assert sev.iloc[1, 0] == pytest.approx(0.30 * 0.40)
 
     # no close_total -> the return family is skipped by NAME, and the revenue one still builds
-    assert "pay_return_gap" not in F
+    assert "pay_return_gap" not in f
     assert tally["skipped: no close_total -> no return-based misalignment"] == 1
 
     print("\n=== SANITY CHECK: pay-vs-performance basis and severity ===")
@@ -233,8 +233,8 @@ def test_the_encoding_and_expiry_contracts():
     assert RAW_FLAG_FIELDS <= ALL_FIELDS, f"dead names: {sorted(RAW_FLAG_FIELDS - ALL_FIELDS)}"
     assert ALL_FIELDS - EVENT_FIELDS == {"log_ceo_total_comp", "ceo_pay_slice"}, "every field except the two standing levels must expire"
 
-    F, _ = pay_fields(_def14a(), _exec_comp(), None, None, PEERS, IDX)
-    built = set(F)
+    f, _ = pay_fields(_def14a(), _exec_comp(), None, None, PEERS, IDX)
+    built = set(f)
     # the builder may emit FEWER fields than ALL_FIELDS (a source can be absent) but never a
     # name outside it -- otherwise a field ships unclassified and un-expired
     assert built <= ALL_FIELDS, f"unclassified field(s): {sorted(built - ALL_FIELDS)}"
@@ -242,8 +242,8 @@ def test_the_encoding_and_expiry_contracts():
     # ⚠ the level is NOT expired: a package is a standing fact between proxies. AAA's last
     # proxy (2023-04-01) is 821 days before the end of the index, so the 548-day horizon is
     # genuinely crossed -- an expiring level would read NaN here and the growth must.
-    assert pd.notna(F["log_ceo_total_comp"].loc[IDX[-1], "AAA"])
-    assert pd.isna(F["ceo_comp_growth_1y"].loc[IDX[-1], "AAA"]), "growth must expire at 548d"
+    assert pd.notna(f["log_ceo_total_comp"].loc[IDX[-1], "AAA"])
+    assert pd.isna(f["ceo_comp_growth_1y"].loc[IDX[-1], "AAA"]), "growth must expire at 548d"
 
     print("\n=== SANITY CHECK: encoding + 548-day expiry ===")
     print(

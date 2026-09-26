@@ -69,7 +69,7 @@ def test_the_aliases_a_first_pass_regex_would_miss():
     assert set(BIG4) == {"pwc", "kpmg", "ey", "deloitte"}
 
     print("\n=== SANITY CHECK: the auditor alias table ===")
-    for raw, expected in pins.items():
+    for raw in pins:
         print(f"  {raw:<32} -> {canonical_auditor(raw)}")
     print(
         f"  Arthur Andersen LLP              -> {canonical_auditor('Arthur Andersen LLP')} "

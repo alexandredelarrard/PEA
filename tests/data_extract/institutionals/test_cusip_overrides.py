@@ -83,7 +83,7 @@ def test_overrides_win_over_a_cached_miss(monkeypatch, tmp_path):
     monkeypatch.setattr(fcm, "_parse_openfigi", lambda *a, **k: {})
 
     out = fcm.build_cusip_ticker_map(context, sample, pause=0.0)
-    got = dict(zip(out["cusip"], out["ticker"]))
+    got = dict(zip(out["cusip"], out["ticker"], strict=False))
 
     for cu in sample:
         assert got.get(cu) == CUSIP_TICKER_OVERRIDES[cu], f"{cu} still unresolved — the override did not beat the cached miss"

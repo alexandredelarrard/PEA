@@ -67,14 +67,14 @@ def test_latest_quarter_margin_inflection_exact():
     fund, ends, rev_q, ni_q = _synth_quarterly()
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    F = _derived_fields(fund, idx, close=None, yoy_periods=4)
-    assert "q_margin_vs_ttm" in F and "q_rev_growth" in F
+    f = _derived_fields(fund, idx, close=None, yoy_periods=4)
+    assert "q_margin_vs_ttm" in f and "q_rev_growth" in f
 
     d = ends[5] + pd.Timedelta(days=5)  # after Q6 filing
     q_margin = ni_q[5] / rev_q[5]  # 20/143
     ttm_margin = sum(ni_q[2:6]) / sum(rev_q[2:6])
-    assert abs(F["q_margin_vs_ttm"].loc[d, "AAA"] - (q_margin - ttm_margin)) < 1e-9
+    assert abs(f["q_margin_vs_ttm"].loc[d, "AAA"] - (q_margin - ttm_margin)) < 1e-9
 
     print("\n=== SANITY CHECK: latest-quarter margin inflection ===")
-    print(f"  Q6 margin={q_margin:.3f}  vs TTM margin={ttm_margin:.3f}  -> inflection={F['q_margin_vs_ttm'].loc[d, 'AAA']:+.3f}")
+    print(f"  Q6 margin={q_margin:.3f}  vs TTM margin={ttm_margin:.3f}  -> inflection={f['q_margin_vs_ttm'].loc[d, 'AAA']:+.3f}")
     print("  latest-quarter margin minus TTM margin = the inflection feature. Exact.")

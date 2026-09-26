@@ -182,7 +182,7 @@ def section_guard_census(strict: pd.DataFrame) -> None:
         print("\n  which candidates were withheld, and from which field:")
         hits = strict[rejected]
         pairs: dict[tuple[str, str], set[str]] = {}
-        for field, blob in zip(hits["field"], hits["adjustment"]):
+        for field, blob in zip(hits["field"], hits["adjustment"], strict=False):
             for concept in json.loads(blob).get("role_rejected", []):
                 pairs.setdefault((field, concept), set())
         counts = hits.assign(_n=1).groupby("field")["_n"].sum().sort_values(ascending=False)
@@ -205,7 +205,7 @@ def section_duplicates(strict: pd.DataFrame) -> None:
         return
     hits = strict[flag]
     rows = []
-    for ticker, field, blob in zip(hits["ticker"], hits["field"], hits["adjustment"]):
+    for ticker, field, blob in zip(hits["ticker"], hits["field"], hits["adjustment"], strict=False):
         for d in json.loads(blob).get("duplicate_fact", []):
             kept, dropped = abs(float(d["kept"])), abs(float(d["dropped"]))
             scale = max(kept, dropped)

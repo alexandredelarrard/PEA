@@ -67,13 +67,13 @@ def test_apply_label_rank_and_zscore_exact():
 # --------------------------------------------------------------------------- #
 # 2. build_targets_multi emits BOTH versions from one epsilon                   #
 # --------------------------------------------------------------------------- #
-def _mini_inputs(T=40, N=6, seed=0):
+def _mini_inputs(t=40, n=6, seed=0):
     rng = np.random.default_rng(seed)
-    dates = pd.bdate_range("2020-01-01", periods=T)
-    tickers = [f"T{i}" for i in range(N)]
-    stock_ret = pd.DataFrame(rng.normal(0, 0.02, (T, N)), index=dates, columns=tickers)
+    dates = pd.bdate_range("2020-01-01", periods=t)
+    tickers = [f"T{i}" for i in range(n)]
+    stock_ret = pd.DataFrame(rng.normal(0, 0.02, (t, n)), index=dates, columns=tickers)
     close = (1 + stock_ret).cumprod() * 100.0
-    factor_panel = pd.DataFrame({"market": rng.normal(0.0004, 0.01, T)}, index=dates)
+    factor_panel = pd.DataFrame({"market": rng.normal(0.0004, 0.01, t)}, index=dates)
     betas = {t: pd.DataFrame({"beta_market": 1.0}, index=dates) for t in tickers}
     return close, stock_ret, betas, factor_panel
 

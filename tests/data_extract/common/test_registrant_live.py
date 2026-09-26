@@ -148,7 +148,7 @@ def test_there_is_no_gap_at_a_boundary(registrants, consolidating):
     print("\n=== SANITY CHECK: no reporting gap at a boundary ===")
     for ticker, reg in sorted(registrants.items()):
         per_cik = consolidating[ticker]
-        for older, newer in zip(reg.segments, reg.segments[1:]):
+        for older, newer in zip(reg.segments, reg.segments[1:], strict=False):
             last = max((d for d in per_cik[older.cik]["dates"] if older.covers(d)), default=None)
             first = min((d for d in per_cik[newer.cik]["dates"] if newer.covers(d)), default=None)
             if last is None or first is None:

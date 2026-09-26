@@ -352,7 +352,7 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict, vendor_pric
                 int((multiplier != 1.0).sum()),
                 len(series),
                 was,
-                "%.5f" % now if now is not None else "unmeasurable",
+                f"{now:.5f}" if now is not None else "unmeasurable",
             )
             if now is not None and abs(now - 1.0) > BUGFIX_WEDGE_TOL:
                 log(

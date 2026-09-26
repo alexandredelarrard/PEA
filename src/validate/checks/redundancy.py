@@ -184,7 +184,7 @@ def check_redundancy(
     n_ok = np.diag(acc["n"])
 
     pairs = []
-    for i, j in zip(*np.where(candidates)):
+    for i, j in zip(*np.where(candidates), strict=False):
         i, j = int(i), int(j)
         shared = int(n[i, j])
         identical = int(acc["eq"][i, j]) == shared

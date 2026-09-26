@@ -45,7 +45,7 @@ def simulate_portfolio(
     dates = sorted(d for d in signal.index if d in stock_ret.index and d in spy_ret.index)
     tickers = list(stock_ret.columns)
     prev_w = pd.Series(0.0, index=tickers + ["SPY"])
-    V = spy_V = starting_capital
+    portfolio_value = benchmark_value = starting_capital
     rows = []
     for i in range(len(dates) - 1):
         t, t1 = dates[i], dates[i + 1]
@@ -59,8 +59,18 @@ def simulate_portfolio(
         r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
         gross = float((w[tickers] * r_stocks).sum() + w["SPY"] * r_spy)
         net = gross - cost
-        V *= 1.0 + net
-        spy_V *= 1.0 + r_spy
-        rows.append({"date": t1, "gross_ret": gross, "cost": cost, "net_ret": net, "turnover": turnover, "portfolio_value": V, "spy_value": spy_V})
+        portfolio_value *= 1.0 + net
+        benchmark_value *= 1.0 + r_spy
+        rows.append(
+            {
+                "date": t1,
+                "gross_ret": gross,
+                "cost": cost,
+                "net_ret": net,
+                "turnover": turnover,
+                "portfolio_value": portfolio_value,
+                "spy_value": benchmark_value,
+            }
+        )
         prev_w = w
     return pd.DataFrame(rows).set_index("date")

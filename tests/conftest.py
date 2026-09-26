@@ -105,7 +105,7 @@ class FakeStore:
     @staticmethod
     def _filter(df, where):
         for col, val in (where or {}).items():
-            df = df[df[col].isin(list(val))] if isinstance(val, (list, tuple, set, frozenset)) else df[df[col] == val]
+            df = df[df[col].isin(list(val))] if isinstance(val, list | tuple | set | frozenset) else df[df[col] == val]
         return df
 
     # -- introspection -- #

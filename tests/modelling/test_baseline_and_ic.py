@@ -22,33 +22,33 @@ def test_standardize_no_warning_on_all_nan_column():
     """A feature that is entirely NaN in a fold must not emit numpy
     'Mean of empty slice' / 'Degrees of freedom <= 0' RuntimeWarnings, and its
     standardized column becomes all zeros (contributes nothing)."""
-    X = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, 6.0], [3.0, np.nan, 7.0]])
+    x = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, 6.0], [3.0, np.nan, 7.0]])
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)  # any RuntimeWarning -> failure
-        Xs, mean, std = baselines._standardize(X)
+        xs, mean, std = baselines._standardize(x)
 
-    assert np.allclose(Xs[:, 1], 0.0), "all-NaN column should standardize to zeros"
+    assert np.allclose(xs[:, 1], 0.0), "all-NaN column should standardize to zeros"
     assert mean[1] == 0.0 and std[1] == 1.0
-    assert np.isfinite(Xs).all()
+    assert np.isfinite(xs).all()
 
     print("\n=== SANITY CHECK: standardize handles all-NaN column ===")
     print("  all-NaN feature -> no RuntimeWarning, mean=0/std=1, column -> zeros. Validated.")
 
 
-def _panel(T: int = 300, N: int = 80, K: int = 8, noise: float = 1.5, seed: int = 0):
+def _panel(t: int = 300, n: int = 80, k: int = 8, noise: float = 1.5, seed: int = 0):
     """Daily cross-sections with a weak LINEAR signal + heavy noise -> a realistic
     low-IC target both a linear model and a GBDT can partly capture."""
     rng = np.random.default_rng(seed)
-    dates = pd.bdate_range("2015-01-01", periods=T)
-    tickers = [f"T{i:02d}" for i in range(N)]
-    feats = [f"f{j}" for j in range(K)]
-    w = np.array([0.6, 0.35, -0.25, 0.15, 0.0, 0.0, 0.0, 0.0])[:K]
+    dates = pd.bdate_range("2015-01-01", periods=t)
+    tickers = [f"T{i:02d}" for i in range(n)]
+    feats = [f"f{j}" for j in range(k)]
+    w = np.array([0.6, 0.35, -0.25, 0.15, 0.0, 0.0, 0.0, 0.0])[:k]
     frames = []
     for d in dates:
-        X = rng.normal(0, 1, (N, K))
-        raw = X @ w + rng.normal(0, noise, N)
+        x = rng.normal(0, 1, (n, k))
+        raw = x @ w + rng.normal(0, noise, n)
         y = pd.Series(raw).rank(pct=True).to_numpy()  # rank target in [0,1]
-        block = pd.DataFrame(X, columns=feats)
+        block = pd.DataFrame(x, columns=feats)
         block.insert(0, "y", y)
         block.insert(0, "ticker", tickers)
         block.insert(0, "date", d)
@@ -108,12 +108,12 @@ def test_elasticnet_selects_where_ridge_keeps_everything():
     """With a correlated + mostly-irrelevant feature set, elastic net's L1 drives
     weak coefficients to EXACTLY zero (selection) while ridge keeps them all."""
     rng = np.random.default_rng(0)
-    n, K = 3000, 10
-    X = rng.normal(0, 1, (n, K))
-    X[:, 1] = X[:, 0] + rng.normal(0, 0.05, n)  # f1 nearly collinear with f0
-    y = 1.5 * X[:, 0] + rng.normal(0, 1.0, n)  # only the f0/f1 cluster matters
-    feats = [f"f{j}" for j in range(K)]
-    panel = pd.DataFrame(X, columns=feats)
+    n, k = 3000, 10
+    x = rng.normal(0, 1, (n, k))
+    x[:, 1] = x[:, 0] + rng.normal(0, 0.05, n)  # f1 nearly collinear with f0
+    y = 1.5 * x[:, 0] + rng.normal(0, 1.0, n)  # only the f0/f1 cluster matters
+    feats = [f"f{j}" for j in range(k)]
+    panel = pd.DataFrame(x, columns=feats)
     panel["y"] = y
 
     en = baselines.train_elasticnet(panel, feats, "y", alpha=0.1, l1_ratio=0.7, max_iter=3000, tol=1e-9)
@@ -128,7 +128,7 @@ def test_elasticnet_selects_where_ridge_keeps_everything():
     assert abs(en.coef[0]) + abs(en.coef[1]) > np.abs(en.coef[2:]).sum()
 
     print("\n=== SANITY CHECK: elastic net selection vs ridge ===")
-    print(f"  zero coefficients: elasticnet={en_zeros}/{K}, ridge={rg_zeros}/{K}")
+    print(f"  zero coefficients: elasticnet={en_zeros}/{k}, ridge={rg_zeros}/{k}")
     print(
         f"  informative f0/f1 |coef| = {abs(en.coef[0]) + abs(en.coef[1]):.2f} "
         f"vs noise sum {np.abs(en.coef[2:]).sum():.3f} -> L1 selects, L2 shares. Validated."
@@ -159,7 +159,7 @@ class _Const:
     def __init__(self, vals):
         self.vals = np.asarray(vals, dtype=float)
 
-    def predict(self, X):
+    def predict(self, x):
         return self.vals
 
 

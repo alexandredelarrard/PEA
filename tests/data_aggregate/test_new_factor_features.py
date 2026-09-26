@@ -82,7 +82,7 @@ def test_sector_quick_wins_that_sharadar_can_feed():
     print("  The NII/loan/premium/float/HTM/NPL/NCO KPIs are absent, not NaN -- SF1 carries none of their inputs. Validated.")
 
 
-def test_universal_quick_wins_A2_A3_A5():
+def test_universal_quick_wins_a2_a3_a5():
     idx = pd.bdate_range("2020-06-01", "2024-06-30")  # extends past the last filing
     base = dict(
         totalRevenue=1000,
@@ -109,18 +109,18 @@ def test_universal_quick_wins_A2_A3_A5():
         freeCashflow=180,
     )
     rows = [{"ticker": "AAA", "as_of": f"{yr}-12-31", **base} for yr in (2021, 2022)] + [{"ticker": "AAA", "as_of": "2023-12-31", **impr}]
-    F = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"AAA": 100.0}, index=idx))
+    f = _derived_fields(pd.DataFrame(rows), idx, pd.DataFrame({"AAA": 100.0}, index=idx))
     d = idx[-1]
 
-    assert abs(F["asset_growth"].loc[d, "AAA"] - 0.05) < 1e-6  # A2: 5250/5000-1
-    assert abs(F["rule_of_40"].loc[d, "AAA"] - (20.0 + 15.0)) < 1e-3  # A5: 20% growth + 15% FCF margin
-    assert F["piotroski_f_score"].loc[d, "AAA"] >= 8  # A3: everything improving
-    assert "rpo_growth" not in F  # remainingPerformanceObligation is not an SF1 column
+    assert abs(f["asset_growth"].loc[d, "AAA"] - 0.05) < 1e-6  # A2: 5250/5000-1
+    assert abs(f["rule_of_40"].loc[d, "AAA"] - (20.0 + 15.0)) < 1e-3  # A5: 20% growth + 15% FCF margin
+    assert f["piotroski_f_score"].loc[d, "AAA"] >= 8  # A3: everything improving
+    assert "rpo_growth" not in f  # remainingPerformanceObligation is not an SF1 column
 
     print("\n=== SANITY: universal A2/A3/A5 ===")
     print(
-        f"  asset_growth={F['asset_growth'].loc[d, 'AAA']:.2f} (CMA), "
-        f"rule_of_40={F['rule_of_40'].loc[d, 'AAA']:.0f}, "
-        f"Piotroski F={F['piotroski_f_score'].loc[d, 'AAA']:.0f}/9. "
+        f"  asset_growth={f['asset_growth'].loc[d, 'AAA']:.2f} (CMA), "
+        f"rule_of_40={f['rule_of_40'].loc[d, 'AAA']:.0f}, "
+        f"Piotroski F={f['piotroski_f_score'].loc[d, 'AAA']:.0f}/9. "
         f"rpo_growth absent (no RPO tag in SF1). Validated."
     )

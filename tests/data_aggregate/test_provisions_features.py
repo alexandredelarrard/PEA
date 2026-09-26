@@ -141,9 +141,9 @@ def _at(frame: pd.DataFrame, date: str, ticker: str) -> float:
 def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skipped():
     """The detector's three rules, each asserted by VALUE on a named ticker and date."""
     hist = _archive()
-    F, tally = provision_fields(hist, IDX)
+    f, tally = provision_fields(hist, IDX)
 
-    added = F["classified_board_added"]
+    added = f["classified_board_added"]
     # 1. AAA adopts a classified board in the 2021 proxy. The flag is 0 the day BEFORE that
     #    filing and 1 from the filing date on -- stamped on the LATER of the two observations,
     #    which is the only date at which the change was public.
@@ -156,7 +156,7 @@ def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skippe
     #    discloses none in 2022. So its only pair is 2019 <-> 2022. The silent years neither
     #    manufacture a transition NOR get a 0.0 -- they are UNKNOWN, because with one
     #    observation behind them and nothing in front there is no comparison to report.
-    removed = F["classified_board_removed"]
+    removed = f["classified_board_removed"]
     assert np.isnan(_at(removed, "2020-05-04", "BBB")), "a silent year invented a comparison"
     assert np.isnan(_at(removed, "2021-05-03", "BBB"))
     # ...and the real change is not hidden either: it is detected ACROSS the gap, on the 2022
@@ -171,7 +171,7 @@ def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skippe
     assert np.isnan(_at(added, "2023-05-02", "CCC")), "a first disclosure became an adoption"
 
     # 4. and the poison-pill pair three years apart is still found, on the later filing
-    assert _at(F["poison_pill_removed"], "2023-05-02", "BBB") == 1.0
+    assert _at(f["poison_pill_removed"], "2023-05-02", "BBB") == 1.0
 
     # the raw detector, checked directly: one row per adjacent KNOWN pair, not per change
     raw = _transitions(hist, "classified_board")
@@ -195,9 +195,9 @@ def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skippe
 
 def test_the_counts_are_min_count_and_the_net_signs_correctly():
     """A count of zero events is 0.0; NO provision history is NaN. The difference is the test."""
-    F, tally = provision_fields(_archive(), IDX)
-    det, imp = F["governance_deterioration_count"], F["governance_improvement_count"]
-    net = F["net_governance_change"]
+    f, tally = provision_fields(_archive(), IDX)
+    det, imp = f["governance_deterioration_count"], f["governance_improvement_count"]
+    net = f["net_governance_change"]
     d = "2022-05-02"  # after AAA's chair combination and independent-chair loss
 
     # 1. DDD disclosed every provision and changed none -> 0.0, which is a FACT, not a gap.
@@ -224,7 +224,7 @@ def test_the_counts_are_min_count_and_the_net_signs_correctly():
     # 5. the counts INHERIT their components' expiry rather than being aged separately: past
     #    the horizon on the last proxy every component is NaN, so the count must be too
     late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
-    comp = [F[f] for f in DETERIORATION_FLAGS if f in F]
+    comp = [f[f] for f in DETERIORATION_FLAGS if f in f]
     assert all(np.isnan(float(c.loc[late, "AAA"])) for c in comp)
     assert np.isnan(float(det.loc[late, "AAA"])), "the count outlived its own components"
 
@@ -240,8 +240,8 @@ def test_the_counts_are_min_count_and_the_net_signs_correctly():
 
 def test_the_independence_drop_fires_at_exactly_ten_points():
     """The boundary, on the boundary. `<=` at exactly -0.10 is the specified behaviour."""
-    F, tally = provision_fields(_archive(), IDX)
-    delta, drop = F["board_independence_delta_1y"], F["board_independence_drop_10pp"]
+    f, tally = provision_fields(_archive(), IDX)
+    delta, drop = f["board_independence_delta_1y"], f["board_independence_drop_10pp"]
 
     # AAA goes 0.90 -> 0.80 between the 2020 and 2021 proxies: a delta of EXACTLY -0.10.
     assert _at(delta, "2021-05-03", "AAA") == pytest.approx(-0.10)
@@ -274,10 +274,10 @@ def test_a_delta_across_an_interpolated_leg_is_rejected():
     clean = _archive()
     dirty = _archive(avg_other_public_boards=[("AAA", 2)])  # the 2021 leg is interpolated
 
-    F_clean, t_clean = provision_fields(clean, IDX)
-    F_dirty, t_dirty = provision_fields(dirty, IDX)
+    f_clean, t_clean = provision_fields(clean, IDX)
+    f_dirty, t_dirty = provision_fields(dirty, IDX)
 
-    clean_d, dirty_d = (F_clean["board_busyness_delta_1y"], F_dirty["board_busyness_delta_1y"])
+    clean_d, dirty_d = (f_clean["board_busyness_delta_1y"], f_dirty["board_busyness_delta_1y"])
     # AAA busyness runs 1.0, 1.2, 1.5, 1.5, 1.5. Fully disclosed, all three deltas exist.
     assert _at(clean_d, "2020-05-04", "AAA") == pytest.approx(0.2)
     assert _at(clean_d, "2021-05-03", "AAA") == pytest.approx(0.3)
@@ -301,7 +301,7 @@ def test_a_delta_across_an_interpolated_leg_is_rejected():
     assert np.isnan(_at(dirty_d, "2022-05-02", "AAA"))
     # the LEVEL keeps the fill either way -- it is the first difference that is unsound, not the
     # value: a carried board average is a defensible estimate of a standing fact
-    assert _at(F_dirty["board_busyness"], "2021-05-03", "AAA") == pytest.approx(1.5)
+    assert _at(f_dirty["board_busyness"], "2021-05-03", "AAA") == pytest.approx(1.5)
 
     print("\n=== SANITY CHECK: the delta provenance gate ===")
     print("  AAA busyness 1.0, 1.2, 1.5, 1.5, 1.5 -> deltas +0.2, +0.3, 0.0 when every leg is")
@@ -316,9 +316,9 @@ def test_a_delta_across_an_interpolated_leg_is_rejected():
 def test_the_auditor_flag_runs_on_the_canonical_firm_and_the_two_tenure_bases_stay_apart():
     """51% of apparent auditor changes are spelling drift, and a censored 12 is not a
     disclosed 12."""
-    F, tally = provision_fields(_archive(), IDX)
-    changed, tenure = F["auditor_changed"], F["auditor_tenure"]
-    censored, big4 = F["auditor_tenure_censored"], F["auditor_is_big4"]
+    f, tally = provision_fields(_archive(), IDX)
+    changed, tenure = f["auditor_changed"], f["auditor_tenure"]
+    censored, big4 = f["auditor_tenure_censored"], f["auditor_is_big4"]
 
     # AAA's raw string changes at EVERY one of its first four proxies
     # (`Ernst & Young LLP` -> `Ernst and Young, LLP` -> `E&Y` -> `KPMG LLP`) but the FIRM
@@ -367,8 +367,8 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     code path produced it, and the two fields that WERE produced sat in neither and silently
     skipped their expiry.
     """
-    F, tally = provision_fields(_archive(), IDX)
-    built = set(F)
+    f, tally = provision_fields(_archive(), IDX)
+    built = set(f)
 
     # 1. no field escapes the declared universe, and every declared name is reachable
     assert built <= ALL_FIELDS, f"undeclared: {sorted(built - ALL_FIELDS)}"
@@ -391,10 +391,10 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     levels = ALL_FIELDS - EVENT_FIELDS
     assert levels == {"board_busyness", "ceo_is_board_chair", "auditor_tenure", "auditor_tenure_censored", "auditor_is_big4"}, sorted(levels)
     # `ceo_is_board_chair` is X05's left leg, shipped as a plain level now the product is gone
-    assert "ceo_is_board_chair" in F
+    assert "ceo_is_board_chair" in f
     late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
-    assert float(F["ceo_is_board_chair"].loc[late, "AAA"]) == 1.0, "a level was expired"
-    assert np.isnan(float(F["ceo_became_board_chair"].loc[late, "AAA"])), "an event survived"
+    assert float(f["ceo_is_board_chair"].loc[late, "AAA"]) == 1.0, "a level was expired"
+    assert np.isnan(float(f["ceo_became_board_chair"].loc[late, "AAA"])), "an event survived"
 
     # 4. NOTHING here gets a peer leg -- measured, not assumed (see PEER_RELATIVE_FIELDS)
     assert PEER_RELATIVE_FIELDS == frozenset()
@@ -439,10 +439,10 @@ def test_the_real_data_readout():
 
     imp, _ = impute_def14a(proxy)
     idx = pd.bdate_range("2011-01-03", "2026-09-04")
-    F, tally = provision_fields(imp, idx)
+    f, tally = provision_fields(imp, idx)
 
     events = {f: tally.get(f"events: {f}", 0) for f in TRANSITION_FLAGS}
-    busy = F["board_busyness"].to_numpy(dtype="float64")
+    busy = f["board_busyness"].to_numpy(dtype="float64")
     busy = busy[np.isfinite(busy)]
 
     # 1. the board average sits in the range the literature reports for an S&P 500 board
@@ -452,7 +452,7 @@ def test_the_real_data_readout():
     fired = {f: n for f, n in events.items() if n > 0}
     assert len(fired) >= 10, f"only {len(fired)} of 13 flags ever fire: {events}"
     for flag, n in events.items():
-        assert (flag in F) == (n > 0), f"{flag}: {n} events but exported={flag in F}"
+        assert (flag in f) == (n > 0), f"{flag}: {n} events but exported={flag in f}"
     # 3. Coverage. The plan's floor is ≥480 tickers, and it applies to every field whose source
     #    column is well filled. Four are gated on a THIN source and cannot reach it -- the floor
     #    for those is the source's own coverage, pinned here so a regression is still visible:
@@ -481,12 +481,12 @@ def test_the_real_data_readout():
         "board_busyness_delta_1y": 410,
         "board_busyness": 470,
     }
-    for name, frame in F.items():
+    for name, frame in f.items():
         n = int(frame.notna().any().sum())
         assert n >= thin_floor.get(name, 480), f"{name} covers only {n} tickers"
 
     print("\n=== SANITY CHECK: phase 5 on the live archive ===")
-    print(f"  {len(F)} fields over {imp['ticker'].nunique()} tickers, {len(imp):,} proxies.")
+    print(f"  {len(f)} fields over {imp['ticker'].nunique()} tickers, {len(imp):,} proxies.")
     print("  transition events over the whole history (filing grain):")
     for f in sorted(events, key=lambda k: -events[k]):
         mark = "" if events[f] else "   <- 0 events, NOT exported (constant column)"
@@ -502,9 +502,9 @@ def test_the_real_data_readout():
         f"{tally['auditor: tenure on the CENSORED archive basis']:,} censored."
     )
     print("  coverage (tickers), lowest first:")
-    cov = sorted(((int(f.notna().any().sum()), n) for n, f in F.items()))
+    cov = sorted(((int(f.notna().any().sum()), n) for n, f in f.items()))
     for n, name in cov[:5]:
         print(f"    {name:<34}{n:>6}{'   <- thin source, floor is its own coverage' if name in thin_floor else ''}")
-    print(f"    ...{len(F) - 5} more, all >= {cov[5][0]}")
+    print(f"    ...{len(f) - 5} more, all >= {cov[5][0]}")
     print("  CONCLUSION: several flags are rare BY CONSTRUCTION, which is why the components")
     print("  ship separately from the counts; the ones with no events at all are dropped.")

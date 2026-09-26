@@ -133,7 +133,7 @@ def _expected_whole(group: pd.DataFrame) -> set[int]:
     """
     deduped = _one_row_per_quarter(group)
     ordinals = quarter_ordinal(deduped["calendardate"])
-    usable = {int(q) for q, ok in zip(ordinals, deduped[FIELD].notna()) if pd.notna(q) and ok}
+    usable = {int(q) for q, ok in zip(ordinals, deduped[FIELD].notna(), strict=False) if pd.notna(q) and ok}
     return {q for q in usable if {q - 3, q - 2, q - 1, q} <= usable}
 
 

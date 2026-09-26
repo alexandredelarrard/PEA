@@ -382,7 +382,7 @@ def test_the_mask_lands_before_ranking_so_other_names_ranks_are_unaffected():
 # --------------------------------------------------------------------------- #
 # incremental safety                                                           #
 # --------------------------------------------------------------------------- #
-def test_an_incremental_window_masks_the_same_trading_DAYS_not_the_same_positions():
+def test_an_incremental_window_masks_the_same_trading_days_not_the_same_positions():
     """`mask_seam_windows` is positional, so a trimmed window shifts every index position --
     the property that has to hold is that the same DATES come out masked."""
     frames = _frames()

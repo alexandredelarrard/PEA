@@ -44,7 +44,7 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
     n = len(w)
     sign = np.sign(w)
     sp = sign * p  # signed price: v_i = sp_i · k_i
-    G = float(np.abs(d).sum())  # target gross $
+    target_gross = float(np.abs(d).sum())
     kmax = np.ceil(share_cap_mult * np.abs(d) / p) + 2.0
     # vars: k_0..k_{n-1} (share magnitude ≥0) then t_0..t_{n-1} (L1 aux ≥0). Only SHORT k's are
     # integer when long_fractional (fractional longs allowed, fractional shorts not); else all k integer.
@@ -54,10 +54,10 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
     bounds = Bounds(np.concatenate([np.zeros(n), np.zeros(n)]), np.concatenate([kmax, np.full(n, np.inf)]))
 
     rows, lbs, ubs = [], [], []
-    I = sparse.identity(n, format="csr")
-    Ksp = sparse.diags(sp)  # k -> v (signed value)
+    identity = sparse.identity(n, format="csr")
+    signed_value_map = sparse.diags(sp)  # k -> v (signed value)
     # tracking:  sp·k − t ≤ d   and   −sp·k − t ≤ −d   (=> t ≥ |v − d|)
-    rows += [sparse.hstack([Ksp, -I]), sparse.hstack([-Ksp, -I])]
+    rows += [sparse.hstack([signed_value_map, -identity]), sparse.hstack([-signed_value_map, -identity])]
     lbs += [np.full(n, -np.inf), np.full(n, -np.inf)]
     ubs += [d, -d]
     zt = sparse.csr_matrix((1, n))
@@ -72,8 +72,8 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
     lbs.append(-beta_tol * capital)
     ubs.append(beta_tol * capital)
     rows.append(row_k(p))
-    lbs.append((1 - gross_tol) * G)
-    ubs.append((1 + gross_tol) * G)
+    lbs.append((1 - gross_tol) * target_gross)
+    ubs.append((1 + gross_tol) * target_gross)
     for g in groups:  # per-sector dollar neutrality
         m = np.zeros(n)
         m[g] = 1.0
@@ -81,14 +81,14 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
         lbs.append(-sector_tol * capital)
         ubs.append(sector_tol * capital)
 
-    A = sparse.vstack(rows, format="csr")
+    constraint_matrix = sparse.vstack(rows, format="csr")
     lb = np.concatenate([np.atleast_1d(x) for x in lbs])
     ub = np.concatenate([np.atleast_1d(x) for x in ubs])
     res = milp(
         c=c,
         integrality=integrality,
         bounds=bounds,
-        constraints=LinearConstraint(A, lb, ub),
+        constraints=LinearConstraint(constraint_matrix, lb, ub),
         options={"time_limit": float(time_limit), "mip_rel_gap": 1e-3},
     )
     if not res.success or res.x is None:

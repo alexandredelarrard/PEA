@@ -87,7 +87,7 @@ def as_ts(values: Any) -> Any:
         return pd.to_datetime(values, errors="coerce").astype("datetime64[ns]")
     if isinstance(values, pd.Index):
         return pd.DatetimeIndex(pd.to_datetime(values, errors="coerce")).as_unit("ns")
-    if isinstance(values, (list, tuple)):
+    if isinstance(values, list | tuple):
         return [as_ts(v) for v in values]
     try:
         stamp = pd.Timestamp(values)

@@ -14,15 +14,15 @@ import pandas as pd
 from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
 
 
-def _synth(years=6, N=12, seed=0, season_start=120, season_len=40, boost=0.004):
+def _synth(years=6, n=12, seed=0, season_start=120, season_len=40, boost=0.004):
     """~`years` of business days. Ticker 'SEAS' gets an extra positive daily drift
     during a fixed calendar window [season_start, season_start+season_len) every
     year; everyone else is plain noise."""
-    T = years * 252
-    dates = pd.bdate_range("2016-01-04", periods=T)
-    tickers = [f"S{i:02d}" for i in range(N - 1)] + ["SEAS"]
+    t = years * 252
+    dates = pd.bdate_range("2016-01-04", periods=t)
+    tickers = [f"S{i:02d}" for i in range(n - 1)] + ["SEAS"]
     rng = np.random.default_rng(seed)
-    ret = pd.DataFrame(rng.normal(0, 0.01, (T, N)), index=dates, columns=tickers)
+    ret = pd.DataFrame(rng.normal(0, 0.01, (t, n)), index=dates, columns=tickers)
     doy = dates.dayofyear.to_numpy()
     in_season = (doy >= season_start) & (doy < season_start + season_len)
     ret.loc[in_season, "SEAS"] += boost  # repeating seasonal drift

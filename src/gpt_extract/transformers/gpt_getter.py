@@ -210,7 +210,7 @@ class LLMExtractor(GptExtracter):
             key = group_key(result.task) if group_key else "_all"
             groups.setdefault(key, []).append(result)
 
-        for key, group in groups.items():
+        for _key, group in groups.items():
             frames: dict[Table, list[pd.DataFrame]] = {}
             for result in group:
                 if not result.ok:

@@ -38,9 +38,9 @@ def _panel(n_days: int = 90, n_tickers: int = 40, n_feats: int = 5, seed: int = 
     feats = [f"f_feat{j}_xs" for j in range(n_feats)]
     frames = []
     for d in dates:
-        X = rng.normal(size=(n_tickers, n_feats))
-        sig = X[:, 0] * 0.7 + X[:, 1] * 0.3 - X[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
-        block = pd.DataFrame(X, columns=feats)
+        x = rng.normal(size=(n_tickers, n_feats))
+        sig = x[:, 0] * 0.7 + x[:, 1] * 0.3 - x[:, 2] * 0.2 + rng.normal(scale=0.5, size=n_tickers)
+        block = pd.DataFrame(x, columns=feats)
         block.insert(0, "y", sig.argsort().argsort() / (n_tickers - 1))
         block.insert(0, "ticker", [f"T{i:03d}" for i in range(n_tickers)])
         block.insert(0, "date", d)

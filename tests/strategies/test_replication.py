@@ -16,7 +16,7 @@ def _panel(dates, per_ticker: dict) -> pd.DataFrame:
     """Build a daily (ticker, as_of) panel from {ticker: (shares_list, net_list, init_list)}."""
     rows = []
     for tk, (shares, net, init) in per_ticker.items():
-        for d, s, n, i in zip(dates, shares, net, init):
+        for d, s, n, i in zip(dates, shares, net, init, strict=False):
             rows.append(
                 {
                     "ticker": tk,
@@ -30,7 +30,7 @@ def _panel(dates, per_ticker: dict) -> pd.DataFrame:
 
 
 def _prices(dates, per_ticker: dict) -> pd.DataFrame:
-    rows = [{"date": d, "ticker": tk, "close": float(p)} for tk, px in per_ticker.items() for d, p in zip(dates, px)]
+    rows = [{"date": d, "ticker": tk, "close": float(p)} for tk, px in per_ticker.items() for d, p in zip(dates, px, strict=False)]
     return pd.DataFrame(rows)
 
 

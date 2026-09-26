@@ -404,10 +404,10 @@ def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame, t
             "person": exec_comp["name"].astype(object).map(person_key),
         }
     ).dropna()
-    present = set(zip(neos["accession_number"], neos["person"]))
+    present = set(zip(neos["accession_number"], neos["person"], strict=False))
     have_rows = set(neos["accession_number"])
-    hit = [(a, c) in present for a, c in zip(ceo["accession_number"], ceo["ceo"])]
-    missed = [a for a, h in zip(ceo["accession_number"], hit) if not h]
+    hit = [(a, c) in present for a, c in zip(ceo["accession_number"], ceo["ceo"], strict=False)]
+    missed = [a for a, h in zip(ceo["accession_number"], hit, strict=False) if not h]
     # ⚠ THE TWO MISS KINDS ARE DIFFERENT FAULTS AND ARE COUNTED SEPARATELY. Measured
     # 2026-09-08: of 1,166 misses, **1,004 (86%) are filings with NO NEO rows at all** -- an
     # extraction-COVERAGE gap, nothing to match against -- and only 162 are filings whose SCT

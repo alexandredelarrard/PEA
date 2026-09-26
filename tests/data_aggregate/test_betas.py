@@ -37,10 +37,10 @@ from src.data_aggregate.utils.target.betas import (
 # --------------------------------------------------------------------------- #
 def test_ridge_recovers_known_betas(synthetic_factor_model):
     y, shared, sector, true_betas = synthetic_factor_model
-    X = pd.concat([shared, sector.rename("sector")], axis=1)
+    x = pd.concat([shared, sector.rename("sector")], axis=1)
 
     # near-OLS (tiny ridge) + long window => estimator should recover truth.
-    out = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=0.001, step=1)
+    out = estimate_betas_for_stock(y, x, window=250, min_obs=200, ridge_alpha=0.001, step=1)
     last = out.dropna().iloc[-1]
 
     recovered = {
@@ -95,18 +95,18 @@ def test_ridge_more_stable_than_ols_under_collinearity():
 def test_betas_have_no_lookahead(synthetic_factor_model):
     """Betas dated <= t must not depend on any observation after t."""
     y, shared, sector, _ = synthetic_factor_model
-    X = pd.concat([shared, sector.rename("sector")], axis=1)
+    x = pd.concat([shared, sector.rename("sector")], axis=1)
     cutoff = y.index[300]
 
-    base = estimate_betas_for_stock(y, X, window=120, min_obs=60, step=5)
+    base = estimate_betas_for_stock(y, x, window=120, min_obs=60, step=5)
 
     # Corrupt everything strictly AFTER the cutoff and recompute.
     y2 = y.copy()
     y2.loc[y2.index > cutoff] = y2.loc[y2.index > cutoff] * 5.0 + 1.0
-    X2 = X.copy()
-    X2.loc[X2.index > cutoff] += 3.0
+    x2 = x.copy()
+    x2.loc[x2.index > cutoff] += 3.0
 
-    corrupted = estimate_betas_for_stock(y2, X2, window=120, min_obs=60, step=5)
+    corrupted = estimate_betas_for_stock(y2, x2, window=120, min_obs=60, step=5)
 
     a = base.loc[base.index <= cutoff]
     b = corrupted.loc[corrupted.index <= cutoff]
@@ -129,9 +129,9 @@ def test_sparse_sector_does_not_truncate_history(synthetic_factor_model):
 
     sparse = sector.copy()
     sparse.iloc[: int(0.6 * len(sparse))] = np.nan  # first 60% missing
-    X = pd.concat([shared, sparse.rename("sector")], axis=1)
+    x = pd.concat([shared, sparse.rename("sector")], axis=1)
 
-    out = estimate_betas_for_stock(y, X, window=63, min_obs=40, step=5)
+    out = estimate_betas_for_stock(y, x, window=63, min_obs=40, step=5)
     valid = out["beta_sector"].ne(0.0) & out["beta_sector"].notna()
 
     # ~40% of dates have a sector value; after warmup we expect a healthy chunk.
@@ -160,12 +160,12 @@ def test_market_beta_shrinks_toward_one_not_zero():
     dates = pd.bdate_range("2019-01-01", periods=n)
     market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
     style = pd.Series(rng.normal(0, 0.008, n), index=dates, name="style")
-    X = pd.concat([market, style], axis=1)
+    x = pd.concat([market, style], axis=1)
     y = (1.6 * market + 0.9 * style + pd.Series(rng.normal(0, 0.004, n), index=dates)).rename("STOCK")
 
-    light = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=0.001, step=1).dropna().iloc[-1]
-    heavy = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=50.0, step=1).dropna().iloc[-1]
-    zero_prior = estimate_betas_for_stock(y, X, window=250, min_obs=200, ridge_alpha=50.0, step=1, market_prior=0.0).dropna().iloc[-1]
+    light = estimate_betas_for_stock(y, x, window=250, min_obs=200, ridge_alpha=0.001, step=1).dropna().iloc[-1]
+    heavy = estimate_betas_for_stock(y, x, window=250, min_obs=200, ridge_alpha=50.0, step=1).dropna().iloc[-1]
+    zero_prior = estimate_betas_for_stock(y, x, window=250, min_obs=200, ridge_alpha=50.0, step=1, market_prior=0.0).dropna().iloc[-1]
 
     assert abs(heavy["beta_market"] - 1.0) < 0.05, "market must shrink toward 1.0"
     assert abs(heavy["beta_style"]) < 0.05, "style must shrink toward 0.0"
@@ -193,7 +193,7 @@ def test_ridge_shrinkage_ratio_is_constant_across_sample_sizes():
     n = 400
     dates = pd.bdate_range("2019-01-01", periods=n)
     market = pd.Series(rng.normal(0, 0.010, n), index=dates, name="market")
-    X = market.to_frame()
+    x = market.to_frame()
     y = (1.5 * market + pd.Series(rng.normal(0, 0.003, n), index=dates)).rename("STOCK")
 
     # a single orthogonal regressor is shrunk toward the prior by exactly
@@ -201,8 +201,8 @@ def test_ridge_shrinkage_ratio_is_constant_across_sample_sizes():
     alpha = 0.25
     ratios = {}
     for n_win in (40, 63, 252):
-        b = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win, ridge_alpha=alpha, step=1)
-        raw = estimate_betas_for_stock(y, X, window=n_win, min_obs=n_win, ridge_alpha=0.0, step=1)
+        b = estimate_betas_for_stock(y, x, window=n_win, min_obs=n_win, ridge_alpha=alpha, step=1)
+        raw = estimate_betas_for_stock(y, x, window=n_win, min_obs=n_win, ridge_alpha=0.0, step=1)
         j = pd.concat([b["beta_market"].rename("s"), raw["beta_market"].rename("r")], axis=1).dropna()
         # (shrunk - prior) / (unshrunk - prior)
         ratios[n_win] = float(((j["s"] - 1.0) / (j["r"] - 1.0)).mean())

@@ -33,6 +33,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_SCT_PART_COLS,

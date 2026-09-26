@@ -136,7 +136,7 @@ def test_the_same_ceo_keeps_the_value_however_extreme():
     assert np.allclose(g.loc[COVERED, "BAD"], 28_095_226.0), "the guard over-fired"
 
 
-def test_a_zero_prior_year_is_NaN_not_infinity():
+def test_a_zero_prior_year_is_nan_not_infinity():
     """A prior year filed as $0 makes `pct_change` infinite, and an infinity is not a growth
     rate. Six live filings have this shape -- AIZ 2010, COHR 2014, F 2012 (Alan Mulally,
     $0 -> $15,499,993), FAST 2007, TTWO 2013 and VRTX 2008 -- and reproducing

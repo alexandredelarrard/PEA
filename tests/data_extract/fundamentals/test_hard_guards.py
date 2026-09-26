@@ -163,7 +163,7 @@ def test_a_shell_footing_to_exactly_zero_assets_survives() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_a_negative_totalAssets_is_nulled_and_the_value_is_recorded() -> None:
+def test_a_negative_totalassets_is_nulled_and_the_value_is_recorded() -> None:
     """The rejected number goes onto the reason-code row as `rejected_value`.
 
     Not into a log line. A DERIVED cell -- a TTM, a `derived_identity` total -- has no fact row

@@ -127,15 +127,15 @@ def _dividend_fields(
     else:
         total = div_paid
 
-    F: dict[str, pd.DataFrame] = {}
+    features: dict[str, pd.DataFrame] = {}
 
     # ---- dividend yield (reconciled): precise per-share/price where paid, source-B
     # fill for names the ex-date history misses, real 0 for true non-payers ----
     yield_a = sanitize(ttm_ps.where(ttm_ps > 0) / close_pos)
     if not mcap.empty and not total.empty:
-        F["dividend_yield"] = yield_a.combine_first(sanitize(total / mcap)).fillna(0.0).where(listed)
+        features["dividend_yield"] = yield_a.combine_first(sanitize(total / mcap)).fillna(0.0).where(listed)
     else:
-        F["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0).where(listed)
+        features["dividend_yield"] = sanitize(ttm_ps / close_pos).fillna(0.0).where(listed)
 
     # ---- growth (1y + 5y CAGR), per-share source A primary, source-B total fills ----
     g1 = sanitize(ttm_ps / ttm_ps.shift(_YOY).where(lambda x: x > 0)) - 1.0
@@ -143,8 +143,8 @@ def _dividend_fields(
     if not div_paid.empty:
         g1 = g1.combine_first(sanitize(div_paid / div_paid.shift(_YOY).where(lambda x: x > 0)) - 1.0)
         g5 = g5.combine_first(_cagr(div_paid, _FIVE_Y, 5.0))
-    F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
-    F["dividend_growth_5y"] = g5
+    features["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
+    features["dividend_growth_5y"] = g5
 
     # ---- payer flag: paid in the trailing year per EITHER source ----
     # A comparison can never be NaN, so this flag is 0/1 on EVERY cell of the grid unless
@@ -153,22 +153,22 @@ def _dividend_fields(
     payer = ttm_ps > 0
     if not div_paid.empty:
         payer = payer | (div_paid > 0)
-    F["dividend_payer"] = payer.astype("float64").where(listed)
+    features["dividend_payer"] = payer.astype("float64").where(listed)
 
     # ---- payout ratio + FCF coverage (dividend safety) off the reconciled total ----
     if not total.empty and not net_income.empty:
-        F["dividend_payout_ratio"] = sanitize(total / net_income.where(net_income > 0)).clip(lower=0.0, upper=3.0)
+        features["dividend_payout_ratio"] = sanitize(total / net_income.where(net_income > 0)).clip(lower=0.0, upper=3.0)
     if not total.empty and not fcf.empty:
         # FCF / dividends: >1 => free cash flow covers the payout (safe); <1 or <0 => not.
-        F["dividend_coverage"] = sanitize(fcf / total.where(total > 0))
+        features["dividend_coverage"] = sanitize(fcf / total.where(total > 0))
 
     # ---- shareholder yield = dividend yield + buyback yield (- share issuance) ----
     if not shares.empty and shares.notna().any().any():
         buyback_yield = -(shares / shares.shift(_YOY) - 1.0)  # >0 => net buyback
         # `fill_value=0.0` treats a missing leg as zero, so this inherits whatever scope
         # `dividend_yield` has; `.where(listed)` is re-applied rather than assumed.
-        F["shareholder_yield"] = F["dividend_yield"].add(buyback_yield, fill_value=0.0).replace([np.inf, -np.inf], np.nan).where(listed)
-    return F
+        features["shareholder_yield"] = features["dividend_yield"].add(buyback_yield, fill_value=0.0).replace([np.inf, -np.inf], np.nan).where(listed)
+    return features
 
 
 def build_dividend_feature_panel(

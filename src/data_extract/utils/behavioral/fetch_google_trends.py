@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import UTC, datetime
 
@@ -91,7 +92,7 @@ GOOGLE_TRENDS_EXPLORE_URL = "https://trends.google.com/trends/api/explore"
 GOOGLE_TRENDS_MULTILINE_URL = "https://trends.google.com/trends/api/widgetdata/multiline"
 
 
-class TrendsRateLimited(RuntimeError):
+class TrendsRateLimitedError(RuntimeError):
     """Raised on an HTTP 429 from Google Trends (message carries '429' so
     call_with_retries treats it as rate-limited and backs off)."""
 
@@ -117,7 +118,7 @@ class _TrendsClient:
     Implements the two-step public flow: `explore` returns widget tokens, then
     `widgetdata/multiline` returns the interest-over-time series for the TIMESERIES
     widget's token. A primed NID cookie is required, so the home URL is fetched once
-    per session. Raises `TrendsRateLimited` on 429 so callers can back off.
+    per session. Raises `TrendsRateLimitedError` on 429 so callers can back off.
     """
 
     def __init__(self, verify: bool = True, impersonate: str = "chrome124", timeout: int = 30, proxies: list[str] | None = None) -> None:
@@ -167,7 +168,7 @@ class _TrendsClient:
     def _get(self, url: str, params: dict):
         resp = self._session.get(url, params=params)  # type: ignore
         if resp.status_code == 429:
-            raise TrendsRateLimited(f"429 Too Many Requests from {url}")
+            raise TrendsRateLimitedError(f"429 Too Many Requests from {url}")
         if resp.status_code != 200:
             raise TrendsError(f"HTTP {resp.status_code} from {url}")
         return resp
@@ -260,7 +261,7 @@ def _stitch_chunks(chunks: list[pd.DataFrame]) -> pd.DataFrame:
         scale[i] = scale[i + 1]  # no usable overlap -> carry level
     merged: dict[pd.Timestamp, float] = {}
     for i, c in enumerate(chunks):  # oldest->newest: newer overwrites overlaps
-        for d, v in zip(c["date"], c["search_interest"]):
+        for d, v in zip(c["date"], c["search_interest"], strict=False):
             merged[d] = v * scale[i]
     out = pd.DataFrame(sorted(merged.items()), columns=["date", "search_interest"])
     mx = out["search_interest"].max()
@@ -422,7 +423,7 @@ def fetch_google_trends(
                 timeframe = f"{win_start.date()} {today.date()}"
                 logger.info(f"Append recent weeks for {tkr} ({timeframe})")
                 recent = call_with_retries(
-                    lambda tf=timeframe: client.interest_over_time(keyword, tf),
+                    lambda tf=timeframe, keyword=keyword: client.interest_over_time(keyword, tf),
                     retries=4,
                     base_wait=(15.0 if client.n_proxies else 45.0),
                     on_retry=client.refresh,

@@ -6,7 +6,7 @@ test_stitch_recovers_underlying_shape     — overlapping renormalized chunks ->
 test_stitch_handles_gap_without_overlap   — non-overlapping chunks still concatenate (carry level)
 test_scale_to_reference_aligns_on_overlap — appended window is levelled onto stored history
 test_client_parses_timeseries_and_drops_partial — explore->widgetdata parsing, isPartial dropped
-test_client_raises_on_429                 — HTTP 429 -> TrendsRateLimited (call_with_retries backs off)
+test_client_raises_on_429                 — HTTP 429 -> TrendsRateLimitedError (call_with_retries backs off)
 """
 
 from __future__ import annotations
@@ -208,7 +208,7 @@ def test_call_with_retries_rotates_ip_on_ratelimit():
     def fn():
         state["n"] += 1
         if state["n"] <= 2:  # blocked twice, then succeeds
-            raise gt.TrendsRateLimited("429 Too Many Requests")
+            raise gt.TrendsRateLimitedError("429 Too Many Requests")
         return "OK"
 
     out = call_with_retries(
@@ -245,9 +245,9 @@ def test_client_raises_on_429(monkeypatch):
     monkeypatch.setattr(gt, "_cffi_requests", fake_req)
 
     client = gt._TrendsClient(verify=False)
-    with pytest.raises(gt.TrendsRateLimited) as ei:
+    with pytest.raises(gt.TrendsRateLimitedError) as ei:
         client.interest_over_time("Apple Inc", "today 5-y")
     assert is_rate_limited(ei.value), "429 not recognised as rate-limit by call_with_retries"
 
     print("\n=== SANITY CHECK: Trends 429 handling ===")
-    print("  HTTP 429 -> TrendsRateLimited, recognised by call_with_retries (backs off). Validated.")
+    print("  HTTP 429 -> TrendsRateLimitedError, recognised by call_with_retries (backs off). Validated.")

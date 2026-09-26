@@ -34,7 +34,7 @@ def test_elasticnet_learns_at_sane_alpha_and_warns_when_degenerate(caplog):
 
     # --- sane alpha: learns real coefficients, non-constant, correctly signed ---
     m = baselines.train_elasticnet(panel, feats, "y", alpha=1e-3, l1_ratio=0.3)
-    coef = dict(zip(feats, m.coef))
+    coef = dict(zip(feats, m.coef, strict=False))
     assert np.count_nonzero(np.abs(m.coef) > 0) >= 2, f"too few live coefs: {coef}"
     assert coef["f1"] > 0 and coef["f2"] < 0, f"signs wrong: {coef}"  # recovers 0.6, -0.4
     preds = m.predict(panel[feats].to_numpy())

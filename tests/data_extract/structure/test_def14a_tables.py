@@ -334,7 +334,7 @@ def test_a_402k_table_without_a_stock_award_column_is_still_classified(ticker):
     print(f"\n  {ticker}: {' | '.join(_REAL_402K_HEADERS[ticker])[:78]} -> {matched}")
 
 
-def test_a_cash_only_board_is_classified_on_its_ROWS_not_its_columns():
+def test_a_cash_only_board_is_classified_on_its_rows_not_its_columns():
     """Berkshire pays its directors cash and nothing else, so its 402(k) table is two columns:
     `Fees Earned or Paid in Cash | Total`. No column vocabulary can rescue that -- there is no
     non-cash column in the filing to match on -- so the rule falls back to asking whether the
@@ -345,7 +345,7 @@ def test_a_cash_only_board_is_classified_on_its_ROWS_not_its_columns():
     print(f"\n  10 named directors, cash + total only -> {matched}")
 
 
-def test_a_director_FEE_SCHEDULE_is_still_rejected():
+def test_a_director_fee_schedule_is_still_rejected():
     """The table the relaxation could plausibly have swept up, and the reason the fallback is
     a ROW test rather than a row COUNT. A fee schedule carries the same fee vocabulary in its
     header and can carry a Total, so no column test separates it -- but its rows are ROLES."""

@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_store.schema import Tables
 
@@ -177,7 +180,7 @@ def check_encoding(store, results: list) -> None:
     would have aborted the insert, so finding zero is the only possible outcome for that one."""
     blobs = store.load(Tables.def14a_llm, columns=["ticker", "as_of", "def14a_json"], limit=200)
     n_nul = int(blobs["def14a_json"].map(lambda v: isinstance(v, str) and "\x00" in v).sum())
-    hits = {m: int(blobs["def14a_json"].map(lambda v: isinstance(v, str) and m in v).sum()) for m in MOJIBAKE}
+    hits = {m: int(blobs["def14a_json"].map(lambda v, marker=m: isinstance(v, str) and marker in v).sum()) for m in MOJIBAKE}
     _row(results, "def14a_json has no NUL", _PASS if n_nul == 0 else _FAIL, f"{n_nul} of {len(blobs)} sampled blobs")
     bad = {k: v for k, v in hits.items() if v}
     _row(results, "def14a_json has no cp1252 mojibake", _PASS if not bad else _FAIL, f"{bad or 'none'} over {len(blobs)} sampled blobs")

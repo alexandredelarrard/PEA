@@ -75,7 +75,7 @@ _COLS = [
 _VALUE_BY_TYPE = {"common": "value_usd", "call": "call_value", "put": "put_value", "debt": "debt_value", "other": "other_value"}
 
 
-class SuperinvestorRosterEmpty(RuntimeError):
+class SuperinvestorRosterEmptyError(RuntimeError):
     """`superinvestor_roster` holds no CIK. The roster IS this walk's entire input, so an empty
     one must stop the run rather than let it report success over zero managers -- the failure
     mode a warning would produce is a table that silently stops growing."""
@@ -149,7 +149,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
 
     ciks = sorted(roster_cik_union(context))
     if not ciks:
-        raise SuperinvestorRosterEmpty(
+        raise SuperinvestorRosterEmptyError(
             "superinvestor_roster is empty -- run `data_extract superinvestors --seed` first. "
             "The roster is this walk's entire scope; there is nothing to fetch without it."
         )

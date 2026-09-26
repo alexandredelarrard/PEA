@@ -168,7 +168,7 @@ def test_a_negative_total_is_dropped_but_its_negative_components_are_kept():
 # --------------------------------------------------------------------------------------------
 
 
-def test_a_pre_2006_total_that_excludes_equity_is_KEPT_not_replaced():
+def test_a_pre_2006_total_that_excludes_equity_is_kept_not_replaced():
     """⚠ THE CASE THAT OVERTURNED THE PLAN'S DIRECTIONAL RULE. GE's 2001 proxy reports John F.
     Welch's FY2000 total as $16,754,019 = salary $4,000,000 + bonus $12,700,000 + other $54,019.
     That is exactly what the PRE-2006 Summary Compensation Table's Total column was: equity
@@ -200,7 +200,7 @@ def test_a_pre_2006_total_that_excludes_equity_is_KEPT_not_replaced():
     assert tally["repaired_total_from_components"] == 0
 
 
-def test_a_zero_total_is_repaired_only_when_the_components_nearly_MATCH_the_neighbours():
+def test_a_zero_total_is_repaired_only_when_the_components_nearly_match_the_neighbours():
     """FAST 2000 is the single repair in the whole table. Robert Kierlin famously took ~$120k at
     Fastenal, so Sigma(parts) = $117,000 lands at 0.96x his $122,500 reference and the $0 is
     recoverable."""
@@ -364,7 +364,7 @@ def test_a_sub_one_pay_ratio_survives_when_its_own_legs_agree():
         ("MDLZ", "2018-04-02", 42_442_924.0, 42_893.0, 403.0),
     ],
 )
-def test_an_unreconciled_ratio_over_a_REAL_total_is_reported_not_rewritten(ticker, as_of, total, median, ratio):
+def test_an_unreconciled_ratio_over_a_real_total_is_reported_not_rewritten(ticker, as_of, total, median, ratio):
     """⚠ THE PLAN'S RULE WOULD HAVE CORRUPTED THIS COLUMN. It asked that any disagreement beyond
     25% be resolved by preferring `ceo_total_comp / median_employee_pay`. These three rows carry
     the same arithmetic symptom and three incompatible causes, and 87 of the 123 disagreements

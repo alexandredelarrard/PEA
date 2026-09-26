@@ -26,20 +26,20 @@ class _BT:
         self.signal, self.stock_ret, self.spy_ret = signal, stock_ret, spy_ret
 
 
-def _gappy_bt(T=400, N=40, seed=0, miss_prob=0.03):
-    dates = pd.bdate_range("2023-01-02", periods=T)
-    tickers = [f"S{i:02d}" for i in range(N)]
+def _gappy_bt(t=400, n=40, seed=0, miss_prob=0.03):
+    dates = pd.bdate_range("2023-01-02", periods=t)
+    tickers = [f"S{i:02d}" for i in range(n)]
     rng = np.random.default_rng(seed)
     # persistent cross-sectional signal that genuinely predicts the drift
-    alpha = rng.normal(0, 1, N)
-    daily = alpha[None, :] * 0.0015 + rng.normal(0, 0.02, (T, N))
+    alpha = rng.normal(0, 1, n)
+    daily = alpha[None, :] * 0.0015 + rng.normal(0, 0.02, (t, n))
     stock = pd.DataFrame(daily, index=dates, columns=tickers)
     stock.iloc[0] = np.nan  # pct_change leading NaN
     # realistic scattered missingness (suspensions / missing closes): ~3% of cells
-    miss = rng.random((T, N)) < miss_prob
+    miss = rng.random((t, n)) < miss_prob
     stock = stock.mask(miss)
-    spy = pd.Series(rng.normal(0.0003, 0.01, T), index=dates)
-    signal = pd.DataFrame(np.tile(alpha, (T, 1)), index=dates, columns=tickers)
+    spy = pd.Series(rng.normal(0.0003, 0.01, t), index=dates)
+    signal = pd.DataFrame(np.tile(alpha, (t, 1)), index=dates, columns=tickers)
     return _BT(signal, stock, spy), dates
 
 

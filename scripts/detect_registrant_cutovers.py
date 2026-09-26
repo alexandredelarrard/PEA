@@ -438,7 +438,7 @@ def all_filings(context, doc: dict) -> list[tuple[str, pd.Timestamp]]:
         except Exception:  # noqa: BLE001 -- one page
             continue
     for block in blocks:
-        for form, date in zip(block.get("form", []), block.get("filingDate", [])):
+        for form, date in zip(block.get("form", []), block.get("filingDate", []), strict=False):
             if date:
                 out.append((str(form), pd.Timestamp(date)))
     return out
@@ -837,13 +837,13 @@ def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
 def collect(conn, registered: set[str]) -> tuple[pd.DataFrame, dict[str, str]]:
     """The candidate table and each candidate's truncation anchor (its first 8-K)."""
     tight, proxy, late = oracle1(conn)
-    anchor = dict(zip(late["ticker"], late["first_8k"])) if not late.empty else {}
+    anchor = dict(zip(late["ticker"], late["first_8k"], strict=False)) if not late.empty else {}
     cand = pd.DataFrame({"ticker": sorted(set(tight.get("ticker", [])) | set(proxy.get("ticker", [])))})
     cand["screen"] = cand["ticker"].map(
         lambda t: "+".join(s for s, df in (("tight", tight), ("proxy", proxy)) if not df.empty and t in set(df["ticker"]))
     )
     cand["first_8k"] = cand["ticker"].map(anchor)
-    cand["lag_y"] = cand["ticker"].map(dict(zip(late["ticker"], late["lag_y"])) if not late.empty else {})
+    cand["lag_y"] = cand["ticker"].map(dict(zip(late["ticker"], late["lag_y"], strict=False)) if not late.empty else {})
     cand["already_registered"] = cand["ticker"].isin(registered)
     return cand, anchor
 
@@ -883,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
         # before `--audit-chains` runs, and the test must not open a second one.
         price_start = dict(conn.execute(text("select ticker, min(date)::date from prices group by 1")).all())
 
-    ciks = dict(zip(roster["ticker"], roster["cik"]))
+    ciks = dict(zip(roster["ticker"], roster["cik"], strict=False))
     # Two columns, not one. `namechange` is every `namechangefrom` in window and is the
     # SUGGESTIVE signal; `shell_name` is the subset whose contraname is a shell by name and is
     # the CONCLUSIVE one -- "CORVETTEPORSCHE CORP" is not a company, it is the Conoco/Phillips

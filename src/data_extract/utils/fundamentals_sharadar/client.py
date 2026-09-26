@@ -102,7 +102,7 @@ def canonical_symbols(tickers: pd.Series) -> pd.Series:
     return tickers.astype(str).str.replace(_SHARE_CLASS_SYMBOL, lambda m: m.group(0).replace(".", "-"), regex=True)
 
 
-class NotEntitled(RuntimeError):
+class NotEntitledError(RuntimeError):
     """HTTP 403 -- the subscription does not cover this ticker/table.
 
     An exception rather than a `None` return because `None` already means "no data / the
@@ -165,7 +165,7 @@ def _page(context: Context, url: str, params: dict) -> str | None:
     if code == 200:
         return resp.text
     if code == 403:
-        raise NotEntitled(str(params.get("ticker") or url))
+        raise NotEntitledError(str(params.get("ticker") or url))
     # Transport error, 5xx, 429, 404 -- worth exactly one retrying call.
     context.log.debug("Sharadar %s -> %s; falling back to the retrying GET", url, code)
     retried = http_get(url, params=params, timeout=_TIMEOUT, retries=3)
@@ -178,7 +178,7 @@ def sharadar_get(
     """`GET {SHARADAR_BASE_URL}/data/{table}` with `filters`, paged, as a DataFrame.
 
     `None` means the request failed; an EMPTY frame means the filters matched no rows.
-    `NotEntitled` is raised on 403.
+    `NotEntitledError` is raised on 403.
 
     The caller MUST pass an explicit `date.gte` for any table with a date column: the API
     defaults `from` to "1 year ago" and `sort` to `date.desc`, so omitting either silently

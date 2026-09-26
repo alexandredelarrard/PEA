@@ -51,33 +51,33 @@ def _synth():
 
 def test_dividend_fields_economics_and_pit():
     dates, tickers, close, div_hist, fund = _synth()
-    F = _dividend_fields(div_hist, close, fund)
+    f = _dividend_fields(div_hist, close, fund)
     for k in ("dividend_yield", "dividend_growth", "dividend_payer", "shareholder_yield"):
-        assert k in F, f"missing {k}"
+        assert k in f, f"missing {k}"
 
     t = dates[-1]
     # non-payer -> 0 yield, flag 0; payer -> positive yield, flag 1
-    assert F["dividend_yield"].loc[t, "N0"] == 0.0
-    assert F["dividend_payer"].loc[t, "N0"] == 0.0
-    assert F["dividend_yield"].loc[t, "P0"] > 0
-    assert F["dividend_payer"].loc[t, "P0"] == 1.0
+    assert f["dividend_yield"].loc[t, "N0"] == 0.0
+    assert f["dividend_payer"].loc[t, "N0"] == 0.0
+    assert f["dividend_yield"].loc[t, "P0"] > 0
+    assert f["dividend_payer"].loc[t, "P0"] == 1.0
     # rising payout -> positive growth for P0, ~0 for a flat payer
-    assert F["dividend_growth"].loc[t, "P0"] > 0.05
-    assert abs(F["dividend_growth"].loc[t, "P1"]) < 0.02
+    assert f["dividend_growth"].loc[t, "P0"] > 0.05
+    assert abs(f["dividend_growth"].loc[t, "P1"]) < 0.02
     # shareholder yield: buyback firm > its dividend yield; issuer < its div yield
-    assert F["shareholder_yield"].loc[t, "P0"] > F["dividend_yield"].loc[t, "P0"]
-    assert F["shareholder_yield"].loc[t, "N0"] < F["dividend_yield"].loc[t, "N0"]
+    assert f["shareholder_yield"].loc[t, "P0"] > f["dividend_yield"].loc[t, "P0"]
+    assert f["shareholder_yield"].loc[t, "N0"] < f["dividend_yield"].loc[t, "N0"]
 
     # point-in-time: perturb everything AFTER t -> value at t unchanged
     div2 = pd.concat([div_hist, pd.DataFrame([{"date": dates[-1], "ticker": "P0", "dividends": 99.0}])], ignore_index=True)
     tm = dates[len(dates) // 2]
-    F2 = _dividend_fields(div2, close, fund)
-    assert np.isclose(F["dividend_yield"].loc[tm, "P0"], F2["dividend_yield"].loc[tm, "P0"])
+    f2 = _dividend_fields(div2, close, fund)
+    assert np.isclose(f["dividend_yield"].loc[tm, "P0"], f2["dividend_yield"].loc[tm, "P0"])
 
     print("\n=== SANITY CHECK: dividend economics + point-in-time ===")
     print(
-        f"  P0 yield={F['dividend_yield'].loc[t, 'P0']:.3f} growth={F['dividend_growth'].loc[t, 'P0']:.2f} "
-        f"shareholder={F['shareholder_yield'].loc[t, 'P0']:.3f} (>div, buyback); "
+        f"  P0 yield={f['dividend_yield'].loc[t, 'P0']:.3f} growth={f['dividend_growth'].loc[t, 'P0']:.2f} "
+        f"shareholder={f['shareholder_yield'].loc[t, 'P0']:.3f} (>div, buyback); "
         f"N0 yield=0, shareholder<0 (issuer). Future dividend didn't change past value. Validated."
     )
 
@@ -106,37 +106,37 @@ def _synth_reconcile():
 
 def test_reconcile_sources_5y_growth_payout_coverage():
     dates, close, div_hist, fund = _synth_reconcile()
-    F = _dividend_fields(div_hist, close, fund)
+    f = _dividend_fields(div_hist, close, fund)
     t = dates[-1]
     for k in ("dividend_growth_5y", "dividend_payout_ratio", "dividend_coverage"):
-        assert k in F, f"missing {k}"
+        assert k in f, f"missing {k}"
 
     # RECONCILIATION: A's per-share (source A) yield agrees with its source-B yield
     # (dividendsPaid/mcap) — same cash two ways.
-    src_b_yield_A = 4.0 * (1.10**5) * 1000.0 / (1000.0 * 100.0)  # dividendsPaid / mcap
-    assert abs(F["dividend_yield"].loc[t, "A"] - src_b_yield_A) < 0.03
+    src_b_yield_a = 4.0 * (1.10**5) * 1000.0 / (1000.0 * 100.0)  # dividendsPaid / mcap
+    assert abs(f["dividend_yield"].loc[t, "A"] - src_b_yield_a) < 0.03
     # RECONCILIATION gap-fill: B_ONLY has NO ex-dates, yield comes from source B = 2000/100000
-    assert abs(F["dividend_yield"].loc[t, "B_ONLY"] - 0.02) < 1e-6
-    assert F["dividend_payer"].loc[t, "B_ONLY"] == 1.0  # counted as a payer via source B
-    assert F["dividend_yield"].loc[t, "N"] == 0.0  # true non-payer -> real 0
+    assert abs(f["dividend_yield"].loc[t, "B_ONLY"] - 0.02) < 1e-6
+    assert f["dividend_payer"].loc[t, "B_ONLY"] == 1.0  # counted as a payer via source B
+    assert f["dividend_yield"].loc[t, "N"] == 0.0  # true non-payer -> real 0
 
     # 5-YEAR GROWTH: A grew per-share ~10%/yr -> 5y CAGR ~= 0.10
-    assert abs(F["dividend_growth_5y"].loc[t, "A"] - 0.10) < 0.02
-    assert pd.isna(F["dividend_growth_5y"].loc[t, "N"])  # non-payer -> undefined
+    assert abs(f["dividend_growth_5y"].loc[t, "A"] - 0.10) < 0.02
+    assert pd.isna(f["dividend_growth_5y"].loc[t, "N"])  # non-payer -> undefined
 
     # PAYOUT + COVERAGE (dividend safety): B_ONLY pays 2000 on 8000 NI (25%), FCF only
     # 1000 -> coverage 0.5 (<1, UNSAFE); A's FCF 12000 comfortably covers -> coverage > 1
-    assert abs(F["dividend_payout_ratio"].loc[t, "B_ONLY"] - 0.25) < 1e-6
-    assert abs(F["dividend_coverage"].loc[t, "B_ONLY"] - 0.5) < 1e-6
-    assert F["dividend_coverage"].loc[t, "A"] > 1.0 > F["dividend_coverage"].loc[t, "B_ONLY"]
+    assert abs(f["dividend_payout_ratio"].loc[t, "B_ONLY"] - 0.25) < 1e-6
+    assert abs(f["dividend_coverage"].loc[t, "B_ONLY"] - 0.5) < 1e-6
+    assert f["dividend_coverage"].loc[t, "A"] > 1.0 > f["dividend_coverage"].loc[t, "B_ONLY"]
 
     print("\n=== SANITY CHECK: dividend source reconciliation + 5y growth + safety ===")
     print(
-        f"  A yield (src A) {F['dividend_yield'].loc[t, 'A']:.4f} ~= dividendsPaid/mcap "
-        f"{src_b_yield_A:.4f} (two sources agree); B_ONLY yield {F['dividend_yield'].loc[t, 'B_ONLY']:.3f} "
-        f"gap-filled from source B; A 5y CAGR {F['dividend_growth_5y'].loc[t, 'A']:.3f}~0.10; "
-        f"B_ONLY payout {F['dividend_payout_ratio'].loc[t, 'B_ONLY']:.2f}, coverage "
-        f"{F['dividend_coverage'].loc[t, 'B_ONLY']:.2f}<1 (unsafe) < A {F['dividend_coverage'].loc[t, 'A']:.2f}. Validated."
+        f"  A yield (src A) {f['dividend_yield'].loc[t, 'A']:.4f} ~= dividendsPaid/mcap "
+        f"{src_b_yield_a:.4f} (two sources agree); B_ONLY yield {f['dividend_yield'].loc[t, 'B_ONLY']:.3f} "
+        f"gap-filled from source B; A 5y CAGR {f['dividend_growth_5y'].loc[t, 'A']:.3f}~0.10; "
+        f"B_ONLY payout {f['dividend_payout_ratio'].loc[t, 'B_ONLY']:.2f}, coverage "
+        f"{f['dividend_coverage'].loc[t, 'B_ONLY']:.2f}<1 (unsafe) < A {f['dividend_coverage'].loc[t, 'A']:.2f}. Validated."
     )
 
 
@@ -160,17 +160,17 @@ def test_zero_fill_is_scoped_to_the_listed_window():
     div_hist = pd.DataFrame([{"date": d, "ticker": "PAYER", "dividends": 0.5} for d in dates[::63]])
     fund = pd.DataFrame([{"ticker": t, "as_of": aso, "sharesOutstanding": 1e9} for aso in dates[::63] for t in ("OLD", "NEW", "PAYER")])
 
-    F = _dividend_fields(div_hist, close, fund)
+    f = _dividend_fields(div_hist, close, fund)
     before, after = dates[10], dates[-1]
     for k in ("dividend_yield", "dividend_payer", "shareholder_yield"):
-        assert pd.isna(F[k].loc[before, "NEW"]), f"{k} fabricated on a pre-listing row"
-        assert pd.notna(F[k].loc[after, "NEW"]), f"{k} lost after listing"
-        assert pd.notna(F[k].loc[before, "OLD"]), f"{k} nulled on a LISTED row"
+        assert pd.isna(f[k].loc[before, "NEW"]), f"{k} fabricated on a pre-listing row"
+        assert pd.notna(f[k].loc[after, "NEW"]), f"{k} lost after listing"
+        assert pd.notna(f[k].loc[before, "OLD"]), f"{k} nulled on a LISTED row"
     # and the post-listing value is the real 0 the design intends, not a NaN
-    assert F["dividend_yield"].loc[after, "NEW"] == 0.0
-    assert F["dividend_payer"].loc[after, "NEW"] == 0.0
-    assert F["dividend_payer"].loc[before, "OLD"] == 0.0
-    assert F["dividend_payer"].loc[after, "PAYER"] == 1.0
+    assert f["dividend_yield"].loc[after, "NEW"] == 0.0
+    assert f["dividend_payer"].loc[after, "NEW"] == 0.0
+    assert f["dividend_payer"].loc[before, "OLD"] == 0.0
+    assert f["dividend_payer"].loc[after, "PAYER"] == 1.0
 
     print("\n=== SANITY CHECK: the zero-fill is scoped to the LISTED window ===")
     print(

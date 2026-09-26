@@ -91,7 +91,7 @@ def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
     if db is None:
         return {}
     out: dict[str, set] = {}
-    for tk, q in zip(db["ticker"], db["quarter"]):
+    for tk, q in zip(db["ticker"], db["quarter"], strict=False):
         out.setdefault(str(tk), set()).add(str(q))
     return out
 

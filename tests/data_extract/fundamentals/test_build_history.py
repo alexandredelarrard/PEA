@@ -307,7 +307,7 @@ def test_every_null_on_a_real_filer_carries_a_reason_code(real_build):
     row in `fundamentals_reason_codes` for its own `(ticker, as_of, field)`."""
     history, codes = real_build.history, real_build.reason_codes
     value_columns = [c for c in history.columns if c not in (*HISTORY_KEYS, "regime", *HISTORY_PROVENANCE)]
-    explained = set(zip(codes["as_of"], codes["field"]))
+    explained = set(zip(codes["as_of"], codes["field"], strict=False))
     unexplained = [
         (row.as_of, column)
         for row in history.itertuples()
@@ -430,7 +430,7 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
     """
     from src.data_extract.utils.fundamentals.build_history import _split_by_field, _total_liabilities_identity
 
-    _INCL = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+    _incl = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
 
     def equity_row(concept: str) -> pd.DataFrame:
         return pd.DataFrame(
@@ -480,7 +480,7 @@ def test_the_nci_bridge_takes_the_other_branch_when_equity_is_ex_nci():
     both = pd.concat(
         [
             pd.DataFrame(
-                [_fact(field="stockholdersEquity", value=830.0, duration_type="instant", period_start=None, source_concept=f"us-gaap:{_INCL}")]
+                [_fact(field="stockholdersEquity", value=830.0, duration_type="instant", period_start=None, source_concept=f"us-gaap:{_incl}")]
             ),
             equity_row("StockholdersEquity"),
         ],
@@ -552,7 +552,7 @@ def test_fiscal_quarter_labels_every_row_including_the_ttm_ones():
     assert "fiscal_quarter" in history.columns
     labelled = history.dropna(subset=["fiscal_end"])
     assert labelled["fiscal_quarter"].notna().all(), "a dated row carries no quarter label"
-    by_end = dict(zip(labelled["fiscal_end"].dt.strftime("%Y-%m-%d"), labelled["fiscal_quarter"]))
+    by_end = dict(zip(labelled["fiscal_end"].dt.strftime("%Y-%m-%d"), labelled["fiscal_quarter"], strict=False))
     assert by_end["2023-03-31"] == 1 and by_end["2023-06-30"] == 2
     assert by_end["2023-09-30"] == 3 and by_end["2023-12-31"] == 4
 

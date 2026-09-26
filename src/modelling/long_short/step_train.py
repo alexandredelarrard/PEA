@@ -715,7 +715,7 @@ class StepModelling(Step):
         """Aggregate gain importance across horizon models -> which features matter."""
         try:
             imp = {}
-            for h, models in self.models.items():
+            for _h, models in self.models.items():
                 for model in models.values():
                     # LightGBM gain vs |coef| for the linear baselines; normalize
                     # each member to sum 1 first so the two scales are comparable.

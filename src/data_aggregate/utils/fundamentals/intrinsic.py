@@ -21,10 +21,13 @@ as NaN) -- a business burning cash has no meaningful cash-flow intrinsic value.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily, daily_market_cap
+from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+
+_QUARTERLY_MAX_AGE_DAYS = 185
 
 
 def two_stage_dcf(
@@ -75,24 +78,44 @@ def intrinsic_value_daily(
       * yield      : total / market cap  ( >1 => cheaper than intrinsic )
     `yield` and `per_share` require `close`; `total` is always returned.
     """
-    base_fcf = fundamentals_to_daily(fund_hist, "freeCashflow", idx)   # TTM, PIT
+    base_fcf = fundamentals_to_daily(
+        fund_hist,
+        "freeCashflow",
+        idx,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     if base_fcf.empty:
         return {}
-    rev_growth = fundamentals_to_daily(fund_hist, "revenueGrowth", idx)
+    rev_growth = fundamentals_to_daily(
+        fund_hist,
+        "revenueGrowth",
+        idx,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     g = rev_growth.reindex_like(base_fcf).clip(growth_floor, growth_cap)
-    g = g.fillna(terminal_growth)                                      # no growth info -> conservative
+    g = g.fillna(terminal_growth)  # no growth info -> conservative
 
     total = two_stage_dcf(base_fcf, g, discount_rate, terminal_growth, years)
     out = {"total": total}
 
-    shares = fundamentals_to_daily(fund_hist, "sharesOutstanding", idx)
+    shares = fundamentals_to_daily(
+        fund_hist,
+        "sharesOutstanding",
+        idx,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     if not shares.empty:
         cols = total.columns.intersection(shares.columns)
         sh = shares[cols].where(shares[cols] > 0)
         out["per_share"] = (total[cols] / sh).replace([np.inf, -np.inf], np.nan)
 
     if close is not None:
-        mcap = daily_market_cap(fund_hist, close, level_factor=level_factor)
+        mcap = daily_market_cap(
+            fund_hist,
+            close,
+            level_factor=level_factor,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
         if not mcap.empty:
             cols = total.columns.intersection(mcap.columns)
             out["yield"] = (total[cols] / mcap[cols]).replace([np.inf, -np.inf], np.nan)

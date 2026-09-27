@@ -65,32 +65,54 @@ KPIs (grouped):
                  not on GICS: capitalizing R&D is meaningful for any research-intensive
                  filer, not only biotech
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily, infer_yoy_periods
+from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import safe_div
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import (
+    fiscal_prior_positions,
+    fiscal_prior_values,
+    fundamentals_to_daily,
+    infer_yoy_periods,
+    null_invalid_gross_profit_sentinels,
+)
 from src.data_aggregate.utils.common.sector_gates import row_gate
-from src.data_aggregate.utils.common import capital
+
+_QUARTERLY_MAX_AGE_DAYS = 185
 
 # KPI columns produced by compute_sector_kpis (the panel builder iterates these).
 SECTOR_KPI_COLS: list[str] = [
     # universal
-    "effective_tax_rate", "accruals_ratio", "asset_turnover",
-    "capex_intensity", "capex_to_dep", "payout_ratio", "buyback_intensity",
-    "earnings_quality", "reinvestment_rate", "sustainable_growth_rate",
-    "fixed_cost_coverage_margin", "gmroi",
+    "effective_tax_rate",
+    "accruals_ratio",
+    "asset_turnover",
+    "capex_intensity",
+    "capex_to_dep",
+    "payout_ratio",
+    "buyback_intensity",
+    "earnings_quality",
+    "reinvestment_rate",
+    "sustainable_growth_rate",
+    "fixed_cost_coverage_margin",
+    "gmroi",
     # financials
-    "aoci_to_equity", "book_value_growth",
+    "aoci_to_equity",
+    "book_value_growth",
     # banks
     "bank_roa",
     # reits
-    "ffo_margin", "ffo_payout", "affo_margin", "affo_dividend_coverage",
+    "ffo_margin",
+    "ffo_payout",
+    "affo_margin",
+    "affo_dividend_coverage",
     # energy
-    "ddna_intensity", "ebitda_margin",
+    "ddna_intensity",
+    "ebitda_margin",
     # software / tech
     "deferred_rev_intensity",
     # utilities
@@ -113,20 +135,41 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series:
     return pd.Series(np.nan, index=df.index)
 
 
-def _yearly_lag(df: pd.DataFrame, s: pd.Series, years_back: int, yoy: int) -> pd.Series:
-    """`s` shifted back `years_back` fiscal YEARS within each ticker's own series
-    (ordered by `as_of`). `yoy` is filings-per-year (4 quarterly, 1 annual). Used
-    for multi-year constructions (capitalized R&D); NaN when ticker/as_of absent."""
-    if "ticker" not in df.columns or "as_of" not in df.columns or years_back == 0:
-        return s if years_back == 0 else pd.Series(np.nan, index=df.index)
-    order = pd.to_datetime(df["as_of"], errors="coerce")
-    tmp = pd.DataFrame({"ticker": df["ticker"], "o": order, "v": s})
-    tmp = tmp.sort_values(["ticker", "o"])
-    tmp["lag"] = tmp.groupby("ticker")["v"].shift(years_back * yoy)
-    return tmp["lag"].reindex(df.index)
+def _yearly_lag(
+    df: pd.DataFrame,
+    values: pd.Series,
+    years_back: int,
+    positions: pd.Series | None = None,
+) -> pd.Series:
+    """Point-in-time value from the comparable fiscal period `years_back` earlier."""
+    if years_back == 0:
+        return values
+    if "ticker" not in df.columns or "as_of" not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+    if "fiscal_end" not in df.columns or not df["fiscal_end"].notna().any():
+        work = pd.DataFrame(
+            {
+                "ticker": df["ticker"].astype(str),
+                "as_of": pd.to_datetime(df["as_of"], errors="coerce"),
+                "value": values,
+                "position": np.arange(len(df)),
+            }
+        ).sort_values(["ticker", "as_of", "position"])
+        cadence = infer_yoy_periods(df)
+        work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(years_back * cadence))
+        result = np.full(len(df), np.nan, dtype="float64")
+        result[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+        return pd.Series(result, index=df.index)
+    return fiscal_prior_values(
+        df,
+        values,
+        years=years_back,
+        tolerance_days=45,
+        positions=positions,
+    )
 
 
-def _capitalized_rd(df: pd.DataFrame, rd: pd.Series, yoy: int) -> tuple[pd.Series, pd.Series]:
+def _capitalized_rd(df: pd.DataFrame, rd: pd.Series, lag) -> tuple[pd.Series, pd.Series]:
     """Damodaran-style capitalized-R&D asset pool and current-year amortization.
 
     Treats R&D as a 5-year-life intangible: the unamortized asset carries each of
@@ -134,12 +177,11 @@ def _capitalized_rd(df: pd.DataFrame, rd: pd.Series, yoy: int) -> tuple[pd.Serie
     year's amortization is 1/5 of each of the prior 5 years' R&D. Both are keyed
     on the current filing; only defined when current R&D is reported."""
     asset = pd.Series(0.0, index=df.index)
-    for t in range(5):                                   # layers t=0..4 -> weight (1 - 0.2t)
-        asset = asset.add(_yearly_lag(df, rd, t, yoy).fillna(0.0) * (1.0 - 0.2 * t),
-                          fill_value=0.0)
+    for t in range(5):  # layers t=0..4 -> weight (1 - 0.2t)
+        asset = asset.add(lag(rd, t).fillna(0.0) * (1.0 - 0.2 * t), fill_value=0.0)
     amort = pd.Series(0.0, index=df.index)
-    for t in range(1, 6):                                # last 5 years each amortize 1/5 this year
-        amort = amort.add(_yearly_lag(df, rd, t, yoy).fillna(0.0) * 0.2, fill_value=0.0)
+    for t in range(1, 6):  # last 5 years each amortize 1/5 this year
+        amort = amort.add(lag(rd, t).fillna(0.0) * 0.2, fill_value=0.0)
     valid = rd.notna()
     return asset.where(valid), amort.where(valid)
 
@@ -154,9 +196,25 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     if fundamentals is None or fundamentals.empty:
         return fundamentals if fundamentals is not None else pd.DataFrame()
 
-    df = fundamentals.copy()
+    df = null_invalid_gross_profit_sentinels(fundamentals)
     g = lambda n: _col(df, n)  # noqa: E731
-    yoy = infer_yoy_periods(df)                     # filings per year (4 quarterly, 1 annual)
+    match_cache: dict[int, pd.Series] = {}
+
+    def lag(values: pd.Series, years_back: int) -> pd.Series:
+        if years_back == 0:
+            return values
+        if years_back not in match_cache:
+            match_cache[years_back] = fiscal_prior_positions(
+                df,
+                years=years_back,
+                tolerance_days=45,
+            )
+        return _yearly_lag(
+            df,
+            values,
+            years_back,
+            positions=match_cache[years_back],
+        )
 
     revenue = g("totalRevenue")
     # ASC-842-adoption-free asset base (shared resolver: precomputed column, else derived,
@@ -165,7 +223,6 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     ebitda = g("ebitda")
     ni = g("netIncome")
     ocf = g("operatingCashFlow")
-    cogs = g("costOfRevenue")
     oper_income = g("operatingIncome")
     depamort = g("depAmort")
     capex = g("capex")
@@ -192,8 +249,8 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     df["accruals_ratio"] = safe_div(ni - ocf, assets, True)
     # asset turnover on AVERAGE total assets (mean of current & 1y-prior; falls back
     # to period-end when no prior year is available).
-    prior_assets = _yearly_lag(df, assets, 1, yoy)
-    avg_assets = ((assets + prior_assets) / 2.0).where(prior_assets.notna(), assets)
+    prior_assets = lag(assets, 1)
+    avg_assets = ((assets + prior_assets) / 2.0).where(prior_assets.notna())
     df["asset_turnover"] = safe_div(revenue, avg_assets, True)
     df["capex_intensity"] = safe_div(capex, revenue, True)
     df["capex_to_dep"] = safe_div(capex, depamort, True)
@@ -217,7 +274,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     df["earnings_quality"] = safe_div(ocf, ni, True)
     # reinvestment rate: net cash ploughed back (capex - D&A + ΔNWC) per $ of NOPAT
     nwc_now = g("currentAssets") - g("currentLiabilities")
-    d_nwc = nwc_now - _yearly_lag(df, nwc_now, 1, yoy)
+    d_nwc = nwc_now - lag(nwc_now, 1)
     df["reinvestment_rate"] = safe_div(capex.fillna(0.0) - depamort.fillna(0.0) + d_nwc, nopat, True)
     # sustainable growth = ROE x retention (max organic growth w/o new equity/leverage).
     # ⚠ THE `clip(0, 1)` MAKES THE `dividendsPaid` SIGN LOAD-BEARING. While the column was
@@ -232,15 +289,15 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     df["fixed_cost_coverage_margin"] = safe_div(g("grossProfit") - ebitda, revenue, True)
     # GMROI (retail): gross profit per $ of average inventory investment
     inv = g("inventory")
-    prior_inv = _yearly_lag(df, inv, 1, yoy)
-    avg_inv = ((inv + prior_inv) / 2.0).where(prior_inv.notna(), inv)
+    prior_inv = lag(inv, 1)
+    avg_inv = ((inv + prior_inv) / 2.0).where(prior_inv.notna())
     df["gmroi"] = safe_div(g("grossProfit"), avg_inv, True).where(inv.notna())
 
     # ---- banks ----------------------------------------------------------- #
     # The only bank KPI Sharadar can feed: everything else needed `loans`, `deposits`Domestic,
     # `noninterestExpense`, `provisionForCreditLosses` or `netInterestIncome`, none of which
     # SF1 delivers. ROA is the right survivor -- for a bank, assets ARE the earning base.
-    df["bank_roa"] = safe_div(ni, assets, True).where(bank_gate)
+    df["bank_roa"] = safe_div(ni, avg_assets, True).where(bank_gate)
 
     # ---- reits ----------------------------------------------------------- #
     # NAREIT FFO = net income + real-estate D&A - gains/losses on sales of real estate
@@ -294,22 +351,24 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     rd = g("researchAndDevelopment")
     # Capitalized-R&D adjusted ROIC: undo GAAP's immediate R&D expensing (treat R&D as
     # a 5-year intangible) so organic innovators are comparable to serial acquirers.
-    rd_asset, rd_amort = _capitalized_rd(df, rd, yoy)
+    rd_asset, rd_amort = _capitalized_rd(df, rd, lag)
     adj_oper_income = oper_income.fillna(0) + rd.fillna(0) - rd_amort.fillna(0)
-    adj_capital = (g("stockholdersEquity").fillna(0) + total_debt
-                   + rd_asset.fillna(0) - cash.fillna(0))
-    df["rd_capitalized_roic"] = safe_div(adj_oper_income, adj_capital, True).where(rd.notna())
+    adj_capital = g("stockholdersEquity").fillna(0) + total_debt + rd_asset.fillna(0) - cash.fillna(0)
+    df["rd_capitalized_roic"] = safe_div(
+        adj_oper_income * (1.0 - tax),
+        adj_capital,
+        True,
+    ).where(rd.notna())
 
     # ---- financial-sector growth & capital ------------------------------- #
     equity = g("stockholdersEquity")
-    prior_equity = _yearly_lag(df, equity, 1, yoy)
+    prior_equity = lag(equity, 1)
     df["book_value_growth"] = safe_div(equity - prior_equity, prior_equity, True).where(fin_gate)
 
     # AOCI is mostly the AFS mark-to-market; a large NEGATIVE AOCI = unrealized securities
     # losses eroding tangible capital (signed: negative = losses). The 2023 SVB signal, minus
     # the held-to-maturity leg, which needs footnote fair values SF1 does not carry.
-    df["aoci_to_equity"] = safe_div(
-        g("accumulatedOtherComprehensiveIncome"), equity, True).where(fin_gate)
+    df["aoci_to_equity"] = safe_div(g("accumulatedOtherComprehensiveIncome"), equity, True).where(fin_gate)
 
     return df
 
@@ -324,8 +383,7 @@ def build_sector_feature_panel(
     Computes the row-level KPIs, forward-fills each point-in-time from its
     `as_of`, and peer-relativizes — identical treatment to the fundamental /
     management panels. Empty if fundamentals are unavailable."""
-    if (fundamentals is None or fundamentals.empty
-            or "as_of" not in fundamentals.columns):
+    if fundamentals is None or fundamentals.empty or "as_of" not in fundamentals.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     kdf = compute_sector_kpis(fundamentals)
@@ -333,7 +391,12 @@ def build_sector_feature_panel(
     for name in SECTOR_KPI_COLS:
         if name not in kdf.columns:
             continue
-        daily = fundamentals_to_daily(kdf, name, trading_index)
+        daily = fundamentals_to_daily(
+            kdf,
+            name,
+            trading_index,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
         if not daily.empty and daily.notna().any().any():
             fields[name] = daily
     if not fields:

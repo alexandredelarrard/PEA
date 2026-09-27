@@ -1,3 +1,4 @@
+# ruff: noqa: N806
 """
 fundamental_features.py  (src/data_aggregate/utils/fundamental_features.py)
 ---------------------------------------------------------------------------
@@ -108,42 +109,56 @@ skipped automatically.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
-from src.data_aggregate.utils.common.pit import (
-    daily_market_cap,
-    fiscal_apply_to_daily,
-    fiscal_change_to_daily,
-    fundamentals_to_daily,
-    infer_yoy_periods,
-)
-from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import ratio, sanitize
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.xs import (
-    HIST_MIN_PERIODS, HIST_WINDOW, self_history_z, winsorize_xs,
+from src.data_aggregate.utils.common.pit import (
+    daily_market_cap,
+    fiscal_change_to_daily,
+    fiscal_change_values,
+    fiscal_prior_positions,
+    fiscal_prior_to_daily,
+    fiscal_prior_values,
+    fiscal_values_to_daily,
+    fundamentals_to_daily,
+    infer_yoy_periods,
+    null_invalid_gross_profit_sentinels,
 )
 from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns
-from src.data_aggregate.utils.common import capital
+from src.data_aggregate.utils.common.xs import (
+    HIST_MIN_PERIODS,
+    HIST_WINDOW,
+    self_history_z,
+)
+from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
+from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 
-_PENSION_FACTS_TABLE = "pension_facts"     # bulk Financial-Statement-Data-Sets pension facts (literal)
-_NOTES_NUM_TABLE = "notes_num"             # footnote NUMERIC facts (10 tags; the panel uses 2)
-_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]   # the only cols the pension builders read
+_PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
+_NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel uses 2)
+_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]  # the only cols the pension builders read
 
 
 # Valuation yields that also get a self-history (mean-reversion) z-score, i.e.
 # "cheap vs its OWN past" in addition to "cheap vs peers". High = cheaper than
 # the firm's own norm -> classic valuation mean-reversion signal.
 _MEAN_REVERSION_FIELDS = (
-    "earnings_yield", "sales_yield", "book_yield",
-    "fcf_yield", "ebitda_to_ev", "fcf_to_ev", "ffo_yield", "intrinsic_yield",
+    "earnings_yield",
+    "sales_yield",
+    "book_yield",
+    "fcf_yield",
+    "ebitda_to_ev",
+    "fcf_to_ev",
+    "ffo_yield",
+    "intrinsic_yield",
 )
 #: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
 #: consumer in the governance panel). Same values; the names stay so no call site here moves.
-_HIST_WINDOW = HIST_WINDOW          # ~5 trading years of daily observations
+_HIST_WINDOW = HIST_WINDOW  # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = HIST_MIN_PERIODS  # require >= 1y of history before emitting a z-score
 
 # Cross-sectional winsorization for the Z-SCORE features (peer-z + self-history z):
@@ -158,7 +173,35 @@ _HIST_MIN_PERIODS = HIST_MIN_PERIODS  # require >= 1y of history before emitting
 # regime instead of averaging a feature whose meaning flips between profitable
 # and loss-making / hyper-growth names.
 _STATE_FIELDS = ("profitable", "fcf_positive", "negative_equity", "hyper_growth")
-_HYPER_GROWTH = 0.25     # YoY revenue growth above which a name is "hyper-growth"
+_HYPER_GROWTH = 0.25  # YoY revenue growth above which a name is "hyper-growth"
+_QUARTERLY_MAX_AGE_DAYS = 185
+_ANNUAL_MAX_AGE_DAYS = 460
+
+
+def _previous_fiscal_value(
+    fund_hist: pd.DataFrame,
+    values: pd.Series,
+) -> pd.Series:
+    """Previous fiscal quarter's row-aligned value, with a legacy row fallback."""
+    if "fiscal_end" in fund_hist.columns and fund_hist["fiscal_end"].notna().any():
+        return fiscal_prior_values(
+            fund_hist,
+            values,
+            years=0,
+            tolerance_days=120,
+        )
+    work = pd.DataFrame(
+        {
+            "ticker": fund_hist["ticker"].astype(str),
+            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+            "value": values.to_numpy(),
+            "position": np.arange(len(fund_hist)),
+        }
+    ).sort_values(["ticker", "as_of", "position"])
+    work["prior"] = work.groupby("ticker", sort=False)["value"].shift(1)
+    result = np.full(len(fund_hist), np.nan, dtype="float64")
+    result[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+    return pd.Series(result, index=fund_hist.index)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,8 +209,7 @@ _HYPER_GROWTH = 0.25     # YoY revenue growth above which a name is "hyper-growt
 # --------------------------------------------------------------------------- #
 
 
-def _combine_debt(daily, long_debt: pd.DataFrame, short_debt: pd.DataFrame,
-                  fallback: pd.DataFrame) -> pd.DataFrame:
+def _combine_debt(daily, long_debt: pd.DataFrame, short_debt: pd.DataFrame, fallback: pd.DataFrame) -> pd.DataFrame:
     """Total interest-bearing debt for the distress block.
 
     ⚠ PREFERS THE RECONCILED `totalDebt` COLUMN, via the shared `capital.borrowings`.
@@ -228,6 +270,7 @@ def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -
 #: keeps every call site in this module (and its test) working unchanged.
 _self_history_z = self_history_z
 
+
 # --------------------------------------------------------------------------- #
 # Business-quality helpers (all from tags ALREADY extracted -- no new SEC pull)
 #   #2 D&A/SBC realism, #5 forensic, #3 M&A digestion, #1 core/adjusted earnings.
@@ -235,10 +278,6 @@ _self_history_z = self_history_z
 # so every field auto-expands to f_<name>_vs_peers + f_<name>_xs downstream.
 # `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
 # --------------------------------------------------------------------------- #
-_YEAR = 252   # trailing trading days ~= one calendar year (year-ago comparison)
-_FIVE_YEARS = 5 * _YEAR   # ~5 trading years (multi-year trend comparison)
-
-
 def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
     """Point-in-time effective tax rate = tax / pretax, clipped to [0, 0.5] and
     defaulted to the US statutory ~21% where missing/nonsensical. INTERNAL ONLY: used to
@@ -265,15 +304,15 @@ def _da_realism_fields(daily) -> dict:
     rank a universe on. They return with the SEC extraction path."""
     F: dict[str, pd.DataFrame] = {}
     sbc = daily("stockBasedComp")
-    buyback = capital.share_repurchases(daily)     # positive magnitude; see capital.py
+    buyback = capital.share_repurchases(daily)  # positive magnitude; see capital.py
     if not sbc.empty and buyback is not None and not buyback.empty:
         s2b = ratio(sbc, buyback, positive_den=True)
         if s2b.notna().any().any():
-            F["sbc_to_buyback"] = s2b             # >1 = buybacks don't even cover SBC
+            F["sbc_to_buyback"] = s2b  # >1 = buybacks don't even cover SBC
     return F
 
 
-def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
+def _beneish_m_score(daily, idx: pd.DatetimeIndex, prior=None) -> pd.DataFrame:
     """Beneish (1999) 8-variable earnings-manipulation model, each index computed
     as this year vs one year ago (trailing 252 trading days). Higher M = more
     likely a manipulator (the classic screen is M > -1.78). Missing index ->
@@ -301,26 +340,56 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
             return pd.DataFrame()
         return ratio(cur, prev.where(prev != 0))
 
+    previous = prior if prior is not None else lambda _field, *_args: pd.DataFrame()
+    prior_rev = previous("totalRevenue")
+    prior_assets = previous("totalAssetsExLease")
+    if prior_assets.empty:
+        prior_assets = previous("totalAssets")
     ar_sales = ratio(ar, rev)
-    dsri = ix(ar_sales, ar_sales.shift(_YEAR))                 # days sales in receivables
+    prior_ar_sales = ratio(previous("accountsReceivable"), prior_rev)
+    dsri = ix(ar_sales, prior_ar_sales)  # days sales in receivables
     gm = ratio(gp, rev, positive_den=True)
-    gmi = ix(gm.shift(_YEAR), gm)                              # gross-margin deterioration
+    prior_gm = ratio(previous("grossProfit"), prior_rev, positive_den=True)
+    gmi = ix(prior_gm, gm)  # gross-margin deterioration
     noncore = 1.0 - ratio(ca.add(ppe, fill_value=0.0), assets, positive_den=True)
-    aqi = ix(noncore, noncore.shift(_YEAR))                    # asset-quality (soft assets)
-    sgi = ix(rev, rev.shift(_YEAR))                            # sales growth
+    prior_noncore = 1.0 - ratio(
+        previous("currentAssets").add(previous("ppeNet"), fill_value=0.0),
+        prior_assets,
+        positive_den=True,
+    )
+    aqi = ix(noncore, prior_noncore)  # asset-quality (soft assets)
+    sgi = ix(rev, prior_rev)  # sales growth
     deprate = ratio(dep, dep.add(ppe, fill_value=0.0), positive_den=True)
-    depi = ix(deprate.shift(_YEAR), deprate)                   # slowing depreciation
+    prior_dep = previous("depAmort")
+    prior_deprate = ratio(
+        prior_dep,
+        prior_dep.add(previous("ppeNet"), fill_value=0.0),
+        positive_den=True,
+    )
+    depi = ix(prior_deprate, deprate)  # slowing depreciation
     sgar = ratio(sga, rev, positive_den=True)
-    sgai = ix(sgar, sgar.shift(_YEAR))                         # SG&A efficiency
+    prior_sgar = ratio(previous("sellingGeneralAdmin"), prior_rev, positive_den=True)
+    sgai = ix(sgar, prior_sgar)  # SG&A efficiency
     lev = ratio(ltd.add(cl, fill_value=0.0), assets, positive_den=True)
-    lvgi = ix(lev, lev.shift(_YEAR))                           # leverage change
-    tata = ratio(ni.sub(ocf, fill_value=np.nan), assets)     # total accruals / assets
+    prior_lev = ratio(
+        previous("longTermDebt").add(previous("currentLiabilities"), fill_value=0.0),
+        prior_assets,
+        positive_den=True,
+    )
+    lvgi = ix(lev, prior_lev)  # leverage change
+    tata = ratio(ni.sub(ocf, fill_value=np.nan), assets)  # total accruals / assets
 
-    terms = [(0.920, dsri, 1.0), (0.528, gmi, 1.0), (0.404, aqi, 1.0),
-             (0.892, sgi, 1.0), (0.115, depi, 1.0), (-0.172, sgai, 1.0),
-             (-0.327, lvgi, 1.0), (4.679, tata, 0.0)]
-    cols = sorted(set().union(*[set(t[1].columns) for t in terms
-                                if isinstance(t[1], pd.DataFrame) and not t[1].empty]))
+    terms = [
+        (0.920, dsri, 1.0),
+        (0.528, gmi, 1.0),
+        (0.404, aqi, 1.0),
+        (0.892, sgi, 1.0),
+        (0.115, depi, 1.0),
+        (-0.172, sgai, 1.0),
+        (-0.327, lvgi, 1.0),
+        (4.679, tata, 0.0),
+    ]
+    cols = sorted(set().union(*[set(t[1].columns) for t in terms if isinstance(t[1], pd.DataFrame) and not t[1].empty]))
     if not cols:
         return pd.DataFrame()
     m = pd.DataFrame(-4.84, index=idx, columns=cols)
@@ -332,25 +401,23 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
     # the docstring's support, enforced per cell: no revenue or no assets -> no score.
     # Deliberately keyed on DATA, not on listing, so a spin-off that files before it starts
     # trading (OTIS, CARR) keeps the score its filings support.
-    support = (rev.reindex(index=idx, columns=cols).notna()
-               & assets.reindex(index=idx, columns=cols).notna())
+    support = rev.reindex(index=idx, columns=cols).notna() & assets.reindex(index=idx, columns=cols).notna()
     return m.where(support).replace([np.inf, -np.inf], np.nan)
 
 
 _NET_PENSION_TAGS = (
     "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
-    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",                          # variant
+    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # variant
 )
 
 # Footnote pension tags from the Financial Statement & NOTES sets (`notes_num`):
 # the projected benefit obligation and fair value of plan assets, both INSTANT
 # (balance-type) facts the primary statements never expose.
-_FN_PBO_TAG = "DefinedBenefitPlanBenefitObligation"          # projected benefit obligation
+_FN_PBO_TAG = "DefinedBenefitPlanBenefitObligation"  # projected benefit obligation
 _FN_PLAN_ASSETS_TAG = "DefinedBenefitPlanFairValueOfPlanAssets"
 
 
-def _scope_to_universe(facts: pd.DataFrame | None,
-                       universe: set[str]) -> pd.DataFrame | None:
+def _scope_to_universe(facts: pd.DataFrame | None, universe: set[str]) -> pd.DataFrame | None:
     """A bulk facts frame restricted to the tickers the fundamentals panel is being built
     for. A no-op when the universe is unknown, so a caller that hands over a frame without
     a `ticker` column still gets the old behaviour rather than an empty one."""
@@ -359,19 +426,17 @@ def _scope_to_universe(facts: pd.DataFrame | None,
     return facts[facts["ticker"].astype(str).isin(universe)]
 
 
-def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
-                           idx: pd.DatetimeIndex) -> pd.DataFrame:
+def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Universe-wide recognized net DB-pension deficit from the Financial Statement
     Data Sets (`pension_facts` table), point-in-time on the FILING date, taking the
     latest period-end per filing. Primary net-liability tag preferred, the pension-
     only variant fills gaps. Empty frame if the table is unavailable."""
-    if (pension_facts is None or pension_facts.empty
-            or "tag" not in pension_facts.columns or "ticker" not in pension_facts.columns):
+    if pension_facts is None or pension_facts.empty or "tag" not in pension_facts.columns or "ticker" not in pension_facts.columns:
         return pd.DataFrame(index=idx)
     pf = pension_facts.copy()
     pf["as_of"] = pd.to_datetime(pf.get("filed"), errors="coerce")
     pf["value"] = pd.to_numeric(pf.get("value"), errors="coerce")
-    if "qtrs" in pf.columns:                          # instant (balance-sheet) facts only
+    if "qtrs" in pf.columns:  # instant (balance-sheet) facts only
         pf = pf[pd.to_numeric(pf["qtrs"], errors="coerce").fillna(0) == 0]
     pf = pf.dropna(subset=["as_of", "value", "ticker"])
 
@@ -381,7 +446,12 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
             return pd.DataFrame(index=idx)
         # sort so the latest period-end (ddate) wins within a filing (aggfunc='last')
         d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": "pension_deficit"})
-        return fundamentals_to_daily(d, "pension_deficit", idx)
+        return fundamentals_to_daily(
+            d,
+            "pension_deficit",
+            idx,
+            max_age_days=_ANNUAL_MAX_AGE_DAYS,
+        )
 
     prim, var = _one(_NET_PENSION_TAGS[0]), _one(_NET_PENSION_TAGS[1])
     if prim.empty:
@@ -391,14 +461,12 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None,
     return prim.combine_first(var)
 
 
-def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str,
-                     idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
+def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
     """One footnote-numeric tag from the NOTES sets (`notes_num`) -> daily wide
     frame, point-in-time on the FILING date, latest period-end (`ddate`) per filing.
     `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
     the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
-    if (notes_num is None or notes_num.empty
-            or "tag" not in notes_num.columns or "ticker" not in notes_num.columns):
+    if notes_num is None or notes_num.empty or "tag" not in notes_num.columns or "ticker" not in notes_num.columns:
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
@@ -411,17 +479,20 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str,
     if d.empty:
         return pd.DataFrame(index=idx)
     d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": tag})
-    return fundamentals_to_daily(d, tag, idx)
+    return fundamentals_to_daily(
+        d,
+        tag,
+        idx,
+        max_age_days=_ANNUAL_MAX_AGE_DAYS,
+    )
 
 
-def load_tagged_facts(context: Context, table: str, tags: tuple[str, ...],
-                      columns: list[str] | None = None) -> pd.DataFrame | None:
+def load_tagged_facts(context: Context, table: str, tags: tuple[str, ...], columns: list[str] | None = None) -> pd.DataFrame | None:
     """Read ONLY the rows whose `tag` the pension/footnote builders actually use — they touch just 2
     tags of each facts table (`notes_num` has 10 tags; only ~16% of its rows are these two). Pulling
     the whole table then filtering in-memory is the same waste pattern as the 13F/embedding tables.
     The tag filter is pushed down server-side. None if the table is absent/empty or no row matches."""
-    df = context.store.load(table, columns=columns or _FACT_COLS,
-                            where={"tag": list(tags)}, optional=True)
+    df = context.store.load(table, columns=columns or _FACT_COLS, where={"tag": list(tags)}, optional=True)
     return df.reset_index(drop=True) if df is not None else None
 
 
@@ -435,7 +506,7 @@ def load_notes_num_scoped(context: Context) -> pd.DataFrame | None:
     return load_tagged_facts(context, _NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
 
 
-def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
+def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
     """#5 -- accounting-quality / hidden-leverage red flags: working-capital days
     and their year-over-year drift (supplier-funded growth = rising DPO; channel
     stuffing = rising DSO), off-balance-sheet-INCLUSIVE net leverage (adds lease
@@ -448,11 +519,29 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
     dso = ratio(ar, rev, positive_den=True) * 365.0
     if dso.notna().any().any():
         F["dso"] = dso
-        F["dso_change"] = (dso - dso.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
+        if prior is not None:
+            prior_dso = (
+                ratio(
+                    prior("accountsReceivable"),
+                    prior("totalRevenue"),
+                    positive_den=True,
+                )
+                * 365.0
+            )
+            F["dso_change"] = (dso - prior_dso).replace([np.inf, -np.inf], np.nan)
     dpo = ratio(ap, cogs, positive_den=True) * 365.0
     if dpo.notna().any().any():
         F["dpo"] = dpo
-        F["dpo_change"] = (dpo - dpo.shift(_YEAR)).replace([np.inf, -np.inf], np.nan)
+        if prior is not None:
+            prior_dpo = (
+                ratio(
+                    prior("accountsPayable"),
+                    prior("costOfRevenue"),
+                    positive_den=True,
+                )
+                * 365.0
+            )
+            F["dpo_change"] = (dpo - prior_dpo).replace([np.inf, -np.inf], np.nan)
     dio = ratio(inv, cogs, positive_den=True) * 365.0
     if dio.notna().any().any():
         F["dio"] = dio
@@ -486,15 +575,13 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex) -> dict:
     #
     # With it went this block's only reads of `ebitda`, the coalesced pension pool and the
     # operating-cash gate, so all three left the signature too.
-    m = _beneish_m_score(daily, idx)
+    m = _beneish_m_score(daily, idx, prior)
     if not m.empty and m.notna().any().any():
         F["beneish_m_score"] = m
     return F
 
 
-def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                      yoy_periods: int,
-                      operating_cash: frozenset[str] | None = None) -> dict:
+def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int, operating_cash: frozenset[str] | None = None) -> dict:
     """#3 -- is bought growth being digested? ROIC WITH vs WITHOUT acquired intangibles (the
     wedge = how much acquisitions drag returns), the intangibles balance-sheet weight
     (writedown exposure), and SG&A elasticity to revenue (<1 = synergies captured, ~1 =
@@ -517,7 +604,7 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # balance-sheet growth (see `totalAssetsExLease` in the extractor).
     oi, assets = daily("operatingIncome"), capital.assets_ex_lease(daily)
     equity = daily("stockholdersEquity")
-    intangibles = daily("intangibles")          # goodwill + other intangibles, COMBINED
+    intangibles = daily("intangibles")  # goodwill + other intangibles, COMBINED
     tax = _nopat_tax_rate(daily)
 
     if not oi.empty and not equity.empty:
@@ -541,20 +628,34 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
             F["intangibles_to_assets"] = gta
         gte = ratio(intangibles, equity.where(equity > 0))
         if gte.notna().any().any():
-            F["intangibles_to_equity"] = gte   # >1 => a writedown can wipe out book equity
+            F["intangibles_to_equity"] = gte  # >1 => a writedown can wipe out book equity
 
-    sga_g = fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods)
-    rev_g = fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods)
+    sga_g = fiscal_change_to_daily(
+        fund_hist,
+        "sellingGeneralAdmin",
+        idx,
+        kind="pct",
+        periods=yoy_periods,
+        years=1,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
+    rev_g = fiscal_change_to_daily(
+        fund_hist,
+        "totalRevenue",
+        idx,
+        kind="pct",
+        periods=yoy_periods,
+        years=1,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     if sga_g.notna().any().any() and rev_g.notna().any().any():
-        el = ratio(sga_g, rev_g.where(rev_g.abs() >= 0.02))   # guard ~flat-revenue blow-ups
+        el = ratio(sga_g, rev_g.where(rev_g.abs() >= 0.02))  # guard ~flat-revenue blow-ups
         if el.notna().any().any():
             F["sga_elasticity"] = el
     return F
 
 
-def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                                       yoy_periods: int,
-                                       close: pd.DataFrame | None) -> dict:
+def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int, close: pd.DataFrame | None) -> dict:
     """Per-share economics and the non-controlled slice of reported profit.
 
     Per share  reported diluted EPS (98.8%) and the OPTION OVERHANG (diluted - basic) / basic,
@@ -581,9 +682,10 @@ def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.D
         cols = eps.columns.intersection(close.columns)
         ey = ratio(eps[cols].where(eps[cols] > 0), close[cols], positive_den=True)
         if ey.notna().any().any():
-            F["eps_yield"] = ey        # reported diluted EPS / price: E/P net of preferred
-    dps_growth = fiscal_change_to_daily(fund_hist, "dividendsPerShare", idx,
-                                         kind="pct", periods=yoy_periods)
+            F["eps_yield"] = ey  # reported diluted EPS / price: E/P net of preferred
+    dps_growth = fiscal_change_to_daily(
+        fund_hist, "dividendsPerShare", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if dps_growth.notna().any().any():
         F["dps_growth"] = dps_growth
 
@@ -610,9 +712,9 @@ def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.D
 # `revenue`, `mcap`, `ev` and `pension_ret` through ~110 signatures, which reads worse
 # than the original, not better.
 # --------------------------------------------------------------------------- #
-def _pension_pool(notes_num: pd.DataFrame | None,
-                  pension_facts: pd.DataFrame | None,
-                  idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _pension_pool(
+    notes_num: pd.DataFrame | None, pension_facts: pd.DataFrame | None, idx: pd.DatetimeIndex
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """The three SHARED pension frames: (pbo, footnote deficit, coalesced overhang).
 
     Not features -- these feed the EV calculation, the forensic block and the scale
@@ -640,22 +742,20 @@ def _pension_pool(notes_num: pd.DataFrame | None,
 
     pension_ret = _pension_deficit_daily(pension_facts, idx)
     if not fn_deficit.empty:
-        pension_ret = (pension_ret.combine_first(fn_deficit)
-                       if not pension_ret.empty else fn_deficit)
+        pension_ret = pension_ret.combine_first(fn_deficit) if not pension_ret.empty else fn_deficit
     if not pension_ret.empty:
-        pension_ret = pension_ret.clip(lower=0.0)          # underfunding only (>= 0)
+        pension_ret = pension_ret.clip(lower=0.0)  # underfunding only (>= 0)
     return pbo, fn_deficit, pension_ret
 
 
-def _pension_health_fields(daily, pbo: pd.DataFrame, notes_num: pd.DataFrame | None,
-                           idx: pd.DatetimeIndex, pension_ret: pd.DataFrame) -> dict:
+def _pension_health_fields(daily, pbo: pd.DataFrame, notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex, pension_ret: pd.DataFrame) -> dict:
     """Funded health straight off the footnote, plus the recognized overhang level.
     The NOTES footnote (PBO / plan assets) yields a standalone funded ratio that covers
     names the balance-sheet tag misses."""
     F: dict[str, pd.DataFrame] = {}
     plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
     if not pbo.empty and not plan_assets.empty:
-        funded_ratio = ratio(plan_assets, pbo, positive_den=True)   # 1.0 = fully funded
+        funded_ratio = ratio(plan_assets, pbo, positive_den=True)  # 1.0 = fully funded
         if funded_ratio.notna().any().any():
             F["pension_funded_ratio"] = funded_ratio
     if not pension_ret.empty and pension_ret.notna().any().any():
@@ -663,8 +763,7 @@ def _pension_health_fields(daily, pbo: pd.DataFrame, notes_num: pd.DataFrame | N
     return F
 
 
-def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame,
-                          mcap: pd.DataFrame) -> dict:
+def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame, mcap: pd.DataFrame) -> dict:
     """Pension obligations SCALED by equity value -- the burden overhanging the stock.
 
     Two genuinely different quantities: `pbo_to_mcap` is the GROSS obligation, which flags
@@ -677,8 +776,7 @@ def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame,
     source the two features were the same number. Measured r = 1.000000 on their overlap,
     against 8.3% coverage versus the pool's 28.3%: a strict subset, not a second view."""
     F: dict[str, pd.DataFrame] = {}
-    for name, src in (("pension_overhang_leverage", pension_ret),
-                      ("pbo_to_mcap", pbo)):
+    for name, src in (("pension_overhang_leverage", pension_ret), ("pbo_to_mcap", pbo)):
         if src is None or src.empty:
             continue
         r = ratio(src, mcap, positive_den=True)
@@ -687,9 +785,9 @@ def _pension_scale_fields(pension_ret: pd.DataFrame, pbo: pd.DataFrame,
     return F
 
 
-def _valuation_yield_fields(mcap: pd.DataFrame, net_income: pd.DataFrame,
-                            revenue: pd.DataFrame, equity: pd.DataFrame,
-                            fcf: pd.DataFrame) -> dict:
+def _valuation_yield_fields(
+    mcap: pd.DataFrame, common_income: pd.DataFrame, consolidated_income: pd.DataFrame, revenue: pd.DataFrame, equity: pd.DataFrame, fcf: pd.DataFrame
+) -> dict:
     """Earnings / sales / book / FCF yields against market cap, plus the loss magnitude
     the yields deliberately exclude.
 
@@ -722,18 +820,28 @@ def _valuation_yield_fields(mcap: pd.DataFrame, net_income: pd.DataFrame,
     same defect the dividend zero-fill had. Given its own column the model can learn the
     reversed sign directly instead of having it cancel inside `earnings_yield`."""
     return {
-        "earnings_yield": ratio(net_income.where(net_income > 0), mcap, positive_den=True),
+        "earnings_yield": ratio(common_income.where(common_income > 0), mcap, positive_den=True),
         "sales_yield": ratio(revenue, mcap, positive_den=True),
         "book_yield": ratio(equity.where(equity > 0), mcap, positive_den=True),
         "fcf_yield": ratio(fcf.where(fcf > 0), mcap, positive_den=True),
-        "loss_intensity": ratio(-net_income.where(net_income < 0), mcap, positive_den=True),
+        "loss_intensity": ratio(
+            -consolidated_income.where(consolidated_income < 0),
+            mcap,
+            positive_den=True,
+        ),
     }
 
 
-def _enterprise_value_frame(daily, close: pd.DataFrame | None, mcap: pd.DataFrame,
-                            equity: pd.DataFrame, d2e: pd.DataFrame,
-                            cash: pd.DataFrame, pension_ret: pd.DataFrame,
-                            operating_cash: frozenset[str] | None = None) -> pd.DataFrame:
+def _enterprise_value_frame(
+    daily,
+    close: pd.DataFrame | None,
+    mcap: pd.DataFrame,
+    equity: pd.DataFrame,
+    d2e: pd.DataFrame,
+    cash: pd.DataFrame,
+    pension_ret: pd.DataFrame,
+    operating_cash: frozenset[str] | None = None,
+) -> pd.DataFrame:
     """True (fully-diluted) enterprise value; feeds every EV yield.
 
       EV = fully-diluted mcap
@@ -753,18 +861,16 @@ def _enterprise_value_frame(daily, close: pd.DataFrame | None, mcap: pd.DataFram
     if close is not None and not diluted.empty and diluted.notna().any().any():
         cols = diluted.columns.intersection(close.columns)
         fd = (close[cols] * diluted[cols]).where(lambda x: x > 0)
-        fd_mcap = fd.combine_first(mcap)          # diluted where available, else basic
+        fd_mcap = fd.combine_first(mcap)  # diluted where available, else basic
     debt = capital.total_debt(daily)
     if debt is None or debt.empty:
-        debt = (d2e.clip(lower=0.0) * equity.where(equity > 0)
-                if not d2e.empty and not equity.empty else pd.DataFrame())
+        debt = d2e.clip(lower=0.0) * equity.where(equity > 0) if not d2e.empty and not equity.empty else pd.DataFrame()
     liquid = capital.liquid_assets(daily, operating_cash=operating_cash)
     return _enterprise_value(
         fd_mcap,
-        [debt, daily("minorityInterest"), daily("redeemableNCI"),
-         daily("preferredEquity"), pension_ret],
-        [liquid if liquid is not None
-         else capital.drop_operating_cash(cash, operating_cash)])
+        [debt, daily("minorityInterest"), daily("redeemableNCI"), daily("preferredEquity"), pension_ret],
+        [liquid if liquid is not None else capital.drop_operating_cash(cash, operating_cash)],
+    )
 
 
 def _ev_yield_fields(ebitda: pd.DataFrame, fcf: pd.DataFrame, ev: pd.DataFrame) -> dict:
@@ -793,18 +899,27 @@ def _altman_z_fields(daily, mcap: pd.DataFrame, revenue: pd.DataFrame) -> dict:
         return {}
     ta = assets_z.where(assets_z > 0)
     wc = daily("currentAssets").sub(daily("currentLiabilities"), fill_value=np.nan)
-    z = (1.2 * ratio(wc, ta) + 1.4 * ratio(daily("retainedEarnings"), ta)
-         + 3.3 * ratio(daily("operatingIncome"), ta)
-         + 0.6 * ratio(mcap, daily("totalLiabilities"), positive_den=True)
-         + 1.0 * ratio(revenue, ta))
+    z = (
+        1.2 * ratio(wc, ta)
+        + 1.4 * ratio(daily("retainedEarnings"), ta)
+        + 3.3 * ratio(daily("operatingIncome"), ta)
+        + 0.6 * ratio(mcap, daily("totalLiabilities"), positive_den=True)
+        + 1.0 * ratio(revenue, ta)
+    )
     if z.empty or not z.notna().any().any():
         return {}
     return {"altman_z": sanitize(z)}
 
 
-def _pegy_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                 mcap: pd.DataFrame, net_income: pd.DataFrame, yoy_periods: int,
-                 earnings_history: pd.DataFrame | None) -> dict:
+def _pegy_fields(
+    daily,
+    fund_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    mcap: pd.DataFrame,
+    net_income: pd.DataFrame,
+    yoy_periods: int,
+    earnings_history: pd.DataFrame | None,
+) -> dict:
     """PEGY = P/E / (EPS growth% + dividend yield%).
 
     Trailing P/E; the growth term PREFERS PROJECTED EPS growth (NTM/TTM-1 from the
@@ -820,12 +935,14 @@ def _pegy_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     if earnings_history is not None and not earnings_history.empty:
         ntm_e, ttm_e = ntm_ttm_eps(earnings_history, idx)
         if not ntm_e.empty and not ttm_e.empty:
-            proj = ratio(ntm_e, ttm_e.where(ttm_e > 0)) - 1.0        # projected EPS growth
+            proj = ratio(ntm_e, ttm_e.where(ttm_e > 0)) - 1.0  # projected EPS growth
             if proj.notna().any().any():
                 growth_pct = proj * 100.0
     if growth_pct is None:
-        growth_pct = fiscal_change_to_daily(fund_hist, "netIncome", idx,
-                                            kind="pct", periods=yoy_periods) * 100.0
+        growth_pct = (
+            fiscal_change_to_daily(fund_hist, "netIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+            * 100.0
+        )
     div_yield_pct = ratio(daily("dividendsPaid"), mcap, positive_den=True) * 100.0
     denom = (growth_pct + div_yield_pct.fillna(0.0)).where(lambda x: x > 0)
     pegy = ratio(pe, denom)
@@ -834,8 +951,7 @@ def _pegy_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     return {"pegy": sanitize(pegy)}
 
 
-def _reit_multiple_fields(daily, fund_hist: pd.DataFrame, net_income: pd.DataFrame,
-                          mcap: pd.DataFrame, ev: pd.DataFrame) -> dict:
+def _reit_multiple_fields(daily, fund_hist: pd.DataFrame, net_income: pd.DataFrame, mcap: pd.DataFrame, ev: pd.DataFrame) -> dict:
     """FFO yield (FFO / price = 1 / P-FFO), scoped to the GICS equity-REIT group.
 
     Previously gated on `realEstateNet | rentalIncome` being tagged, which handed FFO to ~56
@@ -859,13 +975,11 @@ def _reit_multiple_fields(daily, fund_hist: pd.DataFrame, net_income: pd.DataFra
     return {"ffo_yield": fy} if fy.notna().any().any() else {}
 
 
-def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.DataFrame,
-                               fcf: pd.DataFrame) -> dict:
+def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.DataFrame, fcf: pd.DataFrame) -> dict:
     """Profitability / moat: raw ratios straight from the history, plus FCF margin and
     accruals (the net-income-vs-cash gap)."""
     F: dict[str, pd.DataFrame] = {}
-    for field in ["grossMargins", "operatingMargins", "profitMargins",
-                  "returnOnEquity", "debtToEquity", "revenueGrowth", "earningsGrowth"]:
+    for field in ["grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "revenueGrowth", "earningsGrowth"]:
         f = daily(field)
         if not f.empty:
             F[field] = f
@@ -880,9 +994,9 @@ def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.Dat
     return F
 
 
-def _growth_trend_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                         revenue: pd.DataFrame, rnd: pd.DataFrame,
-                         yoy_periods: int) -> dict:
+def _growth_trend_fields(
+    daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, revenue: pd.DataFrame, rnd: pd.DataFrame, yoy_periods: int, prior=None
+) -> dict:
     """Growth / trend / dilution from the fiscal series (year-over-year), the 5-year
     margin trend, and R&D intensity.
 
@@ -890,18 +1004,34 @@ def _growth_trend_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     not just having one good year: TTM operating income / revenue now vs ~5 trading years
     ago (point-in-time, percentage-point change). Positive = durable expansion."""
     F: dict[str, pd.DataFrame] = {}
-    for name, field, kind in (("fcf_growth", "freeCashflow", "pct"),
-                              ("shares_growth", "sharesOutstanding", "pct"),
-                              ("gross_margin_chg", "grossMargins", "diff")):
-        chg = fiscal_change_to_daily(fund_hist, field, idx, kind=kind, periods=yoy_periods)
+    for name, field, kind in (
+        ("fcf_growth", "freeCashflow", "pct"),
+        ("shares_growth", "sharesOutstanding", "pct"),
+        ("gross_margin_chg", "grossMargins", "diff"),
+    ):
+        chg = fiscal_change_to_daily(
+            fund_hist,
+            field,
+            idx,
+            kind=kind,
+            periods=yoy_periods,
+            years=1,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
         if chg.notna().any().any():
             F[name] = chg
 
     op_margin = ratio(daily("operatingIncome"), revenue, positive_den=True)
     if not op_margin.empty and op_margin.notna().any().any():
-        om_5y = sanitize(op_margin - op_margin.shift(_FIVE_YEARS))
-        if om_5y.notna().any().any():
-            F["operating_margin_5y_chg"] = om_5y
+        if prior is not None:
+            prior_op_margin = ratio(
+                prior("operatingIncome", 5),
+                prior("totalRevenue", 5),
+                positive_den=True,
+            )
+            om_5y = sanitize(op_margin - prior_op_margin)
+            if om_5y.notna().any().any():
+                F["operating_margin_5y_chg"] = om_5y
 
     rd_intensity = ratio(rnd, revenue, positive_den=True)
     if not rd_intensity.empty and rd_intensity.notna().any().any():
@@ -909,8 +1039,7 @@ def _growth_trend_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     return F
 
 
-def _reinvestment_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                         yoy_periods: int) -> dict:
+def _reinvestment_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int) -> dict:
     """Reinvestment quality: depreciation & amortization vs capex.
 
     If D&A runs ABOVE capex (da_to_capex > 1) and, worse, is GROWING faster than capex
@@ -923,19 +1052,24 @@ def _reinvestment_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
         da_to_capex = ratio(depamort.abs(), capex.abs(), positive_den=True)
         if da_to_capex.notna().any().any():
             F["da_to_capex"] = da_to_capex
-    da_growth = fiscal_change_to_daily(fund_hist, "depAmort", idx,
-                                       kind="pct", periods=yoy_periods)
-    capex_growth = fiscal_change_to_daily(fund_hist, "capex", idx,
-                                          kind="pct", periods=yoy_periods)
+    da_growth = fiscal_change_to_daily(fund_hist, "depAmort", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+    capex_growth = fiscal_change_to_daily(fund_hist, "capex", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
     if da_growth.notna().any().any() and capex_growth.notna().any().any():
         F["da_minus_capex_growth"] = da_growth - capex_growth
     return F
 
 
-def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                           revenue: pd.DataFrame, net_income: pd.DataFrame,
-                           fcf: pd.DataFrame, long_debt: pd.DataFrame,
-                           yoy_periods: int) -> dict:
+def _quality_regime_fields(
+    daily,
+    fund_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    revenue: pd.DataFrame,
+    net_income: pd.DataFrame,
+    fcf: pd.DataFrame,
+    long_debt: pd.DataFrame,
+    yoy_periods: int,
+    prior,
+) -> dict:
     """REGIME-ROBUST quality measures that stay defined for loss-makers and growth names,
     where the earnings-based yields are masked out:
 
@@ -960,20 +1094,21 @@ def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     gm_lvl = daily("grossMargins")
     if not gm_lvl.empty and not revenue.empty and not assets.empty:
         cols = gm_lvl.columns.intersection(revenue.columns)
-        gross_profit = gm_lvl[cols] * revenue[cols]           # grossMargins * revenue
+        gross_profit = gm_lvl[cols] * revenue[cols]  # grossMargins * revenue
         gp = ratio(gross_profit, assets, positive_den=True)
         if not gp.empty and gp.notna().any().any():
             F["gross_profitability"] = gp
 
-    _assets_field = ("totalAssetsExLease" if "totalAssetsExLease" in fund_hist.columns
-                     else "totalAssets")
-    asset_growth = fiscal_change_to_daily(fund_hist, _assets_field, idx,
-                                          kind="pct", periods=yoy_periods)
+    _assets_field = "totalAssetsExLease" if "totalAssetsExLease" in fund_hist.columns else "totalAssets"
+    asset_growth = fiscal_change_to_daily(
+        fund_hist, _assets_field, idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if asset_growth.notna().any().any():
         F["asset_growth"] = asset_growth
 
-    rev_growth_pct = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
-                                            kind="pct", periods=yoy_periods) * 100.0
+    rev_growth_pct = (
+        fiscal_change_to_daily(fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS) * 100.0
+    )
     fcf_margin_pct = ratio(fcf, revenue, positive_den=True) * 100.0
     rule40 = sanitize(rev_growth_pct + fcf_margin_pct)
     if rule40.notna().any().any():
@@ -987,13 +1122,27 @@ def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     _gm = daily("grossMargins")
     _turn = ratio(revenue, _oa, positive_den=True)
     if not _oa.empty and not _ocf.empty and not net_income.empty:
-        y = _YEAR
+        assets_field = "totalAssetsExLease" if "totalAssetsExLease" in fund_hist.columns else "totalAssets"
+        prior_assets = prior(assets_field)
+        prior_income = prior("netIncome")
+        prior_roa = ratio(prior_income, prior_assets, positive_den=True)
+        prior_cr = ratio(
+            prior("currentAssets"),
+            prior("currentLiabilities"),
+            positive_den=True,
+        )
+        prior_lev = ratio(prior("longTermDebt"), prior_assets, positive_den=True)
+        prior_turn = ratio(prior("totalRevenue"), prior_assets, positive_den=True)
         parts = [
-            (_roa > 0), (_ocf > 0), (_roa > _roa.shift(y)),
-            (ratio(_ocf, _oa, positive_den=True) > _roa),                  # accruals: cash > profit
-            (_lev < _lev.shift(y)), (_cr > _cr.shift(y)),
-            (_sh <= _sh.shift(y) * 1.001),                                 # no net dilution
-            (_gm > _gm.shift(y)), (_turn > _turn.shift(y)),
+            (_roa > 0),
+            (_ocf > 0),
+            (_roa > prior_roa),
+            (ratio(_ocf, _oa, positive_den=True) > _roa),  # accruals: cash > profit
+            (_lev < prior_lev),
+            (_cr > prior_cr),
+            (_sh <= prior("sharesOutstanding") * 1.001),  # no net dilution
+            (_gm > prior("grossMargins")),
+            (_turn > prior_turn),
         ]
         fscore = sum(p.astype("float64") for p in parts)
         gate = _oa.notna() & net_income.notna() & _ocf.notna()
@@ -1003,12 +1152,12 @@ def _quality_regime_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     return F
 
 
-def _state_flag_fields(daily, net_income: pd.DataFrame, fcf: pd.DataFrame,
-                       equity: pd.DataFrame) -> dict:
+def _state_flag_fields(daily, net_income: pd.DataFrame, fcf: pd.DataFrame, equity: pd.DataFrame) -> dict:
     """Absolute 0/1 regime flags (emitted RAW, see _STATE_FIELDS).
 
     A NaN base -> NaN flag (never a false 0), so "no data" is not read as
     "unprofitable"."""
+
     def _flag(base: pd.DataFrame, cond: pd.DataFrame) -> pd.DataFrame:
         return cond.astype(float).where(base.notna())
 
@@ -1025,23 +1174,48 @@ def _state_flag_fields(daily, net_income: pd.DataFrame, fcf: pd.DataFrame,
     return F
 
 
-def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                             yoy_periods: int) -> dict:
+def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int) -> dict:
     """LATEST-QUARTER momentum (discrete single quarter, not TTM): captures the
     acceleration / inflection that TTM smooths away. Needs the discrete single-quarter
     columns emitted by the extractor."""
     F: dict[str, pd.DataFrame] = {}
-    q_rev_yoy = fiscal_apply_to_daily(fund_hist, "revenue_q", idx,
-                                      lambda s: s.pct_change(yoy_periods))
+    q_rev_values = fiscal_change_values(
+        fund_hist,
+        "revenue_q",
+        kind="pct",
+        periods=yoy_periods,
+        years=1,
+    )
+    q_rev_yoy = fiscal_values_to_daily(
+        fund_hist,
+        q_rev_values,
+        idx,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     if q_rev_yoy.notna().any().any():
         F["q_rev_growth"] = q_rev_yoy
         # acceleration = this quarter's YoY minus the previous quarter's YoY
-        F["rev_growth_accel"] = fiscal_apply_to_daily(
-            fund_hist, "revenue_q", idx,
-            lambda s: s.pct_change(yoy_periods).diff(1))
+        previous_growth = _previous_fiscal_value(fund_hist, q_rev_values)
+        F["rev_growth_accel"] = fiscal_values_to_daily(
+            fund_hist,
+            q_rev_values - previous_growth,
+            idx,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
 
-    q_ni_yoy = fiscal_apply_to_daily(fund_hist, "netIncome_q", idx,
-                                     lambda s: s.pct_change(yoy_periods))
+    q_ni_values = fiscal_change_values(
+        fund_hist,
+        "netIncome_q",
+        kind="pct",
+        periods=yoy_periods,
+        years=1,
+    )
+    q_ni_yoy = fiscal_values_to_daily(
+        fund_hist,
+        q_ni_values,
+        idx,
+        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+    )
     if q_ni_yoy.notna().any().any():
         F["q_earnings_growth"] = q_ni_yoy
 
@@ -1054,8 +1228,7 @@ def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
     return F
 
 
-def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                                yoy_periods: int) -> dict:
+def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int) -> dict:
     """YEARLY-TTM momentum (current TTM vs TTM one year ago).
 
     Complements the single-quarter features: captures a multi-quarter trend rather than
@@ -1063,31 +1236,49 @@ def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     the fiscal history of level columns so seasonality is removed by construction (same
     quarter each year -> yoy_periods filings back)."""
     F: dict[str, pd.DataFrame] = {}
-    y_rev_growth = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
-                                          kind="pct", periods=yoy_periods)
+    y_rev_growth = fiscal_change_to_daily(
+        fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if y_rev_growth.notna().any().any():
         F["y_rev_growth"] = y_rev_growth
-        F["y_rev_growth_accel"] = fiscal_apply_to_daily(
-            fund_hist, "totalRevenue", idx,
-            lambda s, n=yoy_periods: s.pct_change(n).diff(1))
+        y_rev_values = fiscal_change_values(
+            fund_hist,
+            "totalRevenue",
+            kind="pct",
+            periods=yoy_periods,
+            years=1,
+        )
+        F["y_rev_growth_accel"] = fiscal_values_to_daily(
+            fund_hist,
+            y_rev_values - _previous_fiscal_value(fund_hist, y_rev_values),
+            idx,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
 
-    y_earnings_growth = fiscal_change_to_daily(fund_hist, "netIncome", idx,
-                                               kind="pct", periods=yoy_periods)
+    y_earnings_growth = fiscal_change_to_daily(
+        fund_hist, "netIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if y_earnings_growth.notna().any().any():
         F["y_earnings_growth"] = y_earnings_growth
 
     # YoY change in TTM profit margin (margin expansion / contraction trend)
-    y_margin_chg = fiscal_change_to_daily(fund_hist, "profitMargins", idx,
-                                          kind="diff", periods=yoy_periods)
+    y_margin_chg = fiscal_change_to_daily(
+        fund_hist, "profitMargins", idx, kind="diff", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if y_margin_chg.notna().any().any():
         F["y_margin_vs_ttm"] = y_margin_chg
     return F
 
 
-def _distress_fields(daily, ebitda: pd.DataFrame, cash: pd.DataFrame,
-                     fcf: pd.DataFrame, long_debt: pd.DataFrame,
-                     short_debt: pd.DataFrame,
-                     operating_cash: frozenset[str] | None = None) -> dict:
+def _distress_fields(
+    daily,
+    ebitda: pd.DataFrame,
+    cash: pd.DataFrame,
+    fcf: pd.DataFrame,
+    long_debt: pd.DataFrame,
+    short_debt: pd.DataFrame,
+    operating_cash: frozenset[str] | None = None,
+) -> dict:
     """DISTRESS / SOLVENCY: can the firm service and roll its debt?
 
     debtToEquity is a book ratio that says nothing about debt-SERVICING ability; these
@@ -1105,10 +1296,8 @@ def _distress_fields(daily, ebitda: pd.DataFrame, cash: pd.DataFrame,
     total_debt = _combine_debt(daily, long_debt, short_debt, daily("totalLiabilities"))
     if not total_debt.empty and not ebitda.empty:
         net_cash = capital.drop_operating_cash(cash, operating_cash)
-        cols = (total_debt.columns.intersection(net_cash.columns)
-                if not net_cash.empty else total_debt.columns)
-        net_debt = (total_debt[cols].sub(net_cash[cols], fill_value=0.0)
-                    if not net_cash.empty else total_debt)
+        cols = total_debt.columns.intersection(net_cash.columns) if not net_cash.empty else total_debt.columns
+        net_debt = total_debt[cols].sub(net_cash[cols], fill_value=0.0) if not net_cash.empty else total_debt
         # HIGH net-debt/EBITDA = more leveraged = worse (only meaningful for EBITDA>0)
         nd_ebitda = ratio(net_debt, ebitda, positive_den=True)
         if not nd_ebitda.empty and nd_ebitda.notna().any().any():
@@ -1119,8 +1308,7 @@ def _distress_fields(daily, ebitda: pd.DataFrame, cash: pd.DataFrame,
         cov = ratio(ebitda, interest.abs(), positive_den=True)
         if not cov.empty and cov.notna().any().any():
             F["interest_coverage"] = cov
-    current_ratio = ratio(daily("currentAssets"), daily("currentLiabilities"),
-                          positive_den=True)
+    current_ratio = ratio(daily("currentAssets"), daily("currentLiabilities"), positive_den=True)
     if not current_ratio.empty and current_ratio.notna().any().any():
         F["current_ratio"] = current_ratio
     if not cash.empty and not total_debt.empty:
@@ -1135,8 +1323,7 @@ def _distress_fields(daily, ebitda: pd.DataFrame, cash: pd.DataFrame,
     return F
 
 
-def _sga_efficiency_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                           revenue: pd.DataFrame, yoy_periods: int) -> dict:
+def _sga_efficiency_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, revenue: pd.DataFrame, yoy_periods: int) -> dict:
     """MARKETING & SALES efficiency (operating leverage).
 
     `operating_leverage` = sales growing FASTER than selling cost (scalable); negative
@@ -1145,10 +1332,12 @@ def _sga_efficiency_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     sga_intensity = ratio(daily("sellingGeneralAdmin"), revenue, positive_den=True)
     if not sga_intensity.empty and sga_intensity.notna().any().any():
         F["sga_intensity"] = sga_intensity
-    sga_growth = fiscal_change_to_daily(fund_hist, "sellingGeneralAdmin", idx,
-                                        kind="pct", periods=yoy_periods)
-    rev_growth = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
-                                        kind="pct", periods=yoy_periods)
+    sga_growth = fiscal_change_to_daily(
+        fund_hist, "sellingGeneralAdmin", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
+    rev_growth = fiscal_change_to_daily(
+        fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if sga_growth.notna().any().any():
         F["sga_growth"] = sga_growth
         if rev_growth.notna().any().any():
@@ -1157,8 +1346,7 @@ def _sga_efficiency_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex
     return F
 
 
-def _ma_footprint_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                         revenue: pd.DataFrame, yoy_periods: int) -> dict:
+def _ma_footprint_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, revenue: pd.DataFrame, yoy_periods: int) -> dict:
     """M&A footprint: organic vs inorganic growth, and impairment risk."""
     F: dict[str, pd.DataFrame] = {}
     # Sharadar's `ncfbus`: net cash paid for acquisitions, stored outflow-negative, so the
@@ -1174,8 +1362,9 @@ def _ma_footprint_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
     # YoY growth in the acquired-intangibles balance: the balance-sheet trace of M&A, and
     # the exposure a future writedown lands on. On Sharadar's COMBINED `intangibles` -- the
     # bare `goodwill` this read before is written by no producer, so it grew nothing.
-    intangibles_growth = fiscal_change_to_daily(fund_hist, "intangibles", idx,
-                                                kind="pct", periods=yoy_periods)
+    intangibles_growth = fiscal_change_to_daily(
+        fund_hist, "intangibles", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if intangibles_growth.notna().any().any():
         F["intangibles_growth"] = intangibles_growth
     return F
@@ -1198,9 +1387,9 @@ def _sbc_fields(daily, revenue: pd.DataFrame, sbc: pd.DataFrame) -> dict:
     return F
 
 
-def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex,
-                             revenue: pd.DataFrame, ebitda: pd.DataFrame,
-                             yoy_periods: int) -> dict:
+def _valuation_engine_fields(
+    daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, revenue: pd.DataFrame, ebitda: pd.DataFrame, yoy_periods: int, prior=None
+) -> dict:
     """REFINED VALUATION-ENGINE RATIOS (elasticity / divergence / dilution).
 
       operating_leverage_elasticity  %dOperatingIncome / %dRevenue (>1 = scalable model,
@@ -1219,10 +1408,12 @@ def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
     The elasticities guard against a ~flat revenue denominator (require a >=2% move),
     which would otherwise make them meaningless and explode."""
     F: dict[str, pd.DataFrame] = {}
-    oi_growth = fiscal_change_to_daily(fund_hist, "operatingIncome", idx,
-                                       kind="pct", periods=yoy_periods)
-    rev_growth_f = fiscal_change_to_daily(fund_hist, "totalRevenue", idx,
-                                          kind="pct", periods=yoy_periods)
+    oi_growth = fiscal_change_to_daily(
+        fund_hist, "operatingIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
+    rev_growth_f = fiscal_change_to_daily(
+        fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     ol_el = ratio(oi_growth, rev_growth_f.where(rev_growth_f.abs() >= 0.02))
     if not ol_el.empty and ol_el.notna().any().any():
         F["operating_leverage_elasticity"] = ol_el
@@ -1231,24 +1422,37 @@ def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
     if gm.empty:
         gm = daily("grossMargins")
     em = ratio(ebitda, revenue, positive_den=True)
-    if not gm.empty and not em.empty:
-        med = (gm - gm.shift(252)) - (em - em.shift(252))     # ~1y change divergence
+    if not gm.empty and not em.empty and prior is not None:
+        prior_gm = ratio(
+            prior("grossProfit"),
+            prior("totalRevenue"),
+            positive_den=True,
+        )
+        if prior_gm.empty:
+            prior_gm = prior("grossMargins")
+        prior_em = ratio(
+            prior("ebitda"),
+            prior("totalRevenue"),
+            positive_den=True,
+        )
+        med = (gm - prior_gm) - (em - prior_em)
         if med.notna().any().any():
             F["margin_expansion_delta"] = sanitize(med)
 
     cur_a2, cur_l2 = daily("currentAssets"), daily("currentLiabilities")
-    if not cur_a2.empty and not cur_l2.empty and not revenue.empty:
+    if not cur_a2.empty and not cur_l2.empty and not revenue.empty and prior is not None:
         nwc = cur_a2.sub(cur_l2, fill_value=np.nan)
-        prev_nwc = nwc.shift(252)
+        prev_nwc = prior("currentAssets").sub(prior("currentLiabilities"), fill_value=np.nan)
         nwc_g = ratio(nwc - prev_nwc, prev_nwc, positive_den=True)
-        prev_rev = revenue.shift(252)
+        prev_rev = prior("totalRevenue")
         rev_g = ratio(revenue - prev_rev, prev_rev, positive_den=True)
         nwc_el = ratio(nwc_g, rev_g.where(rev_g.abs() >= 0.02))
         if not nwc_el.empty and nwc_el.notna().any().any():
             F["nwc_elasticity"] = nwc_el
 
-    dil_growth = fiscal_change_to_daily(fund_hist, "dilutedShares", idx,
-                                        kind="pct", periods=yoy_periods)
+    dil_growth = fiscal_change_to_daily(
+        fund_hist, "dilutedShares", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+    )
     if dil_growth.notna().any().any():
         F["diluted_shares_growth"] = dil_growth
 
@@ -1258,16 +1462,15 @@ def _valuation_engine_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
     return F
 
 
-def _intrinsic_fields(fund_hist: pd.DataFrame, close: pd.DataFrame | None,
-                      idx: pd.DatetimeIndex, intrinsic_cfg: dict | None,
-                      level_factor: pd.DataFrame | None = None) -> dict:
+def _intrinsic_fields(
+    fund_hist: pd.DataFrame, close: pd.DataFrame | None, idx: pd.DatetimeIndex, intrinsic_cfg: dict | None, level_factor: pd.DataFrame | None = None
+) -> dict:
     """INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price. `intrinsic_cfg` is optional --
     every caller up the chain defaults it to None, so fall back to `intrinsic_value_daily`'s
     own documented DCF defaults rather than splatting None."""
     if close is None:
         return {}
-    iy = intrinsic_value_daily(fund_hist, close, idx, level_factor=level_factor,
-                               **(intrinsic_cfg or {})).get("yield")
+    iy = intrinsic_value_daily(fund_hist, close, idx, level_factor=level_factor, **(intrinsic_cfg or {})).get("yield")
     if iy is None or iy.empty or not iy.notna().any().any():
         return {}
     return {"intrinsic_yield": iy}
@@ -1299,19 +1502,71 @@ def _derived_fields(
     overrides the DCF parameters for the intrinsic-value yield.
     """
 
+    fund_hist = null_invalid_gross_profit_sentinels(fund_hist)
     F: dict[str, pd.DataFrame] = {}
     _daily_cache: dict[str, pd.DataFrame] = {}
+    _prior_cache: dict[tuple[str, int, int], pd.DataFrame] = {}
+    _match_cache: dict[tuple[int, int], pd.Series] = {}
 
     def daily(field):
         # memoized: several fields are reused across blocks (and the business-quality
         # helpers), so cache the pivot+ffill instead of recomputing it.
         if field not in _daily_cache:
-            _daily_cache[field] = fundamentals_to_daily(fund_hist, field, idx)
+            _daily_cache[field] = fundamentals_to_daily(
+                fund_hist,
+                field,
+                idx,
+                max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+            )
         return _daily_cache[field]
+
+    def prior(field: str, years: int = 1, tolerance_days: int = 45) -> pd.DataFrame:
+        if field not in fund_hist.columns:
+            return pd.DataFrame(index=idx)
+        key = (field, years, tolerance_days)
+        if key not in _prior_cache:
+            has_fiscal_end = "fiscal_end" in fund_hist.columns and fund_hist["fiscal_end"].notna().any()
+            if not has_fiscal_end:
+                work = pd.DataFrame(
+                    {
+                        "ticker": fund_hist["ticker"].astype(str),
+                        "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+                        "value": pd.to_numeric(fund_hist[field], errors="coerce"),
+                        "position": np.arange(len(fund_hist)),
+                    }
+                ).sort_values(["ticker", "as_of", "position"])
+                work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(years * yoy_periods))
+                values = np.full(len(fund_hist), np.nan, dtype="float64")
+                values[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+                _prior_cache[key] = fiscal_values_to_daily(
+                    fund_hist,
+                    pd.Series(values, index=fund_hist.index),
+                    idx,
+                    max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+                )
+            else:
+                match_key = (years, tolerance_days)
+                if match_key not in _match_cache:
+                    _match_cache[match_key] = fiscal_prior_positions(
+                        fund_hist,
+                        years=years,
+                        tolerance_days=tolerance_days,
+                    )
+                _prior_cache[key] = fiscal_prior_to_daily(
+                    fund_hist,
+                    field,
+                    idx,
+                    years=years,
+                    tolerance_days=tolerance_days,
+                    max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+                    positions=_match_cache[match_key],
+                )
+        return _prior_cache[key]
 
     # ---- frames shared by MORE THAN ONE block (hoisted once) ---- #
     revenue = daily("totalRevenue")
     net_income = daily("netIncome")
+    common_income = daily("netIncomeCommon")
     fcf = daily("freeCashflow")
     equity = daily("stockholdersEquity")
     ebitda = daily("ebitda")
@@ -1350,8 +1605,7 @@ def _derived_fields(
     # every bank: measured, median `cashneq` is 10.97% of market cap for Financials and
     # 101.95% at p90, so the top decile's "cash" exceeds its entire equity value and EV
     # would turn NEGATIVE, nulling a feature that has a value today.
-    operating_cash = frozenset(family_tickers(fund_hist, "bank")
-                               | family_tickers(fund_hist, "insurance"))
+    operating_cash = frozenset(family_tickers(fund_hist, "bank") | family_tickers(fund_hist, "insurance"))
 
     # ---- everything that needs a daily market cap ---- #
     # `close` is Optional all the way down this module (`_intrinsic_fields` returns early on
@@ -1359,8 +1613,16 @@ def _derived_fields(
     # `daily_market_cap` declares a non-Optional frame and reads `close_split.index` on its
     # first line. An empty frame on `idx` is the same answer `PitCache.market_cap` gives when
     # either input is absent, and every downstream block already handles an empty mcap.
-    mcap = (pd.DataFrame(index=idx) if close is None or close.empty
-            else daily_market_cap(fund_hist, close, level_factor=level_factor))
+    mcap = (
+        pd.DataFrame(index=idx)
+        if close is None or close.empty
+        else daily_market_cap(
+            fund_hist,
+            close,
+            level_factor=level_factor,
+            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
+        )
+    )
 
     # Every field below is a yield or a multiple, so all of them are undefined without a
     # price. They are SKIPPED rather than emitted empty, because a key carrying an empty
@@ -1368,31 +1630,36 @@ def _derived_fields(
     # yield" instead of "there was no price to compute one" -- the same distinction
     # `_intrinsic_fields` already makes by returning `{}` when `close is None`.
     if not mcap.empty:
-        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret,
-                                     operating_cash)
-        F.update(_valuation_yield_fields(mcap, net_income, revenue, equity, fcf))
+        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret, operating_cash)
+        F.update(
+            _valuation_yield_fields(
+                mcap,
+                common_income,
+                net_income,
+                revenue,
+                equity,
+                fcf,
+            )
+        )
         F.update(_pension_scale_fields(pension_ret, pbo, mcap))
         F.update(_ev_yield_fields(ebitda, fcf, ev))
         F.update(_altman_z_fields(daily, mcap, revenue))
-        F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods,
-                              earnings_history))
+        F.update(_pegy_fields(daily, fund_hist, idx, mcap, net_income, yoy_periods, earnings_history))
         F.update(_reit_multiple_fields(daily, fund_hist, net_income, mcap, ev))
 
     # ---- price-independent blocks ---- #
     F.update(_profitability_level_fields(daily, revenue, net_income, fcf))
-    F.update(_growth_trend_fields(daily, fund_hist, idx, revenue, rnd, yoy_periods))
+    F.update(_growth_trend_fields(daily, fund_hist, idx, revenue, rnd, yoy_periods, prior))
     F.update(_reinvestment_fields(daily, fund_hist, idx, yoy_periods))
-    F.update(_quality_regime_fields(daily, fund_hist, idx, revenue, net_income, fcf,
-                                    long_debt, yoy_periods))
+    F.update(_quality_regime_fields(daily, fund_hist, idx, revenue, net_income, fcf, long_debt, yoy_periods, prior))
     F.update(_state_flag_fields(daily, net_income, fcf, equity))
     F.update(_quarter_momentum_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_yearly_ttm_momentum_fields(fund_hist, idx, yoy_periods))
-    F.update(_distress_fields(daily, ebitda, cash, fcf, long_debt, short_debt,
-                              operating_cash))
+    F.update(_distress_fields(daily, ebitda, cash, fcf, long_debt, short_debt, operating_cash))
     F.update(_sga_efficiency_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_ma_footprint_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_sbc_fields(daily, revenue, sbc))
-    F.update(_valuation_engine_fields(daily, fund_hist, idx, revenue, ebitda, yoy_periods))
+    F.update(_valuation_engine_fields(daily, fund_hist, idx, revenue, ebitda, yoy_periods, prior))
     F.update(_intrinsic_fields(fund_hist, close, idx, intrinsic_cfg, level_factor))
 
     # ---- BUSINESS-QUALITY blocks ---- #
@@ -1407,7 +1674,7 @@ def _derived_fields(
     # (KKR to 14.1x, APO, ARES, BX -- all real, not extraction bugs) are exactly the
     # observations it would neutralise, and nothing does.
     F.update(_da_realism_fields(daily))
-    F.update(_forensic_fields(daily, idx))
+    F.update(_forensic_fields(daily, idx, prior))
     F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods, operating_cash))
     F.update(_per_share_and_profit_slice_fields(daily, fund_hist, idx, yoy_periods, close))
 
@@ -1438,8 +1705,8 @@ def build_state_panel(fields: dict) -> pd.DataFrame:
         long_frames.append(s.rename(f"f_{name}"))
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't 
-        # trip the "highly fragmented DataFrame" PerformanceWarning
+    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't
+    # trip the "highly fragmented DataFrame" PerformanceWarning
     return pd.concat(long_frames, axis=1).copy().reset_index()
 
 
@@ -1458,8 +1725,8 @@ def build_self_history_panel(fields: dict) -> pd.DataFrame:
         long_frames.append(s.rename(f"f_{name}_vs_hist"))
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    
-    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't 
+
+    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't
     # trip the "highly fragmented DataFrame" PerformanceWarning
     return pd.concat(long_frames, axis=1).copy().reset_index()
 
@@ -1494,24 +1761,25 @@ def build_fundamental_feature_panel(
     without it valuation is skipped but every other feature is still built.
     Empty frame if no fundamentals available.
     """
-    
+
     if fundamentals_history is None or fundamentals_history.empty:
         raise ValueError("Need to build fundamentals_history table first")
 
     yoy_periods = infer_yoy_periods(fundamentals_history)
-    fields = _derived_fields(fund_hist=fundamentals_history, 
-                             idx=trading_index, 
-                             close=stock_close,
-                             yoy_periods=yoy_periods, 
-                             intrinsic_cfg=intrinsic_cfg,
-                             earnings_history=earnings_history, 
-                             pension_facts=pension_facts,
-                             notes_num=notes_num,
-                             level_factor=level_factor)
+    fields = _derived_fields(
+        fund_hist=fundamentals_history,
+        idx=trading_index,
+        close=stock_close,
+        yoy_periods=yoy_periods,
+        intrinsic_cfg=intrinsic_cfg,
+        earnings_history=earnings_history,
+        pension_facts=pension_facts,
+        notes_num=notes_num,
+        level_factor=level_factor,
+    )
 
     # float32 to reduce space vs float 64, no need of too much detail since z scored or ranked
-    fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v)
-              for k, v in fields.items()}
+    fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v) for k, v in fields.items()}
 
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}

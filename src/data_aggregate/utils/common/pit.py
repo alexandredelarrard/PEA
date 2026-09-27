@@ -51,6 +51,27 @@ class FieldGetter(Protocol):
 # --------------------------------------------------------------------------- #
 # pure functions                                                               #
 # --------------------------------------------------------------------------- #
+def null_invalid_gross_profit_sentinels(fund_hist: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with the provider's impossible zero-COGS sentinel nulled.
+
+    Positive revenue, zero cost of revenue, and a gross margin of exactly one is
+    not a usable accounting observation.  Null all three mutually dependent
+    fields so downstream ratios cannot turn that source sentinel into a perfect
+    gross-margin or profitability signal.
+    """
+    out = fund_hist.copy()
+    required = {"totalRevenue", "costOfRevenue", "grossMargins"}
+    if not required.issubset(out.columns):
+        return out
+    revenue = pd.to_numeric(out["totalRevenue"], errors="coerce")
+    cost = pd.to_numeric(out["costOfRevenue"], errors="coerce")
+    margin = pd.to_numeric(out["grossMargins"], errors="coerce")
+    invalid = revenue.gt(0) & cost.eq(0) & margin.eq(1)
+    columns = [column for column in ("costOfRevenue", "grossProfit", "grossMargins") if column in out.columns]
+    out.loc[invalid, columns] = np.nan
+    return out
+
+
 def fundamentals_to_daily(
     fundamentals_history: pd.DataFrame,
     field: str,
@@ -98,7 +119,13 @@ def _observations_to_daily(
     return daily
 
 
-def daily_market_cap(fundamentals_history: pd.DataFrame, close_split: pd.DataFrame, *, level_factor: pd.DataFrame | None) -> pd.DataFrame:
+def daily_market_cap(
+    fundamentals_history: pd.DataFrame,
+    close_split: pd.DataFrame,
+    *,
+    level_factor: pd.DataFrame | None,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
     """Historical daily market cap = ffilled `sharesOutstanding` x `close_split` x `S(d)`.
 
     ⚠ BOTH PRICE LEGS MUST BE SPLIT-ADJUSTED, and the parameter is named for it. The vendor
@@ -128,7 +155,12 @@ def daily_market_cap(fundamentals_history: pd.DataFrame, close_split: pd.DataFra
 
     Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
     """
-    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close_split.index)
+    shares = fundamentals_to_daily(
+        fundamentals_history,
+        "sharesOutstanding",
+        close_split.index,
+        max_age_days=max_age_days,
+    )
     if shares.empty:
         return pd.DataFrame(index=close_split.index)
 
@@ -155,29 +187,13 @@ _CUBE_TIME_GROWTH: dict[str, str] = {
     "earningsGrowth": "netIncome",
 }
 
-#: How far from the 365-day target a filing may sit and still count as "one year ago".
-#:
-#: The match is NEAREST, not backward, and the difference is measured: AAPL's 2026-07-31 row
-#: has filings at 2025-08-01 (target + 1 day) and 2025-05-02 (target - 90). A backward match
-#: is forced to skip the one that is one day too late and compare TTM revenue 455 days apart,
-#: which is not a year-over-year growth. Nearest picks 2025-08-01.
-#:
-#: Nearest stays leak-free: the worst-case match is `as_of - 365 + 180 = as_of - 185` days,
-#: always strictly before the row's own filing date, so both legs are public on `as_of`.
-#: 180 days also still refuses to call a multi-year gap a YoY comparison -- the defect a bare
-#: `shift(4)` cannot even detect.
-_YOY_TOLERANCE_DAYS = 180
-
 
 def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
     """`fundamentals_history` + the `revenueGrowth` / `earningsGrowth` columns, row-level.
 
-    THE OFFSET IS THE WHOLE POINT, and it is why these two are computed at cube time rather
-    than by the history build (`kpi_catalogue.CUBE_TIME_COLUMNS`). Growth is measured against
-    the filing NEAREST 365 CALENDAR DAYS back, found per ticker by an as-of match. The
-    history build could only take a 4-ROW offset, and under the publication-event grain an
-    amendment row makes four rows ~9 months rather than 12 -- so the denominator would be the
-    wrong quarter for exactly the names that restate.
+    Growth is measured against the same fiscal period one year earlier (within 45 days),
+    using only amendments already public on the current row's `as_of`. Publication-date or
+    row-count offsets are not fiscal-period definitions.
 
     Point-in-time by construction: both legs are filings already public on their own `as_of`,
     and the result is keyed on the LATER of the two, so `fundamentals_to_daily` forward-fills
@@ -188,50 +204,22 @@ def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
     "this firm did not grow" instead of "growth was never computed".
     """
     out = fund_hist.copy()
-    if "as_of" not in out.columns or "ticker" not in out.columns or out.empty:
+    required = {"ticker", "as_of", "fiscal_end"}
+    if not required.issubset(out.columns) or out.empty:
         return out
-
-    # ⚠ `[ns]` EXPLICITLY, not just `to_datetime`. Postgres DATE columns come back as
-    # `datetime64[s]`, and subtracting a Timedelta below promotes that to `[us]` -- so the
-    # two sides of the `merge_asof` end up on DIFFERENT RESOLUTIONS and pandas raises
-    # `MergeError: incompatible merge keys`. Reading the same rows out of a parquet or a CSV
-    # gives `[ns]` on both sides and hides it entirely, which is why this only reproduces
-    # against the live store.
-    as_of = pd.to_datetime(out["as_of"], errors="coerce").astype("datetime64[ns]")
+    positions = fiscal_prior_positions(out, years=1, tolerance_days=45)
     for name, source in _CUBE_TIME_GROWTH.items():
         if source not in out.columns:
             continue
-        base = pd.DataFrame(
-            {
-                "ticker": out["ticker"].astype(str),
-                "as_of": as_of,
-                "level": pd.to_numeric(out[source], errors="coerce"),
-            }
-        ).dropna(subset=["ticker", "as_of"])
-        if base.empty:
-            continue
-        # One row per (ticker, as_of): an amendment republishes the same publication date,
-        # and merge_asof would otherwise match against whichever duplicate sorted last.
-        base = base.sort_values(["ticker", "as_of"]).drop_duplicates(["ticker", "as_of"], keep="last")
-        right = base.rename(columns={"as_of": "prior_as_of", "level": "prior"})
-        left = base.assign(target=base["as_of"] - pd.Timedelta(days=365))
-
-        matched = pd.merge_asof(
-            left.sort_values("target"),
-            right.sort_values("prior_as_of"),
-            left_on="target",
-            right_on="prior_as_of",
-            by="ticker",
-            direction="nearest",
-            tolerance=pd.Timedelta(days=_YOY_TOLERANCE_DAYS),
+        level = pd.to_numeric(out[source], errors="coerce")
+        prior = fiscal_prior_values(
+            out,
+            level,
+            years=1,
+            tolerance_days=45,
+            positions=positions,
         )
-        # A zero or negative prior makes the ratio meaningless, not infinite: a swing from a
-        # loss to a profit has no percentage growth, and dividing by it manufactures a huge
-        # number with an arbitrary sign that then dominates every z-score it reaches.
-        prior = matched["prior"].where(matched["prior"] > 0)
-        growth = (matched["level"] / prior - 1.0).replace([np.inf, -np.inf], np.nan)
-        keyed = pd.Series(growth.to_numpy(), index=pd.MultiIndex.from_arrays([matched["ticker"].to_numpy(), matched["as_of"].to_numpy()]))
-        out[name] = pd.MultiIndex.from_arrays([out["ticker"].astype(str), as_of]).map(keyed)
+        out[name] = (level / prior.where(prior > 0) - 1.0).replace([np.inf, -np.inf], np.nan)
     return out
 
 
@@ -251,12 +239,52 @@ def infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
     return int(min(4, max(1, round(365.0 / med))))
 
 
+def fiscal_prior_positions(
+    fund_hist: pd.DataFrame,
+    *,
+    years: int = 1,
+    tolerance_days: int = 45,
+) -> pd.Series:
+    """Positional index of each row's point-in-time fiscal predecessor, or -1."""
+    required = {"ticker", "as_of", "fiscal_end"}
+    if not required.issubset(fund_hist.columns) or fund_hist.empty:
+        return pd.Series(-1, index=fund_hist.index, dtype="int64")
+    work = pd.DataFrame(
+        {
+            "ticker": fund_hist["ticker"].astype(str),
+            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+            "fiscal_end": pd.to_datetime(fund_hist["fiscal_end"], errors="coerce"),
+            "position": np.arange(len(fund_hist)),
+        }
+    )
+    result = np.full(len(fund_hist), -1, dtype="int64")
+    tolerance = pd.Timedelta(days=int(tolerance_days))
+    for _, group in work.groupby("ticker", sort=False):
+        candidates = group.dropna(subset=["as_of", "fiscal_end"])
+        for current in candidates.itertuples(index=False):
+            target = current.fiscal_end - pd.DateOffset(years=int(years))
+            eligible = candidates[(candidates["as_of"] <= current.as_of) & (candidates["fiscal_end"] < current.fiscal_end)].copy()
+            if eligible.empty:
+                continue
+            eligible["_distance"] = (eligible["fiscal_end"] - target).abs()
+            eligible = eligible[eligible["_distance"] <= tolerance]
+            if eligible.empty:
+                continue
+            chosen = eligible.sort_values(
+                ["_distance", "as_of", "position"],
+                ascending=[True, False, False],
+            ).iloc[0]
+            result[int(current.position)] = int(chosen["position"])
+    return pd.Series(result, index=fund_hist.index, dtype="int64")
+
+
 def fiscal_prior_values(
     fund_hist: pd.DataFrame,
     field: str | pd.Series,
     *,
     years: int = 1,
     tolerance_days: int = 45,
+    positions: pd.Series | None = None,
 ) -> pd.Series:
     """Prior fiscal value aligned to each input row and limited to then-public data.
 
@@ -276,33 +304,20 @@ def fiscal_prior_values(
             pd.to_numeric(field.to_numpy(), errors="coerce"),
             index=fund_hist.index,
         )
-    work = pd.DataFrame(
-        {
-            "ticker": fund_hist["ticker"].astype(str),
-            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
-            "fiscal_end": pd.to_datetime(fund_hist["fiscal_end"], errors="coerce"),
-            "value": values,
-            "position": np.arange(len(fund_hist)),
-        }
+    matches = (
+        fiscal_prior_positions(
+            fund_hist,
+            years=years,
+            tolerance_days=tolerance_days,
+        )
+        if positions is None
+        else positions
     )
     result = np.full(len(fund_hist), np.nan, dtype="float64")
-    tolerance = pd.Timedelta(days=int(tolerance_days))
-    for _, group in work.groupby("ticker", sort=False):
-        candidates = group.dropna(subset=["as_of", "fiscal_end"])
-        for current in candidates.itertuples(index=False):
-            target = current.fiscal_end - pd.DateOffset(years=int(years))
-            eligible = candidates[(candidates["as_of"] <= current.as_of) & (candidates["fiscal_end"] < current.fiscal_end)].copy()
-            if eligible.empty:
-                continue
-            eligible["_distance"] = (eligible["fiscal_end"] - target).abs()
-            eligible = eligible[eligible["_distance"] <= tolerance]
-            if eligible.empty:
-                continue
-            chosen = eligible.sort_values(
-                ["_distance", "as_of", "position"],
-                ascending=[True, False, False],
-            ).iloc[0]
-            result[int(current.position)] = chosen["value"]
+    match_array = matches.to_numpy(dtype="int64")
+    valid = match_array >= 0
+    source = values.to_numpy(dtype="float64", na_value=np.nan)
+    result[valid] = source[match_array[valid]]
     return pd.Series(result, index=fund_hist.index, dtype="float64")
 
 
@@ -314,6 +329,7 @@ def fiscal_prior_to_daily(
     years: int = 1,
     tolerance_days: int = 45,
     max_age_days: int | None = None,
+    positions: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Daily PIT projection of the row-aligned fiscal predecessor."""
     prior = fiscal_prior_values(
@@ -321,6 +337,7 @@ def fiscal_prior_to_daily(
         field,
         years=years,
         tolerance_days=tolerance_days,
+        positions=positions,
     )
     observations = fund_hist[["ticker", "as_of"]].assign(_prior=prior)
     return _observations_to_daily(
@@ -329,6 +346,74 @@ def fiscal_prior_to_daily(
         idx,
         max_age_days=max_age_days,
     )
+
+
+def fiscal_values_to_daily(
+    fund_hist: pd.DataFrame,
+    values: pd.Series,
+    idx: pd.DatetimeIndex,
+    *,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
+    """Project row-aligned fiscal values from each row's publication date."""
+    if len(values) != len(fund_hist):
+        raise ValueError("fiscal value series must be row-aligned with fund_hist")
+    observations = fund_hist[["ticker", "as_of"]].assign(_value=pd.to_numeric(values.to_numpy(), errors="coerce"))
+    return _observations_to_daily(
+        observations,
+        "_value",
+        idx,
+        max_age_days=max_age_days,
+    )
+
+
+def fiscal_change_values(
+    fund_hist: pd.DataFrame,
+    field: str,
+    kind: str = "pct",
+    periods: int = 1,
+    *,
+    years: int | None = None,
+    tolerance_days: int = 45,
+    positions: pd.Series | None = None,
+) -> pd.Series:
+    """Row-aligned fiscal change, with a filing-count fallback only without fiscal dates."""
+    if field not in fund_hist.columns:
+        return pd.Series(np.nan, index=fund_hist.index, dtype="float64")
+    current = pd.to_numeric(fund_hist[field], errors="coerce")
+    has_fiscal_end = "fiscal_end" in fund_hist.columns and fund_hist["fiscal_end"].notna().any()
+    if has_fiscal_end:
+        match_years = years
+        if match_years is None:
+            cadence = infer_yoy_periods(fund_hist)
+            match_years = max(1, int(round(int(periods) / cadence)))
+        prior = fiscal_prior_values(
+            fund_hist,
+            current,
+            years=match_years,
+            tolerance_days=tolerance_days,
+            positions=positions,
+        )
+    else:
+        work = pd.DataFrame(
+            {
+                "ticker": fund_hist["ticker"].astype(str),
+                "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+                "value": current,
+                "position": np.arange(len(fund_hist)),
+            }
+        ).sort_values(["ticker", "as_of", "position"])
+        work["prior"] = work.groupby("ticker", sort=False)["value"].shift(periods=int(periods))
+        prior_values = np.full(len(fund_hist), np.nan, dtype="float64")
+        prior_values[work["position"].to_numpy(dtype="int64")] = work["prior"].to_numpy(dtype="float64", na_value=np.nan)
+        prior = pd.Series(prior_values, index=fund_hist.index)
+    if kind == "pct":
+        result = current / prior.where(prior != 0) - 1.0
+    elif kind == "diff":
+        result = current - prior
+    else:
+        raise ValueError("kind must be 'pct' or 'diff'")
+    return result.replace([np.inf, -np.inf], np.nan)
 
 
 def fiscal_change_to_daily(
@@ -341,6 +426,7 @@ def fiscal_change_to_daily(
     years: int | None = None,
     tolerance_days: int = 45,
     max_age_days: int | None = None,
+    positions: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Change of a fiscal field over `periods` filings, forward-filled onto
     trading days. With `periods` = one year of filings this is a seasonality-free
@@ -354,40 +440,23 @@ def fiscal_change_to_daily(
 
     if field not in fund_hist.columns:
         return pd.DataFrame(index=idx)
-    columns = ["ticker", "as_of", field]
-    has_fiscal_end = "fiscal_end" in fund_hist.columns
-    if has_fiscal_end:
-        columns.append("fiscal_end")
-    df = fund_hist[columns].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    df[field] = pd.to_numeric(df[field], errors="coerce")
-    df = df.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-    if df.empty:
+    if fund_hist.empty:
         return pd.DataFrame(index=idx)
-
-    if has_fiscal_end and df["fiscal_end"].notna().any():
-        match_years = years
-        if match_years is None:
-            cadence = infer_yoy_periods(df)
-            match_years = max(1, int(round(int(periods) / cadence)))
-        prior = fiscal_prior_values(
-            df,
-            field,
-            years=match_years,
-            tolerance_days=tolerance_days,
-        )
-    else:
-        prior = df.groupby("ticker")[field].shift(periods=int(periods))
-    if kind == "pct":
-        denominator = prior.where(prior != 0)
-        df["chg"] = df[field] / denominator - 1.0
-    elif kind == "diff":
-        df["chg"] = df[field] - prior
-    else:
-        raise ValueError("kind must be 'pct' or 'diff'")
-
-    df["chg"] = df["chg"].replace([np.inf, -np.inf], np.nan)
-    return _observations_to_daily(df, "chg", idx, max_age_days=max_age_days)
+    values = fiscal_change_values(
+        fund_hist,
+        field,
+        kind=kind,
+        periods=periods,
+        years=years,
+        tolerance_days=tolerance_days,
+        positions=positions,
+    )
+    return fiscal_values_to_daily(
+        fund_hist,
+        values,
+        idx,
+        max_age_days=max_age_days,
+    )
 
 
 def fiscal_apply_to_daily(

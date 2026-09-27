@@ -1,3 +1,4 @@
+# ruff: noqa: N806
 """
 employee_features.py  (src/data_aggregate/utils/employee_features.py)
 ---------------------------------------------------------------------
@@ -19,14 +20,17 @@ look-ahead.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.pit import (
+    fiscal_change_values,
+    fiscal_values_to_daily,
+)
 
-_YOY_TRADING_DAYS = 252   # ~1 year of trading days for the YoY headcount change
+_ANNUAL_MAX_AGE_DAYS = 460
 
 #: Headcount is SEC-OWNED in the Sharadar-first merged table: it is parsed out of the 10-K
 #: body text, and Sharadar does not deliver it. `merge_history` therefore namespaces it
@@ -41,41 +45,105 @@ def _employee_fields(
     idx: pd.DatetimeIndex,
     fundamentals: pd.DataFrame | None,
 ) -> dict:
-    """Daily wide frames (date x ticker), point-in-time from each filing `as_of`."""
+    """Annual-event workforce values projected point-in-time from each publication."""
     F: dict[str, pd.DataFrame] = {}
-
-    employees = fundamentals_to_daily(employees_hist, _HEADCOUNT_FIELD, idx)
-    if employees.empty or not employees.notna().any().any():
+    if _HEADCOUNT_FIELD not in employees_hist.columns:
         return F
 
-    # year-over-year headcount growth (past vs past -> leak-free)
-    emp_growth = employees / employees.shift(_YOY_TRADING_DAYS) - 1.0
+    columns = ["ticker", "as_of", _HEADCOUNT_FIELD]
+    if "fiscal_end" in employees_hist.columns:
+        columns.append("fiscal_end")
+    elif "period" in employees_hist.columns:
+        columns.append("period")
+    if "totalRevenue" in employees_hist.columns:
+        columns.append("totalRevenue")
+    observations = employees_hist[columns].copy()
+    observations["as_of"] = pd.to_datetime(observations["as_of"], errors="coerce")
+    observations[_HEADCOUNT_FIELD] = pd.to_numeric(observations[_HEADCOUNT_FIELD], errors="coerce")
+    observations = observations.dropna(subset=["ticker", "as_of", _HEADCOUNT_FIELD]).reset_index(drop=True)
+    if observations.empty:
+        return F
+    if "fiscal_end" not in observations.columns:
+        observations["fiscal_end"] = pd.to_datetime(observations.get("period"), errors="coerce")
+
+    if "totalRevenue" not in observations.columns:
+        observations["totalRevenue"] = np.nan
+    if fundamentals is not None and "totalRevenue" in fundamentals.columns:
+        revenue = fundamentals[["ticker", "as_of", "totalRevenue"]].copy()
+        revenue["as_of"] = pd.to_datetime(revenue["as_of"], errors="coerce")
+        revenue["totalRevenue"] = pd.to_numeric(revenue["totalRevenue"], errors="coerce")
+        revenue = revenue.dropna(subset=["ticker", "as_of", "totalRevenue"])
+        for ticker, positions in observations.groupby("ticker", sort=False).groups.items():
+            left = observations.loc[positions, ["as_of"]].assign(_row=np.asarray(positions, dtype="int64")).sort_values("as_of")
+            right = revenue[revenue["ticker"].astype(str) == str(ticker)][["as_of", "totalRevenue"]].sort_values("as_of")
+            if right.empty:
+                continue
+            matched = pd.merge_asof(left, right, on="as_of", direction="backward")
+            rows = matched["_row"].to_numpy(dtype="int64")
+            existing = observations.loc[rows, "totalRevenue"].reset_index(drop=True)
+            observations.loc[rows, "totalRevenue"] = existing.combine_first(matched["totalRevenue"]).to_numpy()
+
+    emp_growth_values = fiscal_change_values(
+        observations,
+        _HEADCOUNT_FIELD,
+        kind="pct",
+        periods=1,
+        years=1,
+    )
+    emp_growth = fiscal_values_to_daily(
+        observations,
+        emp_growth_values,
+        idx,
+        max_age_days=_ANNUAL_MAX_AGE_DAYS,
+    )
     if emp_growth.notna().any().any():
         F["employee_growth"] = emp_growth
 
-    # revenue per employee = TTM revenue / employees (both historical, PIT)
-    if fundamentals is not None:
-        revenue = fundamentals_to_daily(fundamentals, "totalRevenue", idx)
-        rev_per_emp = ratio(revenue, employees, positive_den=True)
-        if not rev_per_emp.empty and rev_per_emp.notna().any().any():
-            F["revenue_per_employee"] = rev_per_emp
-            # YoY GROWTH in revenue-per-employee: is revenue outgrowing headcount
-            # (productivity rising, operating leverage) or just scaling linearly with
-            # the people pool (flat rev/employee)? Past-vs-past -> leak-free.
-            rpe_growth = (rev_per_emp / rev_per_emp.shift(_YOY_TRADING_DAYS) - 1.0)
-            # use np.nan (not pd.NA): DataFrame.replace(..., pd.NA) raises
-            # "IndexError: pop index out of range" on an inf+NaN mixed frame (pandas 3.x)
-            rpe_growth = rpe_growth.replace([np.inf, -np.inf], np.nan)
-            if rpe_growth.notna().any().any():
-                F["revenue_per_employee_growth"] = rpe_growth
-        # headcount elasticity to revenue (M&A DIGESTION #3): %Δemployees / %Δrevenue.
-        # <1 = revenue outgrowing the people pool (scale / synergies captured); ~1 =
-        # headcount scaling 1:1 with (often acquired) revenue -> integration not landing.
-        if "employee_growth" in F:
-            rev_growth = revenue / revenue.shift(_YOY_TRADING_DAYS) - 1.0
-            el = ratio(F["employee_growth"], rev_growth.where(rev_growth.abs() >= 0.02))
-            if not el.empty and el.notna().any().any():
-                F["headcount_elasticity"] = el
+    headcount = observations[_HEADCOUNT_FIELD].where(observations[_HEADCOUNT_FIELD] > 0)
+    rpe_values = observations["totalRevenue"] / headcount
+    rpe_values = rpe_values.replace([np.inf, -np.inf], np.nan)
+    rev_per_emp = fiscal_values_to_daily(
+        observations,
+        rpe_values,
+        idx,
+        max_age_days=_ANNUAL_MAX_AGE_DAYS,
+    )
+    if rev_per_emp.notna().any().any():
+        F["revenue_per_employee"] = rev_per_emp
+        observations["_rpe"] = rpe_values
+        rpe_growth_values = fiscal_change_values(
+            observations,
+            "_rpe",
+            kind="pct",
+            periods=1,
+            years=1,
+        )
+        rpe_growth = fiscal_values_to_daily(
+            observations,
+            rpe_growth_values,
+            idx,
+            max_age_days=_ANNUAL_MAX_AGE_DAYS,
+        )
+        if rpe_growth.notna().any().any():
+            F["revenue_per_employee_growth"] = rpe_growth
+
+    revenue_growth_values = fiscal_change_values(
+        observations,
+        "totalRevenue",
+        kind="pct",
+        periods=1,
+        years=1,
+    )
+    elasticity_values = emp_growth_values / revenue_growth_values.where(revenue_growth_values.abs() >= 0.02)
+    elasticity_values = elasticity_values.replace([np.inf, -np.inf], np.nan)
+    elasticity = fiscal_values_to_daily(
+        observations,
+        elasticity_values,
+        idx,
+        max_age_days=_ANNUAL_MAX_AGE_DAYS,
+    )
+    if elasticity.notna().any().any():
+        F["headcount_elasticity"] = elasticity
     return F
 
 
@@ -93,8 +161,7 @@ def build_employee_feature_panel(
     parameters stay separate because the headcount and the revenue it is divided
     by are conceptually independent inputs (and were separate tables until the
     `employees_history` table was retired)."""
-    if (headcount_history is None or headcount_history.empty
-            or "as_of" not in headcount_history.columns):
+    if headcount_history is None or headcount_history.empty or "as_of" not in headcount_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields = _employee_fields(headcount_history, trading_index, fundamentals_history)

@@ -734,10 +734,14 @@ def _catalogue_at(config_dir: str) -> Catalogue:
         if unknown:
             raise ValueError(f"exceptions[{regime}] names unknown field(s) {unknown}")
     for label, register in (("by_ticker", ticker_exceptions), ("by_ticker_periodicity", periodicity)):
+        ticker: str | None = None
+        block: dict = {}
         for ticker, block in register.items():
             unknown = sorted(set(block) - set(fields))
             if unknown:
                 raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) {unknown}")
+        if ticker is None:
+            continue
         # A declared leaf that is ALSO declared not-a-leaf is a contradiction the resolver
         # would silently resolve in favour of the leaf. Fail loudly instead.
         for field, entry in block.items():

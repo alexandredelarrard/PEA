@@ -15,6 +15,7 @@ its estimate and a NaN actual: that row is the live forward EPS.
 from __future__ import annotations
 
 import time
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -80,8 +81,8 @@ def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None, full_limit: i
     if existing is not None and not existing.empty:
         reported = existing.dropna(subset=["eps_actual"])
         if not reported.empty:
-            last_reported = reported.groupby("ticker")["earnings_date"].max().to_dict()
-        next_expected = existing.groupby("ticker")["earnings_date"].max().to_dict()
+            last_reported = cast(dict[str, pd.Timestamp], reported.groupby("ticker")["earnings_date"].max().to_dict())
+        next_expected = cast(dict[str, pd.Timestamp], existing.groupby("ticker")["earnings_date"].max().to_dict())
 
     today = pd.Timestamp.today().normalize()
     plan = []

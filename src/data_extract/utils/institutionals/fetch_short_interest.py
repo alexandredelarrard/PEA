@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+from typing import Any, cast
 
 import pandas as pd
 import requests
@@ -66,7 +67,7 @@ def _parse_regsho(text: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
 
     df = pd.read_csv(io.StringIO(text), sep="|")
-    df = df[df.get("Symbol").notna()] if "Symbol" in df.columns else df.iloc[0:0]
+    df = df[df["Symbol"].notna()] if "Symbol" in df.columns else df.iloc[0:0]
     if df.empty:
         return pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
     out = pd.DataFrame(
@@ -140,9 +141,10 @@ def _stored_rows(
             return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
         kwargs["where"] = {"date": dates}
     try:
-        loaded = context.store.load(Tables.short_interest, **kwargs)
+        loaded = context.store.load(Tables.short_interest, **cast(dict[str, Any], kwargs))
     except TableEmptyError:
         return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
+    assert loaded is not None
     loaded["date"] = pd.to_datetime(loaded["date"])
     return loaded
 

@@ -24,6 +24,7 @@ Needs a free FRED key (https://fred.stlouisfed.org/docs/api/api_key.html -> FRED
 from __future__ import annotations
 
 import os
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -101,7 +102,7 @@ def fill_short_gaps(df: pd.DataFrame, cols: list[str], max_gap_days: int = MAX_G
     for c in cols:
         s = df[c]
         gap = s.isna()
-        if not gap.any():
+        if not bool(gap.any()):
             continue
         prev_val, next_val = s.ffill(), s.bfill()
         obs = idx.where(s.notna())  # observation date, else NaT
@@ -163,9 +164,10 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp, until: pd.Timestamp)
     # `close_total`, not `close`: under auto_adjust=True the normaliser emits the single
     # returned series under the name that states its basis. The stored column stays `close`
     # -- `prices_macro` is one series per row, so the name carries no basis ambiguity.
-    df = raw[["date", "ticker", "close_total"]].rename(columns={"close_total": "close"})
+    df = cast(pd.DataFrame, raw[["date", "ticker", "close_total"]]).rename(columns={"close_total": "close"})
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-    df["ticker"] = df["ticker"].astype(str).map(MACRO_PRICE_SERIES)
+    ticker = cast(pd.Series, df["ticker"])
+    df["ticker"] = ticker.astype(str).map(MACRO_PRICE_SERIES)
     wide = df.dropna(subset=["ticker"]).pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
     wide.columns.name = None
     wide.index.name = "date"
@@ -197,7 +199,7 @@ def derive_series(wide: pd.DataFrame, context: Context | None = None) -> pd.Data
         elif context is not None:
             context.log.warning("spread '%s' skipped: needs %s - %s", name, minuend, subtrahend)
     if "yield_10y" in out.columns:
-        out[MACRO_BOND_TR_SERIES] = build_bond_total_return(out["yield_10y"])
+        out[MACRO_BOND_TR_SERIES] = build_bond_total_return(cast(pd.Series, out["yield_10y"]))
     elif context is not None:
         context.log.warning("'%s' skipped: yield_10y absent", MACRO_BOND_TR_SERIES)
     return out

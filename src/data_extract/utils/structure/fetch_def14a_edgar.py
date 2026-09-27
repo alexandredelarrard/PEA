@@ -135,6 +135,7 @@ def build_ticker_def14a_edgar(
         facts = ecd_facts(f)
         if not has_ecd_block(facts):
             continue  # pre-402(v) fiscal year -- correct behaviour, no row
+        assert facts is not None
         row = ecd_row(facts)
         row.update(
             # ⚠ THE CIK COMES OFF THE FILING, NOT OFF THE ROSTER. `new_filings` resolves by

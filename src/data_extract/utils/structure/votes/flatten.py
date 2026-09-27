@@ -178,13 +178,15 @@ def _director_columns(nominees: list[dict], roles: dict[str, str], titles: dict[
     """
     row: dict = {}
     for cat in _ROLE_CATEGORIES:
-        bucket = [n for n in nominees if roles.get(person_key(n["name"]), "unmatched") == cat]
+        bucket = [n for n in nominees if roles.get(person_key(n["name"]) or "", "unmatched") == cat]
         row[f"n_nominees_{cat}"] = float(len(bucket))
         for f in _VOTE_FIELDS:
             vals = [n[f] for n in bucket if n.get(f) is not None]
             row[f"{f}_{cat}"] = float(sum(vals)) if vals else None
 
-    exec_titles = sorted({titles[k] for k in (person_key(n["name"]) for n in nominees) if k in titles and roles.get(k) == "exec_officer"})
+    exec_titles = sorted(
+        {titles[k] for k in (person_key(n["name"]) for n in nominees) if k is not None and k in titles and roles.get(k or "") == "exec_officer"}
+    )
     row["exec_officer_titles"] = " | ".join(exec_titles) or None
     row["n_nominees"] = float(len(nominees))
 

@@ -117,7 +117,7 @@ def history_by_ticker(facts: pd.DataFrame | None) -> dict[str, list[int]]:
     s["filing_date"] = pd.to_datetime(s["filing_date"], errors="coerce")
     s["value"] = pd.to_numeric(s["value"], errors="coerce")
     s = s.dropna(subset=["filing_date", "value"]).sort_values("filing_date")
-    return {t: g["value"].astype(int).tolist() for t, g in s.groupby("ticker")}
+    return {str(t): g["value"].astype(int).tolist() for t, g in s.groupby("ticker")}
 
 
 def filing_body_text(filing) -> str:

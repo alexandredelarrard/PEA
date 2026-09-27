@@ -38,6 +38,7 @@ import zipfile
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -171,16 +172,19 @@ def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
         ordered = rows.sort_values(["valid_from", "valid_to", "issuer_cik"], kind="mergesort")
         previous = None
         for row in ordered.itertuples(index=False):
+            row_start = pd.Timestamp(cast(Any, row.valid_from))
+            row_end = pd.Timestamp(cast(Any, row.valid_to)) if pd.notna(row.valid_to) else None
             if previous is not None:
-                previous_end = previous.valid_to if pd.notna(previous.valid_to) else pd.Timestamp.max
-                if row.valid_from < previous_end:
+                previous_start = pd.Timestamp(cast(Any, previous.valid_from))
+                previous_end = pd.Timestamp(cast(Any, previous.valid_to)) if pd.notna(previous.valid_to) else pd.Timestamp.max
+                if row_start < previous_end:
                     raise ManualSymbolTenureError(
                         "symbol_tenure: overlapping manual intervals for "
                         f"{symbol}: {previous.canonical_ticker}/{previous.issuer_cik} "
-                        f"[{previous.valid_from.date()}, "
-                        f"{'open' if pd.isna(previous.valid_to) else previous.valid_to.date()}) and "
-                        f"{row.canonical_ticker}/{row.issuer_cik} [{row.valid_from.date()}, "
-                        f"{'open' if pd.isna(row.valid_to) else row.valid_to.date()})"
+                        f"[{previous_start.date()}, "
+                        f"{'open' if pd.isna(previous.valid_to) else previous_end.date()}) and "
+                        f"{row.canonical_ticker}/{row.issuer_cik} [{row_start.date()}, "
+                        f"{'open' if row_end is None else row_end.date()})"
                     )
             previous = row
     return out
@@ -205,7 +209,7 @@ def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd
             winner["n_filings"] = pd.to_numeric(rows["n_filings"], errors="coerce").max()
             labelled = [f"{row.source} evidence: {row.evidence}" for row in rows.itertuples(index=False) if str(row.evidence).strip()]
             winner["evidence"] = " | ".join(dict.fromkeys(labelled))
-        coalesced.append(winner.to_dict())
+        coalesced.append(cast(dict[str, object], winner.to_dict()))
     out = pd.DataFrame.from_records(coalesced, columns=table_columns)
     logger.info(
         "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique table-grain row(s) over %d symbol(s)",
@@ -268,8 +272,8 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
             drops["no_submission_member"] += 1
             return None
         with archive.open(names[SUBMISSION_MEMBER]) as handle:
-            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in _WANTED_COLUMNS)
-    raw.columns = [c.upper() for c in raw.columns]
+            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in _WANTED_COLUMNS)
+    raw.columns = [str(c).upper() for c in raw.columns]
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
         logger.warning("symbol_tenure: %s lacks %s -> SKIPPED", path.name, sorted(missing))
@@ -389,7 +393,7 @@ def changed_tenure_symbols(
             normal[column] = pd.to_datetime(normal[column], errors="coerce").astype("string")
         signature_columns = [column for column in columns if column != "symbol"]
         return {
-            symbol: tuple(sorted(tuple(map(str, row)) for row in group[signature_columns].itertuples(index=False, name=None)))
+            str(symbol): tuple(sorted(tuple(map(str, row)) for row in group[signature_columns].itertuples(index=False, name=None)))
             for symbol, group in normal.groupby("symbol", sort=False)
         }
 

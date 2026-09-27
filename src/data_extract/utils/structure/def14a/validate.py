@@ -49,7 +49,7 @@ The pay-ratio identity did NOT disappear: it lives on the LLM side in
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -185,8 +185,8 @@ def sum_fee_total(row: dict, total_col: str, part_cols: list[str], tol: float = 
     parts = [row.get(c) for c in part_cols]
     if not all(_isnum(p) for p in parts):
         return False
-    total = float(row[total_col])
-    parts_f = [float(p) for p in parts]
+    total = float(cast(Any, row[total_col]))
+    parts_f = [float(cast(Any, p)) for p in parts]
     if not any(abs(total - p) <= tol for p in parts_f):
         return False
     if sum(parts_f) - total <= tol:
@@ -510,7 +510,7 @@ def sanity_check_exec_comp(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
         return out, tally
     total = pd.to_numeric(out["ceo_total_comp"], errors="coerce")
     present = [c for c in DEF14A_SCT_PART_COLS if c in out.columns]
-    parts_df = out[present].apply(pd.to_numeric, errors="coerce") if present else None
+    parts_df = out[present].apply(pd.to_numeric, errors="coerce") if present else pd.DataFrame(index=out.index)
     parts = parts_df.fillna(0.0).sum(axis=1) if present else pd.Series(0.0, index=out.index)
     n_parts = parts_df.notna().sum(axis=1) if present else pd.Series(0, index=out.index)
 

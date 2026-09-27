@@ -51,7 +51,7 @@ import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pandas as pd
 
@@ -478,8 +478,8 @@ def log_symbol_resolutions(
         for row in summary.itertuples(index=False):
             context.log.info(
                 f"{source_name}: {getattr(row, symbol_col)} -> {row.ticker}: "
-                f"{row.rows} row(s), {pd.Timestamp(row.first).date()}.."
-                f"{pd.Timestamp(row.last).date()}"
+                f"{row.rows} row(s), {pd.Timestamp(cast(Any, row.first)).date()}.."
+                f"{pd.Timestamp(cast(Any, row.last)).date()}"
             )
 
     current_reuse = accepted[accepted[symbol_col].isin(universe) & (accepted[symbol_col] != accepted["ticker"])]
@@ -674,10 +674,14 @@ def load_identity(context: Context, config_dir: str | None = None, refresh: bool
     cached = None if refresh else _CACHE.get(context)
     if cached is not None:
         return cached
+    lineage = context.store.load(Tables.entity_lineage, project=True)
+    tenure = context.store.load(Tables.symbol_tenure, project=True)
+    roster = context.store.load(Tables.sp500_tickers)
+    assert lineage is not None and tenure is not None and roster is not None
     identity = build_identity(
-        lineage=context.store.load(Tables.entity_lineage, project=True),
-        tenure=context.store.load(Tables.symbol_tenure, project=True),
-        roster=context.store.load(Tables.sp500_tickers),
+        lineage=lineage,
+        tenure=tenure,
+        roster=roster,
         d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)),
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )

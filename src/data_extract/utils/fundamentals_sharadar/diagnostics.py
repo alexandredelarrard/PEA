@@ -53,6 +53,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -282,7 +283,7 @@ def _sec_counterpart_value(sec: pd.DataFrame, sec_cols: Sequence[str]) -> pd.Dat
     )
 
 
-def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> dict[str, int]:
+def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> dict[str, int | str]:
     """How the SEC layer judges each zero cell of `field`, on a BASIS-MATCHED comparison.
 
     * A DURATION field is judged at the TTM level, because that is the only grain on which the
@@ -519,7 +520,7 @@ def confirm_sign_conventions(frame: pd.DataFrame) -> dict:
             "capex_max": float(capex.max()) if not capex.empty else float("nan"),
             "fcf_rows": int(len(residual)),
             "fcf_max_abs_residual": float(residual.max()) if not residual.empty else 0.0,
-            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} {pd.Timestamp(frame.at[worst, 'date']).date()}" if worst is not None else "-"),
+            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} {pd.Timestamp(cast(Any, frame.at[worst, 'date'])).date()}" if worst is not None else "-"),
             "fcf_violations": int((residual > FCF_IDENTITY_TOLERANCE).sum()),
         }
         out["dimensions"][str(dimension)] = block

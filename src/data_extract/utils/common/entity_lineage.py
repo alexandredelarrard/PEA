@@ -250,21 +250,25 @@ def derive_owner_sets(cache: Path, ciks: frozenset[str]) -> dict[str, set[str]]:
             if SUBMISSION_MEMBER not in names or OWNER_MEMBER not in names:
                 continue
             with archive.open(names[SUBMISSION_MEMBER]) as handle:
-                sub = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in {"ACCESSION_NUMBER", "ISSUERCIK"})
-            sub.columns = [c.upper() for c in sub.columns]
+                sub = pd.read_csv(
+                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "ISSUERCIK"}
+                )
+            sub.columns = [str(c).upper() for c in sub.columns]
             sub["ISSUERCIK"] = sub["ISSUERCIK"].astype("string").str.strip().str.zfill(10)
             sub = sub[sub["ISSUERCIK"].isin(ciks)]
             if sub.empty:
                 continue
             issuer_of = dict(zip(sub["ACCESSION_NUMBER"].astype(str), sub["ISSUERCIK"], strict=False))
             with archive.open(names[OWNER_MEMBER]) as handle:
-                own = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in {"ACCESSION_NUMBER", "RPTOWNERCIK"})
-            own.columns = [c.upper() for c in own.columns]
+                own = pd.read_csv(
+                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "RPTOWNERCIK"}
+                )
+            own.columns = [str(c).upper() for c in own.columns]
             own["ISSUER"] = own["ACCESSION_NUMBER"].astype(str).map(issuer_of)
             own = own.dropna(subset=["ISSUER", "RPTOWNERCIK"])
             own["RPTOWNERCIK"] = own["RPTOWNERCIK"].astype("string").str.strip().str.zfill(10)
             for issuer, grp in own.groupby("ISSUER", sort=False):
-                owners[issuer].update(grp["RPTOWNERCIK"])
+                owners[str(issuer)].update(grp["RPTOWNERCIK"].astype(str))
             read += len(own)
     logger.info(
         "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner rows matched); %d CIK(s) have no Form 345 owner at all",
@@ -308,7 +312,7 @@ def candidate_ciks(tenure: pd.DataFrame, roster: pd.DataFrame) -> tuple[frozense
     seen = tenure[tenure["symbol"].astype(str).isin(universe)]
     by_ticker: dict[str, set[str]] = {t: {roster_cik[t]} for t in roster_cik}
     for symbol, cik in zip(seen["symbol"].astype(str), seen["issuer_cik"].astype(str), strict=False):
-        by_ticker[symbol].add(cik)
+        by_ticker[str(symbol)].add(str(cik))
     return frozenset().union(*by_ticker.values()), by_ticker, roster_cik
 
 
@@ -320,14 +324,16 @@ def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame,
     }
     errors: list[str] = []
     for row in manual.itertuples(index=False):
-        home_cik = roster_cik.get(row.canonical_ticker)
+        canonical_ticker = str(row.canonical_ticker)
+        issuer_cik = str(row.issuer_cik)
+        home_cik = roster_cik.get(canonical_ticker)
         if home_cik is None:
-            errors.append(f"{row.canonical_ticker}: absent from the current roster")
+            errors.append(f"{canonical_ticker}: absent from the current roster")
             continue
         expected = entity_by_cik.get(home_cik, f"E{home_cik}")
-        actual = entity_by_cik.get(row.issuer_cik, f"E{row.issuer_cik}")
+        actual = entity_by_cik.get(issuer_cik, f"E{issuer_cik}")
         if actual != expected:
-            errors.append(f"{row.canonical_ticker}/{row.symbol}/{row.issuer_cik}: manual entity {actual}, roster entity {expected}")
+            errors.append(f"{canonical_ticker}/{row.symbol}/{issuer_cik}: manual entity {actual}, roster entity {expected}")
     if errors:
         raise ManualTenureEntityError("symbol_tenure_manual contains CIKs outside their canonical current entity: " + "; ".join(errors))
 
@@ -340,14 +346,15 @@ def detect_older_cik_rekeys(existing: pd.DataFrame, candidate: pd.DataFrame) -> 
     new["cik"] = new["cik"].astype(str).str.strip().str.zfill(10)
     old_map = dict(zip(old["cik"], old["entity_id"].astype(str), strict=False))
     new_map = dict(zip(new["cik"], new["entity_id"].astype(str), strict=False))
-    new_members = new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).to_dict()
+    new_members = {str(entity): list(members) for entity, members in new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).items()}
     impacts: list[dict[str, object]] = []
-    for old_entity, group in old.groupby("entity_id", sort=True):
+    for old_entity_value, group in old.groupby("entity_id", sort=True):
+        old_entity = str(old_entity_value)
         members = sorted(set(group["cik"]))
         mapped = {new_map[cik] for cik in members if cik in new_map}
         if len(mapped) != 1:
             continue
-        new_entity = next(iter(mapped))
+        new_entity = str(next(iter(mapped)))
         if new_entity == old_entity or not (old_entity.startswith("E") and new_entity.startswith("E")):
             continue
         added = sorted(set(new_members.get(new_entity, [])) - set(old_map))
@@ -517,6 +524,7 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
     """Derive and REPLACE `entity_lineage`; returns the frame written."""
     tenure = context.store.load(Tables.symbol_tenure, project=True)
     roster = context.store.load(Tables.sp500_tickers)
+    assert tenure is not None and roster is not None
     existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
     out, blocked = derive_entity_lineage(cache, tenure, roster, config_dir)
     manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)

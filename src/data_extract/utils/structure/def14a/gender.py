@@ -64,6 +64,16 @@ def _norm(value: object) -> str | None:
     return cleaned or None
 
 
+def _basis_rank(value: object) -> int:
+    normalized = _norm(value)
+    return BASIS_RANK.get(normalized, -1) if normalized is not None else -1
+
+
+def _is_female(value: object) -> bool:
+    normalized = _norm(value)
+    return normalized is not None and normalized.startswith("f")
+
+
 def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Resolve one gender per PERSON and apply it to every row of that person.
 
@@ -83,7 +93,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         if col not in out.columns:
             out[col] = None
     out["person_key"] = out["name"].map(person_key)
-    out["_rank"] = out["gender_basis"].map(lambda b: BASIS_RANK.get(_norm(b), -1))
+    out["_rank"] = out["gender_basis"].map(_basis_rank)
     out["_gender"] = out["gender"].map(_norm)
 
     resolved: dict[str, tuple[str, str]] = {}
@@ -100,13 +110,13 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             latest = top.sort_values("as_of").iloc[-1] if "as_of" in top.columns else top.iloc[-1]
             winner = latest["_gender"]
         basis = next((b for b, r in BASIS_RANK.items() if r == best_rank), "name")
-        resolved[key] = (winner, basis)
+        resolved[str(key)] = (str(winner), basis)
 
     filled = overturned = unchanged = 0
     new_gender, new_basis = [], []
     for _, r in out.iterrows():
         key = r["person_key"]
-        if key is None or key not in resolved:
+        if not isinstance(key, str) or key not in resolved:
             new_gender.append(None if pd.isna(r["_gender"]) else r["_gender"])
             new_basis.append(_norm(r["gender_basis"]))
             continue
@@ -125,7 +135,7 @@ def consensus(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         new_gender.append(winner)
         # never DOWNGRADE the recorded provenance: the row's own basis stands when it is already
         # at least as strong as the consensus's, which is what makes a second run a no-op
-        own_rank = BASIS_RANK.get(_norm(r["gender_basis"]), -1)
+        own_rank = _basis_rank(r["gender_basis"])
         new_basis.append(_norm(r["gender_basis"]) if own_rank >= BASIS_RANK[basis] else basis)
 
     out["gender"] = new_gender
@@ -162,8 +172,8 @@ def recompute_parent_gender(directors: pd.DataFrame) -> pd.DataFrame:
     d = directors[directors["gender"].notna()].copy()
     if d.empty:
         return pd.DataFrame(columns=["ticker", "accession_number", "pct_female_directors", "pct_gender_stated"])
-    d["_female"] = d["gender"].map(lambda g: bool(_norm(g) or "") and _norm(g).startswith("f"))
-    d["_evidence"] = d["gender_basis"].map(lambda b: BASIS_RANK.get(_norm(b), -1) >= EVIDENCE_RANK)
+    d["_female"] = d["gender"].map(_is_female)
+    d["_evidence"] = d["gender_basis"].map(lambda b: _basis_rank(b) >= EVIDENCE_RANK)
     out = (
         d.groupby(["ticker", "accession_number"])
         .agg(

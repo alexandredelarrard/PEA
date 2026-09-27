@@ -217,7 +217,9 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     entry = get_entry(context, Tables.def14a_llm)
     if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
         return False
-    have = set(context.store.load(Tables.def14a_llm, columns=["ticker"])["ticker"].dropna())
+    stored = context.store.load(Tables.def14a_llm, columns=["ticker"])
+    assert stored is not None
+    have = set(stored["ticker"].dropna())
     return set(requested_tickers).issubset(have)
 
 
@@ -270,7 +272,7 @@ def fetch_def14a_llm(
     cache: bool | None = None,
     workers: int = _LLM_WORKERS,
     full: bool = False,
-) -> None:
+) -> pd.DataFrame | None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
     For each ticker only filings AFTER its latest stored `as_of` are sent to the
@@ -300,6 +302,7 @@ def fetch_def14a_llm(
 
     if not full and _is_up_to_date(context, cik_map["ticker"].tolist()):
         existing = context.store.load(Tables.def14a_llm)
+        assert existing is not None
         context.log.info("DEF 14A LLM already up to date — every requested ticker present (%d rows) — skipping", len(existing))
         return existing
 
@@ -378,8 +381,10 @@ def fetch_def14a_llm(
         # starts and an interrupted run loses at most one ticker's tokens.
         results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
         extracted = [r for r in results if r.ok]
-        for r in extracted:
-            seen.add(r.task.meta["filing"]["accession_number"])
+        for result in extracted:
+            filing = result.task.meta["filing"]
+            assert isinstance(filing, pd.Series)
+            seen.add(str(filing["accession_number"]))
 
         if extracted:
             total_new += len(extracted)

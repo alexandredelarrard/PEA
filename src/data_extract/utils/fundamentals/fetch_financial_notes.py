@@ -224,7 +224,7 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
             "tag": txt["tag"],
             "ddate": pd.to_datetime(txt["ddate"], format="%Y%m%d", errors="coerce"),
             "qtrs": pd.to_numeric(txt["qtrs"], errors="coerce"),
-            "txtlen": pd.to_numeric(txt.get("txtlen"), errors="coerce"),
+            "txtlen": pd.to_numeric(txt.get("txtlen", pd.Series(pd.NA, index=txt.index)), errors="coerce"),
             "escaped": txt.get("escaped"),
             "value": txt["value"].astype("string"),
             "footnote": txt.get("footnote"),
@@ -243,7 +243,7 @@ def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: froze
     keep: list[pd.DataFrame] = []
     with z.open(name) as fh:
         for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False, chunksize=_CHUNK, on_bad_lines="skip", usecols=lambda c: c in usecols):
-            dimn = pd.to_numeric(chunk.get("dimn"), errors="coerce")
+            dimn = pd.to_numeric(chunk.get("dimn", pd.Series(pd.NA, index=chunk.index)), errors="coerce")
             coreg = chunk.get("coreg", pd.Series("", index=chunk.index)).astype("string").fillna("").str.strip()
             m = chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
             if m.any():
@@ -318,7 +318,7 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
         if path is None:
             continue
 
-        num, txt = _read_notes(path, cik2tkr, tickers)
+        num, txt = _read_notes(path, cik2tkr, set(tickers))
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period

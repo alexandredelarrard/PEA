@@ -1,5 +1,6 @@
 import io
 import logging
+from typing import cast
 
 import pandas as pd
 import requests
@@ -19,14 +20,22 @@ def _dedupe_share_classes(df: pd.DataFrame) -> pd.DataFrame:
     (GOOG, FOX, NWS). Rows without a CIK are kept as-is."""
     if "cik" not in df.columns:
         return df
-    has_cik = df[df["cik"].notna() & (df["cik"].astype(str).str.strip() != "")].copy()
-    no_cik = df[~df.index.isin(has_cik.index)]
-    has_cik["_len"] = has_cik["ticker"].str.len()
-    kept = has_cik.sort_values(["cik", "_len", "ticker"], ascending=[True, False, True]).drop_duplicates("cik", keep="first").drop(columns="_len")
+    cik = cast(pd.Series, df["cik"])
+    has_cik = cast(pd.DataFrame, df[cik.notna() & (cik.astype(str).str.strip() != "")].copy())
+    no_cik = cast(pd.DataFrame, df[~df.index.isin(has_cik.index)])
+    has_cik["_len"] = cast(pd.Series, has_cik["ticker"]).str.len()
+    kept = (
+        cast(
+            pd.DataFrame,
+            has_cik.sort_values(by=["cik", "_len", "ticker"], ascending=[True, False, True]),
+        )
+        .drop_duplicates(subset=["cik"], keep="first")
+        .drop(columns="_len")
+    )
     dropped = sorted(set(has_cik["ticker"]) - set(kept["ticker"]))
     if dropped:
         logger.info(f"Deduplicated {len(dropped)} redundant share-class tickers: {dropped}")
-    return pd.concat([kept, no_cik], ignore_index=True).sort_values("ticker").reset_index(drop=True)
+    return pd.concat([kept, no_cik], ignore_index=True).sort_values(by="ticker").reset_index(drop=True)
 
 
 def get_sp500_tickers(context: Context) -> None:
@@ -39,7 +48,7 @@ def get_sp500_tickers(context: Context) -> None:
     response.raise_for_status()
     tables = pd.read_html(io.StringIO(response.text))
 
-    df = tables[0]
+    df = cast(pd.DataFrame, tables[0])
     df = df.rename(
         columns={
             "Symbol": "ticker",
@@ -58,5 +67,5 @@ def get_sp500_tickers(context: Context) -> None:
     df = _dedupe_share_classes(df)
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"] if c in df.columns]
-    context.store.save(Tables.sp500_tickers, df[keep])
+    context.store.save(Tables.sp500_tickers, cast(pd.DataFrame, df[keep]))
     logger.info(f"Saved {len(df)} tickers to DB table {Tables.sp500_tickers}")

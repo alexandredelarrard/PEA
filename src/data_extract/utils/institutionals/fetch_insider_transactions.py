@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -269,7 +270,7 @@ def _repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _footnotes(notes: pd.DataFrame, keep_accessions: set[str]) -> pd.DataFrame:
+def _footnotes(notes: pd.DataFrame | None, keep_accessions: set[str]) -> pd.DataFrame:
     """FOOTNOTES.tsv -> `insider_footnotes` rows, restricted to accessions we actually kept.
 
     The raw file is every filer's footnotes (~167k rows a quarter); without the accession filter
@@ -322,12 +323,13 @@ def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
     # tickers the roster actually has.
     known = {t: identity.universe_entity(t) for t in set(claimed.dropna()) & set(identity.roster_cik)}
 
+    screened_on = df["filing_date"] if "filing_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
     out = df.assign(
         claimed_ticker=claimed,
         ticker=resolved,
         resolved_entity_id=raw.map(to_entity).astype("string"),
         universe_entity_id=claimed.map(known).astype("string"),
-        screened_on=df["filing_date"] if "filing_date" in df.columns else pd.NaT,
+        screened_on=screened_on,
     )
 
     keep = resolved.isin(universe)
@@ -338,7 +340,7 @@ def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
     return out.assign(reject_reason=reason)
 
 
-def _filter_universe(df: pd.DataFrame, universe: set[str], identity) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _filter_universe(df: pd.DataFrame, universe: Sequence[str], identity) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Partition into (kept, rejected). Resolution is CIK-FIRST: the row's own `issuer_cik`
     names an ENTITY, and the entity names today's universe ticker.
 
@@ -452,7 +454,9 @@ def _screen_stored_rows(context: Context, universe, identity: Identity, chunk: i
         return 0, 0
     # One verdict per (accession, claimed ticker, cik): the grain it is actually decided at,
     # so the whole-table pass costs ~1.3M dedup keys rather than 2M full rows.
-    scored = _verdicts(keys.drop_duplicates().assign(filing_date=pd.NaT), universe, identity)
+    deduplicated = keys.drop_duplicates().copy()
+    deduplicated["filing_date"] = pd.NaT
+    scored = _verdicts(deduplicated, universe, identity)
     accessions = sorted(scored.loc[scored["reject_reason"].notna(), "accession_number"].dropna().unique())
     if not accessions:
         logger.info("insider: stored-row sweep -- 0 of %d row(s) rejected", len(keys))

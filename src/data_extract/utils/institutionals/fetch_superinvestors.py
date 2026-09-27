@@ -202,7 +202,7 @@ def _parse_dataroma_roster(html: str) -> list[dict]:
     soup = BeautifulSoup(html or "", "html.parser")
     out, seen = [], set()
     for a in soup.find_all("a", href=True):
-        m = re.search(r"holdings\.php\?m=([A-Za-z0-9_.\-]+)", a["href"])
+        m = re.search(r"holdings\.php\?m=([A-Za-z0-9_.\-]+)", str(a["href"]))
         if not m:
             continue
         code = m.group(1)

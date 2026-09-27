@@ -14,6 +14,7 @@ yfinance `actions=True` response already carries the ex-dates next to the OHLCV.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 
@@ -38,7 +39,7 @@ def _extract_dividends(long_prices: pd.DataFrame | None) -> pd.DataFrame:
     if long_prices is None or long_prices.empty or "dividends" not in long_prices.columns:
         return pd.DataFrame(columns=_COLUMNS)
 
-    d = long_prices[_COLUMNS].copy()
+    d = cast(pd.DataFrame, long_prices[_COLUMNS].copy())
     d["dividends"] = pd.to_numeric(d["dividends"], errors="coerce")
     d["date"] = pd.to_datetime(d["date"], format="%Y-%m-%d")
     return d.reset_index(drop=True)

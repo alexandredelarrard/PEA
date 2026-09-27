@@ -183,7 +183,10 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         frames = []
         for _, filing in dated:
             try:
-                period = pd.Timestamp(filing.period_of_report)
+                raw_period = filing.period_of_report
+                if raw_period is None:
+                    continue
+                period = pd.Timestamp(raw_period)
             except Exception:  # noqa: BLE001
                 continue
             if pd.isna(period) or period < since:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import Any, cast
 from xml.etree import ElementTree
 
 import pandas as pd
@@ -76,7 +77,10 @@ def ownership_filings(
                 count=SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
             )
             try:
-                root = ElementTree.fromstring(download_text(url))
+                text = download_text(url)
+                if text is None:
+                    raise ValueError("empty SEC ownership search response")
+                root = ElementTree.fromstring(text)
             except Exception as exc:  # noqa: BLE001 -- preserve other discovery channels
                 _LOG.warning(
                     "ownership filing search failed for %s form %s at offset %d: %r",
@@ -93,7 +97,7 @@ def ownership_filings(
             for entry in entries:
                 form = _atom_text(entry, "filing-type")
                 accession = _atom_text(entry, "accession-number")
-                filing_date = pd.to_datetime(_atom_text(entry, "filing-date"), errors="coerce")
+                filing_date = pd.to_datetime(cast(Any, _atom_text(entry, "filing-date")), errors="coerce")
                 if pd.notna(filing_date):
                     oldest = min(oldest, filing_date.normalize())
                 if (
@@ -125,9 +129,9 @@ def insider_filings(
     since: pd.Timestamp | None,
     through: pd.Timestamp,
     done_accessions: frozenset[str],
-) -> list[object]:
+) -> list[Any]:
     """Union issuer submissions with the owner-inclusive issuer search."""
-    discovered = {str(filing.accession_number): filing for filing in new_filings(ticker, SEC_INSIDER_FORMS, since, done_accessions)}
+    discovered: dict[str, Any] = {str(filing.accession_number): filing for filing in new_filings(ticker, SEC_INSIDER_FORMS, since, done_accessions)}
     for filing in ownership_filings(
         ticker,
         cik,
@@ -143,11 +147,12 @@ def insider_filings(
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
+    filing_obj = cast(Any, filing)
     try:
-        raw = getattr(filing.header, "acceptance_datetime", None)
+        raw = getattr(filing_obj.header, "acceptance_datetime", None)
     except Exception:  # noqa: BLE001 -- optional EDGAR header metadata
         raw = None
-    value = pd.to_datetime(raw, errors="coerce")
+    value = pd.to_datetime(cast(Any, raw), errors="coerce")
     if pd.notna(value) and value.tz is not None:
         value = value.tz_localize(None)
     return value
@@ -161,18 +166,19 @@ def _filing_frames(
     fetched_at: pd.Timestamp,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """One ownership filing -> kept transactions, footnotes, and rejected transactions."""
-    xml = filing.xml()
+    filing_obj = cast(Any, filing)
+    xml = filing_obj.xml()
     if not xml:
-        raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
+        raise ValueError(f"{getattr(filing_obj, 'accession_number', '?')}: no ownership XML")
     transactions, footnotes = parse_ownership_xml(xml)
     if transactions.empty:
         return transactions, pd.DataFrame(columns=("accession_number", *FOOTNOTE_COLUMNS)), pd.DataFrame()
 
-    accession = str(filing.accession_number)
+    accession = str(filing_obj.accession_number)
     transactions = transactions.assign(
         accession_number=accession,
-        filing_date=pd.Timestamp(filing.filing_date).normalize(),
-        acceptance_datetime=_acceptance_datetime(filing),
+        filing_date=pd.Timestamp(filing_obj.filing_date).normalize(),
+        acceptance_datetime=_acceptance_datetime(filing_obj),
         fetched_at=fetched_at,
     )
     transactions = _repair_transaction_dates(transactions)

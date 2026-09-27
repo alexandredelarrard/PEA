@@ -15,11 +15,13 @@ function of the same name taking `(rows)`; they are NOT interchangeable.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from typing import cast
 
 import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import strip_nul
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, ExecutiveCompensation
 from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE,
     clean_holder_name,
@@ -125,7 +127,7 @@ def _latest_sct_rows(extract: Def14AExtract) -> list:
     return [c for c in extract.compensation if c.fiscal_year == latest]
 
 
-def _ceo_from_compensation(extract: Def14AExtract) -> ExecutiveCompensation | None:  # noqa: F821
+def _ceo_from_compensation(extract: Def14AExtract) -> ExecutiveCompensation | None:
     """The CEO's Summary-Compensation-Table row for the MOST RECENT fiscal year: match on the
     extracted CEO name first, else on a CEO-like title, else the first (usually highest-paid)
     NEO of that year."""
@@ -160,7 +162,7 @@ def _bnum(x: bool | None) -> float | None:
     return None if x is None else float(bool(x))
 
 
-def _mean(xs: list[float]) -> float | None:
+def _mean(xs: Sequence[float]) -> float | None:
     return round(sum(xs) / len(xs), 3) if xs else None
 
 
@@ -209,7 +211,7 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     row = {
         "ticker": ticker,
         "as_of": filing["filing_date"],
-        "period": pd.to_datetime(filing.get("period_of_report"), errors="coerce"),
+        "period": pd.to_datetime(period, errors="coerce") if (period := filing.get("period_of_report")) is not None else None,
         "accession_number": filing["accession_number"],
         "company_name": extract.company_name,
         "fiscal_year_extract": extract.fiscal_year,
@@ -550,8 +552,9 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     `def14a_llm`) rather than a parent that claims children it lacks.
     """
     ticker = str(result.task.meta["ticker"])
-    filing = result.task.meta["filing"]
+    filing = cast(pd.Series, result.task.meta["filing"])
     extract = result.parsed
+    assert isinstance(extract, Def14AExtract)
 
     _log_director_comp_recall(ticker, filing, result.task.payload, len(_director_comp_rows(ticker, filing, extract)))
 

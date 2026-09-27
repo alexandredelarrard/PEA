@@ -1561,7 +1561,7 @@ def _linkbase_weights(
     out: list[tuple[str, float]] = []
     for child in children:
         weight = 1.0
-        if trusted:
+        if trusted and parent is not None:
             weight = next((w for c, w in graph.children_of(parent) if c == child), 1.0)
         out.append((child, weight))
     return tuple(out)

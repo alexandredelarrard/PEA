@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote_plus
 from xml.etree import ElementTree
 
@@ -483,7 +483,7 @@ def _atom_text(entry: ElementTree.Element, name: str) -> str | None:
 
 def _header_subject_ciks(filing: object) -> frozenset[str]:
     """Read schedule subject CIKs from the SGML header, before ``filing.obj()``."""
-    header = filing.header
+    header = getattr(filing, "header", None)
     companies = getattr(header, "subject_companies", ()) or ()
     raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
     return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
@@ -617,6 +617,8 @@ def resolve_schedule_subject_filings(
                     lambda url=url: download_text(url),
                     label=f"{ticker} {family} offset {start}",
                 )
+                if payload is None:
+                    raise ValueError("SEC Atom response was empty")
                 root = ElementTree.fromstring(payload)
             except Exception as exc:  # noqa: BLE001 -- completeness is the contract
                 raise ScheduleDiscoveryIncompleteError(
@@ -629,7 +631,7 @@ def resolve_schedule_subject_filings(
             for entry in entries:
                 form = _atom_text(entry, "filing-type")
                 accession = _atom_text(entry, "accession-number")
-                filing_date = pd.to_datetime(_atom_text(entry, "filing-date"), errors="coerce")
+                filing_date = pd.to_datetime(cast(Any, _atom_text(entry, "filing-date")), errors="coerce")
                 file_number = _atom_text(entry, "file-number")
                 if (
                     form not in target_forms
@@ -672,7 +674,7 @@ def resolve_schedule_subject_filings(
             candidates.update(found)
 
     filtered, stats = filter_schedule_subject_filings(list(candidates.values()), subject_ciks)
-    filtered.sort(key=lambda filing: pd.Timestamp(filing.filing_date))
+    filtered.sort(key=lambda filing: pd.Timestamp(cast(Any, filing).filing_date))
     logger.info(
         "%s: subject-first schedules -- %d page(s), %d owner-side row(s) excluded from Atom "
         "metadata, %d candidate(s), %d subject match(es), %d unknown header(s), %d retained "

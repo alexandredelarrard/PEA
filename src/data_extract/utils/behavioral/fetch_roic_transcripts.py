@@ -65,10 +65,10 @@ def _api_key() -> str | None:
     return os.getenv("ROIC_API_KEY", None)
 
 
-def roic_list_quarters(ticker: str, apikey: str) -> dict[str, str]:
+def roic_list_quarters(ticker: str, apikey: str) -> dict[str, str | None]:
     """{quarter_label: call_date} Roic has for `ticker` (one LIST request). Empty on miss/error."""
     data = ph.get_json(ROIC_EARNINGS_LIST_URL.format(ticker=ticker), params={"apikey": apikey}, impersonate=False)
-    out: dict[str, str] = {}
+    out: dict[str, str | None] = {}
     for row in data or []:
         try:
             q = f"{int(row['year'])}Q{int(row['quarter'])}"

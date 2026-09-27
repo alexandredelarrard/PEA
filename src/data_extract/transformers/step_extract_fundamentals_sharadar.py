@@ -46,7 +46,7 @@ class StepExtractFundamentalsSharadar(Step):
         module-level default here would silently ignore `-c` for that path exactly as
         `context.py` used to.
         """
-        config_dir = config_dir or self._config_dir
+        config_dir = str(config_dir or self._config_dir)
         years = int(self._config.data_extract.sharadar_years_history)
 
         # 1. The entity dimension FIRST -- `permaticker`, `currency`, `category`. A full

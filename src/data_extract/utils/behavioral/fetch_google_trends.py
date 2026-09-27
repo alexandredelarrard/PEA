@@ -38,6 +38,7 @@ import random
 import re
 import time
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -132,7 +133,7 @@ class _TrendsClient:
         self._pool = list(proxies) if proxies is not None else crawler.load_proxy_pool()
         random.shuffle(self._pool)
         self._pi = 0
-        self._session = None
+        self._session: Any = None
         self.refresh(rotate=False)
 
     @property
@@ -151,7 +152,8 @@ class _TrendsClient:
             self._pi = (self._pi + 1) % len(self._pool)
         prox = self._current_proxy()
         proxies = {"http": prox, "https": prox} if prox else None
-        self._session = _cffi_requests.Session(impersonate=self._impersonate, verify=self._verify, timeout=self._timeout, proxies=proxies)
+        requests_module = cast(Any, _cffi_requests)
+        self._session = requests_module.Session(impersonate=self._impersonate, verify=self._verify, timeout=self._timeout, proxies=proxies)
         self._session.headers.update(_random_header())
         try:
             self._session.get(GOOGLE_TRENDS_HOME_URL)  # sets NID cookie (on the current IP)
@@ -166,7 +168,7 @@ class _TrendsClient:
         return json.loads(text[i:]) if i >= 0 else {}
 
     def _get(self, url: str, params: dict):
-        resp = self._session.get(url, params=params)  # type: ignore
+        resp = self._session.get(url, params=params)
         if resp.status_code == 429:
             raise TrendsRateLimitedError(f"429 Too Many Requests from {url}")
         if resp.status_code != 200:
@@ -219,7 +221,8 @@ def _weekly_windows(
     """Overlapping [start, end] windows (each <= `chunk_years`, so Trends returns
     WEEKLY data) covering `years` back from `end`. Adjacent windows overlap by
     `overlap_years` so their series can be chain-scaled onto a common level."""
-    end = (end or pd.Timestamp.today()).normalize()
+    end = pd.Timestamp.today() if end is None else end
+    end = end.normalize()
     start0 = end - pd.DateOffset(years=years)
     step = pd.DateOffset(years=chunk_years - overlap_years)
     windows, s = [], start0
@@ -264,7 +267,7 @@ def _stitch_chunks(chunks: list[pd.DataFrame]) -> pd.DataFrame:
         for d, v in zip(c["date"], c["search_interest"], strict=False):
             merged[d] = v * scale[i]
     out = pd.DataFrame(sorted(merged.items()), columns=["date", "search_interest"])
-    mx = out["search_interest"].max()
+    mx = cast(pd.Series, out["search_interest"]).max()
     if mx and mx > 0:
         out["search_interest"] = (out["search_interest"] / mx * 100).round(2).clip(0, 100)
     return out.reset_index(drop=True)
@@ -310,7 +313,10 @@ def _append_and_renormalize(ref: pd.DataFrame, recent: pd.DataFrame) -> pd.DataF
     if new_weeks.empty:
         return ref
     full = (
-        pd.concat([ref[["date", "search_interest"]], new_weeks[["date", "search_interest"]]], ignore_index=True)
+        pd.concat(
+            [cast(pd.DataFrame, ref[["date", "search_interest"]]), cast(pd.DataFrame, new_weeks[["date", "search_interest"]])],
+            ignore_index=True,
+        )
         .drop_duplicates(subset=["date"], keep="last")
         .sort_values("date")
         .reset_index(drop=True)
@@ -375,16 +381,18 @@ def fetch_google_trends(
     impersonate = impersonate or _IMPERSONATE
 
     names = context.store.load(Tables.sp500_tickers)
+    assert names is not None
     names["name"] = names["name"].apply(_clean_name)
     if tickers is not None:
-        names = names[names["ticker"].isin(tickers)]
+        names = cast(pd.DataFrame, names[cast(pd.Series, names["ticker"]).isin(tickers)])
 
     existing = load_existing(context, "google_trends")
+    existing_frame = existing if existing is not None else _empty_long()
     if existing is None:
         span: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     else:
-        agg = existing.groupby("ticker")["date"].agg(["min", "max"])
-        span = {t: (r["min"], r["max"]) for t, r in agg.iterrows()}
+        agg = cast(pd.DataFrame, existing.groupby("ticker")[["date"]].agg(["min", "max"]))
+        span = {str(t): (cast(pd.Timestamp, r.iloc[0]), cast(pd.Timestamp, r.iloc[1])) for t, r in agg.iterrows()}
 
     today = pd.Timestamp.today().normalize()
     deep_before = today - pd.DateOffset(years=years - 1)  # history counts as "deep" if it reaches here
@@ -398,12 +406,12 @@ def fetch_google_trends(
 
     total_new, touched, skipped = 0, 0, 0
     for i, (_, row) in enumerate(tqdm(list(names.iterrows()), desc="Google Trends")):
-        tkr, keyword = row["ticker"], str(row["name"])
+        tkr, keyword = str(row["ticker"]), str(row["name"])
         mn, mx = span.get(tkr, (None, None))
 
         # "backfilled" = history reaches the full window OR already spans >= 3y (as deep
         # as Trends will give for this keyword) -> don't re-run the full backfill.
-        deep = mn is not None and (mn <= deep_before or (mx - mn).days >= _MIN_BACKFILL_DAYS)
+        deep = mn is not None and mx is not None and (mn <= deep_before or (mx - mn).days >= _MIN_BACKFILL_DAYS)
         current = mx is not None and (today - mx).days <= refetch_window_days
         if deep and current:
             skipped += 1
@@ -415,6 +423,7 @@ def fetch_google_trends(
                 series = _fetch_weekly_history(client, keyword, years, pause)
                 n_new = len(series)
             else:  # deep but stale -> fetch an overlapping recent window, reconcile onto history
+                assert mx is not None
                 # Explicit [mx - 1y, today] window: < 5y so Trends returns WEEKLY buckets, and it
                 # OVERLAPS the stored tail by ~1y so `_scale_to_reference` has real common weeks to
                 # level on. (The old "today 1-y" relative timeframe is not a valid Trends unit and
@@ -422,14 +431,18 @@ def fetch_google_trends(
                 win_start = (mx - pd.DateOffset(years=1)).normalize()
                 timeframe = f"{win_start.date()} {today.date()}"
                 logger.info(f"Append recent weeks for {tkr} ({timeframe})")
-                recent = call_with_retries(
-                    lambda tf=timeframe, keyword=keyword: client.interest_over_time(keyword, tf),
-                    retries=4,
-                    base_wait=(15.0 if client.n_proxies else 45.0),
-                    on_retry=client.refresh,
-                    label=f"trends {tkr} recent",
+                recent = cast(
+                    pd.DataFrame,
+                    call_with_retries(
+                        lambda tf=timeframe, keyword=keyword: client.interest_over_time(keyword, tf),
+                        retries=4,
+                        base_wait=(15.0 if client.n_proxies else 45.0),
+                        on_retry=client.refresh,
+                        label=f"trends {tkr} recent",
+                    ),
                 )
-                ref = existing[existing["ticker"] == tkr][["date", "search_interest"]]
+                ref = cast(pd.DataFrame, existing_frame[cast(pd.Series, existing_frame["ticker"]) == tkr])
+                ref = cast(pd.DataFrame, ref[["date", "search_interest"]])
                 series = _append_and_renormalize(ref, recent)  # FULL coherent 0-100 series
                 n_new = max(0, len(series) - len(ref))  # weeks actually appended
         except Exception as e:  # noqa: BLE001
@@ -441,7 +454,7 @@ def fetch_google_trends(
         if series is not None and not series.empty and n_new > 0:
             out = series.copy()
             out["ticker"] = tkr
-            context.store.save("google_trends", out[["date", "ticker", "search_interest"]])
+            context.store.save("google_trends", cast(pd.DataFrame, out[["date", "ticker", "search_interest"]]))
             total_new += n_new
             touched += 1
 

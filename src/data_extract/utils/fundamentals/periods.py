@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -294,8 +295,8 @@ def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
     """
     if ends.size == 0 or pd.isna(q.period_start) or pd.isna(q.value):
         return False
-    gap = (np.datetime64(q.period_start, "ns") - ends) / np.timedelta64(1, "D")
-    quarter = float(q.value)
+    gap = cast(Any, np.datetime64(cast(Any, q.period_start), "ns") - ends) / np.timedelta64(1, "D")
+    quarter = float(cast(Any, q.value))
     # Contiguous AND same-direction. A cumulative of the opposite sign is evidence the year
     # turned, not evidence the window is mislabelled.
     keep = (gap >= 0) & (gap <= _CONTIGUOUS_DAYS) & (values * quarter > 0)
@@ -384,7 +385,7 @@ def _drop_annual_masquerading_as_quarter(
     i_value = interim["value"].to_numpy(float)
     same_period = np.timedelta64(_SAME_PERIOD_DAYS, "D")
     for q in quarters.itertuples():
-        q_end = np.datetime64(q.period_end, "ns")
+        q_end = np.datetime64(cast(Any, q.period_end), "ns")
         near = np.abs(a_end - q_end) <= same_period
         if not near.any():
             if _is_ambiguous_duration(q, y9_end, y9_value):
@@ -395,7 +396,7 @@ def _drop_annual_masquerading_as_quarter(
                             "period_start": q.period_start,
                             "period_end": q.period_end,
                             "period_days": q.period_days,
-                            "value": float(q.value),
+                            "value": float(cast(Any, q.value)),
                             "known_from": q.filing_date,
                             "dc_code": AMBIGUOUS_DURATION,
                             "source_concept": getattr(q, "source_concept", None),
@@ -404,7 +405,7 @@ def _drop_annual_masquerading_as_quarter(
             continue
         near_value = a_value[near]
         scale = float(np.abs(near_value).max())
-        if scale < 1 or float(np.abs(near_value - float(q.value)).min()) > 0.001 * scale:
+        if scale < 1 or float(np.abs(near_value - float(cast(Any, q.value))).min()) > 0.001 * scale:
             continue
         # Scoped to the ANNUAL window, not to the quarter's: a nine-month cumulative ends
         # exactly where the fourth quarter begins, so anchoring on `q.period_start` would
@@ -640,7 +641,7 @@ def quarterize(
             "period_start": r.period_start,
             "period_end": r.period_end,
             "period_days": r.period_days,
-            "value": float(r.value),
+            "value": float(cast(Any, r.value)),
             "basis": AS_REPORTED,
             "known_from": r.filing_date,
             "source_concept": r.source_concept,
@@ -693,18 +694,18 @@ def _ladder(
             prior = _same_start_before(earlier, row.period_start, row.period_end)
             if prior is None:
                 continue
-            derived = _derived(row._asdict(), prior, basis, spec, [float(prior["value"])], guards, refusals)
+            derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards, refusals)
             if derived:
                 out.append(derived)
 
     for fy in annual.itertuples():
-        fy_row = fy._asdict()
+        fy_row = cast(Any, fy)._asdict()
         inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
         # A discrete quarter already ending on the fiscal year-end IS Q4 as reported --
         # nothing to derive, and deriving anyway would duplicate the window.
         if (inside["period_end"] == fy.period_end).any():
             continue
-        siblings = [float(v) for v in inside["value"]]
+        siblings = [float(cast(Any, v)) for v in inside["value"]]
 
         ytd9 = _same_start_before(y9, fy.period_start, fy.period_end)
         if ytd9 is not None:
@@ -858,7 +859,7 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
             continue
         year_start, year_end = starts[position], ends[position]
         quarter_length = max((year_end - year_start).days + 1, 1) / TTM_QUARTERS
-        offset = (pd.Timestamp(out.at[index, "period_start"]) - year_start).days
+        offset = (pd.Timestamp(cast(Any, out.at[index, "period_start"])) - year_start).days
         out.at[index, "fiscal_year"] = year_end.year
         out.at[index, "fiscal_quarter"] = int(min(max(round(offset / quarter_length) + 1, 1), TTM_QUARTERS))
     return out[list(_QUARTER_COLUMNS)]
@@ -943,7 +944,7 @@ def _annual_by_end(annual: pd.DataFrame | None) -> dict:
     if annual is None or annual.empty:
         return {}
     latest = _latest_per_window(annual[annual["duration_type"] == ANNUAL])
-    return {pd.Timestamp(r.period_end): {"value": r.value, "filing_date": r.filing_date} for r in latest.itertuples()}
+    return {pd.Timestamp(cast(Any, r.period_end)): {"value": r.value, "filing_date": r.filing_date} for r in latest.itertuples()}
 
 
 def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:

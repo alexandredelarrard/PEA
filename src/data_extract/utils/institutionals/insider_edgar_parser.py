@@ -7,6 +7,7 @@ identifiers. This adapter assigns an XML-order sequence and never invents a bulk
 
 from __future__ import annotations
 
+from typing import Any, cast
 from xml.etree import ElementTree
 
 import numpy as np
@@ -90,7 +91,7 @@ def _number(parent: ElementTree.Element | None, name: str) -> float:
 
 
 def _date(parent: ElementTree.Element | None, name: str) -> pd.Timestamp:
-    return pd.to_datetime(_text(parent, name), errors="coerce")
+    return pd.to_datetime(cast(Any, _text(parent, name)), errors="coerce")
 
 
 def _flag(parent: ElementTree.Element | None, name: str) -> float:

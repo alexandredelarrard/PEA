@@ -11,6 +11,8 @@ consensus groups on, so a nominee that matches there matches here. The per-filin
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
 from src.context import Context
@@ -49,7 +51,7 @@ def _latest_before(df: pd.DataFrame, meeting_date: object) -> pd.DataFrame:
     if df.empty or "as_of" not in df.columns or meeting_date is None:
         return df.iloc[0:0]
     as_of = pd.to_datetime(df["as_of"], errors="coerce")
-    prior = df[as_of <= pd.Timestamp(meeting_date)]
+    prior = df[as_of <= pd.Timestamp(cast(Any, meeting_date))]
     if prior.empty:
         return prior
     return prior[pd.to_datetime(prior["as_of"], errors="coerce") == as_of[prior.index].max()]

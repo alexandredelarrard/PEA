@@ -30,6 +30,7 @@ Names that hold no earnings call at all (NO_EARNINGS_CALL_TICKERS) are always em
 
 import re
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -68,13 +69,13 @@ def _latest_expected_quarter_index(grace_days: int = EARNINGS_CALL_REPORT_GRACE_
     """Quarter index of the newest call we EXPECT to exist today: the calendar quarter of
     (today - grace), so a just-ended quarter that has not been reported yet is not required."""
     end = pd.Timestamp.today() - pd.Timedelta(days=grace_days)
-    return _quarter_index(end.year, end.quarter)
+    return _quarter_index(int(end.year), int(end.quarter))
 
 
 def _since_floor_index(since: str) -> int:
     """Quarter index of the `since` date floor — the fool gap start for a ticker HF doesn't cover."""
     ts = pd.Timestamp(since)
-    return _quarter_index(ts.year, ts.quarter)
+    return _quarter_index(int(ts.year), int(ts.quarter))
 
 
 def _local_quarters(cache: Path, ticker: str) -> set[str]:
@@ -116,11 +117,11 @@ def _released_quarter_idx_by_ticker(context: Context, lag_days: int = EARNINGS_R
     if not m.any():
         return {}
     rep = pd.DataFrame({"ticker": es["ticker"].astype(str)[m], "d": d[m]})
-    latest = rep.groupby("ticker")["d"].max()
+    latest = cast(pd.Series, rep.groupby("ticker")["d"].max())
     out: dict[str, int] = {}
     for tk, dt in latest.items():
         q = dt - pd.Timedelta(days=lag_days)  # shift into the reported quarter
-        out[tk] = _quarter_index(q.year, q.quarter)
+        out[str(tk)] = _quarter_index(int(q.year), int(q.quarter))
     return out
 
 
@@ -188,7 +189,9 @@ def missing_quarters_by_ticker(
     docstring): it reads the HF parquet horizon, the sections table, the transcript cache
     and the fool JSON index, so re-deriving it per source is both slow and a chance for
     the two sources to disagree about what is missing."""
-    universe = list(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    roster = context.store.load("sp500_tickers", columns=["ticker"])
+    assert roster is not None
+    universe = list(cast(pd.Series, roster["ticker"]))
     if tickers is not None:
         keep = set(tickers)
         universe = [t for t in universe if t in keep]

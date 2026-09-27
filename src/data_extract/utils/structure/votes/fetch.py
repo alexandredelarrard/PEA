@@ -76,6 +76,7 @@ Accepted losses, recorded rather than repaired:
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -122,7 +123,16 @@ def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
     store to categorise a nominee.
     """
     meta = result.task.meta
-    rows, rejected = _proposal_rows(meta["ticker"], meta["filing"], result.parsed, meta["text"], meta["roles"], meta["titles"])
+    extract = result.parsed
+    assert isinstance(extract, Item507Extract)
+    rows, rejected = _proposal_rows(
+        str(meta["ticker"]),
+        cast(pd.Series, meta["filing"]),
+        extract,
+        str(meta["text"]),
+        cast(dict[str, str], meta["roles"]),
+        cast(dict[str, str], meta["titles"]),
+    )
     tally["rejected"] += rejected
     if not rows:
         # NOT the same as a failure: a 5.07(d) board-response filing correctly yields zero
@@ -204,7 +214,7 @@ def fetch_8k_votes_llm(
             tasks.append(
                 LlmTask(
                     seq=len(tasks),
-                    payload=text,
+                    payload=cast(str, text),
                     schema=Item507Extract,
                     table=Tables.sec_8k_votes,
                     meta={"ticker": str(ticker), "filing": f, "text": text, "roles": roles, "titles": titles},

@@ -163,6 +163,7 @@ def _page(context: Context, url: str, params: dict) -> str | None:
     resp = get_once(url, params=params, timeout=_TIMEOUT)
     code = getattr(resp, "status_code", None) if resp is not None else None
     if code == 200:
+        assert resp is not None
         return resp.text
     if code == 403:
         raise NotEntitledError(str(params.get("ticker") or url))

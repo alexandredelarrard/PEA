@@ -29,6 +29,8 @@ Sharadar restatement is picked up by `-F/--full`, not by an incremental run.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 from tqdm import tqdm
 
@@ -105,7 +107,7 @@ def fetch_sharadar_tickers(context: Context) -> None:
     whole dimension is ~17.8k rows, and `isdelisted` / `lastquarter` MUTATE, so an
     append-only view of it would go stale silently.
     """
-    frame = sharadar_get(context, "tickers", keep_default_na=False, **{"table": "fundamentals"})
+    frame = sharadar_get(context, "tickers", keep_default_na=False, **cast(dict[str, Any], {"table": "fundamentals"}))
     if frame is None or frame.empty:
         context.log.warning("Sharadar tickers: no rows returned; %s left unchanged", Tables.sharadar_tickers)
         return
@@ -181,7 +183,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_h
                     ticker=symbol,
                     dimension=dimension,
                     sort="date.asc",
-                    **{"date.gte": since},
+                    **cast(dict[str, Any], {"date.gte": since}),
                 )
                 if page is not None and not page.empty:
                     frames.append(page)
@@ -226,7 +228,7 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_h
 # --------------------------------------------------------------------------- #
 def _fetch_dated_table(context: Context, table: Table, endpoint: str, since: str, *, full: bool = False) -> None:
     """Shared body for the two market-wide, date-resumed side tables."""
-    frame = sharadar_get(context, endpoint, keep_default_na=False, sort="date.asc", **{"date.gte": since})
+    frame = sharadar_get(context, endpoint, keep_default_na=False, sort="date.asc", **cast(dict[str, Any], {"date.gte": since}))
     if frame is None:
         context.log.warning("Sharadar %s: request failed; %s left unchanged", endpoint, table)
         return

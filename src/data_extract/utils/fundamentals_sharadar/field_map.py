@@ -57,6 +57,7 @@ from dataclasses import field as dataclass_field
 from fractions import Fraction
 from functools import cache, cached_property
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -548,7 +549,7 @@ def _is_simple_split(ratio: float) -> bool:
     return frac.denominator == 1 or frac.numerator == 1
 
 
-def split_events(actions: pd.DataFrame, yf_splits: pd.DataFrame | None = None, *, report: TranslationReport | None = None) -> pd.DataFrame:
+def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: TranslationReport | None = None) -> pd.DataFrame:
     """The GENUINE share splits, as `(ticker, date, value)`, from BOTH vendors.
 
     ⚠ A `split` row CO-DATED WITH A SPINOFF IS STILL A SPLIT. This function used to drop
@@ -652,7 +653,11 @@ def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
     """
     if out.empty or not codated:
         return
-    hit = [f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples() if (r.ticker, pd.Timestamp(r.date)) in codated]
+    hit = [
+        f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}"
+        for r in out.itertuples()
+        if (r.ticker, pd.Timestamp(cast(Any, r.date))) in codated
+    ]
     if not hit:
         return
     log.warning(
@@ -777,7 +782,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
     )
     log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
     if report is not None:
-        report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(r.date).date()} x{r.value}" for r in out.itertuples())
+        report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}" for r in out.itertuples())
     return out
 
 
@@ -885,7 +890,7 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
     report = report if report is not None else TranslationReport()
     report.rows_in = len(frame)
 
-    missing = [s.source for s in field_map.direct.values() if s.source not in frame.columns]
+    missing = [cast(str, s.source) for s in field_map.direct.values() if s.source not in frame.columns]
     if missing:
         raise RuntimeError(
             f"the vendor frame is missing {len(missing)} mapped column(s): "

@@ -236,7 +236,7 @@ def peo_block(facts: pd.DataFrame) -> dict:
     out["n_peos"] = float(len(keep))
 
     if not keep.empty:
-        winner = keep.loc[kept_vals.idxmax()]
+        winner = keep.iloc[int(kept_vals.to_numpy().argmax())]
         out["peo_total_comp"] = float(kept_vals.max())
         ind = winner.get(_INDIVIDUAL_AXIS) if _INDIVIDUAL_AXIS in keep.columns else None
         label = winner.get("dimension_member_label")

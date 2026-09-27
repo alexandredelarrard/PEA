@@ -35,11 +35,12 @@ from __future__ import annotations
 import pandas as pd
 
 from src.context import Context
+from src.data_store.schema import Table
 
 __all__ = ["load_existing", "resume_since"]
 
 
-def load_existing(context: Context, table: str, date_col: str | None = "date") -> pd.DataFrame | None:
+def load_existing(context: Context, table: Table | str, date_col: str | None = "date") -> pd.DataFrame | None:
     """A fetcher's already-stored rows, or None when there is nothing to resume from.
 
     None (not an empty frame) is the contract the callers rely on to branch between
@@ -56,7 +57,7 @@ def load_existing(context: Context, table: str, date_col: str | None = "date") -
 
 def resume_since(
     context: Context,
-    table: str,
+    table: Table | str,
     tickers: list[str],
     years_history: int,
     ticker_col: str = "ticker",

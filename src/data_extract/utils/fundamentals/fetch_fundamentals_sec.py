@@ -32,6 +32,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from functools import partial
+from typing import Any, cast
 
 import pandas as pd
 
@@ -116,8 +117,8 @@ def _period_frame(facts: pd.DataFrame) -> pd.DataFrame:
     for column in ("fiscal_year", "fiscal_period", "unit_ref", "decimals"):
         if column not in out.columns:
             out[column] = None
-    start = pd.to_datetime(out.get("period_start"), errors="coerce")
-    end = pd.to_datetime(out.get("period_end"), errors="coerce")
+    start = pd.to_datetime(cast(Any, out.get("period_start")), errors="coerce")
+    end = pd.to_datetime(cast(Any, out.get("period_end")), errors="coerce")
     if "period_instant" in out.columns:
         instant = pd.to_datetime(out["period_instant"], errors="coerce")
         end = end.fillna(instant)
@@ -179,7 +180,7 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
     for row in hits.itertuples():
         key = _period_key(row)
         fact = {
-            "value": float(row.numeric_value),
+            "value": float(cast(Any, row.numeric_value)),
             "unit": getattr(row, "unit_ref", None),
             "decimals": getattr(row, "decimals", None),
             "fiscal_year": row.fiscal_year,
@@ -689,7 +690,7 @@ class _FilingStamp:
             accession_number=filing.accession_number,
             form=filing.form,
             filed=pd.Timestamp(filing.filing_date),
-            reported=pd.to_datetime(period_of_report(filing), errors="coerce"),
+            reported=pd.to_datetime(cast(Any, period_of_report(filing)), errors="coerce"),
             is_amendment=str(filing.form).upper().endswith("/A"),
         )
 
@@ -1034,7 +1035,7 @@ def build_ticker_fundamentals(
 def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: int, *, full: bool = False) -> None:
     # `context.config_dir` is the CLI's `-c` value, resolved once by `get_config_context`;
     # threading it explicitly is what lets a non-default `-c` actually reach the catalogue.
-    catalogue = load_catalogue(context.config_dir)
+    catalogue = load_catalogue(str(context.config_dir))
     # All three GICS levels: the regimes config declares its membership at whichever level
     # is natural (bank/insurer by sub-industry, real_estate by industry group, utility and
     # energy by sector), so reading only one level mis-routes whole sectors.
@@ -1044,7 +1045,7 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
     # for the regimes and once inside the driver for the CIKs.
     levels = ["sector", "industry_group", "sub_industry"]
     cik_map = load_cik_mapping(context, tickers)
-    gics = {row.ticker: {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
+    gics = {str(row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
     # The headcount continuity guard's seed, and the ONE read of this table that is
     # deliberately unfiltered: `history_by_ticker` seeds a per-ticker median from every
     # stored headcount, and a `where=` on the run's ticker list would silently narrow the
@@ -1052,7 +1053,7 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
     # table, so the whole-table read is bounded by construction.
     stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", "employees"], optional=True)
     headcounts = history_by_ticker(stored.rename(columns={"as_of": "filing_date", "employees": "value"}) if stored is not None else None)
-    registrants = load_registrants(context.config_dir)
+    registrants = load_registrants(str(context.config_dir))
     if registrants:
         context.log.info(
             "fundamentals: %d registrant chain(s) declared -- %s",

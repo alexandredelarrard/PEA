@@ -14,6 +14,7 @@ ThreadPoolExecutor overlap. This is what lets the EDGAR fetchers parallelize.
 import json
 import threading
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import requests
 
 from src.context import Context
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 
 _MIN_INTERVAL = 0.11  # ~9 req/sec, safely under SEC's 10/sec limit
 _DEFAULT_TIMEOUT = 30  # seconds; avoid a hung socket stalling a worker
@@ -74,14 +75,14 @@ def existing_filings(context: Context, table) -> frozenset[str]:
     return frozenset(str(a) for a in context.store.distinct(table, "accession_number"))
 
 
-def bulk_ingested_quarters(store, table: str) -> set[str]:
+def bulk_ingested_quarters(store, table: Table | str) -> set[str]:
     """Distinct source-zip `quarter` tags already stored in a bulk table -> the
     set of quarters an incremental re-run can SKIP (a past quarter's data set is
     final once the quarter ends). Empty when the table doesn't exist yet."""
     return {str(q) for q in store.distinct(table, "quarter")}
 
 
-def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
+def load_processed_universe(cache_dir: Path, table: Table | str) -> set[str]:
     """The ticker universe a bulk table was last built against (sidecar JSON). Used
     to decide whether cached zips must be re-parsed to back-fill NEW tickers.
     Comparing to the processed set (not to the tickers that happened to file) is
@@ -95,7 +96,7 @@ def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
         return set()
 
 
-def save_processed_universe(cache_dir: Path, table: str, universe: set[str]) -> None:
+def save_processed_universe(cache_dir: Path, table: Table | str, universe: Collection[str]) -> None:
     (cache_dir / f"{table}_universe.json").write_text(json.dumps({"universe": sorted(universe), "saved": today_iso()}), encoding="utf-8")
 
 
@@ -118,6 +119,7 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     "ExxonMobil Holdings Corp" shell).
     """
     df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS), where={"ticker": list(tickers)} if tickers is not None else None)
+    assert df is not None
 
     # SEC URLs need the 10-digit zero-padded CIK
     df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)

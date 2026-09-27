@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -224,7 +225,9 @@ def ingest_hf_transcripts(
             return 0
 
     path = download_hf_parquet(context)
-    universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    roster = context.store.load("sp500_tickers", columns=["ticker"])
+    assert roster is not None
+    universe = set(cast(pd.Series, roster["ticker"]))
     keep = (universe & set(tickers)) if tickers is not None else universe
     existing = _existing_keys(context)
     url = f"hf://{HF_TRANSCRIPTS_DATASET}"

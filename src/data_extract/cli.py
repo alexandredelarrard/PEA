@@ -15,17 +15,28 @@ insiders, 13D, 8-K, short interest, FTD), fundamentals, structure, behavioral --
 `src/data_extract/utils/<group>/` and, for institutionals, the cube part of the same name.
 """
 
+from typing import Any, cast
+
 import click
+from omegaconf import DictConfig
 
 from src.constants.command_line_interface import (
     CONFIG_ARGS,
-    CONFIG_KWARGS,
     FULL_ARGS,
-    FULL_KWARGS,
     TICKERS_ARGS,
-    TICKERS_KWARGS,
     YEARS_ARGS,
-    YEARS_KWARGS,
+)
+from src.constants.command_line_interface import (
+    CONFIG_KWARGS as _CONFIG_KWARGS,
+)
+from src.constants.command_line_interface import (
+    FULL_KWARGS as _FULL_KWARGS,
+)
+from src.constants.command_line_interface import (
+    TICKERS_KWARGS as _TICKERS_KWARGS,
+)
+from src.constants.command_line_interface import (
+    YEARS_KWARGS as _YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
@@ -94,13 +105,18 @@ from src.data_store.schema import Tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
+CONFIG_KWARGS = cast(dict[str, Any], _CONFIG_KWARGS)
+TICKERS_KWARGS = cast(dict[str, Any], _TICKERS_KWARGS)
+FULL_KWARGS = cast(dict[str, Any], _FULL_KWARGS)
+YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
+
 
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
     """DATA EXTRACTION — one command per source (scheduled by the Airflow extraction DAG)."""
 
 
-def _ctx(config_path: str) -> tuple[object, Context]:
+def _ctx(config_path: str) -> tuple[DictConfig, Context]:
     return get_config_context(config_path, use_cache=False, save=False)
 
 

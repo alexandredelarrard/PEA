@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, cast
 
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
@@ -105,7 +106,7 @@ _VALUE_KEY: tuple[str, ...] = ("field", "duration_type", "period_end")
 #:
 #: Flows are TTM here, because that IS the column (decision 31): `profitMargins` is TTM net
 #: income over TTM revenue, never a quarter over a quarter.
-_FORMULAS: dict[str, tuple[tuple[str, ...], object]] = {
+_FORMULAS: dict[str, tuple[tuple[str, ...], Callable[[float, float], float]]] = {
     "ebitda": (("operatingIncome", "depAmort"), lambda a, b: a + b),
     "freeCashflow": (("operatingCashFlow", "capex"), lambda a, b: a - b),
     "epsDiluted": (("netIncome", "dilutedShares"), lambda a, b: a / b),
@@ -171,7 +172,7 @@ def _amended_fields(facts: pd.DataFrame, accession: str, filed: pd.Timestamp) ->
     for row in amendment.itertuples():
         key = tuple(getattr(row, c) for c in _VALUE_KEY)
         if key not in latest.index or not _same_value(latest.loc[key], row.value):
-            moved.add(row.field)
+            moved.add(str(row.field))
     return sorted(moved)
 
 
@@ -192,7 +193,7 @@ def publication_events(facts: pd.DataFrame) -> pd.DataFrame:
         if not bool(group["is_amendment"].iloc[0]):
             rows.append({"as_of": filed, "publication_form": form, "is_amendment": False, "amended_fiscal_end": pd.NaT, "amended_fields": None})
             continue
-        moved = _amended_fields(facts, accession, filed)
+        moved = _amended_fields(facts, str(accession), filed)
         if not moved:
             continue  # a no-op amendment publishes nothing
         original = first_by_period.get(period)
@@ -297,7 +298,8 @@ def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.S
     rows = frame[frame["field"] == field]
     if rows.empty:
         return None
-    return rows.loc[pd.to_datetime(rows[column]).idxmax()]
+    dates = pd.to_datetime(rows[column])
+    return rows.iloc[int(dates.to_numpy().argmax())]
 
 
 def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
@@ -309,7 +311,7 @@ def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
     """
     if pd.isna(period):
         return False
-    end = pd.to_datetime(newest.get("period_end"), errors="coerce")
+    end = pd.to_datetime(cast(Any, newest.get("period_end")), errors="coerce")
     return pd.notna(end) and abs((period - end).days) > TTM_STALENESS_DAYS
 
 
@@ -323,7 +325,7 @@ def _split_by_field(visible: pd.DataFrame) -> dict[str, pd.DataFrame]:
     order, which is `filing_date` (`_normalise_facts` sorts) -- and the `.iloc[-1]` reads
     below depend on it.
     """
-    return dict(tuple(visible.groupby("field", sort=False)))
+    return {str(field): group for field, group in visible.groupby("field", sort=False)}
 
 
 def _facts_code(by_field: dict[str, pd.DataFrame], field: str) -> str | None:
@@ -597,7 +599,7 @@ def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Times
     if periods.isna().all():
         periods = _as_datetime(visible["period_end"])
     known = periods[periods <= as_of]
-    return known.max() if not known.empty else pd.NaT
+    return cast(pd.Timestamp, known.max() if not known.empty else pd.NaT)
 
 
 def _instant(lookup: InstantLookup, field: str, period) -> float | None:
@@ -735,6 +737,7 @@ def _snapshot(
     if row.get("totalLiabilities") is None:
         row["totalLiabilities"], basis = _total_liabilities_identity(row, by_field)
         if row["totalLiabilities"] is not None:
+            assert basis is not None
             # The absence code the loop just wrote is now false: the cell is not absent, it
             # is derived. Replace rather than accumulate, or the row says both.
             codes[:] = [c for c in codes if c["field"] != "totalLiabilities" or c["dc_code"] in rc.IS_QUALIFIER]
@@ -977,7 +980,7 @@ def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
         facts = facts_frame_from_companyfacts(facts, catalogue)
     out = facts.copy()
     for column in ("filing_date", "period_of_report", "period_start", "period_end"):
-        out[column] = pd.to_datetime(out.get(column), errors="coerce")
+        out[column] = pd.to_datetime(cast(Any, out.get(column)), errors="coerce")
     for column, default in (
         ("is_amendment", False),
         ("dc_code", None),

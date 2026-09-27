@@ -27,6 +27,7 @@ import json
 import logging
 import random
 import re
+from typing import cast
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -138,7 +139,9 @@ def build_transcript_index(
       * `max_pages` / end-of-feed (a page that won't load) as hard safety caps.
 
     `tickers` restricts the kept universe (None = all)."""
-    universe = list(context.store.load(Tables.sp500_tickers, columns=["ticker"])["ticker"])
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
+    assert roster is not None
+    universe = list(cast(pd.Series, roster["ticker"]))
     if tickers is not None:  # scope to a subset (e.g. a test run)
         keep = set(tickers)
         universe = [t for t in universe if t in keep]
@@ -276,7 +279,7 @@ def build_transcript_index_by_ticker(
         need = set(missing[tkr])
         if not need:  # nothing to ask for -> NO request (the 429 fix)
             continue
-        gap_min = min(_quarter_index(*_parse_quarter(q)) for q in need)
+        gap_min = min(_quarter_index(*cast(tuple[int, int], _parse_quarter(q))) for q in need)
         html, exch = _quote_page(tkr, exchanges)
         if html is None:
             missing_page.append(tkr)
@@ -330,7 +333,9 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
     the caps-headed `participants` block, then defers to `split_prepared_qa` for
     full/prepared_remarks/qa."""
     soup = BeautifulSoup(html, "html.parser")
-    div = soup.find("div", class_=lambda c: c and "transcript-content" in c) or soup.find("div", class_=lambda c: c and "article-body" in c)
+    div = soup.find("div", class_=lambda c: bool(c and "transcript-content" in c)) or soup.find(
+        "div", class_=lambda c: bool(c and "article-body" in c)
+    )
     if div is None:
         return {}
     text = div.get_text("\n", strip=True)

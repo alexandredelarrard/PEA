@@ -13,6 +13,7 @@ CUSIP (OpenFIGI), never via unstandardized issuer names.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pandas as pd
 from edgar import get_filings
@@ -167,7 +168,7 @@ def _record(context: Context, tickers: list[str] | None, saved: int, filing_wind
     if filing_window is None:
         record_run(context, Tables.sec13f_hr, n_tickers, saved)
     else:
-        record_run(context, Tables.sec13f_hr, n_tickers, saved, backfill_window=tuple(filing_window))
+        record_run(context, Tables.sec13f_hr, n_tickers, saved, backfill_window=filing_window)
 
 
 def fetch_13f(
@@ -223,7 +224,7 @@ def fetch_13f(
         else:
             since = watermark - pd.Timedelta(days=lookback_days)
 
-    filings = get_filings(form=SEC_13F_FORMS, filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
+    filings = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
 

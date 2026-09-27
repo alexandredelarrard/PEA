@@ -27,6 +27,7 @@ Notes:
 
 import logging
 import time
+from typing import cast
 
 import pandas as pd
 import yfinance as yf
@@ -131,20 +132,24 @@ def _prelisting_cutoff(frame: pd.DataFrame) -> pd.Timestamp | None:
     if frame.empty or "volume" not in frame.columns:
         return None
     f = frame.sort_values("date")
-    volume = pd.to_numeric(f["volume"], errors="coerce")
+    volume = cast(pd.Series, pd.to_numeric(f["volume"], errors="coerce"))
     zero = volume.fillna(0) <= 0
     if not zero.any():
         return None
 
-    last_zero = f.loc[zero, "date"].max()
-    window = f["date"] <= last_zero
+    last_zero_value = cast(pd.Series, f.loc[zero, "date"]).max()
+    if pd.isna(last_zero_value):
+        return None
+    last_zero = cast(pd.Timestamp, last_zero_value)
+    dates = cast(pd.Series, f["date"])
+    window = dates <= last_zero
     if window.sum() and zero[window].mean() >= PRELISTING_ZERO_VOLUME_SHARE:
         return last_zero
 
     # Flat SPAC-trust / stub regime that still records token volume: compare the first
     # year against the ticker's own long-run level, so the test is scale-free.
-    first_year = f["date"] <= f["date"].min() + pd.DateOffset(years=1)
-    early, overall = volume[first_year].median(), volume.median()
+    first_year = dates <= dates.min() + pd.DateOffset(years=1)
+    early, overall = volume.loc[first_year].median(), volume.median()
     if overall and overall > 0 and early / overall < PRELISTING_VOLUME_RATIO:
         return last_zero
     return None
@@ -227,16 +232,19 @@ def _download_price_chunk(
     silently by whoever adds the next call site."""
     for attempt in range(3):
         try:
-            data = yf.download(
-                chunk,
-                start=start.strftime(DATE_FORMAT),
-                end=(end + pd.Timedelta(days=1)).strftime(DATE_FORMAT),
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=auto_adjust,
-                actions=actions,  # also return Dividends / Stock Splits
-                threads=True,
-                progress=False,
+            data = cast(
+                pd.DataFrame,
+                yf.download(
+                    chunk,
+                    start=start.strftime(DATE_FORMAT),
+                    end=(end + pd.Timedelta(days=1)).strftime(DATE_FORMAT),
+                    interval="1d",
+                    group_by="ticker",
+                    auto_adjust=auto_adjust,
+                    actions=actions,  # also return Dividends / Stock Splits
+                    threads=True,
+                    progress=False,
+                ),
             )
             return _chunk_response_to_frames(data, chunk)
         except Exception as e:

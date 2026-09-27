@@ -14,9 +14,10 @@ CSV; unmatched/failed articles are skipped. Network is isolated in
 from __future__ import annotations
 
 import re
+from typing import cast
+from urllib.parse import quote
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 from src.constants.constants import _HEADERS, DATE_FORMAT_COMPACT
@@ -125,7 +126,7 @@ def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
 
 def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     """Network call, isolated for mocking. Returns the 'items' list ([] on miss)."""
-    url = _API.format(article=requests.utils.quote(article, safe=""), start=start, end=end)
+    url = _API.format(article=quote(article, safe=""), start=start, end=end)
     data = _wiki_crawler().get_json(url, headers=_HEADERS)  # IP-rotating crawler, contact UA
     return data.get("items", []) if data else []
 
@@ -146,11 +147,12 @@ def fetch_wiki_pageviews(
     Pace: `pause` defaults to 1.0s so `sleep_pace` (base + 0.1-0.7 jitter, x any post-429
     per-host slowdown) never issues more than ~1 request/second to the Wikimedia API."""
     names = context.store.load("sp500_tickers")
+    assert names is not None
     if tickers is not None:
-        names = names[names["ticker"].isin(tickers)]
+        names = cast(pd.DataFrame, names[cast(pd.Series, names["ticker"]).isin(tickers)])
 
     existing = load_existing(context, "wiki_pageviews")
-    last_by_ticker = {} if existing is None else existing.groupby("ticker")["date"].max().to_dict()
+    last_by_ticker = {} if existing is None else cast(pd.Series, existing.groupby("ticker")["date"].max()).to_dict()
     today = pd.Timestamp.today().normalize()
     default_start = today - pd.DateOffset(years=years_history)
     # pageviews for a day are available the next day; stop at yesterday
@@ -159,7 +161,8 @@ def fetch_wiki_pageviews(
 
     frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Wikipedia pageviews"):
-        last = last_by_ticker.get(row["ticker"])
+        ticker = str(row["ticker"])
+        last = last_by_ticker.get(ticker)
         # already current within the publication lag -> no API call at all
         if last is not None and (today - last).days <= refetch_window_days:
             skipped += 1
@@ -171,9 +174,9 @@ def fetch_wiki_pageviews(
         # resolve the real Wikipedia article via search (handles 'Deere & Company' ->
         # John Deere, 'Alphabet Inc. (Class A)' -> Alphabet Inc., 'Home Depot (The)' ->
         # The Home Depot, ...); the naive suffix-strip is only the fallback.
-        article = _resolve_wiki_article(row["name"])
+        article = _resolve_wiki_article(str(row["name"]))
         try:
-            long = _json_to_long(_fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end), row["ticker"])
+            long = _json_to_long(_fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end), ticker)
         except Exception as e:
             print(f"Wiki fetch failed for {row['ticker']} ({article}): {e}")
             continue
@@ -182,7 +185,7 @@ def fetch_wiki_pageviews(
         ph.sleep_pace(pause, _API)  # per-host paced (honours 429 slowdown)
     print(f"Wikipedia: {skipped}/{len(names)} tickers already current (skipped).")
 
-    parts = [df for df in (existing, *frames) if df is not None and not df.empty]
+    parts: list[pd.DataFrame] = [df for df in (existing, *frames) if df is not None and not df.empty]
     if not parts:
         print("No Wikipedia pageview data available.")
         record_run(context, Tables.wiki_pageviews, len(names), 0)

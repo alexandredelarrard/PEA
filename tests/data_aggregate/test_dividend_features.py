@@ -187,7 +187,14 @@ def test_panel_exposes_f_columns():
     # give each ticker enough peers for the _vs_peers column to populate
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
     panel = build_dividend_feature_panel(div_hist, peers, dates, stock_close=close, fundamentals_history=fund)
-    for c in ("f_dividend_yield_xs", "f_dividend_growth_xs", "f_dividend_payer_xs", "f_shareholder_yield_xs", "f_dividend_yield_vs_peers"):
+    for c in (
+        "f_dividend_yield_xs",
+        "f_dividend_growth_xs",
+        "f_dividend_payer_xs",
+        "f_shareholder_yield_xs",
+        "f_dividend_yield_vs_peers",
+        "f_dividend_payer_vs_peers",
+    ):
         assert c in panel.columns, f"{c} missing from panel"
     xs = panel["f_dividend_yield_xs"].dropna()
     assert xs.between(0, 1).all()

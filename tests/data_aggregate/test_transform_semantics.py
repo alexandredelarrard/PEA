@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 
 import src.data_aggregate.utils.common.panel as panel_module
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.xs import winsorize_xs
 from src.data_aggregate.utils.fundamentals.dividend_features import (
     DIVIDEND_TRANSFORM_SEMANTICS,
 )
@@ -45,8 +46,20 @@ def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkey
     ).set_index("ticker")
 
     expected = field.loc[date].dropna().sort_index().astype("float32")
+    expected_peer = winsorize_xs(
+        real_peer_relative(
+            field,
+            _all_peers(tickers),
+            winsorize_inputs=False,
+        )
+    ).loc[date]
     actual = panel["f_flag_xs"].sort_index()
     pd.testing.assert_series_equal(actual.dropna(), expected, check_names=False)
+    pd.testing.assert_series_equal(
+        panel["f_flag_vs_peers"].sort_index(),
+        expected_peer.sort_index().astype("float32"),
+        check_names=False,
+    )
     assert pd.isna(actual.loc["T6"])
     assert observed_winsor_flags == [False]
     assert set(actual.dropna().unique()) == {0.0, 1.0}
@@ -57,21 +70,38 @@ def test_binary_semantic_preserves_state_and_bypasses_input_winsorization(monkey
 def test_structural_zero_semantic_ranks_only_nonzero_support():
     tickers = [f"T{i}" for i in range(8)]
     date = pd.Timestamp("2024-01-02")
-    field = pd.DataFrame([[0, 0, 0, 1, 2, 3, 4, np.nan]], index=[date], columns=tickers)
+    field = pd.DataFrame([[-2, -1, 0, 0, 1, 2, 3, np.nan]], index=[date], columns=tickers)
+    peers = _all_peers(tickers)
     panel = build_peer_relative_panel(
         {"intensity": field},
-        _all_peers(tickers),
+        peers,
         semantics={"intensity": "structural_zero"},
     ).set_index("ticker")
 
-    assert (panel.loc[["T0", "T1", "T2"], "f_intensity_xs"] == 0.0).all()
-    assert (panel.loc[["T0", "T1", "T2"], "f_intensity_vs_peers"] == 0.0).all()
-    nonzero = panel.loc[["T3", "T4", "T5", "T6"], "f_intensity_xs"]
+    zero_tickers = ["T2", "T3"]
+    nonzero_tickers = ["T0", "T1", "T4", "T5", "T6"]
+    assert (panel.loc[zero_tickers, "f_intensity_xs"] == 0.0).all()
+    assert (panel.loc[zero_tickers, "f_intensity_vs_peers"] == 0.0).all()
+    nonzero = panel.loc[nonzero_tickers, "f_intensity_xs"]
     assert nonzero.is_monotonic_increasing
     assert nonzero.between(0, 1).all() and (nonzero > 0).all()
     assert panel.loc["T7", ["f_intensity_xs", "f_intensity_vs_peers"]].isna().all()
+    comparable = field.mask(field.eq(0))
+    expected_peer = (
+        winsorize_xs(panel_module.peer_relative(comparable, peers))
+        .where(
+            ~field.eq(0),
+            0.0,
+        )
+        .loc[date]
+    )
+    pd.testing.assert_series_equal(
+        panel["f_intensity_vs_peers"].sort_index(),
+        expected_peer.sort_index().astype("float32"),
+        check_names=False,
+    )
     print("\n=== SANITY CHECK: structural-zero transform semantics ===")
-    print("  exact zeros remain 0; only positive comparable support is ranked, monotonically; null stays absent. Validated.")
+    print("  exact zeros remain 0; negative and positive non-zero support alone is ranked/peer-compared; null stays absent. Validated.")
 
 
 def test_default_continuous_transform_is_unchanged_and_semantics_are_validated():

@@ -8,11 +8,18 @@ must be point-in-time (a value only appears once its filing is public).
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fiscal_apply_to_daily
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _synth_quarterly():
@@ -51,11 +58,11 @@ def test_fiscal_apply_yoy_and_acceleration():
     yoy_q5 = rev_q[4] / rev_q[0] - 1  # 121/100 - 1 = 0.21
     yoy_q6 = rev_q[5] / rev_q[1] - 1  # 143/110 - 1 = 0.30
 
-    assert abs(yoy.loc[after_q5, "AAA"] - yoy_q5) < 1e-9
-    assert abs(yoy.loc[after_q6, "AAA"] - yoy_q6) < 1e-9
-    assert abs(accel.loc[after_q6, "AAA"] - (yoy_q6 - yoy_q5)) < 1e-9
+    assert abs(_number(yoy.loc[after_q5, "AAA"]) - yoy_q5) < 1e-9
+    assert abs(_number(yoy.loc[after_q6, "AAA"]) - yoy_q6) < 1e-9
+    assert abs(_number(accel.loc[after_q6, "AAA"]) - (yoy_q6 - yoy_q5)) < 1e-9
     # no look-ahead: before the very first year-over-year is computable -> NaN
-    assert np.isnan(yoy.loc[ends[0] + pd.Timedelta(days=5), "AAA"])
+    assert np.isnan(_number(yoy.loc[ends[0] + pd.Timedelta(days=5), "AAA"]))
 
     print("\n=== SANITY CHECK: latest-quarter YoY + acceleration ===")
     print(f"  Q5 YoY={yoy.loc[after_q5, 'AAA']:.2%} (121/100), Q6 YoY={yoy.loc[after_q6, 'AAA']:.2%} (143/110)")

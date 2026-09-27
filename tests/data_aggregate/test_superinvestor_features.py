@@ -19,6 +19,7 @@ one, each of which was a real defect caught by measurement rather than a hypothe
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -333,8 +334,9 @@ def test_load_reads_only_roster_managers_from_the_book_table(sqlite_store):
     rows = _book("2025-12-31", "2026-02-14", 1000, 250)
     rows += _book("2025-12-31", "2026-02-14", 5, 5, cik="0000000009", n_other=0)  # not roster
     sqlite_store.save("sec13f_manager_holdings", pd.DataFrame(rows))
-    ctx = _Ctx(sqlite_store)
+    ctx = cast(Any, _Ctx(sqlite_store))
     out = load_superinvestor_holdings(ctx, _ROSTER)
+    assert out is not None
     assert set(out["cik"]) == {"0000000001"}, set(out["cik"])
     assert len(out) == 10, "the whole book must come back, not the universe slice"
     assert load_superinvestor_holdings(ctx, {"managers": []}) is None

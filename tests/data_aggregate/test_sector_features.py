@@ -23,6 +23,8 @@ A synthetic fixture may invent VALUES; it must not invent COLUMNS.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -31,6 +33,13 @@ from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS,
     compute_sector_kpis,
 )
+
+
+def _number(value: object) -> float:
+    """Narrow a scalar selected from a numeric fixture frame."""
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
+
 
 #: KPI families deleted with this audit because SF1 carries none of their inputs. Asserted
 #: absent so a future re-add has to come with the data, not just the formula.
@@ -199,15 +208,15 @@ def test_deleted_kpis_are_gone_from_the_contract():
 def test_universal_kpis():
     k = compute_sector_kpis(_fundamentals()).set_index("ticker")
     r = k.loc["INDU"]
-    assert r["effective_tax_rate"] == pytest.approx(0.20)
-    assert r["accruals_ratio"] == pytest.approx((120 - 180) / 2000)  # -0.03
-    assert r["asset_turnover"] == pytest.approx(0.50)
-    assert r["capex_intensity"] == pytest.approx(0.08)
-    assert r["capex_to_dep"] == pytest.approx(80 / 60)
+    assert _number(r["effective_tax_rate"]) == pytest.approx(0.20)
+    assert _number(r["accruals_ratio"]) == pytest.approx((120 - 180) / 2000)  # -0.03
+    assert _number(r["asset_turnover"]) == pytest.approx(0.50)
+    assert _number(r["capex_intensity"]) == pytest.approx(0.08)
+    assert _number(r["capex_to_dep"]) == pytest.approx(80 / 60)
     # dividends 40 (stored outflow-POSITIVE) + buybacks 60 (from equityIssuanceNet -60)
-    assert r["payout_ratio"] == pytest.approx((40 + 60) / 120)  # 0.8333
-    assert r["buyback_intensity"] == pytest.approx(0.06)
-    assert r["deferred_rev_intensity"] == pytest.approx(0.25)
+    assert _number(r["payout_ratio"]) == pytest.approx((40 + 60) / 120)  # 0.8333
+    assert _number(r["buyback_intensity"]) == pytest.approx(0.06)
+    assert _number(r["deferred_rev_intensity"]) == pytest.approx(0.25)
 
     print("\n=== SANITY CHECK: universal KPIs (industrial) ===")
     print(
@@ -224,7 +233,7 @@ def test_bank_roa_is_the_surviving_bank_kpi():
     k = compute_sector_kpis(_fundamentals()).set_index("ticker")
     assert k.loc["BANK", "bank_roa"] == pytest.approx(20 / 1000)  # 0.02
     assert k.loc["BANK", "aoci_to_equity"] == pytest.approx(-9 / 90)  # -0.10
-    assert np.isnan(k.loc["INDU", "bank_roa"]), "an industrial must not get bank_roa"
+    assert np.isnan(_number(k.loc["INDU", "bank_roa"])), "an industrial must not get bank_roa"
     print("\n=== SANITY CHECK: bank KPIs (post-audit) ===")
     print(
         f"  bank_roa={k.loc['BANK', 'bank_roa']:.3f}, aoci_to_equity="
@@ -238,10 +247,10 @@ def test_reit_kpis():
     r = k.loc["REIT"]
     # FFO = net income + D&A only: SF1 has no gainOnDispositions / realEstateImpairment leg
     ffo = 50 + 100  # 150
-    assert r["ffo_margin"] == pytest.approx(ffo / 300)
-    assert r["ffo_payout"] == pytest.approx(120 / ffo)  # dividends are POSITIVE
-    assert r["affo_margin"] == pytest.approx((ffo - 40) / 300)  # less recurring capex
-    assert r["affo_dividend_coverage"] == pytest.approx((ffo - 40) / 120)
+    assert _number(r["ffo_margin"]) == pytest.approx(ffo / 300)
+    assert _number(r["ffo_payout"]) == pytest.approx(120 / ffo)  # dividends are POSITIVE
+    assert _number(r["affo_margin"]) == pytest.approx((ffo - 40) / 300)  # less recurring capex
+    assert _number(r["affo_dividend_coverage"]) == pytest.approx((ffo - 40) / 120)
     print("\n=== SANITY CHECK: REIT KPIs ===")
     print(
         f"  FFO={ffo} (net income + D&A; no disposal-gain leg in SF1) margin="
@@ -253,15 +262,15 @@ def test_reit_kpis():
 
 def test_capital_efficiency_kpis():
     r = compute_sector_kpis(_fundamentals()).set_index("ticker").loc["INDU"]
-    assert r["earnings_quality"] == pytest.approx(180.0 / 120.0)  # 1.5 (OCF/NI)
-    assert r["fixed_cost_coverage_margin"] == pytest.approx((400 - 250) / 1000)  # 0.15
+    assert _number(r["earnings_quality"]) == pytest.approx(180.0 / 120.0)  # 1.5 (OCF/NI)
+    assert _number(r["fixed_cost_coverage_margin"]) == pytest.approx((400 - 250) / 1000)  # 0.15
     # SGR = ROE x (1 - payout). The payout leg is only a payout because `dividendsPaid` is
     # stored outflow-POSITIVE: while it was negative the clip(0,1) floored every payer at 0
     # and SGR collapsed onto returnOnEquity exactly (r = 1.0000).
-    assert r["sustainable_growth_rate"] == pytest.approx(0.13 * (1 - 40 / 120))
-    assert r["sustainable_growth_rate"] != pytest.approx(r["returnOnEquity"])
-    assert r["gmroi"] == pytest.approx(400.0 / 150.0)  # 2.667 (single period)
-    assert r["asset_turnover"] == pytest.approx(0.50)  # single row -> period-end
+    assert _number(r["sustainable_growth_rate"]) == pytest.approx(0.13 * (1 - 40 / 120))
+    assert _number(r["sustainable_growth_rate"]) != pytest.approx(_number(r["returnOnEquity"]))
+    assert _number(r["gmroi"]) == pytest.approx(400.0 / 150.0)  # 2.667 (single period)
+    assert _number(r["asset_turnover"]) == pytest.approx(0.50)  # single row -> period-end
     print("\n=== SANITY CHECK: capital-efficiency KPIs ===")
     print(
         f"  earnings_quality={r['earnings_quality']:.2f} "
@@ -304,7 +313,7 @@ def test_reinvestment_rate_multiperiod():
     last = k.iloc[-1]
     nopat = 200 * (1 - 40 / 200)  # 160
     # reinvestment = (capex 100 - D&A 60 + ΔNWC 60) / NOPAT 160 = 100/160
-    assert last["reinvestment_rate"] == pytest.approx((100 - 60 + 60) / nopat)
+    assert _number(last["reinvestment_rate"]) == pytest.approx((100 - 60 + 60) / nopat)
     assert pd.isna(k.iloc[0]["reinvestment_rate"])  # first year: no prior NWC
     print("\n=== SANITY CHECK: reinvestment rate (multi-period) ===")
     print(f"  (capex-D&A+dNWC)/NOPAT = (100-60+60)/160 = {last['reinvestment_rate']:.3f}; first year NaN (no prior). Validated.")
@@ -314,7 +323,7 @@ def test_utility_kpi():
     r = compute_sector_kpis(_fundamentals()).set_index("ticker").loc["UTIL"]
     # capex over the PLAIN asset base: SF1 has neither `regulatoryAssets` nor a standalone
     # `goodwill`, so the base is not cleaned of either.
-    assert r["capex_to_rate_base"] == pytest.approx(400 / 5000)  # 0.08
+    assert _number(r["capex_to_rate_base"]) == pytest.approx(400 / 5000)  # 0.08
     print("\n=== SANITY CHECK: utility rate-base KPI ===")
     print(
         f"  capex_to_rate_base={r['capex_to_rate_base']:.4f} (capex / total assets; the "
@@ -327,7 +336,7 @@ def test_pharma_kpi_single_period():
     # single period: R&D asset = current R&D only (no prior layers), amortization = 0
     adj_oi = 300 + 250 - 0
     adj_cap = 1000 + (400 + 100) + 250 - 150
-    assert r["rd_capitalized_roic"] == pytest.approx(adj_oi / adj_cap)  # 0.34375
+    assert _number(r["rd_capitalized_roic"]) == pytest.approx(adj_oi / adj_cap)  # 0.34375
     print("\n=== SANITY CHECK: pharma KPI ===")
     print(
         f"  rd_capitalized_roic={r['rd_capitalized_roic']:.4f} (R&D treated as a 5y "
@@ -338,8 +347,8 @@ def test_pharma_kpi_single_period():
 def test_energy_kpis():
     r = compute_sector_kpis(_fundamentals()).set_index("ticker").loc["OILX"]
     # EBITDA, not EBITDAX: `explorationExpense` is not in SF1 so nothing is added back
-    assert r["ebitda_margin"] == pytest.approx((180 + 110) / 1000)  # 0.29
-    assert r["ddna_intensity"] == pytest.approx(110 / 1000)  # 0.11
+    assert _number(r["ebitda_margin"]) == pytest.approx((180 + 110) / 1000)  # 0.29
+    assert _number(r["ddna_intensity"]) == pytest.approx(110 / 1000)  # 0.11
     print("\n=== SANITY CHECK: oil & gas KPIs ===")
     print(
         f"  ebitda_margin={r['ebitda_margin']:.2f} (NOT ebitdax -- no exploration add-back "
@@ -372,7 +381,7 @@ def test_capitalized_rd_multiperiod():
     # asset pool at last row = 100*(1.0+0.8+0.6+0.4+0.2) = 300 ; amort = 100*0.2*5 = 100
     adj_oi = 300 + 100 - 100
     adj_cap = 1000 + 0 + 300 - 0
-    assert last["rd_capitalized_roic"] == pytest.approx(adj_oi / adj_cap)  # 300/1300
+    assert _number(last["rd_capitalized_roic"]) == pytest.approx(adj_oi / adj_cap)  # 300/1300
     print("\n=== SANITY CHECK: capitalized R&D (multi-period) ===")
     print(f"  rd_capitalized_roic (5y flat R&D) = {last['rd_capitalized_roic']:.4f} (asset 300, amort 100). Validated.")
 
@@ -383,22 +392,22 @@ def test_kpis_are_gics_scoped():
     though it is in the same sector as `BANK`; the split needs the industry group."""
     k = compute_sector_kpis(_fundamentals()).set_index("ticker")
     # bank KPIs only for the bank -- INSR is Financials too, so `sector` alone is not enough
-    assert not np.isnan(k.loc["BANK", "bank_roa"])
+    assert not np.isnan(_number(k.loc["BANK", "bank_roa"]))
     for t in ("INSR", "INDU", "REIT", "UTIL", "OILX", "PHRM"):
-        assert np.isnan(k.loc[t, "bank_roa"]), f"{t} got bank_roa"
+        assert np.isnan(_number(k.loc[t, "bank_roa"])), f"{t} got bank_roa"
     # book_value_growth / aoci_to_equity are FINANCIALS-scoped, so BOTH financials get them
     for t in ("BANK", "INSR"):
-        assert not np.isnan(k.loc[t, "aoci_to_equity"]), f"{t} should get aoci_to_equity"
+        assert not np.isnan(_number(k.loc[t, "aoci_to_equity"])), f"{t} should get aoci_to_equity"
     for t in ("INDU", "REIT", "UTIL", "OILX", "PHRM"):
-        assert np.isnan(k.loc[t, "aoci_to_equity"]), f"{t} got aoci_to_equity"
+        assert np.isnan(_number(k.loc[t, "aoci_to_equity"])), f"{t} got aoci_to_equity"
     # REIT KPIs only for the REIT
     for t in ("BANK", "INSR", "INDU", "UTIL", "OILX", "PHRM"):
-        assert np.isnan(k.loc[t, "ffo_margin"]), f"{t} got an FFO margin"
+        assert np.isnan(_number(k.loc[t, "ffo_margin"])), f"{t} got an FFO margin"
     # utility rate base only for the utility, energy EBITDA margin only for energy
-    assert not np.isnan(k.loc["UTIL", "capex_to_rate_base"])
-    assert np.isnan(k.loc["INDU", "capex_to_rate_base"])
-    assert not np.isnan(k.loc["OILX", "ebitda_margin"])
-    assert np.isnan(k.loc["INDU", "ebitda_margin"])
+    assert not np.isnan(_number(k.loc["UTIL", "capex_to_rate_base"]))
+    assert np.isnan(_number(k.loc["INDU", "capex_to_rate_base"]))
+    assert not np.isnan(_number(k.loc["OILX", "ebitda_margin"]))
+    assert np.isnan(_number(k.loc["INDU", "ebitda_margin"]))
     print("\n=== SANITY CHECK: GICS scoping ===")
     print(
         "  bank_roa only for the BANK (not the same-sector insurer); aoci_to_equity for "
@@ -420,9 +429,9 @@ def test_unclassified_rows_get_no_sector_kpi():
     for col in ("bank_roa", "ffo_margin", "ebitda_margin", "capex_to_rate_base", "aoci_to_equity", "book_value_growth"):
         assert k[col].isna().all(), f"{col} emitted for unclassified rows"
     # the UNIVERSAL and AVAILABILITY-gated KPIs are unaffected -- they need no sector
-    assert not np.isnan(k.loc["INDU", "asset_turnover"])
-    assert not np.isnan(k.loc["INDU", "effective_tax_rate"])
-    assert not np.isnan(k.loc["PHRM", "rd_capitalized_roic"])  # gated on R&D, not on GICS
+    assert not np.isnan(_number(k.loc["INDU", "asset_turnover"]))
+    assert not np.isnan(_number(k.loc["INDU", "effective_tax_rate"]))
+    assert not np.isnan(_number(k.loc["PHRM", "rd_capitalized_roic"]))  # gated on R&D, not on GICS
     print("\n=== SANITY CHECK: unclassified rows ===")
     print(
         "  sector/industry_group dropped -> every GICS-scoped KPI NaN; the universal ones "

@@ -35,6 +35,7 @@ def test_forward_compound_no_log1p_warning_on_sub_minus1_return():
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)  # any RuntimeWarning -> failure
         fwd = forward_compound(s, 2)
+    assert isinstance(fwd, pd.Series)
     # windows that don't span the NaN produce finite compounded returns
     assert np.isfinite(fwd.dropna()).all() and fwd.notna().any()
 

@@ -13,6 +13,8 @@ REGIME STAIRCASE it is rather than as an extraction gap.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -28,6 +30,13 @@ from src.data_aggregate.utils.governance.director_comp import (
 )
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
 from src.data_store.schema import Tables
+
+
+def _number(value: object) -> float:
+    """Narrow a scalar selected from a numeric fixture frame."""
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
+
 
 IDX = pd.bdate_range("2019-01-01", "2025-06-30")
 
@@ -138,8 +147,8 @@ def test_the_shares_are_board_level_sums_not_means_of_ratios():
         ]
     )
     frames, _ = director_pay_fields(df, None, IDX)
-    equity = float(frames["director_equity_pay_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
-    cash = float(frames["director_cash_fee_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
+    equity = _number(frames["director_equity_pay_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
+    cash = _number(frames["director_cash_fee_pct"].loc[pd.Timestamp("2020-06-01"), "BBB"])
     # sums: stock 400k, fees 220k, total 620k
     assert equity == pytest.approx(400_000 / 620_000)
     assert cash == pytest.approx(220_000 / 620_000)
@@ -202,7 +211,8 @@ def test_the_ceo_ratio_is_nan_and_never_inf_on_a_zero_denominator():
     )
     frames, tally = director_pay_fields(dc, parent, IDX)
     r = frames["ceo_to_director_pay_ratio"]
-    zero_2020, zero_2022 = float(r.loc[pd.Timestamp("2020-06-01"), "ZERO"]), float(r.loc[pd.Timestamp("2022-06-01"), "ZERO"])
+    zero_2020 = _number(r.loc[pd.Timestamp("2020-06-01"), "ZERO"])
+    zero_2022 = _number(r.loc[pd.Timestamp("2022-06-01"), "ZERO"])
     assert np.isnan(zero_2020), f"a zero median produced {zero_2020}"
     assert not np.isinf(zero_2020)
     assert zero_2022 == pytest.approx(10_000_000 / 150_000), "the LATER, valid year was lost"
@@ -210,13 +220,13 @@ def test_the_ceo_ratio_is_nan_and_never_inf_on_a_zero_denominator():
     assert tally["ceo_to_director_pay_ratio: rejected (median <= 0)"] == 1
     # `log_median_director_pay` is guarded by the same `> 0` -- log(0) is -inf, not a level
     lg = frames["log_median_director_pay"]
-    assert np.isnan(lg.loc[pd.Timestamp("2020-06-01"), "ZERO"])
+    assert np.isnan(_number(lg.loc[pd.Timestamp("2020-06-01"), "ZERO"]))
     assert lg.loc[pd.Timestamp("2020-06-01"), "GOOD"] == pytest.approx(np.log(250_000))
 
     print("\n=== SANITY CHECK: ceo_to_director_pay_ratio's denominator ===")
     print(f"  median director pay 0 -> ratio {zero_2020} (NaN, not inf)")
     print(f"  the same ticker's next, valid filing -> {zero_2022:.1f}x (the year is rejected, not the ticker)")
-    print(f"  median 250,000 vs a $10M CEO -> {float(r.loc[pd.Timestamp('2020-06-01'), 'GOOD']):.1f}x")
+    print(f"  median 250,000 vs a $10M CEO -> {_number(r.loc[pd.Timestamp('2020-06-01'), 'GOOD']):.1f}x")
     print(f"  log_median_director_pay on the zero year: {lg.loc[pd.Timestamp('2020-06-01'), 'ZERO']}")
     print("  CONCLUSION: both the ratio and the log guard at > 0 and leave a parse failure unknown rather than extreme. Validated.")
 
@@ -262,7 +272,7 @@ def test_the_encoding_and_expiry_contracts():
     frames, tally = director_pay_fields(_rows(), None, IDX)
     fee = frames["director_cash_fee_pct"]["AAA"]
     filed = pd.Timestamp("2020-05-01")
-    age = (fee.index - filed).days
+    age = (pd.DatetimeIndex(fee.index) - filed).days
 
     inside = fee[(age >= 0) & (age <= LEVEL_MAX_AGE_DAYS)]
     outside = fee[age > LEVEL_MAX_AGE_DAYS]

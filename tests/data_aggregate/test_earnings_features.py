@@ -12,10 +12,17 @@ Plus the ratio math (forward E/P, expected growth) must be exact.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.earnings_features import _derived_earnings_fields, ntm_ttm_eps
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _synth_earnings():
@@ -86,8 +93,8 @@ def test_ntm_forward_earnings_yield():
     d = idx[-1]
 
     ntm, ttm = ntm_ttm_eps(hist, idx)
-    assert abs(ntm.loc[d, "A"] - (1.5 + 1.2 + 1.3 + 1.4)) < 1e-9  # est(Q+1) + last 3 actuals = 5.4
-    assert abs(ttm.loc[d, "A"] - (1.1 + 1.2 + 1.3 + 1.4)) < 1e-9  # trailing 4 actuals = 5.0
+    assert abs(_number(ntm.loc[d, "A"]) - (1.5 + 1.2 + 1.3 + 1.4)) < 1e-9  # est(Q+1) + last 3 actuals = 5.4
+    assert abs(_number(ttm.loc[d, "A"]) - (1.1 + 1.2 + 1.3 + 1.4)) < 1e-9  # trailing 4 actuals = 5.0
 
     f = _derived_earnings_fields(hist, idx, close)
     assert abs(f["forward_earnings_yield"].loc[d, "A"] - 5.4 / 100.0) < 1e-9

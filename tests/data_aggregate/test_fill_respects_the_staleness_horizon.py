@@ -85,7 +85,7 @@ def _parent() -> pd.DataFrame:
     rows: list[dict] = []
     for ticker, (dates, disclosed) in _ARCHIVES.items():
         for i, d in enumerate(dates):
-            row = {"ticker": ticker, "accession_number": f"{ticker}-{i}", "as_of": d, "ceo_name_proxy": f"{ticker} Chief"}
+            row: dict[str, object] = {"ticker": ticker, "accession_number": f"{ticker}-{i}", "as_of": d, "ceo_name_proxy": f"{ticker} Chief"}
             for col in _CARRIED:
                 row[col] = (0.5 if col not in ("poison_pill", "majority_voting", "independent_chair") else 1.0) if i in disclosed else np.nan
             rows.append(row)
@@ -114,7 +114,7 @@ def _carried_cells(raw: pd.DataFrame, filled: pd.DataFrame, col: str, key: list[
     r = raw.set_index(pd.MultiIndex.from_frame(raw[key]))[col]
     f = filled.set_index(pd.MultiIndex.from_frame(filled[key]))[col]
     newly = r.reindex(f.index).isna() & f.notna()
-    return _source_age_days(raw, filled, col, key, group)[newly.values]
+    return _source_age_days(raw, filled, col, key, group)[newly.to_numpy(dtype=bool)]
 
 
 def test_the_carry_cap_can_never_exceed_the_staleness_horizon():

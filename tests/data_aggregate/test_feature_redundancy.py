@@ -27,6 +27,8 @@ synthetic frame that hand-builds the missing column reproduces none of it.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -93,9 +95,11 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     fh = add_cube_time_growth(fh)
 
     ref = store.load(Tables.sp500_tickers, columns=["ticker", "sector", "industry_group"])
+    assert ref is not None
     fh = fh.merge(ref, on="ticker", how="left")
 
     px = store.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": _TICKERS})
+    assert px is not None
     px["date"] = pd.to_datetime(px["date"])
     close = px.pivot_table(index="date", columns="ticker", values="close_split", aggfunc="last").sort_index()
     idx = pd.DatetimeIndex(close.index)
@@ -145,13 +149,17 @@ def test_no_two_features_are_the_same_signal(feature_frames):
         if pair in seen:
             continue
         seen.add(pair)
-        offenders.append((pair[0], pair[1], float(corr.iloc[a, b])))
+        offenders.append((pair[0], pair[1], float(cast(float, corr.iloc[a, b]))))
     offenders.sort(key=lambda t: -t[2])
 
-    ranked = corr.stack().sort_values(ascending=False)
+    ranked = corr.stack()
+    assert isinstance(ranked, pd.Series)
+    ranked = ranked.sort_values(ascending=False)
     top = []
     seen_top = set()
-    for (a, b), r in ranked.items():
+    for pair, r in ranked.items():
+        assert isinstance(pair, tuple) and len(pair) == 2
+        a, b = pair
         key = tuple(sorted((a, b)))
         if key in seen_top:
             continue

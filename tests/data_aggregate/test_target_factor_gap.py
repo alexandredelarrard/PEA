@@ -11,10 +11,17 @@ required, so the genuine tail stays undefined.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.target.targets import compute_epsilon, forward_compound
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _setup(horizon=20, gap_at=100, t=150):
@@ -32,7 +39,9 @@ def _setup(horizon=20, gap_at=100, t=150):
         },
         index=dates,
     )
-    factor.iloc[gap_at, factor.columns.get_loc("oil")] = np.nan  # the data gap
+    oil_column = factor.columns.get_loc("oil")
+    assert isinstance(oil_column, int)
+    factor.iloc[gap_at, oil_column] = np.nan  # the data gap
     macro_cols = []  # oil = return factor
 
     betas = {}
@@ -51,22 +60,28 @@ def test_shared_factor_gap_does_not_drop_the_cross_section():
     (close, ret, betas, factor, macro_cols, horizon, dates, gap_at) = _setup()
 
     eps = compute_epsilon(ret, betas, factor, macro_cols, horizon)
+    assert isinstance(eps, pd.DataFrame)
 
     # dates whose forward window [t+1, t+h] contains the oil gap -> oil forward NaN
     oil_fwd = forward_compound(factor["oil"], horizon)
+    assert isinstance(oil_fwd, pd.Series)
     affected = dates[(dates >= dates[gap_at - horizon]) & (dates < dates[gap_at])]
-    t0 = affected[len(affected) // 2]
+    t0 = pd.Timestamp(affected[len(affected) // 2])
     assert not np.isfinite(oil_fwd.loc[t0]), "test setup: oil forward should be NaN at t0"
 
     # WITH the fix: target is still defined at t0 for every stock whose OWN
     # forward return is defined (oil neutralization simply skipped there)
     stock_fwd_defined = close["A"].shift(-horizon).loc[t0]
     assert np.isfinite(stock_fwd_defined), "test setup: stock forward defined at t0"
-    assert eps.loc[t0].notna().all(), f"factor gap NaN'd the cross-section at {t0.date()} (eps={eps.loc[t0].to_dict()})"
+    eps_at_t0 = eps.loc[t0]
+    assert isinstance(eps_at_t0, pd.Series)
+    assert eps_at_t0.notna().all(), f"factor gap NaN'd the cross-section at {t0.date()} (eps={eps_at_t0.to_dict()})"
 
     # the genuine TAIL (no future price) is still correctly undefined
-    tail = dates[-1]
-    assert eps.loc[tail].isna().all(), "tail target should be NaN (no forward price)"
+    tail = pd.Timestamp(dates[-1])
+    eps_at_tail = eps.loc[tail]
+    assert isinstance(eps_at_tail, pd.Series)
+    assert eps_at_tail.isna().all(), "tail target should be NaN (no forward price)"
 
     # coverage sanity: the affected window is now populated, not blank
     cov_affected = eps.loc[affected].notna().mean().mean()
@@ -89,8 +104,9 @@ def test_missing_beta_still_propagates_nan():
     betas["A"].loc[t, "beta_market"] = np.nan
 
     eps = compute_epsilon(ret, betas, factor, macro_cols, horizon)
-    assert np.isnan(eps.loc[t, "A"]), "missing beta must still yield NaN (unchanged)"
-    assert np.isfinite(eps.loc[t, "B"]), "other stocks unaffected"
+    assert isinstance(eps, pd.DataFrame)
+    assert np.isnan(_number(eps.loc[t, "A"])), "missing beta must still yield NaN (unchanged)"
+    assert np.isfinite(_number(eps.loc[t, "B"])), "other stocks unaffected"
     print("\n=== SANITY CHECK: missing beta still propagates NaN ===")
     print(
         f"  A's blanked market beta on {t.date()} -> A target NaN (preserved); "

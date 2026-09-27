@@ -13,11 +13,13 @@ Two layers:
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from src.context import Context
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
@@ -32,6 +34,12 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     load_pension_facts_scoped,
     load_tagged_facts,
 )
+
+
+def _number(value: object) -> float:
+    """Narrow a scalar selected from a numeric fixture frame."""
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 # --------------------------------------------------------------------------- #
@@ -205,8 +213,8 @@ def test_ratio_aligns_and_guards_denominator():
 
     out = ratio(num, den, positive_den=True)
     assert out.loc[idx[0], "A"] == 5.0  # 10/2
-    assert np.isnan(out.loc[idx[1], "A"])  # /0 -> NaN
-    assert np.isnan(out.loc[idx[2], "A"])  # negative den masked
+    assert np.isnan(_number(out.loc[idx[1], "A"]))  # /0 -> NaN
+    assert np.isnan(_number(out.loc[idx[2], "A"]))  # negative den masked
     assert (out["B"] == 0.5).all()
 
     print("\n=== SANITY CHECK: ratio ===")
@@ -231,10 +239,10 @@ def test_fiscal_change_pct_and_diff():
     diff = fiscal_change_to_daily(fund, "grossMargins", idx, kind="diff")
 
     # before the 2nd filing -> NaN; on/after -> YoY value, held forward.
-    assert np.isnan(pct.loc[pd.Timestamp("2019-06-03"), "AAA"])
+    assert np.isnan(_number(pct.loc[pd.Timestamp("2019-06-03"), "AAA"]))
     after = pd.Timestamp("2020-03-02")
-    assert abs(pct.loc[after, "AAA"] - 0.5) < 1e-9  # 150/100 - 1
-    assert abs(diff.loc[after, "AAA"] - 0.05) < 1e-9  # 0.45 - 0.40
+    assert abs(_number(pct.loc[after, "AAA"]) - 0.5) < 1e-9  # 150/100 - 1
+    assert abs(_number(diff.loc[after, "AAA"]) - 0.05) < 1e-9  # 0.45 - 0.40
 
     print("\n=== SANITY CHECK: fiscal YoY change (PIT ffill) ===")
     print("  FCF 100->150 => +50% growth; gross margin 0.40->0.45 => +0.05 diff.")
@@ -258,11 +266,11 @@ def test_peer_relative_zscore_correct():
 
     rel = peer_relative(field, peers, winsorize_inputs=False)
     # peer mean=2, population std=sqrt(2/3)=0.8165 -> (4-2)/0.8165 = 2.449
-    assert abs(rel.loc[idx[0], "A"] - 2.449) < 1e-2
+    assert abs(_number(rel.loc[idx[0], "A"]) - 2.449) < 1e-2
 
     # with the trim ON (production default) the subject is pulled toward the pack
     trimmed = peer_relative(field, peers)
-    assert trimmed.loc[idx[0], "A"] < rel.loc[idx[0], "A"]
+    assert _number(trimmed.loc[idx[0], "A"]) < _number(rel.loc[idx[0], "A"])
 
     print("\n=== SANITY CHECK: peer-relative z-score ===")
     print(
@@ -285,8 +293,8 @@ def test_peer_dispersion_floor_bounds_a_homogeneous_basket():
     floored = peer_relative(field, peers, winsorize_inputs=False)
     unfloored = peer_relative(field, peers, winsorize_inputs=False, dispersion_floor=0.0)
 
-    assert abs(unfloored.loc[idx[0], "A"]) >= 7.99, "without the floor this pins at the clip"
-    assert abs(floored.loc[idx[0], "A"]) < 7.99, "the floor must keep it off the clip"
+    assert abs(_number(unfloored.loc[idx[0], "A"])) >= 7.99, "without the floor this pins at the clip"
+    assert abs(_number(floored.loc[idx[0], "A"])) < 7.99, "the floor must keep it off the clip"
 
     print("\n=== SANITY CHECK: peer dispersion floor ===")
     print(
@@ -313,8 +321,8 @@ def test_peer_relative_does_not_explode_on_degenerate_peers():
     peers = {"A": {"B": 1.0, "C": 1.0, "D": 1.0}}
 
     rel = peer_relative(field, peers, clip=8.0)
-    assert np.isnan(rel.loc[idx[0], "A"]), "identical peers (std 0) must give NaN"
-    assert abs(rel.loc[idx[1], "A"]) <= 8.0 + 1e-9, "near-degenerate std must be clipped"
+    assert np.isnan(_number(rel.loc[idx[0], "A"])), "identical peers (std 0) must give NaN"
+    assert abs(_number(rel.loc[idx[1], "A"])) <= 8.0 + 1e-9, "near-degenerate std must be clipped"
 
     print("\n=== SANITY CHECK: peer-std explosion guard ===")
     print(f"  identical peers -> {rel.loc[idx[0], 'A']}; near-degenerate -> {rel.loc[idx[1], 'A']:.1f} (clipped to +-8, not 1e13).")
@@ -433,7 +441,7 @@ def test_headline_feature_signs_make_sense(fundamental_panel, real_pipeline):
     for f, want in available.items():
         sub = df[["date", f, "target"]].dropna()
         ic = sub.groupby("date").apply(
-            lambda g, feature=f: spearmanr(g[feature], g["target"]).statistic if g[feature].nunique() > 2 else np.nan,
+            lambda g, feature=f: cast(tuple[float, float], spearmanr(g[feature], g["target"]))[0] if g[feature].nunique() > 2 else np.nan,
             include_groups=False,
         )
         mic = float(np.nanmean(ic))
@@ -777,7 +785,7 @@ def test_pct_growth_signed_base_is_negative_when_losing_money():
     val = g.loc[pd.Timestamp("2020-03-02"), "AAA"]
 
     # (50 - (-50)) / (-50) = -2.0 -> negative growth off a loss base, as intended
-    assert abs(val - (-2.0)) < 1e-9
+    assert abs(_number(val) - (-2.0)) < 1e-9
 
     print("\n=== SANITY CHECK: signed-base %-growth (intended) ===")
     print(f"  netIncome off a loss base -> growth={val:+.0%} (negative = weak/loss signal, kept).")
@@ -1030,8 +1038,9 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
         for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
     sqlite_store.save("notes_num", pd.DataFrame(rows))
-    ctx = _Ctx(sqlite_store)
+    ctx = cast(Context, _Ctx(sqlite_store))
     out = load_notes_num_scoped(ctx)
+    assert out is not None
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG}, "non-pension footnote tags leaked in"
     assert len(out) == 2, f"expected only the 2 pension tags, got {len(out)}"
     assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed"]
@@ -1084,10 +1093,10 @@ def test_peer_panel_tolerates_none_cells():
     assert {"f_kpi_vs_peers", "f_kpi_xs"}.issubset(panel.columns)
     panel = panel.set_index(["date", "ticker"])
     # the None cells surface as NaN features (missing), NOT a crash
-    assert np.isnan(panel.loc[(idx[1], "A"), "f_kpi_xs"])
-    assert np.isnan(panel.loc[(idx[2], "B"), "f_kpi_xs"])
+    assert np.isnan(_number(panel.loc[(idx[1], "A"), "f_kpi_xs"]))
+    assert np.isnan(_number(panel.loc[(idx[2], "B"), "f_kpi_xs"]))
     # a present cell still produces a finite percentile rank
-    assert np.isfinite(panel.loc[(idx[0], "A"), "f_kpi_xs"])
+    assert np.isfinite(_number(panel.loc[(idx[0], "A"), "f_kpi_xs"]))
 
     print("\n=== SANITY CHECK: peer panel tolerates None cells ===")
     print(

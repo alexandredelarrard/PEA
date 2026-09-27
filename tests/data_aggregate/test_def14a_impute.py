@@ -120,13 +120,14 @@ def test_impute_rules_synthetic():
 
     # global non-destructiveness: every originally-present cell is byte-for-byte unchanged
     r = raw.set_index(["ticker", "as_of"])
-    r.index = r.index.set_levels(pd.to_datetime(r.index.levels[1]), level=1)
+    assert isinstance(r.index, pd.MultiIndex)
+    r.index = r.index.set_levels(pd.to_datetime(r.index.levels[1]).tolist(), level=1)
     changed = 0
     for c in [x for x in r.columns if x != "accession_number"]:
         pres = r[c].notna()
         if pres.any():
             a, b = r.loc[pres, c].astype(float), out.loc[r.index[pres], c].astype(float)
-            changed += int((~np.isclose(a.values, b.values)).sum())
+            changed += int((~np.isclose(a.to_numpy(dtype=float), b.to_numpy(dtype=float))).sum())
     assert changed == 0, f"{changed} present cells were overwritten"
 
     print("\n=== SANITY CHECK: DEF 14A imputation (synthetic) ===")
@@ -160,7 +161,7 @@ def test_impute_real_data_nondestructive():
     for c in num:
         pres = a[c].notna()
         if pres.any():
-            overwritten += int((~np.isclose(a.loc[pres, c].values, b.loc[pres, c].values, equal_nan=True)).sum())
+            overwritten += int((~np.isclose(a.loc[pres, c].to_numpy(dtype=float), b.loc[pres, c].to_numpy(dtype=float), equal_nan=True)).sum())
         filled += int((a[c].isna() & b[c].notna()).sum())
     assert overwritten == 0, f"{overwritten} present numeric cells overwritten"
 

@@ -6,6 +6,8 @@ event-only history, and removal of the short-history `percent_of_class` feature 
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 
@@ -112,9 +114,9 @@ def test_campaign_age_days_resets_and_is_nan_before_first_event():
     before = age.loc[: pd.Timestamp("2023-02-28"), "AAA"]
     assert before.isna().all(), "no campaign yet -> NaN, not 0"
     d0 = age.loc[pd.Timestamp("2023-03-01"), "AAA"]
-    d10 = age.loc[IDX[IDX.get_indexer([pd.Timestamp("2023-03-01")])[0] + 7], "AAA"]
-    assert d0 == 0
-    assert d10 > d0
+    d10 = age.loc[IDX[IDX.get_indexer(pd.DatetimeIndex([pd.Timestamp("2023-03-01")]))[0] + 7], "AAA"]
+    assert float(cast(Any, d0)) == 0
+    assert float(cast(Any, d10)) > float(cast(Any, d0))
 
 
 def test_escalation_and_deescalation_join():
@@ -123,7 +125,10 @@ def test_escalation_and_deescalation_join():
     out = _cross_fields(canon_d, canon_g, IDX, halflife=126.0)
     esc = out["ic_bo_escalation_13g_to_13d"]
     assert "ZZZ" in esc.columns
-    assert esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].dropna().eq(0).all() or esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].isna().all()
+    assert (
+        esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].dropna().eq(0).to_numpy().all()
+        or esc.loc[: pd.Timestamp("2023-02-28"), "ZZZ"].isna().to_numpy().all()
+    )
     assert esc.loc[pd.Timestamp("2023-03-01") :, "ZZZ"].dropna().gt(0).any()
 
     # reverse order (13D before 13G on another ticker) -> de-escalation, not escalation
@@ -148,8 +153,8 @@ def test_bo_holder_count_sums_distinct_filers_not_group_members():
     out = _bo_fields(canon, IDX, halflife=126.0)
     hc = out["ic_bo_holder_count"]
     # 2 distinct filers on AAA / 3 filers total that year -> 2/3; 1 of 3 on BBB -> 1/3
-    assert np.isclose(hc.loc[pd.Timestamp("2023-01-10"), "AAA"], 2 / 3)
-    assert np.isclose(hc.loc[pd.Timestamp("2023-01-10"), "BBB"], 1 / 3)
+    assert np.isclose(float(cast(Any, hc.loc[pd.Timestamp("2023-01-10"), "AAA"])), 2 / 3)
+    assert np.isclose(float(cast(Any, hc.loc[pd.Timestamp("2023-01-10"), "BBB"])), 1 / 3)
     assert hc.loc[: pd.Timestamp("2023-01-04"), "AAA"].isna().all(), "before any filer -> NaN"
 
 
@@ -285,8 +290,9 @@ def test_holder_count_is_a_bounded_share_and_lapses():
     assert np.nanmax(vals) <= 1.0, "a share cannot exceed 1"
     assert hc.loc[pd.Timestamp("2023-02-01"), "AAA"] == 0.5  # 1 of the 2 active filers
     # F1 lapses HOLDER_ACTIVE_DAYS after its only filing, so AAA stops being held
-    lapsed = IDX[IDX.get_indexer([pd.Timestamp("2023-01-05")])[0] + HOLDER_ACTIVE_DAYS + 5]
-    assert pd.isna(hc.loc[lapsed, "AAA"]) or hc.loc[lapsed, "AAA"] == 0.0
+    lapsed = IDX[IDX.get_indexer(pd.DatetimeIndex([pd.Timestamp("2023-01-05")]))[0] + HOLDER_ACTIVE_DAYS + 5]
+    lapsed_value = float(cast(Any, hc.loc[lapsed, "AAA"]))
+    assert pd.isna(lapsed_value) or lapsed_value == 0.0
     print("\n=== SANITY CHECK: holder_count is a bounded share that lapses ===")
     print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after {HOLDER_ACTIVE_DAYS} trading days. Validated.")
 

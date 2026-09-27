@@ -115,7 +115,9 @@ def _exec_comp() -> pd.DataFrame:
 
 def test_turnover_guard_and_the_missing_year():
     tally: dict[str, int] = {}
-    h = _comp_history(_def14a(), tally).set_index(["ticker", "as_of"])
+    history = _comp_history(_def14a(), tally)
+    assert history is not None
+    h = history.set_index(["ticker", "as_of"])
 
     g = h["ceo_comp_growth_1y"]
     # 1. one CEO, three spellings -> BOTH pairs computable, and the values are exact log growths
@@ -145,6 +147,7 @@ def test_turnover_guard_and_the_missing_year():
 def test_exact_pay_slice_latest_fiscal_year_and_the_floors():
     tally: dict[str, int] = {}
     top5 = _top5_history(_exec_comp(), tally)
+    assert top5 is not None
     assert list(top5["ticker"]) == ["AAA"], "the 2-NEO filing must be rejected, not shipped"
     # the five largest of FY2022 only: 9 + 5 + 4 + 3 + 2 = 23e6. Summing both fiscal years
     # would give 34.5e6, and the CEO's slice would silently shrink by a third.
@@ -153,6 +156,7 @@ def test_exact_pay_slice_latest_fiscal_year_and_the_floors():
     assert tally["CPS filings rejected (< 3 NEOs)"] == 1
 
     sl = _slice_history(_def14a(), top5, tally)
+    assert sl is not None
     # AAA's CEO earned 15e6 of a 23e6 top-five pool
     assert sl["ceo_pay_slice"].iloc[0] == pytest.approx(15e6 / 23e6)
 

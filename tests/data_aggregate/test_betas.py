@@ -23,6 +23,8 @@ Covers:
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -309,7 +311,7 @@ def test_label_window_does_not_overlap_estimation_window():
     fwd = forward_return(close, h).iloc[t, 0]
     expected = close["A"].iloc[t + h] / close["A"].iloc[t] - 1.0
 
-    assert np.isclose(fwd, expected)
+    assert np.isclose(float(cast(float, fwd)), float(cast(float, expected)))
     # the label is a function of closes t..t+h, i.e. of the RETURNS of t+1..t+h;
     # the estimation window ends at the return of day t.
     assert close.index[t] < close.index[t + 1]

@@ -103,7 +103,7 @@ def test_insider_frontier_masks_only_the_insider_conditioning_family():
         frontiers={"insider": frontier},
     )
     tail = panel[panel["date"] > frontier]
-    insider_cols = [column for column in panel if column.startswith("f_ic_sig_insider_")]
+    insider_cols = [column for column in panel if str(column).startswith("f_ic_sig_insider_")]
     assert tail[insider_cols].isna().to_numpy().all()
     assert tail["f_ic_sig_super_age_days"].notna().any()
     print(

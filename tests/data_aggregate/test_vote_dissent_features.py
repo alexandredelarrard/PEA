@@ -78,6 +78,7 @@ def test_broker_non_votes_are_excluded_from_the_denominator():
     """A broker non-vote is an absent instruction, not an opinion — it must not dilute."""
     votes = pd.DataFrame([_row(votes_for=800.0, votes_against=150.0, votes_abstain=50.0, votes_broker_non_votes=1_000_000.0)])
     hist = _say_on_pay_history(votes, {})
+    assert hist is not None
     got = float(hist["sop_dissent"].iloc[0])
 
     # (150 + 50) / (800 + 150 + 50) = 0.20 — the million broker non-votes change nothing.
@@ -96,6 +97,7 @@ def test_withheld_standard_is_not_double_counted():
     against_row = _row(votes_for=900.0, votes_against=100.0, votes_abstain=0.0, vote_standard="against")
     withheld_row = _row(votes_for=900.0, votes_against=100.0, votes_abstain=0.0, vote_standard="withheld", accession_number="0002", ticker="BBB")
     hist = _say_on_pay_history(pd.DataFrame([against_row, withheld_row]), {})
+    assert hist is not None
     a, w = float(hist["sop_dissent"].iloc[0]), float(hist["sop_dissent"].iloc[1])
 
     assert a == pytest.approx(0.10) and w == pytest.approx(0.10)
@@ -119,6 +121,7 @@ def test_unusable_tally_is_nan_and_the_flags_inherit_it():
     real = _row(votes_for=100.0, votes_against=900.0, votes_abstain=0.0, ticker="CCC", accession_number="0003")
     tally: dict[str, int] = {}
     hist = _say_on_pay_history(pd.DataFrame([zero, no_for, real]), tally)
+    assert hist is not None
     by = hist.set_index("ticker")
 
     assert pd.isna(by.loc["AAA", "sop_dissent"]), "an all-zero tally is a failed extraction"
@@ -145,6 +148,7 @@ def test_absent_abstain_leg_is_read_as_zero():
     nulling those rows would throw away good votes to guard against a different failure.
     """
     hist = _say_on_pay_history(pd.DataFrame([_row(votes_for=900.0, votes_against=100.0, votes_abstain=None)]), {})
+    assert hist is not None
     assert float(hist["sop_dissent"].iloc[0]) == pytest.approx(0.10)
     print("\n=== SANITY CHECK: absent abstain leg ===")
     print("  for=900 against=100 abstain=None -> dissent=0.1000 (abstain treated as 0).")
@@ -178,7 +182,9 @@ def test_breadth_and_aggregates_over_a_hand_computed_ballot():
     votes = pd.DataFrame(
         [_row(proposal_type="director_election", n_nominees=5.0, n_nominees_below_70pct=1.0, nominee_votes_json=json.dumps(nominees))]
     )
-    hist = _election_history(votes, {}).iloc[0]
+    history = _election_history(votes, {})
+    assert history is not None
+    hist = history.iloc[0]
 
     assert hist["board_dissent_mean"] == pytest.approx(0.168)
     assert hist["board_dissent_median"] == pytest.approx(0.12)
@@ -224,7 +230,9 @@ def test_ceo_who_did_not_stand_is_nan_not_unopposed():
         votes_against_ceo=0.0,
         votes_abstain_ceo=0.0,
     )
-    hist = _election_history(pd.DataFrame([stood, absent]), {}).set_index("ticker")
+    history = _election_history(pd.DataFrame([stood, absent]), {})
+    assert history is not None
+    hist = history.set_index("ticker")
 
     assert hist.loc["AAA", "ceo_director_dissent"] == pytest.approx(0.10)
     assert pd.isna(hist.loc["BBB", "ceo_director_dissent"])
@@ -343,6 +351,7 @@ def test_real_data_top_dissent_against_the_monitors():
     votes = _live_votes()
     tally: dict[str, int] = {}
     sop = _say_on_pay_history(votes, tally)
+    assert sop is not None
     raw = _rows_of(votes, "say_on_pay").copy()
     raw["as_of"] = pd.to_datetime(raw["filing_date"])
     mon = ["mentions_preliminary", "is_preliminary_stated", "is_amendment"]
@@ -385,6 +394,8 @@ def test_real_data_cross_source_against_the_proxy_archive():
         pytest.skip(f"def14a_llm not reachable ({e})")
 
     sop = _say_on_pay_history(votes, {})
+    assert sop is not None
+    assert proxies is not None
     sop["support"] = 1.0 - sop["sop_dissent"]
     sop["year"] = sop["as_of"].dt.year
 
@@ -482,7 +493,10 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
     raw = pd.DataFrame({"A": [0.02, 0.30, 0.11], "B": [0.40, 0.05, 0.22], "C": [0.13, 0.19, 0.07], "D": [0.28, 0.02, 0.35]}, index=idx)
     ranked = xs_rank_pct(raw)
     for d in idx:
-        assert raw.loc[d].corr(ranked.loc[d], method="spearman") == pytest.approx(1.0)
+        raw_row = raw.loc[d]
+        ranked_row = ranked.loc[d]
+        assert isinstance(raw_row, pd.Series) and isinstance(ranked_row, pd.Series)
+        assert raw_row.corr(ranked_row, method="spearman") == pytest.approx(1.0)
 
     assert PEER_RELATIVE_FIELDS <= EVENT_FIELDS
     assert not (PEER_RELATIVE_FIELDS & RAW_FLAG_FIELDS), "a flag must never be peer-z-scored"

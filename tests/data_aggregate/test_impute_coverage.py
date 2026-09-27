@@ -122,7 +122,8 @@ def test_d23_fill_artifact_share():
         assert f in CARRY_LEVELS, f"{f} is no longer filled — D23's premise changed"
         raw_present = raw.set_index(key)[f].notna()
         d = imp[key + ["as_of", f]].copy()
-        d["_imp"] = d[f].notna() & ~pd.MultiIndex.from_frame(d[key]).map(raw_present).fillna(False).to_numpy()
+        present = raw_present.reindex(pd.MultiIndex.from_frame(d[key])).fillna(False).to_numpy(dtype=bool)
+        d["_imp"] = d[f].notna() & ~present
         d = d.sort_values(["ticker", "as_of"])
         g = d.groupby("ticker", sort=False)
         prev_val, prev_imp = g[f].shift(1), g["_imp"].shift(1)

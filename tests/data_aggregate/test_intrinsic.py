@@ -8,11 +8,18 @@ point-in-time yield / per-share consistent with the market cap identity.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily, two_stage_dcf
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _closed_form(fcf, g, r, gt, n):
@@ -44,7 +51,7 @@ def test_two_stage_dcf_nan_for_cash_burners():
     base = pd.DataFrame({"AAA": [-50.0], "BBB": [0.0]}, index=idx)
     growth = pd.DataFrame({"AAA": [0.05], "BBB": [0.05]}, index=idx)
     v = two_stage_dcf(base, growth, 0.10, 0.025, 5)
-    assert np.isnan(v.loc[idx[0], "AAA"]) and np.isnan(v.loc[idx[0], "BBB"])
+    assert np.isnan(_number(v.loc[idx[0], "AAA"])) and np.isnan(_number(v.loc[idx[0], "BBB"]))
     print("\n=== SANITY CHECK: cash-burning firms -> NaN intrinsic ===")
     print("  FCF<=0 has no cash-flow intrinsic value -> NaN, never a bogus number.")
 

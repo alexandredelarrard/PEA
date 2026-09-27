@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pandas as pd
 
+from src.context import Context
 from src.data_aggregate.utils.common.part_status import (
     _insider_source_status,
     part_status_report,
@@ -51,7 +53,7 @@ def test_all_ticker_live_coverage_makes_the_source_current(sqlite_store):
             }
         ),
     )
-    status = _insider_source_status(SimpleNamespace(store=sqlite_store), "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, SimpleNamespace(store=sqlite_store)), "2026-09-04", tolerance_days=4)
     assert status["ok"]
     assert status["live_complete_through"] == "2026-09-04"
     assert status["lag_days"] == 0
@@ -70,7 +72,7 @@ def test_partial_live_run_cannot_hide_the_stale_bulk_frontier(sqlite_store):
             }
         ),
     )
-    status = _insider_source_status(SimpleNamespace(store=sqlite_store), "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, SimpleNamespace(store=sqlite_store)), "2026-09-04", tolerance_days=4)
     assert not status["ok"]
     assert status["live_complete_through"] is None
     assert status["complete_through"] == "2026-06-30"
@@ -114,7 +116,7 @@ def test_unpromoted_bulk_overlap_cannot_make_status_green(sqlite_store):
         config=SimpleNamespace(source_freshness={"insider_bulk_authoritative_through": "2026Q2"}),
     )
 
-    status = _insider_source_status(context, "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, context), "2026-09-04", tolerance_days=4)
 
     assert not status["ok"]
     assert status["bulk_reported_quarter"] == "2026q3"
@@ -174,7 +176,7 @@ def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
             }
         ),
     )
-    report = part_status_report(context)
+    report = part_status_report(cast(Context, context))
     expected_parts = {part.name for part in CUBE_PARTS} | {table.name for table in TERMINAL_TABLES}
     assert {"ok", "behind", "parts", "as_of", "cube_max_date"}.issubset(report)
     assert set(report["parts"]) == expected_parts

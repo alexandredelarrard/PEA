@@ -7,6 +7,8 @@ NaN before the first report, and clipped for late/gap reporters.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -28,7 +30,7 @@ def test_days_since_earnings_ramp_reset_clip():
     ds = days_since_earnings(df, idx, cap_days=180)
 
     # leak-free: NaN before the first report
-    assert np.isnan(ds.loc[pd.Timestamp("2020-01-10"), "A"])
+    assert np.isnan(float(cast(float, ds.loc[pd.Timestamp("2020-01-10"), "A"])))
     # 0 on the report day; +5 calendar days five days later
     assert ds.loc[pd.Timestamp("2020-01-15"), "A"] == 0
     assert ds.loc[pd.Timestamp("2020-01-20"), "A"] == 5

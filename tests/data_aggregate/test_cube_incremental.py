@@ -19,6 +19,7 @@ incremental run able to replace that row.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -35,12 +36,14 @@ from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
     ALL,
+    Table,
     Tables,
     name_of,
     projection,
     projection_report,
     resolve,
 )
+from src.data_store.store import DataStore
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -269,6 +272,9 @@ class _RefreshStore:
         return len(tail)
 
 
+_TEST_PART = cast(Table, "p")
+
+
 def _rows(dates=CAL[LAST_POS - 10 : LAST_POS + 6]):
     return pd.DataFrame({"date": dates, "ticker": "T0", "f": 1.0})
 
@@ -280,11 +286,12 @@ def test_plan_window_refresh_arithmetic():
     REWRITTEN date, not from `last`, or that date is computed with less look-back than a full
     rebuild would give it."""
     warmup, refresh = 1320, PART_REFRESH_TRADING_DAYS
-    w = plan_window(_RefreshStore(), "p", warmup=warmup, full=False, trading_index=CAL, refresh=refresh)
+    w = plan_window(cast(DataStore, _RefreshStore()), _TEST_PART, warmup=warmup, full=False, trading_index=CAL, refresh=refresh)
 
     assert w.last == LAST
     assert w.refresh_from == CAL[LAST_POS - refresh]
     assert w.since == CAL[LAST_POS - refresh - warmup]
+    assert w.refresh_from is not None and w.since is not None and w.last is not None
     # the oldest rewritten date still gets the FULL warm-up behind it
     assert CAL.searchsorted(w.refresh_from) - CAL.searchsorted(w.since) == warmup
     print(f"\n=== SANITY CHECK: plan_window(refresh={refresh}) ===")
@@ -297,15 +304,23 @@ def test_plan_window_refresh_arithmetic():
 
 def test_plan_window_without_refresh_is_unchanged():
     """The parts that opt out (fundamentals / text / extras) keep their exact old window."""
-    w = plan_window(_RefreshStore(), "p", warmup=130, full=False, trading_index=CAL)
+    w = plan_window(cast(DataStore, _RefreshStore()), _TEST_PART, warmup=130, full=False, trading_index=CAL)
     assert w.refresh_from is None
     assert w.since == CAL[LAST_POS - 130]
-    assert plan_window(_RefreshStore(), "p", warmup=130, full=True).refresh_from is None
+    assert plan_window(cast(DataStore, _RefreshStore()), _TEST_PART, warmup=130, full=True).refresh_from is None
 
 
 def test_plan_window_refresh_stacks_with_extra_back():
     """Targets take both: `extra_back` for the maturing-label compute window and `refresh`."""
-    w = plan_window(_RefreshStore(), "p", warmup=390, full=False, trading_index=CAL, extra_back=90, refresh=PART_REFRESH_TRADING_DAYS)
+    w = plan_window(
+        cast(DataStore, _RefreshStore()),
+        _TEST_PART,
+        warmup=390,
+        full=False,
+        trading_index=CAL,
+        extra_back=90,
+        refresh=PART_REFRESH_TRADING_DAYS,
+    )
     assert w.since == CAL[LAST_POS - 390 - 90 - PART_REFRESH_TRADING_DAYS]
 
 
@@ -314,8 +329,9 @@ def test_write_part_rewrites_inclusively_from_refresh_from():
     append could never replace that row -- only a `--full` rebuild would."""
     store = _RefreshStore(columns=["date", "ticker", "f"])
     window = PartWindow(LAST, CAL[LAST_POS - 1320], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    n = write_part(store, "p", _rows(), window)
+    n = write_part(cast(DataStore, store), _TEST_PART, _rows(), window)
 
+    assert store.appended is not None
     tail, cutoff, inclusive = store.appended
     assert inclusive is True
     assert cutoff == window.refresh_from
@@ -331,7 +347,8 @@ def test_write_part_rewrites_inclusively_from_refresh_from():
 def test_write_part_strict_append_when_no_refresh():
     """No opt-in -> bit-identical to the pre-refresh behaviour."""
     store = _RefreshStore(columns=["date", "ticker", "f"])
-    write_part(store, "p", _rows(), PartWindow(LAST, CAL[LAST_POS - 130]))
+    write_part(cast(DataStore, store), _TEST_PART, _rows(), PartWindow(LAST, CAL[LAST_POS - 130]))
+    assert store.appended is not None
     tail, cutoff, inclusive = store.appended
     assert inclusive is False and cutoff == LAST
     assert tail["date"].min() > LAST
@@ -343,7 +360,8 @@ def test_explicit_refresh_from_wins_over_the_part_default():
     store = _RefreshStore(columns=["date", "ticker", "f"])
     wide = window_start(CAL, LAST, 90)
     window = PartWindow(LAST, CAL[LAST_POS - 500], CAL[LAST_POS - PART_REFRESH_TRADING_DAYS])
-    write_part(store, "p", _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window, refresh_from=wide)
+    write_part(cast(DataStore, store), _TEST_PART, _rows(CAL[LAST_POS - 150 : LAST_POS + 6]), window, refresh_from=wide)
+    assert store.appended is not None
     _, cutoff, inclusive = store.appended
     assert inclusive is True and cutoff == wide
     assert cutoff < window.refresh_from
@@ -472,8 +490,7 @@ def test_step_forwards_the_registry_projection_to_the_store():
     class _Ctx:
         store = _Store()
 
-    step._context = _Ctx()
-    step._store = step._context.store
+    step._store = cast(DataStore, _Ctx.store)
     step._log = logging.getLogger("test")
     step._load_source(Tables.sec13f_hr)
     step._load_source(Tables.prices_splits)  # declares no read_columns
@@ -533,8 +550,7 @@ def test_universe_scope_is_pushed_down_to_the_read():
     class _Ctx:
         store = _Store()
 
-    step._context = _Ctx()
-    step._store = step._context.store
+    step._store = cast(DataStore, _Ctx.store)
     step._log = logging.getLogger("test")
 
     step._load_source(Tables.sec13f_hr, universe)  # (a) has ticker_col

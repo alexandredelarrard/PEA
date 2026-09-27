@@ -22,6 +22,8 @@ untouched, which is the property that makes this a mask and not a ticker blackli
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -453,8 +455,10 @@ def test_the_stored_panel_carries_the_mask_through_build_feature_panel():
     span = frames["close_total"].index[SEAM_POS + 21 : SEAM_POS + 252]
     assert seam_rows.loc[span, "mom_12_1"].isna().all()
     # the bar either side of the span still carries a value
-    assert pd.notna(seam_rows.loc[frames["close_total"].index[SEAM_POS + 20], "mom_12_1"])
-    assert pd.notna(seam_rows.loc[frames["close_total"].index[SEAM_POS + 252], "mom_12_1"])
+    before = seam_rows.loc[frames["close_total"].index[SEAM_POS + 20], "mom_12_1"]
+    after = seam_rows.loc[frames["close_total"].index[SEAM_POS + 252], "mom_12_1"]
+    assert pd.notna(cast(float, before))
+    assert pd.notna(cast(float, after))
 
     print("\n=== SANITY CHECK: the mask survives into the stored long panel ===")
     print(f"  SEAM mom_12_1 is NaN for all {len(span)} bars in [s+21, s+251] and non-null at s+20 and s+252. Validated.")

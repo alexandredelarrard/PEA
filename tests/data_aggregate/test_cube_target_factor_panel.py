@@ -17,11 +17,13 @@ store below asserts both the table identity AND the call count.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+from src.context import Context
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.target.factors import (
@@ -30,6 +32,7 @@ from src.data_aggregate.utils.target.factors import (
     characteristic_to_factor_return,
 )
 from src.data_store.schema import name_of
+from src.data_store.store import DataStore
 
 _MACRO_SERIES = [MACRO_MARKET_SERIES, *MACRO_CUBE_FACTORS.values()]
 
@@ -106,8 +109,8 @@ def _step(macro_long: pd.DataFrame) -> StepCubeTarget:
     step = object.__new__(StepCubeTarget)
     step._log = logging.getLogger("test")
     store = _SpyStore(macro_long)
-    step._store = store
-    step._context = type("Ctx", (), {"store": store})()
+    step._store = cast(DataStore, store)
+    step._context = cast(Context, type("Ctx", (), {"store": store})())
     return step
 
 
@@ -164,10 +167,11 @@ def test_factor_panel_makes_exactly_one_macro_read():
 
     step._factor_panel(frames, fundamentals)
 
-    assert step._store.reads == ["prices_macro"], f"reads were {step._store.reads}"
+    store = cast(_SpyStore, step._store)
+    assert store.reads == ["prices_macro"], f"reads were {store.reads}"
 
     print("\n=== SANITY CHECK: one macro read, one pivot ===")
-    print(f"  _factor_panel store reads: {step._store.reads}")
+    print(f"  _factor_panel store reads: {store.reads}")
     print("  market return + commodity/FX factors + macro changes all come off that single wide pivot. Validated.")
 
 

@@ -19,6 +19,8 @@ The synthetic archive is built to make each of those visible as a VALUE, not as 
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -134,7 +136,9 @@ def _at(frame: pd.DataFrame, date: str, ticker: str) -> float:
     """The feature's value on a date, or NaN when the ticker has no column at all."""
     if ticker not in frame.columns:
         return np.nan
-    return float(frame.loc[pd.Timestamp(date), ticker])
+    value = frame.loc[pd.Timestamp(date), ticker]
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 # --------------------------------------------------------------------------- #
@@ -175,6 +179,7 @@ def test_a_transition_is_stamped_on_the_later_filing_and_a_silent_year_is_skippe
 
     # the raw detector, checked directly: one row per adjacent KNOWN pair, not per change
     raw = _transitions(hist, "classified_board")
+    assert raw is not None
     assert set(raw.columns) == {"ticker", "as_of", "classified_board__up", "classified_board__down"}
     assert len(raw[raw["ticker"] == "BBB"]) == 2, "BBB has 3 known observations -> 2 pairs"
     assert len(raw[raw["ticker"] == "CCC"]) == 0, "1 known observation -> 0 pairs"
@@ -224,9 +229,9 @@ def test_the_counts_are_min_count_and_the_net_signs_correctly():
     # 5. the counts INHERIT their components' expiry rather than being aged separately: past
     #    the horizon on the last proxy every component is NaN, so the count must be too
     late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
-    comp = [f[f] for f in DETERIORATION_FLAGS if f in f]
-    assert all(np.isnan(float(c.loc[late, "AAA"])) for c in comp)
-    assert np.isnan(float(det.loc[late, "AAA"])), "the count outlived its own components"
+    comp = [frame for name, frame in f.items() if name in DETERIORATION_FLAGS]
+    assert all(np.isnan(float(cast(float, c.loc[late, "AAA"]))) for c in comp)
+    assert np.isnan(float(cast(float, det.loc[late, "AAA"]))), "the count outlived its own components"
 
     print("\n=== SANITY CHECK: the aggregate counts ===")
     print("  DDD (all disclosed, nothing changed) -> deterioration 0.0 / improvement 0.0 / net 0.0")
@@ -393,8 +398,8 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     # `ceo_is_board_chair` is X05's left leg, shipped as a plain level now the product is gone
     assert "ceo_is_board_chair" in f
     late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
-    assert float(f["ceo_is_board_chair"].loc[late, "AAA"]) == 1.0, "a level was expired"
-    assert np.isnan(float(f["ceo_became_board_chair"].loc[late, "AAA"])), "an event survived"
+    assert float(cast(float, f["ceo_is_board_chair"].loc[late, "AAA"])) == 1.0, "a level was expired"
+    assert np.isnan(float(cast(float, f["ceo_became_board_chair"].loc[late, "AAA"]))), "an event survived"
 
     # 4. NOTHING here gets a peer leg -- measured, not assumed (see PEER_RELATIVE_FIELDS)
     assert PEER_RELATIVE_FIELDS == frozenset()
@@ -439,10 +444,10 @@ def test_the_real_data_readout():
 
     imp, _ = impute_def14a(proxy)
     idx = pd.bdate_range("2011-01-03", "2026-09-04")
-    f, tally = provision_fields(imp, idx)
+    fields, tally = provision_fields(imp, idx)
 
-    events = {f: tally.get(f"events: {f}", 0) for f in TRANSITION_FLAGS}
-    busy = f["board_busyness"].to_numpy(dtype="float64")
+    events = {name: tally.get(f"events: {name}", 0) for name in TRANSITION_FLAGS}
+    busy = fields["board_busyness"].to_numpy(dtype="float64")
     busy = busy[np.isfinite(busy)]
 
     # 1. the board average sits in the range the literature reports for an S&P 500 board
@@ -452,7 +457,7 @@ def test_the_real_data_readout():
     fired = {f: n for f, n in events.items() if n > 0}
     assert len(fired) >= 10, f"only {len(fired)} of 13 flags ever fire: {events}"
     for flag, n in events.items():
-        assert (flag in f) == (n > 0), f"{flag}: {n} events but exported={flag in f}"
+        assert (flag in fields) == (n > 0), f"{flag}: {n} events but exported={flag in fields}"
     # 3. Coverage. The plan's floor is ≥480 tickers, and it applies to every field whose source
     #    column is well filled. Four are gated on a THIN source and cannot reach it -- the floor
     #    for those is the source's own coverage, pinned here so a regression is still visible:
@@ -481,16 +486,16 @@ def test_the_real_data_readout():
         "board_busyness_delta_1y": 410,
         "board_busyness": 470,
     }
-    for name, frame in f.items():
+    for name, frame in fields.items():
         n = int(frame.notna().any().sum())
         assert n >= thin_floor.get(name, 480), f"{name} covers only {n} tickers"
 
     print("\n=== SANITY CHECK: phase 5 on the live archive ===")
-    print(f"  {len(f)} fields over {imp['ticker'].nunique()} tickers, {len(imp):,} proxies.")
+    print(f"  {len(fields)} fields over {imp['ticker'].nunique()} tickers, {len(imp):,} proxies.")
     print("  transition events over the whole history (filing grain):")
-    for f in sorted(events, key=lambda k: -events[k]):
-        mark = "" if events[f] else "   <- 0 events, NOT exported (constant column)"
-        print(f"    {f:<34}{events[f]:>6}{mark}")
+    for flag in sorted(events, key=lambda k: -events[k]):
+        mark = "" if events[flag] else "   <- 0 events, NOT exported (constant column)"
+        print(f"    {flag:<34}{events[flag]:>6}{mark}")
     print(
         f"  board_busyness: median {np.median(busy):.2f} other boards per director "
         f"(p10 {np.percentile(busy, 10):.2f}, p90 {np.percentile(busy, 90):.2f}) "
@@ -502,9 +507,9 @@ def test_the_real_data_readout():
         f"{tally['auditor: tenure on the CENSORED archive basis']:,} censored."
     )
     print("  coverage (tickers), lowest first:")
-    cov = sorted(((int(f.notna().any().sum()), n) for n, f in f.items()))
+    cov = sorted((int(frame.notna().any().sum()), name) for name, frame in fields.items())
     for n, name in cov[:5]:
         print(f"    {name:<34}{n:>6}{'   <- thin source, floor is its own coverage' if name in thin_floor else ''}")
-    print(f"    ...{len(f) - 5} more, all >= {cov[5][0]}")
+    print(f"    ...{len(fields) - 5} more, all >= {cov[5][0]}")
     print("  CONCLUSION: several flags are rare BY CONSTRUCTION, which is why the components")
     print("  ship separately from the counts; the ones with no events at all are dropped.")

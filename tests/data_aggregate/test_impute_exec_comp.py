@@ -84,7 +84,7 @@ def test_exec_comp_real_data_and_neo_bar():
     assert not (out.loc[present, "total_imputed"] > 0).any(), "total_imputed stamped on a row whose total the filer stated"
 
     # --- the identity's credibility where it is checkable ---
-    rec = pd.to_numeric(raw.get("reconciles"), errors="coerce")
+    rec = pd.to_numeric(raw["reconciles"], errors="coerce")
     checkable = rec.notna()
     rec_rate = float(rec[checkable].mean()) if checkable.any() else float("nan")
 

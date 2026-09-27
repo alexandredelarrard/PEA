@@ -13,6 +13,8 @@ at all, they are being computed on the wrong column.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -42,7 +44,7 @@ def _board(ticker: str, year_idx: int, people: list[dict]) -> list[dict]:
 
 
 def _at(frame: pd.DataFrame, date: str, ticker: str) -> float:
-    return float(frame.loc[pd.Timestamp(date), ticker])
+    return float(cast(float, frame.loc[pd.Timestamp(date), ticker]))
 
 
 def _turnover_board() -> pd.DataFrame:
@@ -267,7 +269,9 @@ def test_the_real_board_quality_readout():
 
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load(Tables.def14a_directors)
-        n_filings = ctx.store.load(Tables.def14a_llm, columns=["accession_number"])["accession_number"].nunique()
+        filings = ctx.store.load(Tables.def14a_llm, columns=["accession_number"])
+        assert filings is not None
+        n_filings = filings["accession_number"].nunique()
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_directors not reachable ({e})")
     if raw is None or raw.empty:

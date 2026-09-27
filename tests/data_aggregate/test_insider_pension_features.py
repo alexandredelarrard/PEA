@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -30,14 +32,14 @@ def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
     )
     out = _pension_deficit_daily(pf, idx)
     # point-in-time: nothing before the filing
-    assert np.isnan(out.loc[pd.Timestamp("2024-02-01"), "VZ"])
+    assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-02-01"), "VZ"])))
     # after filing: the LATEST period-end (2023: 13.2B), not the prior-year comparative
-    assert abs(out.loc[pd.Timestamp("2024-03-01"), "VZ"] - 13.2e9) < 1
+    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-03-01"), "VZ"])) - 13.2e9) < 1
     # GE reports BOTH tags same filing -> primary (7B) preferred over variant (6B)
-    assert abs(out.loc[pd.Timestamp("2024-03-01"), "GE"] - 7e9) < 1
+    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-03-01"), "GE"])) - 7e9) < 1
     # MSFT reports only the variant -> variant fills; still PIT (only after its July filing)
-    assert np.isnan(out.loc[pd.Timestamp("2024-06-03"), "MSFT"])
-    assert abs(out.loc[pd.Timestamp("2024-08-15"), "MSFT"] - 5e8) < 1
+    assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-06-03"), "MSFT"])))
+    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-08-15"), "MSFT"])) - 5e8) < 1
 
     print("\n=== SANITY: pension_facts -> PIT net deficit ===")
     print(

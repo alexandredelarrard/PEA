@@ -8,6 +8,8 @@ embedding KPIs (no tone/uncertainty), sourcing call dates from `sections` (no Fi
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from src.data_aggregate.utils.text import earnings_call_features as ec
@@ -43,7 +45,7 @@ def test_embedding_panel_emits_only_embedding_kpis(monkeypatch):
     peers = {"AAA": ["BBB"], "BBB": ["AAA"]}
     idx = pd.bdate_range("2025-04-01", "2025-07-01")
 
-    panel = ec.build_earnings_call_embedding_panel(embeddings=object(), peer_dict=peers, trading_index=idx, sections=sections)
+    panel = ec.build_earnings_call_embedding_panel(embeddings=cast(pd.DataFrame, object()), peer_dict=peers, trading_index=idx, sections=sections)
     assert not panel.empty, "embedding panel should build from the mocked KPIs"
     feat_cols = [c for c in panel.columns if c not in ("date", "ticker")]
     # every emitted feature must derive from an EMBEDDING KPI stem, and NONE from a sentiment one

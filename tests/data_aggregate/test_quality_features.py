@@ -18,6 +18,8 @@ is how 24 dead features stayed green for a whole vintage of the table.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -32,6 +34,12 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
 
 IDX = pd.bdate_range("2022-01-03", periods=300)  # >252 so shift(_YEAR) has a year-ago
 _SPLIT = 252  # rows [0:252) = "a year ago", [252:] = "now"
+
+
+def _number(value: object) -> float:
+    """Narrow a scalar selected from a numeric fixture frame."""
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _const(vals: dict) -> pd.DataFrame:
@@ -93,8 +101,8 @@ def test_beneish_ranks_manipulator_above_clean():
     }
     m = _beneish_m_score(_mock(frames), IDX)
     last = IDX[-1]
-    assert np.isfinite(m.loc[last, "CLN"]) and np.isfinite(m.loc[last, "MAN"])
-    assert m.loc[last, "MAN"] > m.loc[last, "CLN"]
+    assert np.isfinite(_number(m.loc[last, "CLN"])) and np.isfinite(_number(m.loc[last, "MAN"]))
+    assert _number(m.loc[last, "MAN"]) > _number(m.loc[last, "CLN"])
 
     print("\n=== SANITY CHECK: #5 Beneish M-score ===")
     print(
@@ -123,10 +131,10 @@ def test_beneish_is_null_without_revenue_and_assets():
     }
     m = _beneish_m_score(_mock(frames), IDX)
     last = IDX[-1]
-    assert np.isfinite(m.loc[last, "REAL"])
-    assert np.isnan(m.loc[last, "GHOST"]), "M fabricated for a ticker with no data"
+    assert np.isfinite(_number(m.loc[last, "REAL"]))
+    assert np.isnan(_number(m.loc[last, "GHOST"])), "M fabricated for a ticker with no data"
     # the specific value it used to fabricate, so the regression is named not just implied
-    assert not np.isclose(m.loc[last, "GHOST"], -2.48, equal_nan=False)
+    assert not np.isclose(_number(m.loc[last, "GHOST"]), -2.48, equal_nan=False)
     assert m["GHOST"].notna().sum() == 0
 
     print("\n=== SANITY CHECK: Beneish support is enforced per cell ===")
@@ -180,7 +188,8 @@ def test_forensic_days_and_offbs_leverage():
     # the off-BS arithmetic itself, asserted where it now lives: recognized net deficit 30
     # is debt-like and is passed in, the way `_derived_fields` passes it from `_pension_pool`
     net_od = capital.net_debt(get, off_balance_sheet=True, pension=_const({"X": 30}))
-    assert abs(net_od.loc[last, "X"] - (400 + 70 + 30 - 80)) < 1e-6
+    assert net_od is not None
+    assert abs(_number(net_od.loc[last, "X"]) - (400 + 70 + 30 - 80)) < 1e-6
 
     print("\n=== SANITY CHECK: #5 forensic working-capital + off-BS leverage ===")
     print(f"  DSO={dso:.1f}d, DPO={dpo:.1f}d, DIO={dio:.1f}d, CCC={dso + dio - dpo:.1f}d.")
@@ -390,15 +399,18 @@ def test_liquid_assets_does_not_double_count_short_term_investments():
     get = _mock(frames)
     last = IDX[-1]
     liquid = capital.liquid_assets(get)
+    assert liquid is not None
     assert liquid.loc[last, "X"] == 125.0, "short-term investments counted twice"
     # and net debt therefore nets 125, not 150
-    assert capital.net_debt(get).loc[last, "X"] == 400.0 - 125.0
+    net = capital.net_debt(get)
+    assert net is not None
+    assert net.loc[last, "X"] == 400.0 - 125.0
 
     print("\n=== SANITY CHECK: liquid_assets counts ST investments ONCE ===")
     print(
         f"  cash=125 (100 cashneq + 25 STI) with shortTermInvestments=25 also present -> "
         f"liquid_assets={liquid.loc[last, 'X']:.0f}, not 150; net debt "
-        f"{capital.net_debt(get).loc[last, 'X']:.0f} = 400 - 125. Validated."
+        f"{net.loc[last, 'X']:.0f} = 400 - 125. Validated."
     )
 
 

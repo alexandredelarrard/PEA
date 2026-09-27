@@ -18,6 +18,7 @@ assert `== 1.0` bit-exactly, not `approx`.
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,11 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 #: A daily grid that straddles every fixture event below. Business days only, so the frame is
 #: shaped like a real `cube_part_prices` slice without being large.
 INDEX = pd.DatetimeIndex(pd.bdate_range("1995-01-02", "2026-12-31"), name="date")
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _yf(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
@@ -337,8 +343,8 @@ def test_fdx_market_cap_matches_sharadar_after_the_factor():
     factor = pd.DataFrame({"FDX": [1.241]}, index=when)
     sharadar_bn = 77.470
 
-    before = float(daily_market_cap(fund, close, level_factor=None).iloc[0, 0]) / 1e9
-    after = float(daily_market_cap(fund, close, level_factor=factor).iloc[0, 0]) / 1e9
+    before = _number(daily_market_cap(fund, close, level_factor=None).iloc[0, 0]) / 1e9
+    after = _number(daily_market_cap(fund, close, level_factor=factor).iloc[0, 0]) / 1e9
 
     assert before == pytest.approx(62.425, abs=0.01), "the defect, reproduced"
     assert after == pytest.approx(sharadar_bn, rel=0.01), "within 1% of Sharadar"
@@ -570,7 +576,8 @@ def test_a_multi_segment_wedge_is_a_staircase_not_a_product():
     filings = pd.DatetimeIndex(pd.date_range("1995-02-15", "2002-11-15", freq="QE"))
     bounds = [pd.Timestamp(d) for d, _ in ladder]
     wedges = [1.61051, 1.46410, 1.33100, 1.21000, 1.10000, 1.0]
-    price = [20.0 * wedges[int(np.searchsorted(bounds, d, side="right"))] for d in filings]
+    bounds_index = pd.DatetimeIndex(bounds)
+    price = [20.0 * wedges[int(bounds_index.searchsorted(d, side="right"))] for d in filings]
     vendor = pd.DataFrame({"ticker": "HBAN", "date": filings, "price": price})
 
     logged: list[str] = []
@@ -672,7 +679,7 @@ def test_a_null_ret_entry_deletes_the_bar_it_registered():
     applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
 
     assert applied == 1
-    assert np.isnan(ret.at[pd.Timestamp(DHR_DATE), "DHR"])
+    assert np.isnan(_number(ret.at[pd.Timestamp(DHR_DATE), "DHR"]))
     assert any("APPLIED" in m for m in logged), logged
     # NOTHING else moved: exactly one cell differs and the control column is bit-identical
     moved = before.ne(ret) & ~(before.isna() & ret.isna())

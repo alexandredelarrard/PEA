@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
+from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_features import (
     _per_call_kpis,
     build_earnings_call_feature_panel,
@@ -24,6 +26,12 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
+
+
+def _number(value: object) -> float:
+    """Narrow a scalar selected from a numeric fixture frame."""
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _row(tkr, q, tag, pos, neg, words, unc):
@@ -78,22 +86,22 @@ def test_per_call_kpi_arithmetic():
     a = per[per["ticker"] == "A"].set_index("quarter")
 
     # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
-    assert abs(a.loc["2023Q1", "ec_tone"] - (0.5 * 1000 + 0.3 * 500) / 1500) < 1e-9
+    assert abs(_number(a.loc["2023Q1", "ec_tone"]) - (0.5 * 1000 + 0.3 * 500) / 1500) < 1e-9
     # Q&A gap = qa_net - prepared_net = .3 - .5
-    assert abs(a.loc["2023Q1", "ec_qa_gap"] - (0.3 - 0.5)) < 1e-9
+    assert abs(_number(a.loc["2023Q1", "ec_qa_gap"]) - (0.3 - 0.5)) < 1e-9
     # length-weighted uncertainty, Q1: (.02*1000 + .05*500)/1500
-    assert abs(a.loc["2023Q1", "ec_uncertainty"] - (0.02 * 1000 + 0.05 * 500) / 1500) < 1e-9
+    assert abs(_number(a.loc["2023Q1", "ec_uncertainty"]) - (0.02 * 1000 + 0.05 * 500) / 1500) < 1e-9
     # tone delta Q2 vs Q1
     tone_q1 = (0.5 * 1000 + 0.3 * 500) / 1500
     tone_q2 = (0.65 * 1200 + 0.40 * 600) / 1800
-    assert abs(a.loc["2023Q2", "ec_tone_delta"] - (tone_q2 - tone_q1)) < 1e-9
-    assert math.isnan(a.loc["2023Q1", "ec_tone_delta"])  # first call -> no prior
+    assert abs(_number(a.loc["2023Q2", "ec_tone_delta"]) - (tone_q2 - tone_q1)) < 1e-9
+    assert math.isnan(_number(a.loc["2023Q1", "ec_tone_delta"]))  # first call -> no prior
     # disclosure-length delta Q2 = log(1800/1500)
-    assert abs(a.loc["2023Q2", "ec_length_delta"] - math.log(1800 / 1500)) < 1e-9
+    assert abs(_number(a.loc["2023Q2", "ec_length_delta"]) - math.log(1800 / 1500)) < 1e-9
     # vocabulary novelty: Q1 (first) NaN; Q2 low (near-identical); Q3 high (topic shift)
-    assert math.isnan(a.loc["2023Q1", "ec_vocab_novelty"])
-    assert a.loc["2023Q2", "ec_vocab_novelty"] < a.loc["2023Q3", "ec_vocab_novelty"]
-    assert a.loc["2023Q3", "ec_vocab_novelty"] > 0.5
+    assert math.isnan(_number(a.loc["2023Q1", "ec_vocab_novelty"]))
+    assert _number(a.loc["2023Q2", "ec_vocab_novelty"]) < _number(a.loc["2023Q3", "ec_vocab_novelty"])
+    assert _number(a.loc["2023Q3", "ec_vocab_novelty"]) > 0.5
 
 
 class _Ctx:
@@ -109,8 +117,9 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     sent, sec = _sentiment_frame(), _sections_frame()
     sqlite_store.save("earnings_call_sentiment", sent)
     sqlite_store.save("earnings_call_sections", sec)
-    ctx = _Ctx(sqlite_store)
+    ctx = cast(Context, _Ctx(sqlite_store))
     streamed = sentiment_kpis_streamed(ctx)
+    assert streamed is not None
     batch = _per_call_kpis(sent, sec)
     m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))
     assert len(m) == len(batch) == len(streamed), "row set changed under streaming"

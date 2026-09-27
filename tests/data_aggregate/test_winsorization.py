@@ -8,6 +8,7 @@ features are already outlier-proof and are left untouched.
 from __future__ import annotations
 
 import warnings
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,11 @@ import pytest
 
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.xs import winsorize_xs
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def test_peer_panel_no_fragmentation_warning():
@@ -77,9 +83,9 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
 
     # T0's raw peer-z is extreme (hits the internal +-8 clip); winsorize then pulls
     # it down to the row's cross-sectional 99th percentile (< raw -> trimmed).
-    assert raw.loc[d, "T0"] >= 7.9
+    assert _number(raw.loc[d, "T0"]) >= 7.9
     assert wins.loc[d, "T0"] == pytest.approx(raw.loc[d].quantile(0.99))
-    assert wins.loc[d, "T0"] < raw.loc[d, "T0"]
+    assert _number(wins.loc[d, "T0"]) < _number(raw.loc[d, "T0"])
 
     # the built panel reflects the winsorized value; the rank `_xs` is untouched (T0 top).
     last = build_peer_relative_panel({"metric": field}, peers)

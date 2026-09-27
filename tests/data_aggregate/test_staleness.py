@@ -25,8 +25,11 @@ which is why `LEVEL_MAX_AGE_DAYS` records the per-field figures instead of one h
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 import pytest
+from pandas._typing import Scalar
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.staleness import (
@@ -45,6 +48,14 @@ def _daily(history: pd.DataFrame, field: str, idx: pd.DatetimeIndex) -> pd.DataF
     return fundamentals_to_daily(history, field, idx)
 
 
+def _asof_value(frame: pd.DataFrame, when: pd.Timestamp, ticker: str) -> Scalar:
+    """Select the latest fixture value at or before ``when`` as a scalar."""
+    date = cast(pd.Timestamp, pd.DatetimeIndex(frame.index).asof(when))
+    value = frame.loc[date, ticker]
+    assert not isinstance(value, pd.Series)
+    return value
+
+
 def test_expiry_boundary_on_both_tiers():
     """17 months lives, 19 months dies -- and a LEVEL lives to 1,095 days, then dies."""
     idx = pd.bdate_range("2020-01-01", "2024-12-31")
@@ -58,14 +69,14 @@ def test_expiry_boundary_on_both_tiers():
     d19 = filed + pd.Timedelta(days=int(30.4 * 19))  # ~577 days -> outside it
     assert (d17 - filed).days <= GOVERNANCE_EVENT_MAX_AGE_DAYS < (d19 - filed).days
 
-    v17 = capped.loc[capped.index.asof(d17), "AAA"]
-    v19 = capped.loc[capped.index.asof(d19), "AAA"]
+    v17 = _asof_value(capped, d17, "AAA")
+    v19 = _asof_value(capped, d19, "AAA")
     assert v17 == pytest.approx(0.11), "a 17-month-old event was expired"
     assert pd.isna(v19), "a 19-month-old event survived"
 
     # the exact boundary: still alive on day 548, gone on day 549
-    assert capped.loc[capped.index.asof(filed + pd.Timedelta(days=548)), "AAA"] == pytest.approx(0.11)
-    assert pd.isna(capped.loc[capped.index.asof(filed + pd.Timedelta(days=549)), "AAA"])
+    assert _asof_value(capped, filed + pd.Timedelta(days=548), "AAA") == pytest.approx(0.11)
+    assert pd.isna(_asof_value(capped, filed + pd.Timedelta(days=549), "AAA"))
 
     # --- the LEVEL tier: a legacy field is on 1,095 days, NOT exempt and NOT on 548 ---
     # ⚠ This block asserted the opposite until 2026-09-08. It required `expire_stale` to return
@@ -81,7 +92,7 @@ def test_expiry_boundary_on_both_tiers():
     assert horizon_for("sop_dissent") == GOVERNANCE_EVENT_MAX_AGE_DAYS == 548
 
     def at(frame, days):
-        return frame.loc[frame.index.asof(filed + pd.Timedelta(days=days)), "AAA"]
+        return _asof_value(frame, filed + pd.Timedelta(days=days), "AAA")
 
     # survives where an EVENT would already be dead -- that is what the second tier buys
     assert at(kept, 549) == pytest.approx(0.11), "a level expired on the EVENT horizon"
@@ -115,7 +126,7 @@ def test_expiry_uses_the_filing_that_produced_the_cell():
     capped = expire_stale(daily, hist, "sop_dissent")
 
     def at(d: str, t: str):
-        return capped.loc[capped.index.asof(pd.Timestamp(d)), t]
+        return _asof_value(capped, pd.Timestamp(d), t)
 
     # 2020-06-01 is 396d after the 2019 filing but only 31d after the 2020 one -> alive at 0.09
     assert at("2020-06-01", "AAA") == pytest.approx(0.09)
@@ -247,21 +258,22 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     second = pd.Timestamp("1997-04-24")
 
     def at(days):
-        return capped.loc[capped.index.asof(second + pd.Timedelta(days=days)), "JNJ"]
+        return _asof_value(capped, second + pd.Timedelta(days=days), "JNJ")
 
     assert daily["JNJ"].notna().sum() > 7_000, "the unbounded ffill shape is not reproduced"
     assert at(548) == pytest.approx(0.01), "expired on the EVENT horizon -- wrong tier"
     assert at(1000) == pytest.approx(0.01), "expired before its own horizon"
     # the boundary, partitioned over the whole index by age -- see the routing test for why a
     # two-point `index.asof` probe is not enough near a weekend
-    ages = pd.Series((capped.index - second).days, index=capped.index)
+    capped_index = pd.DatetimeIndex(capped.index)
+    ages = pd.Series((capped_index - second).days, index=capped_index)
     inside = capped["JNJ"][(ages >= 0) & (ages <= LEVEL_MAX_AGE_DAYS)]
     outside = capped["JNJ"][ages > LEVEL_MAX_AGE_DAYS]
     assert inside.notna().all(), "a cell inside the level horizon was expired"
     assert (inside - 0.01).abs().max() < 1e-9, "the surviving cells are not the filed value"
     assert outside.isna().all(), "survived its own horizon"
     # and the 29 NULL filings did not restart the clock at any point
-    assert pd.isna(capped.loc[capped.index.asof(pd.Timestamp("2026-01-02")), "JNJ"])
+    assert pd.isna(_asof_value(capped, pd.Timestamp("2026-01-02"), "JNJ"))
 
     kept, before = int(capped["JNJ"].notna().sum()), int(daily["JNJ"].notna().sum())
     print("\n=== SANITY CHECK: the JNJ shape (2 of 31 proxies carry a value) ===")
@@ -294,7 +306,7 @@ def test_a_ford_shaped_history_expires_the_zero_and_reopens_on_the_new_filing():
     capped = expire_stale(daily, hist, "ceo_to_director_pay_ratio", max_age_days=LEVEL_MAX_AGE_DAYS)
 
     def at(d):
-        return capped.loc[capped.index.asof(pd.Timestamp(d)), "F"]
+        return _asof_value(capped, pd.Timestamp(d), "F")
 
     filed = pd.Timestamp("2011-04-01")
     horizon = filed + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)
@@ -369,7 +381,8 @@ def test_the_event_tier_is_unperturbed_and_the_two_wrappers_route_correctly():
     assert GOVERNANCE_EVENT_MAX_AGE_DAYS == 548
     filed = pd.Timestamp("2019-05-01")
     ev = frames["sop_dissent"]
-    ages = pd.Series((ev.index - filed).days, index=ev.index)
+    ev_index = pd.DatetimeIndex(ev.index)
+    ages = pd.Series((ev_index - filed).days, index=ev_index)
     assert int(ages.max()) > GOVERNANCE_EVENT_MAX_AGE_DAYS, "the boundary is never crossed"
     inside = ev["AAA"][(ages >= 0) & (ages <= GOVERNANCE_EVENT_MAX_AGE_DAYS)]
     outside = ev["AAA"][ages > GOVERNANCE_EVENT_MAX_AGE_DAYS]

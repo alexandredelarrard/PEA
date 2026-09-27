@@ -63,6 +63,7 @@ def test_slow_warming_factor_does_not_delay_the_other_betas():
     first_mixed = estimate_betas_for_stock(y, with_slow)["beta_market"].dropna().index[0]
     idx = close.index
     pos_alone, pos_mixed = idx.get_loc(first_alone), idx.get_loc(first_mixed)
+    assert isinstance(pos_alone, int) and isinstance(pos_mixed, int)
 
     assert pos_mixed == pos_alone, f"the momentum factor delayed the market beta: alone +{pos_alone} rows, with momentum +{pos_mixed} rows"
     assert pos_mixed <= MIN_OBS + 5, f"market beta starts at +{pos_mixed}, expected ~{MIN_OBS}"
@@ -114,7 +115,9 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     for h in horizons:
         nn = built[h]["rank"].dropna(how="all")
         lead = idx.get_loc(nn.index[0])
-        trail = len(idx) - 1 - idx.get_loc(nn.index[-1])
+        last = idx.get_loc(nn.index[-1])
+        assert isinstance(lead, int) and isinstance(last, int)
+        trail = len(idx) - 1 - last
         # the tail must be EXACTLY the horizon: t+h has not happened yet, nothing else
         assert trail == h, f"h={h}: trailing gap {trail} rows, expected exactly {h}"
         # the head must be the beta warm-up, not the 252-day style-factor warm-up

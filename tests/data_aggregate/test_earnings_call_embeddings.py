@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
+from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
@@ -190,10 +192,11 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     # ---- embed -> ONE ROW PER TURN, cached with every requested column ------------------------
     store = FakeStore()
     store.t["earnings_call_sections"] = _sections()
-    ctx = FakeCtx(store)
+    ctx = cast(Context, FakeCtx(store))
     stub = StubClient()
     embed_earnings_calls(ctx, client=stub)  # populates the cache (returns None)
     emb = store.load("earning_calls_embedding")
+    assert emb is not None
     qa_rows, prep_rows = emb[emb["section"] == "qa"], emb[emb["section"] == "prepared_remarks"]
     assert len(qa_rows) == 20, f"5 qa turns x 4 calls, got {len(qa_rows)}"
     assert len(prep_rows) == 4, f"1 prepared turn x 4 calls, got {len(prep_rows)}"
@@ -218,7 +221,9 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
 
     # ---- KPIs derived from the turns ----------------------------------------------------------
-    kpi = build_embedding_kpis(emb).sort_values(["ticker", "quarter"]).reset_index(drop=True)
+    kpi = build_embedding_kpis(emb)
+    assert kpi is not None
+    kpi = kpi.sort_values(["ticker", "quarter"]).reset_index(drop=True)
     assert (kpi["ec_n_qa"] == 2).all(), "2 exchanges per call"
     assert (kpi["ec_n_answers"] == 3).all(), "3 answer turns per call (2 in ex0 + 1 in ex1)"
     assert (kpi["ec_qa_answer_ratio"] == 1.5).all(), "3 answers / 2 questions = 1.5"
@@ -309,7 +314,7 @@ def test_force_reembed_drops_stale_turns():
     that would inflate answer counts / pollute the KPIs."""
     store = FakeStore()
     store.t["earnings_call_sections"] = _sections()
-    ctx = FakeCtx(store)
+    ctx = cast(Context, FakeCtx(store))
     stub = StubClient()
     embed_earnings_calls(ctx, client=stub)  # initial embed
     tbl = "earning_calls_embedding"

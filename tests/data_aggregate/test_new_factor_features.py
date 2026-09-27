@@ -14,10 +14,17 @@ hand-built the missing columns.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
 from src.data_aggregate.utils.fundamentals.sector_features import compute_sector_kpis
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def test_sector_quick_wins_that_sharadar_can_feed():
@@ -61,13 +68,13 @@ def test_sector_quick_wins_that_sharadar_can_feed():
     last = k[k["as_of"] == "2023-12-31"].set_index("ticker")
 
     # A6 book-value growth, financials-scoped so BOTH the bank and the insurer are in scope
-    assert abs(last.loc["INS", "book_value_growth"] - 0.20) < 1e-6
+    assert abs(_number(last.loc["INS", "book_value_growth"]) - 0.20) < 1e-6
     # A8: FFO = 100 + 150 = 250 (no disposal-gain leg in SF1); AFFO = 250 - 40 = 210
-    assert abs(last.loc["REIT", "affo_dividend_coverage"] - 210.0 / 180.0) < 1e-6
+    assert abs(_number(last.loc["REIT", "affo_dividend_coverage"]) - 210.0 / 180.0) < 1e-6
     # B1: AOCI / equity = -30/300 = -0.10 -- the surviving half of the SVB signal
-    assert abs(last.loc["BANK", "aoci_to_equity"] - (-0.10)) < 1e-6
+    assert abs(_number(last.loc["BANK", "aoci_to_equity"]) - (-0.10)) < 1e-6
     # the bank ROA that replaced the NIM/efficiency/provision family
-    assert abs(last.loc["BANK", "bank_roa"] - 50.0 / 2000.0) < 1e-6
+    assert abs(_number(last.loc["BANK", "bank_roa"]) - 50.0 / 2000.0) < 1e-6
 
     for gone in ("nii_growth", "loan_growth", "premium_growth", "float_growth", "htm_unrealized_loss_ratio", "npl_ratio", "net_charge_off_rate"):
         assert gone not in k.columns, f"{gone} needs a tag SF1 does not deliver"

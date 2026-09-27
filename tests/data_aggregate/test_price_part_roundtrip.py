@@ -50,8 +50,11 @@ def frames() -> dict:
     close = pd.DataFrame(
         100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(TICKERS))), axis=0)), index=idx, columns=pd.Index(TICKERS, name="ticker")
     )
-    close.iloc[:10, close.columns.get_loc("CCC")] = np.nan  # late IPO
-    close.iloc[-8:, close.columns.get_loc("DDD")] = np.nan  # delisting
+    ccc_column = close.columns.get_loc("CCC")
+    ddd_column = close.columns.get_loc("DDD")
+    assert isinstance(ccc_column, int) and isinstance(ddd_column, int)
+    close.iloc[:10, ccc_column] = np.nan  # late IPO
+    close.iloc[-8:, ddd_column] = np.nan  # delisting
     market = pd.Series(400.0, index=idx)
     market.iloc[25] = np.nan  # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)

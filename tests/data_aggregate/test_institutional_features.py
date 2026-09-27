@@ -8,6 +8,8 @@ emitted `f_*` columns, and the pure extractor parsers (SEC join + OpenFIGI).
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,6 +41,10 @@ from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfig
 from tests.conftest import make_frames
 
 LAG = pd.Timedelta(days=45)
+
+
+def _as_float(value: object) -> float:
+    return float(cast(Any, value))
 
 
 # ⚠ THE PER-TICKER COVERAGE-ONSET GUARD IS OFF BY DEFAULT IN THIS MODULE, and that is a
@@ -247,17 +253,17 @@ def test_coverage_hole_and_break_guards():
 
     hole, recovery = pd.Timestamp("2021-12-31"), pd.Timestamp("2022-03-31")
     normal = pd.Timestamp("2021-09-30")
-    assert np.isnan(qf.loc[hole, "ic_inst_holders"]), "hole level not suppressed"
-    assert np.isnan(qf.loc[hole, "ic_inst_concentration"])
-    assert np.isnan(qf.loc[hole, "ic_inst_breadth_chg"])
-    assert np.isnan(qf.loc[hole, "inst_shares"]), "hole value leg not suppressed"
+    assert np.isnan(_as_float(qf.loc[hole, "ic_inst_holders"])), "hole level not suppressed"
+    assert np.isnan(_as_float(qf.loc[hole, "ic_inst_concentration"]))
+    assert np.isnan(_as_float(qf.loc[hole, "ic_inst_breadth_chg"]))
+    assert np.isnan(_as_float(qf.loc[hole, "inst_shares"])), "hole value leg not suppressed"
     # the recovery quarter keeps its LEVEL (40 filers really did file) and loses its DELTAS
-    assert np.isfinite(qf.loc[recovery, "ic_inst_holders"])
-    assert np.isnan(qf.loc[recovery, "ic_inst_shares_chg"]), "delta against a hole survived"
-    assert np.isnan(qf.loc[recovery, "ic_inst_new_buyer_ratio"])
+    assert np.isfinite(_as_float(qf.loc[recovery, "ic_inst_holders"]))
+    assert np.isnan(_as_float(qf.loc[recovery, "ic_inst_shares_chg"])), "delta against a hole survived"
+    assert np.isnan(_as_float(qf.loc[recovery, "ic_inst_new_buyer_ratio"]))
     # an ordinary quarter is untouched
-    assert np.isfinite(qf.loc[normal, "ic_inst_holders"])
-    assert np.isfinite(qf.loc[normal, "ic_inst_breadth_chg"])
+    assert np.isfinite(_as_float(qf.loc[normal, "ic_inst_holders"]))
+    assert np.isfinite(_as_float(qf.loc[normal, "ic_inst_breadth_chg"]))
     print("\n=== SANITY CHECK: D17 coverage-discontinuity guards ===")
     print(
         f"  filer counts {dict(zip(periods, counts, strict=False))}: the 2021-12-31 HOLE has every level "
@@ -289,7 +295,7 @@ def test_per_ticker_coverage_onset_guard():
     on = _quarter_features(pd.DataFrame(rows), min_prior_holders=MIN_PRIOR_HOLDERS).set_index(["ticker", "period"])
     key = ("A", pd.Timestamp(broad))
 
-    unguarded = off.loc[key, "ic_inst_shares_chg"]
+    unguarded = _as_float(off.loc[key, "ic_inst_shares_chg"])
     assert unguarded > 1e6, f"fixture no longer reproduces the defect: {unguarded}"
     for c in (
         "ic_inst_shares_chg",
@@ -299,11 +305,13 @@ def test_per_ticker_coverage_onset_guard():
         "ic_inst_cluster_buying",
         "inst_value_flow",
     ):
-        assert np.isnan(on.loc[key, c]), f"{c} survived the per-ticker onset guard"
+        assert np.isnan(_as_float(on.loc[key, c])), f"{c} survived the per-ticker onset guard"
     # levels untouched, on both the guarded ticker and its broadly-held neighbour
-    assert np.isfinite(on.loc[key, "ic_inst_holders"])
-    assert np.isfinite(on.loc[key, "ic_inst_concentration"])
-    assert np.isfinite(on.loc[("B", pd.Timestamp(broad)), "ic_inst_shares_chg"]), "a name held by 400 filers in BOTH quarters must keep its delta"
+    assert np.isfinite(_as_float(on.loc[key, "ic_inst_holders"]))
+    assert np.isfinite(_as_float(on.loc[key, "ic_inst_concentration"]))
+    assert np.isfinite(_as_float(on.loc[("B", pd.Timestamp(broad)), "ic_inst_shares_chg"])), (
+        "a name held by 400 filers in BOTH quarters must keep its delta"
+    )
     print("\n=== SANITY CHECK: per-ticker coverage-onset guard ===")
     print(
         f"  A: 1 filer/9 shares -> 400 filers/300M shares reads as shares_chg="
@@ -327,9 +335,11 @@ def test_d16_hard_cutoff_before_the_2013_break():
     qf = _quarter_features(_pre_floor_fixture()).set_index("period")
     for p in ("2012-12-31", "2013-03-31"):
         assert pd.Timestamp(p) not in qf.index, f"{p} was still emitted"
-    assert np.isfinite(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_holders"])
-    assert np.isnan(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_breadth_chg"]), "the first post-break quarter has no comparable predecessor (L10)"
-    assert np.isfinite(qf.loc[INST_DELTA_FLOOR_PERIOD, "ic_inst_breadth_chg"])
+    assert np.isfinite(_as_float(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_holders"]))
+    assert np.isnan(_as_float(qf.loc[INST_LEVEL_FLOOR_PERIOD, "ic_inst_breadth_chg"])), (
+        "the first post-break quarter has no comparable predecessor (L10)"
+    )
+    assert np.isfinite(_as_float(qf.loc[INST_DELTA_FLOOR_PERIOD, "ic_inst_breadth_chg"]))
     print("\n=== SANITY CHECK: D16 hard cutoff ===")
     print(
         f"  the two pre-{INST_LEVEL_FLOOR_PERIOD.date()} quarters are not emitted at all, "
@@ -358,7 +368,7 @@ def test_the_pre_floor_cut_leaves_the_delta_floor_onward_identical(monkeypatch):
 
     # and 2013-06-30 itself: it lost a predecessor, but every delta there was already NaN
     deltas = [c for c in cut.columns if c.endswith(("_chg", "_ratio", "_buying"))]
-    assert cut.loc[INST_LEVEL_FLOOR_PERIOD, [c for c in deltas if c != "ic_inst_net_options_ratio"]].isna().all()
+    assert cut.loc[INST_LEVEL_FLOOR_PERIOD, [c for c in deltas if c != "ic_inst_net_options_ratio"]].isna().to_numpy().all()
 
     print("\n=== SANITY CHECK: the pre-floor cut is output-neutral ===")
     print(
@@ -1068,8 +1078,9 @@ def test_first_publication_shares_chg_error_does_not_regress():
     # The matched sample, for the comparison the design decision turns on: both sides cut to
     # the filers public at `q`'s first publication.
     cur = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()
-    prv = stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum().rename(columns={"shares": "prev_shares"})
-    prv = prv.merge(frame[["ticker", "period", "prev_period"]].rename(columns={"period": "_q", "prev_period": "period"}), on=["ticker", "period"])
+    prv = cast(pd.DataFrame, stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()).rename(columns={"shares": "prev_shares"})
+    period_map = cast(pd.DataFrame, frame[["ticker", "period", "prev_period"]]).rename(columns={"period": "_q", "prev_period": "period"})
+    prv = prv.merge(period_map, on=["ticker", "period"])
     matched = cur.merge(prv.rename(columns={"_q": "period", "period": "_prev"}), on=["ticker", "period", "cik"], how="inner")
     matched = matched.groupby(["ticker", "period"], as_index=False).agg(m_cur=("shares", "sum"), m_prev=("prev_shares", "sum"))
 

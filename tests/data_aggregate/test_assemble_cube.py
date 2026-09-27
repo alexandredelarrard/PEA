@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf import DictConfig
 
+from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 from src.data_store.schema import name_of
@@ -103,8 +106,8 @@ def _parts(targets: pd.DataFrame | None = None):
 
 def _make_step(store, monkeypatch, chunk_rows: int | None = None):
     step = StepAssembleCube.__new__(StepAssembleCube)  # skip heavy __init__
-    step._context = _FakeCtx(store)
-    step._config = None
+    step._context = cast(Context, _FakeCtx(store))
+    step._config = cast(DictConfig, None)
     step._log = logging.getLogger("test")
     step._cfg = {}
     # the peer dict is read through utils/common/peers_io, so stub that rather than an attribute

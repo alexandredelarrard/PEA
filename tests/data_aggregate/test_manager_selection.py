@@ -20,6 +20,7 @@ hindsight. Each is a defect the module was written to avoid, not a hypothetical:
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -350,14 +351,17 @@ def test_build_cube_yml_declares_the_selection_block_and_parses_it():
     `elite_weight(mode="False")` and raise mid-build."""
     from omegaconf import OmegaConf
 
-    cfg = OmegaConf.to_container(OmegaConf.load("configs/build_cube.yml"), resolve=True)["build_cube"]
-    sel = cfg["institutionals"]["superinvestor"]["selection"]
+    root = cast(dict[str, Any], OmegaConf.to_container(OmegaConf.load("configs/build_cube.yml"), resolve=True))
+    cfg = cast(dict[str, Any], root["build_cube"])
+    institutionals = cast(dict[str, Any], cfg["institutionals"])
+    superinvestor = cast(dict[str, Any], institutionals["superinvestor"])
+    sel = cast(dict[str, Any], superinvestor["selection"])
     print(f"superinvestor.selection = {sel}")
-    print(f"  stale_quarters = {cfg['institutionals']['superinvestor']['stale_quarters']}")
+    print(f"  stale_quarters = {superinvestor['stale_quarters']}")
     assert isinstance(sel["mode"], str), f"`mode` parsed as {type(sel['mode']).__name__} ({sel['mode']!r}) -- quote it"
     assert sel["mode"] in ("off", "top_k", "continuous")
     assert sel["k"] >= 1 and sel["min_quarters"] >= 0 and sel["min_positions"] >= 0
-    assert cfg["institutionals"]["superinvestor"]["stale_quarters"] >= 1
+    assert int(superinvestor["stale_quarters"]) >= 1
     print("=== 13. `configs/build_cube.yml` carries a parseable selection block, and `mode` is a string rather than YAML 1.1's boolean False ===")
 
 
@@ -380,7 +384,7 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
     class _FakeContext:
         store = _FakeStore()
 
-    step = StepCubeInstitutionals.__new__(StepCubeInstitutionals)
+    step = cast(Any, StepCubeInstitutionals.__new__(StepCubeInstitutionals))
     step._context = _FakeContext()
     step._log = logging.getLogger(__name__)
 
@@ -413,7 +417,9 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
         for mode in ("top_k", "continuous"):
             _configure(mode)
             reads["n"] = 0
-            sel = step._superinvestor_selector()(st)
+            selector = step._superinvestor_selector()
+            assert selector is not None
+            sel = selector(st)
             got[mode] = (sel.nunique(), int(reads["n"]))
         print(f"distinct weights / roster reads: {got}; distinct periods in the state: {st['period'].nunique()}")
     finally:

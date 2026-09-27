@@ -17,6 +17,8 @@ the names that have been going up: 14,376 cells over 410 tickers whose median tr
 return is +21.36% against +3.87% where present.
 """
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -50,7 +52,9 @@ def test_collapse_is_flagged():
     bad = DATES[80]
     f.loc[bad, TICKERS[9:100]] = np.nan  # 9 of 100 survive
     thin = _thin_cross_sections({"rev_5": f})
-    print(f"  population on {bad.date()} = {int(f.loc[bad].notna().sum())}/100 -> flagged={bool(thin.loc[bad, 'rev_5'])}")
+    row = f.loc[bad]
+    assert isinstance(row, pd.Series)
+    print(f"  population on {bad.date()} = {int(row.notna().sum())}/100 -> flagged={bool(thin.loc[bad, 'rev_5'])}")
     assert thin.loc[bad, "rev_5"]
     assert thin["rev_5"].sum() == 1, "only the collapsed date"
 
@@ -133,7 +137,9 @@ def test_nulling_leaves_every_other_cell_bit_identical(caplog):
         out = _null_thin_cross_sections({"rev_5": f})["rev_5"]
 
     print(f"  warned: {caplog.text.strip()[:110]}")
-    assert out.loc[bad].isna().all(), "the thin date is nulled, not renormalised"
+    bad_row = out.loc[bad]
+    assert isinstance(bad_row, pd.Series)
+    assert bad_row.isna().all(), "the thin date is nulled, not renormalised"
     other = out.index != bad
     pd.testing.assert_frame_equal(out.loc[other], before.loc[other])
     assert "rev_5" in caplog.text and str(bad.date()) in caplog.text
@@ -158,7 +164,9 @@ def test_only_the_offending_feature_is_nulled():
     thin_f.loc[bad, TICKERS[9:]] = np.nan
     ok_before = ok_f.copy()
     out = _null_thin_cross_sections({"thin": thin_f, "ok": ok_f})
-    assert out["thin"].loc[bad].isna().all()
+    thin_row = out["thin"].loc[bad]
+    assert isinstance(thin_row, pd.Series)
+    assert thin_row.isna().all()
     pd.testing.assert_frame_equal(out["ok"], ok_before)
 
 
@@ -220,7 +228,7 @@ def test_downside_vol_still_undefined_below_five_down_days():
     """min_periods=5, not 1: a standard deviation off one or two observations is noise."""
     idx = pd.bdate_range("2023-01-02", periods=200)
     prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
-    prices.iloc[80, 0] *= 0.99  # exactly ONE down day, far outside the last window
+    prices.iloc[80, 0] = float(cast(float, prices.iloc[80, 0])) * 0.99  # exactly ONE down day, far outside the last window
     raw = compute_raw_features(prices, prices, _sector_returns(prices))
     got = raw["downside_vol_63"].iloc[-1, 0]
     print(f"  monotone riser, 0 down days in the last 63 -> downside_vol_63={got}")

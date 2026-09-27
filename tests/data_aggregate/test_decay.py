@@ -10,6 +10,7 @@ details (trading-day clock, event stacking, NaN-before-first-event) plus the hal
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -119,10 +120,12 @@ def test_events_stack_rather_than_overwrite():
     both = decay_events(_events([(a, "AAA", 1.0), (b, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
     only_a = decay_events(_events([(a, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
     only_b = decay_events(_events([(b, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
-    on_b = both.loc[b, "AAA"]
-    assert on_b > only_a.loc[b, "AAA"] and on_b > only_b.loc[b, "AAA"]
+    on_b = float(cast(Any, both.loc[b, "AAA"]))
+    only_a_on_b = float(cast(Any, only_a.loc[b, "AAA"]))
+    only_b_on_b = float(cast(Any, only_b.loc[b, "AAA"]))
+    assert on_b > only_a_on_b and on_b > only_b_on_b
     # and it is exactly additive, not merely larger
-    assert on_b == pytest.approx(only_a.loc[b, "AAA"] + only_b.loc[b, "AAA"])
+    assert on_b == pytest.approx(only_a_on_b + only_b_on_b)
 
 
 def test_two_events_on_the_same_day_sum():
@@ -164,7 +167,7 @@ def test_nan_magnitude_keeps_the_event_at_unit_weight():
 def test_empty_and_invalid_inputs():
     idx = _grid(50)
     assert decay_events(_events([]), idx, 21, magnitude_col="magnitude").empty
-    assert decay_events(None, idx, 21).empty
+    assert decay_events(cast(pd.DataFrame, None), idx, 21).empty
     with pytest.raises(ValueError, match="halflife"):
         decay_events(_events([(idx[0], "AAA", 1.0)]), idx, 0, magnitude_col="magnitude")
 

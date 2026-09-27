@@ -28,24 +28,15 @@ def _synth_employees():
             "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")],
             "period": [pd.Timestamp("2018-12-31"), pd.Timestamp("2019-12-31")],
             "employees_sec": [1000.0, 1200.0],
+            "totalRevenue": [np.nan, 600_000.0],
             "form_type": ["10-K", "10-K"],
-        }
-    )
-
-
-def _synth_fundamentals():
-    return pd.DataFrame(
-        {
-            "ticker": ["AAA"],
-            "as_of": ["2020-02-03"],
-            "totalRevenue": [600_000.0],
         }
     )
 
 
 def test_employee_fields_pit_growth_and_rev_per_employee():
     idx = pd.bdate_range("2018-06-01", "2020-06-01")
-    F = _employee_fields(_synth_employees(), idx, _synth_fundamentals())
+    F = _employee_fields(_synth_employees(), idx)
 
     before_any = pd.Timestamp("2018-11-30")  # before the first filing (a business day)
     after_second = pd.Timestamp("2020-03-02")  # after the 2020-02-03 filing
@@ -70,22 +61,16 @@ def test_employee_fields_pit_growth_and_rev_per_employee():
 def test_revenue_per_employee_growth():
     """rev/employee GROWTH = is revenue outgrowing headcount (productivity up) or
     scaling linearly with it (flat)? Past-vs-past, leak-free."""
-    emp = pd.DataFrame(
+    history = pd.DataFrame(
         {
             "ticker": ["AAA", "AAA"],
             "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")],
             "employees_sec": [1000.0, 1200.0],
-        }
-    )
-    fund = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA"],
-            "as_of": ["2019-02-01", "2020-02-03"],
             "totalRevenue": [500_000.0, 720_000.0],  # rev/emp 500 -> 600 (+20%)
         }
     )
     idx = pd.bdate_range("2018-06-01", "2020-06-01")
-    F = _employee_fields(emp, idx, fund)
+    F = _employee_fields(history, idx)
     after = pd.Timestamp("2020-03-02")
     assert "revenue_per_employee_growth" in F
     g = F["revenue_per_employee_growth"].loc[after, "AAA"]
@@ -103,23 +88,17 @@ def test_rev_per_employee_growth_handles_inf_no_crash():
     3.x). Now inf -> NaN cleanly and _employee_fields must not raise."""
     # AAA: finite +20% rev/employee growth; ZZZ: 0 -> 5000 => +inf. The combined frame
     # is the finite + inf + NaN-warmup mix that triggered the old crash.
-    emp = pd.DataFrame(
+    history = pd.DataFrame(
         {
             "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],
             "as_of": [pd.Timestamp("2019-02-01"), pd.Timestamp("2020-02-03")] * 2,
             "employees_sec": [1000.0, 1200.0, 100.0, 100.0],
-        }
-    )
-    fund = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA", "ZZZ", "ZZZ"],
-            "as_of": ["2019-02-01", "2020-02-03", "2019-02-01", "2020-02-03"],
             "totalRevenue": [500_000.0, 720_000.0, 0.0, 500_000.0],  # AAA 500->600 (+20%); ZZZ 0->5000 (inf)
         }
     )
     idx = pd.bdate_range("2018-06-01", "2020-06-01")
 
-    F = _employee_fields(emp, idx, fund)  # must NOT raise IndexError
+    F = _employee_fields(history, idx)  # must NOT raise IndexError
     assert "revenue_per_employee_growth" in F  # AAA's finite values keep the field alive
     g = F["revenue_per_employee_growth"]
     after = pd.Timestamp("2020-03-02")
@@ -146,7 +125,7 @@ def test_employee_features_follow_fiscal_year_and_expire_after_460_days():
     )
     idx = pd.date_range("2021-05-10", "2022-08-15")
 
-    fields = _employee_fields(observations, idx, observations)
+    fields = _employee_fields(observations, idx)
 
     assert np.isclose(fields["employee_growth"].loc[pd.Timestamp("2021-05-10"), "AAA"], 0.2)
     assert np.isclose(fields["revenue_per_employee"].loc[pd.Timestamp("2022-08-13"), "AAA"], 600.0)

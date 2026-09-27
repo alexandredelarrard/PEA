@@ -798,7 +798,7 @@ def compute() -> dict:
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
-    out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, peers, idx, fundamentals_history=fund))
+    out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, peers, idx))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
     # `exec_comp` and `close_total` are what make the three EXECUTIVE-PAY families exist:
     # without the child table there is no CPS denominator, and without a total-return series no

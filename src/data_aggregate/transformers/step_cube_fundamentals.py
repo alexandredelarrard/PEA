@@ -135,7 +135,6 @@ class StepCubeFundamentals(Step):
         )
         if df is None:
             raise Exception("No fundamentals history -> the fundamental, sector, workforce " "and dividend-payout features will be skipped.")
-        df = df[df["ticker"].astype(str).isin(universe)].copy()
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)", Tables.fundamentals_history, len(df), df["ticker"].nunique())
         df = add_cube_time_growth(df)
         return attach_gics_columns(df, self._context, self._log)
@@ -155,7 +154,7 @@ class StepCubeFundamentals(Step):
         if df is None:
             self._log.warning("No %s -> related features skipped (run %s).", what, fetcher)
             return None
-        return df[df["ticker"].astype(str).isin(universe)].copy()
+        return df
 
     @staticmethod
     def _restrict_to_skeleton(
@@ -214,12 +213,10 @@ class StepCubeFundamentals(Step):
 
     def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
         """Revenue per employee and YoY headcount growth, from the `employees` column of
-        `fundamentals_history` (10-K body-text headcount). Headcount and the revenue it is
-        divided by come from the SAME frame and the same `as_of`, which is why one source is
-        passed twice."""
+        `fundamentals_history` (10-K body-text headcount)."""
         if fundamentals is None:
             return None
-        return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index, fundamentals_history=fundamentals)
+        return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index)
 
     def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
         """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend

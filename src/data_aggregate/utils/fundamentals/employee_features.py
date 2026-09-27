@@ -43,7 +43,6 @@ _HEADCOUNT_FIELD = "employees_sec"
 def _employee_fields(
     employees_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
-    fundamentals: pd.DataFrame | None,
 ) -> dict:
     """Annual-event workforce values projected point-in-time from each publication."""
     F: dict[str, pd.DataFrame] = {}
@@ -68,21 +67,6 @@ def _employee_fields(
 
     if "totalRevenue" not in observations.columns:
         observations["totalRevenue"] = np.nan
-    if fundamentals is not None and "totalRevenue" in fundamentals.columns:
-        revenue = fundamentals[["ticker", "as_of", "totalRevenue"]].copy()
-        revenue["as_of"] = pd.to_datetime(revenue["as_of"], errors="coerce")
-        revenue["totalRevenue"] = pd.to_numeric(revenue["totalRevenue"], errors="coerce")
-        revenue = revenue.dropna(subset=["ticker", "as_of", "totalRevenue"])
-        for ticker, positions in observations.groupby("ticker", sort=False).groups.items():
-            left = observations.loc[positions, ["as_of"]].assign(_row=np.asarray(positions, dtype="int64")).sort_values("as_of")
-            right = revenue[revenue["ticker"].astype(str) == str(ticker)][["as_of", "totalRevenue"]].sort_values("as_of")
-            if right.empty:
-                continue
-            matched = pd.merge_asof(left, right, on="as_of", direction="backward")
-            rows = matched["_row"].to_numpy(dtype="int64")
-            existing = observations.loc[rows, "totalRevenue"].reset_index(drop=True)
-            observations.loc[rows, "totalRevenue"] = existing.combine_first(matched["totalRevenue"]).to_numpy()
-
     emp_growth_values = fiscal_change_values(
         observations,
         _HEADCOUNT_FIELD,
@@ -151,18 +135,11 @@ def build_employee_feature_panel(
     headcount_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
-    fundamentals_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format workforce feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
-    Empty if the employee-count history is unavailable.
-
-    `headcount_history` needs only (ticker, as_of, employees_sec) -- today that IS
-    `fundamentals_history`, so callers pass the same frame twice; the two
-    parameters stay separate because the headcount and the revenue it is divided
-    by are conceptually independent inputs (and were separate tables until the
-    `employees_history` table was retired)."""
+    Empty if the merged fundamentals/employee-count history is unavailable."""
     if headcount_history is None or headcount_history.empty or "as_of" not in headcount_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    fields = _employee_fields(headcount_history, trading_index, fundamentals_history)
+    fields = _employee_fields(headcount_history, trading_index)
     return build_peer_relative_panel(fields, peer_dict)

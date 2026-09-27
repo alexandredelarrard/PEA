@@ -33,6 +33,8 @@ Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward)
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -70,8 +72,8 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
                 "sent_pos": round(float(p["pos"]), 6),
                 "sent_neg": round(float(p["neg"]), 6),
                 "sent_neu": round(float(p["neu"]), 6),
-                "n_words": int(word_count(r.text)),
-                "uncertainty_ratio": round(float(uncertainty_ratio(r.text)), 6),
+                "n_words": int(word_count(cast(str, r.text))),
+                "uncertainty_ratio": round(float(uncertainty_ratio(cast(str, r.text))), 6),
                 "model": FINBERT_TONE_MODEL,
             }
         )
@@ -209,7 +211,7 @@ def _vocab_novelty(sections: pd.DataFrame, tag: str = _VOCAB_TAG) -> pd.DataFram
     for tkr, grp in sec.groupby("ticker", sort=False):
         prev_cf = None
         for r in grp.itertuples(index=False):
-            cf = content_frequency(r.text)
+            cf = content_frequency(cast(str, r.text))
             nov = np.nan if prev_cf is None else 1.0 - cosine_similarity(cf, prev_cf)
             rows.append({"ticker": tkr, "quarter": r.quarter, "ec_vocab_novelty": nov})
             prev_cf = cf

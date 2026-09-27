@@ -68,6 +68,8 @@ KPIs (grouped):
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -174,7 +176,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     revenue = g("totalRevenue")
     # ASC-842-adoption-free asset base (shared resolver: precomputed column, else derived,
     # else plain total assets -- so an older history vintage still works).
-    assets = capital.assets_ex_lease(g)
+    assets = cast(pd.Series, capital.assets_ex_lease(g))
     ebitda = g("ebitda")
     ni = g("netIncome")
     ocf = g("operatingCashFlow")
@@ -185,7 +187,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     cash = g("cash")
     # ONE definition of debt / invested capital (src/data_aggregate/utils/common/capital.py):
     # borrowings + capitalized leases, with no commercial-paper double count.
-    total_debt = capital.total_debt(g)
+    total_debt = cast(pd.Series, capital.total_debt(g))
 
     # GICS scopes (business-model, not tagging-based) for the sector KPI families
     bank_gate = row_gate(df, "bank")
@@ -215,7 +217,7 @@ def compute_sector_kpis(fundamentals: pd.DataFrame) -> pd.DataFrame:
     # `dividendsPaid` outflow is stored positive (the field map flips Sharadar's negative,
     # matching `capex`), and `share_repurchases` floors net issuance at 0 -- see capital.py,
     # the source column is NET ISSUANCE and reads negative for a repurchaser.
-    buybacks = capital.share_repurchases(g)
+    buybacks = cast(pd.Series | None, capital.share_repurchases(g))
     if buybacks is None:
         buybacks = pd.Series(np.nan, index=df.index)
     df["payout_ratio"] = safe_div(g("dividendsPaid").fillna(0) + buybacks.fillna(0), ni, True)

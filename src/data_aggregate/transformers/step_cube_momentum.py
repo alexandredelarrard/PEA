@@ -83,6 +83,9 @@ class StepCubeMomentum(Step):
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")
+        assert frames.close_total is not None
+        assert frames.open is not None
+        assert frames.sector_ret is not None
         seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         # a SKIP here is not cosmetic: it means the register no longer matches this build's

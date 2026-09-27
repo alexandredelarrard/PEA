@@ -19,8 +19,11 @@ p99 clip destroys real data while leaving ~1.1% of the 1000x rows standing.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
+
+from src.data_aggregate.utils.common.typing import frame_column
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,7 @@ def _period_close(close_split: pd.DataFrame, periods: pd.Series) -> pd.Series:
     if wanted.empty:
         return pd.Series(dtype=float)
     asof = close_split.reindex(close_split.index.union(wanted)).ffill().reindex(wanted)
-    out = asof.stack(future_stack=True)
+    out = cast(pd.Series, asof.stack(future_stack=True))
     out.index = out.index.set_names(["period", "ticker"])
     return out
 
@@ -105,16 +108,15 @@ def repair_value_basis(
         out["value_basis_repaired"] = KEPT
         return out, _empty_register()
 
-    shares = pd.to_numeric(out["shares"], errors="coerce")
-    close = (
-        pd.Series(out.set_index(["period", "ticker"]).index.map(_period_close(close_split, out["period"])), index=out.index)
-        .replace(0.0, pd.NA)
-        .astype(float)
-    )
+    shares = cast(pd.Series, pd.to_numeric(frame_column(out, "shares"), errors="coerce"))
+    keys = out.set_index(["period", "ticker"]).index
+    period_close = _period_close(close_split, frame_column(out, "period"))
+    close = pd.Series(period_close.reindex(keys).to_numpy(), index=out.index, dtype=float)
+    close = close.mask(close.eq(0.0))
 
     # `value_usd == shares` is a filer field swap -- the share count landed in the value column,
     # so the implied price is $1.00 and the bands below would read it as a 1000x unit error.
-    value = pd.to_numeric(out["value_usd"], errors="coerce")
+    value = cast(pd.Series, pd.to_numeric(frame_column(out, "value_usd"), errors="coerce"))
     swapped = (value == shares) & shares.gt(0) & close.notna()
     if swapped.any():
         before = float(value[swapped].sum())
@@ -132,7 +134,9 @@ def repair_value_basis(
     implied = value.where(value > 0) / shares.where(shares > 0)  # call and put
     ratio = implied / close
 
-    measured = ratio.groupby([out["cik"], out["period"]]).median().rename("median_ratio")
+    groups = [frame_column(out, "cik"), frame_column(out, "period")]
+    measured = cast(pd.Series, ratio.groupby(groups).median())
+    measured.name = "median_ratio"
     factor = pd.Series(pd.NA, index=measured.index, dtype="Float64")
     for low, high, mult in _REPAIR_BANDS:
         factor = factor.mask(measured.between(low, high, inclusive="left"), mult)
@@ -166,7 +170,7 @@ def repair_value_basis(
 
     scale = row_factor.astype(float)
     for col in value_columns:
-        scaled = pd.to_numeric(out[col], errors="coerce") * scale
+        scaled = cast(pd.Series, pd.to_numeric(frame_column(out, col), errors="coerce")) * scale
         # ⚠ ABSTENTION IS NaN, NOT 0. `clean_holdings` zero-fills the value legs, so a nulled
         # abstention that fell through as 0.0 would read as a REAL zero holding and drag
         # `ic_inst_concentration` down instead of leaving the filing out of the numerator.
@@ -181,11 +185,13 @@ def _empty_register() -> pd.DataFrame:
 
 def _register(out: pd.DataFrame, measured: pd.Series, factor: pd.Series, value_before: pd.Series, flag: pd.Series) -> pd.DataFrame:
     """One row per filing: what was measured, what was done, and how much value moved."""
+    groups = [frame_column(out, "cik"), frame_column(out, "period")]
+    value_after = cast(pd.Series, pd.to_numeric(frame_column(out, "value_usd"), errors="coerce"))
     grouped = pd.DataFrame(
         {
-            "rows": value_before.groupby([out["cik"], out["period"]]).size(),
-            "value_before": value_before.groupby([out["cik"], out["period"]]).sum(min_count=1),
-            "value_after": pd.to_numeric(out["value_usd"], errors="coerce").groupby([out["cik"], out["period"]]).sum(min_count=1),
+            "rows": value_before.groupby(groups).size(),
+            "value_before": value_before.groupby(groups).sum(min_count=1),
+            "value_after": value_after.groupby(groups).sum(min_count=1),
         }
     )
     register = pd.concat([measured, factor.rename("factor"), grouped], axis=1).reset_index()
@@ -205,22 +211,22 @@ def log_register(register: pd.DataFrame, value_before_total: float, log=logger) 
         return
     by = {DIVIDED: 1e-3, MULTIPLIED: 1e3}
     for name, mult in (("divided by 1000", by[DIVIDED]), ("multiplied by 1000", by[MULTIPLIED])):
-        hit = register[register["factor"] == mult]
+        hit = cast(pd.DataFrame, register.loc[frame_column(register, "factor") == mult])
         if not hit.empty:
-            moved = float(hit["value_before"].sum())
+            moved = float(frame_column(hit, "value_before").sum())
             log.warning(
                 "13F value basis: %s filing(s) %s -- %s row(s), $%.3e of filed value (%.2f%% of the table's total)",
                 f"{len(hit):,}",
                 name,
-                f"{int(hit['rows'].sum()):,}",
+                f"{int(frame_column(hit, 'rows').sum()):,}",
                 moved,
                 100.0 * moved / value_before_total if value_before_total else 0.0,
             )
-    abstained = register[register["factor"].isna()]
+    abstained = cast(pd.DataFrame, register.loc[frame_column(register, "factor").isna()])
     if not abstained.empty:
         log.warning(
             "13F value basis: %s filing(s) ABSTAINED (median implied price is not a "
             "clean power of 1000 against the market) -- %s row(s), value nulled",
             f"{len(abstained):,}",
-            f"{int(abstained['rows'].sum()):,}",
+            f"{int(frame_column(abstained, 'rows').sum()):,}",
         )

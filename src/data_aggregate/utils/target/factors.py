@@ -38,6 +38,7 @@ value / quality           -> need fundamentals HISTORY. With snapshot-only
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -88,7 +89,7 @@ def build_characteristics(
     leg for 231 trading days, so the contamination would leave the six seam tickers and reach
     `beta_momentum` for the whole universe.
     """
-    idx = stock_close_total.index
+    idx = pd.DatetimeIndex(stock_close_total.index)
     close_level = stock_close_total if stock_close_split is None else stock_close_split.reindex_like(stock_close_total)
     chars: dict[str, pd.DataFrame] = {}
 
@@ -111,7 +112,7 @@ def build_characteristics(
 
         if not mcap.empty:
             # Size: -log market cap (small = long side).
-            chars["size"] = -np.log(mcap.where(mcap > 0))
+            chars["size"] = cast(pd.DataFrame, -np.log(mcap.where(mcap > 0)))
 
             # Value: earnings yield + FCF yield + book/price, all vs market cap.
             ni = fundamentals_to_daily(fundamentals_history, "netIncome", idx)
@@ -125,7 +126,7 @@ def build_characteristics(
                         yld = (num[common] / mcap[common]).replace([np.inf, -np.inf], np.nan)
                         val_parts.append(xs_z(yld, clip=XS_CLIP_CHARACTERISTIC))
             if val_parts:
-                chars["value"] = sum(val_parts) / len(val_parts)
+                chars["value"] = cast(pd.DataFrame, sum(val_parts)) / len(val_parts)
     return chars
 
 
@@ -146,7 +147,9 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
     w = z.div(gross, axis=0)  # unit gross exposure
     aligned = stock_ret.reindex_like(w)
     f = (w.shift(1) * aligned).sum(axis=1, min_count=1)
-    return f.rename(char.name if char.name else "factor")
+    name = cast(Any, getattr(char, "name", None))
+    f.name = name if name else "factor"
+    return f
 
 
 def gics_sector_excess_returns(
@@ -208,7 +211,7 @@ def macro_change_factors(
     m = m.sort_index()
 
     out = {}
-    for level, change in level_to_change.items():
+    for level, change in cast(dict, level_to_change).items():
         if level in m.columns:
             s = m[level].reindex(m.index.union(trading_index)).ffill().reindex(trading_index)
             out[change] = s.diff()

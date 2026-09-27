@@ -76,6 +76,7 @@ class StepCubePrices(Step):
         window = self._plan_window(full)
         since = window.since
         raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS)
+        assert raw is not None
         self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
 
         # long to wide format

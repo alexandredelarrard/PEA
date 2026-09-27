@@ -177,7 +177,7 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
         return daily
     h["_produced_at"] = h["as_of"].map(pd.Timestamp.toordinal).astype("float64")
 
-    produced = fundamentals_to_daily(h, "_produced_at", daily.index)
+    produced = fundamentals_to_daily(h, "_produced_at", pd.DatetimeIndex(daily.index))
     if produced.empty:
         return daily
     produced = produced.reindex(columns=daily.columns)

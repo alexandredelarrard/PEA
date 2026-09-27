@@ -18,6 +18,7 @@ neither numerator nor denominator; an available zero remains a measured negative
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -226,7 +227,8 @@ def build_cross_source_panel(
     if bear is not None:
         fields["ic_xs_bearish_family_ratio"] = bear
     if bull is not None and bear is not None:
-        fields["ic_xs_conflict_ratio"] = np.minimum(bull, bear).where(bull.notna() & bear.notna())
+        conflict = cast(pd.DataFrame, np.minimum(bull, bear))
+        fields["ic_xs_conflict_ratio"] = conflict.where(bull.notna() & bear.notna())
 
     # #84 -- distinct actors on the BULLISH side only. The bearish families have no comparable
     # actor axis: short flow has no identifiable actor at all (FINRA reports volume, not who

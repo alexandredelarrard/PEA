@@ -48,7 +48,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.step import Step
 
 
@@ -70,6 +70,8 @@ class StepCubeFundamentals(Step):
             self._store, Tables.cube_part_fundamentals, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store)
         )
         frames = self._load_frames(window.since)
+        frames.require(*self._FIELDS)
+        assert frames.close_split is not None
         fundamentals = self._load_fundamentals()
         earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history", "fetch_earnings_surprises")
 
@@ -110,7 +112,7 @@ class StepCubeFundamentals(Step):
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
-    def _load_fundamentals(self) -> pd.DataFrame | None:
+    def _load_fundamentals(self) -> pd.DataFrame:
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
@@ -125,7 +127,7 @@ class StepCubeFundamentals(Step):
         df = add_cube_time_growth(df)
         return attach_gics_columns(df, self._context, self._log)
 
-    def _load_optional(self, table: str, what: str, fetcher: str) -> pd.DataFrame | None:
+    def _load_optional(self, table: Table, what: str, fetcher: str) -> pd.DataFrame | None:
         df = self._context.store.load(table, optional=True)
         if df is None:
             self._log.warning("No %s -> related features skipped (run %s).", what, fetcher)
@@ -190,6 +192,7 @@ class StepCubeFundamentals(Step):
         dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_price_history -> StepExtractPrices")
         if dividends is None:
             return None
+        assert frames.close_split is not None
         return build_dividend_feature_panel(
             dividends,
             frames.peers,

@@ -38,6 +38,8 @@ Forward factor returns over the SAME t->t+h window:
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -103,7 +105,7 @@ def compute_epsilon(
     for why projecting the TRANSFORMED label rather than epsilon is worth that cost.
     """
 
-    fwd_stock = forward_compound(stock_ret, horizon)
+    fwd_stock = cast(pd.DataFrame, forward_compound(stock_ret, horizon))
 
     # Precompute forward returns of every SHARED factor (same for all stocks).
     style_market_cols = [c for c in factor_panel.columns if c not in macro_cols]
@@ -117,7 +119,7 @@ def compute_epsilon(
     # the sector basket is a daily RETURN frame -> compounded, like the style factors.
     # OPTIONAL for the same reason as `betas.estimate_all_betas`'s sector regressor: the
     # fingerprint harnesses build a label with no sector term at all.
-    fwd_sector = forward_compound(sector_excess, horizon) if sector_excess is not None else None
+    fwd_sector = cast(pd.DataFrame, forward_compound(sector_excess, horizon)) if sector_excess is not None else None
 
     eps = pd.DataFrame(index=stock_ret.index, columns=stock_ret.columns, dtype="float64")
     for ticker in stock_ret.columns:
@@ -237,7 +239,7 @@ def _neutralizing_design(
         frames.append(momentum_characteristic(close_total, seams=seams))
 
     if market_cap is not None:
-        frames.append(np.log(market_cap))  # sign is irrelevant to a projection
+        frames.append(cast(pd.DataFrame, np.log(market_cap)))  # sign is irrelevant to a projection
 
     # zero_sd_to_nan: on a day with no dispersion the loading is undefined, so this yields NaN
     # (-> 0 below) rather than the fabricated +/-clip an unguarded z would produce.

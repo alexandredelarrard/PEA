@@ -58,6 +58,7 @@ while retaining legitimate late filings as dated revisions.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -72,6 +73,7 @@ from src.constants.constants import (
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.institutionals.availability import availability_date
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
@@ -181,7 +183,7 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     Computed once over the (ticker, period) grid rather than per manager -- the factor is a
     property of the two dates, not of who held the shares.
     """
-    pairs = h[["ticker", "period"]].drop_duplicates().sort_values(["ticker", "period"])
+    pairs = cast(pd.DataFrame, h[["ticker", "period"]]).drop_duplicates().sort_values(["ticker", "period"])
     if pairs.empty:
         return {}
 
@@ -189,8 +191,8 @@ def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
     pairs = pairs.dropna(subset=["prev_period"])
     if pairs.empty:
         return {}
-    f_now = future_split_factor(splits, pairs["ticker"], pairs["period"])
-    f_prev = future_split_factor(splits, pairs["ticker"], pairs["prev_period"])
+    f_now = future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "period"))
+    f_prev = future_split_factor(splits, frame_column(pairs, "ticker"), frame_column(pairs, "prev_period"))
     factor = np.divide(f_prev, f_now, out=np.ones_like(f_prev), where=f_now > 0)
     n = int((np.abs(factor - 1.0) > 1e-9).sum())
     if n:
@@ -269,7 +271,7 @@ def _stamp_availability(
     every row -- one emission per period, every filing inside it -- and says so.
     """
     h = holdings.copy()
-    h["first_pub"] = availability_date(h["period"], trading_index, settle_trading_days=settle_trading_days)
+    h["first_pub"] = availability_date(frame_column(h, "period"), trading_index, settle_trading_days=settle_trading_days)
 
     if "filing_date" not in h.columns:
         logger.info(
@@ -279,10 +281,12 @@ def _stamp_availability(
         )
         h["as_of"] = h["first_pub"]
     else:
-        later = h["filing_date"].notna() & h["first_pub"].notna() & (h["filing_date"] > h["first_pub"])
-        h["as_of"] = h["first_pub"].where(~later, h["filing_date"])
+        filing_date = frame_column(h, "filing_date")
+        first_pub = frame_column(h, "first_pub")
+        later = filing_date.notna() & first_pub.notna() & (filing_date > first_pub)
+        h["as_of"] = first_pub.where(~later, filing_date)
 
-    unavailable = h["as_of"].isna()
+    unavailable = frame_column(h, "as_of").isna()
     if unavailable.any():
         # The trading grid has not reached these periods' availability dates. They cannot be
         # published on any date the panel has a row for, so they are dropped HERE rather than
@@ -291,11 +295,11 @@ def _stamp_availability(
         logger.info(
             "13F availability: %s row(s) across period(s) %s have no availability date inside the trading calendar (it ends %s) -> not emitted",
             f"{int(unavailable.sum()):,}",
-            sorted({str(pd.Timestamp(p).date()) for p in h.loc[unavailable, "period"].unique()})[:6],
-            str(pd.DatetimeIndex(trading_index).max().date()) if len(trading_index) else "(empty)",
+            sorted({str(pd.Timestamp(p).date()) for p in cast(pd.Series, h.loc[unavailable, "period"]).unique()})[:6],
+            str(pd.Timestamp(cast(Any, pd.DatetimeIndex(trading_index).max())).date()) if len(trading_index) else "(empty)",
         )
-        h = h[~unavailable]
-    return h
+        h = cast(pd.DataFrame, h.loc[~unavailable])
+    return cast(pd.DataFrame, h)
 
 
 def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
@@ -314,12 +318,13 @@ def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
     and 2015-06-30's start 2015-07-01); that is harmless and is not what this checks. Only the
     EMISSION windows matter.
     """
-    span = qf.groupby("period")["as_of"].agg(["min", "max"]).sort_index()
+    span = cast(pd.DataFrame, qf.groupby("period")["as_of"].agg(["min", "max"]).sort_index())
     # `bad` marks the LATER period of an offending pair -- the one whose first publication is
     # at or before its predecessor's last revision -- so the pair is `(index[i - 1], index[i])`.
-    bad = np.flatnonzero((span["max"].shift(1) >= span["min"]).to_numpy())
+    bad = np.flatnonzero((frame_column(span, "max").shift(1) >= frame_column(span, "min")).to_numpy())
     if len(bad):
-        overlaps = [(str(span.index[i - 1].date()), str(span.index[i].date())) for i in bad]
+        period_index: pd.DatetimeIndex = pd.DatetimeIndex(span.index)
+        overlaps = [(str(period_index[int(i) - 1].date()), str(period_index[int(i)].date())) for i in bad]
         raise ValueError(
             "13F emission windows OVERLAP across consecutive periods -- a later quarter's "
             f"first publication is at or before an earlier one's last revision: {overlaps[:6]}. "
@@ -356,8 +361,8 @@ def _report_first_publication_shortfall(h: pd.DataFrame) -> None:
         logger.info("13F availability: no `as_of`/`first_pub` -> the first-publication shortfall cannot be measured on this read")
         return
 
-    late = (h["as_of"] > h["first_pub"]).fillna(False)
-    shares = pd.to_numeric(h["shares"], errors="coerce")
+    late = (frame_column(h, "as_of") > frame_column(h, "first_pub")).fillna(False)
+    shares = cast(pd.Series, pd.to_numeric(frame_column(h, "shares"), errors="coerce"))
     total_sh = float(shares.sum())
     logger.info(
         "13F availability (settle %s trading day(s)): %s of %s filer-row(s) (%.2f%%) and "
@@ -367,15 +372,18 @@ def _report_first_publication_shortfall(h: pd.DataFrame) -> None:
         f"{int(late.sum()):,}",
         f"{len(h):,}",
         100.0 * float(late.mean()),
-        100.0 * float(shares[late].sum()) / total_sh if total_sh > 0 else 0.0,
+        100.0 * float(cast(pd.Series, shares.loc[late]).sum()) / total_sh if total_sh > 0 else 0.0,
     )
 
-    per_q = pd.DataFrame({"period": h["period"], "shares": shares, "behind": shares.where(late, 0.0)}).groupby("period").sum()
-    shortfall = (per_q["behind"] / per_q["shares"].replace(0.0, np.nan)).dropna().sort_values(ascending=False)
+    per_q = cast(
+        pd.DataFrame,
+        pd.DataFrame({"period": frame_column(h, "period"), "shares": shares, "behind": shares.where(late, 0.0)}).groupby("period").sum(),
+    )
+    shortfall = (frame_column(per_q, "behind") / frame_column(per_q, "shares").replace(0.0, np.nan)).dropna().sort_values(ascending=False)
     worst = shortfall.head(6)
     logger.info(
         "13F availability: worst 6 quarters by share of SHARES behind the first publication: %s (universe-wide median %.2f%%)",
-        {str(pd.Timestamp(p).date()): f"{100.0 * v:.2f}%" for p, v in worst.items()},
+        {str(pd.Timestamp(cast(Any, p)).date()): f"{100.0 * v:.2f}%" for p, v in worst.items()},
         100.0 * float(shortfall.median()),
     )
 
@@ -414,7 +422,8 @@ def _availability_coverage(h: pd.DataFrame) -> pd.Series:
     # a caller reads as "no quarter has a prior quarter", a true-sounding sentence about the
     # wrong thing. Raising the distinction to the caller is the point: no data and no basis for
     # the measurement are different answers.
-    if float(pd.to_numeric(h["shares"], errors="coerce").abs().sum()) == 0.0:
+    shares = cast(pd.Series, pd.to_numeric(frame_column(h, "shares"), errors="coerce"))
+    if float(shares.abs().sum()) == 0.0:
         logger.info(
             "13F availability coverage: the `shares` column is all zero -- it was almost "
             "certainly projected away and zero-filled by `clean_holdings`, so there is no "
@@ -425,27 +434,29 @@ def _availability_coverage(h: pd.DataFrame) -> pd.Series:
     # One row per (cik, period): the filer's universe-wide share count, and the first date any
     # of its filings for that period was public.
     per_filer = h.groupby(["cik", "period"], sort=False).agg(shares=("shares", "sum"), pub=("as_of", "min")).reset_index()
-    first_pub = h.groupby("period")["first_pub"].first()
+    first_pub = cast(pd.Series, h.groupby("period")["first_pub"].first())
     periods = pd.Index(sorted(first_pub.dropna().index))
     pos = {p: i for i, p in enumerate(periods)}
-    per_filer["pi"] = per_filer["period"].map(pos)
+    per_filer["pi"] = frame_column(per_filer, "period").map(pos)
     per_filer = per_filer.dropna(subset=["pi"])
 
     # `q-1`'s filers, aligned onto `q`, then matched against the filers public at `q`'s own
     # first publication. `pub <= first_pub(q)` IS "reported by the availability date".
-    prior = per_filer[["cik", "pi", "shares"]].assign(pi=lambda x: x["pi"] + 1)
-    reported = per_filer.loc[per_filer["pub"] <= per_filer["period"].map(first_pub), ["cik", "pi"]].assign(_seen=True)
+    prior = cast(pd.DataFrame, per_filer[["cik", "pi", "shares"]].copy())
+    prior["pi"] = frame_column(prior, "pi") + 1
+    public_by_deadline = frame_column(per_filer, "pub") <= frame_column(per_filer, "period").map(first_pub)
+    reported = cast(pd.DataFrame, per_filer.loc[public_by_deadline, ["cik", "pi"]]).assign(_seen=True)
     joined = prior.merge(reported, on=["cik", "pi"], how="left")
     # ⚠ `pi + 1` PUTS THE LAST QUARTER'S FILERS ONE PAST THE END, and that row has no quarter
     # to describe. Dropping it BEFORE the groupby rather than trimming the index afterwards is
     # what keeps the index assignment length-safe -- the earlier form filtered the list and not
     # the Series, which would raise on exactly the frame that triggered it.
-    joined = joined[joined["pi"] < len(periods)]
+    joined = cast(pd.DataFrame, joined.loc[frame_column(joined, "pi") < len(periods)])
     if joined.empty:
         return pd.Series(dtype="float64")
-    seen = joined["_seen"].fillna(False).to_numpy(dtype=bool)
-    weight = joined.groupby("pi")["shares"].sum().replace(0.0, np.nan)
-    held = joined.loc[seen].groupby("pi")["shares"].sum()
+    seen = frame_column(joined, "_seen").fillna(False).to_numpy(dtype=bool)
+    weight = cast(pd.Series, joined.groupby("pi")["shares"].sum()).replace(0.0, np.nan)
+    held = cast(pd.Series, joined.loc[seen].groupby("pi")["shares"].sum())
     coverage = (held.reindex(weight.index).fillna(0.0) / weight).dropna()
     coverage.index = pd.DatetimeIndex([periods[int(i)] for i in coverage.index])
     return coverage.sort_index()
@@ -456,17 +467,19 @@ def _report_availability_coverage(h: pd.DataFrame) -> None:
     coverage = _availability_coverage(h)
     if coverage.empty:
         return
-    thin = coverage[coverage < 0.90]
+    thin = cast(pd.Series, coverage.loc[coverage < 0.90])
     logger.info(
         "13F availability coverage (share of q-1's SHARES held by filers public by as_of(q)): "
         "median %.2f%%, p05 %.2f%%, min %.2f%% on %s; %s of %s quarter(s) below 90%%%s",
         100.0 * float(coverage.median()),
         100.0 * float(coverage.quantile(0.05)),
         100.0 * float(coverage.min()),
-        str(pd.Timestamp(coverage.idxmin()).date()),
+        str(pd.Timestamp(cast(Any, coverage.idxmin())).date()),
         len(thin),
         len(coverage),
-        (" -> " + ", ".join(f"{pd.Timestamp(p).date()}={100.0 * v:.1f}%" for p, v in thin.sort_values().head(8).items())) if len(thin) else "",
+        (" -> " + ", ".join(f"{pd.Timestamp(cast(Any, p)).date()}={100.0 * v:.1f}%" for p, v in thin.sort_values().head(8).items()))
+        if len(thin)
+        else "",
     )
 
 
@@ -506,7 +519,7 @@ def _quarter_features(
             sorted(str(p.date()) for p in holes),
             len(breaks),
             sorted(str(p.date()) for p in breaks),
-            {str(p.date()): int(coverage.loc[p, "filers"]) for p in sorted(holes | breaks)},
+            {str(p.date()): int(cast(Any, coverage.at[p, "filers"])) for p in sorted(holes | breaks)},
         )
 
     # D28: the denominator that turns the holder COUNT into a breadth share.
@@ -518,7 +531,7 @@ def _quarter_features(
     # report a clean axis. Cutting here instead is provably free: every surviving period keeps
     # its own `n_filers`, and `isin(holes | breaks)` below simply matches nothing for the
     # periods that are gone.
-    h = h[h["period"] >= INST_LEVEL_FLOOR_PERIOD]
+    h = cast(pd.DataFrame, h.loc[frame_column(h, "period") >= INST_LEVEL_FLOOR_PERIOD])
     factors = _split_factors(h, splits)
 
     if "as_of" in h.columns:
@@ -570,8 +583,8 @@ def _quarter_features(
             # The prior quarter's counts, restated onto THIS quarter's split basis.
             factor = factors.get((ticker, p), 1.0) if has_prev else 1.0
             prev_shares = prev_total * factor if has_prev else np.nan
-            pool = float(n_filers.get(p, np.nan))
-            prev_pool = float(n_filers.get(prev_period, np.nan)) if prev_period is not None else np.nan
+            pool = float(cast(Any, n_filers.get(p, np.nan)))
+            prev_pool = float(cast(Any, n_filers.get(prev_period, np.nan))) if prev_period is not None else np.nan
             prev_share = n_prev / prev_pool if (has_prev and prev_pool > 0) else np.nan
 
             # Running per-filer counters, advanced row by row. The SET arithmetic
@@ -624,7 +637,7 @@ def _quarter_features(
                 rows.append(
                     {
                         "ticker": ticker,
-                        "period": pd.Timestamp(p),
+                        "period": pd.Timestamp(cast(Any, p)),
                         "as_of": pd.Timestamp(stamps[k - 1]),
                         # Carried only so the per-ticker coverage-onset guard can be applied
                         # vectorised below; dropped before the frame is returned.
@@ -649,7 +662,7 @@ def _quarter_features(
             prev = dict(zip(cik_list, share_list, strict=False))
             prev_total = float(sum(prev.values()))
             prev_value = float(values.sum())
-            prev_period = pd.Timestamp(p)
+            prev_period = pd.Timestamp(cast(Any, p))
 
     if n_revisions or n_skipped:
         logger.info(
@@ -668,8 +681,8 @@ def _quarter_features(
         return qf
     # D17 / the hole guard, applied on the PERIOD (never on the availability date: two
     # quarters share no date, and the mask has to travel with the quarter it describes).
-    is_hole = qf["period"].isin(holes)
-    is_break = qf["period"].isin(breaks) | is_hole
+    is_hole = frame_column(qf, "period").isin(list(holes))
+    is_break = frame_column(qf, "period").isin(list(breaks)) | is_hole
     value_cols = ["inst_shares", "inst_value", "inst_value_flow"]
     for c in DELTA_FEATURES + ("inst_value_flow",):
         if c in qf.columns:
@@ -763,7 +776,7 @@ def build_institutional_feature_panel(
     # divide-by-1000 band) carry 84.08% of the table's filed dollars, against 15.22% for the
     # 95.57% of rows that are already correct. Every value-weighted statement made before this
     # call is a statement about those 2,458 filings.
-    value_before = pd.to_numeric(holdings.get("value_usd"), errors="coerce").sum()
+    value_before = cast(pd.Series, pd.to_numeric(frame_column(holdings, "value_usd"), errors="coerce")).sum()
     holdings, register = repair_value_basis(holdings, close_split)
     log_register(register, float(value_before), logger)
 
@@ -827,8 +840,8 @@ def build_institutional_feature_panel(
     floors = availability_date(
         pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_index, settle_trading_days=settle_trading_days
     )
-    level_floor = floors.get(INST_LEVEL_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
-    delta_floor = floors.get(INST_DELTA_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+    level_floor = pd.Timestamp(cast(Any, floors.get(INST_LEVEL_FLOOR_PERIOD, INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
+    delta_floor = pd.Timestamp(cast(Any, floors.get(INST_DELTA_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))))
     if pd.isna(level_floor):
         level_floor = INST_LEVEL_FLOOR_PERIOD + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
     if pd.isna(delta_floor):

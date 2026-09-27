@@ -97,7 +97,7 @@ def _dividend_fields(
     name, so that fallback yield would read `S` too high without the factor.
     """
     close = close_split
-    idx = close.index
+    idx = pd.DatetimeIndex(close.index)
     universe = list(close.columns)
     ttm_ps = _ttm_dividends(dividends_hist, idx, universe)  # per-share TTM (source A)
     close_pos = close.where(close > 0)

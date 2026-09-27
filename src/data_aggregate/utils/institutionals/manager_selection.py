@@ -150,11 +150,12 @@ def manager_concentration_score(state: pd.DataFrame, eligible: pd.Series | None 
         live = wide.notna() if live is None else (live & wide.notna())
         pct = wide.rank(axis=1, pct=True, ascending=ascending)
         total = pct if total is None else total + pct
+    assert total is not None and live is not None
     score = (total / float(len(_LEGS))).where(live)
     n_public = live.sum(axis=1).astype("float64")
 
-    r = grid.get_indexer(st["avail"])
-    c = ciks.get_indexer(st["cik"])
+    r = grid.get_indexer(pd.Index(st["avail"]))
+    c = ciks.get_indexer(pd.Index(st["cik"]))
     out = pd.DataFrame({"score": score.to_numpy()[r, c], "n_public": n_public.to_numpy()[r]}, index=pd.MultiIndex.from_frame(st[["cik", "period"]]))
     logger.info(
         "concentration score: %s manager-quarters over %s availability dates, pool %s-%s managers",

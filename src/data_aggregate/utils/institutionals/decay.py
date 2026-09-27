@@ -132,7 +132,7 @@ def decay_events(
         return pd.DataFrame(index=idx, dtype="float64")
 
     tickers = pd.Index(sorted(ev[ticker_col].astype(str).unique()), name=ticker_col)
-    col = tickers.get_indexer(ev[ticker_col].astype(str))
+    col = tickers.get_indexer(pd.Index(ev[ticker_col].astype(str)))
     new = np.zeros((len(idx), len(tickers)), dtype="float64")
     # `np.add.at` (unbuffered) is what makes two events on the SAME (day, ticker) sum instead of
     # the second overwriting the first -- plain fancy-index assignment would keep only the last.

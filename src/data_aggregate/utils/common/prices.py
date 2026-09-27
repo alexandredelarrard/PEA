@@ -29,6 +29,8 @@ edge if it demanded a full one. Both call sites pass their own value explicitly.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -90,7 +92,7 @@ def forward_return(total_return_index: pd.DataFrame, horizon: int) -> pd.DataFra
 def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int, min_periods: int | None = None):
     """Compounded forward return over t+1..t+h from a daily-return series/frame."""
     safe = daily.clip(lower=-0.999999)
-    log1p = np.log1p(safe)
+    log1p = cast(pd.Series | pd.DataFrame, np.log1p(safe))
     mp = horizon if min_periods is None else min_periods
     fwd = np.expm1(log1p[::-1].rolling(horizon, min_periods=mp).sum()[::-1].shift(-1))
     return fwd

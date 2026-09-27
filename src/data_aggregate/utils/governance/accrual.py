@@ -139,7 +139,7 @@ def accrual_anchor(
         return df.groupby("key")["implied"].median()
     med = df.groupby("key")["implied"].median()
     outlier = (df["implied"] - df["key"].map(med)).abs() > outlier_years
-    share = outlier.groupby(df["key"]).mean()
+    share = outlier.astype(float).groupby(df["key"]).mean()
     anchor = df[~outlier].groupby("key")["implied"].median()
     return anchor[share.reindex(anchor.index) <= max_outlier_share]
 

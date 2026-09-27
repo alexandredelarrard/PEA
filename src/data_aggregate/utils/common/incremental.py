@@ -112,7 +112,7 @@ def plan_window(
     )
 
 
-def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str], part: str) -> pd.DataFrame:
+def drop_empty_feature_rows(rows: pd.DataFrame, keys: Sequence[str], part: Table) -> pd.DataFrame:
     """Drop (date, ticker) rows where EVERY feature is NaN.
 
     The merge-based builders left-join onto the full universe grid, so a name with no
@@ -184,6 +184,7 @@ def write_part(
     inclusive = cutoff is not None
     if cutoff is None:
         cutoff = window.last
+    assert cutoff is not None
     tail = rows[rows["date"] >= cutoff] if inclusive else rows[rows["date"] > cutoff]
     n = store.append_tail(part, tail, cutoff, inclusive=inclusive)
     logger.info("Appended %s (INCREMENTAL): +%s rows %s %s.", part, n, ">=" if inclusive else ">", pd.Timestamp(cutoff).date())

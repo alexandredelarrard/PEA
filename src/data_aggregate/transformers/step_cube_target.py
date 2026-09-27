@@ -119,6 +119,7 @@ class StepCubeTarget(Step):
     def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
         """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
         frames.require("close_total")
+        assert frames.close_total is not None
         seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info(
@@ -132,7 +133,9 @@ class StepCubeTarget(Step):
 
     def _load_fundamentals(self) -> pd.DataFrame:
         columns = ("ticker", "as_of", "totalRevenue", "sharesOutstanding", "netIncome", "freeCashflow", "stockholdersEquity")
-        return self._context.store.load(Tables.fundamentals_history, columns=columns)
+        frame = self._context.store.load(Tables.fundamentals_history, columns=columns)
+        assert frame is not None
+        return frame
 
     def _load_macro(self) -> pd.DataFrame:
         """`prices_macro`, pivoted wide -- date-indexed, one column per series.
@@ -189,6 +192,9 @@ class StepCubeTarget(Step):
         behind another wrapper."""
 
         frames.require("close_split", "close_total", "ret")
+        assert frames.close_split is not None
+        assert frames.close_total is not None
+        assert frames.ret is not None
         chars = build_characteristics(
             stock_close_total=frames.close_total,
             stock_ret=frames.ret,
@@ -221,6 +227,7 @@ class StepCubeTarget(Step):
         cfg = self._cfg.betas
         sector = sector_groups["sector"]
         frames.require("ret")
+        assert frames.ret is not None
 
         # `market_ret` is the panel's own `market` column, passed in rather than re-derived:
         # this de-markets the sector REGRESSOR before any beta is fit, so it must be the exact
@@ -237,6 +244,7 @@ class StepCubeTarget(Step):
     def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame, sector_excess: pd.DataFrame | None) -> dict:
         cfg = self._cfg.betas
         frames.require("ret")
+        assert frames.ret is not None
         betas = estimate_all_betas(
             stock_returns=frames.ret,
             global_factors=panel,
@@ -276,6 +284,9 @@ class StepCubeTarget(Step):
 
         cfg = self._cfg.targets
         frames.require("ret")
+        assert frames.ret is not None
+        assert frames.close_split is not None
+        assert frames.close_total is not None
 
         # store EVERY configured target version (e.g. rank AND zscore) so the modelling step
         # can pick one via model.target_type without a cube rebuild

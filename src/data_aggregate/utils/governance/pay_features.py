@@ -47,6 +47,8 @@ piecewise-constant like the rest of the governance panel.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 
@@ -218,11 +220,11 @@ def prior_annual_leg(hist: pd.DataFrame, field: str, key: str = "ticker", date: 
     d = pd.to_datetime(hist[date], errors="coerce")
     g = hist.groupby(key, sort=False)
     prev = g[field].shift(1)
-    gap = d.groupby(hist[key]).diff().dt.days
+    gap = cast(Any, d.groupby(hist[key]).diff()).dt.days
     return prev.where(gap.between(*_ANNUAL_GAP_DAYS))
 
 
-def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _comp_history(def14a: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, log_ceo_total_comp, ceo_comp_growth_1y, ceo_turnover_flag]` per filing.
 
     Per ticker, chronologically by `as_of`:
@@ -290,7 +292,7 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     return out.reset_index(drop=True)
 
 
-def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _top5_history(exec_comp: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, top5_neo_total_comp, n_neos_top5]` -- one row per FILING.
 
     Per `(ticker, accession_number)`: keep the rows of the filing's own LATEST `fiscal_year`,
@@ -369,7 +371,7 @@ def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     return agg.reset_index(drop=True) if not agg.empty else None
 
 
-def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> None:
+def _ceo_inside_own_denominator(def14a: pd.DataFrame | None, exec_comp: pd.DataFrame | None, tally: dict[str, int]) -> None:
     """Count the filings whose CEO is NOT among the NEOs their own slice divides by.
 
     A `ceo_pay_slice` whose numerator sits outside its own denominator is an extraction defect,
@@ -421,7 +423,7 @@ def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame, t
     tally["CPS misses: NEOs parsed but the CEO is not among them"] = int(len(missed) - no_rows)
 
 
-def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _slice_history(comp_src: pd.DataFrame | None, top5: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, ceo_pay_slice]`, the CEO's share of the top five, in `(0, 1]`.
 
     A slice above 1 means the CEO is not inside their own denominator, which is an extraction
@@ -466,7 +468,8 @@ def _log_growth(pct: pd.DataFrame) -> pd.DataFrame:
     """
     if pct is None or pct.empty:
         return pd.DataFrame()
-    return np.log1p(pct.where(pct > -1.0)).replace([np.inf, -np.inf], np.nan)
+    logged = cast(pd.DataFrame, np.log1p(pct.where(pct > -1.0)))
+    return logged.replace([np.inf, -np.inf], np.nan)
 
 
 def _flag_pair(pay: pd.DataFrame, perf: pd.DataFrame) -> pd.DataFrame:

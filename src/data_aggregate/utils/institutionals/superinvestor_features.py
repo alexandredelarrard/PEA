@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -707,7 +708,9 @@ def _events(contrib: pd.DataFrame) -> pd.DataFrame:
 def _to_long(frame: pd.DataFrame, name: str) -> pd.DataFrame:
     """An availability-indexed `(date x ticker)` frame -> the `(ticker, as_of, <name>)` shape
     `fundamentals_to_daily` forward-fills onto the trading grid."""
-    long = frame.stack(future_stack=True).rename(name).reset_index()
+    stacked = cast(pd.Series, frame.stack(future_stack=True))
+    stacked.name = name
+    long = stacked.reset_index()
     long.columns = ["as_of", "ticker", name]
     return long.dropna(subset=["as_of"])[["ticker", "as_of", name]]
 

@@ -100,7 +100,8 @@ def daily_market_cap(fundamentals_history: pd.DataFrame, close_split: pd.DataFra
 
     Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
     """
-    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close_split.index)
+    trading_index = pd.DatetimeIndex(close_split.index)
+    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", trading_index)
     if shares.empty:
         return pd.DataFrame(index=close_split.index)
 
@@ -203,7 +204,8 @@ def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
         prior = matched["prior"].where(matched["prior"] > 0)
         growth = (matched["level"] / prior - 1.0).replace([np.inf, -np.inf], np.nan)
         keyed = pd.Series(growth.to_numpy(), index=pd.MultiIndex.from_arrays([matched["ticker"].to_numpy(), matched["as_of"].to_numpy()]))
-        out[name] = pd.MultiIndex.from_arrays([out["ticker"].astype(str), as_of]).map(keyed)
+        row_keys = pd.MultiIndex.from_arrays([out["ticker"].astype(str), as_of])
+        out[name] = keyed.reindex(row_keys).to_numpy()
     return out
 
 
@@ -339,7 +341,10 @@ class PitFrames:
         """Memoized `fundamentals_to_daily(history, field, trading_index)`."""
         self._accesses += 1
         if field not in self._daily:
-            self._daily[field] = pd.DataFrame(index=self._index) if self.empty else fundamentals_to_daily(self._history, field, self._index)
+            history = self._history
+            self._daily[field] = (
+                pd.DataFrame(index=self._index) if history is None or history.empty else fundamentals_to_daily(history, field, self._index)
+            )
         return self._daily[field]
 
     def __call__(self, field: str) -> pd.DataFrame:
@@ -353,8 +358,11 @@ class PitFrames:
         n = self.yoy_periods if periods is None else int(periods)
         key = (field, kind, n)
         if key not in self._changes:
+            history = self._history
             self._changes[key] = (
-                pd.DataFrame(index=self._index) if self.empty else fiscal_change_to_daily(self._history, field, self._index, kind=kind, periods=n)
+                pd.DataFrame(index=self._index)
+                if history is None or history.empty
+                else fiscal_change_to_daily(history, field, self._index, kind=kind, periods=n)
             )
         return self._changes[key]
 
@@ -363,7 +371,10 @@ class PitFrames:
         callable (often a lambda) is not a usable cache key."""
         ck = (field, key)
         if ck not in self._applied:
-            self._applied[ck] = pd.DataFrame(index=self._index) if self.empty else fiscal_apply_to_daily(self._history, field, self._index, func)
+            history = self._history
+            self._applied[ck] = (
+                pd.DataFrame(index=self._index) if history is None or history.empty else fiscal_apply_to_daily(history, field, self._index, func)
+            )
         return self._applied[ck]
 
     # ---- derived ---- #
@@ -372,24 +383,27 @@ class PitFrames:
         """Memoized `daily_market_cap(history, close, level_factor=...)`. Empty when either
         input is absent, matching `daily_market_cap`'s own empty-frame contract."""
         if self._market_cap is None:
-            if self.empty or self._close is None or self._close.empty:
+            history = self._history
+            if history is None or history.empty or self._close is None or self._close.empty:
                 self._market_cap = pd.DataFrame(index=self._index)
             else:
-                self._market_cap = daily_market_cap(self._history, self._close, level_factor=self._level_factor)
+                self._market_cap = daily_market_cap(history, self._close, level_factor=self._level_factor)
         return self._market_cap
 
     @property
     def yoy_periods(self) -> int:
         """Memoized `infer_yoy_periods(history)`."""
         if self._yoy is None:
-            self._yoy = 1 if self.empty else infer_yoy_periods(self._history)
+            history = self._history
+            self._yoy = 1 if history is None or history.empty else infer_yoy_periods(history)
         return self._yoy
 
     def has(self, field: str) -> bool:
         """True when the field is present in the history AND has at least one value."""
-        if self.empty or field not in self._history.columns:
+        history = self._history
+        if history is None or history.empty or field not in history.columns:
             return False
-        return bool(pd.to_numeric(self._history[field], errors="coerce").notna().any())
+        return bool(pd.to_numeric(history[field], errors="coerce").notna().any())
 
     # ---- guards + diagnostics ---- #
     def assert_matches(self, trading_index: pd.DatetimeIndex, close: pd.DataFrame | None = None) -> None:

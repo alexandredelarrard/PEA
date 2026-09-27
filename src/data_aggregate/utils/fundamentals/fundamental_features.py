@@ -109,6 +109,8 @@ skipped automatically.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -197,7 +199,7 @@ def _combine_debt(daily, long_debt: pd.DataFrame, short_debt: pd.DataFrame, fall
 
     Falls back to the two legs, then to total liabilities, so a history vintage without
     the reconciled column still produces leverage."""
-    borrowed = capital.borrowings(daily)
+    borrowed = cast(pd.DataFrame | None, capital.borrowings(daily))
     if borrowed is not None and not borrowed.empty and borrowed.notna().any().any():
         return borrowed
     have_long = long_debt is not None and not long_debt.empty
@@ -273,7 +275,7 @@ def _da_realism_fields(daily) -> dict:
     rank a universe on. They return with the SEC extraction path."""
     features: dict[str, pd.DataFrame] = {}
     sbc = daily("stockBasedComp")
-    buyback = capital.share_repurchases(daily)  # positive magnitude; see capital.py
+    buyback = cast(pd.DataFrame | None, capital.share_repurchases(daily))  # positive magnitude; see capital.py
     if not sbc.empty and buyback is not None and not buyback.empty:
         s2b = ratio(sbc, buyback, positive_den=True)
         if s2b.notna().any().any():
@@ -295,7 +297,8 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex) -> pd.DataFrame:
     Measured, that was 565,720 pre-listing rows carrying the identical constant. The guard
     above only checks that SOME ticker has revenue and assets, which is why the final
     `.where` is needed -- it is what makes the docstring's promise true per cell."""
-    rev, assets = daily("totalRevenue"), capital.assets_ex_lease(daily)
+    rev = daily("totalRevenue")
+    assets = cast(pd.DataFrame, capital.assets_ex_lease(daily))
     if rev.empty or assets.empty:
         return pd.DataFrame()
     ar, gp = daily("accountsReceivable"), daily("grossProfit")
@@ -379,8 +382,8 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeI
     if pension_facts is None or pension_facts.empty or "tag" not in pension_facts.columns or "ticker" not in pension_facts.columns:
         return pd.DataFrame(index=idx)
     pf = pension_facts.copy()
-    pf["as_of"] = pd.to_datetime(pf.get("filed"), errors="coerce")
-    pf["value"] = pd.to_numeric(pf.get("value"), errors="coerce")
+    pf["as_of"] = pd.to_datetime(cast(pd.Series, pf.get("filed")), errors="coerce")
+    pf["value"] = pd.to_numeric(cast(pd.Series, pf.get("value")), errors="coerce")
     if "qtrs" in pf.columns:  # instant (balance-sheet) facts only
         pf = pf[pd.to_numeric(pf["qtrs"], errors="coerce").fillna(0) == 0]
     pf = pf.dropna(subset=["as_of", "value", "ticker"])
@@ -411,9 +414,9 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
         return pd.DataFrame(index=idx)
-    d["as_of"] = pd.to_datetime(d.get("filed"), errors="coerce")
-    d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
-    q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
+    d["as_of"] = pd.to_datetime(cast(pd.Series, d.get("filed")), errors="coerce")
+    d["value"] = pd.to_numeric(cast(pd.Series, d.get("value")), errors="coerce")
+    q = pd.to_numeric(cast(pd.Series, d.get("qtrs")), errors="coerce").fillna(0)
     d = d[(q == 0) if instant else (q > 0)]
     d = d.dropna(subset=["as_of", "value", "ticker"])
     if d.empty:
@@ -528,11 +531,11 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy
         nopat = oi * (1.0 - tax) if not tax.empty else oi
         # invested capital now INCLUDES capitalized leases (shared definition), matching
         # how leases are already treated as debt in EV and in the leverage ratios.
-        ic = capital.invested_capital(daily, operating_cash=operating_cash)
+        ic = cast(pd.DataFrame | None, capital.invested_capital(daily, operating_cash=operating_cash))
         roic_incl = ratio(nopat, ic, positive_den=True) if ic is not None else pd.DataFrame()
         if roic_incl.notna().any().any():
             features["roic_incl_intangibles"] = roic_incl
-            if not intangibles.empty:
+            if ic is not None and not intangibles.empty:
                 roic_ex = ratio(nopat, ic.sub(intangibles, fill_value=0.0), positive_den=True)
                 if roic_ex.notna().any().any():
                     features["roic_ex_intangibles"] = roic_ex
@@ -1003,7 +1006,7 @@ def _quality_regime_fields(
             (_gm > _gm.shift(y)),
             (_turn > _turn.shift(y)),
         ]
-        fscore = sum(p.astype("float64") for p in parts)
+        fscore = cast(pd.DataFrame, sum(p.astype("float64") for p in parts))
         gate = _oa.notna() & net_income.notna() & _ocf.notna()
         fscore = fscore.where(gate)
         if fscore.notna().any().any():

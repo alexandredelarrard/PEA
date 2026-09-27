@@ -12,6 +12,7 @@ This module flattens that into per-field wide frames.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 
@@ -45,9 +46,10 @@ def extract_field(df: pd.DataFrame, field: str) -> pd.DataFrame:
     out.index = pd.to_datetime(out.index)
 
     # Drop tickers that are entirely empty.
-    out = out.dropna(axis=1, how="all")
+    keep = cast(pd.Series, out.notna().any(axis=0))
+    out = out.loc[:, keep.to_numpy(dtype=bool)]
 
-    return out.astype("float64")
+    return cast(pd.DataFrame, out.astype("float64"))
 
 
 def daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:

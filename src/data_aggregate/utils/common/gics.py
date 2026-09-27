@@ -43,6 +43,7 @@ def load_gics_maps(context: Context) -> dict[str, dict[str, str]]:
     """{"sector": {ticker: group}, "industry_group": {...}} -- only the columns present and
     populated in `sp500_tickers`."""
     ref = context.store.load(Tables.sp500_tickers)
+    assert ref is not None
     maps: dict[str, dict[str, str]] = {}
     for col in GICS_COLUMNS:
         if not ref.empty and col in ref.columns:

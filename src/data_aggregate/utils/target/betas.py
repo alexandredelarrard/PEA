@@ -140,7 +140,7 @@ duplicate of a column already in the design.
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import numpy as np
 import pandas as pd
@@ -460,7 +460,7 @@ def estimate_all_betas(
             continue
 
         window_returns = stock_return_values[lo : t + 1]
-        window_sector = sector_values[lo : t + 1] if has_sector else None
+        window_sector = sector_values[lo : t + 1] if sector_values is not None else None
 
         # STEADY STATE: every stock whose window is fully observed, in one ridge solve
         complete = np.flatnonzero(estimable & (n_valid == n_win))
@@ -469,7 +469,7 @@ def estimate_all_betas(
                 global_design,
                 window_factors,
                 window_returns[:, complete],
-                window_sector[:, complete] if has_sector else None,
+                window_sector[:, complete] if window_sector is not None else None,
                 market_col_idx,
                 market_prior,
                 ridge_alpha,
@@ -483,7 +483,7 @@ def estimate_all_betas(
                 window_factors,
                 window_returns[:, stock_idx],
                 window_observed[:, stock_idx],
-                window_sector[:, stock_idx] if has_sector else None,
+                window_sector[:, stock_idx] if window_sector is not None else None,
                 market_col_idx,
                 market_prior,
                 ridge_alpha,
@@ -526,7 +526,7 @@ def estimate_betas_for_stock(
     A one-column panel takes the SAME code path as the full universe, so this can
     never drift from what the pipeline computes.
     """
-    name = y.name if y.name is not None else "STOCK"
+    name = cast(str, y.name if y.name is not None else "STOCK")
     kwargs.setdefault("filter_factors", False)
     sector_frame = sector.rename(name).to_frame() if sector is not None else None
 

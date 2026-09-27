@@ -33,6 +33,8 @@ Also exposes `ntm_ttm_eps()` (NTM & TTM annual EPS) for PEGY's projected-growth 
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -210,8 +212,9 @@ def build_earnings_feature_panel(
     # (the model splits/loads on the raw value; PEAD decays as this rises).
     dse = days_since_earnings(prepped, trading_index)
     if not dse.empty and dse.notna().any().any():
-        long = dse.stack()
+        long = cast(pd.Series, dse.stack())
         long.index.set_names(["date", "ticker"], inplace=True)
-        long = long.rename("f_days_since_earnings").reset_index()
+        long.name = "f_days_since_earnings"
+        long = long.reset_index()
         panel = long if (panel is None or panel.empty) else panel.merge(long, on=["date", "ticker"], how="outer")
     return panel

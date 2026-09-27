@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -548,7 +549,8 @@ def _qq_similarity(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame
         prev = None
         for r in grp.itertuples(index=False):
             v = r.vec
-            out.append({"ticker": tkr, "quarter": r.quarter, name: np.nan if prev is None else round(cosine(v, prev), 6)})
+            similarity = np.nan if prev is None else round(cosine(cast(np.ndarray, v), cast(np.ndarray, prev)), 6)
+            out.append({"ticker": tkr, "quarter": r.quarter, name: similarity})
             prev = v
     return pd.DataFrame(out)
 

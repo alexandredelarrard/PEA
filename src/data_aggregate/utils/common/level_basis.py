@@ -80,9 +80,14 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
+
+from src.data_extract.utils.fundamentals_sharadar.field_map import split_events as genuine_splits
+
+__all__ = ["genuine_splits"]
 
 # ⚠ THE ONE PLACE `data_aggregate` REACHES INTO `data_extract`, and it is deliberate.
 #
@@ -107,7 +112,7 @@ import pandas as pd
 LEVEL_SNAP_TOL = 1e-12
 
 
-def _suffix_factor(events: pd.DataFrame, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
+def _suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
     """Per ticker, `PROD(value : event date > d)` evaluated at every `d` in `stamps`.
 
     A suffix product plus a `searchsorted`, not a loop over events: the products are formed
@@ -140,7 +145,12 @@ def _suffix_factor(events: pd.DataFrame, tickers: Sequence[str], stamps: np.ndar
     return out
 
 
-def level_factor(index: pd.DatetimeIndex, universe: Sequence[str], yf_splits: pd.DataFrame, genuine_splits: pd.DataFrame) -> pd.DataFrame:
+def level_factor(
+    index: pd.DatetimeIndex,
+    universe: Sequence[str],
+    yf_splits: pd.DataFrame | None,
+    genuine_splits: pd.DataFrame,
+) -> pd.DataFrame:
     """`S(d)` as a wide (date x ticker) frame of MULTIPLIERS, 1.0 where nothing applies.
 
     `yf_splits` is `prices_splits` (`ticker`, `date`, `ratio`) -- every factor Yahoo applied
@@ -167,6 +177,7 @@ def level_factor(index: pd.DatetimeIndex, universe: Sequence[str], yf_splits: pd
         up = numerator.get(ticker)
         down = denominator.get(ticker)
         if up is None:
+            assert down is not None
             frame[ticker] = 1.0 / down
         elif down is None:
             frame[ticker] = up
@@ -192,7 +203,7 @@ def describe(factor: pd.DataFrame, top: int = 10) -> str:
     if not rows or not cells:
         return "level_factor: 1.0 everywhere -- no spinoff factor to undo"
     extreme = factor.where(off).stack(future_stack=True).dropna()
-    ranked = extreme.groupby(level=1).max().pipe(lambda s: s.reindex(np.log(s).abs().sort_values(ascending=False).index)).head(top)
+    ranked = extreme.groupby(level=1).max().pipe(lambda s: s.reindex(s.apply(np.log).abs().sort_values(ascending=False).index)).head(top)
     return (
         f"level_factor: {rows:,} of {cells:,} cells != 1.0 "
         f"({rows / cells:.2%}) across {tickers} of {factor.shape[1]} tickers; "
@@ -377,7 +388,7 @@ def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp, ratio: float) -
     values = series.to_numpy(dtype="float64")
     out = np.ones(values.size, dtype="float64")
     flips = 0
-    for i in range(int(series.index.get_loc(anchor)) - 1, -1, -1):
+    for i in range(int(cast(int, series.index.get_loc(anchor))) - 1, -1, -1):
         here = values[i] * out[i + 1]
         if not np.isfinite(here) or here <= 0:
             out[i] = out[i + 1]
@@ -424,7 +435,8 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callabl
             if position == 0:
                 log("price bugfix: %s %s seam SKIPPED -- first bar, no step to measure", ticker, when.date())
                 continue
-            prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
+            prior = float(cast(float, series.iloc[position - 1]))
+            here = float(cast(float, series.iloc[position]))
             if not (np.isfinite(prior) and np.isfinite(here)) or prior <= 0:
                 log("price bugfix: %s %s seam SKIPPED -- no usable bar pair", ticker, when.date())
                 continue
@@ -485,7 +497,7 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) ->
             if ticker not in ret.columns or when not in ret.index:
                 log("price bugfix: %s %s null_ret SKIPPED -- outside this build's window", ticker, when.date())
                 continue
-            observed = float(ret.at[when, ticker])
+            observed = float(cast(float, ret.at[when, ticker]))
             if not np.isfinite(observed):
                 log("price bugfix: %s %s null_ret SKIPPED -- already not a number", ticker, when.date())
                 continue
@@ -583,12 +595,13 @@ def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
     for ticker, dates in (seams or {}).items():
         if ticker not in out.columns:
             continue
-        column = out.columns.get_loc(ticker)
+        column = int(cast(int, out.columns.get_loc(ticker)))
         for when in dates:
             if when not in out.index:
                 continue
-            start = int(out.index.get_loc(when)) + skip
-            stop = int(out.index.get_loc(when)) + back  # exclusive: s+back-1 inclusive
+            position = int(cast(int, out.index.get_loc(when)))
+            start = position + skip
+            stop = position + back  # exclusive: s+back-1 inclusive
             if stop <= start:
                 continue
             out.iloc[max(start, 0) : stop, column] = np.nan

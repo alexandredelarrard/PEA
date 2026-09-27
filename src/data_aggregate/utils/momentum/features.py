@@ -79,6 +79,7 @@ side of the trade and it is 21-43 bars on two tickers.
 from __future__ import annotations
 
 import logging
+from typing import Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -311,7 +312,8 @@ def compute_raw_features(
         dollar_vol = split * volume * lvl  # daily $ traded
 
         # Liquidity/size proxy: log average daily dollar volume (63d).
-        feats["dollar_volume_63"] = sanitize(np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
+        dollar_volume_log = cast(pd.DataFrame, np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
+        feats["dollar_volume_63"] = sanitize(dollar_volume_log)
         # Amihud (2002) illiquidity = mean(|ret| / $volume). HIGHER = more illiquid
         # (illiquidity premium).
         #
@@ -328,7 +330,8 @@ def compute_raw_features(
         # map +/-inf to NaN, but relying on that emits a NumPy divide warning every build.
         amihud = sanitize(ret.abs() / dollar_vol.where(dollar_vol > 0))
         amihud_mean = amihud.rolling(63, min_periods=20).mean()
-        feats["amihud_63"] = sanitize(np.log(amihud_mean.where(amihud_mean > 0)))
+        amihud_log = cast(pd.DataFrame, np.log(amihud_mean.where(amihud_mean > 0)))
+        feats["amihud_63"] = sanitize(amihud_log)
         # Relative volume: recent 5d vs 63d average -> volume spike / attention.
         v5 = volume.rolling(5, min_periods=3).mean()
         v63 = volume.rolling(63, min_periods=20).mean()
@@ -337,14 +340,15 @@ def compute_raw_features(
         # ---- Volume-flow dynamics ----
         # Signed-volume imbalance: up-day minus down-day volume as a fraction of
         # total volume (63d) -> net buying(+) / selling(-) pressure (order-flow proxy).
-        signed = np.sign(ret) * volume
+        signed = cast(pd.DataFrame, np.sign(ret) * volume)
         num = signed.rolling(63, min_periods=20).sum()
         den = volume.rolling(63, min_periods=20).sum()
         feats["signed_vol_63"] = sanitize(num / den.where(den > 0))
         # Volume trend: recent (21d) vs long (252d) average volume (log) -> whether
         # trading activity is structurally rising or fading.
         v252 = volume.rolling(252, min_periods=60).mean()
-        feats["volume_trend_63"] = sanitize(np.log(v63 / v252.where(v252 > 0)))
+        volume_trend = cast(pd.DataFrame, np.log(v63 / v252.where(v252 > 0)))
+        feats["volume_trend_63"] = sanitize(volume_trend)
         # Volume dispersion (coefficient of variation, 63d) -> lumpy/event-driven
         # trading vs steady flow.
         feats["volume_cv_63"] = sanitize(volume.rolling(63, min_periods=20).std() / v63.where(v63 > 0))
@@ -361,7 +365,7 @@ def compute_raw_features(
         for h in sorted({int(x) for x in seasonal_horizons}):
             # PARTIAL window on purpose (see prices.forward_compound): this averages the
             # last 5 years, so demanding a full h at the sample edge would drop the newest.
-            fwd_h = forward_compound(ret, h, min_periods=max(1, int(round(h * 0.6))))
+            fwd_h = cast(pd.DataFrame, forward_compound(ret, h, min_periods=max(1, int(round(h * 0.6)))))
             prior = np.stack([fwd_h.shift(252 * y).to_numpy() for y in range(1, seasonal_years + 1)])
             finite = np.isfinite(prior)
             cnt = finite.sum(axis=0)
@@ -449,7 +453,7 @@ def build_feature_panel(
     close_total: pd.DataFrame,
     open: pd.DataFrame,
     sector_returns: pd.DataFrame,
-    method: str = "rank",
+    method: Literal["rank", "zscore"] = "rank",
     high: pd.DataFrame | None = None,
     low: pd.DataFrame | None = None,
     volume: pd.DataFrame | None = None,
@@ -497,9 +501,10 @@ def build_feature_panel(
 
     long_frames = []
     for name, f in std.items():
-        s = f.stack()
+        s = cast(pd.Series, f.stack())
         s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(name))
+        s.name = name
+        long_frames.append(s)
 
     panel = pd.concat(long_frames, axis=1).reset_index()
     return panel

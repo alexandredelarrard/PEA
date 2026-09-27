@@ -43,6 +43,8 @@ the lag, not a basis conflict.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -52,6 +54,7 @@ from src.data_aggregate.utils.common.pit import (
     fundamentals_to_daily,
     infer_yoy_periods,
 )
+from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.common.xs import self_history_z, winsorize_xs
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
@@ -262,12 +265,13 @@ def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeInd
         if tally is not None:
             tally[f"⚠ domain gate on {field} lost its discriminator ({col}) -> applied unconditionally"] = 1
         return None
-    qualifying = def14a_hist[def14a_hist[field].notna()] if field in def14a_hist.columns else def14a_hist
+    qualifying = cast(pd.DataFrame, def14a_hist.loc[frame_column(def14a_hist, field).notna()]) if field in def14a_hist.columns else def14a_hist
     if qualifying.empty:
         return None
     if "ticker" in def14a_hist.columns:
-        ever = (pd.to_numeric(def14a_hist[col], errors="coerce").fillna(0.0) > 0).groupby(def14a_hist["ticker"]).max()
-        qualifying = qualifying.assign(**{col: qualifying["ticker"].map(ever).fillna(False).astype(float)})
+        values = cast(pd.Series, pd.to_numeric(frame_column(def14a_hist, col), errors="coerce"))
+        ever = cast(pd.Series, (values.fillna(0.0) > 0).groupby(frame_column(def14a_hist, "ticker")).max())
+        qualifying = cast(pd.DataFrame, qualifying.assign(**{col: frame_column(qualifying, "ticker").map(ever).fillna(False).astype(float)}))
     cond = fundamentals_to_daily(qualifying, col, idx)
     return None if cond.empty else cond
 
@@ -500,7 +504,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
     keep = [c for c in ("ticker", "as_of", "ceo_total_comp", "ceo_name_proxy") if c in def14a_hist.columns]
-    d = def14a_hist[keep].copy()
+    d = cast(pd.DataFrame, def14a_hist[keep].copy())
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
     d = d.dropna(subset=["ticker", "as_of", "ceo_total_comp"]).sort_values(["ticker", "as_of"])
@@ -509,8 +513,8 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
     # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
     d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
-    names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
-    changed = ceo_identity_changed(names, d["ticker"])
+    names = frame_column(d, "ceo_name_proxy") if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
+    changed = ceo_identity_changed(names, frame_column(d, "ticker"))
     # 0.0 means "do not mask", which is ALSO the unknown-identity policy above -- so filling
     # the unknowns here cannot substitute a STALE flag for a missing one: every row of `sub`
     # carries an explicit 0 or 1, so the two pivots below have identical shape and the flag on
@@ -590,14 +594,15 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
     # NOT normalise the unit, so this crashed the whole panel build until it was pinned.
     left = def14a_hist.copy()
     left["_as_of"] = pd.to_datetime(left["as_of"], errors="coerce").astype("datetime64[ns]")
-    right = (
+    right = cast(
+        pd.DataFrame,
         fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
         .copy()
         .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
         .drop(columns="as_of")
-        .dropna(subset=["_as_of"])
+        .dropna(subset=["_as_of"]),
     )
-    right = right[right[_SHARES_OUTSTANDING] > 0]
+    right = cast(pd.DataFrame, right.loc[frame_column(right, _SHARES_OUTSTANDING) > 0])
     if right.empty:
         return def14a_hist
 
@@ -607,12 +612,11 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
     # were individually plausible and the tally counted the right number of them, so nothing
     # but a named-ticker probe would have caught it.
     left["_key"] = range(len(left))
-    merged = pd.merge_asof(
-        left.dropna(subset=["_as_of"]).sort_values("_as_of"), right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward"
-    )
+    dated_left = cast(pd.DataFrame, left.dropna(subset=["_as_of"])).sort_values("_as_of")
+    merged = pd.merge_asof(dated_left, right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward")
 
-    shares_out = pd.to_numeric(merged[_SHARES_OUTSTANDING], errors="coerce")
-    insider = pd.to_numeric(merged["insider_shares"], errors="coerce")
+    shares_out = cast(pd.Series, pd.to_numeric(frame_column(merged, _SHARES_OUTSTANDING), errors="coerce"))
+    insider = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_shares"), errors="coerce"))
     computed = insider / shares_out
     # a share of a whole: anything outside (0, 1] means the two counts are on different bases
     # (one class's shares over the total, or a count in thousands) and is not usable
@@ -623,18 +627,18 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
     # computed economic stake ABOVE the disclosed voting percentage is not a measurement of
     # anything -- it means the denominator and the numerator are on different bases.
     if "insider_voting_pct" in merged.columns:
-        vote = pd.to_numeric(merged["insider_voting_pct"], errors="coerce")
+        vote = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_voting_pct"), errors="coerce"))
         bad = computed.notna() & vote.notna() & (computed > vote + 1e-9)
         if tally is not None and int(bad.sum()):
             tally["insider_ownership_pct: computed value REJECTED (exceeds voting power)"] = int(bad.sum())
         computed = computed.where(~bad)
 
-    by_key = pd.Series(computed.to_numpy(), index=merged["_key"].to_numpy())
-    filled = by_key.reindex(left["_key"].to_numpy())
+    by_key = pd.Series(computed.to_numpy(), index=frame_column(merged, "_key").to_numpy())
+    filled = by_key.reindex(frame_column(left, "_key").to_numpy())
     filled.index = left.index
 
     out = left.drop(columns=["_as_of", "_key"])
-    disclosed = pd.to_numeric(out["insider_ownership_pct"], errors="coerce")
+    disclosed = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_ownership_pct"), errors="coerce"))
 
     # ⚠ THE DISCLOSED PERCENTAGE WINS. THE COMPUTED ONE ONLY FILLS A HOLE, and getting this
     # precedence backwards was a real bug in the first cut of this function, caught by
@@ -706,7 +710,8 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
         return def14a_hist
 
     out = def14a_hist.copy()
-    dual = pd.to_numeric(out["dual_class_shares"], errors="coerce") > 0
+    dual_values = cast(pd.Series, pd.to_numeric(frame_column(out, "dual_class_shares"), errors="coerce"))
+    dual = dual_values > 0
     if "ticker" in out.columns:
         # ⚠ CORROBORATE ACROSS THE FILER'S OWN HISTORY, do not trust the single filing's flag.
         # The flag and the value fail TOGETHER: a per-class ownership figure is produced exactly
@@ -717,9 +722,11 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
         # their own flag while 27 of UHS's 31 filings and every other CCL filing disclose dual
         # class. Promoting to "this filer ever disclosed dual class" catches both and costs
         # nothing: LVS discloses single class in 23 of 23 filings, so its real 0.91 still stands.
-        dual = dual | out["ticker"].map(dual.groupby(out["ticker"]).max()).fillna(False).astype(bool)
-    vote = pd.to_numeric(out["insider_voting_pct"], errors="coerce")
-    own = pd.to_numeric(out["insider_ownership_pct"], errors="coerce")
+        tickers = frame_column(out, "ticker")
+        ever_dual = cast(pd.Series, dual.groupby(tickers).max())
+        dual = dual | tickers.map(ever_dual).fillna(False).astype(bool)
+    vote = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_voting_pct"), errors="coerce"))
+    own = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_ownership_pct"), errors="coerce"))
     per_class = dual & vote.notna() & own.notna() & (own > vote + 1e-9)
 
     n = int(per_class.sum())
@@ -781,9 +788,9 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict
         return pd.DataFrame()
 
     sub = def14a_hist.loc[:, sorted(need)].copy()
-    dual = pd.to_numeric(sub["dual_class_shares"], errors="coerce")
-    own = pd.to_numeric(sub["insider_ownership_pct"], errors="coerce")
-    vote = pd.to_numeric(sub["insider_voting_pct"], errors="coerce")
+    dual = cast(pd.Series, pd.to_numeric(frame_column(sub, "dual_class_shares"), errors="coerce"))
+    own = cast(pd.Series, pd.to_numeric(frame_column(sub, "insider_ownership_pct"), errors="coerce"))
+    vote = cast(pd.Series, pd.to_numeric(frame_column(sub, "insider_voting_pct"), errors="coerce"))
 
     # The SAME bounds the daily gate applies, read from `_DOMAIN` so the two cannot drift, and
     # with the same conditionality: the 0.90 ceiling is a dual-class-only bound (LVS 2005 at
@@ -856,7 +863,7 @@ def _governance_fields(
     # reached 7,301 days (20.0 years) stale, and over that span a CEO change is the base case.
     since = fundamentals_to_daily(def14a_hist, "ceo_since_year", idx)
     if not since.empty and since.notna().any().any():
-        years = pd.Series(idx.year, index=idx, dtype="float64")
+        years = pd.Series([stamp.year for stamp in idx], index=idx, dtype="float64")
         tenure = since.rsub(years, axis=0).where(lambda t: t >= 0)
         tenure = _expire(tenure, def14a_hist, "ceo_since_year", "ceo_tenure", tally)
         if tenure.notna().any().any():
@@ -906,12 +913,13 @@ def _stack(fields: dict[str, pd.DataFrame], suffix: str) -> pd.DataFrame:
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
             continue
-        fdf = fdf.apply(pd.to_numeric, errors="coerce")
-        if not fdf.notna().any().any():
+        fdf = cast(pd.DataFrame, fdf.apply(pd.to_numeric, errors="coerce"))
+        if not fdf.notna().to_numpy().any():
             continue
-        s = fdf.stack().astype("float32")
+        s = cast(pd.Series, fdf.stack()).astype("float32")
         s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}{suffix}"))
+        s.name = f"f_{name}{suffix}"
+        long_frames.append(s)
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
     return pd.concat(long_frames, axis=1).copy().reset_index()
@@ -929,8 +937,8 @@ def _peer_only(fields: dict[str, pd.DataFrame], peer_dict: dict) -> pd.DataFrame
     for name, fdf in fields.items():
         if fdf is None or fdf.empty:
             continue
-        fdf = fdf.apply(pd.to_numeric, errors="coerce")
-        if not fdf.notna().any().any():
+        fdf = cast(pd.DataFrame, fdf.apply(pd.to_numeric, errors="coerce"))
+        if not fdf.notna().to_numpy().any():
             continue
         rel[name] = winsorize_xs(peer_relative(fdf, peer_dict))
     return _stack(rel, "_vs_peers")
@@ -1008,7 +1016,7 @@ def build_governance_feature_panel(
     # has ALREADY repaired the board averages upstream, in the step, before `impute_def14a` ran
     # (D35): that is a change to existing features' PROVENANCE, not a new family, and it is why
     # `board_busyness_delta_1y` rejects 22.5% of pairs here where phase 5 rejected 65.5%.
-    quality_frames, quality_tally = board_quality_fields(directors, trading_index)
+    quality_frames, quality_tally = board_quality_fields(directors if directors is not None else pd.DataFrame(), trading_index)
     raw.update(quality_frames)
     quality_peers = {k: v for k, v in quality_frames.items() if k in BOARD_QUALITY_PEER_FIELDS}
 

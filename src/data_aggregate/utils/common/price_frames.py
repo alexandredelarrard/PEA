@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import pandas as pd
 
@@ -108,6 +109,7 @@ class PriceFrames:
         pattern by construction (one response, one upsert), but `close_split` is the one that
         is never null when the other is -- `close_total` is derived from it."""
         self.require("close_split")
+        assert self.close_split is not None
         s = self.close_split.reset_index()
         idx_col = s.columns[0]
         m = s.melt(id_vars=idx_col, var_name="ticker", value_name="_v").dropna(subset=["_v"]).rename(columns={idx_col: "date"})
@@ -124,9 +126,10 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
     for field, wide in universe_fields.items():
         if wide is None or wide.empty:
             continue
-        s = wide.stack(future_stack=True)
+        s = cast(pd.Series, wide.stack(future_stack=True))
         s.index = s.index.set_names(["date", "ticker"])
-        frames.append(s.rename(field))
+        s.name = field
+        frames.append(s)
 
     prices = pd.concat(frames, axis=1)
     return prices.dropna(how="all").reset_index()

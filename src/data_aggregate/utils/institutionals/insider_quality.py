@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -262,7 +263,7 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     t["code"] = t["transaction_code"].astype(str).str.upper().str.strip()
     t["day"] = to_day(t["filing_date"])
     t["shares_n"] = pd.to_numeric(t["shares"], errors="coerce")
-    pps = pd.to_numeric(t.get("price_per_share"), errors="coerce")
+    pps = pd.to_numeric(cast(pd.Series, t.get("price_per_share")), errors="coerce")
 
     # The exercise-and-sell link is computed BEFORE the scope cut, because the `M` leg of the
     # package is a derivative row and the cut would remove the very evidence of the package.
@@ -318,8 +319,8 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
 
     t["role"] = t["officer_title"].map(officer_role) if "officer_title" in t.columns else OTHER_OFFICER
     for flag in ("is_director", "is_officer", "is_ten_pct_owner"):
-        t[flag] = pd.to_numeric(t.get(flag), errors="coerce")
-    t["is_10b5_1"] = pd.to_numeric(t.get("is_10b5_1"), errors="coerce")
+        t[flag] = pd.to_numeric(cast(pd.Series, t.get(flag)), errors="coerce")
+    t["is_10b5_1"] = pd.to_numeric(cast(pd.Series, t.get("is_10b5_1")), errors="coerce")
 
     _log.info(
         "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
@@ -348,7 +349,7 @@ def _exercise_packages(t: pd.DataFrame) -> pd.Series:
         return pd.Series(False, index=t.index)
     key = pd.MultiIndex.from_arrays([t["accession_number"].astype(str), pd.to_datetime(t["transaction_date"], errors="coerce")])
     has_m = pd.Series(t["code"].eq("M").to_numpy(), index=key).groupby(level=[0, 1]).any()
-    return pd.Series(key.map(has_m).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
+    return pd.Series(has_m.reindex(key).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
 
 
 def asof_values(frame: pd.DataFrame | None, tickers: pd.Series, days: pd.Series) -> pd.Series:
@@ -366,7 +367,7 @@ def asof_values(frame: pd.DataFrame | None, tickers: pd.Series, days: pd.Series)
     known = (pos >= 0) & tickers.isin(f.columns).to_numpy()
     out = np.full(len(tickers), np.nan)
     if known.any():
-        out[known] = f.to_numpy()[pos[known], f.columns.get_indexer(tickers[known])]
+        out[known] = f.to_numpy()[pos[known], f.columns.get_indexer(pd.Index(tickers[known]))]
     return pd.Series(out, index=idx, dtype="float64")
 
 

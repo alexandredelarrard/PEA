@@ -17,6 +17,8 @@ the one thing that is genuinely about PEERS.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -129,7 +131,7 @@ def peer_relative(
 
         pmean = peer_vals.mul(w, axis=1).sum(axis=1, min_count=1).div(wsum.where(valid))
         var = (peer_vals.sub(pmean, axis=0) ** 2).mul(w, axis=1).sum(axis=1, min_count=1)
-        pstd = np.sqrt(var.div(wsum.where(valid)))
+        pstd = cast(pd.Series, np.sqrt(var.div(wsum.where(valid))))
         # ⚠ THE ZERO-DISPERSION GUARD IS EVALUATED ON THE RAW STD, BEFORE THE FLOOR, and the
         # order is the whole point. Flooring first would turn a basket whose peers all report
         # the SAME value into a finite z divided by the floor -- silently overriding the
@@ -141,7 +143,7 @@ def peer_relative(
 
         z = (field_df[ticker] - pmean) / pstd
         z = z.where(valid)
-        rel[ticker] = z.clip(-clip, clip)
+        rel[ticker] = z.clip(lower=-clip, upper=clip)
     return rel.replace([np.inf, -np.inf], np.nan)
 
 
@@ -205,21 +207,24 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
         # defrag copy below) is what keeps the many-feature panels off the OOM killer.
         mode = emission.get(name)
         if mode is not None:
-            raw = fdf.stack().astype("float32")
+            raw = cast(pd.Series, fdf.stack()).astype("float32")
             raw.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(raw.rename(f"f_{name}"))
+            raw.name = f"f_{name}"
+            long_frames.append(raw)
             del raw
         if mode is None or mode == "raw+peers":
             rel = winsorize_xs(peer_relative(fdf, peer_dict))
-            s = rel.stack().astype("float32")
+            s = cast(pd.Series, rel.stack()).astype("float32")
             s.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(s.rename(f"f_{name}_vs_peers"))
+            s.name = f"f_{name}_vs_peers"
+            long_frames.append(s)
             del rel, s
         if mode is None or mode == "raw+xs":
             xs = xs_rank_pct(fdf)
-            s2 = xs.stack().astype("float32")
+            s2 = cast(pd.Series, xs.stack()).astype("float32")
             s2.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(s2.rename(f"f_{name}_xs"))
+            s2.name = f"f_{name}_xs"
+            long_frames.append(s2)
             del xs, s2
         del fdf  # free per-field intermediates promptly
 

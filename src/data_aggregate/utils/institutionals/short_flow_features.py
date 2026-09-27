@@ -265,6 +265,7 @@ def _fails_fields(
 
     f_dict: dict[str, pd.DataFrame] = {}
     pct_so = None
+    to_adv = None
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
         pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
@@ -280,7 +281,7 @@ def _fails_fields(
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
-    basis = pct_so if pct_so is not None else (to_adv if volume is not None and not volume.empty else None)
+    basis = pct_so if pct_so is not None else to_adv
     if basis is not None:
         z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
         # A zero standard deviation normally makes a z-score undefined. FTD has one economic

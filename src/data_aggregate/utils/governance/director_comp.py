@@ -205,7 +205,7 @@ def impute_director_comp(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return fill_total_from_components(df, DIRECTOR_COMPONENTS)
 
 
-def _per_filing_pay(dc: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _per_filing_pay(dc: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """One row per filing: the median director total and the two pay-MIX shares.
 
     ⚠ THE SHARES ARE BOARD-LEVEL SUMS, not means of per-director ratios. A single director who

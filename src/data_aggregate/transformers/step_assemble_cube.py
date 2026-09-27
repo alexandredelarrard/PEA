@@ -61,7 +61,7 @@ from src.data_aggregate.utils.common.gics import apply_categorical_codes
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import FEATURE_PARTS
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.step import Step
 
 _CHUNK_ROWS = 200_000
@@ -81,7 +81,7 @@ class StepAssembleCube(Step):
         self._stream_cube(base)
 
     # ---- read the parts ---- #
-    def _read_part(self, name: str) -> pd.DataFrame | None:
+    def _read_part(self, name: str | Table) -> pd.DataFrame | None:
         if not self._context.store.exists(name):
             # NOT cosmetic: `store.replace` does not DROP the cube table, it DELETEs the rows
             # and COPYs into the existing schema (and `ensure_columns` only ever ADDS). So a

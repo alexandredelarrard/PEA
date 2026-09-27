@@ -80,7 +80,8 @@ def _select_fundamentals() -> pd.DataFrame:
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
       * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
-        them, because the year-ago leg is found by a 365-DAY as-of match, not a row offset.
+        them, because the prior leg is the same fiscal period within 45 days and must already
+        be public at the current row; it is not a row or fixed-calendar-day offset.
     """
     from dotenv import load_dotenv
 

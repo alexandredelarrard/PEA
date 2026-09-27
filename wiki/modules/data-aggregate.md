@@ -10,15 +10,17 @@ tags:
 
 ## Summary
 
-`src/data_aggregate` converts normalized extract tables into a wide, point-in-time modelling cube. Seven domain sub-steps persist eight intermediate parts, and a final assembler merges features, betas, peers, and wide targets at one row per date and ticker.
+`src/data_aggregate` converts normalized extract tables into a wide, point-in-time modelling cube. Seven domain sub-steps persist eight intermediate parts through the price maximum date, and a final assembler reports any part-edge mismatch before merging features, betas, peers, and wide targets at one row per date and ticker.
 
 ## Responsibilities
 
 - Normalize prices and define the trading grid.
 - Build forward targets and rolling factor loadings.
 - Build fundamental, momentum, text, institutional, and governance feature panels.
-- Apply peer-relative and cross-sectional transformations without future leakage.
+- Apply peer-relative and cross-sectional transformations without future leakage, preserving binary states and structural zeros.
+- Match financial changes by fiscal period, enforce publication-time visibility, and expire stale point-in-time values by source cadence.
 - Recompute guarded trailing windows and detect schema drift.
+- Warn on every missing, behind, or ahead registered part during assembly, while `cube-status` fails closed on any non-exact price-edge alignment.
 - Stream the final cube to the store without materializing all output chunks twice.
 
 ## Public API / entry points
@@ -32,9 +34,9 @@ tags:
 
 - [parts.py](../../src/data_aggregate/utils/common/parts.py) is the single part registry.
 - [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans refresh windows and writes inclusive tails.
-- [price_frames.py](../../src/data_aggregate/utils/common/price_frames.py), [pit.py](../../src/data_aggregate/utils/common/pit.py), [panel.py](../../src/data_aggregate/utils/common/panel.py), and [xs.py](../../src/data_aggregate/utils/common/xs.py) hold shared contracts.
+- [price_frames.py](../../src/data_aggregate/utils/common/price_frames.py), [pit.py](../../src/data_aggregate/utils/common/pit.py), [panel.py](../../src/data_aggregate/utils/common/panel.py), and [xs.py](../../src/data_aggregate/utils/common/xs.py) hold shared contracts. `pit.py` owns fiscal-period matching and source-age projection; `panel.py` applies declared continuous, binary, and structural-zero transform semantics.
 - [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) keeps the ordered institutional merge and persistence contract; [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py) owns projected and universe-scoped reads, [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py) resolves completeness boundaries, and [sink.py](../../src/data_aggregate/utils/institutionals/sink.py) carries source events and availability into the two derived panels.
-- [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) left-joins wide targets onto the feature-led base and writes chunks.
+- [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) logs registry-wide part-versus-price edge warnings, left-joins wide targets onto the feature-led base, and writes chunks. [part_status.py](../../src/data_aggregate/utils/common/part_status.py) is the exact-alignment readiness gate.
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns windows, targets, feature settings, and output switches.
 
 ## Dependencies

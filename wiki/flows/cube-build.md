@@ -10,7 +10,7 @@ tags:
 
 ## Summary
 
-The cube build converts extract tables into independently persisted price, target, beta, fundamental, momentum, text, institutional, and governance parts. Each builder uses one registry-defined incremental window, then the assembler streams a feature-led left join into the final wide cube.
+The cube build converts extract tables into independently persisted price, target, beta, fundamental, momentum, text, institutional, and governance parts. Each builder uses one registry-defined incremental window, every registered output is expected to end exactly at the price-part maximum date, and the assembler streams a feature-led left join into the final wide cube.
 
 ## Trigger
 
@@ -41,13 +41,13 @@ sequenceDiagram
 1. `StepBuildCube` in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) runs the price-basis gate unless explicitly skipped.
 2. [parts.py](../../src/data_aggregate/utils/common/parts.py) supplies each part's table, command, kind, warm-up, and binding look-backs.
 3. [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans a full build or inclusive trailing refresh.
-4. Domain builders load projected source columns and emit one panel at the date/ticker grain. The institutional builder reads through [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py), resolves observed-zero boundaries through [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), and runs 13F, superinvestor, insider, short-flow, ownership, conditioning, then cross-source panels in that explicit order with one shared [conditioning sink](../../src/data_aggregate/utils/institutionals/sink.py).
-5. [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) merges feature parts, betas, peers, and GICS metadata, then left-joins wide targets.
-6. The first output chunk replaces the cube and later chunks use `bulk_seed`.
+4. Domain builders load projected source columns and emit one panel at the date/ticker grain. Fundamentals are restricted to the price-supported universe, fiscal changes match the prior fiscal period rather than a fixed daily lag, and quarterly/TTM versus annual-only values expire after their declared source-age limits. The institutional builder reads through [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py), resolves observed-zero boundaries through [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), and runs 13F, superinvestor, insider, short-flow, ownership, conditioning, then cross-source panels in that explicit order with one shared [conditioning sink](../../src/data_aggregate/utils/institutionals/sink.py).
+5. Before joining, [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) compares every registered part maximum with `cube_part_prices.max_date` and emits an explicit missing, behind, or ahead warning for each mismatch. Assembly then merges feature parts, betas, peers, and GICS metadata and left-joins wide targets.
+6. The first output chunk replaces the cube and later chunks use `bulk_seed`. `cube-status` is the fail-closed readiness gate: every registered part and the final cube must exist at exactly the price edge.
 
 ## Failure modes
 
-A missing price-basis gate can propagate adjustment seams into returns, betas, and labels. A look-back longer than its declared warm-up makes incremental and full tails diverge. Feature-name collisions or duplicate date/ticker keys are rejected by the merge layer, and long or duplicate targets are refused before they can multiply rows.
+A missing price-basis gate can propagate adjustment seams into returns, betas, and labels. A look-back longer than its declared warm-up makes incremental and full tails diverge; the fundamentals part therefore rewrites an inclusive recent tail rather than strict-appending. Feature-name collisions or duplicate date/ticker keys are rejected by the merge layer, and long or duplicate targets are refused before they can multiply rows. Assembly warnings do not abort the write by themselves, so `cube-status` must pass before the cube is treated as ready.
 
 ## Related
 

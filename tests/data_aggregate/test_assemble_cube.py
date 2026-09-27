@@ -12,6 +12,7 @@ captures the writes, proving:
     multiplying the cube,
   * feature columns are stored float32 (half the footprint).
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,7 +23,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.utils.common.parts import FEATURE_PARTS
+from src.data_aggregate.utils.common.parts import CUBE_PARTS, FEATURE_PARTS
 from src.data_store.schema import name_of
 
 
@@ -34,19 +35,25 @@ class _FakeStore:
 
     def __init__(self, tables: dict):
         self.t = {name_of(k): v for k, v in tables.items()}
-        self.writes: list[tuple[str, pd.DataFrame]] = []   # (op, df) in call order
+        self.writes: list[tuple[str, pd.DataFrame]] = []  # (op, df) in call order
 
-    def exists(self, table): return name_of(table) in self.t
+    def exists(self, table):
+        return name_of(table) in self.t
 
     def load(self, table, columns=None, **kw):
         df = self.t.get(name_of(table))
         return df.copy() if df is not None else pd.DataFrame()
 
+    def max_date(self, table):
+        df = self.t.get(name_of(table))
+        if df is None or df.empty or "date" not in df.columns:
+            return None
+        return pd.to_datetime(df["date"], errors="coerce").max()
+
     def _append(self, op, table, df):
         self.writes.append((op, df.copy()))
         prev = self.t.get(name_of(table))
-        self.t[name_of(table)] = (pd.concat([prev, df], ignore_index=True)
-                                  if prev is not None else df.copy())
+        self.t[name_of(table)] = pd.concat([prev, df], ignore_index=True) if prev is not None else df.copy()
         return len(df)
 
     def replace(self, table, df, chunksize=200_000):
@@ -54,9 +61,11 @@ class _FakeStore:
         self.t[name_of(table)] = df.copy()
         return len(df)
 
-    def save(self, table, df, pk=None): return self._append("save", table, df)
+    def save(self, table, df, pk=None):
+        return self._append("save", table, df)
 
-    def bulk_seed(self, table, df): return self._append("bulk_seed", table, df)
+    def bulk_seed(self, table, df):
+        return self._append("bulk_seed", table, df)
 
 
 class _FakeCtx:
@@ -79,61 +88,69 @@ def _targets_wide(drop: tuple[str, str] | None = None) -> pd.DataFrame:
     `labels_to_wide` — nothing is known for it at any horizon yet, so it stores no row."""
     y = [0.01, 0.02, 0.03, 0.04]
     df = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(
-        target_fwd_ret_h5=np.array([v * 5 for v in y], dtype="float64"),
-        target_fwd_ret_h20=np.array([v * 20 for v in y], dtype="float64"))
+        target_fwd_ret_h5=np.array([v * 5 for v in y], dtype="float64"), target_fwd_ret_h20=np.array([v * 20 for v in y], dtype="float64")
+    )
     return df if drop is None else df[~((df["date"] == drop[0]) & (df["ticker"] == drop[1]))]
 
 
 def _parts(targets: pd.DataFrame | None = None):
-    price = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(
-        f_ret=np.array([0.1, 0.2, 0.3, 0.4], dtype="float64"))
-    fund = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(
-        f_val=np.array([1.0, 2.0, 3.0, 4.0], dtype="float64"))
-    betas = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(
-        beta_mkt=np.array([0.9, 1.1, 1.0, 1.2], dtype="float64"))
+    price = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(f_ret=np.array([0.1, 0.2, 0.3, 0.4], dtype="float64"))
+    fund = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(f_val=np.array([1.0, 2.0, 3.0, 4.0], dtype="float64"))
+    betas = pd.DataFrame(_GRID, columns=["date", "ticker"]).assign(beta_mkt=np.array([0.9, 1.1, 1.0, 1.2], dtype="float64"))
     momentum_part, fundamentals_part = FEATURE_PARTS[0].name, FEATURE_PARTS[1].name
-    return {momentum_part: price, fundamentals_part: fund,
-            "cube_part_betas": betas,
-            "cube_part_targets": _targets_wide() if targets is None else targets,
-            "sp500_tickers": pd.DataFrame(columns=["ticker", "sector", "industry_group"])}
+    return {
+        momentum_part: price,
+        fundamentals_part: fund,
+        "cube_part_betas": betas,
+        "cube_part_targets": _targets_wide() if targets is None else targets,
+        "sp500_tickers": pd.DataFrame(columns=["ticker", "sector", "industry_group"]),
+    }
+
+
+def _edge_complete_parts() -> dict:
+    """Every registered part at the same date edge, with unique feature names."""
+    tables = _parts()
+    grid = pd.DataFrame(_GRID, columns=["date", "ticker"])
+    tables["cube_part_prices"] = grid.assign(close_split=1.0)
+    for i, part in enumerate(FEATURE_PARTS):
+        tables[part.name] = grid.assign(**{f"f_part_{i}": np.arange(4, dtype=float) + i})
+    return tables
 
 
 def _make_step(store, monkeypatch, chunk_rows: int | None = None):
-    step = StepAssembleCube.__new__(StepAssembleCube)     # skip heavy __init__
+    step = StepAssembleCube.__new__(StepAssembleCube)  # skip heavy __init__
     step._context = _FakeCtx(store)
     step._config = None
     step._log = logging.getLogger("test")
     step._cfg = {}
     # the peer dict is read through utils/common/peers_io, so stub that rather than an attribute
-    monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise",
-                        lambda ctx, cfg=None: {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}})
+    monkeypatch.setattr(
+        "src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda ctx, cfg=None: {"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}
+    )
     if chunk_rows is not None:
         # 4 fixture rows fit in ONE 200k chunk, so the replace -> bulk_seed ordering would
         # never be exercised at the production size. Shrink the chunk rather than weaken the
         # assertion: that ordering is load-bearing (only `replace` creates the schema).
-        monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube._CHUNK_ROWS",
-                            chunk_rows)
+        monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube._CHUNK_ROWS", chunk_rows)
     return step
 
 
 def test_assemble_streams_chunks_and_matches_oneshot(monkeypatch):
     store = _FakeStore(_parts())
-    step = _make_step(store, monkeypatch, chunk_rows=2)    # 4 rows -> 2 chunks
+    step = _make_step(store, monkeypatch, chunk_rows=2)  # 4 rows -> 2 chunks
 
     step.run()
 
     # ---- streaming shape: chunked COPY (replace first, bulk_seed append) ---------------------
     ops = [op for op, _ in store.writes]
     assert ops == ["replace", "bulk_seed"], f"expected chunked COPY streaming, got {ops}"
-    assert all(len(df) <= 2 for _, df in store.writes)     # every write is a bounded row-chunk
+    assert all(len(df) <= 2 for _, df in store.writes)  # every write is a bounded row-chunk
     cube = store.t["cube"]
 
     # ---- correctness: equals a one-shot base LEFT JOIN targets --------------------------------
     p = _parts()
-    base_ref = (p[FEATURE_PARTS[0].name].merge(p[FEATURE_PARTS[1].name], on=["date", "ticker"])
-                .merge(p["cube_part_betas"], on=["date", "ticker"]))
-    ref = base_ref.merge(p["cube_part_targets"], on=["date", "ticker"], how="left",
-                         validate="one_to_one")
+    base_ref = p[FEATURE_PARTS[0].name].merge(p[FEATURE_PARTS[1].name], on=["date", "ticker"]).merge(p["cube_part_betas"], on=["date", "ticker"])
+    ref = base_ref.merge(p["cube_part_targets"], on=["date", "ticker"], how="left", validate="one_to_one")
     # 2 dates x 2 tickers. NOT 8: the horizon axis is columns now, so the row duplication the
     # wide part removes IS the number being asserted.
     assert len(cube) == len(ref) == 4, f"rows {len(cube)} vs {len(ref)}"
@@ -154,13 +171,13 @@ def test_assemble_streams_chunks_and_matches_oneshot(monkeypatch):
     assert set(f32) == set(checked), {c: str(cube[c].dtype) for c in checked}
 
     print("\n=== SANITY CHECK: cube assembly (chunked base LEFT JOIN wide targets) ===")
-    print(f"  wrote {len(store.writes)} bounded chunks as {ops} (replace creates the schema, "
-          f"bulk_seed appends)")
-    print(f"  cube {len(cube)} rows = {len(_DATES)} dates x {len(_TICKERS)} tickers, 0 duplicate "
-          f"(date,ticker), no target_horizon column -- the 2-horizon row duplication is gone "
-          f"(it was 8 rows)")
-    print(f"  values equal the one-shot LEFT JOIN; {len(_TARGET_COLS)} label columns float32. "
-          f"Validated.")
+    print(f"  wrote {len(store.writes)} bounded chunks as {ops} (replace creates the schema, " f"bulk_seed appends)")
+    print(
+        f"  cube {len(cube)} rows = {len(_DATES)} dates x {len(_TICKERS)} tickers, 0 duplicate "
+        f"(date,ticker), no target_horizon column -- the 2-horizon row duplication is gone "
+        f"(it was 8 rows)"
+    )
+    print(f"  values equal the one-shot LEFT JOIN; {len(_TARGET_COLS)} label columns float32. " f"Validated.")
 
 
 def test_base_row_with_no_target_survives_with_nan_labels(monkeypatch):
@@ -183,16 +200,17 @@ def test_base_row_with_no_target_survives_with_nan_labels(monkeypatch):
     assert cube[~hit][_TARGET_COLS].notna().all(axis=None), "the labelled rows lost their labels"
 
     print("\n=== SANITY CHECK: immature (date, ticker) survives the join ===")
-    print(f"  targets part holds 3 of 4 keys; cube still has {len(cube)} rows. "
-          f"{missing} carries f_ret={float(row['f_ret'].iloc[0]):.2f} with both labels NaN. "
-          f"An inner join would have returned 3 rows and hidden the newest date. Validated.")
+    print(
+        f"  targets part holds 3 of 4 keys; cube still has {len(cube)} rows. "
+        f"{missing} carries f_ret={float(row['f_ret'].iloc[0]):.2f} with both labels NaN. "
+        f"An inner join would have returned 3 rows and hidden the newest date. Validated."
+    )
 
 
 def test_long_targets_part_is_refused(monkeypatch):
     """A part left over from the LONG era would merge to a horizon-duplicated cube. It must
     raise, naming the part and the fix, rather than be silently broadcast."""
-    long_rows = [{"date": d, "ticker": t, "target_horizon": h, "target_fwd_ret": 0.01 * h}
-                 for h in (5, 20) for (d, t) in _GRID]
+    long_rows = [{"date": d, "ticker": t, "target_horizon": h, "target_fwd_ret": 0.01 * h} for h in (5, 20) for (d, t) in _GRID]
     store = _FakeStore(_parts(targets=pd.DataFrame(long_rows)))
     step = _make_step(store, monkeypatch)
 
@@ -201,8 +219,7 @@ def test_long_targets_part_is_refused(monkeypatch):
     assert not store.writes, "nothing must be written when the part is refused"
 
     print("\n=== SANITY CHECK: the old LONG targets part is refused ===")
-    print("  a part still carrying `target_horizon` raises before any write, naming "
-          "cube_part_targets and `build-target --full`. Validated.")
+    print("  a part still carrying `target_horizon` raises before any write, naming " "cube_part_targets and `build-target --full`. Validated.")
 
 
 def test_duplicate_target_keys_are_refused(monkeypatch):
@@ -217,10 +234,73 @@ def test_duplicate_target_keys_are_refused(monkeypatch):
     assert not store.writes, "nothing must be written when the part is refused"
 
     print("\n=== SANITY CHECK: duplicate (date,ticker) in the targets part is refused ===")
-    print("  1 repeated key -> RuntimeError naming cube_part_targets and the duplicate count, "
-          "before any write. The cube cannot silently double. Validated.")
+    print(
+        "  1 repeated key -> RuntimeError naming cube_part_targets and the duplicate count, "
+        "before any write. The cube cannot silently double. Validated."
+    )
+
+
+def test_assembly_emits_no_edge_warning_when_every_part_is_aligned(monkeypatch, caplog):
+    step = _make_step(_FakeStore(_edge_complete_parts()), monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        step.run()
+
+    edge_warnings = [r.message for r in caplog.records if "Cube part edge mismatch" in r.message]
+    assert not edge_warnings
+    print("\n=== SANITY CHECK: aligned assembly edge ===")
+    print("  every registered part equals the price maximum; no edge warning was emitted. " "Validated.")
+
+
+@pytest.mark.parametrize(
+    ("status", "part_name", "dates"),
+    [
+        ("missing", CUBE_PARTS[3].name, None),
+        (
+            "behind",
+            CUBE_PARTS[3].name,
+            ["2022-12-30", "2022-12-30", "2023-01-02", "2023-01-02"],
+        ),
+        (
+            "ahead",
+            CUBE_PARTS[3].name,
+            ["2023-01-02", "2023-01-02", "2023-01-04", "2023-01-04"],
+        ),
+    ],
+)
+def test_assembly_warns_for_each_non_aligned_part(monkeypatch, caplog, status, part_name, dates):
+    tables = _edge_complete_parts()
+    if dates is None:
+        del tables[part_name]
+    else:
+        tables[part_name] = tables[part_name].assign(date=dates)
+    step = _make_step(_FakeStore(tables), monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        step.run()
+
+    messages = [r.message for r in caplog.records if "Cube part edge mismatch" in r.message]
+    assert any(part_name in message and f"status={status}" in message for message in messages)
+    assert any("price_max=2023-01-03" in message for message in messages)
+    print(f"\n=== SANITY CHECK: assembly warns for a {status} part ===")
+    print(f"  warning names {part_name}, status={status}, and the 2023-01-03 price edge; " "assembly continues. Validated.")
+
+
+def test_missing_required_target_warns_before_existing_prerequisite_raises(monkeypatch, caplog):
+    tables = _edge_complete_parts()
+    del tables["cube_part_targets"]
+    step = _make_step(_FakeStore(tables), monkeypatch)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="build-target"):
+        step.run()
+
+    messages = [r.message for r in caplog.records]
+    assert any("Cube part edge mismatch" in message and "cube_part_targets" in message and "status=missing" in message for message in messages)
+    print("\n=== SANITY CHECK: edge warnings do not weaken assembly prerequisites ===")
+    print("  missing targets emitted its edge warning first, then the existing required-target " "guard raised. Validated.")
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

@@ -33,6 +33,7 @@ from src.data_aggregate.utils.institutionals.insider_sources import (
     bulk_complete_through,
 )
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 
 # more than ~one build behind the cube is a gap worth attention
 _LAG_TOLERANCE_DAYS = 4
@@ -40,6 +41,37 @@ _LAG_TOLERANCE_DAYS = 4
 
 def _fmt(value: pd.Timestamp | None) -> str | None:
     return value.strftime("%Y-%m-%d") if value is not None and pd.notna(value) else None
+
+
+def _edge_detail(
+    part_max: pd.Timestamp | None,
+    price_max: pd.Timestamp | None,
+) -> dict[str, object]:
+    """Describe one table edge against prices; positive delta means ahead."""
+    if part_max is None or price_max is None:
+        return {"status": "missing", "max_date": _fmt(part_max), "delta_days": None}
+    delta = int((part_max.normalize() - price_max.normalize()).days)
+    status = "aligned" if delta == 0 else "behind" if delta < 0 else "ahead"
+    return {"status": status, "max_date": _fmt(part_max), "delta_days": delta}
+
+
+def cube_part_edge_report(store: DataStore) -> dict[str, object]:
+    """Exact max-date alignment of every registered part to persisted prices."""
+    price_name = Tables.cube_part_prices.name
+    price_max = store.max_date(price_name) if store.exists(price_name) else None
+    details: dict[str, dict[str, object]] = {}
+    misaligned: list[str] = []
+    for part in CUBE_PARTS:
+        part_max = store.max_date(part.name) if store.exists(part.name) else None
+        detail = _edge_detail(part_max, price_max)
+        details[part.name] = detail
+        if detail["status"] != "aligned":
+            misaligned.append(part.name)
+    return {
+        "price_max_date": _fmt(price_max),
+        "misaligned": misaligned,
+        "parts": details,
+    }
 
 
 def _insider_source_status(
@@ -129,14 +161,12 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
     log = log or logging.getLogger(__name__)
     store = context.store
 
-    # the market part is ALWAYS fully replaced by build-prices, so its max date is by
-    # construction the prices part's -- reporting it as "behind" would be noise
     # `.name`, not the `Table` object: these become the KEYS of report["parts"], which the DAG
     # pushes as XCom JSON (`max_<name>`) -- a Table key is neither serialisable nor the shape
     # `dag_data_aggregation._cube_status` reads.
     terminal = [t.name for t in TERMINAL_TABLES]
     names = [p.name for p in CUBE_PARTS] + terminal
-    never_behind = {p.name for p in CUBE_PARTS if p.kind == "market"} | set(terminal)
+    edge = cube_part_edge_report(store)
 
     parts: dict[str, dict] = {}
     for name in names:
@@ -144,22 +174,28 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
         if context.store.exists(name):
             mx = store.max_date(name)
             info = {"exists": True, "max_date": mx.strftime("%Y-%m-%d") if mx is not None else None, "rows": store.row_count(name)}
+        if name in edge["parts"]:
+            detail = edge["parts"][name]
+            info.update(
+                edge_status=detail["status"],
+                delta_vs_price_days=detail["delta_days"],
+            )
         parts[name] = info
 
     cube_max = parts.get("cube", {}).get("max_date")
-    behind: list[str] = []
-    if cube_max is not None:
-        cmax = pd.Timestamp(cube_max)
-        for name, info in parts.items():
-            if name in never_behind:
-                continue
-            if info["exists"] and info["max_date"] is not None:
-                lag = int((cmax - pd.Timestamp(info["max_date"])).days)
-                info["lag_vs_cube_days"] = lag
-                if lag > _LAG_TOLERANCE_DAYS:
-                    behind.append(name)
-            elif not info["exists"]:
-                behind.append(name)
+    price_max = edge["price_max_date"]
+    cube_detail = _edge_detail(
+        pd.Timestamp(cube_max) if cube_max is not None else None,
+        pd.Timestamp(price_max) if price_max is not None else None,
+    )
+    parts[Tables.cube.name].update(
+        edge_status=cube_detail["status"],
+        delta_vs_price_days=cube_detail["delta_days"],
+    )
+    misaligned = list(edge["misaligned"])
+    if cube_detail["status"] != "aligned":
+        misaligned.append(Tables.cube.name)
+    behind = list(misaligned)
 
     source_config = getattr(context.config, "source_freshness", {})
     insider_tolerance = int(source_config.get("insider_max_lag_days", _LAG_TOLERANCE_DAYS))
@@ -179,7 +215,10 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
 
     report = {
         "as_of": pd.Timestamp.today().normalize().strftime("%Y-%m-%d"),
+        "max_date": cube_max,
         "cube_max_date": cube_max,
+        "price_max_date": price_max,
+        "misaligned": misaligned,
         "ok": not behind,
         "behind": behind,
         "parts": parts,

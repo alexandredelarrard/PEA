@@ -3,6 +3,7 @@ Assemble the modelling cube: one row per (date, ticker) with betas, peers, targe
 features. Targets are WIDE -- one column per (label, horizon), named by `target_column`
 below -- so a (date, ticker) appears exactly once whatever the horizon grid is.
 """
+
 from __future__ import annotations
 
 import re
@@ -35,8 +36,7 @@ def target_column(label: str, horizon: int) -> str:
 
 def horizons_in(columns: Iterable[str], label: str) -> list[int]:
     """Sorted horizons this label has a column for. Schema-only: no data scan."""
-    out = {int(m["horizon"]) for c in columns
-           if (m := TARGET_COL_RE.match(c)) and m["label"] == label}
+    out = {int(m["horizon"]) for c in columns if (m := TARGET_COL_RE.match(c)) and m["label"] == label}
     return sorted(out)
 
 
@@ -53,7 +53,10 @@ def _betas_to_long(betas: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def labels_to_wide(labels: dict) -> pd.DataFrame:
+def labels_to_wide(
+    labels: dict,
+    valid_keys: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """{horizon: {label: DataFrame(date x ticker)}} -> one row per (date, ticker), one column
     per (label, horizon).
 
@@ -71,14 +74,20 @@ def labels_to_wide(labels: dict) -> pd.DataFrame:
     cols: dict[str, pd.Series] = {}
     for horizon, per in labels.items():
         if not isinstance(per, dict):
-            raise TypeError("labels must be {horizon: {label: DataFrame}} -- rebuild with "
-                            "build_targets_multi")
+            raise TypeError("labels must be {horizon: {label: DataFrame}} -- rebuild with " "build_targets_multi")
         for label, df in per.items():
             s = df.stack()
             s.index = s.index.set_names(["date", "ticker"])
             cols[target_column(label, horizon)] = s
     out = pd.DataFrame(cols)
-    out = out.dropna(axis=0, how="all")          # nothing known yet -> store nothing
+    if valid_keys is None:
+        out = out.dropna(axis=0, how="all")  # direct callers retain the old contract
+    else:
+        keys = valid_keys[["date", "ticker"]].copy()
+        if keys.duplicated(["date", "ticker"]).any():
+            raise ValueError("valid target keys must be unique by (date, ticker)")
+        key_index = pd.MultiIndex.from_frame(keys, names=["date", "ticker"])
+        out = out.reindex(key_index)  # keep all valid immature rows, no others
     return out.reset_index()
 
 
@@ -110,12 +119,12 @@ def panel_from_cube(
         raise KeyError(
             f"Target column '{target_col}' not in cube; rebuild the cube with '{target_type}' "
             f"in build_cube.targets.labels and {horizon} in build_cube.targets.horizons "
-            f"(available: {avail}).")
+            f"(available: {avail})."
+        )
     panel = cube.rename(columns={target_col: label_name})
 
     if feature_cols is None:
-        feature_cols = [c for c in panel.columns
-                        if not is_meta_column(c) and c != label_name]
+        feature_cols = [c for c in panel.columns if not is_meta_column(c) and c != label_name]
     else:
         feature_cols = [c for c in feature_cols if c in panel.columns]
     keep = ["date", "ticker", label_name] + feature_cols

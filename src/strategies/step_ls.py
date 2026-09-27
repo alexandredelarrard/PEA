@@ -48,7 +48,7 @@ class LongShortStrategy(Strategy):
         self._log.info(
             "ls_equity sleeve: %d OOS days from %s, ann-vol %.1f%%", len(ret), self.backtest_start.date(), float(ret.std() * (252**0.5)) * 100
         )
-        extra = {"signal_shape": tuple(self.signal.shape)}
+        extra: dict[str, object] = {"signal_shape": tuple(self.signal.shape)}
         if inputs.analysis:
             extra["analysis"] = self._analyze(ret)
         book = self._book_weights(daily, inputs)
@@ -81,7 +81,7 @@ class LongShortStrategy(Strategy):
                 signal=self.signal,
                 stock_ret=self.stock_ret,
                 spy_ret=self.spy_ret,
-                close_split=self.close_split,
+                close=self.close_split,
                 starting_capital=float(inp.capital),
                 target_ann_vol=float(inp.target_vol),
                 beta_neutral=c.get("beta_neutral", True),

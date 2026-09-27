@@ -75,6 +75,7 @@ def trade_blotter(
         return pd.DataFrame(columns=_COLS)
     tl = tl.merge(_melt(pos, "position_usd"), on=["date", "instrument"], how="left")
     if prices is not None:
+        assert px is not None and shares_held is not None and shares_traded is not None
         tl = tl.merge(_melt(px, "price"), on=["date", "instrument"], how="left")
         tl = tl.merge(_melt(shares_held, "shares_held"), on=["date", "instrument"], how="left")
         tl = tl.merge(_melt(shares_traded, "shares_traded"), on=["date", "instrument"], how="left")

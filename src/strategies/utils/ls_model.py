@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import pickle
 from dataclasses import dataclass
+from typing import Any, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -61,7 +62,7 @@ def _load_models(context: Context, cube_cfg: DictConfig, model_cfg: DictConfig):
                 continue
             if kind in ml.BOOSTER_MEMBER_KINDS:
                 b = lgb.Booster(model_file=str(p))
-                b.feature_names = b.feature_name()
+                cast(Any, b).feature_names = b.feature_name()
                 members[kind] = b
             else:
                 with p.open("rb") as f:
@@ -94,13 +95,18 @@ def _project_cube(context: Context, meta: dict, models: dict, target_type: str, 
     load_cols = list(dict.fromkeys(["date", "ticker"] + tcols + [c for c in want if c in cube_cols]))
     # bound parameters, not f-string interpolation: `date >= '{start.date()}'` was the one
     # query in the repo pasting a value straight into SQL
-    return store.load(Tables.cube, columns=load_cols, since=start, until=end)
+    panel = store.load(Tables.cube, columns=load_cols, since=start, until=end)
+    if panel is None:
+        raise RuntimeError(f"'{Tables.cube}' returned no modeling panel")
+    return panel
 
 
 def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_cfg: DictConfig, start: pd.Timestamp):
     buffer = int(2.2 * (int(model_cfg.get("beta_window", 63)) + int(model_cfg.get("vol_window", 63))) + 30)
     cutoff = start - pd.Timedelta(days=buffer)
     long = context.store.load(Tables.prices, since=cutoff)
+    if long is None:
+        raise RuntimeError(f"'{Tables.prices}' returned no price frame")
     pivot = du.prices_long_to_multiindex(long)
     # TWO bases, two jobs. `rets` drives the P&L, so it is the buy-and-hold path; the frame
     # returned as `close` is used as `book_prices` -- the price a share is actually
@@ -155,6 +161,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
     zc = [f"z_{h}" for h in models if blended is not None and f"z_{h}" in blended.columns]
     if not zc:
         raise RuntimeError("build_signal: no horizon produced a signal in the OOS window.")
+    assert blended is not None
     hs = [int(c.split("_")[1]) for c in zc]
     ir = {h: train_ic.get(h, np.nan) for h in hs}
     if str(model_cfg.get("blend", "ir")) == "equal":

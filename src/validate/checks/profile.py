@@ -119,7 +119,7 @@ def _stats(values: pd.Series, dates: pd.Series | None) -> dict[str, Any]:
         }
     )
     if dates is not None:
-        seen = dates[numeric.notna().values]
+        seen = dates[numeric.notna().to_numpy(dtype=bool)]
         out["first_date"] = seen.min() if len(seen) else None
         out["last_date"] = seen.max() if len(seen) else None
     return out

@@ -35,6 +35,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,7 +91,9 @@ def gics_lookup(tickers: list[str]) -> dict[str, dict[str, str | None]]:
     if universe is None:
         print("  ! sp500_tickers is empty -- resolving with regime=None")
         return {}
-    return {row.ticker: {lvl: getattr(row, lvl) for lvl in levels} for row in universe.itertuples() if row.ticker in set(tickers)}
+    return {
+        cast(str, row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cast(Any, universe).itertuples() if row.ticker in set(tickers)
+    }
 
 
 def sweep_ticker(ticker: str, catalogue, gics: dict | None, cutovers: dict | None = None) -> pd.DataFrame:
@@ -147,12 +150,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not os.getenv("SEC_USER_AGENT", "").strip():
+    identity = os.getenv("SEC_USER_AGENT", "").strip()
+    if not identity:
         print("SEC_USER_AGENT unset -- EDGAR refuses anonymous traffic. Aborting.")
         return 2
     from edgar import set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    set_identity(identity)
 
     config_dir = Path(args.config_dir)
     all_rosters = rosters(config_dir)

@@ -17,6 +17,8 @@ All functions are point-in-time: a value at t uses only prices up to t.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -26,7 +28,7 @@ _ANN: float = 252.0
 def daily_vol(close: pd.DataFrame, window: int, min_periods: int | None = None) -> pd.DataFrame:
     """Trailing daily-return volatility per asset (date x asset). NaN-tolerant."""
     mp = int(min_periods) if min_periods is not None else max(10, window // 2)
-    return close.pct_change(fill_method=None).rolling(window, min_periods=mp).std()
+    return cast(pd.DataFrame, close.pct_change(fill_method=None).rolling(window, min_periods=mp).std())
 
 
 def combined_forecast(close: pd.DataFrame, lookbacks: list[int], vol_window: int, cap: float = 2.0) -> pd.DataFrame:
@@ -41,8 +43,8 @@ def combined_forecast(close: pd.DataFrame, lookbacks: list[int], vol_window: int
     for lb in lookbacks:
         mom = close.pct_change(lb, fill_method=None)  # P_t/P_{t-lb} - 1
         parts.append(mom / (dvol * np.sqrt(float(lb))))  # standardized trend strength
-    forecast = sum(parts) / float(len(parts))
-    return forecast.clip(lower=-cap, upper=cap)
+    forecast = cast(pd.DataFrame, sum(parts)) / float(len(parts))
+    return cast(pd.DataFrame, forecast.clip(lower=-cap, upper=cap))
 
 
 def trend_scale_long_only(
@@ -60,11 +62,12 @@ def trend_scale_long_only(
     Warmup (no forecast yet) -> NaN, which the caller treats as neutral (1.0)."""
     fc = combined_forecast(close, lookbacks, vol_window, cap)
     if scheme == "binary":
-        scale = fc.where(fc.isna(), (fc > 0).astype(float))
+        scale = cast(pd.DataFrame, fc.where(fc.isna(), (fc > 0).astype(float)))
         scale = scale.where(scale != 0.0, floor).where(fc.notna())
         return scale
     if scheme == "linear":
-        return (1.0 + fc / cap).clip(lower=floor, upper=1.0)  # cut on downside only
+        linear = cast(pd.DataFrame, 1.0 + fc / cap)
+        return cast(pd.DataFrame, linear.clip(lower=floor, upper=1.0))  # cut on downside only
     raise ValueError(f"unknown trend scheme '{scheme}' (use linear | binary)")
 
 

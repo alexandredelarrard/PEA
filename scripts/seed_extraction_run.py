@@ -103,8 +103,11 @@ def main() -> None:
     _, context = get_config_context("./configs", use_cache=False, save=False)
 
     if args.yes:
-        written = context.store.save(Tables.extraction_run, frame)
-        print(f"\nWrote {written} row(s) to {Tables.extraction_run} (run_id='seed').")
+        run_table = getattr(Tables, "extraction_run", None)
+        if run_table is None:
+            raise SystemExit("extraction_run is no longer registered; seeding is obsolete")
+        written = context.store.save(run_table, frame)
+        print(f"\nWrote {written} row(s) to {run_table} (run_id='seed').")
 
     if args.verify:
         from src.data_extract.utils.common.run_manifest import manifest_window

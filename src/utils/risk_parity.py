@@ -18,6 +18,8 @@ point-in-time weighting and no cross-package import.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -74,7 +76,8 @@ def cov_window(window_rets: pd.DataFrame, min_obs: int = 20) -> tuple[np.ndarray
     cols = [c for c in window_rets.columns if window_rets[c].notna().sum() >= min_obs]
     if not cols:
         return np.empty((0, 0)), []
-    cov = window_rets[cols].dropna(how="any").cov().to_numpy() * _ANN
+    complete = cast(pd.DataFrame, window_rets[cols].dropna(how="any"))
+    cov = complete.cov().to_numpy() * _ANN
     return cov, cols
 
 
@@ -112,7 +115,7 @@ def risk_on_score(
         v = vix.reindex(rets.index).ffill()
         vz = (v - v.rolling(z_win, min_periods=252).mean()) / v.rolling(z_win, min_periods=252).std()
         parts.append((0.5 - 0.5 * vz).clip(0.0, 1.0))
-    s = sum(parts) / float(len(parts))
+    s = cast(pd.Series, sum(parts)) / float(len(parts))
     return s.clip(0.0, 1.0).shift(1)
 
 
@@ -163,7 +166,7 @@ def base_weights(
             continue
         budget = None
         if score is not None:
-            s = score.get(t, np.nan)
+            s = cast(float, score.get(t, np.nan))
             s = 0.5 if not np.isfinite(s) else float(s)
             budget = tilted_budget(cols, s, offensive, off_share_range)
         if scheme == "erc":

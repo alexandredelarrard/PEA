@@ -17,6 +17,8 @@ moves, FIFO-matched into round trips, and upserted to the `strategy` table with 
 entry price, exit price and realized P&L.
 """
 
+from typing import Any, cast
+
 import click
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
@@ -37,7 +39,7 @@ def cli() -> None:
     "pictures + tables under data/output/portfolio/.",
     help_priority=1,
 )
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def backtest(config_path: str) -> None:
     # save=True so the analysis pictures + tables are written to data/output/portfolio/
     config, context = get_config_context(config_path, use_cache=False, save=True)
@@ -53,7 +55,7 @@ def backtest(config_path: str) -> None:
     "price_sold/pnl on the day they close.",
     help_priority=2,
 )
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def strategy_moves(config_path: str) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepStrategyMoves(context=context, config=config).run()

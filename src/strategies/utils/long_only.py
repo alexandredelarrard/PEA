@@ -10,6 +10,8 @@ shorts) so the book carries full market beta (~1) — it is the long leg of the 
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -65,7 +67,7 @@ def long_only_book(
         t, t1 = dates[i], dates[i + 1]
         if i % max(1, rebalance_freq) == 0:
             s = signal.loc[t].dropna()
-            cand = [tk for tk in s.index if tk in vol.columns and np.isfinite(vol.loc[t, tk]) and vol.loc[t, tk] > 0]
+            cand = [tk for tk in s.index if tk in vol.columns and np.isfinite(cast(float, vol.loc[t, tk])) and cast(float, vol.loc[t, tk]) > 0]
             if len(cand) >= min_names:
                 ranked = s[cand].sort_values(ascending=False)  # best signal first
                 rank = {tk: r for r, tk in enumerate(ranked.index)}

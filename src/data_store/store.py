@@ -14,7 +14,7 @@ import datetime as dt
 import io
 import logging
 from collections.abc import Iterator, Sequence
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -115,15 +115,18 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
         return upsert_dataframe(engine, df, name, list(resolve(name).pk))
 
     tbl = _reflect(engine, name)
-    df = df[[c for c in df.columns if c in tbl.c]]
+    df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])
     buf = io.StringIO()
     df.to_csv(buf, index=False, header=False, quoting=csv.QUOTE_MINIMAL)
     buf.seek(0)
     cols = ", ".join(f'"{c}"' for c in df.columns)
     raw = engine.raw_connection()
     try:
-        with raw.cursor() as cur:
+        cur = raw.cursor()
+        try:
             cur.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH (FORMAT csv)', buf)
+        finally:
+            cur.close()
         raw.commit()
     finally:
         raw.close()
@@ -227,7 +230,7 @@ def build_select(
             # "2024-03-22 00:00:00.000000" <= "2024-03-22" is lexically FALSE, which would
             # drop the very day the caller asked to include. This form is also right for a
             # TIMESTAMP column carrying intraday times.
-            end = pd.Timestamp(until).normalize() + pd.Timedelta(days=1)
+            end = cast(pd.Timestamp, pd.Timestamp(until)).normalize() + pd.Timedelta(days=1)
             stmt = stmt.where(column < _bind_date(column, end))
 
     if order_by is not None:
@@ -297,7 +300,7 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str],
     if df is None or df.empty:
         return 0
     tbl = _reflect(engine, name)
-    df = df[[c for c in df.columns if c in tbl.c]]  # only real columns
+    df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])  # only real columns
     records = _records(_coerce_temporal(df, tbl))
     dialect = engine.dialect.name
     n = len(records)
@@ -403,7 +406,7 @@ class DataStore:
         if value is None:
             return None
         try:
-            return pd.Timestamp(value).normalize()
+            return cast(pd.Timestamp, pd.Timestamp(value)).normalize()
         except (TypeError, ValueError):
             return None
 
@@ -432,7 +435,7 @@ class DataStore:
             if key is None or value is None:
                 continue
             try:
-                out[str(key)] = pd.Timestamp(value).normalize()
+                out[str(key)] = cast(pd.Timestamp, pd.Timestamp(value)).normalize()
             except (TypeError, ValueError):
                 continue
         return out
@@ -609,7 +612,7 @@ class DataStore:
         # is true for that very day -- it deleted the cutoff day and the append never brought
         # it back, silently losing one day per incremental run. Postgres hid this because its
         # column is a real TIMESTAMP.
-        boundary = pd.Timestamp(cutoff).normalize()
+        boundary = cast(pd.Timestamp, pd.Timestamp(cutoff)).normalize()
         if not inclusive:
             boundary += pd.Timedelta(days=1)
         with self.engine.begin() as conn:

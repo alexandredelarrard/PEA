@@ -1,15 +1,17 @@
 import os
+from typing import Any, cast
 
 import click
-from click.core import Command, Context
+from click.core import Command, Context, Group
 
 
-class CLI(click.MultiCommand):
-    def list_commands(self, ctx: Context):
+class CLI(Group):
+    def list_commands(self, ctx: Context) -> list[str]:
 
         plugins = []
-        for dir_name in os.listdir(__package__):
-            dir_path = os.path.join(__package__, dir_name)
+        package_name = cast(str, __package__)
+        for dir_name in os.listdir(package_name):
+            dir_path = os.path.join(package_name, dir_name)
             if os.path.isdir(dir_path):
                 for filename in os.listdir(dir_path):
                     if filename == "cli.py":
@@ -20,8 +22,8 @@ class CLI(click.MultiCommand):
 
     def get_command(self, ctx: Context, cmd_name: str) -> Command | None:
 
-        commands = {}
-        filename = os.path.join(__package__, cmd_name, "cli.py")
+        commands: dict[str, Any] = {}
+        filename = os.path.join(cast(str, __package__), cmd_name, "cli.py")
         try:
             with open(filename) as file:
                 code = compile(file.read(), filename, "exec")
@@ -36,7 +38,7 @@ class CLI(click.MultiCommand):
     context_settings=dict(help_option_names=["-h", "--help"], max_content_width=120),
 )
 @click.version_option(version="0.1.12")
-def main():
+def main() -> None:
     "WELCOME TO PACKAGE HART"
     pass
 

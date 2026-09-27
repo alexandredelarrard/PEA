@@ -4,6 +4,7 @@ import sys
 from io import StringIO
 from logging.config import dictConfig
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 from dotenv import find_dotenv, load_dotenv
@@ -191,8 +192,8 @@ def get_config_context(config_path: str, use_cache: bool, save: bool):
 
     config_dir = Path(config_path).resolve()
     try:
-        config = read_config(path=config_dir)
-        dictConfig(OmegaConf.to_container(config.logging))
+        config = read_config(path=str(config_dir))
+        dictConfig(cast(dict[str, Any], OmegaConf.to_container(config.logging)))
         set_seed(config)
     except FileNotFoundError:
         print(f"configuration file {config_path} not found ", file=sys.stderr)

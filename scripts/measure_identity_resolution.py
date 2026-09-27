@@ -40,8 +40,14 @@ OUT = Path("reports/2026-09-11")
 def _read(z: zipfile.ZipFile, names: dict[str, str], member: str, wanted: set[str]) -> pd.DataFrame:
     if member not in names:
         return pd.DataFrame()
-    frame = pd.read_csv(z.open(names[member]), sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in wanted)
-    frame.columns = [c.upper() for c in frame.columns]
+    frame = pd.read_csv(
+        z.open(names[member]),
+        sep="\t",
+        dtype=str,
+        low_memory=False,
+        usecols=lambda c: str(c).upper() in wanted,
+    )
+    frame.columns = [str(c).upper() for c in frame.columns]
     return frame
 
 

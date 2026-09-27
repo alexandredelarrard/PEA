@@ -17,6 +17,7 @@ from __future__ import annotations
 import pickle
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -56,7 +57,7 @@ def time_decay_weights(
 # 1. Assemble the modeling panel                                              #
 # --------------------------------------------------------------------------- #
 def make_panel(feature_panel: pd.DataFrame, label_df: pd.DataFrame, label_name: str = "y") -> pd.DataFrame:
-    lab = label_df.stack()
+    lab = cast(pd.Series, label_df.stack())
     lab.index.set_names(["date", "ticker"], inplace=True)
     lab = lab.rename(label_name).reset_index()
 
@@ -114,7 +115,7 @@ def build_monotone_constraints(
 # 2. Purged + embargoed walk-forward CV                                       #
 # --------------------------------------------------------------------------- #
 def purged_wf_splits(dates: pd.Series, n_splits: int = 5, embargo: int = 20):
-    unique_days = np.sort(pd.unique(dates))
+    unique_days = np.sort(np.asarray(pd.unique(dates)))
     n = len(unique_days)
     fold = n // (n_splits + 1)
     if fold <= embargo:
@@ -308,7 +309,7 @@ def train_ranker(
         feval=feval,
         callbacks=callbacks or None,
     )
-    booster.feature_names = feats
+    cast(Any, booster).feature_names = feats
     return booster
 
 
@@ -487,8 +488,9 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horiz
     for _, g in df.groupby("date", sort=True):
         if g["pred"].nunique() > 2 and g[label_name].nunique() > 2:
             ic, _ = spearmanr(g["pred"], g[label_name])
-            if np.isfinite(ic):
-                ics.append(ic)
+            ic_value = cast(float, ic)
+            if np.isfinite(ic_value):
+                ics.append(ic_value)
     ics = np.asarray(ics, dtype=float)
     n = len(ics)
     periods_per_year = trading_days_per_year / max(1, int(horizon))

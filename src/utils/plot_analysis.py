@@ -4,7 +4,16 @@ import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
 
 
-def var_vs_target(data, y_label, variable, bins=30, normalize=False):
+def var_vs_target(data, *args, **kwargs):
+    """Plot a variable against targets, accepting the legacy ``Y_label`` keyword."""
+    if "Y_label" in kwargs:
+        if "y_label" in kwargs:
+            raise TypeError("var_vs_target() got multiple values for argument 'y_label'")
+        kwargs["y_label"] = kwargs.pop("Y_label")
+    return _var_vs_target(data, *args, **kwargs)
+
+
+def _var_vs_target(data, y_label, variable, bins=30, normalize=False):
 
     if isinstance(y_label, str):
         y_label = [y_label]

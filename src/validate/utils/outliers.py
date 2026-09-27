@@ -210,7 +210,7 @@ def detect_level_outliers(
     if len(sub) < 3:
         return pd.DataFrame(columns=cols)
 
-    vals = sub["value"].astype(float).values
+    vals = sub["value"].to_numpy(dtype=float)
     # Decision 60: the QoQ LOG CHANGE, not the raw level. See the module docstring for the
     # 10x-growth measurement that retired the raw-level kernel, and for where this abstains.
     modified_z = _score_changes(log_change(vals, lag=1), fallback_to_mean_abs_dev=True)

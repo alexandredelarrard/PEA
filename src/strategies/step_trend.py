@@ -8,6 +8,8 @@ long/short book -> vol-targeted returns). Self-contained; no dependency on other
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from src.modelling.trend.signal import load_close, trend_book
@@ -34,10 +36,10 @@ class TrendCTAStrategy(Strategy):
             spread_bps=float(c.get("spread_bps", inputs.spread_bps)),
         )
 
-        ret = _slice(book["ret"].astype(float), inputs.start, inputs.end)
-        positions = _slice(book["positions"], inputs.start, inputs.end)
+        ret = _slice(cast(pd.Series, book["ret"]).astype(float), inputs.start, inputs.end)
+        positions = _slice(cast(pd.DataFrame, book["positions"]), inputs.start, inputs.end)
         self._log.info("trend_cta sleeve universe %s: %d days, ann-vol %.1f%%", list(close.columns), len(ret), float(ret.std() * (252**0.5)) * 100)
-        extra = {}
+        extra: dict[str, object] = {}
         if inputs.analysis:
             from src.strategies.analysis.common import load_market_refs
             from src.strategies.analysis.trend_analysis import analyze_trend
@@ -45,7 +47,8 @@ class TrendCTAStrategy(Strategy):
             sp = load_market_refs(self._context.store).get("sp", pd.Series(dtype=float))
             out_dir = self._context.paths["OUTPUT_DIR"] / "trend_cta" / "analysis"
             extra["analysis"] = analyze_trend(ret, positions, sp, out_dir)
-            self._log.info("trend_cta analysis: full beta_SP %.2f -> %s", extra["analysis"]["full_beta_sp"], out_dir)
+            analysis = cast(dict[str, object], extra["analysis"])
+            self._log.info("trend_cta analysis: full beta_SP %.2f -> %s", analysis["full_beta_sp"], out_dir)
         from src.strategies.utils.blotter import trade_blotter
 
         trades = trade_blotter(

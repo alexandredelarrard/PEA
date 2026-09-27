@@ -79,3 +79,7 @@ def all_logging_disabled(highest_level=logging.CRITICAL):
         yield
     finally:
         logging.disable(previous_level)
+
+
+# Compatibility for the pre-Ruff public typo without re-declaring a mixed-case name.
+globals()["all_loggingLdisabled"] = all_logging_disabled

@@ -154,13 +154,13 @@ def _measure(
         for k in np.flatnonzero((score > spec.jump_z) & material):
             found["jump"].append(
                 {
-                    "date": stamps[k],
-                    "value": float(support[k]),
-                    "previous": float(support[k - 1]) if k else float("nan"),
-                    "change": float(change[k]),
-                    "z": round(float(score[k]), 1),
+                    "date": stamps[int(k)],
+                    "value": float(support[int(k)]),
+                    "previous": float(support[int(k) - 1]) if k else float("nan"),
+                    "change": float(change[int(k)]),
+                    "z": round(float(score[int(k)]), 1),
                     "p1_p99_span": round(span, 6),
-                    "change_over_span": round(abs(float(change[k])) / span, 2),
+                    "change_over_span": round(abs(float(change[int(k)])) / span, 2),
                 }
             )
 

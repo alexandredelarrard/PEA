@@ -8,6 +8,8 @@ regime tilt + responsive leverage). Self-contained; no dependency on other strat
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from src.data_store.schema import Tables
@@ -62,11 +64,12 @@ class LongBookStrategy(Strategy):
             lev_max=float(c.get("lev_max", 2.0)),
         )
 
-        ret = _slice(res["net_ret"].astype(float), inputs.start, inputs.end)
-        alloc = res["alloc"].copy()
-        alloc["cash"] = res["alloc_cash"]
+        net_ret = cast(pd.Series, res["net_ret"])
+        ret = _slice(net_ret.astype(float), inputs.start, inputs.end)
+        alloc = cast(pd.DataFrame, res["alloc"]).copy()
+        alloc["cash"] = cast(pd.Series, res["alloc_cash"])
         self._log.info("long_book sleeve: %d days, ann-vol %.1f%%", len(ret), float(ret.std() * (252**0.5)) * 100)
-        extra = {"leverage": res["leverage"], "cash_weight": res["alloc_cash"]}
+        extra: dict[str, object] = {"leverage": res["leverage"], "cash_weight": res["alloc_cash"]}
         if inputs.analysis:
             from src.strategies.analysis.long_book_analysis import analyze_long_book
 
@@ -83,8 +86,8 @@ class LongBookStrategy(Strategy):
         dd["date"] = pd.to_datetime(dd["date"])
         dd = dd.sort_values("date").set_index("date")
         levels = pd.DataFrame({k: dd[v].astype(float) for k, v in _lvl.items() if v in dd.columns})
-        wl = res["weights"].copy()
-        wl["cash"] = res["alloc_cash"]
+        wl = cast(pd.DataFrame, res["weights"]).copy()
+        wl["cash"] = cast(pd.Series, res["alloc_cash"])
         book = _slice(wl, inputs.start, inputs.end)
         trades = trade_blotter(
             book, inputs.capital, float(c.get("fee_bps", inputs.fee_bps)), float(c.get("spread_bps", inputs.spread_bps)), self.name, prices=levels

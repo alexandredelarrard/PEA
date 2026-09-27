@@ -29,23 +29,23 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from src.constants.constants import MACRO_ALL_SERIES, MACRO_MARKET_SERIES
+from src.constants.constants_price import MACRO_ALL_SERIES, MACRO_MARKET_SERIES
 from src.context import get_config_context
 from src.data_aggregate.utils.assemble.cube import TARGET_COL_RE
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
 
 
-def _window(a, b):
+def _window(a: str, b: str) -> tuple[pd.Timestamp, pd.Timestamp]:
     return pd.Timestamp(a), pd.Timestamp(b)
 
 
 def main(lo: str, hi: str):
-    lo, hi = _window(lo, hi)
+    lo_date, hi_date = _window(lo, hi)
     config, context = get_config_context("./configs", use_cache=False, save=False)
     store = context.store
 
-    print(f"\n==== Diagnosing missing window {lo.date()} .. {hi.date()} (market series={MACRO_MARKET_SERIES}) ====\n")
+    print(f"\n==== Diagnosing missing window {lo_date.date()} .. {hi_date.date()} (market series={MACRO_MARKET_SERIES}) ====\n")
 
     # ---- 1. RAW EQUITY PRICES ------------------------------------------------
     print(f"1. RAW PRICES  {Tables.prices}")
@@ -55,7 +55,7 @@ def main(lo: str, hi: str):
         return
     dmin, dmax = pd.Timestamp(dmin), pd.Timestamp(dmax)
     print(f"   overall date range: {dmin.date()} .. {dmax.date()}")
-    if hi > dmax:
+    if hi_date > dmax:
         print(
             f"   >>> window END is AFTER the last price date ({dmax.date()}). "
             f"This is a TAIL case: forward-return targets need ~max(horizon) trading days "
@@ -66,7 +66,7 @@ def main(lo: str, hi: str):
     # projected + bounded: `prices` is ~1.8M rows and only the window is needed
     # `close_split` is never null when `close_total` is, so it defines the widest grid --
     # which is what a coverage diagnostic wants.
-    win = store.load(Tables.prices, columns=["date", "ticker", "close_split"], since=lo, until=hi, optional=True)
+    win = store.load(Tables.prices, columns=["date", "ticker", "close_split"], since=lo_date, until=hi_date, optional=True)
     if win is None:
         print("   rows in window: 0  -> the whole window is absent from `prices`.")
         close = pd.DataFrame()
@@ -93,7 +93,7 @@ def main(lo: str, hi: str):
             f"the whole cube calendar is undefined. FIX = run `data_extract macro`."
         )
     else:
-        mw = mkt.loc[(mkt.index >= lo) & (mkt.index <= hi)]
+        mw = mkt.loc[(mkt.index >= lo_date) & (mkt.index <= hi_date)]
         n_dates, n_valid = len(mw), int(mw.notna().sum())
         print(f"   {MACRO_MARKET_SERIES} rows present in window: {n_dates}  non-NaN: {n_valid}")
         if n_dates == 0:
@@ -121,7 +121,7 @@ def main(lo: str, hi: str):
             print(f"   {name:<20} ABSENT from {Tables.prices_macro}")
             continue
         s = macro[name]
-        sw = s.loc[(s.index >= lo) & (s.index <= hi)]
+        sw = s.loc[(s.index >= lo_date) & (s.index <= hi_date)]
         print(
             f"   {name:<20} rows {len(sw):>3}  non-NaN {int(sw.notna().sum()):>3}  "
             f"(history {s.dropna().index.min().date() if s.notna().any() else '-'} ..)"
@@ -138,7 +138,7 @@ def main(lo: str, hi: str):
         # actually carry a value on", which is what separates a MISSING date from a date that
         # is present but whose label is still immature (NaN).
         tcols = sorted(c for c in store.columns(Tables.cube) if TARGET_COL_RE.match(c))
-        cw = store.load(Tables.cube, columns=["date", "ticker"] + tcols, since=lo, until=hi, optional=True)
+        cw = store.load(Tables.cube, columns=["date", "ticker"] + tcols, since=lo_date, until=hi_date, optional=True)
         if cw is None:
             print("   cube rows in window: 0")
         else:

@@ -29,6 +29,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -121,10 +122,10 @@ def section_before_after(ledger: pd.DataFrame) -> pd.DataFrame:
     # `fiscal_year` is not in JOIN_KEY, so the merge suffixed it; the two sides agree by
     # construction (same fact) and the `_after` copy is the one production produced.
     both["fiscal_year"] = pd.to_numeric(both["fiscal_year_after"], errors="coerce")
-    for year, group in both.dropna(subset=["fiscal_year"]).groupby(lambda i: int(both.loc[i, "fiscal_year"]), sort=True):
+    for year, group in both.dropna(subset=["fiscal_year"]).groupby(lambda i: int(cast(int, both.at[i, "fiscal_year"])), sort=True):
         mv = group[~group["value_agreed"]]
         print(
-            f"    {int(year):<6d} {len(group):8,d} {group['route_changed'].mean():9.2%} "
+            f"    {int(cast(int, year)):<6d} {len(group):8,d} {group['route_changed'].mean():9.2%} "
             f"{group['value_agreed'].mean():11.3%} {len(mv):7,d} "
             f"{int((mv['relative'] > MATERIAL).sum()):9,d}"
         )
@@ -148,7 +149,8 @@ def section_material_disagreements(both: pd.DataFrame) -> None:
         )
         .sort_values("rows", ascending=False)
     )
-    for (ticker, field), row in grouped.iterrows():
+    for key, row in grouped.iterrows():
+        ticker, field = cast(tuple[str, str], key)
         print(f"    {ticker:6s} {field:22s} {int(row['rows']):4d} rows  median {row['median_rel']:8.2%}  max {row['max_rel']:9.2%}")
         print(f"           before: {row['before']}")
         print(f"           after : {row['after']}")
@@ -169,7 +171,8 @@ def section_guard_census(strict: pd.DataFrame) -> None:
     if undeclared.any():
         hits = strict[undeclared]
         print("    by (ticker, field):")
-        for (ticker, field), n in hits.groupby(["ticker", "field"]).size().sort_values(ascending=False).items():
+        for key, n in hits.groupby(["ticker", "field"]).size().sort_values(ascending=False).items():
+            ticker, field = cast(tuple[str, str], key)
             withheld = sorted(
                 {
                     c
@@ -227,7 +230,8 @@ def section_duplicates(strict: pd.DataFrame) -> None:
     grouped = (
         frame.groupby(["ticker", "field"]).agg(n=("relative", "size"), max_rel=("relative", "max")).sort_values("max_rel", ascending=False).head(20)
     )
-    for (ticker, field), row in grouped.iterrows():
+    for key, row in grouped.iterrows():
+        ticker, field = cast(tuple[str, str], key)
         print(f"    {ticker:6s} {field:22s} {int(row['n']):4d}  worst {row['max_rel']:8.4%}")
     print("\n  a sample, showing which precision won:")
     for r in frame.sort_values("relative", ascending=False).head(6).itertuples():
@@ -290,7 +294,7 @@ def section_long_term_debt(strict: pd.DataFrame) -> None:
             print(f"  {ticker:7s} {len(group):6d} {0:7d}  NEVER RESOLVES -- {codes}")
             continue
         mix = v["source_concept"].value_counts(normalize=True)
-        parts = ", ".join(f"{c.split(':')[-1]} {s:.0%}" for c, s in mix.head(3).items())
+        parts = ", ".join(f"{cast(str, c).split(':')[-1]} {s:.0%}" for c, s in mix.head(3).items())
         print(f"  {ticker:7s} {len(group):6d} {len(v):7d}  {parts}")
     hits = valued[valued["source_concept"].astype(str).str.endswith(":LongTermDebt")]
     print(f"\n  rows resolved on the CONTAMINATED concept `us-gaap:LongTermDebt`: {len(hits):,} across {hits['ticker'].nunique()} ticker(s)")
@@ -372,6 +376,7 @@ def section_ambiguous_duration(strict):
     print(f"  total D1b refusals: {len(frame)}")
     if not frame.empty:
         for r in frame.sort_values(["ticker", "field", "period_end"]).itertuples():
+            r = cast(Any, r)
             print(f"    {r.ticker:6s} {r.field:16s} {str(r.period_end)[:10]}  {float(r.value) / 1e6:>12,.1f}M  known_from {str(r.known_from)[:10]}")
         print(f"\n  distinct (ticker, field, period): {frame.groupby(['ticker', 'field', 'period_end']).ngroups}")
         print(f"  tickers affected: {sorted(frame['ticker'].unique())}")
@@ -528,6 +533,7 @@ def section_annual_footing(strict, quarters):
     if not flips.empty:
         print(f"\nSIGN-CONVENTION cases excluded from the rates below: {len(flips)} (equal magnitude, opposite sign -- a different defect class)")
         for r in flips.sort_values(["ticker", "field"]).itertuples():
+            r = cast(Any, r)
             print(f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M")
     frame = frame[~frame.sign_flip]
     for label, sub in (
@@ -554,7 +560,7 @@ def section_annual_footing(strict, quarters):
         per_field = (
             independent.groupby("field")["relative"]
             .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(), median="median", worst="max")
-            .sort_values("within_2pc")
+            .pipe(lambda result: cast(Any, result).sort_values("within_2pc"))
         )
         print(f"    {'field':24s} {'n':>5s} {'within 2%':>10s} {'median':>10s} {'worst':>9s}")
         for field, row in per_field.iterrows():
@@ -564,7 +570,7 @@ def section_annual_footing(strict, quarters):
         per_ticker = (
             independent.groupby("ticker")["relative"]
             .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(), worst="max")
-            .sort_values(["within_2pc", "worst"], ascending=[True, False])
+            .pipe(lambda result: cast(Any, result).sort_values(["within_2pc", "worst"], ascending=[True, False]))
         )
         for ticker, row in per_ticker.head(15).iterrows():
             print(f"    {ticker:6s} n={int(row['n']):4d}  within 2% {row['within_2pc']:7.2%}  worst {row['worst']:8.2%}")
@@ -573,6 +579,7 @@ def section_annual_footing(strict, quarters):
         bad = independent[independent["relative"] > 0.02].sort_values("relative", ascending=False)
         print(f"    {len(bad)} of {len(independent)} ({len(bad) / len(independent):.2%})")
         for r in bad.head(40).itertuples():
+            r = cast(Any, r)
             print(
                 f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  "
                 f"summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M  "

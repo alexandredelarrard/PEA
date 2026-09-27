@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -81,7 +82,7 @@ def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
         for chunk in context.store.iter_load(table, columns=[unit, date_col], date_col=date_col, since=since):
             years = pd.to_datetime(chunk[date_col], errors="coerce").dt.year
             for year, values in chunk.assign(_y=years).dropna(subset=["_y"]).groupby("_y")[unit]:
-                per_year.setdefault(int(year), set()).update(values.dropna().unique())
+                per_year.setdefault(int(cast(int, year)), set()).update(values.dropna().unique())
         if per_year:
             columns[label] = pd.Series({y: len(v) for y, v in per_year.items()})
     if not columns:

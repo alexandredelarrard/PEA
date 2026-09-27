@@ -19,6 +19,7 @@ the roster itself comes from `utils/superinvestor_roster.roster_as_of`.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pandas as pd
 
@@ -163,7 +164,8 @@ def _superinvestor_events(d: pd.DataFrame) -> pd.DataFrame:
     cal = _published_calendar(d)
     d = d.merge(cal[["cik", "period"]], on=["cik", "period"], how="inner")
     pairs = d[["cik", "ticker"]].drop_duplicates()
-    first_period = d.groupby(["cik", "ticker"], as_index=False)["period"].min().rename(columns={"period": "_first_period"})
+    first_period = cast(pd.DataFrame, d.groupby(["cik", "ticker"], as_index=False)["period"].min())
+    first_period = first_period.rename(columns={"period": "_first_period"})
 
     full = pairs.merge(cal, on="cik", how="left").merge(first_period, on=["cik", "ticker"], how="left")
     full = full[full["period"] >= full["_first_period"]]  # never fabricate pre-history
@@ -208,12 +210,12 @@ def _expand_daily(events: pd.DataFrame, end: pd.Timestamp, group_keys: list[str]
     out = []
     for key, t in events.groupby(group_keys, sort=False):
         t = t.set_index("as_of").sort_index()
-        idx = pd.bdate_range(t.index.min(), max(end, t.index.max())).union(t.index)
+        idx = pd.bdate_range(t.index.min(), max(end, t.index.max())).union(pd.DatetimeIndex(t.index))
         r = t.reindex(idx)
         r[_SUPER_LEVEL_COLS] = r[_SUPER_LEVEL_COLS].ffill()
         r[_SUPER_FLOW_COLS] = r[_SUPER_FLOW_COLS].fillna(0.0)
         for name, value in zip(group_keys, key if isinstance(key, tuple) else (key,), strict=False):
-            r[name] = value
+            r[name] = cast(Any, value)
         out.append(r.rename_axis("as_of").reset_index())
     return pd.concat(out, ignore_index=True)
 

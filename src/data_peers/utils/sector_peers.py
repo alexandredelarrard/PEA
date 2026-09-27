@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -37,17 +38,17 @@ DUAL_CLASS_SECONDARY_TO_PRIMARY: dict[str, str] = {
 
 def _weights_from_similarity(sim_row: pd.Series, top_k: int, weighting: str) -> dict:
     """Top-k peers from one row of a similarity matrix (self excluded)."""
-    peers = sim_row.drop(labels=[sim_row.name], errors="ignore").dropna()
+    peers = cast(pd.Series, sim_row.drop(labels=[sim_row.name], errors="ignore").dropna())
     if peers.empty:
         return {}
-    top = peers.sort_values(ascending=False).head(top_k)
-    top = top[top > 0]
+    top = cast(pd.Series, peers.sort_values(ascending=False).head(top_k))
+    top = cast(pd.Series, top[top > 0])
     if top.empty:
         return {}
     if weighting == "equal":
         w = pd.Series(1.0, index=top.index)
     elif weighting == "corr":  # weight by similarity strength
-        w = top.clip(lower=0.0)
+        w = cast(pd.Series, top.clip(lower=0.0))
     else:
         raise ValueError("weighting must be 'equal' or 'corr'")
     w = w / w.sum()

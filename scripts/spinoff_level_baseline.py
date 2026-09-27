@@ -45,6 +45,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -56,12 +57,11 @@ if str(ROOT) not in sys.path:
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
-from src.validate.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
-
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import get_config_context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 from src.data_store.schema import Tables
+from src.validate.utils.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
 
 #: Names with a spinoff in their history and no `sharadar_actions` row to explain it -- the
 #: cohort the whole plan exists for. Each one's `S` is a yfinance-only price factor.
@@ -327,6 +327,7 @@ def dividend_leg_question(store, panel: pd.DataFrame) -> dict:
     ttm = []
     by_ticker = {t: g.sort_values("date") for t, g in div.groupby("ticker")}
     for row in keys.itertuples():
+        row = cast(Any, row)
         g = by_ticker.get(row.ticker)
         if g is None:
             ttm.append(np.nan)
@@ -427,8 +428,8 @@ def _cohort_verdict(frame: pd.DataFrame, what: str) -> dict:
     detail = {"n": int(len(hit))}
     verdict = f"INDETERMINATE -- only {len(hit)} rows with |S-1| > {STRONG_FACTOR:.0%}, too few to separate the hypotheses"
     if len(hit) >= MIN_VERDICT_ROWS:
-        d_cancel = float(np.abs(np.log(hit["ratio"])).median())
-        d_broken = float(np.abs(np.log(hit["ratio"] / hit["level_factor"])).median())
+        d_cancel = float(np.median(np.abs(np.log(hit["ratio"]))))
+        d_broken = float(np.median(np.abs(np.log(hit["ratio"] / hit["level_factor"]))))
         detail |= {
             "median_S": round(float(hit["level_factor"].median()), 4),
             "median_ratio": round(float(hit["ratio"].median()), 4),
@@ -504,7 +505,7 @@ def return_controls(store) -> dict:
     on both sides of the change. `cube_part_prices` is digested too when its columns exist."""
     px = store.load(Tables.prices, columns=["ticker", "date", "close_total"])
     px = _as_ns(px, "date").sort_values(["ticker", "date"])
-    ret = px.groupby("ticker")["close_total"].pct_change(fill_method=None)
+    ret = cast(Any, px.groupby("ticker")["close_total"]).pct_change(fill_method=None)
 
     out = {"source": "prices", "rows": int(len(px)), "close_total_digest": _digest(px["close_total"]), "ret_from_close_total_digest": _digest(ret)}
 

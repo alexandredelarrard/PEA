@@ -29,6 +29,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -175,7 +176,8 @@ def _spot_co_peo(exe: pd.DataFrame) -> None:
         f"    {len(peo)} PEO-titled row(s) over {sub['accession_number'].nunique()} filing(s); "
         f"{len(multi)} (ticker, filing, year) group(s) carry more than one"
     )
-    for (t, acc, fy), n in multi.head(8).items():
+    for key, n in multi.head(8).items():
+        t, acc, fy = cast(tuple[str, str, int], key)
         names = peo[(peo["accession_number"] == acc) & (peo["fiscal_year"] == fy)]
         print(f"      {t} FY{int(fy)} {acc}: {n} — " + "; ".join(f"{r['name']} ({r['title']})" for _, r in names.iterrows()))
     if multi.empty:

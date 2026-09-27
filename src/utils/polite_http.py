@@ -29,6 +29,7 @@ import os
 import random
 import time
 from email.utils import parsedate_to_datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 import requests
@@ -171,7 +172,7 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
     Cloudflare/JA3), else a plain requests GET (friendly REST APIs). Returns a response
     (.status_code/.text/.headers/.json) or None on a transport error. Isolated so tests can
     monkeypatch the transport."""
-    proxies = resolve_proxy()
+    proxies: Any = resolve_proxy()
     if impersonate:
         try:
             prof = random.choice(IMPERSONATE_POOL)

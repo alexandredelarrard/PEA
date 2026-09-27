@@ -13,6 +13,8 @@ for this run (leaving them out uses the config as-is). The step trains one per-h
 reads them back), the `predictions` / `cube_signal` tables, and the per-run diagnostics pictures.
 """
 
+from typing import Any, cast
+
 import click
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
@@ -32,7 +34,7 @@ def cli() -> None:
     "Saves model artifacts + metadata.json + predictions + diagnostics.",
     help_priority=1,
 )
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--train-start", default=None, help="Override train.start_date (YYYY-MM-DD).")
 @click.option("--train-end", default=None, help="Override train.end_date (YYYY-MM-DD).")
 def train(config_path: str, train_start: str | None, train_end: str | None) -> None:
@@ -51,7 +53,7 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
     "no OOS holdout). Runs after the backtest; the fitted model feeds `predict`.",
     help_priority=2,
 )
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def full_train(config_path: str) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepModelling(context=context, config=config).run(full_history=True)
@@ -63,7 +65,7 @@ def full_train(config_path: str) -> None:
     "artifacts from disk; no retraining.",
     help_priority=3,
 )
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--n-dates", default=1, show_default=True, type=int, help="How many of the most recent cube dates to predict.")
 def predict(config_path: str, n_dates: int) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)

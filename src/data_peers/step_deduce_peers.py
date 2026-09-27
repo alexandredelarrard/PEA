@@ -1,3 +1,6 @@
+from typing import cast
+
+import pandas as pd
 from omegaconf import DictConfig
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
@@ -56,8 +59,10 @@ class StepDeducePeers(Step):
         return self.peers
 
     def normalize_prices(self):
-
-        raw = du.prices_long_to_multiindex(self.prices_long)
+        prices_long = self.prices_long
+        if prices_long is None:
+            raise RuntimeError("prices must be loaded before normalization")
+        raw = du.prices_long_to_multiindex(prices_long)
         # `CloseTotal`: the peer graph is built from the CORRELATION of daily returns, so it
         # needs the buy-and-hold path. On the price-only series two names with different
         # dividend policies look less correlated than they are.
@@ -126,7 +131,7 @@ class StepDeducePeers(Step):
 
         if embed_sim is not None:
             self.peers = build_peer_dict_hybrid(
-                self.stock_ret,
+                cast(pd.DataFrame, self.stock_ret),
                 embed_sim,
                 top_k=self._cfg.top_k,
                 weighting=self._cfg.weighting,

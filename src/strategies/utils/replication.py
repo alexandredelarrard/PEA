@@ -38,6 +38,7 @@ days later (default 1) at that day's close.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 
@@ -99,7 +100,7 @@ def replicate_superinvestors(
         keep = shares_w.index <= pd.Timestamp(end)
         shares_w, net_w, init_w = shares_w[keep], net_w[keep], init_w[keep]
 
-    close = _close_panel(prices, shares_w.index, list(shares_w.columns))
+    close = _close_panel(prices, pd.DatetimeIndex(shares_w.index), list(shares_w.columns))
     tradable = [t for t in shares_w.columns if close[t].notna().any()]
     shares_w, net_w, init_w, close = (shares_w[tradable], net_w[tradable], init_w[tradable], close[tradable])
     held_w = shares_w.fillna(0.0)
@@ -189,9 +190,9 @@ def replicate_superinvestors(
         cash_hist.append(cash)
         book.append((shares * px).to_numpy(copy=True))  # $ position, priced at t
 
-    eq = pd.Series(equity, index=dates, dtype=float)
-    inv_s = pd.Series(invested, index=dates, dtype=float)
-    cash_s = pd.Series(cash_hist, index=dates, dtype=float)
+    eq = cast(pd.Series, pd.Series(equity, index=dates, dtype=float))
+    inv_s = cast(pd.Series, pd.Series(invested, index=dates, dtype=float))
+    cash_s = cast(pd.Series, pd.Series(cash_hist, index=dates, dtype=float))
     # day 0 is measured against the capital handed in, NOT against itself: establishing the
     # book costs a fee, and a `pct_change` first value of 0 would hide that entry cost from the
     # return series (and let `(1+r).cumprod()*capital` drift above the real equity path)
@@ -204,7 +205,7 @@ def replicate_superinvestors(
     # Micron position he had already sold -- none of them can see a position that simply should
     # not exist. Measured on VALUE, not shares: a delisted name with no price contributes
     # nothing to equity and cannot be sold, so flagging it would be a false positive.
-    orphan = book_val.where(held_lag.loc[dates].fillna(0.0) <= 0, 0.0).abs().sum(axis=1)
+    orphan = cast(pd.Series, book_val.where(held_lag.loc[dates].fillna(0.0) <= 0, 0.0).abs().sum(axis=1))
     orphan_weight = (orphan / eq.where(eq > 0)).fillna(0.0)
 
     trades = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date", "sold_usd", "bought_usd", "cost_usd", "buy_capped"])

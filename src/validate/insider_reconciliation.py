@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -143,7 +143,10 @@ def replay_completed_quarter(
             }
 
         for filing in filings:
-            filing_date = pd.to_datetime(getattr(filing, "filing_date", None), errors="coerce")
+            raw_filing_date = getattr(filing, "filing_date", None)
+            if raw_filing_date is None:
+                continue
+            filing_date = cast(pd.Timestamp, pd.to_datetime(raw_filing_date, errors="coerce"))
             if pd.isna(filing_date) or not start <= filing_date.normalize() <= end:
                 continue
             accession = str(getattr(filing, "accession_number", ""))
@@ -171,11 +174,14 @@ def replay_completed_quarter(
             "errors": errors,
         }
 
-    results = run_per_ticker(
-        cik_map,
-        worker,
-        desc=f"insider parity {quarter}",
-        max_workers=max_workers,
+    results = cast(
+        list[dict[str, Any]],
+        run_per_ticker(
+            cik_map,
+            worker,
+            desc=f"insider parity {quarter}",
+            max_workers=max_workers,
+        ),
     )
     frames = [frame for result in results for frame in result["frames"] if isinstance(frame, pd.DataFrame) and not frame.empty]
     live = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(columns=_PARITY_COLUMNS)
@@ -257,6 +263,8 @@ def run_completed_quarter_reconciliation(
         columns=_PARITY_COLUMNS,
         where={"quarter": str(quarter).lower()},
     )
+    if bulk is None:
+        raise RuntimeError(f"'{Tables.insider_transactions}' returned no bulk transaction frame")
     cache_path = Path(replay_cache) if replay_cache is not None else None
     metadata_path = cache_path.with_suffix(".json") if cache_path is not None else None
     if cache_path is not None and metadata_path is not None and cache_path.exists() and metadata_path.exists() and not refresh_replay:

@@ -28,6 +28,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -180,7 +181,7 @@ def mcap_error_by_year(panel: pd.DataFrame) -> dict:
         e = g["mcap_error"].dropna()
         if e.empty:
             continue
-        out[str(int(year))] = {
+        out[str(int(cast(int, year)))] = {
             "n": int(e.size),
             "median": round(float(e.median()), 4),
             "p05": round(float(e.quantile(0.05)), 4),
@@ -198,7 +199,7 @@ def error_decomposition(panel: pd.DataFrame) -> dict:
         g = g.dropna(subset=["mcap_error", "split_part", "dividend_part"])
         if g.empty:
             continue
-        out[str(int(year))] = {
+        out[str(int(cast(int, year)))] = {
             "n": int(len(g)),
             "split_part": round(float(g["split_part"].median()), 4),
             "dividend_part": round(float(g["dividend_part"].median()), 4),
@@ -237,7 +238,7 @@ def dividend_part_quintiles(panel: pd.DataFrame) -> dict:
     g["q"] = _xs_quintile(g, "dividend_part")
     out = {}
     for q, sub in g.dropna(subset=["q"]).groupby("q"):
-        out[f"Q{int(q)}"] = {
+        out[f"Q{int(cast(int, q))}"] = {
             "n": int(len(sub)),
             "mean_dividend_part": round(float(sub["dividend_part"].mean()), 4),
             "mean_fwd_12m": round(float(sub["fwd_12m"].mean()), 4),
@@ -251,7 +252,8 @@ def combined_error_quintiles(panel: pd.DataFrame) -> dict:
     g = panel.dropna(subset=["mcap_error", "fwd_12m"]).copy()
     g["q"] = _xs_quintile(g, "mcap_error")
     return {
-        f"Q{int(q)}": {"n": int(len(sub)), "mean_fwd_12m": round(float(sub["fwd_12m"].mean()), 4)} for q, sub in g.dropna(subset=["q"]).groupby("q")
+        f"Q{int(cast(int, q))}": {"n": int(len(sub)), "mean_fwd_12m": round(float(sub["fwd_12m"].mean()), 4)}
+        for q, sub in g.dropna(subset=["q"]).groupby("q")
     }
 
 
@@ -316,14 +318,19 @@ def spike_revert_scan(prices: pd.DataFrame) -> dict:
     the three MNST seams post-2020, plus FITB 2009-02-06 and HIG 2008-11-03 -- both genuine
     GFC round-trips, and both pre-2020, so the post-2020 count is the one to gate on."""
     px = prices.sort_values(["ticker", "date"]).copy()
-    px["ret"] = px.groupby("ticker")["close"].pct_change(fill_method=None)
+    px["ret"] = cast(Any, px.groupby("ticker")["close"]).pct_change(fill_method=None)
     pre_jump = px.groupby("ticker")["close"].shift(1)
     ahead = [(px.groupby("ticker")["close"].shift(-i) / pre_jump - 1).abs() for i in range(1, SPIKE_REVERT_BARS + 1)]
     px["revert_gap"] = pd.concat(ahead, axis=1).min(axis=1)
 
     hit = px[(px["ret"].abs() > SPIKE_THRESHOLD) & (px["revert_gap"] < SPIKE_REVERT_BAND)]
     events = [
-        {"ticker": row.ticker, "date": row.date.strftime("%Y-%m-%d"), "ret": round(float(row.ret), 4), "revert_gap": round(float(row.revert_gap), 4)}
+        {
+            "ticker": cast(Any, row).ticker,
+            "date": cast(Any, row).date.strftime("%Y-%m-%d"),
+            "ret": round(float(cast(Any, row).ret), 4),
+            "revert_gap": round(float(cast(Any, row).revert_gap), 4),
+        }
         for row in hit.sort_values(["date", "ticker"]).itertuples()
     ]
     post2020 = [e for e in events if e["date"] >= "2020-01-01"]

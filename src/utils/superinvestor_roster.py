@@ -24,6 +24,7 @@ highest. Survivorship bias correlated with the selection rule is the worst kind.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 
@@ -62,7 +63,7 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
         df = df[df["snapshot_date"] <= pd.Timestamp(as_of)]
         if df.empty:
             return None
-    return df[df["snapshot_date"] == df["snapshot_date"].max()]
+    return cast(pd.DataFrame, df[df["snapshot_date"] == df["snapshot_date"].max()])
 
 
 def roster_as_of(context: Context, as_of=None) -> set[str]:
@@ -101,7 +102,10 @@ def first_snapshot_date(context: Context) -> pd.Timestamp | None:
     the oldest roster backwards is a compromise, but the alternative is today's roster,
     which is the survivorship bias this table exists to remove."""
     df = _load(context)
-    return None if df is None else pd.Timestamp(df["snapshot_date"].min())
+    if df is None:
+        return None
+    snapshot_dates = cast(pd.Series, df["snapshot_date"])
+    return cast(pd.Timestamp, pd.Timestamp(snapshot_dates.min()))
 
 
 def roster_cik_union(context: Context) -> set[str]:

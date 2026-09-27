@@ -60,10 +60,10 @@ N_RANDOM = 10
 SNAPSHOT_TABLES = {
     "def14a_llm": Tables.def14a_llm,
     "sec_def14a": Tables.def14a_edgar,
-    "sec_def14a_executive_comp": Tables.def14a_edgar_executive_comp,
-    "sec_def14a_director_comp": Tables.def14a_edgar_director_comp,
-    "sec_def14a_ownership": Tables.def14a_edgar_ownership,
-    "sec_def14a_votes": Tables.def14a_edgar_votes,
+    "sec_def14a_executive_comp": Tables.def14a_executive_comp,
+    "sec_def14a_director_comp": Tables.def14a_director_comp,
+    "sec_def14a_ownership": Tables.def14a_ownership,
+    "sec_def14a_votes": Tables.sec_8k_votes,
 }
 #: `item_text` is the only wide column and Phase 5 needs it, so the projection is explicit
 #: rather than a full read (AGENTS.md: never read a large table unprojected).

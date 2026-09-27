@@ -14,6 +14,8 @@ Reuses the shared risk-parity primitives (src/utils/risk_parity) and trend overl
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -107,13 +109,13 @@ def allocation_backtest(
     held0 = book.shift(1)
     pre_ret = (held0 * rets).sum(axis=1) + (1.0 - held0.sum(axis=1)) * cash_ret
     if vol_mode == "ewma":
-        pv = np.sqrt(pre_ret.pow(2).ewm(halflife=cov_halflife).mean()).shift(1) * np.sqrt(_ANN)
+        pv = pre_ret.pow(2).ewm(halflife=cov_halflife).mean().pow(0.5).shift(1) * np.sqrt(_ANN)
     else:
         pv = pre_ret.rolling(vol_window, min_periods=max(10, vol_window // 2)).std().shift(1) * np.sqrt(_ANN)
     raw_lev = portfolio_vol_target / pv
     if lev_responsive and score is not None:
         cap = (lev_min + (lev_max - lev_min) * score.reindex(raw_lev.index)).clip(lev_min, lev_max)
-        lev = np.minimum(raw_lev, cap.fillna(lev_min))
+        lev = raw_lev.clip(upper=cap.fillna(lev_min))
     else:
         lev = raw_lev.clip(upper=max_leverage)
     lev = lev.where(np.isfinite(lev)).fillna(1.0)
@@ -157,7 +159,7 @@ def sweep_trend_params(rets: pd.DataFrame, cash_ret: pd.Series, grid: list[dict]
     for override in grid:
         clean = {k: v for k, v in override.items() if not k.startswith("_")}
         res = allocation_backtest(rets, cash_ret, **{**base_kwargs, **clean})
-        m = series_metrics(res["net_ret"], rf_annual)
+        m = series_metrics(cast(pd.Series, res["net_ret"]), rf_annual)
         label = override.get("_label") or ", ".join(f"{k}={v}" for k, v in clean.items())
         rows.append({"config": label, **{k: round(v, 3) for k, v in m.items()}})
     return pd.DataFrame(rows)

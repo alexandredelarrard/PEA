@@ -38,6 +38,7 @@ is unit-tested; only the day loop touches state.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -318,7 +319,7 @@ def simulate_portfolio_opt(
     collect_weights: bool = False,  # stash the per-day held per-name weights on out.attrs["weights"]
 ) -> pd.DataFrame:
     cost_rate = (fee_bps + spread_bps) / 1e4
-    weights_hist: dict = {} if collect_weights else None
+    weights_hist: dict | None = {} if collect_weights else None
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
     smap = sector_map if (sector_neutral and sector_map) else None
     reg_scale = regime_vol_scale(spy_ret, regime_vol_window, regime_target_vol, regime_scale_floor, regime_scale_cap) if vol_scaling else None
@@ -376,10 +377,11 @@ def simulate_portfolio_opt(
         turnover = (w - prev_w).abs().sum()
         cost = turnover * cost_rate
         r_stocks = stock_ret.loc[t1, tickers].fillna(0.0)
-        r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
+        raw_spy = float(cast(float, spy_ret.at[t1]))
+        r_spy = raw_spy if np.isfinite(raw_spy) else 0.0
         # split the P&L into its two sleeves so each param's effect is observable
-        alpha_ret = float((w[tickers] * r_stocks).sum())
-        mkt_ret = float(w["SPY"] * r_spy)
+        alpha_ret = float(cast(float, (w[tickers] * r_stocks).sum()))
+        mkt_ret = float(cast(float, w["SPY"]) * r_spy)
         gross = alpha_ret + mkt_ret
         net = gross - cost
         portfolio_value *= 1.0 + net
@@ -480,10 +482,10 @@ def simulate_integer_ls(
                 tk
                 for tk in s.index
                 if tk in beta_df.columns
-                and np.isfinite(beta_df.loc[t, tk])
-                and np.isfinite(var_df.loc[t, tk])
-                and np.isfinite(close.loc[t, tk])
-                and close.loc[t, tk] > 0
+                and np.isfinite(float(cast(float, beta_df.at[t, tk])))
+                and np.isfinite(float(cast(float, var_df.at[t, tk])))
+                and np.isfinite(float(cast(float, close.at[t, tk])))
+                and float(cast(float, close.at[t, tk])) > 0
             ]
             if len(common) >= 10:
                 a = s[common].to_numpy(float)
@@ -498,7 +500,7 @@ def simulate_integer_ls(
                 tw = pd.Series(w_star, index=common)
                 n = integerize(
                     tw,
-                    close.loc[t, common],
+                    cast(pd.Series, close.loc[t, common]).astype(float),
                     starting_capital,
                     beta=pd.Series(b, index=common),
                     sector=(pd.Series(sec, index=common) if sec else None),

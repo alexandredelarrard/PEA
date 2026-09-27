@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -188,11 +189,11 @@ def reconcile_transactions(
         thresholds.numeric_relative_tolerance,
     )
 
-    bulk_value = float(pd.to_numeric(bulk.get("value_usd"), errors="coerce").sum())
-    live_value = float(pd.to_numeric(live.get("value_usd"), errors="coerce").sum())
+    bulk_value = float(pd.to_numeric(cast(pd.Series, bulk.get("value_usd")), errors="coerce").sum())
+    live_value = float(pd.to_numeric(cast(pd.Series, live.get("value_usd")), errors="coerce").sum())
     value_difference = abs(live_value - bulk_value) / max(abs(bulk_value), 1.0)
-    matched_bulk_value = pd.to_numeric(merged.get("value_usd_bulk"), errors="coerce").fillna(0.0)
-    matched_live_value = pd.to_numeric(merged.get("value_usd_live"), errors="coerce").fillna(0.0)
+    matched_bulk_value = pd.to_numeric(cast(pd.Series, merged.get("value_usd_bulk")), errors="coerce").fillna(0.0)
+    matched_live_value = pd.to_numeric(cast(pd.Series, merged.get("value_usd_live")), errors="coerce").fillna(0.0)
     value_weighted_difference = float((matched_live_value - matched_bulk_value).abs().sum() / max(matched_bulk_value.abs().sum(), 1.0))
     missing = sorted(bulk_accessions - live_accessions)
     missing_rows = bulk[bulk["accession_number"].astype(str).isin(missing)].copy()
@@ -260,7 +261,7 @@ def reconcile_feature_panels(
 ) -> dict[str, object]:
     """Compare final insider feature cells, including the availability mask."""
     keys = ["date", "ticker"]
-    feature_columns = sorted((set(bulk_panel) & set(live_panel)) - set(keys))
+    feature_columns = sorted(cast(set[str], (set(bulk_panel) & set(live_panel)) - set(keys)))
     bulk_keys = set(map(tuple, bulk_panel[keys].itertuples(index=False, name=None)))
     live_keys = set(map(tuple, live_panel[keys].itertuples(index=False, name=None)))
     row_key_agreement = len(bulk_keys & live_keys) / max(len(bulk_keys | live_keys), 1)
@@ -300,8 +301,8 @@ def reconcile_feature_panels(
                 continue
             correlation = pair.corr(method="spearman").iloc[0, 1]
             if pd.notna(correlation):
-                edge_correlations[column] = float(correlation)
-                feature_metrics[column]["edge_rank_correlation"] = float(correlation)
+                edge_correlations[column] = float(cast(float, correlation))
+                feature_metrics[column]["edge_rank_correlation"] = float(cast(float, correlation))
     minimum_edge_rank = min(edge_correlations.values(), default=1.0)
     return {
         "passed": bool(

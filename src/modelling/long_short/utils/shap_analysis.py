@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shap
+from matplotlib.axes import Axes
 
 from src.modelling.long_short.utils import model as ml
 
@@ -51,7 +52,7 @@ def shap_feature_importance(
 
 
 def _plot_dependence(
-    ax: plt.Axes,
+    ax: Axes,
     feat: str,
     x: np.ndarray,
     shap_values: np.ndarray,

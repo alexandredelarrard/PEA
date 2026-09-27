@@ -88,6 +88,8 @@ def main() -> None:
 
     after = store.load(Tables.insider_transactions)
     quarantine = store.load(Tables.insider_transactions_quarantine, optional=True)
+    if after is None:
+        raise RuntimeError("insider_transactions is unavailable")
     if quarantine is None or quarantine.empty:
         raise SystemExit("the quarantine table is empty -- run the re-parse first")
 

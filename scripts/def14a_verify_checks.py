@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -107,12 +108,13 @@ def _sum_identity(df: pd.DataFrame, parts: list[str], total: str, tol: float) ->
     bad_mask = evaluable & ((complete & (diff > tol)) | over)
     detail = []
     for _, r in df[bad_mask].head(8).iterrows():
+        row_index = cast(Any, r.name)
         label = " ".join(str(r.get(k, "")) for k in ("ticker", "name", "fiscal_year") if k in r)
-        d = float(diff[r.name])
+        d = float(diff[row_index])
         detail.append(
             f"- `{label.strip()}`: components sum off by **{d:,.0f}** "
-            f"(total {float(tot[r.name]):,.0f}, "
-            f"{int(n_present[r.name])}/{len(present)} components present)"
+            f"(total {float(tot[row_index]):,.0f}, "
+            f"{int(n_present[row_index])}/{len(present)} components present)"
         )
     n_bad = int(bad_mask.sum())
     return ok, n_bad, int(len(df) - ok - n_bad), detail

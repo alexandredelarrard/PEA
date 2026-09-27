@@ -127,21 +127,24 @@ def check_clip(
         dates = frame[date_col] if date_col else None
         for column in block:
             values = pd.to_numeric(frame[column], errors="coerce")
-            finite = np.isfinite(values.values)
+            array = values.to_numpy(dtype=float)
+            finite = np.isfinite(array)
             n_ok = int(finite.sum())
             if column in peer_legs:
+                assert spec.clip_peer is not None
                 limit = float(spec.clip_peer)
-                on_clip = int((np.abs(values.values[finite]) >= limit - _CLIP_TOL).sum())
+                on_clip = int((np.abs(array[finite]) >= limit - _CLIP_TOL).sum())
                 share = (on_clip / n_ok) if n_ok else None
                 peer_metrics[column] = {
                     "n_ok": n_ok,
                     "on_clip": on_clip,
                     "share": share,
                     "clip": limit,
-                    "max_abs": (float(np.abs(values.values[finite]).max()) if n_ok else None),
+                    "max_abs": (float(np.abs(array[finite]).max()) if n_ok else None),
                 }
             else:
-                tie_metrics[column] = _tie_mass(values, dates, spec.min_tickers_xs)
+                tie_dates = dates if dates is not None else pd.Series(pd.NaT, index=values.index)
+                tie_metrics[column] = _tie_mass(values, tie_dates, spec.min_tickers_xs)
         log.info("clip %s: %d/%d legs", spec_t.name, len(peer_metrics) + len(tie_metrics), len(peer_legs) + len(xs_legs))
 
     over = sorted(

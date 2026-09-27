@@ -72,6 +72,7 @@ import collections
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 from sqlalchemy import text
@@ -650,7 +651,7 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
     # is evidence, while one silently dropped is indistinguishable next quarter from one never
     # examined.
     rejected: list[dict] = []
-    scored: list[tuple[int, str, str, int, dict]] = []
+    scored: list[tuple[float, int, str, str, int, dict[str, Any]]] = []
     for name, pred, n in peers:
         prof = predecessor_profile(context, pred, truncation)
         if prof.get("ok"):
@@ -878,10 +879,20 @@ def main(argv: list[str] | None = None) -> int:
         tight, proxy, late = oracle1(conn)
         actions = oracle2(conn, list(cand["ticker"]), anchor)
         crosscheck = roster_crosscheck(conn, registrants)
-        roster = pd.DataFrame(conn.execute(text("select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all())
+        roster = pd.DataFrame(
+            cast(
+                Any,
+                conn.execute(text("select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all(),
+            )
+        )
         # The archive-start test's denominator. Read here because the connection closes
         # before `--audit-chains` runs, and the test must not open a second one.
-        price_start = dict(conn.execute(text("select ticker, min(date)::date from prices group by 1")).all())
+        price_start = dict(
+            cast(
+                Any,
+                conn.execute(text("select ticker, min(date)::date from prices group by 1")).all(),
+            )
+        )
 
     ciks = dict(zip(roster["ticker"], roster["cik"], strict=False))
     # Two columns, not one. `namechange` is every `namechangefrom` in window and is the
@@ -889,8 +900,18 @@ def main(argv: list[str] | None = None) -> int:
     # the CONCLUSIVE one -- "CORVETTEPORSCHE CORP" is not a company, it is the Conoco/Phillips
     # merger's internal codename. Reporting only the second would hide how many candidates
     # Sharadar speaks to at all; reporting only the first would overstate the evidence.
-    cand["namechange"] = cand["ticker"].map(lambda t: next((a["contraname"] for a in actions.get(t, []) if a["action"] == "namechangefrom"), None))
-    cand["shell_name"] = cand["ticker"].map(lambda t: next((a["contraname"] for a in actions.get(t, []) if a["is_shell"]), None))
+    cand["namechange"] = cand["ticker"].map(
+        lambda t: next(
+            (a["contraname"] for a in actions.get(cast(str, t), []) if a["action"] == "namechangefrom"),
+            None,
+        )
+    )
+    cand["shell_name"] = cand["ticker"].map(
+        lambda t: next(
+            (a["contraname"] for a in actions.get(cast(str, t), []) if a["is_shell"]),
+            None,
+        )
+    )
 
     print(f"oracle 1 -- tight cluster : {len(tight):>3} tickers")
     print(f"oracle 1 -- proxy screen  : {len(proxy):>3} tickers")

@@ -25,6 +25,8 @@ short-side rounding to restore dollar/beta/sector-neutrality (only shorts pay a 
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -51,7 +53,10 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
     k_int = (sign < 0).astype(float) if long_fractional else np.ones(n)
     c = np.concatenate([np.zeros(n), np.ones(n)])
     integrality = np.concatenate([k_int, np.zeros(n)])
-    bounds = Bounds(np.concatenate([np.zeros(n), np.zeros(n)]), np.concatenate([kmax, np.full(n, np.inf)]))
+    bounds = Bounds(
+        cast(Any, np.concatenate([np.zeros(n), np.zeros(n)])),
+        cast(Any, np.concatenate([kmax, np.full(n, np.inf)])),
+    )
 
     rows, lbs, ubs = [], [], []
     identity = sparse.identity(n, format="csr")
@@ -88,7 +93,7 @@ def _solve_milp(w, p, d, b, groups, capital, gross_tol, dollar_tol, beta_tol, se
         c=c,
         integrality=integrality,
         bounds=bounds,
-        constraints=LinearConstraint(constraint_matrix, lb, ub),
+        constraints=LinearConstraint(constraint_matrix, cast(Any, lb), cast(Any, ub)),
         options={"time_limit": float(time_limit), "mip_rel_gap": 1e-3},
     )
     if not res.success or res.x is None:

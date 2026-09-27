@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import click
 
@@ -57,13 +58,13 @@ def _shared(fn: Callable) -> Callable:
     """The options every check command takes. Declared once so `--out` cannot mean two
     things in two commands."""
     for decorator in (
-        click.option(*CONFIG_ARGS, **CONFIG_KWARGS),
-        click.option(*TICKERS_ARGS, **TICKERS_KWARGS),
+        click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS)),
+        click.option(*TICKERS_ARGS, **cast(dict[str, Any], TICKERS_KWARGS)),
         click.option(
             "--cache/--no-cache", "use_cache", default=True, show_default=True, help="Read the `pull` snapshot in <out>/_cache when one exists."
         ),
-        click.option(*OUT_ARGS, **OUT_KWARGS),
-        click.option(*TABLE_ARGS, **TABLE_KWARGS),
+        click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS)),
+        click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS)),
     ):
         fn = decorator(fn)
     return fn
@@ -75,9 +76,9 @@ def cli() -> None:
 
 
 @cli.command(help="Stream one table into <out>/_cache/<table>.parquet, reused by every check.")
-@click.option(*TABLE_ARGS, **TABLE_KWARGS)
-@click.option(*OUT_ARGS, **OUT_KWARGS)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS))
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def pull(table: str, out: str, config_path: str) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     started = time.perf_counter()
@@ -157,8 +158,8 @@ def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config
     is_flag=True,
     help="Ignore the retained EDGAR replay cache and fetch the quarter again.",
 )
-@click.option(*OUT_ARGS, **OUT_KWARGS)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def insider_parity(
     quarter: str,
     workers: int,

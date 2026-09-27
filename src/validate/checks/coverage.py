@@ -43,7 +43,7 @@ THREE THINGS THIS CHECK REFUSES TO DO, each because doing it produced a false re
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -76,13 +76,18 @@ def _exclusions(context: Context) -> set[str]:
 
     ⚠ Never inline this list. `load_universe_tickers` subtracts exactly this set, so a copy
     that drifted would make this check report names the universe had already dropped."""
-    return INSUFFICIENT_HISTORY_TICKERS | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
+    return set(INSUFFICIENT_HISTORY_TICKERS) | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
 
 
 def _panel(frame: pd.DataFrame, ticker_col: str, date_col: str) -> pd.DataFrame:
     """Per ticker: rows, first and last date."""
     grouped = frame.groupby(ticker_col)[date_col]
     return pd.DataFrame({"rows": grouped.size(), "first": grouped.min(), "last": grouped.max()})
+
+
+def _at(frame: pd.DataFrame, row: str, column: str) -> Any:
+    """Return one scalar cell without exposing pandas' broad Scalar union."""
+    return cast(Any, frame.at[row, column])
 
 
 def _expected_sessions(sessions: np.ndarray, start: Any, end: Any) -> int:
@@ -131,6 +136,8 @@ def check_coverage(
     if ref_ticker is None or "date" not in ref_cols:
         return CheckResult.abstained(CHECK, spec_t.name, f"the reference table `{reference}` has no (ticker, date) grid to measure against")
     prices = context.store.load(reference, columns=[ref_ticker, "date"])
+    if prices is None:
+        return CheckResult.abstained(CHECK, spec_t.name, f"the reference table `{reference}` returned no rows")
     prices = prices.rename(columns={ref_ticker: ticker_col})
     prices["date"] = as_ts(prices["date"])
     prices[ticker_col] = prices[ticker_col].astype(str).str.strip().str.upper()
@@ -178,19 +185,20 @@ def check_coverage(
     # -- 2. universe names with no row at all --------------------------------------------- #
     absent = sorted(universe_set - present)
     for ticker in absent[:_MAX_FINDINGS]:
-        span = price_span.loc[ticker] if ticker in price_span.index else None
+        span = cast(pd.Series, price_span.loc[ticker]) if ticker in price_span.index else None
         findings.append(
             Finding.at(
                 8,
                 ticker=ticker,
                 observed=f"{ticker} has 0 rows in {spec_t.name}",
                 expected=(
-                    f"rows over its own price span {span['first'].date()} -> {span['last'].date()} ({int(span['rows']):,} sessions)"
+                    f"rows over its own price span {pd.Timestamp(cast(Any, span['first'])).date()} -> "
+                    f"{pd.Timestamp(cast(Any, span['last'])).date()} ({int(cast(Any, span['rows'])):,} sessions)"
                     if span is not None
                     else "rows, or absence from the universe -- it has no `prices` history either"
                 ),
                 in_prices=ticker in priced,
-                price_rows=int(span["rows"]) if span is not None else 0,
+                price_rows=int(cast(Any, span["rows"])) if span is not None else 0,
             )
         )
 
@@ -204,13 +212,13 @@ def check_coverage(
             Finding.at(
                 4 if in_prices else 7,
                 ticker=ticker,
-                observed=f"{ticker} holds {int(panel.loc[ticker, 'rows']):,} rows in "
+                observed=f"{ticker} holds {int(_at(panel, ticker, 'rows')):,} rows in "
                 f"{spec_t.name} but is not in the {len(universe)}-name universe" + ("" if in_prices else " and has no `prices` rows either"),
                 expected="every ticker in a cube part is a current universe member; a former "
                 "member is stale data, and a ticker in neither the roster nor `prices` "
                 "came from somewhere no other table knows about",
                 in_prices=in_prices,
-                rows=int(panel.loc[ticker, "rows"]),
+                rows=int(_at(panel, ticker, "rows")),
             )
         )
 
@@ -239,7 +247,7 @@ def check_coverage(
     interior_expected = inside.groupby(ticker_col).size()
     head_expected = joined[joined["date"] < joined["first"]].groupby(ticker_col).size()
 
-    cut = pd.Timestamp(sessions[-min(spec.recent_sessions, len(sessions))])
+    cut = pd.Timestamp(cast(Any, sessions[-min(spec.recent_sessions, len(sessions))]))
     trailing_expected = traded[traded["date"] >= cut].groupby(ticker_col).size()
     trailing_seen = frame[frame[date_col] >= cut].groupby(ticker_col).size()
 
@@ -247,10 +255,10 @@ def check_coverage(
     trailing: dict[str, float] = {}
     head: dict[str, float] = {}
     for ticker in members:
-        own = int(price_span.loc[ticker, "rows"])
+        own = int(_at(price_span, ticker, "rows"))
         expected = int(interior_expected.get(ticker, 0))
         if expected > 0:
-            interior[ticker] = int(panel.loc[ticker, "rows"]) / expected
+            interior[ticker] = int(_at(panel, ticker, "rows")) / expected
         want = int(trailing_expected.get(ticker, 0))
         if want > 0:
             trailing[ticker] = int(trailing_seen.get(ticker, 0)) / want
@@ -266,17 +274,17 @@ def check_coverage(
             Finding.at(
                 5,
                 ticker=ticker,
-                observed=f"{int(panel.loc[ticker, 'rows']):,} rows over {expected:,} sessions it "
+                observed=f"{int(_at(panel, ticker, 'rows')):,} rows over {expected:,} sessions it "
                 f"traded between its own first and last row here "
                 f"({interior[ticker]:.1%})",
                 expected=f">= {spec.coverage_min_share:.0%} -- inside a span this table already "
                 f"claims for the ticker, a traded session with no row is a hole, not a "
                 f"late-starting source",
                 share=round(interior[ticker], 4),
-                rows=int(panel.loc[ticker, "rows"]),
+                rows=int(_at(panel, ticker, "rows")),
                 sessions_traded=expected,
-                first=panel.loc[ticker, "first"],
-                last=panel.loc[ticker, "last"],
+                first=_at(panel, ticker, "first"),
+                last=_at(panel, ticker, "last"),
             )
         )
 
@@ -289,12 +297,12 @@ def check_coverage(
                 observed=f"{int(trailing_seen.get(ticker, 0)):,} of the "
                 f"{int(trailing_expected[ticker]):,} sessions it traded in the last "
                 f"{spec.recent_sessions} ({trailing[ticker]:.1%}); last row "
-                f"{pd.Timestamp(panel.loc[ticker, 'last']).date()}",
+                f"{pd.Timestamp(_at(panel, ticker, 'last')).date()}",
                 expected=f">= {spec.coverage_min_share:.0%} of its recent traded sessions -- a "
                 f"name that stopped updating still passes every row-count and every "
                 f"depth ratio computed over the whole history",
                 share=round(trailing[ticker], 4),
-                last=panel.loc[ticker, "last"],
+                last=_at(panel, ticker, "last"),
             )
         )
 

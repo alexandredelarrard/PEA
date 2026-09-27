@@ -1,4 +1,5 @@
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast, overload
 
 import click
 import pandas as pd
@@ -9,25 +10,30 @@ from src.constants.constants import DATE_FORMAT
 
 
 class SpecialHelpOrder(click.Group):
-    def __init__(self, *args, **kwargs):
-        self.help_priorities = {}
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.help_priorities: dict[str | None, int] = {}
         super().__init__(*args, **kwargs)
 
-    def get_help(self, ctx):
-        self.list_commands = self.list_commands_for_help
-        return super().get_help(ctx)
-
-    def list_commands_for_help(self, ctx):
+    def list_commands(self, ctx: Context) -> list[str]:
         commands = super().list_commands(ctx)
-        return (c[1] for c in sorted((self.help_priorities.get(command, 99), command) for command in commands))
+        return sorted(commands, key=lambda command: (self.help_priorities.get(command, 99), command))
 
-    def command(self, *args, **kwargs):
+    @overload
+    def command(self, __func: Callable[..., Any], /) -> click.Command: ...
+
+    @overload
+    def command(self, *args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], click.Command]: ...
+
+    def command(self, *args: Any, **kwargs: Any) -> Callable[[Callable[..., Any]], click.Command] | click.Command:
         help_priority = kwargs.pop("help_priority", 99)
-        help_priorities = self.help_priorities
+        if args and callable(args[0]):
+            cmd = cast(click.Command, super().command(*args, **kwargs))
+            self.help_priorities[cmd.name] = help_priority
+            return cmd
 
-        def decorator(f):
+        def decorator(f: Callable[..., Any]) -> click.Command:
             cmd = super(SpecialHelpOrder, self).command(*args, **kwargs)(f)
-            help_priorities[cmd.name] = help_priority
+            self.help_priorities[cmd.name] = help_priority
             return cmd
 
         return decorator

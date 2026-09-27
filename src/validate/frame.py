@@ -75,6 +75,8 @@ def feature_columns(context: Context, table: Table | str, *, frame: pd.DataFrame
     keys = set(key_columns(table))
     if frame is None:
         frame = context.store.load(table, limit=_DTYPE_SAMPLE_ROWS)
+    if frame is None:
+        return []
     return [c for c in frame.columns if c not in keys and _is_leg(frame[c])]
 
 

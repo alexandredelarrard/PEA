@@ -14,6 +14,8 @@ the sleeve cross-correlation, and the $-allocation per sleeve; saves an equity c
 
 from __future__ import annotations
 
+from typing import cast
+
 import matplotlib
 import numpy as np
 import pandas as pd
@@ -123,7 +125,7 @@ class StepPortfolio(Step):
         if inputs.end is not None:
             rets = rets[rets.index <= inputs.end]
         self.sleeve_rets = rets.dropna(how="all")
-        self.benchmark = self._benchmark(self.sleeve_rets.index)
+        self.benchmark = self._benchmark(pd.DatetimeIndex(self.sleeve_rets.index))
         cover = {n: f"{rets[n].dropna().index.min().date()}→{rets[n].dropna().index.max().date()}" for n in rets.columns}
         self._log.info(
             "Portfolio sleeves %s | window %s→%s | coverage %s",
@@ -267,7 +269,8 @@ class StepPortfolio(Step):
         w = self.weights.clip(lower=0.0).resample("ME").mean()
         cols = list(w.columns)
         fig, ax = plt.subplots(figsize=(12, 5))
-        ax.stackplot(w.index, *[w[c] for c in cols], labels=cols, colors=[_SLEEVE_COLORS.get(c) for c in cols], alpha=0.85)
+        colors = cast(list[str], [_SLEEVE_COLORS.get(c) for c in cols])
+        ax.stackplot(w.index, *[w[c] for c in cols], labels=cols, colors=colors, alpha=0.85)
         ax.set_ylim(0, 1)
         ax.margins(x=0)
         ax.set_ylabel("Sleeve weight (monthly mean)")

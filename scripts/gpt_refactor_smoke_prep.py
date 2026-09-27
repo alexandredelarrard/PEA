@@ -156,6 +156,8 @@ def main() -> None:
     left = [c for c in DROP_COLUMNS if c in after]
     rows_after = store.row_count(Tables.def14a_llm)
     remaining = store.load(Tables.def14a_llm, columns=["ticker"])
+    if remaining is None:
+        raise RuntimeError("def14a_llm is unavailable after smoke preparation")
     still_smoke = sorted(set(remaining["ticker"]) & set(SMOKE_TICKERS))
 
     print("\nAfter:")

@@ -49,6 +49,7 @@ MISSTATE THE DEFECT.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -153,7 +154,7 @@ def main() -> None:
             "last": df["date"].max().date(),
             "below_tenure_floor": int((df["date"] < TENURE_FLOOR).sum()),
         }
-        row.update(df["verdict"].value_counts().to_dict())
+        row.update(cast(dict[str, int], df["verdict"].value_counts().to_dict()))
         summary.append(row)
     out = pd.DataFrame(summary).fillna(0)
     out.to_csv(OUT / "symbol_tenure_exposure.csv", index=False)

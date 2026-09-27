@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -69,7 +70,7 @@ def _decisions(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
             rows.append(
                 {
                     "ticker": before.at[i, "ticker"],
-                    "as_of": pd.to_datetime(before.at[i, "as_of"]).date(),
+                    "as_of": pd.to_datetime(cast(Any, before.at[i, "as_of"])).date(),
                     "ceo": before.at[i, "ceo_name_proxy"],
                     "column": col,
                     "before": b.at[i],
@@ -109,6 +110,8 @@ def main() -> int:
         print(f"def14a_llm is missing expected columns: {missing}")
         return 1
     before = store.load(Tables.def14a_llm, columns=_COLS)
+    if before is None:
+        raise RuntimeError("def14a_llm is unavailable")
     if args.tickers:
         wanted = {t.strip().upper() for t in args.tickers.split(",") if t.strip()}
         before = before[before["ticker"].isin(wanted)].copy()

@@ -49,6 +49,8 @@ def main() -> None:
     excluded = {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
 
     cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
+    if cmap is None:
+        raise RuntimeError("cusip_ticker_map is unavailable")
     cmap["ticker"] = cmap["ticker"].astype("string").str.upper().str.strip()
     print("\n=== 1. does cusip_ticker_map carry the excluded classes separately? ===")
     print(
@@ -64,6 +66,8 @@ def main() -> None:
     unmapped = set(cmap.loc[cmap["ticker"].isna(), "cusip"])
 
     holdings = context.store.load(Tables.sec13f_manager_holdings, columns=["period", "cusip", "shares", "value_usd"])
+    if holdings is None:
+        raise RuntimeError("sec13f_manager_holdings is unavailable")
     holdings["cusip"] = holdings["cusip"].astype(str).str.strip()
     print(
         f"\n  sec13f_manager_holdings: {len(holdings):,} rows, "

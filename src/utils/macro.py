@@ -18,6 +18,7 @@ Lives in src/utils/ because it is read from `data_aggregate`, `modelling`, `stra
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 import pandas as pd
 
@@ -60,5 +61,5 @@ def load_macro_series(store, name: str, since=None) -> pd.Series | None:
     wide = load_macro_wide(store, series=[name], since=since)
     if wide is None or name not in wide.columns:
         return None
-    out = wide.set_index("date")[name].astype(float)
-    return out if out.notna().any() else None
+    out = cast(pd.Series, wide.set_index("date")[name].astype(float))
+    return out if bool(out.notna().any()) else None

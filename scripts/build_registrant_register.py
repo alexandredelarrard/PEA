@@ -261,7 +261,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"merged into {path}")
         # Re-read through the loader: a merge that produces a register the validator refuses
         # must fail HERE, not in tonight's extraction run.
-        load_registrants.__wrapped__ if hasattr(load_registrants, "__wrapped__") else None
         from src.data_extract.utils.common.registrant import _registrants_at
 
         _registrants_at.cache_clear()

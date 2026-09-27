@@ -70,18 +70,19 @@ def main() -> None:
             print(f"  {ticker}: listing failed ({type(e).__name__}: {e})")
             continue
         for f in filings:
-            if f.filing_date.year < args.since:
+            filing_year = pd.Timestamp(f.filing_date).year
+            if filing_year < args.since:
                 continue
             try:
                 facts = ecd_facts(f)
-                if not has_ecd_block(facts):
-                    skipped.append((ticker, f.filing_date.year, f.accession_no))
+                if facts is None or not has_ecd_block(facts):
+                    skipped.append((ticker, filing_year, f.accession_no))
                     continue
                 r = ecd_row(facts)
             except Exception as e:  # noqa: BLE001
                 print(f"  {ticker} {f.filing_date}: FAILED ({type(e).__name__}: {e})")
                 continue
-            r.update(ticker=ticker, filing_year=f.filing_date.year, accession_number=f.accession_no, filing_date=f.filing_date)
+            r.update(ticker=ticker, filing_year=filing_year, accession_number=f.accession_no, filing_date=f.filing_date)
             rows.append(r)
             print(
                 f"  {ticker:<6}{f.filing_date}  n_peos={r['n_peos']}  "

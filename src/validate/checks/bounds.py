@@ -24,7 +24,7 @@ direct read costs one narrow pass.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -105,11 +105,12 @@ def check_bounds(
     for column in testable:
         lo, hi = declared[column]
         values = pd.to_numeric(frame[column], errors="coerce").astype("float64")
-        finite = np.isfinite(values.values)
-        outside = finite & ((values.values < lo) | (values.values > hi))
+        array = values.to_numpy(dtype=float)
+        finite = np.isfinite(array)
+        outside = finite & ((array < lo) | (array > hi))
         n_ok = int(finite.sum())
         n_bad = int(outside.sum())
-        leg = {
+        leg: dict[str, Any] = {
             "lo": lo,
             "hi": hi,
             "n_ok": n_ok,
@@ -124,22 +125,22 @@ def check_bounds(
         # The worst violator, named. A count says how much; one (ticker, date, value) says
         # where to look, which is the difference between a finding and a statistic.
         bad = values[outside]
-        worst_idx = (bad - np.clip(bad, lo, hi)).abs().idxmax()
-        example = {"value": float(values.loc[worst_idx])}
+        worst_idx: Any = (bad - np.clip(bad, lo, hi)).abs().idxmax()
+        example: dict[str, Any] = {"value": float(cast(float, values.at[worst_idx]))}
         if ticker_col:
-            example["ticker"] = str(frame.loc[worst_idx, ticker_col])
+            example["ticker"] = str(frame.at[worst_idx, ticker_col])
         if date_col:
-            example["date"] = frame.loc[worst_idx, date_col]
+            example["date"] = frame.at[worst_idx, date_col]
         leg["worst"] = example
         findings.append(
             Finding.at(
                 9,
                 field=column,
-                ticker=example.get("ticker"),
+                ticker=str(example["ticker"]) if "ticker" in example else None,
                 observed=f"{n_bad:,} of {n_ok:,} finite values fall outside [{lo}, {hi}] "
                 f"(range seen {leg['min']:.6g} -> {leg['max']:.6g}); worst "
                 f"{example.get('ticker', '?')} "
-                f"{pd.Timestamp(example['date']).date() if date_col else ''} "
+                f"{pd.Timestamp(cast(Any, example['date'])).date() if date_col else ''} "
                 f"= {example['value']:.6g}",
                 expected=f"every value in [{lo}, {hi}] -- the bound is what the quantity MEANS, "
                 f"so a value outside it is a unit error, a wrong denominator or a "

@@ -29,6 +29,7 @@ import logging
 import os
 import random
 import time
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -124,7 +125,7 @@ class Crawler:
         """ONE stateless GET. curl_cffi with a ROTATED real-browser impersonation (best vs JA3
         fingerprinting), else plain requests. No Session -> no cookies persist. Returns a response
         (.status_code/.text/.headers/.json) or None on a transport error."""
-        proxies = {"http": proxy, "https": proxy} if proxy else None
+        proxies: Any = {"http": proxy, "https": proxy} if proxy else None
         if self._impersonate:
             try:
                 prof = random.choice(ph.IMPERSONATE_POOL)

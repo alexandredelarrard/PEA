@@ -15,7 +15,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from threading import Lock
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -74,7 +74,7 @@ def with_gpt_overrides(
         overrides["cache"] = cache
     if not overrides:
         return config
-    return OmegaConf.merge(config, OmegaConf.create({"gpt": overrides}))
+    return cast(DictConfig, OmegaConf.merge(config, OmegaConf.create({"gpt": overrides})))
 
 
 class GptExtracter(Step):
@@ -91,7 +91,8 @@ class GptExtracter(Step):
         self.max_token = gpt.get("max_token")
         self.threads = int(gpt.get("threads") or 1)
         self.cache = bool(gpt.get("cache", True))
-        self.reasoning_models = set(OmegaConf.to_container(gpt.get("reasoning_models")) if gpt.get("reasoning_models") is not None else [])
+        reasoning_models = OmegaConf.to_container(gpt.get("reasoning_models")) if gpt.get("reasoning_models") is not None else []
+        self.reasoning_models = set(cast(Sequence[str], reasoning_models))
         self.max_chars: Mapping[str, int] = gpt.get("max_chars") or {}
         self.embedding: Mapping[str, Any] = gpt.get("embedding") or {}
 

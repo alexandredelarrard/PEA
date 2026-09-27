@@ -45,6 +45,7 @@ import math
 import shutil
 import sys
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -286,8 +287,10 @@ def build_gates(run: dict, compare: dict | None, tolerance: float) -> list[Gate]
             now = info.get("oos_ic_mean")
             if not (_finite(prev) and _finite(now)):
                 continue
-            if float(now) < float(prev) - tolerance:
-                worse.append(f"h{h}: {float(prev):+.4f} -> {float(now):+.4f}")
+            previous_value = float(cast(float, prev))
+            current_value = float(cast(float, now))
+            if current_value < previous_value - tolerance:
+                worse.append(f"h{h}: {previous_value:+.4f} -> {current_value:+.4f}")
         gates.append(
             Gate(
                 "M5",

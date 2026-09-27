@@ -22,6 +22,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 # Ensure imports resolve from the repo root
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,7 @@ os.chdir(ROOT)
 import numpy as np
 import pandas as pd
 import streamlit as st
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from src.context import get_config_context
 from src.portfolio import StepPortfolio
@@ -145,7 +146,7 @@ with st.sidebar:
 # Run
 # ---------------------------------------------------------------------------
 def run_portfolio(params: dict) -> StepPortfolio:
-    cfg = OmegaConf.merge(base_config, OmegaConf.create({"portfolio": params}))
+    cfg = cast(DictConfig, OmegaConf.merge(base_config, OmegaConf.create({"portfolio": params})))
     step = StepPortfolio(context=context, config=cfg)
     step.run()
     return step

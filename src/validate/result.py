@@ -17,7 +17,8 @@ is built from. A finding without its scope is a rumour with a decimal point.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 import numpy as np
@@ -88,7 +89,7 @@ class Finding:
     ticker: str | None
     observed: str
     expected: str
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
 
     @classmethod
     def at(cls, score: int, observed: str, expected: str, *, field: str | None = None, ticker: str | None = None, **evidence: Any) -> Finding:
@@ -104,9 +105,9 @@ class CheckResult:
     table: str
     status: str
     reason: str = ""
-    scope: dict[str, Any] = field(default_factory=dict)
-    findings: list[Finding] = field(default_factory=list)
-    metrics: dict[str, Any] = field(default_factory=dict)
+    scope: dict[str, Any] = dataclass_field(default_factory=dict)
+    findings: list[Finding] = dataclass_field(default_factory=list)
+    metrics: dict[str, Any] = dataclass_field(default_factory=dict)
 
     @classmethod
     def abstained(cls, check: str, table: str, reason: str, **scope: Any) -> CheckResult:

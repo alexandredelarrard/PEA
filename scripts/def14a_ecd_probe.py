@@ -129,7 +129,7 @@ def main() -> None:
         print(f"\n>>> {ticker} {year}: {why}")
         try:
             filings = Company(ticker).get_filings(form=["DEF 14A", "DEF 14C"])
-            picked = [f for f in filings if f.filing_date.year == year]
+            picked = [f for f in filings if pd.Timestamp(f.filing_date).year == year]
             if not picked:
                 print(f"    no {year} proxy found")
                 continue

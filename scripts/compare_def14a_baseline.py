@@ -29,6 +29,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -137,7 +138,7 @@ def _pct_single_neo(df: pd.DataFrame) -> float | None:
     summary of whether the table-anchored carve reached the Summary Compensation Table."""
     if df.empty or "n_neos" not in df.columns:
         return None
-    d = df[pd.to_datetime(df["as_of"], errors="coerce") >= "2012-01-01"]
+    d = df[pd.to_datetime(df["as_of"], errors="coerce") >= pd.Timestamp("2012-01-01")]
     d = d[d["n_neos"].notna()]
     return None if d.empty else round(float((d["n_neos"] == 1).mean()), 4)
 
@@ -171,7 +172,7 @@ def _pct_fully_null(df: pd.DataFrame, until: str) -> tuple[int, int] | None:
     was handed a folder index instead of the proxy and invented only the inferred-FALSE flags."""
     if df.empty or "as_of" not in df.columns:
         return None
-    d = df[pd.to_datetime(df["as_of"], errors="coerce") < until]
+    d = df[pd.to_datetime(df["as_of"], errors="coerce") < pd.Timestamp(until)]
     if d.empty:
         return None
     payload = [c for c in d.columns if c not in _NON_SIGNAL_COLS]
@@ -231,7 +232,7 @@ def _director_comp_coverage(dc: pd.DataFrame, llm: pd.DataFrame) -> float | None
     the first season the Item 402(k) table exists (Reg S-K 2006, FY ending >= 2006-12-15)."""
     if llm.empty or "as_of" not in llm.columns:
         return None
-    proxies = llm[pd.to_datetime(llm["as_of"], errors="coerce") >= "2008-01-01"]
+    proxies = llm[pd.to_datetime(llm["as_of"], errors="coerce") >= pd.Timestamp("2008-01-01")]
     if proxies.empty:
         return None
     have = set() if dc.empty else set(dc["accession_number"].dropna())
@@ -300,18 +301,15 @@ def build_gates(base: dict[str, pd.DataFrame], new: dict[str, pd.DataFrame], bas
     """The G1-G14 table. Each gate carries its own `check`, so a gate with no `new` side yet
     reports `-` and PENDING rather than a spurious FAIL."""
     b_llm, n_llm = base["def14a_llm"], new["def14a_llm"]
-    # same-accession population for every fill comparison
-    (set(b_llm.get("accession_number", pd.Series(dtype=str))) & set(n_llm.get("accession_number", pd.Series(dtype=str)))) or None
-
     b_null, n_null = _pct_fully_null(b_llm, "2001-01-01"), _pct_fully_null(n_llm, "2001-01-01")
     b_sop, n_sop = _low_say_on_pay(b_llm), _low_say_on_pay(n_llm)
     b_gender = _gender_metrics(b_llm, base["def14a_directors"])
     n_gender = _gender_metrics(n_llm, new["def14a_directors"])
-    baseline_female_fill = b_gender.get("pct_female_fill")
-    baseline_women_count_agrees = b_gender.get("pct_women_count_agrees")
+    baseline_female_fill = cast(float | None, b_gender.get("pct_female_fill"))
+    baseline_women_count_agrees = cast(float | None, b_gender.get("pct_women_count_agrees"))
 
-    def pct(x):
-        return None if x is None else round(100 * x, 2)
+    def pct(x: object | None) -> float | None:
+        return None if x is None else round(100 * float(cast(float, x)), 2)
 
     gates = [
         dict(

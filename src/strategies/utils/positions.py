@@ -192,7 +192,8 @@ def round_trip_ledger(trades: pd.DataFrame, run_time: pd.Timestamp | None = None
 
     # fee BEFORE the sort, so it travels with its row (charging the full cost of the move:
     # commission + spread, which is what a real ledger deducts)
-    df["_fee"] = pd.to_numeric(df["cost_usd"] if "cost_usd" in df.columns else df.get("fee_usd", 0.0), errors="coerce").fillna(0.0)
+    fee_values = df["cost_usd"] if "cost_usd" in df.columns else df["fee_usd"] if "fee_usd" in df.columns else pd.Series(0.0, index=df.index)
+    df["_fee"] = pd.to_numeric(fee_values, errors="coerce").fillna(0.0)
     df = df.sort_values(["sleeve", "ticker", "date"]).reset_index(drop=True)
     df["_row"] = np.arange(len(df))
 

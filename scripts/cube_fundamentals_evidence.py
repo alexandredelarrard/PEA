@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
@@ -153,9 +154,10 @@ def collect(prof: pd.DataFrame, sat: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 
     rows = []
     for char, g in p.groupby("char", sort=True):
+        char = cast(str, char)
         views = ", ".join(sorted(g["view"].unique(), key=lambda v: (v != "raw", v)))
         # null rate from the BEST-covered view: a transform can only lose rows, never add them
-        best = g.loc[g["null_rate"].idxmin()]
+        best = g.loc[cast(Any, g["null_rate"].idxmin())]
         # DISTRIBUTION from the PEER-Z view, never the percentile rank. A percentile rank is
         # uniform on [0, 1] BY CONSTRUCTION, so its p1/p50/p99 are 0.01/0.50/0.99 for every
         # feature in the table and carry no information at all.
@@ -199,7 +201,7 @@ def build_markdown(r: pd.DataFrame, missing: list[str], unused: list[str]) -> st
     lines.append(
         f"Peer-z clip saturation across the {len(s)} standardised characteristics: "
         f"**mean {s.mean():.2%}**, median {s.median():.2%}, worst {s.max():.2%} "
-        f"(`{r.loc[s.idxmax(), 'characteristic']}`).\n"
+        f"(`{r.at[cast(Any, s.idxmax()), 'characteristic']}`).\n"
     )
 
     for fam, gf in r.groupby("family", sort=True):
@@ -236,12 +238,12 @@ def _meta(r: pd.DataFrame) -> dict:
         "sat_mean": f"{s.mean():.2%}",
         "sat_median": f"{s.median():.2%}",
         "sat_worst": f"{s.max():.2%}",
-        "sat_worst_name": r.loc[s.idxmax(), "characteristic"],
+        "sat_worst_name": r.at[cast(Any, s.idxmax()), "characteristic"],
         "sparsest_null": f"{r.attrs['sparsest_null']:.1%}",
         "table_lede": (
             f"{len(r)} characteristics across all {r.attrs['n_columns']} cube columns. "
             f"Clip saturation: mean {s.mean():.2%}, median {s.median():.2%}, worst "
-            f"{s.max():.2%} (`{r.loc[s.idxmax(), 'characteristic']}`)."
+            f"{s.max():.2%} (`{r.at[cast(Any, s.idxmax()), 'characteristic']}`)."
         ),
     }
 

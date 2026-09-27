@@ -230,11 +230,16 @@ def main() -> None:
 
     print("\n=== after ===")
     after = store.load(Tables.def14a_llm, columns=["ticker", "accession_number"])
+    if after is None:
+        raise RuntimeError("def14a_llm is unavailable after the purge")
     print(f"  def14a_llm {len(after):,} rows ({info['tables']['def14a_llm']['rows']:,} before), {after['ticker'].nunique()} tickers")
     left = target & set(after["accession_number"])
     print(f"  target accessions still present: {len(left)}")
     for name, table in CHILD_TABLES:
-        n = len(store.load(table, columns=["ticker"]))
+        child = store.load(table, columns=["ticker"])
+        if child is None:
+            raise RuntimeError(f"{table} is unavailable after the purge")
+        n = len(child)
         print(f"  {name:24s} {n:>7,} rows ({info['tables'][name]['rows']:,} before)")
 
 

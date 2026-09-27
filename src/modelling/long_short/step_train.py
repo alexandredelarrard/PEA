@@ -2,6 +2,7 @@ import gc
 import json
 import pickle
 from datetime import datetime, timedelta
+from typing import Any, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -286,7 +287,10 @@ class StepModelling(Step):
     def _load_cube_where_labelled(self, load_cols: list[str], target_col: str) -> pd.DataFrame:
         """SELECT the projected columns for rows whose target is non-null."""
         store = self._context.store
-        return store.load(Tables.cube, columns=load_cols, where={target_col: store.NOT_NULL})
+        panel = store.load(Tables.cube, columns=load_cols, where={target_col: store.NOT_NULL})
+        if panel is None:
+            raise RuntimeError(f"'{Tables.cube}' returned no labelled panel for {target_col}")
+        return panel
 
     def _select_categoricals(self, available: list[str]) -> list[str]:
         """Categorical columns (`inputs.categoricals` in modellling.yml, e.g. sector /
@@ -353,23 +357,23 @@ class StepModelling(Step):
         c = self._lgb_cfg()
         kw = {
             "params": {
-                "learning_rate": c.learning_rate,
-                "max_depth": c.max_depth,
+                "learning_rate": c.get("learning_rate"),
+                "max_depth": c.get("max_depth"),
                 "num_leaves": c.get("num_leaves", 31),
                 # subsample (=bagging_fraction) only takes effect when bagging_freq>0
-                "subsample": c.subsample,
+                "subsample": c.get("subsample"),
                 "bagging_freq": c.get("bagging_freq", 0),
-                "colsample_bytree": c.colsample_bytree,
-                "min_child_samples": c.min_child_samples,
-                "lambda_l1": c.lambda_l1,
-                "lambda_l2": c.lambda_l2,
+                "colsample_bytree": c.get("colsample_bytree"),
+                "min_child_samples": c.get("min_child_samples"),
+                "lambda_l1": c.get("lambda_l1"),
+                "lambda_l2": c.get("lambda_l2"),
                 # deterministic training keyed on the pipeline's global seed so a
                 # rerun reproduces results bit-for-bit (see model.train_ranker)
                 "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
                 "deterministic": True,
                 "force_row_wise": True,
             },
-            "num_boost_round": c.num_boost_round,
+            "num_boost_round": c.get("num_boost_round"),
             "early_stopping_rounds": int(c.get("early_stopping_rounds", ml.EARLY_STOPPING_ROUNDS)),
             # early-stop metric: lgbm-config `eval_metric` wins, else legacy model.eval_metric
             "eval_metric": c.get("eval_metric") or self._config.model.get("eval_metric", "rmse"),
@@ -643,7 +647,10 @@ class StepModelling(Step):
                 "horizon %s diagnostics -> %s | %s | OOS IC %+.4f over %d days",
                 h,
                 run_dir / f"h{h}",
-                ", ".join(f"{n}: {m['n_pdp']} PDPs, shap={m['shap_available']}({m['shap_rows']} rows)" for n, m in summary["members"].items()),
+                ", ".join(
+                    f"{name}: {member.get('n_pdp', 0)} PDPs, shap={member.get('shap_available', False)}({member.get('shap_rows', 0)} rows)"
+                    for name, member in summary["members"].items()
+                ),
                 summary["ic_mean"],
                 summary["ic_days"],
             )
@@ -692,6 +699,8 @@ class StepModelling(Step):
         blended = None
         for df in self._score_frames:
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
+        if blended is None:
+            raise RuntimeError("No horizon score frame was produced")
 
         zcols = [f"z_{h}" for h in self.models]
         w = np.array([weights[h] for h in self.models])
@@ -705,7 +714,7 @@ class StepModelling(Step):
         blended["signal"] = blended.groupby("date")["combined"].rank(pct=True)
         self.predictions = blended
 
-        last_date = blended["date"].max()
+        last_date = pd.Timestamp(blended["date"].max())
         latest = blended[blended["date"] == last_date].sort_values("signal", ascending=False)
         self.signal = latest.set_index("ticker")["signal"]
         self.signal_date = last_date
@@ -720,7 +729,7 @@ class StepModelling(Step):
                     # LightGBM gain vs |coef| for the linear baselines; normalize
                     # each member to sum 1 first so the two scales are comparable.
                     gains = (
-                        ml.feature_importance(model, list(model.feature_names))
+                        ml.feature_importance(model, list(getattr(model, "feature_names", model.feature_name())))
                         if isinstance(model, lgb.Booster)
                         else baselines.linear_importance(model)
                     )
@@ -730,12 +739,12 @@ class StepModelling(Step):
                         s = s / tot
                     for f, g in s.items():
                         imp[f] = imp.get(f, 0.0) + float(g)
-            imp_s = pd.Series(imp).sort_values(ascending=False)
+            imp_s = pd.Series(imp, dtype=float).sort_values(ascending=False)
             imp_s = imp_s / imp_s.sum()
             self.feature_importance = imp_s
             top = imp_s.head(15)
             self._log.info("Top features by gain:\n%s", top.round(4).to_string())
-            fund_share = imp_s[[f for f in imp_s.index if f.startswith("f_")]].sum()
+            fund_share = float(imp_s[[f for f in imp_s.index if str(f).startswith("f_")]].sum())
             self._log.info("Peer-relative fundamentals share of importance: %.1f%%", 100 * fund_share)
         except Exception as e:  # feature_importance helper may not exist in ml
             self._log.warning("Feature importance unavailable: %s", e)
@@ -744,7 +753,7 @@ class StepModelling(Step):
     def save_outputs(self):
         out = self._cfg.output
         # full rebuild each run -> replace the predictions table
-        self._context.store.replace("predictions", self.predictions)
+        self._context.store.replace("predictions", cast(pd.DataFrame, self.predictions))
         self._log.info("Saved predictions to DB table 'predictions'")
 
         if not self._context.save:
@@ -779,6 +788,7 @@ class StepModelling(Step):
                     with path.open("wb") as f:
                         pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+        train_end_effective = getattr(self, "_train_end_effective", None)
         meta = {
             "horizons": [int(h) for h in self.models],
             "feature_cols": list(self.feature_cols),  # union (backtest panel + fallback)
@@ -796,8 +806,8 @@ class StepModelling(Step):
             "train_start": self._config.train.start_date,
             # full-history run records the ACTUAL latest trained date; normal run keeps the config cutoff
             "train_end": (
-                pd.Timestamp(self._train_end_effective).strftime("%Y-%m-%d")
-                if getattr(self, "_full_history", False) and getattr(self, "_train_end_effective", None) is not None
+                pd.Timestamp(train_end_effective).strftime("%Y-%m-%d")
+                if getattr(self, "_full_history", False) and train_end_effective is not None
                 else self._config.train.end_date
             ),
             "full_history": bool(getattr(self, "_full_history", False)),
@@ -828,7 +838,7 @@ class StepModelling(Step):
                     continue
                 if kind in ml.BOOSTER_MEMBER_KINDS:
                     b = lgb.Booster(model_file=str(p))
-                    b.feature_names = b.feature_name()
+                    cast(Any, b).feature_names = b.feature_name()
                     members[kind] = b
                 else:
                     with p.open("rb") as f:

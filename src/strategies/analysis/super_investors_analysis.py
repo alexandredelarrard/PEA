@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import cast
 
 import matplotlib
 import numpy as np
@@ -169,7 +170,8 @@ def analyze_super_investors_by_cik(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
-    for cik, sub in panel.groupby("cik", sort=False):
+    for raw_cik, sub in panel.groupby("cik", sort=False):
+        cik = str(raw_cik)
         name = roster.get(cik, cik)
         try:
             res = replicate_superinvestors(
@@ -202,7 +204,7 @@ def analyze_super_investors_by_cik(
         )
         ann = float((1 + r).prod() ** (_ANN / len(r)) - 1.0)
         sp = spy_ret.reindex(r.index).fillna(0.0)
-        ann_spy = float((1 + sp).prod() ** (_ANN / len(sp)) - 1.0)
+        ann_spy = float(cast(float, (1 + sp).prod())) ** (_ANN / len(sp)) - 1.0
         # Sharpe / max-DD come straight from the figure's own numbers, so the table and the
         # chart title can never quote different values for the same manager
         rows.append(
@@ -259,7 +261,7 @@ def _plot_cik_leaderboard(summary: pd.DataFrame, out_dir, top_n: int = 25) -> No
     ax.axvline(0, color="#52514e", lw=1.0)
     ax.set_xlabel("annualized excess return vs SPY over the manager's own window (pp)")
     ax.set_title(f"Superinvestor 13F replication — per-manager excess vs SPY ({len(summary)} managers, best/worst {len(d)} shown)")
-    ax.grid(True, axis="x", **_GRID)
+    ax.grid(True, axis="x", alpha=0.25, lw=0.6)
     ax.tick_params(axis="y", labelsize=8)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)

@@ -18,11 +18,13 @@ stays NaN and is correctly skipped.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
 
-def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int, min_frac: float = 0.6):
+def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int, min_frac: float = 0.6) -> pd.DataFrame | pd.Series:
     """NaN-tolerant compounded forward return over t+1..t+horizon.
 
     Sums the AVAILABLE daily log-returns in the forward window (a missing day
@@ -32,10 +34,10 @@ def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int, min_frac: 
     and the genuine tail (fewer than the required observations ahead) -- stay NaN.
     """
     safe = daily_ret.clip(lower=-0.999999)
-    logr = np.log1p(safe)
+    logr = cast(pd.DataFrame | pd.Series, np.log1p(safe))
     min_periods = max(1, int(round(horizon * min_frac)))
     fwd_log = logr[::-1].rolling(horizon, min_periods=min_periods).sum()[::-1].shift(-1)
-    return np.expm1(fwd_log)
+    return cast(pd.DataFrame | pd.Series, np.expm1(fwd_log))
 
 
 def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1, min_frac: float = 0.6) -> pd.DataFrame:

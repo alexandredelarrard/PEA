@@ -40,9 +40,8 @@ class SuperInvestorsStrategy(Strategy):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
-    def run(self) -> StrategyResult:
-
-        inputs = PortfolioInputs(analysis=True)
+    def run(self, inputs: PortfolioInputs | None = None) -> StrategyResult:
+        inputs = inputs or PortfolioInputs(analysis=True)
         c = self.config if self.config_key in self._config else {}
         raw_funds, prices, end = self.load_raw()
         panel = _aggregate_superinvestors(raw_funds, end=end)
@@ -162,11 +161,16 @@ class SuperInvestorsStrategy(Strategy):
                 f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager -- run `data_extract superinvestors --seed`."
             )
         df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": roster_ciks})
+        if df_funds is None:
+            raise RuntimeError(f"super_investors: '{Tables.sec13f_hr}' returned no filing frame")
         # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return
         # index.
-        prices = store.load(Tables.prices, columns=["date", "ticker", "close_split"]).rename(columns={"close_split": "close"})
+        prices = store.load(Tables.prices, columns=["date", "ticker", "close_split"])
+        if prices is None:
+            raise RuntimeError(f"super_investors: '{Tables.prices}' returned no price frame")
+        prices = prices.rename(columns={"close_split": "close"})
 
         # carry the holdings forward to the last price date, so the book is marked to market
         # right up to today rather than stopping at the most recent 13F filing

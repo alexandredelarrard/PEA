@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import cast
 
 import matplotlib
 
@@ -210,8 +211,9 @@ def daily_ic_series(oos: pd.DataFrame, label_name: str, pred_col: str = "pred") 
     for d, g in oos.groupby("date", sort=True):
         if g[pred_col].nunique() > 2 and g[label_name].nunique() > 2:
             ic, _ = spearmanr(g[pred_col], g[label_name])
-            if np.isfinite(ic):
-                rows[d] = ic
+            ic_value = cast(float, ic)
+            if np.isfinite(ic_value):
+                rows[d] = ic_value
     return pd.Series(rows, name="ic").sort_index()
 
 

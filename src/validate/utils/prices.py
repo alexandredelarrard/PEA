@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from typing import Any, cast
 
 import pandas as pd
 
@@ -157,6 +158,8 @@ def load_panel(context: Context, tickers: list[str] | None = None, since: str | 
     where = {"ticker": tickers} if tickers else None
 
     prices = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
+    if prices is None:
+        raise RuntimeError(f"'{Tables.prices}' returned no price frame")
     prices = _as_ns(prices, "date").dropna(subset=["close_split"])
 
     vendor = context.store.load(
@@ -165,11 +168,15 @@ def load_panel(context: Context, tickers: list[str] | None = None, since: str | 
         where={**(where or {}), "dimension": "ARQ"},
         since=since,
     )
+    if vendor is None:
+        raise RuntimeError(f"'{Tables.sharadar_fundamentals}' returned no vendor frame")
     vendor = _as_ns(vendor, "date")
 
     prices = _repair_registered(context, prices, vendor)
 
     merged = context.store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding"], where=where)
+    if merged is None:
+        raise RuntimeError(f"'{Tables.fundamentals_history}' returned no fundamentals frame")
     merged = _as_ns(merged, "as_of")
 
     panel = vendor.merge(merged, left_on=["ticker", "date"], right_on=["ticker", "as_of"], how="left")
@@ -211,7 +218,7 @@ def _repair_registered(context: Context, prices: pd.DataFrame, vendor: pd.DataFr
     apply_split_vintage(wide, blob, vendor[["ticker", "date", "price"]], logger.info)
     apply_return_seams(wide, blob, logger.info)
 
-    repaired = wide["close_split"].stack(future_stack=True).rename("close_split").reset_index().dropna(subset=["close_split"])
+    repaired = cast(pd.Series, wide["close_split"].stack(future_stack=True)).rename("close_split").reset_index().dropna(subset=["close_split"])
     return pd.concat([prices[~prices["ticker"].isin(named)], repaired], ignore_index=True)
 
 
@@ -253,12 +260,12 @@ def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None)
         wide, load_bugfix(context.config_dir), panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers), logger.info
     )
 
-    flat = wide.stack(future_stack=True).rename("level_factor")
+    flat = cast(pd.Series, wide.stack(future_stack=True)).rename("level_factor")
     flat.index = flat.index.set_names(["date", "ticker"])
     keys = pd.MultiIndex.from_arrays([panel["date"], panel["ticker"].astype(str)])
     # `fillna(1.0)`: a row whose (date, ticker) fell outside the grid gets NO adjustment,
     # never a NaN -- a NaN here would silently drop the row from every invariant below.
-    return flat.reindex(keys).fillna(1.0).to_numpy()
+    return pd.Series(flat.reindex(keys).fillna(1.0).to_numpy(), index=panel.index)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,8 +351,10 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
     on the books". Reads the full price history, so it is the expensive one."""
     where = {"ticker": tickers} if tickers else None
     px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
+    if px is None:
+        raise RuntimeError(f"'{Tables.prices}' returned no price frame")
     px = _as_ns(px, "date").sort_values(["ticker", "date"])
-    px["ret"] = px.groupby("ticker")["close_split"].pct_change(fill_method=None)
+    px["ret"] = cast(Any, px.groupby("ticker")["close_split"]).pct_change(fill_method=None)
     pre_jump = px.groupby("ticker")["close_split"].shift(1)
     ahead = [(px.groupby("ticker")["close_split"].shift(-i) / pre_jump - 1).abs() for i in range(1, SPIKE_REVERT_BARS + 1)]
     px["revert_gap"] = pd.concat(ahead, axis=1).min(axis=1)
@@ -360,7 +369,8 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
                 known.add((str(ticker), when + pd.Timedelta(days=offset)))
 
     detail, failing = [], {}
-    for row in hit.sort_values(["date", "ticker"]).itertuples():
+    for raw_row in hit.sort_values(["date", "ticker"]).itertuples():
+        row: Any = raw_row
         corroborated = (str(row.ticker), row.date) in known
         record = {
             "ticker": str(row.ticker),
@@ -405,13 +415,14 @@ def invariant_day_coverage(context: Context, tickers: list[str] | None = None) -
     Streams the (ticker, date) pair columns rather than loading them, so the check costs a
     grouped count over ~3.3M narrow rows and never materialises the table.
     """
-    where = {"ticker": tickers} if tickers else None
+    where: dict[str, object] | None = {"ticker": tickers} if tickers else None
     per_day: dict[pd.Timestamp, int] = {}
     seen: set[str] = set()
     for chunk in context.store.iter_load(Tables.prices, columns=["ticker", "date"], where=where, chunksize=500_000):
         seen.update(chunk["ticker"].astype(str))
         counts = pd.to_datetime(chunk["date"]).dt.normalize().value_counts()
-        for day, n in counts.items():
+        for raw_day, n in counts.items():
+            day = pd.Timestamp(cast(Any, raw_day))
             per_day[day] = per_day.get(day, 0) + int(n)
 
     if not per_day:
@@ -431,7 +442,8 @@ def invariant_day_coverage(context: Context, tickers: list[str] | None = None) -
             "missing": int(ref[day] - n),
             "share_present": round(float(n) / float(ref[day]), 4),
         }
-        for day, n in short.items()
+        for raw_day, n in short.items()
+        for day in [pd.Timestamp(cast(Any, raw_day))]
     ]
     return InvariantResult(
         name="day_coverage", rows=int(ref.sum()), failed=int(sum(d["missing"] for d in detail)), tickers=len(seen), detail=detail, clustered_by="date"

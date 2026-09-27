@@ -25,9 +25,11 @@ Both imports are now gone and this module is a leaf (numpy/pandas only).
 and the daily market cap recomputed 6 times per run, identically. `PitFrames` computes
 each once. Sharing it changes no number; see `tests/data_aggregate/test_pit_cache.py`.
 """
+
 from __future__ import annotations
 
-from typing import Callable, Literal, Protocol
+from collections.abc import Callable
+from typing import Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -53,6 +55,7 @@ def fundamentals_to_daily(
     fundamentals_history: pd.DataFrame,
     field: str,
     trading_index: pd.DatetimeIndex,
+    max_age_days: int | None = None,
 ) -> pd.DataFrame:
     """
     Turn a (ticker, as_of, <fields>) history into a daily wide frame for one
@@ -62,17 +65,40 @@ def fundamentals_to_daily(
     if field not in fundamentals_history.columns:
         return pd.DataFrame(index=trading_index)
     df = fundamentals_history[["ticker", "as_of", field]].copy()
-    df["as_of"] = pd.to_datetime(df["as_of"])
-    wide = df.pivot_table(index="as_of", columns="ticker", values=field, aggfunc="last")
-    wide = wide.sort_index().reindex(
-        wide.index.union(trading_index)
-    ).ffill().reindex(trading_index)
-    return wide
+    return _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
 
 
-def daily_market_cap(fundamentals_history: pd.DataFrame,
-                     close_split: pd.DataFrame,
-                     *, level_factor: pd.DataFrame | None) -> pd.DataFrame:
+def _observations_to_daily(
+    observations: pd.DataFrame,
+    value_col: str,
+    trading_index: pd.DatetimeIndex,
+    *,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
+    """Project producing observations to daily rows, optionally expiring their age."""
+    df = observations[["ticker", "as_of", value_col]].copy()
+    df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
+    df = df.dropna(subset=["ticker", "as_of", value_col])
+    if df.empty:
+        return pd.DataFrame(index=trading_index)
+    df = df.sort_values(["ticker", "as_of"]).drop_duplicates(["ticker", "as_of"], keep="last")
+    wide = df.pivot(index="as_of", columns="ticker", values=value_col).sort_index()
+    union = wide.index.union(trading_index)
+    daily = wide.reindex(union).ffill().reindex(trading_index)
+    if max_age_days is None:
+        return daily
+
+    produced = df.assign(_produced_at=df["as_of"]).pivot(index="as_of", columns="ticker", values="_produced_at")
+    produced = produced.sort_index().reindex(union).ffill().reindex(trading_index)
+    current = pd.Series(trading_index, index=trading_index)
+    horizon = pd.Timedelta(days=int(max_age_days))
+    for ticker in daily.columns:
+        age = current - produced[ticker]
+        daily[ticker] = daily[ticker].where(age <= horizon)
+    return daily
+
+
+def daily_market_cap(fundamentals_history: pd.DataFrame, close_split: pd.DataFrame, *, level_factor: pd.DataFrame | None) -> pd.DataFrame:
     """Historical daily market cap = ffilled `sharesOutstanding` x `close_split` x `S(d)`.
 
     ⚠ BOTH PRICE LEGS MUST BE SPLIT-ADJUSTED, and the parameter is named for it. The vendor
@@ -102,8 +128,7 @@ def daily_market_cap(fundamentals_history: pd.DataFrame,
 
     Requires a `sharesOutstanding` column (the VENDOR-basis one, not `sharesOutstandingPit`).
     """
-    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding",
-                                   close_split.index)
+    shares = fundamentals_to_daily(fundamentals_history, "sharesOutstanding", close_split.index)
     if shares.empty:
         return pd.DataFrame(index=close_split.index)
 
@@ -176,35 +201,37 @@ def add_cube_time_growth(fund_hist: pd.DataFrame) -> pd.DataFrame:
     for name, source in _CUBE_TIME_GROWTH.items():
         if source not in out.columns:
             continue
-        base = pd.DataFrame({
-            "ticker": out["ticker"].astype(str),
-            "as_of": as_of,
-            "level": pd.to_numeric(out[source], errors="coerce"),
-        }).dropna(subset=["ticker", "as_of"])
+        base = pd.DataFrame(
+            {
+                "ticker": out["ticker"].astype(str),
+                "as_of": as_of,
+                "level": pd.to_numeric(out[source], errors="coerce"),
+            }
+        ).dropna(subset=["ticker", "as_of"])
         if base.empty:
             continue
         # One row per (ticker, as_of): an amendment republishes the same publication date,
         # and merge_asof would otherwise match against whichever duplicate sorted last.
-        base = (base.sort_values(["ticker", "as_of"])
-                    .drop_duplicates(["ticker", "as_of"], keep="last"))
+        base = base.sort_values(["ticker", "as_of"]).drop_duplicates(["ticker", "as_of"], keep="last")
         right = base.rename(columns={"as_of": "prior_as_of", "level": "prior"})
         left = base.assign(target=base["as_of"] - pd.Timedelta(days=365))
 
         matched = pd.merge_asof(
-            left.sort_values("target"), right.sort_values("prior_as_of"),
-            left_on="target", right_on="prior_as_of", by="ticker",
-            direction="nearest", tolerance=pd.Timedelta(days=_YOY_TOLERANCE_DAYS),
+            left.sort_values("target"),
+            right.sort_values("prior_as_of"),
+            left_on="target",
+            right_on="prior_as_of",
+            by="ticker",
+            direction="nearest",
+            tolerance=pd.Timedelta(days=_YOY_TOLERANCE_DAYS),
         )
         # A zero or negative prior makes the ratio meaningless, not infinite: a swing from a
         # loss to a profit has no percentage growth, and dividing by it manufactures a huge
         # number with an arbitrary sign that then dominates every z-score it reaches.
         prior = matched["prior"].where(matched["prior"] > 0)
         growth = (matched["level"] / prior - 1.0).replace([np.inf, -np.inf], np.nan)
-        keyed = pd.Series(growth.to_numpy(),
-                          index=pd.MultiIndex.from_arrays(
-                              [matched["ticker"].to_numpy(), matched["as_of"].to_numpy()]))
-        out[name] = pd.MultiIndex.from_arrays(
-            [out["ticker"].astype(str), as_of]).map(keyed)
+        keyed = pd.Series(growth.to_numpy(), index=pd.MultiIndex.from_arrays([matched["ticker"].to_numpy(), matched["as_of"].to_numpy()]))
+        out[name] = pd.MultiIndex.from_arrays([out["ticker"].astype(str), as_of]).map(keyed)
     return out
 
 
@@ -224,12 +251,96 @@ def infer_yoy_periods(fund_hist: pd.DataFrame) -> int:
     return int(min(4, max(1, round(365.0 / med))))
 
 
+def fiscal_prior_values(
+    fund_hist: pd.DataFrame,
+    field: str | pd.Series,
+    *,
+    years: int = 1,
+    tolerance_days: int = 45,
+) -> pd.Series:
+    """Prior fiscal value aligned to each input row and limited to then-public data.
+
+    Matching is by `(ticker, fiscal_end)` rather than publication-row count. Amendments of
+    the selected prior period are eligible only when their `as_of` is no later than the
+    current row, and the latest eligible amendment wins.
+    """
+    required = {"ticker", "as_of", "fiscal_end"}
+    if not required.issubset(fund_hist.columns) or fund_hist.empty:
+        return pd.Series(np.nan, index=fund_hist.index, dtype="float64")
+    if isinstance(field, str):
+        values = pd.to_numeric(fund_hist[field], errors="coerce")
+    else:
+        if len(field) != len(fund_hist):
+            raise ValueError("fiscal value series must be row-aligned with fund_hist")
+        values = pd.Series(
+            pd.to_numeric(field.to_numpy(), errors="coerce"),
+            index=fund_hist.index,
+        )
+    work = pd.DataFrame(
+        {
+            "ticker": fund_hist["ticker"].astype(str),
+            "as_of": pd.to_datetime(fund_hist["as_of"], errors="coerce"),
+            "fiscal_end": pd.to_datetime(fund_hist["fiscal_end"], errors="coerce"),
+            "value": values,
+            "position": np.arange(len(fund_hist)),
+        }
+    )
+    result = np.full(len(fund_hist), np.nan, dtype="float64")
+    tolerance = pd.Timedelta(days=int(tolerance_days))
+    for _, group in work.groupby("ticker", sort=False):
+        candidates = group.dropna(subset=["as_of", "fiscal_end"])
+        for current in candidates.itertuples(index=False):
+            target = current.fiscal_end - pd.DateOffset(years=int(years))
+            eligible = candidates[(candidates["as_of"] <= current.as_of) & (candidates["fiscal_end"] < current.fiscal_end)].copy()
+            if eligible.empty:
+                continue
+            eligible["_distance"] = (eligible["fiscal_end"] - target).abs()
+            eligible = eligible[eligible["_distance"] <= tolerance]
+            if eligible.empty:
+                continue
+            chosen = eligible.sort_values(
+                ["_distance", "as_of", "position"],
+                ascending=[True, False, False],
+            ).iloc[0]
+            result[int(current.position)] = chosen["value"]
+    return pd.Series(result, index=fund_hist.index, dtype="float64")
+
+
+def fiscal_prior_to_daily(
+    fund_hist: pd.DataFrame,
+    field: str | pd.Series,
+    idx: pd.DatetimeIndex,
+    *,
+    years: int = 1,
+    tolerance_days: int = 45,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
+    """Daily PIT projection of the row-aligned fiscal predecessor."""
+    prior = fiscal_prior_values(
+        fund_hist,
+        field,
+        years=years,
+        tolerance_days=tolerance_days,
+    )
+    observations = fund_hist[["ticker", "as_of"]].assign(_prior=prior)
+    return _observations_to_daily(
+        observations,
+        "_prior",
+        idx,
+        max_age_days=max_age_days,
+    )
+
+
 def fiscal_change_to_daily(
     fund_hist: pd.DataFrame,
     field: str,
     idx: pd.DatetimeIndex,
     kind: str = "pct",
     periods: int = 1,
+    *,
+    years: int | None = None,
+    tolerance_days: int = 45,
+    max_age_days: int | None = None,
 ) -> pd.DataFrame:
     """Change of a fiscal field over `periods` filings, forward-filled onto
     trading days. With `periods` = one year of filings this is a seasonality-free
@@ -243,27 +354,50 @@ def fiscal_change_to_daily(
 
     if field not in fund_hist.columns:
         return pd.DataFrame(index=idx)
-    df = fund_hist[["ticker", "as_of", field]].copy()
+    columns = ["ticker", "as_of", field]
+    has_fiscal_end = "fiscal_end" in fund_hist.columns
+    if has_fiscal_end:
+        columns.append("fiscal_end")
+    df = fund_hist[columns].copy()
     df["as_of"] = pd.to_datetime(df["as_of"])
     df[field] = pd.to_numeric(df[field], errors="coerce")
-    df = df.dropna(subset=[field]).sort_values(["ticker", "as_of"])
+    df = df.sort_values(["ticker", "as_of"]).reset_index(drop=True)
     if df.empty:
         return pd.DataFrame(index=idx)
 
-    grp = df.groupby("ticker")[field]
+    if has_fiscal_end and df["fiscal_end"].notna().any():
+        match_years = years
+        if match_years is None:
+            cadence = infer_yoy_periods(df)
+            match_years = max(1, int(round(int(periods) / cadence)))
+        prior = fiscal_prior_values(
+            df,
+            field,
+            years=match_years,
+            tolerance_days=tolerance_days,
+        )
+    else:
+        prior = df.groupby("ticker")[field].shift(periods=int(periods))
     if kind == "pct":
-        df["chg"] = grp.pct_change(periods=periods)
+        denominator = prior.where(prior != 0)
+        df["chg"] = df[field] / denominator - 1.0
     elif kind == "diff":
-        df["chg"] = grp.diff(periods=periods)
+        df["chg"] = df[field] - prior
     else:
         raise ValueError("kind must be 'pct' or 'diff'")
 
-    wide = df.pivot_table(index="as_of", columns="ticker", values="chg", aggfunc="last")
-    wide = wide.replace([np.inf, -np.inf], np.nan).sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
+    df["chg"] = df["chg"].replace([np.inf, -np.inf], np.nan)
+    return _observations_to_daily(df, "chg", idx, max_age_days=max_age_days)
 
 
-def fiscal_apply_to_daily(fund_hist, field, idx, func) -> pd.DataFrame:
+def fiscal_apply_to_daily(
+    fund_hist: pd.DataFrame,
+    field: str,
+    idx: pd.DatetimeIndex,
+    func: Callable[[pd.Series], pd.Series],
+    *,
+    max_age_days: int | None = None,
+) -> pd.DataFrame:
     """Apply a per-ticker series transform (e.g. YoY growth, or acceleration =
     change in YoY) to a fiscal field, forward-filled point-in-time onto trading
     days. `func` receives one ticker's chronological series and returns a series
@@ -277,9 +411,8 @@ def fiscal_apply_to_daily(fund_hist, field, idx, func) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(index=idx)
     df["v"] = df.groupby("ticker")[field].transform(func)
-    wide = df.pivot_table(index="as_of", columns="ticker", values="v", aggfunc="last")
-    wide = wide.replace([np.inf, -np.inf], np.nan).sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
+    df["v"] = df["v"].replace([np.inf, -np.inf], np.nan)
+    return _observations_to_daily(df, "v", idx, max_age_days=max_age_days)
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +434,13 @@ class PitFrames:
     `if history is None` guard keeps behaving as before.
     """
 
-    def __init__(self, history: pd.DataFrame | None, trading_index: pd.DatetimeIndex,
-                 close: pd.DataFrame | None = None,
-                 level_factor: pd.DataFrame | None = None) -> None:
+    def __init__(
+        self,
+        history: pd.DataFrame | None,
+        trading_index: pd.DatetimeIndex,
+        close: pd.DataFrame | None = None,
+        level_factor: pd.DataFrame | None = None,
+    ) -> None:
         self._history = history
         self._index = trading_index
         self._close = close
@@ -311,9 +448,9 @@ class PitFrames:
         #: required as it is there: `PitFrames` is also built for histories with no price at
         #: all, where `market_cap` is never reached and demanding a basis would be noise.
         self._level_factor = level_factor
-        self._daily: dict[str, pd.DataFrame] = {}
-        self._changes: dict[tuple[str, str, int], pd.DataFrame] = {}
-        self._applied: dict[tuple[str, str], pd.DataFrame] = {}
+        self._daily: dict[tuple[str, int | None], pd.DataFrame] = {}
+        self._changes: dict[tuple[str, str, int, int | None, int | None], pd.DataFrame] = {}
+        self._applied: dict[tuple[str, str, int | None], pd.DataFrame] = {}
         self._market_cap: pd.DataFrame | None = None
         self._yoy: int | None = None
         self._accesses = 0
@@ -332,42 +469,78 @@ class PitFrames:
         return self._history
 
     # ---- accessors ---- #
-    def daily(self, field: str) -> pd.DataFrame:
+    def daily(self, field: str, max_age_days: int | None = None) -> pd.DataFrame:
         """Memoized `fundamentals_to_daily(history, field, trading_index)`."""
         self._accesses += 1
-        if field not in self._daily:
-            self._daily[field] = (
-                pd.DataFrame(index=self._index) if self.empty
-                else fundamentals_to_daily(self._history, field, self._index))
-        return self._daily[field]
+        key = (field, max_age_days)
+        if key not in self._daily:
+            if self.empty:
+                self._daily[key] = pd.DataFrame(index=self._index)
+            elif max_age_days is None:
+                self._daily[key] = fundamentals_to_daily(
+                    self._history,
+                    field,
+                    self._index,
+                )
+            else:
+                self._daily[key] = fundamentals_to_daily(
+                    self._history,
+                    field,
+                    self._index,
+                    max_age_days=max_age_days,
+                )
+        return self._daily[key]
 
     def __call__(self, field: str) -> pd.DataFrame:
         """`FieldGetter` alias, so a `PitFrames` can be passed anywhere `capital.py`
         or `_derived_fields` expects a `daily`-style accessor."""
         return self.daily(field)
 
-    def change(self, field: str, kind: Literal["pct", "diff"] = "pct",
-               periods: int | None = None) -> pd.DataFrame:
+    def change(
+        self,
+        field: str,
+        kind: Literal["pct", "diff"] = "pct",
+        periods: int | None = None,
+        *,
+        years: int | None = None,
+        max_age_days: int | None = None,
+    ) -> pd.DataFrame:
         """Memoized `fiscal_change_to_daily`. `periods=None` uses this history's own
         filing cadence (`yoy_periods`), which is what a year-over-year change means."""
         n = self.yoy_periods if periods is None else int(periods)
-        key = (field, kind, n)
+        key = (field, kind, n, years, max_age_days)
         if key not in self._changes:
             self._changes[key] = (
-                pd.DataFrame(index=self._index) if self.empty
-                else fiscal_change_to_daily(self._history, field, self._index,
-                                            kind=kind, periods=n))
+                pd.DataFrame(index=self._index)
+                if self.empty
+                else fiscal_change_to_daily(
+                    self._history,
+                    field,
+                    self._index,
+                    kind=kind,
+                    periods=n,
+                    years=years,
+                    max_age_days=max_age_days,
+                )
+            )
         return self._changes[key]
 
-    def applied(self, field: str, key: str,
-                func: Callable[[pd.Series], pd.Series]) -> pd.DataFrame:
+    def applied(self, field: str, key: str, func: Callable[[pd.Series], pd.Series], *, max_age_days: int | None = None) -> pd.DataFrame:
         """Memoized `fiscal_apply_to_daily`. `key` names the transform, since a
         callable (often a lambda) is not a usable cache key."""
-        ck = (field, key)
+        ck = (field, key, max_age_days)
         if ck not in self._applied:
             self._applied[ck] = (
-                pd.DataFrame(index=self._index) if self.empty
-                else fiscal_apply_to_daily(self._history, field, self._index, func))
+                pd.DataFrame(index=self._index)
+                if self.empty
+                else fiscal_apply_to_daily(
+                    self._history,
+                    field,
+                    self._index,
+                    func,
+                    max_age_days=max_age_days,
+                )
+            )
         return self._applied[ck]
 
     # ---- derived ---- #
@@ -379,8 +552,7 @@ class PitFrames:
             if self.empty or self._close is None or self._close.empty:
                 self._market_cap = pd.DataFrame(index=self._index)
             else:
-                self._market_cap = daily_market_cap(
-                    self._history, self._close, level_factor=self._level_factor)
+                self._market_cap = daily_market_cap(self._history, self._close, level_factor=self._level_factor)
         return self._market_cap
 
     @property
@@ -397,26 +569,28 @@ class PitFrames:
         return bool(pd.to_numeric(self._history[field], errors="coerce").notna().any())
 
     # ---- guards + diagnostics ---- #
-    def assert_matches(self, trading_index: pd.DatetimeIndex,
-                       close: pd.DataFrame | None = None) -> None:
+    def assert_matches(self, trading_index: pd.DatetimeIndex, close: pd.DataFrame | None = None) -> None:
         """Refuse to serve a cache built on a different window. Cheap: compares the
         index and the close frame's shape/columns, not their values."""
         if not self._index.equals(trading_index):
             raise ValueError(
                 f"PitFrames was built on a {len(self._index)}-day index "
                 f"({self._index.min()}..{self._index.max()}) but is being used with a "
-                f"{len(trading_index)}-day one -- build one cache per warm-up window")
+                f"{len(trading_index)}-day one -- build one cache per warm-up window"
+            )
         if close is not None and self._close is not None:
-            if (self._close.shape != close.shape
-                    or not self._close.columns.equals(close.columns)):
-                raise ValueError("PitFrames was built on a different `close` frame "
-                                 f"({self._close.shape} vs {close.shape})")
+            if self._close.shape != close.shape or not self._close.columns.equals(close.columns):
+                raise ValueError("PitFrames was built on a different `close` frame " f"({self._close.shape} vs {close.shape})")
 
     def stats(self) -> dict[str, int]:
         """What the cache actually collapsed, so the sub-step can log it and the tests
         can assert it: distinct fields pivoted vs total accesses."""
         computed = len(self._daily)
-        return {"fields": computed, "accesses": self._accesses,
-                "hits": max(0, self._accesses - computed),
-                "changes": len(self._changes), "applied": len(self._applied),
-                "market_cap": int(self._market_cap is not None)}
+        return {
+            "fields": computed,
+            "accesses": self._accesses,
+            "hits": max(0, self._accesses - computed),
+            "changes": len(self._changes),
+            "applied": len(self._applied),
+            "market_cap": int(self._market_cap is not None),
+        }

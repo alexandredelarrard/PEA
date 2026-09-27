@@ -14,13 +14,17 @@ division and inf-sanitizing in `frames.py`, and every per-day cross-sectional tr
 `xs.py` (which is where the five duplicate standardizers were merged). What is left here is
 the one thing that is genuinely about PEERS.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.xs import (
-    PEER_DISPERSION_FLOOR, XS_CLIP_PEER, winsorize_xs, xs_rank_pct,
+    PEER_DISPERSION_FLOOR,
+    XS_CLIP_PEER,
+    winsorize_xs,
+    xs_rank_pct,
 )
 
 
@@ -152,10 +156,10 @@ def peer_relative(
 #: conviction weight in [0, ~n_managers] is a quantity LightGBM can split on directly, and
 #: ranking it away throws that scale out.
 _EMISSION_MODES = ("raw", "raw+xs", "raw+peers")
+_SEMANTIC_MODES = ("binary", "structural_zero")
 
 
-def build_peer_relative_panel(fields: dict, peer_dict: dict,
-                              emission: dict | None = None) -> pd.DataFrame:
+def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | None = None, semantics: dict | None = None) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
     `f_<name>_xs` (universe percentile). Shared by every panel builder.
@@ -163,6 +167,12 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict,
     `emission` overrides that per field with one of `_EMISSION_MODES`. Fields left out of the
     map -- and every caller that passes no map at all -- keep the exact two-leg behaviour
     above, unchanged.
+
+    `semantics` is an equally optional transform declaration. `binary` preserves the exact
+    0/1 state in the public `_xs` column and bypasses continuous input winsorization on the
+    peer leg. `structural_zero` preserves zero as a state while ranking/standardizing only
+    non-zero comparable support. Undeclared fields remain bit-identical to the continuous
+    default.
 
     ⚠ The RAW leg is deliberately NOT winsorized and NOT clipped. Those treatments belong to
     the z-score, whose scale is only meaningful after outlier control; the raw value is a
@@ -172,16 +182,22 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict,
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     emission = emission or {}
+    semantics = semantics or {}
     unknown = {m for m in emission.values() if m not in _EMISSION_MODES}
     if unknown:
-        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; "
-                         f"expected one of {list(_EMISSION_MODES)}")
+        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; " f"expected one of {list(_EMISSION_MODES)}")
     stray = set(emission) - set(fields)
     if stray:
         # A name in the map that no field produces is a silent no-op -- exactly the drift the
         # parts registry was built to end. Fail loudly rather than emit a panel missing the
         # column the caller thinks it declared.
         raise KeyError(f"emission declares field(s) not present in `fields`: {sorted(stray)}")
+    unknown_semantics = {mode for mode in semantics.values() if mode not in _SEMANTIC_MODES}
+    if unknown_semantics:
+        raise ValueError(f"unknown semantic mode(s) {sorted(unknown_semantics)}; " f"expected one of {list(_SEMANTIC_MODES)}")
+    stray_semantics = set(semantics) - set(fields)
+    if stray_semantics:
+        raise KeyError(f"semantics declares field(s) not present in `fields`: {sorted(stray_semantics)}")
 
     long_frames = []
     for name, fdf in fields.items():
@@ -202,24 +218,37 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict,
         # bounded to O(1), so float64 storage is wasted — halving them (and the concat +
         # defrag copy below) is what keeps the many-feature panels off the OOM killer.
         mode = emission.get(name)
+        semantic = semantics.get(name)
+        zero_state = fdf.eq(0) if semantic == "structural_zero" else None
+        comparable = fdf.mask(zero_state) if zero_state is not None else fdf
         if mode is not None:
             raw = fdf.stack().astype("float32")
             raw.index.set_names(["date", "ticker"], inplace=True)
             long_frames.append(raw.rename(f"f_{name}"))
             del raw
         if mode is None or mode == "raw+peers":
-            rel = winsorize_xs(peer_relative(fdf, peer_dict))
+            rel = winsorize_xs(
+                peer_relative(
+                    comparable,
+                    peer_dict,
+                    winsorize_inputs=semantic != "binary",
+                )
+            )
+            if zero_state is not None:
+                rel = rel.where(~zero_state, 0.0)
             s = rel.stack().astype("float32")
             s.index.set_names(["date", "ticker"], inplace=True)
             long_frames.append(s.rename(f"f_{name}_vs_peers"))
             del rel, s
         if mode is None or mode == "raw+xs":
-            xs = xs_rank_pct(fdf)
+            xs = fdf if semantic == "binary" else xs_rank_pct(comparable)
+            if zero_state is not None:
+                xs = xs.where(~zero_state, 0.0)
             s2 = xs.stack().astype("float32")
             s2.index.set_names(["date", "ticker"], inplace=True)
             long_frames.append(s2.rename(f"f_{name}_xs"))
             del xs, s2
-        del fdf                                       # free per-field intermediates promptly
+        del fdf, comparable  # free per-field intermediates promptly
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])

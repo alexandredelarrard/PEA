@@ -84,6 +84,7 @@ from src.data_aggregate.utils.common.pit import (
 from src.data_aggregate.utils.common.sector_gates import row_gate
 
 _QUARTERLY_MAX_AGE_DAYS = 185
+SECTOR_TRANSFORM_SEMANTICS = {"deferred_rev_intensity": "structural_zero"}
 
 # KPI columns produced by compute_sector_kpis (the panel builder iterates these).
 SECTOR_KPI_COLS: list[str] = [
@@ -401,4 +402,5 @@ def build_sector_feature_panel(
             fields[name] = daily
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    return build_peer_relative_panel(fields, peer_dict)
+    semantics = {name: mode for name, mode in SECTOR_TRANSFORM_SEMANTICS.items() if name in fields}
+    return build_peer_relative_panel(fields, peer_dict, semantics=semantics)

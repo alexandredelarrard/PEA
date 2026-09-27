@@ -55,6 +55,7 @@ from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 _YOY = 252  # ~1 trading year
 _FIVE_Y = 5 * 252  # ~5 trading years
 _QUARTERLY_MAX_AGE_DAYS = 185
+DIVIDEND_TRANSFORM_SEMANTICS = {"dividend_payer": "binary"}
 
 
 def _cagr(now: pd.DataFrame, span: int, years: float) -> pd.DataFrame:
@@ -192,4 +193,5 @@ def build_dividend_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
     close = stock_close.reindex(trading_index)
     fields = _dividend_fields(dividends_history, close, fundamentals_history, level_factor)
-    return build_peer_relative_panel(fields, peer_dict)
+    semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
+    return build_peer_relative_panel(fields, peer_dict, semantics=semantics)

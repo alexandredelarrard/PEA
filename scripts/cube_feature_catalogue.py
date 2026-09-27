@@ -281,23 +281,23 @@ add(
 add(
     "revenueGrowth",
     "growth",
-    "YoY revenue growth, computed AT CUBE TIME against the filing nearest 365 calendar days back.",
-    "A `CUBE_TIME_COLUMN`: the history build could only take a 4-ROW offset, and under the publication-event grain an amendment row makes four rows about nine months -- the wrong denominator for exactly the names that restate. The as-of match is NEAREST with a 180-day tolerance, whose worst case (as_of - 185 days) is still strictly before the row's own filing date, so both legs are public.",
-    "Correlates 0.998 with `y_rev_growth`, which is the row-offset version -- the residual 0.2% is precisely the amendment/irregular-cadence cases the calendar match exists to fix.",
+    "YoY TTM revenue growth, computed AT CUBE TIME against the same fiscal period one year earlier.",
+    "A `CUBE_TIME_COLUMN`: fiscal-end matching within 45 days avoids filing-row and publication-date offsets, selects only amendments public by the current filing, and projects the result from that filing date.",
+    "Economically the same growth quantity as `y_rev_growth`; both public names are retained for established consumers, and no active model config may select both.",
 )
 add(
     "earningsGrowth",
     "growth",
-    "YoY net-income growth, same cube-time 365-day as-of match.",
+    "YoY net-income growth, using the same prior-fiscal-period point-in-time match as `revenueGrowth`.",
     "Same construction as `revenueGrowth`. A zero or negative prior is masked, not divided by: a swing from loss to profit has no percentage growth, and dividing by it manufactures a huge number with an arbitrary sign.",
     "Nulls are higher than for revenue because the prior-period mask bites on every loss year.",
 )
 add(
     "y_rev_growth",
     "growth",
-    "TTM revenue vs TTM one year ago, on the fiscal filing series (row offset).",
-    "Seasonality-free by construction: same fiscal quarter each year, `yoy_periods` filings back.",
-    "The row-offset twin of `revenueGrowth`; both are kept because they disagree exactly where the filing cadence is irregular.",
+    "TTM revenue vs the same fiscal period one year earlier, matched by fiscal end within 45 days.",
+    "Seasonality-free and point-in-time by construction: only predecessor amendments public by the current filing are eligible.",
+    "Economically the same quantity as `revenueGrowth`; the alias is retained for established model contracts, with a guard preventing one model from selecting both.",
 )
 add(
     "y_earnings_growth",
@@ -373,8 +373,8 @@ add(
     "rd_intensity",
     "growth",
     "R&D expense / revenue.",
-    "Null for filers who report no R&D -- absence of the tag here means the firm genuinely does not separate R&D, not a data gap.",
-    "Above 0.2 is research-led (biotech, semis). Read `_vs_peers` because the level is a sector property.",
+    "Null means R&D was not separately reported; an explicitly reported zero is a real no-R&D state, not missing data.",
+    "Structural-zero transform: zero stays exactly 0 while only non-zero support is ranked/peer-standardised. Above 0.2 is research-led (biotech, semis).",
 )
 add(
     "hyper_growth",
@@ -533,7 +533,7 @@ add(
     "accounting_quality",
     "Income attributable to non-controlling interests / |net income| -- the share of consolidated profit the parent's shareholders do not own.",
     "Reads `netIncomeToNci`, the LIVE column name. It was written `nciIncome`, which nothing has ever produced, so the feature emitted nothing -- and the column-existence diff could not see it because the argument is a loop variable, not a string literal.",
-    "A high share means headline EPS overstates what accrues to the common holder. `netIncome` maps from Sharadar's `consolinc`, which includes NCI, so the ratio is well-posed.",
+    "Structural-zero transform: zero means no income attributed to NCI and stays exactly 0; non-zero support alone is compared. A high share means headline EPS overstates what accrues to the common holder.",
 )
 add(
     "earnings_quality",
@@ -650,8 +650,8 @@ add(
     "deferred_rev_intensity",
     "operating",
     "Deferred revenue / revenue -- contracted but unrecognised billings.",
-    "NOT sector-gated on purpose: deferred revenue is meaningful for any subscription or contract-backed model, and it is only reported by filers that have it.",
-    "High is a subscription book with visibility; the tail is enterprise software and maintenance-heavy industrials.",
+    "NOT sector-gated: deferred revenue is meaningful for any subscription or contract-backed model. An explicitly reported zero is a real state; an absent tag remains null.",
+    "Structural-zero transform: zero stays exactly 0 while positive support is ranked/peer-standardised. High is a subscription book with visibility.",
 )
 
 # --------------------------------------------------------------- workforce #
@@ -741,7 +741,7 @@ add(
     "shareholder_return",
     "0/1 flag: does the firm pay a dividend at all?",
     "Set from EITHER the ex-date history or a positive `dividendsPaid`, so a gap in one source does not misclassify a payer.",
-    "Binary. It lets the model condition on the regime rather than average a yield across payers and non-payers.",
+    "Binary transform: `f_dividend_payer_xs` preserves exact 0/1 and its peer leg bypasses continuous input winsorization, so the model conditions on the regime rather than a faux percentile.",
 )
 add(
     "dividend_payout_ratio",

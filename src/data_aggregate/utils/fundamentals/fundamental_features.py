@@ -173,6 +173,10 @@ _HIST_MIN_PERIODS = HIST_MIN_PERIODS  # require >= 1y of history before emitting
 # regime instead of averaging a feature whose meaning flips between profitable
 # and loss-making / hyper-growth names.
 _STATE_FIELDS = ("profitable", "fcf_positive", "negative_equity", "hyper_growth")
+FUNDAMENTAL_TRANSFORM_SEMANTICS = {
+    "nci_income_share": "structural_zero",
+    "rd_intensity": "structural_zero",
+}
 _HYPER_GROWTH = 0.25  # YoY revenue growth above which a name is "hyper-growth"
 _QUARTERLY_MAX_AGE_DAYS = 185
 _ANNUAL_MAX_AGE_DAYS = 460
@@ -1785,7 +1789,8 @@ def build_fundamental_feature_panel(
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}
     peer_fields = {k: v for k, v in fields.items() if k not in _STATE_FIELDS}
 
-    peer_panel = build_peer_relative_panel(peer_fields, peer_dict)
+    semantics = {name: mode for name, mode in FUNDAMENTAL_TRANSFORM_SEMANTICS.items() if name in peer_fields}
+    peer_panel = build_peer_relative_panel(peer_fields, peer_dict, semantics=semantics)
 
     # Self-history (mean-reversion) z-scores on the valuation yields only.
     hist_fields = {

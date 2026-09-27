@@ -1,4 +1,5 @@
 {
+  "exclude": ["reports"],
   "venvPath": ".",
   "venv": ".venv"
 }

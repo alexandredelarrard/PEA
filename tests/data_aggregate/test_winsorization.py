@@ -4,6 +4,7 @@ band so a few extreme names can't dominate the standardized value / the model
 peer-z `_vs_peers` and the self-history `_vs_hist` outputs). The rank `_xs`
 features are already outlier-proof and are left untouched.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -16,19 +17,26 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel, pee
 from src.data_aggregate.utils.common.xs import winsorize_xs
 
 
-def test_peer_panel_no_fragmentation_warning():
+def test_peer_panel_no_fragmentation_warning(monkeypatch):
     """Regression: build_peer_relative_panel concats one block per feature column,
     so once the panel has 100+ columns the reset_index() insert used to emit
-    pandas' 'DataFrame is highly fragmented' PerformanceWarning. The `.copy()`
-    that consolidates the blocks must keep it silent."""
+    pandas' 'DataFrame is highly fragmented' PerformanceWarning. Building the keys
+    separately must keep it silent without consolidating the multi-gigabyte feature frame."""
     dates = pd.bdate_range("2022-01-03", periods=30)
     tickers = [f"T{i}" for i in range(6)]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
     rng = np.random.default_rng(0)
     # 60 fields -> 120 f_*_vs_peers/_xs columns (+ date,ticker) => well over 100 blocks
-    fields = {f"feat{k}": pd.DataFrame(rng.standard_normal((len(dates), len(tickers))),
-                                       index=dates, columns=tickers)
-              for k in range(60)}
+    fields = {f"feat{k}": pd.DataFrame(rng.standard_normal((len(dates), len(tickers))), index=dates, columns=tickers) for k in range(60)}
+
+    original_copy = pd.DataFrame.copy
+
+    def reject_wide_eager_copy(frame, *args, **kwargs):
+        if frame.shape[1] >= 100:
+            raise AssertionError("peer panel attempted a full-width eager copy")
+        return original_copy(frame, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "copy", reject_wide_eager_copy)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -38,8 +46,9 @@ def test_peer_panel_no_fragmentation_warning():
     assert not frag, f"fragmentation warning emitted: {[str(w.message)[:80] for w in frag]}"
     assert panel.shape[1] == 2 + 60 * 2 and {"date", "ticker"} <= set(panel.columns)
     print("\n=== SANITY CHECK: peer panel not fragmented ===")
-    print(f"  built {panel.shape[1]-2} feature cols from 60 fields with ZERO "
-          "'highly fragmented' warnings (blocks consolidated via .copy()). Validated.")
+    print(
+        f"  built {panel.shape[1]-2} feature cols from 60 fields with ZERO " "'highly fragmented' warnings and no full-width eager copy. Validated."
+    )
 
 
 def test_winsorize_xs_clips_each_row_to_1_99():
@@ -49,15 +58,16 @@ def test_winsorize_xs_clips_each_row_to_1_99():
     assert w.iloc[0].max() == pytest.approx(row.iloc[0].quantile(0.99))
     assert w.iloc[0].min() == pytest.approx(row.iloc[0].quantile(0.01))
     # interior values unchanged; only the 1% tails clipped
-    assert (w.iloc[0].sort_values().iloc[1:-1].to_numpy()
-            == pytest.approx(row.iloc[0].sort_values().iloc[1:-1].to_numpy()))
+    assert w.iloc[0].sort_values().iloc[1:-1].to_numpy() == pytest.approx(row.iloc[0].sort_values().iloc[1:-1].to_numpy())
     # all-NaN row -> no crash, stays NaN
     nanrow = pd.DataFrame([{f"t{i}": np.nan for i in range(5)}])
     assert winsorize_xs(nanrow).isna().all().all()
 
     print("\n=== SANITY CHECK: cross-sectional 1/99 winsorize ===")
-    print(f"  values 0..99 -> max clipped {row.iloc[0].max():.0f} -> {w.iloc[0].max():.2f} "
-          f"(99th pct), min 0 -> {w.iloc[0].min():.2f} (1st pct); interior untouched. Validated.")
+    print(
+        f"  values 0..99 -> max clipped {row.iloc[0].max():.0f} -> {w.iloc[0].max():.2f} "
+        f"(99th pct), min 0 -> {w.iloc[0].min():.2f} (1st pct); interior untouched. Validated."
+    )
 
 
 def test_peer_z_outlier_is_trimmed_but_rank_untouched():
@@ -66,11 +76,11 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
     tickers = [f"T{i}" for i in range(60)]
     rng = np.random.default_rng(0)
     field = pd.DataFrame(rng.normal(1.0, 0.05, size=(3, 60)), index=dates, columns=tickers)
-    field.loc[dates[-1], "T0"] = 1e6                     # extreme outlier
+    field.loc[dates[-1], "T0"] = 1e6  # extreme outlier
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
     d = dates[-1]
-    raw = peer_relative(field, peers)                    # un-winsorized peer-z
+    raw = peer_relative(field, peers)  # un-winsorized peer-z
     wins = winsorize_xs(raw)
 
     # T0's raw peer-z is extreme (hits the internal +-8 clip); winsorize then pulls
@@ -86,5 +96,7 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
     assert last.loc["T0", "f_metric_xs"] == pytest.approx(1.0, abs=1e-9)
 
     print("\n=== SANITY CHECK: peer-z outlier trim + rank intact ===")
-    print(f"  T0 raw=1e6: peer-z {raw.loc[d,'T0']:.2f} (at +-8 clip) -> winsorized "
-          f"{wins.loc[d,'T0']:.3f} (day 99th pct); f_metric_xs rank still 1.00. Validated.")
+    print(
+        f"  T0 raw=1e6: peer-z {raw.loc[d,'T0']:.2f} (at +-8 clip) -> winsorized "
+        f"{wins.loc[d,'T0']:.3f} (day 99th pct); f_metric_xs rank still 1.00. Validated."
+    )

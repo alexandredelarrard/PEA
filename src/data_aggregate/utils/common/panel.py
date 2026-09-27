@@ -215,8 +215,8 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
         # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
         # The stacked long columns are cast to float32: these are z-scores / percentile ranks
-        # bounded to O(1), so float64 storage is wasted — halving them (and the concat +
-        # defrag copy below) is what keeps the many-feature panels off the OOM killer.
+        # bounded to O(1), so float64 storage is wasted — halving them keeps the
+        # many-feature panels off the OOM killer.
         mode = emission.get(name)
         semantic = semantics.get(name)
         zero_state = fdf.eq(0) if semantic == "structural_zero" else None
@@ -252,7 +252,12 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
-    # behind, so the reset_index() column insert doesn't trip the "highly fragmented
-    # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
-    return pd.concat(long_frames, axis=1).copy().reset_index()
+    # Keep concat's independent float32 blocks. Consolidating this frame with `.copy()`
+    # needs another contiguous allocation for every output column: 2.23 GiB for the live
+    # 156-column x 3.83M-row fundamentals panel, on top of the blocks already resident.
+    # Build the two key columns separately instead of inserting them into a 100+ block
+    # frame: insertion emits a fragmentation warning, while this concat reuses the blocks.
+    feature_frame = pd.concat(long_frames, axis=1)
+    keys = feature_frame.index.to_frame(index=False)
+    feature_frame.index = keys.index
+    return pd.concat([keys, feature_frame], axis=1)

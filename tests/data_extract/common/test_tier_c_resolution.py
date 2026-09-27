@@ -177,7 +177,7 @@ def test_a_union_table_keeps_that_same_row():
     df = pd.DataFrame(
         {"ticker": [None, None], "issuer_cik": ["0000006769", "0000006769"], "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2022-05-01")]}
     )
-    out, rejected = _filter_universe(df, {"APA"}, IDENTITY)
+    out, rejected = _filter_universe(df, ["APA"], IDENTITY)
 
     assert len(out) == 2, "the union path must not apply a date filter"
     assert rejected.empty
@@ -196,7 +196,7 @@ def test_cik_first_resolution_labels_the_row_whether_the_symbol_is_typed_or_not(
     df = pd.DataFrame(
         {"ticker": ["APA", None], "issuer_cik": ["0000006769", "0000006769"], "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2019-06-01")]}
     )
-    out, rejected = _filter_universe(df, {"APA"}, IDENTITY)
+    out, rejected = _filter_universe(df, ["APA"], IDENTITY)
 
     assert list(out["ticker"]) == ["APA", "APA"]
     assert out["claimed_ticker"].tolist()[0] == "APA"

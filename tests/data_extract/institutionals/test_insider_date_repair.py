@@ -12,17 +12,19 @@ Small in count, but a transaction stamped 2031 dominates any recency-weighted in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.institutionals.fetch_insider_transactions import _repair_transaction_dates
 
 
-def _frame(rows: list[tuple[str, str]]) -> pd.DataFrame:
+def _frame(rows: Sequence[tuple[str | None, str | None]]) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "transaction_date": pd.to_datetime([r[0] for r in rows], errors="coerce"),
-            "filing_date": pd.to_datetime([r[1] for r in rows], errors="coerce"),
+            "transaction_date": pd.to_datetime(pd.Series([r[0] for r in rows], dtype="string"), errors="coerce"),
+            "filing_date": pd.to_datetime(pd.Series([r[1] for r in rows], dtype="string"), errors="coerce"),
         }
     )
 

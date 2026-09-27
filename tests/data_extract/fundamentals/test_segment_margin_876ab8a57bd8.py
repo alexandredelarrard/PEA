@@ -53,6 +53,8 @@ the real-filing evidence is the measurement recorded above and in the two docstr
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import reason_codes as rc
@@ -292,7 +294,7 @@ def test_an_unknown_fiscal_end_refuses_nothing():
     """Absence of a bound is not a bound of zero: a row with no `fiscal_end` has nothing
     to be stale against, and refusing there would null every ticker's first event."""
     row = pd.Series({"period_end": pd.Timestamp("2020-01-31"), "value": 1.0})
-    assert not _is_stale(row, pd.NaT)
+    assert not _is_stale(row, cast(Any, pd.NaT))
     assert not _is_stale(pd.Series({"period_end": pd.NaT, "value": 1.0}), pd.Timestamp("2020-01-31"))
     print("\n=== SANITY CHECK: NaT on either side refuses nothing ===")
     print("  no fiscal_end -> no refusal; no period_end -> no refusal. Validated.")
@@ -326,6 +328,7 @@ def test_a_filer_that_never_tags_gross_profit_gets_the_derived_number():
     visible = _facts([("totalRevenue", "2026-05-31", 67_357e6), ("costOfRevenue", "2026-05-31", 23_021e6)])
     got = _gross_profit_identity(row, visible)
     assert got == 44_336e6
+    assert got is not None
     print("\n=== SANITY CHECK: the derivation, on ORCL's FY2026 numbers ===")
     print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin {got / row['totalRevenue']:.1%}")
     print("  Oracle files no gross-profit line; this is how every vendor has the number.")

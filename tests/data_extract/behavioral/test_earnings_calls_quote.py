@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import types
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -28,7 +29,7 @@ from src.data_extract.utils.behavioral import utils_missing_quarters as mq
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 
-def _ctx(tickers, tmp_path):
+def _ctx(tickers, tmp_path) -> Any:
     store = FakeStore({"sp500_tickers": pd.DataFrame({"ticker": list(tickers)})})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
@@ -66,6 +67,7 @@ def test_quote_discovery_filters_and_merges(tmp_path, monkeypatch):
     ctx = _ctx(["AAA", "BBB"], tmp_path)
 
     idx = fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", exchanges=("nasdaq", "nyse"), pause=0.0)
+    assert idx is not None
     got = {(r["ticker"], r["quarter"]) for r in idx.values()}
 
     assert ("AAA", "2025Q2") in got  # post-cutoff, own page -> kept
@@ -99,13 +101,14 @@ def test_quote_discovery_live(tmp_path):
         idx = fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", pause=0.8)
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"MF unreachable: {e}")
+    assert idx is not None
     if not idx:
         pytest.skip("no links returned (MF blocked)")
     by_tkr = {}
     for r in idx.values():
         by_tkr.setdefault(r["ticker"], []).append(r["quarter"])
     floor = mq._since_floor_index("2025-01-01")
-    assert all(mq._quarter_index(*mq._parse_quarter(d["quarter"])) >= floor for d in idx.values()), (
+    assert all(mq._quarter_index(*cast(tuple[int, int], mq._parse_quarter(d["quarter"]))) >= floor for d in idx.values()), (
         "quarter-floor filter leaked pre-floor fiscal quarters"
     )
     print("\n=== SANITY CHECK: quote-page discovery on REAL MF pages ===")
@@ -153,6 +156,7 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     ctx = _ctx(["AAA", "BBB", "CCC"], tmp_path)
 
     idx = fe.build_transcript_index_by_ticker(ctx, pause=0.0)
+    assert idx is not None
     got = {(r["ticker"], r["quarter"]) for r in idx.values()}
 
     assert not any("/aaa/" in u for u in calls), "AAA (HF-complete) must NOT be requested"
@@ -205,7 +209,7 @@ def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
     """earnings_surprises report dates -> the fiscal quarter each ticker last REPORTED: a late-Apr
     report is Q1, an early-Feb report is the prior Q4 (report date shifted back ~45d)."""
     es = pd.DataFrame({"ticker": ["AAA", "AAA", "BBB"], "earnings_date": ["2025-01-30", "2025-04-25", "2025-02-05"]})
-    ctx = types.SimpleNamespace(store=FakeStore({"earnings_surprises": es}))
+    ctx: Any = types.SimpleNamespace(store=FakeStore({"earnings_surprises": es}))
     rel = mq._released_quarter_idx_by_ticker(ctx)
     assert rel["AAA"] == mq._quarter_index(2025, 1)  # latest = Apr-25 report -> Q1'25
     assert rel["BBB"] == mq._quarter_index(2024, 4)  # Feb-05 report -> prior Q4'24

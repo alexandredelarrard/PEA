@@ -12,6 +12,7 @@ Every test prints a sanity-check conclusion.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pandas as pd
 import pandas.api.types as ptypes
@@ -33,6 +34,7 @@ from src.data_store.schema import Tables
 
 CONFIG_DIR = "./configs"
 ENTITLED = "AAPL"  # measured entitled on the current key
+sharadar_get_untyped: Any = sharadar_get
 #: ⚠ There is no longer a non-entitled ticker to point at. Measured 2026-08-26 after the
 #: subscription was upgraded: the key covers the WHOLE SF1 universe (5,780 distinct tickers in
 #: 2024 alone) and nothing returns 403. `ADBE` used to sit here and used to 403 on the free
@@ -152,8 +154,8 @@ def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
     while BRK-B kept appearing in the cube via the price panel. If this test ever starts
     failing because the dash form returns rows, the mapping can be deleted."""
     common = dict(dimension="ARQ", sort="date.asc", limit=5)
-    wrong = sharadar_get(context, "fundamentals", ticker="BRK-B", **common, **{"date.gte": "2020-01-01"})
-    right = sharadar_get(context, "fundamentals", ticker=vendor_symbol("BRK-B"), **common, **{"date.gte": "2020-01-01"})
+    wrong = sharadar_get_untyped(context, "fundamentals", ticker="BRK-B", **common, **{"date.gte": "2020-01-01"})
+    right = sharadar_get_untyped(context, "fundamentals", ticker=vendor_symbol("BRK-B"), **common, **{"date.gte": "2020-01-01"})
     if wrong is None or right is None:
         pytest.skip("Sharadar request failed (network)")
 
@@ -172,7 +174,7 @@ def test_response_header_matches_contract(context):
     """`fields=` drops an unavailable field SILENTLY -- a typo yields a missing column and no
     warning. So the header is validated against `SHARADAR_SF1_COLUMNS` on every response, and
     this test pins that contract against the live feed."""
-    frame = sharadar_get(context, "fundamentals", ticker=ENTITLED, dimension="ARQ", sort="date.asc", limit=5, **{"date.gte": "2024-01-01"})
+    frame = sharadar_get_untyped(context, "fundamentals", ticker=ENTITLED, dimension="ARQ", sort="date.asc", limit=5, **{"date.gte": "2024-01-01"})
     if frame is None:
         pytest.skip("Sharadar request failed (network)")
 
@@ -217,7 +219,7 @@ def test_not_entitled_is_not_a_retry_storm(context, monkeypatch):
 
     started = time.time()
     with pytest.raises(NotEntitledError) as raised:
-        sharadar_get(context, "fundamentals", ticker="ANY", dimension="ARQ", sort="date.asc", **{"date.gte": "2021-01-01"})
+        sharadar_get_untyped(context, "fundamentals", ticker="ANY", dimension="ARQ", sort="date.asc", **{"date.gte": "2021-01-01"})
     elapsed = time.time() - started
 
     print("\n=== SANITY CHECK: a 403 costs one request, not five ===")

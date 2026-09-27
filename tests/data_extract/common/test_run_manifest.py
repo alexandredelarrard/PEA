@@ -7,15 +7,19 @@ filing-listing fetchers. All offline (tmp_path-based fake context), no network/D
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
+from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
+from src.data_extract.utils.common.run_manifest import manifest_window, record_run
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
+get_entry: Any = _get_entry
 
-def _ctx(tmp_path):
+
+def _ctx(tmp_path) -> Any:
     return types.SimpleNamespace(paths={"DATA_STORE": tmp_path}, config=extract_config())
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 
@@ -45,7 +46,7 @@ def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch)
         "AAA",
         "1",
         universe=["AAA"],
-        identity=object(),
+        identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
     )
     assert out[Tables.insider_transactions_live].empty
@@ -77,7 +78,7 @@ def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
         "AAA",
         "1",
         universe=["AAA"],
-        identity=object(),
+        identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
     )
     live = out[Tables.insider_transactions_live]

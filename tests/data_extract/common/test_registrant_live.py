@@ -39,11 +39,12 @@ EVENT_FORMS = ["8-K", "SC 13G", "SC 13G/A", "4"]
 
 @pytest.fixture(scope="module")
 def edgar_ready() -> bool:
-    if not os.getenv("SEC_USER_AGENT", "").strip():
+    identity = os.getenv("SEC_USER_AGENT")
+    if not identity or not identity.strip():
         pytest.skip("SEC_USER_AGENT unset -- these checks need EDGAR")
     from edgar import set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    set_identity(identity)
     return True
 
 

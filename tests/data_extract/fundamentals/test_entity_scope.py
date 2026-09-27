@@ -13,6 +13,7 @@ extensions.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -116,9 +117,11 @@ def edgar_ready() -> bool:
 def maa_filing(edgar_ready):
     from edgar import Company, set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
     try:
-        filing = Company("MAA").latest("10-K")
+        filing: Any = Company("MAA").latest("10-K")
         return filing, filing.xbrl()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"EDGAR unreachable: {exc}")
@@ -195,9 +198,12 @@ def test_southern_company_six_registrants_collapse_to_the_parent(edgar_ready):
     yields silent nulls -- this path must not depend on it."""
     from edgar import Company, set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
     try:
-        xbrl = Company("SO").latest("10-K").xbrl()
+        filing: Any = Company("SO").latest("10-K")
+        xbrl = filing.xbrl()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"EDGAR unreachable: {exc}")
 

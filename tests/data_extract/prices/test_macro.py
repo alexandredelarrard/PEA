@@ -8,6 +8,7 @@ so real data would only make the assertions weaker.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -143,7 +144,7 @@ def test_price_leg_stores_closes_untransformed(monkeypatch):
     monkeypatch.setattr(fm, "download_ohlcv", lambda *a, **k: raw)
 
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    wide = fm._fetch_price_leg(ctx, idx[0], idx[-1])
+    wide = fm._fetch_price_leg(cast(Any, ctx), idx[0], idx[-1])
 
     assert set(wide.columns) == set(MACRO_PRICE_SERIES.values())
     for sym, name in MACRO_PRICE_SERIES.items():

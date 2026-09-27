@@ -14,6 +14,7 @@ every run to the full window forever.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
@@ -50,7 +51,7 @@ def test_max_date_by_is_one_grouped_query(sqlite_store):
 
 def test_resume_since_takes_the_oldest_frontier(sqlite_store):
     _seed(sqlite_store)
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx: Any = SimpleNamespace(store=sqlite_store)
 
     since = resume_since(ctx, "prices", ["AAA", "BBB"], years_history=15)
     assert since == pd.Timestamp("2024-01-05"), since  # the laggard sets the window
@@ -63,7 +64,7 @@ def test_resume_since_takes_the_oldest_frontier(sqlite_store):
 
 def test_missing_ticker_pulls_back_only_when_include_missing(sqlite_store):
     _seed(sqlite_store)
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx: Any = SimpleNamespace(store=sqlite_store)
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
 
     # prices semantics: an unseen ticker genuinely needs its full history
@@ -78,7 +79,7 @@ def test_window_never_predates_years_history(sqlite_store):
     """A ticker stale beyond the configured window must not widen it: the stored
     frontier is clamped, so a 1-year config never triggers a 15-year download."""
     _seed(sqlite_store)
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx: Any = SimpleNamespace(store=sqlite_store)
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=1)
 
     since = resume_since(ctx, "prices", ["AAA", "BBB"], years_history=1)
@@ -88,7 +89,7 @@ def test_window_never_predates_years_history(sqlite_store):
 
 
 def test_cold_table_falls_back_to_full_history(sqlite_store):
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx: Any = SimpleNamespace(store=sqlite_store)
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert resume_since(ctx, "prices", ["AAA"], years_history=15) == history_start
     print("\n=== SANITY CHECK: cold start ===")

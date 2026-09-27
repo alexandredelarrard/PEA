@@ -8,16 +8,28 @@ free — the tokens were paid when those filings were first extracted.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.schemas.def14a_schema import (
-    BeneficialOwner,
-    Def14AExtract,
-    DirectorCompensation,
-    DirectorInfo,
-    ExecutiveCompensation,
-    GovernanceProfile,
+    BeneficialOwner as _BeneficialOwner,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorCompensation as _DirectorCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import (
     _RECONCILE_TOLERANCE_USD,
@@ -31,6 +43,13 @@ from src.data_extract.utils.structure.def14a.gender import (
     recompute_parent_gender,
 )
 
+BeneficialOwner: Any = _BeneficialOwner
+Def14AExtract: Any = _Def14AExtract
+DirectorCompensation: Any = _DirectorCompensation
+DirectorInfo: Any = _DirectorInfo
+ExecutiveCompensation: Any = _ExecutiveCompensation
+GovernanceProfile: Any = _GovernanceProfile
+
 FILING = pd.Series(
     {
         "filing_date": pd.Timestamp("2026-04-30"),
@@ -41,14 +60,14 @@ FILING = pd.Series(
 )
 
 
-def _extract(**kw) -> Def14AExtract:
+def _extract(**kw) -> Any:
     return Def14AExtract(**kw)
 
 
 # --------------------------------------------------------------------------- #
 # multi-year SCT: three derived values that break if left alone               #
 # --------------------------------------------------------------------------- #
-def _three_year_sct() -> list[ExecutiveCompensation]:
+def _three_year_sct() -> list[Any]:
     """Two NEOs x three fiscal years — the shape Item 402(c) actually requires."""
     rows = []
     for year, salary in ((2025, 1_500_000.0), (2024, 1_400_000.0), (2023, 1_300_000.0)):
@@ -90,7 +109,10 @@ def test_exec_comp_rows_carry_every_neo_year_pair():
     assert len(rows) == 6
     assert {r["fiscal_year"] for r in rows} == {2023, 2024, 2025}
     assert all(r["as_of"] == FILING["filing_date"] for r in rows), "as_of must be the FILING date"
-    print(f"\n  {len(rows)} exec-comp rows across {len({r['fiscal_year'] for r in rows})} years, all stamped as_of={FILING['filing_date'].date()}")
+    print(
+        f"\n  {len(rows)} exec-comp rows across {len({r['fiscal_year'] for r in rows})} years, "
+        f"all stamped as_of={pd.Timestamp(cast(Any, FILING['filing_date'])).date()}"
+    )
 
 
 # --------------------------------------------------------------------------- #

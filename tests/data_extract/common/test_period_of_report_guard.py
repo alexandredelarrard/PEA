@@ -12,6 +12,7 @@ had already resolved.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -29,7 +30,8 @@ class _Raising:
 
     @property
     def period_of_report(self):
-        _, _, period = None  # what attachments.py:1170 really does
+        broken: Any = None
+        _, _, period = broken  # what attachments.py:1170 really does
         return period
 
 

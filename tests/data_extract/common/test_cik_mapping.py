@@ -11,6 +11,7 @@ test_load_cik_mapping_reads_sp500_tickers — reads sp500_tickers, zero-pads the
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
@@ -40,7 +41,8 @@ def test_load_cik_mapping_reads_sp500_tickers(sqlite_store):
     )
 
     sqlite_store.replace("sp500_tickers", sp500)  # the ONLY table it may read (no cik_mapping)
-    m = sec_utils.load_cik_mapping(SimpleNamespace(store=sqlite_store))
+    context: Any = SimpleNamespace(store=sqlite_store)
+    m = sec_utils.load_cik_mapping(context)
     d = {r["ticker"]: r for _, r in m.iterrows()}
 
     # CIK zero-padded to 10 digits for SEC URLs (even when stored short)

@@ -16,6 +16,7 @@ turn "this function is never executed in CI" into "it is".
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -71,7 +72,7 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
     post = _filing("0001-post", "0001652044", "2016-04-21")  # Alphabet, post-boundary
     patched([pre, post], lambda t, c, f: [_row(t, c, f, period_end=str(f.filing_date))])
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=None, gics_by_ticker={}, registrants=_registrants())[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())[
         mod.Tables.fundamentals_facts
     ]
 
@@ -83,7 +84,9 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
 def test_a_ticker_with_no_register_entry_still_stamps_a_cik(patched):
     f = _filing("0001-a", "0000320193", "2024-02-01")
     patched([f], lambda t, c, fl: [_row(t, c, fl)])
-    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=None, gics_by_ticker={}, registrants={})[mod.Tables.fundamentals_facts]
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})[
+        mod.Tables.fundamentals_facts
+    ]
     assert list(out["cik"]) == ["0000320193"]
 
 
@@ -109,7 +112,7 @@ def test_the_dedup_overlap_guard_cannot_fire(patched):
     b = _filing("0001-dup", "0001652044", "2016-04-21")  # same accession, both segments
     patched([a, b], lambda t, c, f: [_row(t, c, f)])  # identical PK -> dedup drops one
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=None, gics_by_ticker={}, registrants=_registrants())[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())[
         mod.Tables.fundamentals_facts
     ]
     assert len(out) == 1  # a row WAS dropped
@@ -123,5 +126,5 @@ def test_the_dedup_overlap_guard_cannot_fire(patched):
 
 def test_an_empty_walk_returns_empty_frames_without_touching_the_guard(patched):
     patched([], lambda t, c, f: [])
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=None, gics_by_ticker={}, registrants=_registrants())
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())
     assert out[mod.Tables.fundamentals_facts].empty

@@ -12,6 +12,7 @@ real filing cannot be made to disagree with itself on demand.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -158,7 +159,8 @@ def test_negative_weights_are_preserved():
     kids = dict(graph.children_of("PropertyPlantAndEquipmentNet"))
 
     assert kids["AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment"] == -1.0
-    assert not graph.is_pure_aggregation("PropertyPlantAndEquipmentNet") if hasattr(graph, "is_pure_aggregation") else True
+    pure_aggregation = getattr(graph, "is_pure_aggregation", None)
+    assert not pure_aggregation("PropertyPlantAndEquipmentNet") if pure_aggregation else True
     print("\n=== SANITY CHECK: contra-account weight ===")
     print(f"  accumulated depreciation arc weight = {kids['AccumulatedDepreciationDepletionAndAmortizationPropertyPlantAndEquipment']}")
     print("  OK: Sign preserved.")
@@ -401,6 +403,7 @@ def test_root_discovery_rejects_the_balance_sheet_and_cash_flow_roots():
     found = discover_root(graph, available, duration_concepts=durations)
 
     assert found == ("RegulatedAndUnregulatedOperatingRevenue", "linkbase_root_node"), found
+    assert found is not None
     assert discover_root(graph, available, duration_concepts=durations, banned=frozenset({"RegulatedAndUnregulatedOperatingRevenue"})) is None
     print("\n=== SANITY CHECK: 3c.2 root discovery is constrained AND ranked ===")
     print("  arc order offers the cash-flow root first and the balance-sheet root second")
@@ -609,13 +612,15 @@ def resolved_regimes(edgar_ready) -> dict:
     `filing.xbrl()` costs 1.4-5.8 s, so this is paid once for the whole file."""
     from edgar import Company, set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
     from src.data_extract.utils.fundamentals.xbrl_linkbase import resolve_field as rf
 
     out = {}
     for ticker, (sector, group, sub), _ in _REGIME_CASES:
         try:
-            filing = Company(ticker).latest("10-K")
+            filing: Any = Company(ticker).latest("10-K")
             xbrl = filing.xbrl()
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"EDGAR unreachable for {ticker}: {exc}")
@@ -762,7 +767,11 @@ def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regime
 #: `fundamentals_regimes.json`, which matters: v1 recorded AXP as routing to `industrial`
 #: and that was wrong -- "Transaction & Payment Processing Services" is V and MA. Asserted
 #: below rather than assumed, because the regime selects the two-leg roll-up this fix needs.
-_AXP_GICS = {"sector": "Financials", "industry_group": "Financial Services", "sub_industry": "Consumer Finance"}
+_AXP_GICS: dict[str, str | None] = {
+    "sector": "Financials",
+    "industry_group": "Financial Services",
+    "sub_industry": "Consumer Finance",
+}
 
 
 @pytest.fixture(scope="module")
@@ -777,7 +786,9 @@ def axp_revenue(edgar_ready) -> dict:
 
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
 
     company = Company("AXP")
     out: dict[int, pd.DataFrame] = {}

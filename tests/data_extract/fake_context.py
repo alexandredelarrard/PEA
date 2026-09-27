@@ -13,6 +13,7 @@ while the pipeline wrote somewhere else entirely.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -25,4 +26,4 @@ def extract_config(**branches) -> DictConfig:
     filenames) and the real `gpt` tree (model / max_chars / cache defaults), plus whatever
     per-test branches the caller adds -- `extract_config(data_extract={"years_history": 15})`."""
     cfg = OmegaConf.merge(OmegaConf.load(_PATHS_YML), OmegaConf.load(_GPT_YML))
-    return OmegaConf.merge(cfg, OmegaConf.create(branches)) if branches else cfg
+    return cast(DictConfig, OmegaConf.merge(cfg, OmegaConf.create(branches)) if branches else cfg)

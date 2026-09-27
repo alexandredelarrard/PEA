@@ -63,7 +63,9 @@ class _FakeFiling:
 # 1. Fact-row shape: what `instant_stock` needs to accept it                    #
 # --------------------------------------------------------------------------- #
 def test_employee_fact_row_is_a_year_end_instant():
-    row = employee_fact_frame(_FakeFiling()).iloc[0]
+    frame = employee_fact_frame(_FakeFiling())
+    assert frame is not None
+    row = frame.iloc[0]
 
     assert row["field"] == EMPLOYEES_FIELD and row["value"] == 21_400.0
     assert row["period_type"] == "instant"

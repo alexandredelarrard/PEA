@@ -16,6 +16,8 @@ the world. The measurements live in `test_registrant_live.py` and in the detecto
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 import pytest
 
@@ -56,7 +58,7 @@ def test_the_shell_name_reading(contraname, is_shell):
 # --------------------------------------------------------------------------- #
 # The FPI test, and why it runs first                                         #
 # --------------------------------------------------------------------------- #
-def _doc(pairs: list[tuple[str, str]]) -> dict:
+def _doc(pairs: list[tuple[str, Any]]) -> dict:
     """A submissions document with everything inlined in `recent` and no archive pages."""
     return {"filings": {"recent": {"form": [f for f, _ in pairs], "filingDate": [d for _, d in pairs]}, "files": []}}
 
@@ -221,7 +223,9 @@ def test_oracle4_picks_the_predecessor_whose_history_the_successor_restated(monk
         {"name": "wrong co", "cik": "0000000002", "co_indexed_on": 9, "profile": {}},
         {"name": "right co", "cik": "0000000001", "co_indexed_on": 1, "profile": {}},
     ]
-    winner, evidence = detect.oracle4_comparative(None, "0000000009", cands, "2018-09-21")
+    result = detect.oracle4_comparative(None, "0000000009", cands, "2018-09-21")
+    assert result is not None
+    winner, evidence = result
 
     assert winner["cik"] == "0000000001", "the larger/more co-indexed candidate must not win"
     assert evidence["matched"] == 2

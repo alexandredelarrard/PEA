@@ -16,6 +16,8 @@ CIKs throughout, because a synthetic id would let a wrong entity mapping pass un
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
@@ -38,7 +40,7 @@ DUPONT_EI = "0000030554"  # DuPont E I de Nemours -- DD's own predecessor
 ABC = "0001140859"  # AmerisourceBergen / Cencora, COR's roster CIK
 CORESITE = "0001490892"  # CoreSite Realty -- held COR until 2021
 
-UNIVERSE = {"AVGO", "TT", "DD", "COR", "IR"}
+UNIVERSE = ("AVGO", "TT", "DD", "COR", "IR")
 
 
 @pytest.fixture(scope="module")
@@ -205,7 +207,7 @@ def test_a_departed_universe_ticker_is_reason_entity_not_in_universe(identity):
     scored = _verdicts(frame, UNIVERSE, identity)
 
     assert list(scored["reject_reason"]) == ["entity_mismatch"]  # COR IS in the universe
-    gone = _verdicts(frame, UNIVERSE - {"COR"}, identity)
+    gone = _verdicts(frame, tuple(symbol for symbol in UNIVERSE if symbol != "COR"), identity)
     assert list(gone["reject_reason"]) == ["entity_not_in_universe"]
     print("\n=== the two rejection reasons are distinguishable ===")
     print("  the same CoreSite row reads entity_mismatch while COR is in the universe and entity_not_in_universe once it leaves.")
@@ -313,13 +315,15 @@ def test_the_sweep_quarantines_and_deletes_the_stored_rejects(tmp_path, identity
     class _Ctx:
         pass
 
-    ctx = _Ctx()
+    ctx = cast(Any, _Ctx())
     ctx.store = store
 
     quarantined, deleted = ins._screen_stored_rows(ctx, UNIVERSE, identity)
 
     left = store.load(Tables.insider_transactions)
     quarantine = store.load(Tables.insider_transactions_quarantine)
+    assert left is not None
+    assert quarantine is not None
     assert (quarantined, deleted) == (2, 2)
     assert sorted(left["accession_number"]) == ["a0", "a2"], "only the two keepers remain"
     assert set(quarantine["reject_reason"]) == {"entity_mismatch", "entity_not_in_universe"}
@@ -345,7 +349,7 @@ def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity
     class _Ctx:
         pass
 
-    ctx = _Ctx()
+    ctx = cast(Any, _Ctx())
     ctx.store = store
 
     first = ins._screen_stored_rows(ctx, UNIVERSE, identity)
@@ -353,6 +357,8 @@ def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity
 
     assert first == (1, 1)
     assert second == (0, 0), "a clean table must be a no-op, not a second delete"
-    assert len(store.load(Tables.insider_transactions)) == 1
+    remaining = store.load(Tables.insider_transactions)
+    assert remaining is not None
+    assert len(remaining) == 1
     print("\n=== sweep idempotence ===")
     print(f"  first pass {first}, second pass {second}. Re-running is safe.")

@@ -119,7 +119,7 @@ def test_the_four_union_cases():
     )
     report = TranslationReport()
     out = split_events(actions, yf_splits, report=report)
-    got = {(r.ticker, pd.Timestamp(r.date).date().isoformat()): r.value for r in out.itertuples()}
+    got = {(r.ticker, pd.Timestamp(str(r.date)).date().isoformat()): r.value for r in out.itertuples()}
 
     assert ("WTW", "2016-01-05") in got, "corroborated -> kept even though 0.3775 is odd"
     assert ("AAPL", "2020-08-31") in got

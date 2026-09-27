@@ -55,7 +55,7 @@ def test_stitch_recovers_underlying_shape():
     ]
     st = gt._stitch_chunks([chunks[2], chunks[0], chunks[1]])  # unsorted input
     aligned = pd.Series(true, index=idx).reindex(st["date"].values)
-    corr = np.corrcoef(aligned.values, st["search_interest"].values)[0, 1]
+    corr = np.corrcoef(np.asarray(aligned, dtype=float), np.asarray(st["search_interest"], dtype=float))[0, 1]
 
     assert corr > 0.99, f"stitch did not recover the shape (corr={corr:.3f})"
     assert st["search_interest"].min() >= 0 and abs(st["search_interest"].max() - 100) < 0.01
@@ -108,7 +108,7 @@ def test_append_and_renormalize_full_trend():
     assert len(full) == 156, "full span (history + appended weeks) not preserved"
     # ONE coherent 0-100 scale over the whole trend; the peak sits in the NEW (post-history) portion
     assert abs(full["search_interest"].max() - 100) < 0.01
-    assert full.loc[full["search_interest"].idxmax(), "date"] > ref["date"].max()
+    assert full.iloc[int(full["search_interest"].to_numpy().argmax())]["date"] > ref["date"].max()
     # history shape untouched: full/ref over the stored dates is a single constant factor
     ov = full[full["date"].isin(ref["date"])].set_index("date")["search_interest"]
     rv = ref.set_index("date")["search_interest"].reindex(ov.index)
@@ -117,7 +117,7 @@ def test_append_and_renormalize_full_trend():
     assert ratio.std() / ratio.mean() < 1e-3, "history was not rescaled by a single factor (patchwork!)"
     # the whole series still tracks the underlying truth
     aligned = pd.Series(true, index=idx).reindex(full["date"].values)
-    corr = np.corrcoef(aligned.values, full["search_interest"].values)[0, 1]
+    corr = np.corrcoef(np.asarray(aligned, dtype=float), np.asarray(full["search_interest"], dtype=float))[0, 1]
     assert corr > 0.99
 
     print("\n=== SANITY CHECK: full-trend reconciliation (append + renormalise) ===")

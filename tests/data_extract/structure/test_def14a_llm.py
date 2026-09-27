@@ -19,16 +19,23 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.schemas.def14a_schema import (
-    Def14AExtract,
-    DirectorInfo,
-    ExecutiveCompensation,
-    GovernanceProfile,
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
@@ -42,6 +49,11 @@ from src.data_extract.utils.structure.def14a.carve import (
     prepare_def14a_sections,
 )
 from src.data_extract.utils.structure.def14a.flatten import _flatten
+
+Def14AExtract: Any = _Def14AExtract
+DirectorInfo: Any = _DirectorInfo
+ExecutiveCompensation: Any = _ExecutiveCompensation
+GovernanceProfile: Any = _GovernanceProfile
 
 # --------------------------------------------------------------------------- #
 # Synthetic DEF 14A fixture — exercises the tricky section-anchoring cases      #
@@ -103,7 +115,7 @@ Audit Fees billed by Ernst & Young LLP were $5,000,000 for the year. {_FILLER}
 """
 
 
-def _make_expected() -> Def14AExtract:
+def _make_expected() -> Any:
     """A fully-populated extract matching the current (trimmed) schema."""
     return Def14AExtract(
         company_name="ACME Corporation",
@@ -371,12 +383,12 @@ def _stub_extractor_cls(captured: dict):
             return _make_expected(), {"input_tokens": 1, "output_tokens": 1, "cached_input_tokens": 0}
 
     class _Stubbed(_Real):
-        def initialize_client(self, methode=None, key_index=None):
+        def initialize_client(self, methode=None, key_index=None) -> Any:
             return _StubProvider()
 
         def run_extraction(self, tasks, flatten=None, group_key=None):
             tasks = list(tasks)
-            captured.setdefault("extracted", []).extend(t.meta["filing"]["accession_number"] for t in tasks)
+            captured.setdefault("extracted", []).extend(cast(Any, t.meta)["filing"]["accession_number"] for t in tasks)
             return super().run_extraction(tasks, flatten=flatten, group_key=group_key)
 
     return _Stubbed
@@ -590,6 +602,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         assert "SUMMARY COMPENSATION TABLE" in captured["system"]  # the .md prompt is used
 
         back = ctx.store.load("def14a_llm")
+        assert back is not None
         row = back[back["ticker"] == ticker]
         assert len(row) == 1, "row not found in def14a_llm table"
         r = row.iloc[0]
@@ -644,9 +657,14 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
     _cleanup()
     try:
         for yr, acc in have_years.items():
+            def14a_fetch: Any = mod
             ctx.store.save(
                 mod.Tables.def14a_llm,
-                mod._prepare_frame([_seed_row(ticker, acc, pd.Timestamp(f"{yr}-04-01"))], tuple(mod._NUMERIC_COLS), ["ticker", "accession_number"]),
+                def14a_fetch._prepare_frame(
+                    [_seed_row(ticker, acc, pd.Timestamp(f"{yr}-04-01"))],
+                    tuple(def14a_fetch._NUMERIC_COLS),
+                    ["ticker", "accession_number"],
+                ),
             )
         captured: dict = {"since_seen": [], "extracted": []}
         _fakeextractor = _stub_extractor_cls(captured)
@@ -683,6 +701,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         assert captured["since_seen"] == [None]
         assert set(captured["extracted"]) == set(gap_years.values()), captured["extracted"]
         back = ctx.store.load("def14a_llm")
+        assert back is not None
         accs = set(back[back["ticker"] == ticker]["accession_number"])
         assert accs == set(have_years.values()) | set(gap_years.values()), accs
 

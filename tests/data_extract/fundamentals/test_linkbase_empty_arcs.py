@@ -43,7 +43,7 @@ class _FakeXbrl:
         return self._arcs
 
 
-def _arcs(rows: list[tuple[str, str]]) -> pd.DataFrame:
+def _arcs(rows: list[tuple[str, str | None]]) -> pd.DataFrame:
     """(role_uri, menucat) -> the RAW calculation-linkbase frame."""
     return pd.DataFrame(
         [

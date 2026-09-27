@@ -566,7 +566,9 @@ def latest_rows(edgar_ready) -> dict:
 
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
 
     out: dict[str, pd.DataFrame] = {}
     for ticker, (sector, group, sub), *_ in _GROUND_TRUTH:

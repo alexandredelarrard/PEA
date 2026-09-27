@@ -139,10 +139,12 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
         # ANY boundary in the chain excuses it, not just the latest. A ticker can have
         # several -- PSKY is CBS -> Viacom -> ViacomCBS -> Paramount Global -> Paramount
         # Skydance -- and each seam can produce the same two-publication-events shape.
-        entry = cutovers.get(ticker)
-        if entry is not None and any(abs((pd.Timestamp(fiscal_end) - boundary).days) <= 400 for boundary in entry.boundaries):
+        ticker_name = str(ticker)
+        fiscal_end_ts = pd.Timestamp(str(fiscal_end))
+        entry = cutovers.get(ticker_name)
+        if entry is not None and any(abs((fiscal_end_ts - boundary).days) <= 400 for boundary in entry.boundaries):
             continue  # two registrants either side of a DECLARED, evidenced boundary
-        unexplained.append((ticker, str(fiscal_end.date()), len(group)))
+        unexplained.append((ticker_name, str(fiscal_end_ts.date()), len(group)))
 
     print("\n=== SANITY CHECK: one row per publication event ===")
     print(f"  {len(df):,} rows / {df['ticker'].nunique()} tickers")

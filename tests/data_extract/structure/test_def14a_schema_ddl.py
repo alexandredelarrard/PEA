@@ -20,18 +20,36 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from src.data_extract.utils.schemas.def14a_schema import (
-    BeneficialOwner,
-    Def14AExtract,
-    DirectorCompensation,
-    DirectorInfo,
-    ExecutiveCompensation,
-    GovernanceProfile,
+    BeneficialOwner as _BeneficialOwner,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorCompensation as _DirectorCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
+
+BeneficialOwner: Any = _BeneficialOwner
+Def14AExtract: Any = _Def14AExtract
+DirectorCompensation: Any = _DirectorCompensation
+DirectorInfo: Any = _DirectorInfo
+ExecutiveCompensation: Any = _ExecutiveCompensation
+GovernanceProfile: Any = _GovernanceProfile
 
 SCHEMA_SQL = Path(__file__).resolve().parents[3] / "sql" / "schema.sql"
 #: Every table this module owns, parent first.
@@ -46,7 +64,7 @@ def _ddl_columns(table: str) -> list[str]:
     return re.findall(r'^\s+"([a-z0-9_]+)"\s', m.group(1), re.M)
 
 
-def _maximal_extract() -> Def14AExtract:
+def _maximal_extract() -> Any:
     """An extract with every array non-empty, so each builder emits its full key set."""
     return Def14AExtract(
         company_name="ACME Corp",

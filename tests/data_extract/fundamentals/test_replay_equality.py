@@ -9,6 +9,8 @@ derivation exception).
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
@@ -81,8 +83,8 @@ def test_harness_detects_a_planted_change(tmp_path):
 
     mutated = built.history.copy()
     last = mutated.index[-1]  # the only event with a full TTM window
-    original = float(mutated.loc[last, _FLOW])
-    mutated.loc[last, _FLOW] = original + 1.0
+    original = float(cast(Any, mutated.at[last, _FLOW]))
+    mutated.at[last, _FLOW] = original + 1.0
     harness.snapshot({_TICKER: TickerHistory(mutated, built.reason_codes)}, after_dir)
 
     report = harness.compare(before_dir, after_dir)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 from src.data_extract.transformers import step_extract_institutionals as module
 from src.data_extract.transformers.step_extract_institutionals import (
@@ -27,6 +28,7 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
         "upsert_roster_snapshot",
         "fetch_13f_managers",
         "fetch_insider_transactions",
+        "fetch_insider_edgar",
         "fetch_13d_edgar",
         "fetch_13g_edgar",
         "fetch_8k_edgar",
@@ -59,7 +61,7 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
         local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="sec_insider_transactions")),
     )
     context = SimpleNamespace(config=config, config_dir="./configs")
-    step = object.__new__(StepExtractInstitutionals)
+    step = cast(Any, object.__new__(StepExtractInstitutionals))
     step._context = context
     step.config = config
     step.run(["AAA"])

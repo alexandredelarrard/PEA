@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import types
+from typing import Any
 
 import pytest
 
@@ -123,7 +124,7 @@ def test_row_sections_on_real_dataset_rows():
 # --------------------------------------------------------------------------- #
 # Backbone-present short-circuit (the "0 new calls" stall fix)                  #
 # --------------------------------------------------------------------------- #
-def _ctx(minmax):
+def _ctx(minmax) -> Any:
     """A store whose `bounds` returns the given (min_quarter, max_quarter).
 
     Was a fake ENGINE returning a fake result row -- only meaningful while the check issued

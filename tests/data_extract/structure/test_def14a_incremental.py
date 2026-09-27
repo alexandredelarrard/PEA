@@ -7,23 +7,28 @@ from __future__ import annotations
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, GovernanceProfile
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date
 from src.data_extract.utils.structure.def14a.flatten import _flatten
 from src.data_store.store import DataStore
 from tests.data_extract.fake_context import extract_config
 
+Def14AExtract: Any = _Def14AExtract
+GovernanceProfile: Any = _GovernanceProfile
 
-def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True):
+
+def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True) -> Any:
     tmp_path.mkdir(parents=True, exist_ok=True)
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
     ds.save("def14a_llm", pd.DataFrame([{"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers]))
-    ctx = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config=extract_config())
+    ctx: Any = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config=extract_config())
     if write_meta_today:
         record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
     return ctx
@@ -68,7 +73,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
             ]
         ),
     )
-    ctx = types.SimpleNamespace(
+    ctx: Any = types.SimpleNamespace(
         store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
     )
 
@@ -124,7 +129,9 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
 
     assert listed_since == [None], "must list the FULL window (no since cutoff) to find gaps"
     assert set(extracted) == {"a2023", "a2025"}, f"only missing filings should hit the LLM: {extracted}"
-    accs = set(ds.load("def14a_llm").query("ticker == 'ZZ'")["accession_number"])
+    stored = ds.load("def14a_llm")
+    assert stored is not None
+    accs = set(stored.query("ticker == 'ZZ'")["accession_number"])
     assert accs == {"a2022", "a2023", "a2024", "a2025"}
 
     print("\n=== SANITY: DEF 14A gap-filling incremental ===")
@@ -154,7 +161,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
             ]
         ),
     )
-    ctx = types.SimpleNamespace(
+    ctx: Any = types.SimpleNamespace(
         store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
     )
     # A prior run 10 days ago, one ticker -- same ticker count as this run, and well

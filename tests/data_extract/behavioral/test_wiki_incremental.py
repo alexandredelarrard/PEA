@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import types
+from typing import Any
 
 import pandas as pd
 
@@ -30,7 +31,7 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
     store = FakeStore({"sp500_tickers": names, "wiki_pageviews": existing})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
-    ctx = types.SimpleNamespace(
+    ctx: Any = types.SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
         config=types.SimpleNamespace(

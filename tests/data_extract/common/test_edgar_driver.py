@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import types
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -20,7 +21,7 @@ from src.data_extract.utils.common.edgar_driver import (
     run_edgar_fetch,
 )
 from src.data_extract.utils.common.registrant import Registrant, Segment
-from src.data_extract.utils.common.run_manifest import get_entry
+from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store import schema
 from src.data_store.schema import Table, Tables
@@ -29,6 +30,7 @@ from tests.data_extract.fake_context import extract_config
 _T_MAIN = Table("driver_main", ("ticker", "accession_number"), date_col="filing_date")
 _T_CHILD = Table("driver_child", ("ticker", "accession_number"), date_col="filing_date")
 _T_EMPTY = Table("driver_empty", ("ticker", "accession_number"), date_col="filing_date")
+get_entry: Any = _get_entry
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +45,7 @@ def _filing(accession: str, filing_date: str):
     return types.SimpleNamespace(accession_number=accession, filing_date=filing_date)
 
 
-def _ctx(tmp_path, store, tickers):
+def _ctx(tmp_path, store, tickers) -> Any:
     """A Context stand-in carrying the four attributes the driver touches.
 
     `sp500_tickers` is seeded with EVERY column `load_cik_mapping` projects, not just the two

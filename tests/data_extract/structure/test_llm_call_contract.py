@@ -13,24 +13,27 @@ from __future__ import annotations
 import logging
 import types
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
 from src.data_extract.utils.structure.def14a import fetch as def14a_mod
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
 _GPT_YML = Path(__file__).resolve().parents[3] / "configs" / "gpt.yml"
+Def14AExtract: Any = _Def14AExtract
+Item507Extract: Any = _Item507Extract
 
 
-def _config():
+def _config() -> Any:
     return OmegaConf.load(_GPT_YML)
 
 
-def _context(store=None):
+def _context(store=None) -> Any:
     return types.SimpleNamespace(store=store, log=logging.getLogger("t"), config_dir=Path("."))
 
 
@@ -51,8 +54,8 @@ class _RecordingProvider:
         return parsed, {"input_tokens": 5, "output_tokens": 1, "cached_input_tokens": 2}
 
 
-def _extractor(action: str, calls: list, fail_on: str | None = None, store=None):
-    ext = LLMExtractor(_context(store), _config(), action=action, threads=2)
+def _extractor(action: str, calls: list, fail_on: str | None = None, store=None) -> Any:
+    ext: Any = LLMExtractor(_context(store), _config(), action=action, threads=2)
     ext.initialize_client = lambda methode=None, key_index=None: _RecordingProvider(calls, fail_on)
     return ext
 
@@ -160,6 +163,7 @@ def test_a_failed_filing_does_not_abort_its_ticker():
 
     assert len(results) == 4
     assert sum(r.ok for r in results) == 3
+    assert results[2].error is not None
     assert not results[2].ok and "blew up" in results[2].error
     parent_saves = [n for name, n in store.saves if name == "def14a_llm"]
     assert parent_saves == [3], f"the 3 good filings must still be saved: {store.saves}"
@@ -191,7 +195,8 @@ def test_no_prompt_literals_remain_in_data_extract():
                 continue
             value = node.value
             if isinstance(value, ast.Constant) and isinstance(value.value, str) and len(value.value) > 200:
-                names = [t.id for t in getattr(node, "targets", [node.target]) if isinstance(t, ast.Name)]
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names = [t.id for t in targets if isinstance(t, ast.Name)]
                 offenders.append(f"{path.relative_to(root)}:{node.lineno} {names} ({len(value.value)} chars)")
 
     assert not offenders, "prompt-sized module constants left in src/data_extract:\n  " + "\n  ".join(offenders)

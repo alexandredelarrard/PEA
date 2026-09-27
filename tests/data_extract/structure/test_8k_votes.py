@@ -28,14 +28,21 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+from typing import Any
 
 import pandas as pd
 
 from src.data_extract.utils.schemas.vote_schema import (
     PROPOSAL_TYPES,
-    Item507Extract,
-    NomineeVote,
-    ProposalVote,
+)
+from src.data_extract.utils.schemas.vote_schema import (
+    Item507Extract as _Item507Extract,
+)
+from src.data_extract.utils.schemas.vote_schema import (
+    NomineeVote as _NomineeVote,
+)
+from src.data_extract.utils.schemas.vote_schema import (
+    ProposalVote as _ProposalVote,
 )
 from src.data_extract.utils.structure.votes.flatten import (
     _DIRECTOR_COLS,
@@ -56,6 +63,10 @@ from src.data_extract.utils.structure.votes.guard import (
 from src.data_extract.utils.structure.votes.roles import _role_map
 from src.data_store.schema import Tables
 
+Item507Extract: Any = _Item507Extract
+NomineeVote: Any = _NomineeVote
+ProposalVote: Any = _ProposalVote
+
 _FIXTURES = json.loads((pathlib.Path(__file__).parent / "fixtures" / "item507_texts.json").read_text(encoding="utf-8"))
 
 
@@ -71,17 +82,17 @@ def _text(key: str) -> str:
     return _FIXTURES[key]["item_text"]
 
 
-def _nominee(name: str, f: float, a: float, ab: float | None = None, bnv: float | None = None) -> NomineeVote:
+def _nominee(name: str, f: float, a: float | None, ab: float | None = None, bnv: float | None = None) -> Any:
     return NomineeVote(name=name, votes_for=f, votes_against=a, votes_abstain=ab, votes_broker_non_votes=bnv)
 
 
-def _election(nominees: list[NomineeVote], standard: str = "against", number: str = "1") -> ProposalVote:
+def _election(nominees: list[Any], standard: str = "against", number: str = "1") -> Any:
     return ProposalVote(
         proposal_number=number, description="Election of directors", proposal_type="director_election", vote_standard=standard, nominees=nominees
     )
 
 
-def _plain(description: str, ptype: str, f: float, a: float, ab: float | None = None, bnv: float | None = None, number: str = "2") -> ProposalVote:
+def _plain(description: str, ptype: str, f: float, a: float, ab: float | None = None, bnv: float | None = None, number: str = "2") -> Any:
     return ProposalVote(
         proposal_number=number,
         description=description,
@@ -93,11 +104,11 @@ def _plain(description: str, ptype: str, f: float, a: float, ab: float | None = 
     )
 
 
-def _extract(*proposals: ProposalVote, meeting: str | None = None, preliminary: bool | None = None) -> Item507Extract:
+def _extract(*proposals: Any, meeting: str | None = None, preliminary: bool | None = None) -> Any:
     return Item507Extract(meeting_date=meeting, is_preliminary=preliminary, proposals=list(proposals))
 
 
-def _rows(key: str, extract: Item507Extract, roles: dict | None = None, titles: dict | None = None, **overrides) -> tuple[list[dict], int]:
+def _rows(key: str, extract: Any, roles: dict | None = None, titles: dict | None = None, **overrides) -> tuple[list[dict], int]:
     f = _filing(key, **overrides)
     return _proposal_rows(f["ticker"], f, extract, _text(key), roles or {}, titles or {})
 
@@ -161,7 +172,8 @@ def test_the_three_zero_row_populations_are_refused_for_distinct_reasons():
     the others."""
     assert rejection_reason(_text("aapl_2020")) == "empty item_text"
     assert rejection_reason(_text("nke_2011")) == "no comma-grouped number -- no vote table"
-    assert "truncated" in rejection_reason("Item 5.07. 1,234,567 votes.")
+    reason = rejection_reason("Item 5.07. 1,234,567 votes.")
+    assert reason is not None and "truncated" in reason
     assert rejection_reason(_text("aapl_2025")) is None
 
 

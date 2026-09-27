@@ -131,7 +131,7 @@ def test_insider_parse_and_universe_filter_synthetic():
         ),
         roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]),
     )
-    filt, rejected = ins._filter_universe(out, {"AAPL"}, identity)
+    filt, rejected = ins._filter_universe(out, ["AAPL"], identity)
     assert set(filt["ticker"]) == {"AAPL"}
     assert rejected.empty
     print("\n=== SANITY: insider parse + universe filter ===")
@@ -142,7 +142,7 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = ins._parse_insider(*tables)
+    df = ins._parse_insider(tables[0], tables[1], tables[2], tables[3])
     assert not df.empty and df["transaction_sk"].notna().all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()

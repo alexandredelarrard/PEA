@@ -17,6 +17,8 @@ Two kinds of test here, deliberately:
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -152,7 +154,7 @@ def test_the_macro_leg_is_pinned_to_total_return():
     try:
         fm.download_ohlcv = _spy
         ctx = type("Ctx", (), {"log": type("L", (), {"info": lambda *a, **k: None, "warning": lambda *a, **k: None})()})()
-        fm._fetch_price_leg(ctx, pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05"))
+        fm._fetch_price_leg(cast(Any, ctx), pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05"))
     finally:
         fm.download_ohlcv = original
 
@@ -186,8 +188,8 @@ def test_forward_compound_and_forward_return_diverge_exactly_on_the_dividend():
     # a NON-PAYER: the price path IS the total-return path
     close_np = (1 + price_ret).cumprod() * 100.0
     h = 20
-    a = forward_compound(price_ret, h)["X"]
-    b = forward_return(close_np, h)["X"]
+    a = cast(pd.DataFrame, forward_compound(price_ret, h))["X"]
+    b = cast(pd.DataFrame, forward_return(close_np, h))["X"]
     both = a.notna() & b.notna()
     assert np.allclose(a[both], b[both], atol=1e-9), "they must agree when there is no dividend"
 
@@ -196,8 +198,8 @@ def test_forward_compound_and_forward_return_diverge_exactly_on_the_dividend():
     div.iloc[::63] = 0.005
     total_ret = price_ret["X"] + div
     close_payer = (1 + price_ret["X"]).cumprod() * 100.0  # PRICE path only
-    a_pay = forward_compound(total_ret.to_frame("X"), h)["X"]
-    b_pay = forward_return(close_payer.to_frame("X"), h)["X"]
+    a_pay = cast(pd.DataFrame, forward_compound(total_ret.to_frame("X"), h))["X"]
+    b_pay = cast(pd.DataFrame, forward_return(close_payer.to_frame("X"), h))["X"]
     valid = a_pay.notna() & b_pay.notna()
     gap = (a_pay[valid] - b_pay[valid]).mean()
 

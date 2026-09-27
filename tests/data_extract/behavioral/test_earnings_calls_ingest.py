@@ -9,6 +9,7 @@ nothing happens" stall). Verified with a tiny on-disk cache + a fake store.
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import pandas as pd
 
@@ -39,7 +40,7 @@ def _seed_cache(tmp_path, pairs):
     return cache
 
 
-def _ctx(tmp_path, existing_keys):
+def _ctx(tmp_path, existing_keys) -> Any:
     existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys else pd.DataFrame(columns=["ticker", "quarter"])
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`

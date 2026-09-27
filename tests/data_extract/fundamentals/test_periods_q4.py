@@ -526,7 +526,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     set_identity(os.environ["SEC_USER_AGENT"])
     rows: list[dict] = []
     for ticker, (sector, group, sub) in _REAL_TICKERS.items():
-        gics = {"sector": sector, "industry_group": group, "sub_industry": sub}
+        gics: dict[str, str | None] = {"sector": sector, "industry_group": group, "sub_industry": sub}
         company = Company(ticker)
         filings = [
             f
@@ -811,7 +811,11 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
-    gics = {"sector": "Information Technology", "industry_group": "Software & Services", "sub_industry": "Systems Software"}
+    gics: dict[str, str | None] = {
+        "sector": "Information Technology",
+        "industry_group": "Software & Services",
+        "sub_industry": "Systems Software",
+    }
     company = Company("ORCL")
     rows: list[dict] = []
     for filing in company.get_filings(form=["10-K", "10-Q"]):

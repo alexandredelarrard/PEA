@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -78,7 +79,7 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
     monkeypatch.setattr(fm, "_fetch_fred_leg", _fake_fred_leg)
 
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(ctx, years_history=31)
+    long = fm.build_macro_frame(cast(Any, ctx), years_history=31)
 
     assert seen["span_years"] == 31, "the argument must drive the download window"
     assert list(long.columns) == ["date", "ticker", "close"]
@@ -95,7 +96,7 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
 @pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY (and network) for the live pull")
 def test_real_pull_ranges_and_fx_convention():
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(ctx, years_history=3)
+    long = fm.build_macro_frame(cast(Any, ctx), years_history=3)
 
     assert not long.empty and list(long.columns) == ["date", "ticker", "close"]
     assert not long["close"].isna().any(), "the melt must drop NaN, not store it"

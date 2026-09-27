@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -58,7 +59,7 @@ def _identity() -> Identity:
     return build_identity(lineage, tenure, roster)
 
 
-def _context(store) -> SimpleNamespace:
+def _context(store) -> Any:
     return SimpleNamespace(store=store, log=logging.getLogger("test.regsho"))
 
 
@@ -205,7 +206,7 @@ def test_fetch_day_reuses_the_supplied_http_session():
             calls.append((url, kwargs))
             return SimpleNamespace(status_code=200, text="payload")
 
-    assert si._fetch_day(pd.Timestamp("2026-09-22"), Session()) == "payload"
+    assert si._fetch_day(pd.Timestamp("2026-09-22"), cast(Any, Session())) == "payload"
     assert len(calls) == 1 and calls[0][0].endswith("CNMSshvol20260922.txt")
 
     print("\n=== SANITY CHECK: RegSHO connection reuse ===")

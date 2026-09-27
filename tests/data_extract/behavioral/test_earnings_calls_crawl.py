@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import types
+from typing import Any
 
 import pandas as pd
 
@@ -29,7 +30,7 @@ def _page(items) -> str:
     return "<html><body>" + "".join(_href(*it) for it in items) + "</body></html>"
 
 
-def _fake_ctx(tickers, tmp_path):
+def _fake_ctx(tickers, tmp_path) -> Any:
     store = types.SimpleNamespace(load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.

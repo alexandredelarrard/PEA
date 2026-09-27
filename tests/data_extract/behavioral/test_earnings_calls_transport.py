@@ -14,6 +14,7 @@ Two failure modes that cost the whole recent gap, both reproduced here without a
 from __future__ import annotations
 
 import types
+from typing import Any, cast
 
 import pytest
 
@@ -110,7 +111,7 @@ def test_hf_failure_does_not_stop_roic_and_fool(monkeypatch):
     monkeypatch.setattr(fec, "build_transcript_index_by_ticker", _fool_index)
     monkeypatch.setattr(fec, "download_transcripts", lambda *a, **k: ran.append("download"))
 
-    fec.download_earnings_calls(context=None, tickers=["AIG"])  # must NOT raise
+    fec.download_earnings_calls(context=cast(Any, None), tickers=["AIG"])  # must NOT raise
 
     assert ran == ["hf", "roic", "fool", "download"], f"every stage must still run, got {ran}"
 
@@ -135,7 +136,7 @@ def test_hf_ingest_failure_still_ingests_the_fool_html(monkeypatch):
     monkeypatch.setattr(fec, "ingest_earnings_calls", lambda context, tickers=None, force=False: (ran.append("fool"), 42)[1])
     monkeypatch.setattr(fec, "record_run", lambda *a, **k: ran.append("record"))
 
-    saved = fec.ingest_all_earnings_calls(context=None, tickers=["AIG"])
+    saved = fec.ingest_all_earnings_calls(context=cast(Any, None), tickers=["AIG"])
 
     assert ran == ["hf", "fool", "record"], f"the fool ingest must still run, got {ran}"
     assert saved == 42, "the fool leg's row count must still be returned/recorded"

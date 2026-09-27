@@ -14,6 +14,7 @@ These tests pin the override table's integrity and that it wins over a cached mi
 from __future__ import annotations
 
 import re
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -77,7 +78,7 @@ def test_overrides_win_over_a_cached_miss(monkeypatch, tmp_path):
             "save": lambda self, t, df: (saved.append(df), len(df))[1],
         },
     )()
-    context = type("C", (), {"store": store})()
+    context = cast(Any, type("C", (), {"store": store})())
 
     monkeypatch.setattr(fcm, "_openfigi_request", lambda *a, **k: {})
     monkeypatch.setattr(fcm, "_parse_openfigi", lambda *a, **k: {})

@@ -199,7 +199,9 @@ def ledger() -> pd.DataFrame:
         pytest.skip("SEC_USER_AGENT unset -- the history sweep needs EDGAR")
     from edgar import Company, set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
 
     roster = _rostered()
     rows: list[dict] = []

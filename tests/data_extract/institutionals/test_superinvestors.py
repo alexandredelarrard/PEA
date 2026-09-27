@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -68,9 +69,13 @@ def test_pick_best_match():
     assert si._pick_best_match([("0001079114", "GREENLIGHT CAPITAL INC")], "Greenlight Capital") == ("0001079114", "GREENLIGHT CAPITAL INC")
     # multi WITH names -> highest token overlap
     pairs = [("0000000001", "ACME HOLDINGS"), ("0000000002", "PERSHING SQUARE CAPITAL")]
-    assert si._pick_best_match(pairs, "Pershing Square")[0] == "0000000002"
+    match = si._pick_best_match(pairs, "Pershing Square")
+    assert match is not None
+    assert match[0] == "0000000002"
     # multi WITHOUT names -> EDGAR's first (most-relevant) block
-    assert si._pick_best_match([("0001336528", ""), ("0002026053", "")], "Pershing Square")[0] == "0001336528"
+    match = si._pick_best_match([("0001336528", ""), ("0002026053", "")], "Pershing Square")
+    assert match is not None
+    assert match[0] == "0001336528"
     assert si._pick_best_match([], "x") is None
     print("\n=== SANITY: best-CIK pick ===")
     print("  single trusted; multi by token overlap; no-name multi -> first block; empty -> None. Validated.")
@@ -84,6 +89,7 @@ def test_edgar_cik_for_name_stubbed():
         return SimpleNamespace(text=_SINGLE_ATOM)
 
     cik, filer = si._edgar_cik_for_name("David Einhorn - Greenlight Capital", get_fn=fake_get)
+    assert filer is not None
     assert cik == "0001079114" and "GREENLIGHT" in filer
     assert "company=Greenlight" in calls["url"]  # searched the FUND part, url-quoted
 
@@ -175,7 +181,7 @@ def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_st
     def fake_edgar(url):
         return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store))
     df = si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)
     assert set(df["cik"]) == {"0001079114", "0001067983"}  # EDGAR + override
     assert df["snapshot_date"].nunique() == 1

@@ -42,6 +42,7 @@ def test_parse_link_resolves_multitoken_ticker():
         "url": "https://www.fool.com/earnings/call-transcripts/2024/02/15/berkshire-hathaway-brk-b-q4-2023-earnings-call-transcript/",
     }
     aapl = _parse_link("/earnings/call-transcripts/2024/05/02/apple-aapl-q2-2024-earnings-call-transcript", slug_map)
+    assert aapl is not None
     assert aapl["ticker"] == "AAPL" and aapl["quarter"] == "2024Q2"
     # a ticker not in the universe -> None (filtered out of the index)
     assert _parse_link("/earnings/call-transcripts/2024/05/02/someco-zzzz-q2-2024-earnings-call-transcript", slug_map) is None

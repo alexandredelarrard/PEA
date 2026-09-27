@@ -16,6 +16,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -197,7 +198,7 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
         ),
     )
     monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
-    context = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
     lineage_module.build_entity_lineage(context, CACHE, CONFIG_DIR)
@@ -317,7 +318,7 @@ def test_manual_config_rejects_an_undocumented_verdict(tmp_path):
 # Real data: the live register + curated files against the live tables         #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def live_lineage():
+def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 40:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
     from src.context import get_config_context
@@ -331,6 +332,7 @@ def live_lineage():
         pytest.skip(f"database unavailable ({type(exc).__name__})")
     if tenure is None or roster is None or tenure.empty or roster.empty:
         pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
+    assert tenure is not None and roster is not None
     return derive_entity_lineage(CACHE, tenure, roster, CONFIG_DIR)
 
 
@@ -342,6 +344,7 @@ def test_no_entity_holds_two_universe_tickers(live_lineage):
 
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     roster = context.store.load(Tables.sp500_tickers)
+    assert roster is not None
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
 
     per_entity: dict[str, list[str]] = {}
@@ -422,6 +425,7 @@ def test_d19_allowlist_covers_every_live_disagreement(live_lineage):
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     roster = context.store.load(Tables.sp500_tickers)
     tenure = context.store.load(Tables.symbol_tenure, project=True)
+    assert roster is not None and tenure is not None
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
 
     def func_e(c):

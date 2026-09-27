@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -57,7 +58,7 @@ def _identity() -> Identity:
     return build_identity(lineage, tenure, roster)
 
 
-def _context(sqlite_store, tmp_path) -> SimpleNamespace:
+def _context(sqlite_store, tmp_path) -> Any:
     return SimpleNamespace(
         store=sqlite_store,
         log=logging.getLogger("test.ftd"),
@@ -211,7 +212,7 @@ def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite
         "201501a": (
             "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
             "20150102|A|FB|100|FACEBOOK|10\n"
-            "20150102|B|META|200|META ALIAS|10\n"
+            "20150102|B|FB|200|META ALIAS|10\n"
             "20150102|C|IR|50|INGERSOLL RAND PLC|10\n"
             "20150102|D|WTW|70|WEIGHT WATCHERS|10\n"
         ),

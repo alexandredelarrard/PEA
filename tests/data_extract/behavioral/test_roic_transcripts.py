@@ -17,6 +17,7 @@ import logging
 import time
 import types
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -29,7 +30,7 @@ from src.data_extract.utils.behavioral.utils_missing_quarters import (
 )
 
 
-def _ctx(saved: list):
+def _ctx(saved: list) -> Any:
     store = types.SimpleNamespace(save=lambda t, df: (saved.append(df), len(df))[1])
     return types.SimpleNamespace(store=store, log=logging.getLogger("roic-test"))
 
@@ -127,6 +128,7 @@ def test_roic_live_frt_pm_mtd():
     """Best-effort LIVE check: FRT, PM, MTD all have recent (2025+) quarters on Roic AI, and a
     transcript fetch parses into sections. Paced for the 5 req/min free tier."""
     key = roic._api_key()
+    assert key is not None
     coverage = {}
     for t in ["FRT", "PM", "MTD"]:
         avail = roic.roic_list_quarters(t, key)

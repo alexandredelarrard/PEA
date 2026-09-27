@@ -298,7 +298,8 @@ def real_build():
     if not path.exists():
         pytest.skip(f"{path} not present -- run scripts/sweep_fundamentals_resolution.py")
     facts = pd.read_parquet(path)
-    facts = facts[facts.get("prefer_structure", True).astype(bool)]
+    prefer_structure = facts["prefer_structure"].astype(bool) if "prefer_structure" in facts else pd.Series(True, index=facts.index)
+    facts = facts[prefer_structure]
     return build_ticker("AAPL", facts, catalogue=CATALOGUE)
 
 

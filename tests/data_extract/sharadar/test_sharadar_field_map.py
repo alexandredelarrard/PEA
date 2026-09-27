@@ -902,7 +902,7 @@ def test_a_ttm_window_straddling_a_split_stays_on_one_basis(field_map):
     print("\nsplit 2024-05-15 x2; Sharadar stores 200 on every quarter")
     print(got[["filed", "sharesOutstandingPit", "sharesOutstanding", "dilutedShares"]].to_string(index=False))
 
-    pre = pd.to_datetime(built["date"]) < "2024-05-15"
+    pre = pd.to_datetime(built["date"]).lt(pd.Timestamp("2024-05-15"))
     pit_before = built.loc[pre, "sharesOutstandingPit"].dropna()
     pit_after = built.loc[~pre, "sharesOutstandingPit"].dropna()
     assert (pit_before == 100.0).all(), f"PIT pre-split must be as-filed 100, {list(pit_before)}"

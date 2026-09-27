@@ -9,6 +9,7 @@ check actually SKIPS instead of re-running the rate-limited OpenFIGI lookup each
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import src.data_extract.utils.institutionals.fetch_cusip_map as cm
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
@@ -29,7 +30,7 @@ def _looked_up(df):
     return set(df["cusip"]) - _OVERRIDES
 
 
-def _ctx():
+def _ctx() -> Any:
     return types.SimpleNamespace(store=FakeStore())
 
 

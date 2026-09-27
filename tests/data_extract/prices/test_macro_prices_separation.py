@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 from omegaconf import OmegaConf
@@ -45,7 +46,7 @@ def test_equity_universe_is_sp500_tickers_only(sqlite_store):
         _log=logging.getLogger("test"),
     )
     # bind the method to a fake self (avoids constructing the sub-steps / hitting the DB)
-    tickers = StepExtractAllData._resolve_tickers(fake)
+    tickers = StepExtractAllData._resolve_tickers(cast(Any, fake))
 
     assert tickers == ["AAPL", "MSFT", "XOM"]  # universe only, sorted
     for symbol in MACRO_PRICE_SERIES:
@@ -74,7 +75,7 @@ def test_fetch_macro_writes_only_prices_macro(sqlite_store, monkeypatch):
     monkeypatch.setenv("FRED_API_KEY", "test-key")
 
     ctx = SimpleNamespace(store=sqlite_store, log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
-    fm.fetch_macro(ctx, years_history=31)
+    fm.fetch_macro(cast(Any, ctx), years_history=31)
 
     saved = sqlite_store.load(Tables.prices_macro)
     assert set(saved.columns) == {"date", "ticker", "close"}
@@ -117,7 +118,7 @@ def test_price_fetch_writes_clean_ohlcv_and_never_the_dividends_table(sqlite_sto
     monkeypatch.setattr(fp, "record_run", lambda *a, **k: None)
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fp.fetch_price_history(ctx, tickers=["AAPL"], years_history=15)
+    fp.fetch_price_history(cast(Any, ctx), tickers=["AAPL"], years_history=15)
 
     # assert on what LANDED, not on the return value: these fetchers write to the store and
     # their return is incidental (fetch_macro returns None outright)
@@ -183,7 +184,7 @@ def test_dividend_fetch_is_the_only_ex_date_writer(sqlite_store, monkeypatch):
     monkeypatch.setattr(fd, "record_run", lambda *a, **k: None)
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fd.fetch_dividends(ctx, tickers=["AAPL"], years_history=15)
+    fd.fetch_dividends(cast(Any, ctx), tickers=["AAPL"], years_history=15)
 
     saved = sqlite_store.load(Tables.dividends)
     assert list(saved.columns) == ["date", "ticker", "dividends"]

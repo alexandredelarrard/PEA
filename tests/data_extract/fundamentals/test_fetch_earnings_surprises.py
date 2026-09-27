@@ -9,6 +9,7 @@ the refetch window) get a small top-up pull, and up-to-date tickers are skipped.
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -64,7 +65,7 @@ def test_the_no_data_branch_returns_after_recording_exactly_one_run(monkeypatch)
     calls: list[tuple] = []
     saved: list = []
 
-    context = types.SimpleNamespace(
+    context: Any = types.SimpleNamespace(
         store=types.SimpleNamespace(load=lambda *a, **k: None, save=lambda table, df: saved.append((table, df))),
         log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
         config=types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15)),

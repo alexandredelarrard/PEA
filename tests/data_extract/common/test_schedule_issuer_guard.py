@@ -11,6 +11,7 @@ MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor filings.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
@@ -85,7 +86,7 @@ def test_subject_filter_finds_wanted_filing_beyond_the_old_2000_cap():
         [*unrelated, wanted],
         frozenset({"0001364742", "0002012383"}),
     )
-    assert [filing.accession_number for filing in kept] == ["0001306550-23-008694"]
+    assert [cast(Any, filing).accession_number for filing in kept] == ["0001306550-23-008694"]
     assert stats == {"candidates": 2_501, "subject_matches": 1, "unknown_headers": 0}
 
     print("\n=== SANITY: schedule subject-first filtering ===")
@@ -134,7 +135,7 @@ def test_owner_inclusive_search_filters_header_before_full_object(monkeypatch):
         through=pd.Timestamp("2023-12-31"),
         done_accessions=frozenset(),
     )
-    assert [filing.accession_number for filing in filings] == ["0001306550-23-008694"]
+    assert [cast(Any, filing).accession_number for filing in filings] == ["0001306550-23-008694"]
 
 
 def test_failed_owner_inclusive_page_is_a_hard_incomplete_outcome(monkeypatch):
@@ -190,7 +191,7 @@ def test_transient_owner_inclusive_page_is_retried_before_success(monkeypatch):
     )
 
     assert attempts == 3
-    assert [filing.accession_number for filing in filings] == ["0001306550-23-008694"]
+    assert [cast(Any, filing).accession_number for filing in filings] == ["0001306550-23-008694"]
     print("\n=== SANITY: transient SEC page retry ===")
     print("  two HTTP 503 failures -> third attempt succeeded")
     print("  OK: the complete BLK issuer result is retained without advancing a partial run")
@@ -241,7 +242,7 @@ def test_deep_owner_book_is_bisected_by_date_without_requesting_unsafe_offset(mo
         done_accessions=frozenset(),
     )
 
-    assert [filing.accession_number for filing in filings] == ["0001306550-23-008694"]
+    assert [cast(Any, filing).accession_number for filing in filings] == ["0001306550-23-008694"]
     assert len(requested) == 3
     assert {query["start"][0] for query in requested} == {"0"}
     print("\n=== SANITY: SEC deep-pagination split ===")

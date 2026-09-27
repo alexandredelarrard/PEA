@@ -21,6 +21,7 @@ price/settlement signals.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 from omegaconf import OmegaConf
@@ -58,11 +59,13 @@ def _patched_step(monkeypatch, calls: list[str], *, boom: str | None = None):
 
         return _fn
 
-    for attr, label in ALL_SOURCES:
+    for attr, label in EXPECTED_SOURCES:
         monkeypatch.setattr(mod, attr, _recorder(label))
+    for attr, label in DORMANT_SOURCES:
+        monkeypatch.setattr(mod, attr, _recorder(label), raising=False)
 
     context = object.__new__(object)  # not touched: every dependency is monkeypatched
-    step = object.__new__(StepExtractFundamentals)
+    step: Any = object.__new__(StepExtractFundamentals)
     step._context = context
     # `run()` reads years_history off the config to size the EDGAR listing window.
     # `_config`, not `config`: that is the attribute `Step.__init__` sets, and reading

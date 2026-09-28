@@ -5,11 +5,7 @@ Resume helpers shared by the per-entity fetchers -- the "what do we already have
 read that every incremental fetcher does before it spends a request.
 
 `load_existing` replaces five byte-identical private copies, which differed only in
-the table name; google_trends and wiki_pageviews still use it (the others now resolve
-their frontier without reading the table -- see below). The normalisation matters and
-is easy to get wrong in a copy: dates must be `.normalize()`d, because the resume
-logic compares a stored timestamp against a fetched one and a stray time component
-silently re-downloads a day that is already there.
+the table name;
 
 `resume_since` generalizes the per-ticker `groupby(...)[date_col].max()` idiom that
 several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already

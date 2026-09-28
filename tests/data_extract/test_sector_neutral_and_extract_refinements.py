@@ -71,27 +71,6 @@ def test_sector_neutral_weights_sum_to_zero_per_group():
     )
 
 
-# ---- 4. Google Trends header rotation ---------------------------------------
-def test_google_trends_header_rotation():
-    try:
-        from src.data_extract.utils.behavioral.fetch_google_trends import _USER_AGENTS, _random_header
-    except ModuleNotFoundError as e:  # module hard-imports pytrends at top
-        print(f"\n=== SKIP: Google Trends header test (pytrends not installed: {e}) ===")
-        return
-    seen = {_random_header()["User-Agent"] for _ in range(200)}
-    assert len(seen) >= 3, "User-Agent not rotating"
-    assert seen <= set(_USER_AGENTS)
-    h = _random_header()
-    for k in ("User-Agent", "Accept-Language", "Accept", "Referer"):
-        assert k in h and h[k]
-    print("\n=== SANITY CHECK: Google Trends anti-429 header rotation ===")
-    print(
-        f"  rotated across {len(seen)} User-Agents over 200 calls; full browser-like "
-        f"headers incl Referer. (Plus fresh session + retry/backoff + jitter.) Validated."
-    )
-
-
 if __name__ == "__main__":
     test_dedupe_share_classes_and_gics()
     test_sector_neutral_weights_sum_to_zero_per_group()
-    test_google_trends_header_rotation()

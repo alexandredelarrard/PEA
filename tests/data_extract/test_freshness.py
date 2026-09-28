@@ -11,7 +11,7 @@ import pandas as pd
 from src.data_extract import cli as extraction_cli
 from src.data_extract.utils.prices import fetch_dividends as dividends_fetcher
 from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS
-from src.data_store.schema import Tables, freshness_tables
+from src.data_store.schema import Tables
 
 
 def _context(store) -> Any:
@@ -45,16 +45,6 @@ def test_gate_reads_table_cadence_and_date_column_from_schema(sqlite_store, monk
     print("\n=== SANITY CHECK: schema-driven extraction gate ===")
     print("  prices at 2026-09-25 -> GREEN; prices at 2026-09-20 -> RED")
     print("  OK: the gate reads its table, date column and cadence directly from schema.py")
-
-
-def test_retired_attention_tables_do_not_declare_freshness():
-    checked = set(freshness_tables())
-    assert Tables.wiki_pageviews not in checked
-    assert Tables.google_trends not in checked
-
-    print("\n=== SANITY CHECK: retired extraction tables ===")
-    print("  Wikipedia pageviews and Google Trends declare no freshness in schema.py")
-    print("  OK: retired attention tables cannot block aggregation")
 
 
 def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypatch):

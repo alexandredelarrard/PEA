@@ -17,7 +17,7 @@ do NOT evade bans:
     WARNING naming its fix (`configure_corporate_ca()`), because it is otherwise indistinguishable
     from a dead endpoint: it surfaced only as `GET failed (transport)` after four wasted retries.
 
-Used by `fetch_earnings_calls` (Cloudflare) and `fetch_wiki_pageviews`; `fetch_google_trends`
+Used by `fetch_earnings_calls` (Cloudflare)
 keeps its bespoke cookie/token session client but shares `resolve_proxy`.
 """
 

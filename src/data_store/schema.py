@@ -1150,8 +1150,6 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- behavioral / text / embeddings                         #
     # ----------------------------------------------------------------- #
-    google_trends = Table("google_trends", ("ticker", "date"), date_col="date", read_columns=("date", "ticker", "search_interest"))
-    wiki_pageviews = Table("wiki_pageviews", ("ticker", "date"), date_col="date", read_columns=("date", "ticker", "pageviews"))
     # FREE earnings-call transcripts (Motley Fool), split into high-signal sections
     # (prepared_remarks / qa / participants). One row per ticker / fiscal quarter /
     # section; `as_of` = call date, `text` = the prose. NOT projected: `text` IS the

@@ -5,8 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from src.data_store.schema import Tables, freshness_tables
-
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
 STRICT_EDGAR_FILES = (
@@ -79,8 +77,6 @@ def test_freshness_inventory_comes_only_from_schema():
     assert "freshness_tables()" in cli_source
     assert "SOURCE_TABLES" not in cli_source
     assert not (root / "src/data_extract/freshness.py").exists()
-    assert Tables.wiki_pageviews not in freshness_tables()
-    assert Tables.google_trends not in freshness_tables()
 
     print("\n=== SANITY CHECK: one freshness inventory ===")
     print("  extraction-status consumes schema.freshness_tables(); no parallel registry exists")

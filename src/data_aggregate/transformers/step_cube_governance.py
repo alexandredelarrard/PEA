@@ -156,15 +156,11 @@ class StepCubeGovernance(Step):
     # ---- panels ---- #
     def _governance_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         """Build governance features without mutating raw extraction tables."""
+
         df = self._load_def14a()
         if df is None:
             return None
 
-        # ⚠ THE ORDER IS THE DESIGN (D35, §3.2). The directors table is filled per person, the
-        # board averages are DERIVED from it, the derivation is merged into the parent rows under
-        # D39's precedence -- and only THEN does `impute_def14a` run, so its forward carry is the
-        # LAST resort rather than the first move. `CARRY_LEVELS` itself is unchanged: this is a
-        # change of order, not of the fill rule.
         directors = self._load_directors()
         if directors is not None:
             df, mstats = merge_board_aggregates(df, board_aggregates(directors))
@@ -174,6 +170,7 @@ class StepCubeGovernance(Step):
         df, stats = impute_def14a(df)
         if stats:
             self._log.info("DEF 14A clean-on-read: deduced %d missing cells across %d rules (raw table untouched).", sum(stats.values()), len(stats))
+
         # Step 4 of the precedence chain has now run, so the three-valued provenance can be
         # completed and said out loud: how much of each board average is EVIDENCE.
         df, sstats = finalize_board_source(df)

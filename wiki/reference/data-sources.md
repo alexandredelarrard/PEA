@@ -37,7 +37,6 @@ This page is the source-facing operating contract: where data comes from, which 
 | Activist/passive stakes | SEC Schedule 13D/13G | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions`, `sec_13g` | institutional utilities |
 | Filing narrative | SEC 10-K/10-Q | `SEC_USER_AGENT` | `sec_filing_text` | structure utilities |
 | Short volume and settlement fails | FINRA RegSHO, SEC | none | `short_interest`, `sec_fails_to_deliver` | institutional utilities |
-| Retail attention | Wikipedia and Google Trends | none | `wiki_pageviews`, `google_trends` | [behavioral utilities](../../src/data_extract/utils/behavioral/) |
 | Earnings calls | HuggingFace, Roic AI, Motley Fool | none | `earnings_call_sections` | behavioral utilities |
 | Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | sentiment and embedding tables | behavioral and [gpt_extract](../../src/gpt_extract/) |
 

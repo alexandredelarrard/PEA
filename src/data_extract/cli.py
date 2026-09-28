@@ -51,10 +51,6 @@ from src.data_extract.utils.behavioral.fetch_earnings_calls import (
 from src.data_extract.utils.behavioral.fetch_earnings_calls import (
     ingest_all_earnings_calls as _ingest_earnings_calls,
 )
-from src.data_extract.utils.behavioral.fetch_google_trends import fetch_google_trends
-
-# --- behavioral ------------------------------------------------------------- #
-from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
 
 # --- identity: which company is this ticker, and when ----------------------- #
 from src.data_extract.utils.common.bulk_cache import cache_dir
@@ -662,22 +658,6 @@ def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> No
 # --------------------------------------------------------------------------- #
 # Behavioral (retail attention)                                                 #
 # --------------------------------------------------------------------------- #
-@cli.command(help="Wikipedia pageviews (retail attention). Scrape.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def wiki_pageviews(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_wiki_pageviews(context, tickers=_tickers(context, tickers))
-
-
-@cli.command(help="Google Trends search interest (rate-limited, SLOW). Scrape.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def google_trends(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_google_trends(context, tickers=_tickers(context, tickers))
-
-
 @cli.command(
     help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
 )

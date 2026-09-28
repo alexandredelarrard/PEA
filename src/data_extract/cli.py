@@ -15,9 +15,11 @@ insiders, 13D, 8-K, short interest, FTD), fundamentals, structure, behavioral --
 `src/data_extract/utils/<group>/` and, for institutionals, the cube part of the same name.
 """
 
+import json
 from typing import Any, cast
 
 import click
+import pandas as pd
 from omegaconf import DictConfig
 
 from src.constants.command_line_interface import (
@@ -38,6 +40,7 @@ from src.constants.command_line_interface import (
 from src.constants.command_line_interface import (
     YEARS_KWARGS as _YEARS_KWARGS,
 )
+from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
@@ -101,7 +104,7 @@ from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
 
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
-from src.data_store.schema import Tables
+from src.data_store.schema import Tables, freshness_tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
@@ -125,6 +128,38 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
     if tickers:
         return [t.strip().upper() for t in tickers.split(",") if t.strip()]
     return load_universe_tickers(context)
+
+
+def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
+    """Measure exactly the tables and cadences declared by the schema registry."""
+    as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    statuses: dict[str, dict[str, object]] = {}
+    for table in freshness_tables():
+        cadence = cast(str, table.freshness)
+        maximum = context.store.max_date(table, table.freshness_col)
+        age_days = None if maximum is None else int((as_of - maximum).days)
+        max_age_days = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
+        statuses[table.name] = {
+            "date_column": table.freshness_col,
+            "cadence": cadence,
+            "max_date": None if maximum is None else maximum.date().isoformat(),
+            "age_days": age_days,
+            "max_age_days": max_age_days,
+            "ok": age_days is not None and age_days <= max_age_days,
+        }
+    behind = [name for name, status in statuses.items() if not status["ok"]]
+    context.log.info("Extraction freshness gate ok=%s behind=%s", not behind, behind)
+    return {"as_of": as_of.date().isoformat(), "ok": not behind, "behind": behind, "tables": statuses}
+
+
+@cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def extraction_status(config_path: str) -> None:
+    _, context = _ctx(config_path)
+    report = _extraction_status_report(context)
+    click.echo(json.dumps(report, sort_keys=True))
+    if not report["ok"]:
+        raise click.ClickException("stale or incomplete extraction tables: " + ", ".join(cast(list[str], report["behind"])))
 
 
 # --------------------------------------------------------------------------- #

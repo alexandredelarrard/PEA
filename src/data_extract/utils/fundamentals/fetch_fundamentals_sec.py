@@ -1072,4 +1072,5 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
         full=full,
         cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers),
+        require_complete=True,
     )

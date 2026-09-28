@@ -64,10 +64,15 @@ def row_gate(fundamentals: pd.DataFrame, family: str) -> pd.Series:
 
 def family_tickers(fundamentals: pd.DataFrame, family: str) -> set[str]:
     """Tickers inside the family's GICS scope (empty set when unclassifiable)."""
-    if "ticker" not in fundamentals.columns:
+    try:
+        level, values = SECTOR_KPI_SCOPE[family]
+    except KeyError as exc:
+        raise UnknownKpiFamilyError(
+            f"KPI family {family!r} has no GICS scope; add it to SECTOR_KPI_SCOPE (known: {sorted(SECTOR_KPI_SCOPE)})"
+        ) from exc
+    if "ticker" not in fundamentals.columns or level not in fundamentals.columns:
         return set()
-    gate = row_gate(fundamentals, family)
-    return set(fundamentals.loc[gate, "ticker"].dropna().unique())
+    return set(fundamentals.loc[fundamentals[level].isin(values), "ticker"].dropna().astype(str).unique())
 
 
 def mask_columns(frame: pd.DataFrame, fundamentals: pd.DataFrame, family: str) -> pd.DataFrame:

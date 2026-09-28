@@ -51,6 +51,7 @@ from src.data_store.errors import TableEmptyError
 from src.data_store.schema import Tables
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
+SHORT_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +93,20 @@ def _fetch_day(
 
 
 def _resume_day(context: Context, years_history: int = 15, full: bool = False) -> pd.Timestamp:
-    """The first day to download: the day after the GLOBAL stored max, or the full
-    `years_history` window on a cold table.
+    """The first day to download: a seven-session overlap from the GLOBAL stored max,
+    or the full `years_history` window on a cold table.
 
     Global and not per-ticker on purpose. A RegSHO day-file carries every symbol at once, so
     one lagging ticker would drag the whole download back to its own last date and re-fetch
-    days already stored for all the others.
+    days already stored for all the others. The bounded overlap repairs a failed interior
+    day even after a later day advanced the global maximum.
     """
 
     today = _today()
     stored_max = context.store.max_date(Tables.short_interest)
     if stored_max is None or full:
         return today - pd.DateOffset(years=years_history)
-    return stored_max + pd.Timedelta(days=1)
+    return stored_max - pd.tseries.offsets.BDay(SHORT_REFRESH_TRADING_DAYS)
 
 
 def _canonicalise_regsho(

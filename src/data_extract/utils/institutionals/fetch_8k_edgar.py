@@ -159,4 +159,12 @@ def build_ticker_8k_edgar(
 
 
 def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history, tables=(Tables.sec_8k,), build=build_ticker_8k_edgar, desc="8-K (edgartools)")
+    run_edgar_fetch(
+        context,
+        tickers,
+        years_history,
+        tables=(Tables.sec_8k,),
+        build=build_ticker_8k_edgar,
+        desc="8-K (edgartools)",
+        require_complete=True,
+    )

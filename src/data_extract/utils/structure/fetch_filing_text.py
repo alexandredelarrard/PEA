@@ -215,5 +215,11 @@ def build_ticker_filing_text(
 
 def fetch_filing_text(context: Context, tickers: list[str], years_history: int) -> None:
     run_edgar_fetch(
-        context, tickers, years_history, tables=(Tables.filing_risk_text,), build=build_ticker_filing_text, desc="10-K/10-Q text (edgartools)"
+        context,
+        tickers,
+        years_history,
+        tables=(Tables.filing_risk_text,),
+        build=build_ticker_filing_text,
+        desc="10-K/10-Q text (edgartools)",
+        require_complete=True,
     )

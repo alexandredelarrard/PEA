@@ -128,7 +128,7 @@ def _cube_status(**context) -> None:
         raise AirflowFailException("Cube parts behind/missing (RED): " + ", ".join(report.get("behind", [])))
 
 
-# 4) status gate: latest date per cube part -> XCom (RED if a part is behind); visible, not blocking
+# 4) status gate: latest date per cube part -> XCom (RED if a part is behind)
 cube_status = PythonOperator(task_id="cube_status", python_callable=_cube_status, dag=dag)
 
 # 5) kick off the DAILY prediction DAG (predict -> strategy ledger) once the cube is fresh.
@@ -139,7 +139,7 @@ trigger_strat_prediction = TriggerDagRunOperator(
     trigger_dag_id="strat_prediction",
     wait_for_completion=False,
     reset_dag_run=True,
-    trigger_rule=TriggerRule.ALL_DONE,
+    trigger_rule=TriggerRule.ALL_SUCCESS,
     dag=dag,
 )
 

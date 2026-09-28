@@ -302,4 +302,5 @@ def fetch_insider_edgar(
         minimum_since=minimum_since,
         completion_table=Tables.insider_transactions_live_coverage,
         full=full,
+        require_complete=True,
     )

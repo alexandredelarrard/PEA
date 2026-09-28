@@ -68,7 +68,7 @@ def _regsho(day: str, rows: list[tuple[str, int, int]]) -> str:
     return head + "".join(f"{day}|{t}|{s}|0|{v}|Q\n" for t, s, v in rows)
 
 
-def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
+def test_resume_day_replays_a_bounded_tail_from_the_global_max(sqlite_store):
     ctx = _context(sqlite_store)
     # cold table -> full years_history window
     cold = si._resume_day(ctx, years_history=10)
@@ -86,12 +86,12 @@ def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
         ),
     )
     # GLOBAL max is 2024-06-04 (BBB's) -- AAA lagging at 05-01 must NOT pull it back
-    assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-06-05")
+    assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-05-24")
 
     print("\n=== SANITY CHECK: RegSHO resume day ===")
     print(
         f"  cold table -> {cold.date()} (years_history); stored max 2024-06-04 -> "
-        "2024-06-05. A ticker stale at 2024-05-01 does not widen the window. Validated."
+        "2024-05-24 (7-session repair tail). AAA at 2024-05-01 does not widen it. Validated."
     )
 
 

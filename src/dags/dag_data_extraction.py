@@ -6,24 +6,17 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher), so parallelism is tu
 big group: the light sources fan out freely, while the heavy / long / rate-limited ones are capped by
 Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — big SEC zip downloads: fails_to_deliver, thirteen_f, financial_statements,
+  * sec_bulk (2 slots)  — big SEC zip downloads: fails_to_deliver, financial_statements,
                           insider_transactions, financial_notes  (disk + SEC bandwidth bound)
-  * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s): fundamentals (incl.
-    10-K headcount), def14a
-  * scrape   (2 slots)  — external rate-limited scraping: wiki_pageviews, google_trends,
-                          download_earnings_calls -> ingest_earnings_calls
+  * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
+                          slots, so only one EDGAR walk runs at a time
+  * scrape   (2 slots)  — external rate-limited scraping: earnings-call download -> ingest
   * default             — light / fast: macro, short_interest, earnings_surprises,
                           superinvestors  (+ the one heavy yfinance pull: price_history)
 
-⚠ Tasks are grouped by POOL (what throttles them), NOT by the step that owns them in
-`src/data_extract/transformers/`. The INSTITUTIONALS step's sources are therefore spread across
-three groups here: thirteen_f / insider_transactions / fails_to_deliver (sec_bulk),
-sec_8k_items / sec_13d (sec_api), short_interest / superinvestors (default). That is deliberate
--- an 8-K pull and a 13F zip contend for different resources -- so do not re-group them by step.
-
-Flow: seed_universe -> (all fetchers in parallel, pool-throttled) -> extraction_complete -> trigger
-the data_aggregation DAG. The gate is a visible WARNING, not a hard block (trigger_rule=ALL_DONE), so
-aggregation still runs on a red gate; flip to ALL_SUCCESS to hard-stop prediction on stale data.
+Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
+the data_aggregation DAG. Fetchers and the schema-driven freshness gate each get three attempts;
+the final gate is a hard block.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
 run from the mounted repo. Fetchers are incremental, so a nightly run only pulls new data.
@@ -32,7 +25,6 @@ run from the mounted repo. Fetchers are incremental, so a nightly run only pulls
 from datetime import datetime, timedelta
 
 from airflow.operators.bash import BashOperator
-from airflow.operators.empty import EmptyOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.utils.trigger_rule import TriggerRule
 
@@ -46,7 +38,7 @@ PIPE = f"{PIPE_PY} -m src data_extract"
 default_args = {
     "owner": "pea",
     "depends_on_past": False,
-    "retries": 1,
+    "retries": 3,
     "retry_delay": timedelta(minutes=10),
     "email_on_failure": False,
 }
@@ -63,13 +55,18 @@ dag = DAG(
 )
 
 
-def fetch(cmd: str, pool: str = "default_pool", task_id: str | None = None) -> BashOperator:
-    """A BashOperator that runs one extraction command from the pipeline venv."""
+def fetch(
+    cmd: str,
+    pool: str = "default_pool",
+    task_id: str | None = None,
+) -> BashOperator:
+    """Run one retryable extraction command from the pipeline venv."""
     return BashOperator(
         task_id=task_id or cmd.replace("-", "_"),
         bash_command=f"{PIPE} {cmd} -c {CONFIGS}",
         cwd=PROJECT,
         pool=pool,
+        pool_slots=2 if pool == "sec_api" else 1,
         dag=dag,
     )
 
@@ -78,76 +75,91 @@ def fetch(cmd: str, pool: str = "default_pool", task_id: str | None = None) -> B
 seed_universe = fetch("seed-universe")
 
 # 1) LIGHT / fast — fan out in the default pool
-light = [
-    # ONE macro task: `market-prices` + `macro` + `macro-assets` collapsed into it when every
-    # non-equity series moved out of `prices` and into `prices_macro`.
-    fetch("macro"),
-    fetch("short-interest"),
-    fetch("earnings-surprises"),
-]
-# the one heavy yfinance pull (own host -> default pool, not the SEC pools)
+macro = fetch("macro")
+short_interest = fetch("short-interest")
+earnings_surprises = fetch("earnings-surprises")
+
+# yfinance sources: splits must finish before prices so a new event triggers a full re-pull
+splits = fetch("splits")
 price_history = fetch("price-history")
+dividends = fetch("dividends")
 
 # 2) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
-thirteen_f = fetch("thirteen-f", pool="sec_bulk")
+thirteen_f = fetch("thirteen-f", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions", pool="sec_bulk")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
+identity_tables = fetch("identity-tables")
 superinvestors = fetch("superinvestors")  # light, needs 13F
 thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
 #   ^ institutionals step: thirteen_f, insider_transactions, fails_to_deliver,
-#     superinvestors, short-interest (in `light`), sec_8k_items, sec_13d and sec_13g (below)
+#     superinvestors, short-interest, sec_8k_items, sec_13d and sec_13g (below)
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 fundamentals = fetch("fundamentals", pool="sec_api")  # incl. 10-K headcount
+fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("def14a", pool="sec_api")  # + LLM
+def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
+sec_8k_votes = fetch("sec-8k-votes", pool="sec_api")  # parses stored Item 5.07 narratives
 sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 
-# 4) external scraping — capped to 2 (site rate limits)
-# wiki_pageviews = fetch("wiki-pageviews", pool="scrape")
-# google_trends = fetch("google-trends", pool="scrape")                # slow
-# earnings calls split in two: DOWNLOAD to disk (HF 1.8GB one-time + MF HTML) -> INGEST to DB
+# 4) earnings calls: DOWNLOAD to disk (HF + MF HTML) -> INGEST to DB
 download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
 ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
-extraction_complete = EmptyOperator(task_id="extraction_complete", dag=dag)
 
-# aggregation runs even if some fetchers failed (ALL_DONE, not ALL_SUCCESS); flip this to
-# TriggerRule.ALL_SUCCESS to make a failed extraction hard-stop the prediction build.
+# 5) final schema-driven freshness gate; a red gate retries and never permits aggregation.
+extraction_status = fetch("extraction-status", task_id="extraction_status")
+
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
     wait_for_completion=False,
     reset_dag_run=True,
-    trigger_rule=TriggerRule.ALL_DONE,
+    trigger_rule=TriggerRule.ALL_SUCCESS,
     dag=dag,
 )
 
 # --- wiring ---
-all_fetchers = light + [
+all_fetchers = [
+    macro,
+    short_interest,
+    earnings_surprises,
+    splits,
     price_history,
+    dividends,
     fails_to_deliver,
     thirteen_f,
     financial_statements,
     insider_transactions,
     financial_notes,
+    identity_tables,
     fundamentals,
+    fundamentals_sharadar,
     def14a,
+    def14a_edgar,
     sec_8k_items,
+    sec_8k_votes,
     sec_13d,
     sec_13g,
     filing_text,
     download_earnings_calls,
-]  # wiki_pageviews, google_trends,
+    ingest_earnings_calls,
+    superinvestors,
+    thirteen_f_managers,
+]
 
 seed_universe >> all_fetchers
+splits >> price_history
+insider_transactions >> identity_tables >> [short_interest, fails_to_deliver]
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
+fundamentals >> fundamentals_sharadar  # merge only after today's SEC layer is complete
+[sec_8k_items, def14a] >> sec_8k_votes
 download_earnings_calls >> ingest_earnings_calls  # ingest parses the downloaded files
 
-# all sources refreshed -> trigger aggregation
-(all_fetchers + [superinvestors, thirteen_f_managers, ingest_earnings_calls]) >> extraction_complete
-extraction_complete >> trigger_aggregation
+# all sources refreshed -> schema freshness hard gate -> aggregation
+all_fetchers >> extraction_status >> trigger_aggregation

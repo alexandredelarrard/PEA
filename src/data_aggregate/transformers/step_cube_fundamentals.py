@@ -4,19 +4,15 @@ step_cube_fundamentals.py  (src/data_aggregate/transformers/step_cube_fundamenta
 Everything keyed on SEC filings -> `cube_part_fundamentals`: the peer-relative fundamental
 panel, the sector-scoped KPIs, earnings expectations, workforce and dividends.
 
-WHY THESE FIVE TOGETHER. They all read `fundamentals_history`, and in the exploded DAG each
-was its own task, so that table was loaded five separate times and every shared field
-(`sharesOutstanding`, `totalRevenue`, `netIncome`, `freeCashflow`) was pivoted and
-forward-filled once per task. Here it is loaded ONCE and the point-in-time frames are shared
-through a single `PitFrames`, which is a pure memoization -- proved bit-identical by
-`tests/data_aggregate/test_pit_cache.py`.
+The five builders share one cleaned `fundamentals_history` read. The peer-relative
+fundamental builder also reuses one memoized `PitFrames` instance across its feature blocks.
 
 Quarter-basis and leak-free by construction: the SEC history is quarterly (TTM levels) and
 every value is keyed on its FILING date (`as_of`); the point-in-time layer forward-fills each
 value only from that date, so a feature on day d reflects the most recent quarter whose
 10-Q/10-K was already public on d -- never a not-yet-filed one.
 
-Warm-up 1320: the binding look-backs are `_self_history_z`'s rolling(1260) and the 5-year
+Warm-up 1320: the binding look-backs are `self_history_z`'s rolling(1260) and the 5-year
 dividend payout growth. `sector` / `earnings` need ~none (they look back in filing space over
 the full source table), so merging them into this part costs them a longer daily grid but no
 correctness.
@@ -44,6 +40,7 @@ from src.data_aggregate.utils.fundamentals.earnings_features import build_earnin
 from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     build_fundamental_feature_panel,
+    clean_fundamentals_history,
     load_notes_num_scoped,
     load_pension_facts_scoped,
 )
@@ -72,10 +69,10 @@ class StepCubeFundamentals(Step):
         frames = self._load_frames(window.since)
         frames.require(*self._FIELDS)
         assert frames.close_split is not None
-        fundamentals = self._load_fundamentals()
+        fundamentals = self._load_fundamentals(frames.universe)
         earnings = self._load_optional(Tables.earnings_surprises, "earnings-surprise history", "fetch_earnings_surprises")
 
-        # ONE point-in-time cache for all five builders (see the module docstring)
+        # ONE point-in-time cache for all fundamental feature blocks.
         pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
 
         merger = PanelMerger(self._log)
@@ -85,17 +82,17 @@ class StepCubeFundamentals(Step):
             "peer-relative fundamental",
             "No fundamental features built (missing fundamentals).",
         )
-        merger.add(self._sector_kpi_panel(frames, fundamentals, pit), "sector-KPI", "No sector KPI features built (missing fundamentals).")
+        merger.add(self._sector_kpi_panel(frames, fundamentals), "sector-KPI", "No sector KPI features built (missing fundamentals).")
 
         # earnings
         merger.add(self._earnings_panel(frames, earnings), "earnings-expectation", "No earnings-expectation features built.")
 
         # employees
-        merger.add(self._employee_panel(frames, fundamentals, pit), "workforce", "No workforce features built.")
+        merger.add(self._employee_panel(frames, fundamentals), "workforce", "No workforce features built.")
 
         # dividends
-        merger.add(self._dividend_panel(frames, fundamentals, pit), "dividend", "No dividend features built (missing dividend history).")
-        self._log.info("PitFrames shared across the fundamentals builders: %s", pit.stats())
+        merger.add(self._dividend_panel(frames, fundamentals), "dividend", "No dividend features built (missing dividend history).")
+        self._log.info("Fundamental PitFrames cache: %s", pit.stats())
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         del frames, fundamentals, earnings, pit
@@ -112,7 +109,7 @@ class StepCubeFundamentals(Step):
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
         return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
-    def _load_fundamentals(self) -> pd.DataFrame:
+    def _load_fundamentals(self, universe: tuple[str, ...]) -> pd.DataFrame:
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
@@ -120,11 +117,16 @@ class StepCubeFundamentals(Step):
         sector membership and `fundamentals_history` has never carried it, so this is a
         lookup, not a column the read could have asked for. Without it every sector KPI is
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""
-        df = self._context.store.load(Tables.fundamentals_history, optional=True)
+        df = self._context.store.load(
+            Tables.fundamentals_history,
+            project=True,
+            where={"ticker": list(universe)},
+            optional=True,
+        )
         if df is None:
             raise Exception("No fundamentals history -> the fundamental, sector, workforce and dividend-payout features will be skipped.")
         self._log.info("Loaded %s: %s rows, %s tickers (ONCE for five builders)", Tables.fundamentals_history, len(df), df["ticker"].nunique())
-        df = add_cube_time_growth(df)
+        df = add_cube_time_growth(clean_fundamentals_history(df))
         return attach_gics_columns(df, self._context, self._log)
 
     def _load_optional(self, table: Table, what: str, fetcher: str) -> pd.DataFrame | None:
@@ -153,11 +155,12 @@ class StepCubeFundamentals(Step):
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=earnings,  # PEGY projected-growth term
-            pension_facts=load_pension_facts_scoped(self._context),
-            notes_num=load_notes_num_scoped(self._context),
+            pension_facts=load_pension_facts_scoped(self._context, frames.universe),
+            notes_num=load_notes_num_scoped(self._context, frames.universe),
+            pit=pit,
         )
 
-    def _sector_kpi_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
+    def _sector_kpi_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
         """Sector-specific KPIs (combined/loss ratio, NIM, efficiency ratio, FFO, inventory
         days, shareholder payout, net-debt/EBITDA, accruals), availability-gated per row so a
         KPI is null unless its sector reported the inputs."""
@@ -175,7 +178,7 @@ class StepCubeFundamentals(Step):
             earnings, frames.peers, frames.trading_index, stock_close=frames.close_split, level_factor=frames.level_factor
         )
 
-    def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
+    def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
         """Revenue per employee and YoY headcount growth, from the `employees` column of
         `fundamentals_history` (10-K body-text headcount). Headcount and the revenue it is
         divided by come from the SAME frame and the same `as_of`, which is why one source is
@@ -184,7 +187,7 @@ class StepCubeFundamentals(Step):
             return None
         return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index, fundamentals_history=fundamentals)
 
-    def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None, pit: PitFrames) -> pd.DataFrame | None:
+    def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
         """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a

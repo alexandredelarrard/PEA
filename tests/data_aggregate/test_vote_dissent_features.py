@@ -510,7 +510,7 @@ def test_the_encoding_rule_is_declared_and_no_field_gets_xs():
     # measured r = 0.9949 and 0.9867 on the live part, with `auditor_vote_dissent` a strict
     # SUPERSET of its twin (254 cells more, 0 the other way). Both were levels with a peer leg,
     # so the counts drop by 2 each and FOUR columns leave the part, not two.
-    assert len(EVENT_FIELDS) == 26 and len(PEER_RELATIVE_FIELDS) == 10
+    assert len(EVENT_FIELDS) == 26 and len(PEER_RELATIVE_FIELDS) == 9
     for retired in ("sop_against_pct", "auditor_vote_against_pct"):
         assert retired not in EVENT_FIELDS and retired not in PEER_RELATIVE_FIELDS
 

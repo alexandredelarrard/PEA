@@ -98,7 +98,7 @@ CUBE_PARTS: tuple[CubePart, ...] = (
         "features",
         1320,
         (
-            ("fundamental", 1260),  # _self_history_z rolling(1260)
+            ("fundamental", 1260),  # self_history_z rolling(1260)
             ("dividend", 1260),  # 5y payout growth shift(5 * 252)
             ("employee", 252),  # YoY headcount / rev-per-employee shift(252)
             ("sector", 0),  # _yearly_lag over the FULL fundamentals history

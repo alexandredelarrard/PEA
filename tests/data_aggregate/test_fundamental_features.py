@@ -22,18 +22,20 @@ import pytest
 from src.context import Context
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
-from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
+from src.data_aggregate.utils.common.pit import PitFrames, fiscal_change_to_daily
+from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _derived_fields,
-    _self_history_z,
     build_fundamental_feature_panel,
     build_state_panel,
+    clean_fundamentals_history,
     load_notes_num_scoped,
     load_pension_facts_scoped,
     load_tagged_facts,
 )
+from src.data_store.schema import Tables
 
 
 def _number(value: object) -> float:
@@ -518,7 +520,7 @@ def test_yearly_ttm_features_computed_correctly():
 # 8. Valuation MEAN-REVERSION (self-history z-score)                           #
 # --------------------------------------------------------------------------- #
 def test_self_history_z_mean_reversion():
-    """`_self_history_z` z-scores each ticker vs its OWN trailing window: NaN
+    """`self_history_z` z-scores each ticker vs its OWN trailing window: NaN
     until min_periods, negative when the yield sits BELOW its own norm
     (expensive), positive when ABOVE (cheap). Strictly trailing -> no leak."""
     idx = pd.bdate_range("2020-01-01", periods=300)
@@ -527,7 +529,7 @@ def test_self_history_z_mean_reversion():
     vals = np.concatenate([np.full(200, 0.05), np.full(50, 0.02), np.full(50, 0.08)])
     yld = pd.DataFrame({"AAA": vals}, index=idx)
 
-    z = _self_history_z(yld, window=120, min_periods=60)
+    z = self_history_z(yld, window=120, min_periods=60)
 
     # insufficient history -> NaN
     assert z["AAA"].iloc[:59].isna().all(), "z must be NaN before min_periods"
@@ -1037,22 +1039,77 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
         {"adsh": f"0000-{i}", "ticker": "AAA", "tag": tag, "ddate": "2024-12-31", "qtrs": 0, "value": 100.0, "filed": "2025-02-14"}
         for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
-    sqlite_store.save("notes_num", pd.DataFrame(rows))
+    rows.append(
+        {
+            "adsh": "0000-4",
+            "ticker": "OUT",
+            "tag": _FN_PBO_TAG,
+            "ddate": "2024-12-31",
+            "qtrs": 0,
+            "value": 999.0,
+            "filed": "2025-02-14",
+        }
+    )
+    sqlite_store.save(Tables.notes_num, pd.DataFrame(rows))
     ctx = cast(Context, _Ctx(sqlite_store))
-    out = load_notes_num_scoped(ctx)
+    out = load_notes_num_scoped(ctx, ["AAA"])
     assert out is not None
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG}, "non-pension footnote tags leaked in"
-    assert len(out) == 2, f"expected only the 2 pension tags, got {len(out)}"
+    assert len(out) == 2, f"expected only AAA's 2 pension tags, got {len(out)}"
     assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed"]
     # no matching tag -> None (builder then treats pension as unavailable)
-    assert load_tagged_facts(ctx, "notes_num", ("NoSuchTag",)) is None
+    assert load_tagged_facts(ctx, Tables.notes_num, ("NoSuchTag",)) is None
     # table absent entirely (cold DB) -> None, not a raise
     assert load_pension_facts_scoped(ctx) is None
     print("\n=== SANITY CHECK: scoped facts read ===")
     print(
         f"  notes_num (10 tags in prod) -> only {_FN_PBO_TAG} + {_FN_PLAN_ASSETS_TAG} loaded "
-        "(2/4 synthetic rows) via server-side tag IN; projected to the 6 columns the builders "
-        "read; no-match -> None; absent pension_facts -> None. Validated."
+        "(2/5 synthetic rows) via server-side tag + ticker filters; projected to the 6 columns "
+        "the builders read; no-match -> None; absent pension_facts -> None. Validated."
+    )
+
+
+def test_clean_fundamentals_history_normalizes_once():
+    raw = pd.DataFrame(
+        {
+            "ticker": [" aaa ", "DROP"],
+            "as_of": ["2025-02-14", "not-a-date"],
+            "fiscal_end": ["2024-12-31", "2024-12-31"],
+            "totalRevenue": ["123.5", "999"],
+            "sector": ["Industrials", "Industrials"],
+        }
+    )
+
+    cleaned = clean_fundamentals_history(raw)
+
+    assert cleaned["ticker"].tolist() == ["AAA"]
+    assert pd.api.types.is_datetime64_any_dtype(cleaned["as_of"])
+    assert pd.api.types.is_datetime64_any_dtype(cleaned["fiscal_end"])
+    assert cleaned.loc[0, "totalRevenue"] == pytest.approx(123.5)
+    assert cleaned.loc[0, "sector"] == "Industrials"
+    print("\n=== SANITY CHECK: one-pass fundamentals cleaning ===")
+    print("  ticker/date/numeric columns normalized; invalid filing date removed; categorical GICS preserved. Validated.")
+
+
+def test_panel_reuses_supplied_pit_frames():
+    """The production builder must use the shared daily-frame cache, not create its own."""
+    fundamentals = clean_fundamentals_history(_synth_mixed_regime())
+    idx = pd.bdate_range("2020-03-02", periods=3)
+    close = pd.DataFrame({"AAA": 2.0, "ZZZ": 1.0}, index=idx)
+    pit = PitFrames(fundamentals, idx, close)
+
+    panel = build_fundamental_feature_panel(fundamentals, {}, idx, stock_close=close, pit=pit)
+    stats = pit.stats()
+
+    assert not panel.empty
+    assert stats["fields"] > 0 and stats["hits"] > 0
+    assert stats["changes"] > 0 and stats["applied"] > 0
+    assert stats["market_cap"] == 1
+    print("\n=== SANITY CHECK: shared fundamental PitFrames ===")
+    print(
+        f"  {stats['fields']} daily fields computed once across {stats['accesses']} accesses "
+        f"({stats['hits']} hits); {stats['changes']} fiscal changes and {stats['applied']} custom transforms cached; "
+        "market cap computed once. Validated."
     )
 
 

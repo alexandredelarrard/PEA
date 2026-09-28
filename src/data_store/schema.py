@@ -1150,10 +1150,8 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- behavioral / text / embeddings                         #
     # ----------------------------------------------------------------- #
-    google_trends = Table(
-        "google_trends", ("ticker", "date"), date_col="date", freshness="weekly", read_columns=("date", "ticker", "search_interest")
-    )
-    wiki_pageviews = Table("wiki_pageviews", ("ticker", "date"), date_col="date", freshness="daily", read_columns=("date", "ticker", "pageviews"))
+    google_trends = Table("google_trends", ("ticker", "date"), date_col="date", read_columns=("date", "ticker", "search_interest"))
+    wiki_pageviews = Table("wiki_pageviews", ("ticker", "date"), date_col="date", read_columns=("date", "ticker", "pageviews"))
     # FREE earnings-call transcripts (Motley Fool), split into high-signal sections
     # (prepared_remarks / qa / participants). One row per ticker / fiscal quarter /
     # section; `as_of` = call date, `text` = the prose. NOT projected: `text` IS the
@@ -1308,14 +1306,7 @@ def by_kind(kind: str) -> tuple[Table, ...]:
 
 
 def freshness_tables() -> tuple[Table, ...]:
-    """The tables declaring a refresh cadence, in registry order.
-
-    Currently has NO caller: the gate that consumed it was removed. Kept as the single
-    entry point for any future staleness check, so a new consumer reads the cadence off
-    the registry instead of reintroducing a hand-maintained table list (the mistake
-    `constants.DATA_FRESHNESS_SOURCES` made -- every label there equalled its own table
-    name, duplicating `date_col` plus a cadence the spec already declared).
-    """
+    """The tables checked by the extraction freshness gate, in registry order."""
     return tuple(t for t in ALL if t.freshness is not None)
 
 

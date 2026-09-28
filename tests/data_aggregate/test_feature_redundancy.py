@@ -39,19 +39,17 @@ from src.data_aggregate.utils.common.pit import (
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
-    _FACT_COLS,
+    _FACT_COLUMNS,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _NET_PENSION_TAGS,
-    _NOTES_NUM_TABLE,
-    _PENSION_FACTS_TABLE,
     _derived_fields,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS,
     compute_sector_kpis,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.db import get_engine
 
@@ -104,8 +102,8 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     close = px.pivot_table(index="date", columns="ticker", values="close_split", aggfunc="last").sort_index()
     idx = pd.DatetimeIndex(close.index)
 
-    def _facts(table: str, tags: tuple[str, ...]) -> pd.DataFrame | None:
-        got = store.load(table, columns=_FACT_COLS, where={"tag": list(tags)}, optional=True)
+    def _facts(table: Table, tags: tuple[str, ...]) -> pd.DataFrame | None:
+        got = store.load(table, columns=_FACT_COLUMNS, where={"tag": list(tags)}, optional=True)
         return got.reset_index(drop=True) if got is not None else None
 
     frames = _derived_fields(
@@ -113,8 +111,8 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         idx=idx,
         close=close,
         yoy_periods=infer_yoy_periods(fh),
-        pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
+        pension_facts=_facts(Tables.pension_facts, _NET_PENSION_TAGS),
+        notes_num=_facts(Tables.notes_num, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

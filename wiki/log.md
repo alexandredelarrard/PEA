@@ -57,3 +57,10 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Runtime syntax: Python 3.13 unions use `A | B`, including the explicit project convention for `isinstance`; every `zip()` states its strictness
 - Tooling: [pyrightconfig.json](../pyrightconfig.json) resolves the project-local `.venv`; matching `pandas-stubs` supports pandas boundaries; Airflow-only suppressions remain file-scoped because DAGs run in the separate Python 3.12 environment
 - Page: [Coding standards](./guides/coding-standards.md)
+
+## 2026-09-27: refresh — schema-driven extraction freshness
+
+- Profile: internal/standard
+- source_commit: bb65544 (was 783e6a5)
+- Coverage: replaced the parallel extraction freshness registry with the canonical table metadata in `src/data_store/schema.py`; documented the three-retry hard gate between extraction and aggregation; removed retired Wikipedia and Google Trends tables from freshness checks
+- Pages: [Overview](./OVERVIEW.md), [Data extraction](./modules/data-extract.md), [Nightly data refresh](./flows/nightly-data-refresh.md)

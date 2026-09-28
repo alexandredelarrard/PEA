@@ -21,7 +21,7 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.prices.fetch_prices import download_ohlcv
+from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS, download_ohlcv
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ def fetch_dividends(
 
     today = pd.Timestamp.today().normalize()
     since = resume_since(context, Tables.dividends, tickers, years_history, include_missing=False)
+    since = min(since, today - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS))
 
     logger.info(f"Downloading dividends for {len(tickers)} tickers since {since.date()}")
     # auto_adjust=False for the same response shape the price fetcher uses, so a future

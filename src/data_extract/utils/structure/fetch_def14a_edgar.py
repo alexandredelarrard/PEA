@@ -176,4 +176,12 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 
 def fetch_def14a_edgar(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history, tables=tuple(_NUMERIC_COLS), build=build_ticker_def14a_edgar, desc="DEF 14A (ECD XBRL)")
+    run_edgar_fetch(
+        context,
+        tickers,
+        years_history,
+        tables=tuple(_NUMERIC_COLS),
+        build=build_ticker_def14a_edgar,
+        desc="DEF 14A (ECD XBRL)",
+        require_complete=True,
+    )

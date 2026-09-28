@@ -96,10 +96,11 @@ CUBE_PARTS: tuple[CubePart, ...] = (
         Tables.cube_part_fundamentals,
         "build-fundamentals",
         "features",
-        1320,
+        1560,
         (
             ("fundamental", 1260),  # _self_history_z rolling(1260)
-            ("dividend", 1260),  # 5y payout growth shift(5 * 252)
+            # 5y growth shifts a 252-session TTM series: 1260 + (252 - 1).
+            ("dividend", 1511),
             ("employee", 0),  # fiscal match over FULL annual employee history
             ("sector", 0),  # _yearly_lag over the FULL fundamentals history
             ("earnings", 0),

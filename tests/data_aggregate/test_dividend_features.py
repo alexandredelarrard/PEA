@@ -13,6 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
+from src.data_aggregate.utils.common.parts import PART_BY_NAME
 from src.data_aggregate.utils.fundamentals.dividend_features import (
     _dividend_fields,
     build_dividend_feature_panel,
@@ -204,6 +206,51 @@ def test_panel_exposes_f_columns():
     print(
         f"  panel has f_dividend_yield/growth/payer/shareholder_yield (_xs & _vs_peers); "
         f"continuous xs rank in [0,1] and payer xs is exact 0/1. Rows={len(panel)}. Validated."
+    )
+
+
+def test_incremental_dividend_window_reproduces_full_tail() -> None:
+    """The part warm-up must cover the 5y shift plus the TTM dividend window."""
+    dates = pd.bdate_range("2018-01-01", periods=7 * 252)
+    tickers = ["A", "B", "C", "D", "E"]
+    close = pd.DataFrame(100.0, index=dates, columns=tickers)
+    growth = dict(zip(tickers, (1.02, 1.05, 1.08, 1.11, 1.14), strict=True))
+    dividends = pd.DataFrame(
+        [
+            {"date": date, "ticker": ticker, "dividends": growth[ticker] ** (i // 4)}
+            for ticker_pos, ticker in enumerate(tickers)
+            for i, date in enumerate(dates[ticker_pos * 10 :: 63])
+        ]
+    )
+    peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
+
+    full = build_dividend_feature_panel(dividends, peers, dates, stock_close=close)
+    warmup = PART_BY_NAME["cube_part_fundamentals"].warmup_trading_days
+    last_pos = 7 * 252 - 40
+    refresh_from = dates[last_pos - PART_REFRESH_TRADING_DAYS]
+    start = dates[last_pos - PART_REFRESH_TRADING_DAYS - warmup]
+    windowed = build_dividend_feature_panel(
+        dividends,
+        peers,
+        dates[dates >= start],
+        stock_close=close.loc[start:],
+    )
+
+    columns = ["f_dividend_growth_5y_vs_peers", "f_dividend_growth_5y_xs"]
+    full_tail = full.loc[full["date"] >= refresh_from, ["date", "ticker", *columns]]
+    windowed_tail = windowed.loc[windowed["date"] >= refresh_from, ["date", "ticker", *columns]]
+    pd.testing.assert_frame_equal(
+        full_tail.set_index(["date", "ticker"]).sort_index(),
+        windowed_tail.set_index(["date", "ticker"]).sort_index(),
+        check_exact=False,
+        atol=1e-7,
+        rtol=0,
+    )
+
+    print("\n=== SANITY CHECK: incremental dividend panel matches full tail ===")
+    print(
+        f"  {warmup} warm-up sessions preserve the 1,260-session CAGR shift plus its "
+        f"252-session TTM base; {len(full_tail)} rewritten/appended cells match. Validated."
     )
 
 

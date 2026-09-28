@@ -16,10 +16,10 @@ every value is keyed on its FILING date (`as_of`); the point-in-time layer forwa
 value only from that date, so a feature on day d reflects the most recent quarter whose
 10-Q/10-K was already public on d -- never a not-yet-filed one.
 
-Warm-up 1320: the binding look-backs are `_self_history_z`'s rolling(1260) and the 5-year
-dividend payout growth. `sector` / `earnings` need ~none (they look back in filing space over
-the full source table), so merging them into this part costs them a longer daily grid but no
-correctness.
+Warm-up 1560: the binding look-backs are `_self_history_z`'s rolling(1260) and the 5-year
+dividend payout CAGR's 1260-day shift of a 252-day TTM series (1511 days end to end).
+`sector` / `earnings` need ~none (they look back in filing space over the full source table),
+so merging them into this part costs them a longer daily grid but no correctness.
 """
 
 from __future__ import annotations

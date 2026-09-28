@@ -79,7 +79,7 @@ add(
     "value",
     "TTM revenue / market cap (S/P).",
     "Lowest null rate of the yields: revenue is always positive so nothing is masked; nulls are only missing price or missing revenue.",
-    "The high tail is low-margin distribution/retail (huge sales per dollar of equity value); the low tail is high-multiple software. Both are real business-model differences, which is why the feature is used peer-relative.",
+    "The high tail is low-margin distribution/retail (huge sales per dollar of equity value); the low tail is high-multiple software. Read the raw level together with the firm's own-history z-score.",
 )
 add(
     "book_yield",
@@ -144,7 +144,7 @@ add(
     "quality",
     "Gross profit / revenue, straight from the history.",
     "A reported ratio, not a derived one -- nulls are filers who do not separate cost of revenue (many financials).",
-    "Near 1.0 for software/pharma, near 0.1 for distributors. Used `_vs_peers` precisely because the level is an industry property.",
+    "Near 1.0 for software/pharma, near 0.1 for distributors. The raw level describes the business model; self-history shows margin change within the firm.",
 )
 add(
     "operatingMargins",
@@ -260,7 +260,7 @@ add(
     "distress",
     "Current assets / current liabilities.",
     "A textbook liquidity ratio off two well-covered columns.",
-    "Below 1 means short-term obligations exceed short-term assets. Banks sit low structurally, which is why it is read peer-relative.",
+    "Below 1 means short-term obligations exceed short-term assets. Banks sit low structurally, so interpret the retained raw level with sector context.",
 )
 add(
     "cash_to_debt",
@@ -279,13 +279,6 @@ add(
 
 # ---------------------------------------------------------- growth / trend #
 add(
-    "revenueGrowth",
-    "growth",
-    "YoY TTM revenue growth, computed AT CUBE TIME against the same fiscal period one year earlier.",
-    "A `CUBE_TIME_COLUMN`: fiscal-end matching within 45 days avoids filing-row and publication-date offsets, selects only amendments public by the current filing, and projects the result from that filing date.",
-    "Economically the same growth quantity as `y_rev_growth`; both public names are retained for established consumers, and no active model config may select both.",
-)
-add(
     "earningsGrowth",
     "growth",
     "YoY net-income growth, using the same prior-fiscal-period point-in-time match as `revenueGrowth`.",
@@ -297,7 +290,7 @@ add(
     "growth",
     "TTM revenue vs the same fiscal period one year earlier, matched by fiscal end within 45 days.",
     "Seasonality-free and point-in-time by construction: only predecessor amendments public by the current filing are eligible.",
-    "Economically the same quantity as `revenueGrowth`; the alias is retained for established model contracts, with a guard preventing one model from selecting both.",
+    "Numerically the same as the internal cube-time `revenueGrowth` input; only this public name is emitted, so a model cannot select the same growth signal twice.",
 )
 add(
     "y_earnings_growth",
@@ -312,13 +305,6 @@ add(
     "Change in the YoY revenue-growth rate -- second derivative of sales.",
     "Acceleration is a different signal from level growth and is what tends to move multiples.",
     "Symmetric tails; a large positive is an inflection, a large negative is a decelerating grower.",
-)
-add(
-    "q_rev_growth",
-    "growth",
-    "LATEST-QUARTER revenue YoY (discrete single quarter, not TTM).",
-    "Reads the discrete `revenue_q` column, so it captures the inflection TTM smooths away.",
-    "Noisier than the TTM version by design -- that is why both exist and the model chooses.",
 )
 add(
     "q_earnings_growth",
@@ -352,8 +338,8 @@ add(
     "gross_margin_chg",
     "growth",
     "YoY change in gross margin (percentage points).",
-    "Deliberately on `_xs` not `_vs_peers`: a CHANGE in margin is comparable across industries even though the LEVEL is not.",
-    "A software company and a grocer both improving 2pp is the same news, which is the rationale for the cross-sectional view.",
+    "A CHANGE in margin is comparable across industries even though the LEVEL is not, so the retained raw percentage-point move has a direct meaning.",
+    "A software company and a grocer both improving 2pp is the same news; the raw move preserves that common unit.",
 )
 add(
     "operating_margin_5y_chg",
@@ -453,7 +439,7 @@ add(
     "ma_digestion",
     "The same NOPAT over invested capital LESS acquired intangibles.",
     "NO LONGER identical to its twin: the pair was r = 1.0000 because the deduction read the bare `goodwill`, which subtracted nothing. Measured r after moving to Sharadar's `intangibles`: 0.549.",
-    "Structurally higher than the incl-version (a smaller denominator). It is a WIDER deduction than a textbook ex-goodwill ROIC -- it also removes purchased patents, customer lists and brands -- but it is the same deduction for every ticker, which is what makes the cross-sectional rank meaningful.",
+    "Structurally higher than the incl-version (a smaller denominator). It is a WIDER deduction than a textbook ex-goodwill ROIC -- it also removes purchased patents, customer lists and brands. Raw plus self-history preserves both the level and its change within the firm.",
 )
 add(
     "intangibles_roic_drag",
@@ -570,7 +556,7 @@ add(
     "reinvestment",
     "Capex / revenue.",
     "Repo convention stores cash outflows POSITIVE, so this is a positive intensity rather than a negative flow.",
-    "Utilities and semis sit high, software near zero -- read `_vs_peers` for that reason.",
+    "Utilities and semis sit high, software near zero; raw plus self-history separates business-model level from the firm's own cycle.",
 )
 add(
     "capex_to_dep",
@@ -616,7 +602,13 @@ add(
 )
 
 # ---------------------------------------------------------------- operating #
-add("sga_intensity", "operating", "SG&A / revenue.", "A reported-cost intensity.", "A strong sector property -- read `_vs_peers`.")
+add(
+    "sga_intensity",
+    "operating",
+    "SG&A / revenue.",
+    "A reported-cost intensity.",
+    "A strong sector property; use the raw level and its within-firm history together.",
+)
 add("sga_growth", "operating", "YoY growth in SG&A.", "Fiscal-series YoY.", "Paired with revenue growth to form `operating_leverage`.")
 add(
     "operating_leverage",
@@ -660,7 +652,7 @@ add(
     "workforce",
     "TTM revenue / headcount, from the 10-K body-text employee count.",
     "Reads `employees_sec` -- SEC-owned in the Sharadar-first merged table (SF1 does not carry headcount), so `merge_history` namespaces it. Reading the bare `employees` returned an empty frame and killed all four workforce features on the first lookup, before revenue was ever read. Live coverage 75.7%.",
-    "Enormous across sectors (a bank vs a restaurant chain) which is why it is read `_vs_peers`; within a peer set it is a genuine productivity measure.",
+    "Enormous across sectors (a bank vs a restaurant chain); the raw level describes the model and self-history measures productivity change within the firm.",
 )
 add(
     "employee_growth",
@@ -711,7 +703,7 @@ add(
     "pension_risk",
     "GROSS projected benefit obligation / market cap.",
     "Genuinely different from the deficit ratio: it flags rate and return sensitivity even for a FULLY FUNDED plan, which the net figure shows as zero.",
-    "The tail is legacy manufacturers whose pension is larger than the equity it sits under. ⚠ THE WORST CLIP SATURATION IN THE TABLE (9.7%), and it is SKEW, not sparsity: peer-z mean +0.76 against a median of -0.21 with σ = 2.78. Sparsity is ruled out by `pension_funded_ratio`, which is sparser still (99.3% null) and saturates 0.0%. A gross obligation floored at zero with a handful of names at multiples of their own market cap cannot be symmetric, and z-scoring it puts that tail on the clip. Read the `_xs` percentile view for this one.",
+    "The tail is legacy manufacturers whose pension is larger than the equity it sits under. The old peer z-score saturated its clip because this sparse, non-negative ratio is strongly skewed; the approved compact schema therefore retains only the directly interpretable raw ratio.",
 )
 
 # ----------------------------------------------------- shareholder return #
@@ -741,7 +733,7 @@ add(
     "shareholder_return",
     "0/1 flag: does the firm pay a dividend at all?",
     "Set from EITHER the ex-date history or a positive `dividendsPaid`, so a gap in one source does not misclassify a payer.",
-    "Binary transform: `f_dividend_payer_xs` preserves exact 0/1 and its peer leg bypasses continuous input winsorization, so the model conditions on the regime rather than a faux percentile.",
+    "The raw 0/1 state is retained directly, so the model conditions on the regime rather than a faux percentile.",
 )
 add(
     "dividend_payout_ratio",

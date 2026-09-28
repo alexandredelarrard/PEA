@@ -190,22 +190,21 @@ def test_panel_exposes_f_columns():
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
     panel = build_dividend_feature_panel(div_hist, peers, dates, stock_close=close, fundamentals_history=fund)
     for c in (
-        "f_dividend_yield_xs",
-        "f_dividend_growth_xs",
-        "f_dividend_payer_xs",
-        "f_shareholder_yield_xs",
-        "f_dividend_yield_vs_peers",
-        "f_dividend_payer_vs_peers",
+        "f_dividend_yield",
+        "f_dividend_yield_vs_hist",
+        "f_dividend_growth",
+        "f_dividend_payer",
+        "f_shareholder_yield",
+        "f_shareholder_yield_vs_hist",
     ):
         assert c in panel.columns, f"{c} missing from panel"
-    xs = panel["f_dividend_yield_xs"].dropna()
-    assert xs.between(0, 1).all()
-    payer_xs = panel["f_dividend_payer_xs"].dropna()
-    assert set(payer_xs.unique()) <= {0.0, 1.0}
+    assert not any(column.endswith(("_vs_peers", "_xs")) for column in panel.columns)
+    payer = panel["f_dividend_payer"].dropna()
+    assert set(payer.unique()) <= {0.0, 1.0}
     print("\n=== SANITY CHECK: dividend panel columns ===")
     print(
-        f"  panel has f_dividend_yield/growth/payer/shareholder_yield (_xs & _vs_peers); "
-        f"continuous xs rank in [0,1] and payer xs is exact 0/1. Rows={len(panel)}. Validated."
+        "  dividend yield and shareholder yield have raw+history; growth and payer are raw; "
+        f"peer/XS legs are absent and payer stays exact 0/1. Rows={len(panel)}. Validated."
     )
 
 
@@ -236,7 +235,7 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
         stock_close=close.loc[start:],
     )
 
-    columns = ["f_dividend_growth_5y_vs_peers", "f_dividend_growth_5y_xs"]
+    columns = ["f_dividend_growth_5y"]
     full_tail = full.loc[full["date"] >= refresh_from, ["date", "ticker", *columns]]
     windowed_tail = windowed.loc[windowed["date"] >= refresh_from, ["date", "ticker", *columns]]
     pd.testing.assert_frame_equal(

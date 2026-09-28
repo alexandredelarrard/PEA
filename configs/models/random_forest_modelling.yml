@@ -16,110 +16,101 @@ random_forest:
   lambda_l1: 0.0
   lambda_l2: 1.0
 
-  # DEFAULT feature list (horizon-agnostic) = h60 50-feature RF set (Boruta+SHAP,
-  # orthogonal). Used for ANY horizon that has no entry under columns_by_horizon.
+  # DEFAULT feature list (horizon-agnostic) = the former h60 50-selection RF set,
+  # now 44 distinct columns after removed fundamentals views collapse to raw.
+  # Used for ANY horizon that has no entry under columns_by_horizon.
   columns:
-  - f_pegy_vs_peers
+  - f_pegy
   - f_ic_inst_new_buyer_ratio
   - f_goodwill_intangibles_to_assets_vs_peers
-  - f_current_ratio_xs
-  - f_pegy_xs
+  - f_current_ratio
   - f_ic_inst_holders
   - f_goodwill_intangibles_to_assets_xs
-  - f_refinancing_risk_xs
-  - f_current_ratio_vs_peers
-  - f_fixed_cost_coverage_margin_vs_peers
-  - f_book_yield_xs
+  - f_refinancing_risk
+  - f_fixed_cost_coverage_margin
+  - f_book_yield
   - f_ic_inst_flow_to_mcap_xs
-  - f_intrinsic_yield_xs
+  - f_intrinsic_yield
   - f_intangible_amortization_share_vs_peers
-  - f_fwd_eps_yield_xs
-  - f_da_to_capex_xs
-  - f_sbc_intensity_vs_peers
+  - f_fwd_eps_yield
+  - f_da_to_capex
+  - f_sbc_intensity
   - f_implied_useful_life_vs_peers
   - f_implied_useful_life_xs
   - f_ic_inst_ownership_pct_vs_peers
   - f_ic_insider_distinct_buyers_120d
-  - f_dividend_growth_xs
-  - f_sales_yield_xs
+  - f_dividend_growth
+  - f_sales_yield
   - f_ic_inst_shares_chg_xs
-  - f_debtToEquity_vs_peers
+  - f_debtToEquity
   - amihud_63
-  - f_gross_profitability_vs_peers
-  - f_capex_intensity_xs
-  - f_sga_intensity_xs
-  - f_dso_change_xs
+  - f_gross_profitability
+  - f_capex_intensity
+  - f_sga_intensity
+  - f_dso_change
   - f_intangible_amortization_share_xs
-  - f_y_margin_vs_ttm_xs
-  - f_asset_growth_vs_peers
+  - f_y_margin_vs_ttm
+  - f_asset_growth
   - f_asset_age_vs_peers
   - f_ic_super_shares_chg_xs
   - f_ic_inst_concentration_xs
-  - f_acquisition_intensity_vs_peers
-  - f_aoci_to_equity_vs_peers
-  - f_eps_surprise_last_xs
-  - f_fixed_cost_coverage_margin_xs
-  - f_debtToEquity_xs
-  - f_effective_tax_rate_xs
-  - f_employee_growth_vs_peers
-  - f_effective_tax_rate_vs_peers
-  - f_dso_xs
-  - f_dividend_payer_vs_peers
+  - f_acquisition_intensity
+  - f_aoci_to_equity
+  - f_eps_surprise_last
+  - f_effective_tax_rate
+  - f_employee_growth
+  - f_dso
+  - f_dividend_payer
   - volume_trend_63
-  - f_earningsGrowth_xs
-  - f_diluted_shares_growth_xs
+  - f_earningsGrowth
+  - f_diluted_shares_growth
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
-    30:   # 30-day RF 49-feature set (earnings-surprise / growth / distress tilted).
-          # Was written as 50 and carried `f_ic_inst_net_options_ratio` TWICE; the repeat is
-          # gone and the count is the distinct one, matching `columns` above.
-    - f_pegy_vs_peers
-    - f_pegy_xs
+    30:   # 30-day RF set, now 46 distinct columns after fundamentals-view migration.
+    - f_pegy
     - f_ic_inst_net_options_ratio
-    - f_refinancing_risk_xs
+    - f_refinancing_risk
     - f_goodwill_intangibles_to_assets_vs_peers
-    - f_current_ratio_xs
+    - f_current_ratio
     - f_goodwill_intangibles_to_assets_xs
-    - f_book_yield_xs
+    - f_book_yield
     - f_ic_inst_ownership_pct_vs_peers
-    - f_aoci_to_equity_xs
+    - f_aoci_to_equity
     - f_roic_ex_goodwill_xs
-    - f_dividend_growth_xs
-    - f_current_ratio_vs_peers
+    - f_dividend_growth
     - f_ic_inst_holders
     - f_days_inventory_outstanding_vs_peers
-    - f_sbc_intensity_xs
-    - f_sga_intensity_xs
+    - f_sbc_intensity
+    - f_sga_intensity
     - f_ic_inst_exit_ratio
-    - f_employee_growth_xs
-    - f_fwd_eps_yield_xs
+    - f_employee_growth
+    - f_fwd_eps_yield
     - f_ic_inst_flow_to_mcap
-    - f_gmroi_xs
+    - f_gmroi
     - f_ic_insider_distinct_buyers_120d
-    - f_eps_expectation_growth_xs
+    - f_eps_expectation_growth
     - f_ic_inst_flow_to_mcap_xs
     - volume_trend_63
-    - f_q_margin_vs_ttm_xs
-    - f_y_earnings_growth_xs
-    - f_capex_intensity_xs
-    - f_effective_tax_rate_vs_peers
-    - f_fixed_cost_coverage_margin_vs_peers
+    - f_q_margin_vs_ttm
+    - f_y_earnings_growth
+    - f_capex_intensity
+    - f_effective_tax_rate
+    - f_fixed_cost_coverage_margin
     - f_ic_inst_new_buyer_ratio
-    - f_dio_xs
-    - f_fcf_yield_vs_peers
-    - f_eps_surprise_last_xs
-    - f_debtToEquity_vs_peers
-    - f_intrinsic_yield_xs
-    - f_revenueGrowth_xs
+    - f_dio
+    - f_fcf_yield
+    - f_eps_surprise_last
+    - f_debtToEquity
+    - f_intrinsic_yield
+    - f_y_rev_growth
     - f_ic_inst_shares_chg_xs
-    - f_eps_surprise_4q_avg_xs
-    - f_dividend_growth_vs_peers
-    - f_capex_to_dep_xs
-    - f_operating_margin_5y_chg_vs_peers
-    - f_shares_growth_xs
-    - f_diluted_shares_growth_vs_peers
-    - f_q_earnings_growth_vs_peers
-    - f_asset_growth_vs_peers
-    - f_sbc_to_buyback_vs_peers
-    - f_dso_change_xs
+    - f_eps_surprise_4q_avg
+    - f_capex_to_dep
+    - f_operating_margin_5y_chg
+    - f_shares_growth
+    - f_diluted_shares_growth
+    - f_q_earnings_growth
+    - f_asset_growth
+    - f_sbc_to_buyback
+    - f_dso_change

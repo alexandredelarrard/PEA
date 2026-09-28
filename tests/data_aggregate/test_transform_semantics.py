@@ -145,14 +145,13 @@ def _all_strings(value) -> set[str]:
     return {str(value)} if isinstance(value, str) else set()
 
 
-def test_no_active_model_selects_both_revenue_growth_aliases():
+def test_no_active_model_selects_removed_revenue_growth_alias():
     checked: list[str] = []
     for path in sorted(Path("configs/models").glob("*_modelling.yml")):
         values = _all_strings(OmegaConf.to_container(OmegaConf.load(path), resolve=True))
-        cube_time = {value for value in values if value.startswith("f_revenueGrowth_")}
-        computed = {value for value in values if value.startswith("f_y_rev_growth_") and not value.startswith("f_y_rev_growth_accel_")}
-        assert not (cube_time and computed), f"{path} selects both revenue-growth aliases: {cube_time | computed}"
+        cube_time = {value for value in values if value == "f_revenueGrowth" or value.startswith("f_revenueGrowth_")}
+        assert not cube_time, f"{path} selects removed revenue-growth alias: {cube_time}"
         checked.append(path.name)
     assert checked
-    print("\n=== SANITY CHECK: duplicate revenue-growth consumers ===")
-    print(f"  {len(checked)} active model configs checked; none selects both revenueGrowth and y_rev_growth. Validated.")
+    print("\n=== SANITY CHECK: removed revenue-growth consumer ===")
+    print(f"  {len(checked)} active model configs checked; none selects removed revenueGrowth. Validated.")

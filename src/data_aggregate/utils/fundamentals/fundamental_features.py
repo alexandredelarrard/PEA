@@ -2,18 +2,11 @@
 """
 fundamental_features.py  (src/data_aggregate/utils/fundamental_features.py)
 ---------------------------------------------------------------------------
-The "firm vs its direct competitors" fundamental signals -- the differentiator
-of this strategy. For every fundamental characteristic we express the stock
-RELATIVE TO ITS PEER BASKET (from the peer dict), not in absolute terms:
-
-    rel_i(t) = (X_i(t) - peer_weighted_mean_i(t)) / peer_weighted_std_i(t)
-
-so "cheaper than its competitors", "growing faster than its competitors",
-"diluting shareholders more than its competitors" become features, while a
-market-wide value/growth LEVEL does not (that crowded style factor is already
-stripped from the label). These peer-relative fundamentals are largely
-orthogonal to the broad style factors, so they survive residualization and are
-where real firm-specific edge lives.
+Point-in-time fundamental signals for the modelling cube. Every approved
+characteristic is emitted in raw economic units; the selected characteristics
+also receive a trailing self-history z-score. Peer and whole-universe
+cross-sectional encodings are deliberately omitted from this part under its
+200-column contract.
 
 CHARACTERISTICS
 ===============
@@ -49,12 +42,11 @@ Profitability / moat:
                       LOW/negative = earnings backed by cash = higher quality)
 
 Growth (TTM, year-over-year):
-    revenueGrowth, earningsGrowth  (YoY, from the fiscal series)
+    y_rev_growth, earningsGrowth   (YoY, from the fiscal series)
     fcf_growth                     (YoY free-cash-flow growth)
     gross_margin_chg               (YoY change in gross margin = margin expansion)
 
 Latest-quarter momentum (discrete single quarter, what TTM smooths away):
-    q_rev_growth      latest-quarter revenue YoY
     rev_growth_accel  change in that YoY vs the prior quarter (acceleration)
     q_earnings_growth latest-quarter net-income YoY
     q_margin_vs_ttm   latest-quarter profit margin minus the TTM margin (inflection)
@@ -87,10 +79,9 @@ Stock-based compensation ("employee shares given"; gross, unlike net dilution):
     sbc_intensity      stock-based comp / revenue
     sbc_to_ocf         stock-based comp / operating cash flow (cash-flow quality)
 
-Valuation mean-reversion (self-history, emitted as `f_<yield>_vs_hist`):
-    every valuation yield above ALSO gets a z-score versus the firm's OWN
-    trailing history -> "cheap vs its own past" (e.g. PE below its 5y average),
-    an axis orthogonal to the cross-sectional "cheap vs peers" signals.
+Self-history views (emitted as `f_<characteristic>_vs_hist`):
+    approved ratios and levels get a z-score versus the firm's OWN trailing
+    history. The explicit allow-list lives in `feature_views.py`.
 
 Capital allocation / dilution ("stock given to employees" proxy):
     shares_growth   = YoY change in sharesOutstanding. Positive => issuing /
@@ -116,7 +107,6 @@ import pandas as pd
 from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import ratio, sanitize
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import (
     daily_market_cap,
     fiscal_change_to_daily,
@@ -136,6 +126,7 @@ from src.data_aggregate.utils.common.xs import (
     self_history_z,
 )
 from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
+from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 
 _PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
@@ -143,36 +134,11 @@ _NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel use
 _FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]  # the only cols the pension builders read
 
 
-# Valuation yields that also get a self-history (mean-reversion) z-score, i.e.
-# "cheap vs its OWN past" in addition to "cheap vs peers". High = cheaper than
-# the firm's own norm -> classic valuation mean-reversion signal.
-_MEAN_REVERSION_FIELDS = (
-    "earnings_yield",
-    "sales_yield",
-    "book_yield",
-    "fcf_yield",
-    "ebitda_to_ev",
-    "fcf_to_ev",
-    "ffo_yield",
-    "intrinsic_yield",
-)
 #: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
 #: consumer in the governance panel). Same values; the names stay so no call site here moves.
 _HIST_WINDOW = HIST_WINDOW  # ~5 trading years of daily observations
 _HIST_MIN_PERIODS = HIST_MIN_PERIODS  # require >= 1y of history before emitting a z-score
 
-# Cross-sectional winsorization for the Z-SCORE features (peer-z + self-history z):
-# clip each day's distribution to its [1%, 99%] percentiles so a few extreme names
-# can't dominate the standardized value -> better generalization. The percentile-
-# RANK features (`_xs`) are already outlier-proof and are left untouched.
-
-
-# Company-regime STATE flags. These are absolute 0/1 indicators (is the firm
-# profitable? cash-generative? in negative equity? growing fast?) emitted RAW
-# into the panel -- NOT peer-standardized -- so the model can CONDITION on the
-# regime instead of averaging a feature whose meaning flips between profitable
-# and loss-making / hyper-growth names.
-_STATE_FIELDS = ("profitable", "fcf_positive", "negative_equity", "hyper_growth")
 FUNDAMENTAL_TRANSFORM_SEMANTICS = {
     "nci_income_share": "structural_zero",
     "rd_intensity": "structural_zero",
@@ -278,8 +244,8 @@ _self_history_z = self_history_z
 # --------------------------------------------------------------------------- #
 # Business-quality helpers (all from tags ALREADY extracted -- no new SEC pull)
 #   #2 D&A/SBC realism, #5 forensic, #3 M&A digestion, #1 core/adjusted earnings.
-# Each returns a {name: daily wide frame} dict that _derived_fields merges into F,
-# so every field auto-expands to f_<name>_vs_peers + f_<name>_xs downstream.
+# Each returns a {name: daily wide frame} dict that _derived_fields merges into F;
+# `feature_views` then applies the approved raw/self-history contract downstream.
 # `daily` is the memoized accessor from _derived_fields (field -> date x ticker).
 # --------------------------------------------------------------------------- #
 def _nopat_tax_rate(daily, default: float = 0.21) -> pd.DataFrame:
@@ -601,8 +567,8 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy
 
     So `roic_ex_intangibles` is a WIDER deduction than a textbook ex-goodwill ROIC: it also
     removes purchased patents, customer lists and brands. That is the honest name for what
-    the data supports, and it is the same deduction for every ticker, which is what makes
-    the cross-sectional rank meaningful."""
+    the data supports, and it is the same deduction for every ticker, so the raw ratio and
+    its self-history change stay interpretable."""
     F: dict[str, pd.DataFrame] = {}
     # asset base EX the ASC-842 ROU asset, so the FY2019 adoption jump does not read as
     # balance-sheet growth (see `totalAssetsExLease` in the extractor).
@@ -820,9 +786,8 @@ def _valuation_yield_fields(
     `loss_intensity` is how the discarded information is kept instead: the annual loss as a
     POSITIVE share of market cap (house convention for `*_intensity`), defined ONLY where
     earnings are negative. NaN for profitable names, never 0 -- a zero would pile every
-    profitable name into one tie at the bottom of the cross-sectional rank, which is the
-    same defect the dividend zero-fill had. Given its own column the model can learn the
-    reversed sign directly instead of having it cancel inside `earnings_yield`."""
+    profitable name into the same artificial raw state. Given its own column the model can
+    learn the reversed sign directly instead of having it cancel inside `earnings_yield`."""
     return {
         "earnings_yield": ratio(common_income.where(common_income > 0), mcap, positive_den=True),
         "sales_yield": ratio(revenue, mcap, positive_den=True),
@@ -1157,7 +1122,7 @@ def _quality_regime_fields(
 
 
 def _state_flag_fields(daily, net_income: pd.DataFrame, fcf: pd.DataFrame, equity: pd.DataFrame) -> dict:
-    """Absolute 0/1 regime flags (emitted RAW, see _STATE_FIELDS).
+    """Absolute 0/1 regime flags emitted as raw columns.
 
     A NaN base -> NaN flag (never a false 0), so "no data" is not read as
     "unprofitable"."""
@@ -1197,7 +1162,6 @@ def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
         max_age_days=_QUARTERLY_MAX_AGE_DAYS,
     )
     if q_rev_yoy.notna().any().any():
-        F["q_rev_growth"] = q_rev_yoy
         # acceleration = this quarter's YoY minus the previous quarter's YoY
         previous_growth = _previous_fiscal_value(fund_hist, q_rev_values)
         F["rev_growth_accel"] = fiscal_values_to_daily(
@@ -1685,56 +1649,6 @@ def _derived_fields(
     return F
 
 
-def _merge_feature_panels(panels: list[pd.DataFrame]) -> pd.DataFrame:
-    """Outer-merge the non-empty long panels on ['date','ticker']."""
-    out = None
-    for p in panels:
-        if p is None or p.empty or list(p.columns) == ["date", "ticker"]:
-            continue
-        out = p if out is None else out.merge(p, on=["date", "ticker"], how="outer")
-    return out if out is not None else pd.DataFrame(columns=["date", "ticker"])
-
-
-def build_state_panel(fields: dict) -> pd.DataFrame:
-    """Stack raw 0/1 regime flags into long `f_<name>` columns -- absolute state
-    indicators the model conditions on, NOT peer-standardized."""
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-    long_frames = []
-    for name, fdf in fields.items():
-        if fdf is None or fdf.empty:
-            continue
-        s = fdf.stack().astype("float32")
-        s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}"))
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't
-    # trip the "highly fragmented DataFrame" PerformanceWarning
-    return pd.concat(long_frames, axis=1).copy().reset_index()
-
-
-def build_self_history_panel(fields: dict) -> pd.DataFrame:
-    """Stack already-z-scored self-history frames into long `f_<name>_vs_hist`
-    columns. The input frames are the OUTPUT of `_self_history_z` (final signal),
-    so they are NOT re-standardized cross-sectionally the way peer features are."""
-    if not fields:
-        return pd.DataFrame(columns=["date", "ticker"])
-    long_frames = []
-    for name, zdf in fields.items():
-        if zdf is None or zdf.empty:
-            continue
-        s = zdf.stack().astype("float32")
-        s.index.set_names(["date", "ticker"], inplace=True)
-        long_frames.append(s.rename(f"f_{name}_vs_hist"))
-    if not long_frames:
-        return pd.DataFrame(columns=["date", "ticker"])
-
-    # .copy() consolidates the many single-column blocks that concat(axis=1) doesn't
-    # trip the "highly fragmented DataFrame" PerformanceWarning
-    return pd.concat(long_frames, axis=1).copy().reset_index()
-
-
 def build_fundamental_feature_panel(
     fundamentals_history: pd.DataFrame | None,
     peer_dict: dict,
@@ -1749,17 +1663,9 @@ def build_fundamental_feature_panel(
     level_factor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    Long-format panel: ['date','ticker', f_<char>_vs_peers, f_<char>_xs,
-    f_<yield>_vs_hist, ...].
-
-    Three complementary views:
-      * f_<char>_vs_peers : firm minus its direct competitors (peer basket),
-                            standardized -> the firm-specific edge.
-      * f_<char>_xs       : cross-sectional percentile across the whole universe.
-      * f_<yield>_vs_hist : each valuation yield versus the firm's OWN trailing
-                            history (a z-score over `hist_window` days) -> the
-                            time-series valuation mean-reversion signal ("cheap
-                            vs its own past", e.g. PE below its 5y average).
+    Long-format panel with a raw ``f_<characteristic>`` column for every approved
+    characteristic and ``f_<characteristic>_vs_hist`` only for the approved history set.
+    The compact contract deliberately emits no peer or universe-percentile legs.
 
     `stock_close` is required for the valuation features (daily market cap);
     without it valuation is skipped but every other feature is still built.
@@ -1782,23 +1688,14 @@ def build_fundamental_feature_panel(
         level_factor=level_factor,
     )
 
-    # float32 to reduce space vs float 64, no need of too much detail since z scored or ranked
+    # float32 halves storage while retaining ample precision for ratios and z-scores.
     fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v) for k, v in fields.items()}
 
-    # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
-    state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}
-    peer_fields = {k: v for k, v in fields.items() if k not in _STATE_FIELDS}
-
-    semantics = {name: mode for name, mode in FUNDAMENTAL_TRANSFORM_SEMANTICS.items() if name in peer_fields}
-    peer_panel = build_peer_relative_panel(peer_fields, peer_dict, semantics=semantics)
-
-    # Self-history (mean-reversion) z-scores on the valuation yields only.
-    hist_fields = {
-        name: _self_history_z(fields[name], window=hist_window, min_periods=hist_min_periods)
-        for name in _MEAN_REVERSION_FIELDS
-        if name in fields and fields[name] is not None and not fields[name].empty
-    }
-    hist_panel = build_self_history_panel(hist_fields)
-    state_panel = build_state_panel(state_fields)
-
-    return _merge_feature_panels([peer_panel, hist_panel, state_panel])
+    semantics = {name: mode for name, mode in FUNDAMENTAL_TRANSFORM_SEMANTICS.items() if name in fields}
+    return build_fundamental_views(
+        fields,
+        peer_dict,
+        semantics=semantics,
+        history_window=hist_window,
+        history_min_periods=hist_min_periods,
+    )

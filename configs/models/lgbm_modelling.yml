@@ -23,26 +23,26 @@ lgbm:
     features:
     - amihud_63: 1
     - vol_63: -1
-    - f_y_rev_growth_xs: 1
-    - f_operating_margin_5y_chg_xs: 1
-    - f_operating_leverage_xs: 1
-    - f_revenue_per_employee_growth_xs: 1
-    - f_acquisition_intensity_xs: -1
-    - f_ebitda_to_ev_xs: 1
-    - f_pegy_xs: -1
+    - f_y_rev_growth: 1
+    - f_operating_margin_5y_chg: 1
+    - f_operating_leverage: 1
+    - f_revenue_per_employee_growth: 1
+    - f_acquisition_intensity: -1
+    - f_ebitda_to_ev: 1
+    - f_pegy: -1
     - f_core_earnings_yield_xs: 1
     - f_nonrecurring_pretax_share_xs: -1
-    - f_gross_profitability_xs: 1
-    - f_rd_intensity_vs_peers: 1
+    - f_gross_profitability: 1
+    - f_rd_intensity: 1
     - f_capitalized_software_intensity_vs_peers: 1
-    - f_shareholder_yield_xs: 1
-    - f_da_to_capex_xs: -1
-    - f_shares_growth_xs: -1
-    - f_sbc_to_ocf_xs: -1
-    - f_dividend_growth_5y_xs: 1
-    - f_interest_coverage_vs_peers: 1
-    - f_net_debt_to_ebitda_xs: -1
-    - f_refinancing_risk_xs: -1
+    - f_shareholder_yield: 1
+    - f_da_to_capex: -1
+    - f_shares_growth: -1
+    - f_sbc_to_ocf: -1
+    - f_dividend_growth_5y: 1
+    - f_interest_coverage: 1
+    - f_net_debt_to_ebitda: -1
+    - f_refinancing_risk: -1
     - f_ic_insider_net_buy_ratio_180d: 1
     - f_tier1_capital_ratio_xs: 1
     - f_combined_ratio_xs: -1
@@ -58,20 +58,20 @@ lgbm:
     - f_ec_qa_gap_xs: 1
     - f_ec_uncertainty_xs: -1
     - peer_mom_63: 1
-    - f_piotroski_f_score_xs: 1
-    - f_rule_of_40_xs: 1
+    - f_piotroski_f_score: 1
+    - f_rule_of_40: 1
     - f_rpo_growth_xs: 1
-    - f_book_value_growth_xs: 1
+    - f_book_value_growth: 1
     - f_premium_growth_xs: 1
     - f_float_growth_xs: 1
-    - f_affo_dividend_coverage_xs: 1
+    - f_affo_dividend_coverage: 1
     - f_nii_growth_xs: 1
     - f_ic_super_initiations_xs: 1
-    - f_q_margin_vs_ttm_vs_peers: 1
-    - f_eps_expectation_growth_vs_peers: 1
-    - f_intrinsic_yield_vs_peers: 1
+    - f_q_margin_vs_ttm: 1
+    - f_eps_expectation_growth: 1
+    - f_intrinsic_yield: 1
     - f_goodwill_intangibles_to_assets_vs_peers: -1
-    - f_fcf_to_ev_vs_hist: 1
+    - f_fcf_to_ev: 1
     # ⚠ f_ceo_tenure_vs_peers and f_pct_female_directors_vs_peers REMOVED 2026-09-08,
     # from this list and from `columns` below. Both were monotone +1, and both features'
     # information coefficient FLIPS SIGN between halves of the sample under all three
@@ -90,35 +90,35 @@ lgbm:
   - volume_trend_63
   - volume_cv_63
   - peer_mom_63
-  - f_y_rev_growth_xs
-  - f_operating_margin_5y_chg_xs
-  - f_operating_leverage_xs
-  - f_revenue_per_employee_growth_xs
-  - f_acquisition_intensity_xs
-  - f_q_margin_vs_ttm_vs_peers
-  - f_rule_of_40_xs
+  - f_y_rev_growth
+  - f_operating_margin_5y_chg
+  - f_operating_leverage
+  - f_revenue_per_employee_growth
+  - f_acquisition_intensity
+  - f_q_margin_vs_ttm
+  - f_rule_of_40
   - f_rpo_growth_xs
-  - f_ebitda_to_ev_xs
-  - f_fcf_to_ev_vs_hist
-  - f_pegy_xs
+  - f_ebitda_to_ev
+  - f_fcf_to_ev
+  - f_pegy
   - f_core_earnings_yield_xs
   - f_nonrecurring_pretax_share_xs
-  - f_eps_expectation_growth_vs_peers
+  - f_eps_expectation_growth
   - f_days_since_earnings          # raw PEAD-timing counter (0->180); monotone-free (tree interaction)
-  - f_intrinsic_yield_vs_peers
-  - f_gross_profitability_xs
-  - f_piotroski_f_score_xs
+  - f_intrinsic_yield
+  - f_gross_profitability
+  - f_piotroski_f_score
   - f_goodwill_intangibles_to_assets_vs_peers
-  - f_rd_intensity_vs_peers
+  - f_rd_intensity
   - f_capitalized_software_intensity_vs_peers
-  - f_shareholder_yield_xs
-  - f_da_to_capex_xs
-  - f_shares_growth_xs
-  - f_sbc_to_ocf_xs
-  - f_dividend_growth_5y_xs
-  - f_interest_coverage_vs_peers
-  - f_net_debt_to_ebitda_xs
-  - f_refinancing_risk_xs
+  - f_shareholder_yield
+  - f_da_to_capex
+  - f_shares_growth
+  - f_sbc_to_ocf
+  - f_dividend_growth_5y
+  - f_interest_coverage
+  - f_net_debt_to_ebitda
+  - f_refinancing_risk
   - f_ic_insider_net_buy_ratio_180d
   - f_ic_inst_flow_to_mcap_xs
   - f_ic_super_initiations_xs
@@ -135,7 +135,7 @@ lgbm:
   - f_tier1_capital_ratio_xs
   - f_combined_ratio_xs
   - f_nii_growth_xs
-  - f_book_value_growth_xs
+  - f_book_value_growth
   - f_premium_growth_xs
   - f_float_growth_xs
-  - f_affo_dividend_coverage_xs
+  - f_affo_dividend_coverage

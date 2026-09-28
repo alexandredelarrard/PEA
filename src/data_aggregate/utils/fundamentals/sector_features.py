@@ -14,9 +14,9 @@ Derived, sector-specific fundamental KPIs computed from `fundamentals_history`. 
                                         on industrials) while only 3 of 21 Energy names
                                         tag `OilAndGasProperty*` (EBITDAX empty for
                                         86% of the sector).
-  * build_sector_feature_panel(...)  -> turns the chosen KPIs into a daily,
-                                        peer-relative feature panel (same
-                                        machinery as the fundamental panel), so
+  * build_sector_feature_panel(...)  -> turns the chosen KPIs into a daily
+                                        raw/self-history feature panel (the
+                                        fundamentals view contract), so
                                         they drop straight into the cube.
 
 ⚠ THE GICS COLUMNS MUST BE ON THE FRAME. `row_gate` fails CLOSED, so a caller that hands
@@ -73,7 +73,6 @@ import pandas as pd
 
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import safe_div
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import (
     fiscal_prior_positions,
     fiscal_prior_values,
@@ -82,6 +81,7 @@ from src.data_aggregate.utils.common.pit import (
     null_invalid_gross_profit_sentinels,
 )
 from src.data_aggregate.utils.common.sector_gates import row_gate
+from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 
 _QUARTERLY_MAX_AGE_DAYS = 185
 SECTOR_TRANSFORM_SEMANTICS = {"deferred_rev_intensity": "structural_zero"}
@@ -379,10 +379,10 @@ def build_sector_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Long-format sector-KPI feature panel (`f_<kpi>_vs_peers`, `f_<kpi>_xs`).
+    """Long-format sector-KPI panel using the approved raw/self-history view contract.
 
     Computes the row-level KPIs, forward-fills each point-in-time from its
-    `as_of`, and peer-relativizes — identical treatment to the fundamental /
+    `as_of`, then applies the same raw/self-history contract as the fundamental and
     management panels. Empty if fundamentals are unavailable."""
     if fundamentals is None or fundamentals.empty or "as_of" not in fundamentals.columns:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -403,4 +403,4 @@ def build_sector_feature_panel(
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     semantics = {name: mode for name, mode in SECTOR_TRANSFORM_SEMANTICS.items() if name in fields}
-    return build_peer_relative_panel(fields, peer_dict, semantics=semantics)
+    return build_fundamental_views(fields, peer_dict, semantics=semantics)

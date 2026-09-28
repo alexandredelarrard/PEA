@@ -25,22 +25,17 @@ RECONCILED across the two dividend sources (they measure the same cash two ways)
 The reconciled TTM total = per-share x shares where the name paid (source A), else
 `dividendsPaid` (source B); one consistent number feeds every ratio here.
 
-Non-payers get a real 0 dividend yield (not NaN) so they rank correctly in the
-cross-section; shareholder_yield still captures their buybacks/dilution.
+Non-payers get a real 0 dividend yield (not NaN) so the raw state is distinct from
+missing data; shareholder_yield still captures their buybacks/dilution.
 
 ⚠ THAT ZERO IS SCOPED TO THE LISTED WINDOW (`close.notna()`). The panel is a near-dense
 date x ticker grid, so every ticker carries rows back to 1995 whether or not it existed,
 and an unscoped `.fillna(0.0)` wrote "this company pays no dividend" onto 565,893
-pre-listing rows. Those rows are dropped at training (no label), but `_xs` is a percentile
-rank computed PER DAY ACROSS THE UNIVERSE, so the phantoms sat in the cross-section that
-prices the real names: on 1996-01-02, 491 tickers carried a dividend rank while only 300
-were listed, and all 272 zero-yield names -- 191 of them phantoms -- tied at rank 0.278,
-compressing the real universe into [0.278, 1.000]. The contamination decays monotonically
-to zero by 2026, so the feature's SCALE DRIFTS ACROSS THE BACKTEST: the same economic state
-maps to a different value in 1996 than today. That is a trend, not noise, and it is the
-worst failure mode for a time-series split. Masking costs 448 rows of genuine data (holes
-inside a listed span, 0.014% of listed rows, max 2 per ticker) -- and a day with no quote
-has no yield anyway.
+pre-listing rows. Those rows are dropped at training (no label), but they would still enter
+the trailing self-history window after listing and used to contaminate the retired daily
+cross-sectional rank. Either path creates an artificial time trend. Masking costs 448 rows
+of genuine data (holes inside a listed span, 0.014% of listed rows, max 2 per ticker) -- and
+a day with no quote has no yield anyway.
 """
 
 from __future__ import annotations
@@ -49,8 +44,8 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.frames import sanitize
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 
 _YOY = 252  # ~1 trading year
 _FIVE_Y = 5 * 252  # ~5 trading years
@@ -187,11 +182,11 @@ def build_dividend_feature_panel(
     level_factor: pd.DataFrame | None = None,
     fundamentals_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Long-format dividend feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
+    """Long-format dividend panel using the approved raw/self-history view contract.
     Empty if no dividend history is available."""
     if dividends_history is None or dividends_history.empty or "dividends" not in dividends_history.columns or stock_close is None:
         return pd.DataFrame(columns=["date", "ticker"])
     close = stock_close.reindex(trading_index)
     fields = _dividend_fields(dividends_history, close, fundamentals_history, level_factor)
     semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
-    return build_peer_relative_panel(fields, peer_dict, semantics=semantics)
+    return build_fundamental_views(fields, peer_dict, semantics=semantics)

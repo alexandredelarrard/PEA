@@ -21,8 +21,11 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.xs import (
+    HIST_MIN_PERIODS,
+    HIST_WINDOW,
     PEER_DISPERSION_FLOOR,
     XS_CLIP_PEER,
+    self_history_z,
     winsorize_xs,
     xs_rank_pct,
 )
@@ -152,21 +155,30 @@ def peer_relative(
 #:   "raw"        f_<name>                          the value itself, nothing else
 #:   "raw+xs"     f_<name>, f_<name>_xs             + its universe percentile
 #:   "raw+peers"  f_<name>, f_<name>_vs_peers       + its peer z-score
+#:   "raw+hist"   f_<name>, f_<name>_vs_hist        + its trailing self-history z-score
 #: Every explicit mode emits the raw leg: nothing ships as a rank alone (D27). A decayed
 #: conviction weight in [0, ~n_managers] is a quantity LightGBM can split on directly, and
 #: ranking it away throws that scale out.
-_EMISSION_MODES = ("raw", "raw+xs", "raw+peers")
+_EMISSION_MODES = ("raw", "raw+xs", "raw+peers", "raw+hist")
 _SEMANTIC_MODES = ("binary", "structural_zero")
 
 
-def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | None = None, semantics: dict | None = None) -> pd.DataFrame:
+def build_peer_relative_panel(
+    fields: dict,
+    peer_dict: dict,
+    emission: dict | None = None,
+    semantics: dict | None = None,
+    history_window: int = HIST_WINDOW,
+    history_min_periods: int = HIST_MIN_PERIODS,
+) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
     `f_<name>_xs` (universe percentile). Shared by every panel builder.
 
     `emission` overrides that per field with one of `_EMISSION_MODES`. Fields left out of the
     map -- and every caller that passes no map at all -- keep the exact two-leg behaviour
-    above, unchanged.
+    above, unchanged. The `raw+hist` mode adds a trailing within-firm z-score without a
+    peer or universe-relative leg.
 
     `semantics` is an equally optional transform declaration. `binary` preserves the exact
     0/1 state in the public `_xs` column and bypasses continuous input winsorization on the
@@ -248,6 +260,16 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
             s2.index.set_names(["date", "ticker"], inplace=True)
             long_frames.append(s2.rename(f"f_{name}_xs"))
             del xs, s2
+        if mode == "raw+hist":
+            hist = self_history_z(
+                fdf,
+                window=history_window,
+                min_periods=history_min_periods,
+            )
+            hist_long = hist.stack().astype("float32")
+            hist_long.index.set_names(["date", "ticker"], inplace=True)
+            long_frames.append(hist_long.rename(f"f_{name}_vs_hist"))
+            del hist, hist_long
         del fdf, comparable  # free per-field intermediates promptly
 
     if not long_frames:

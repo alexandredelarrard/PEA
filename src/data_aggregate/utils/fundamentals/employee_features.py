@@ -24,11 +24,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_values,
     fiscal_values_to_daily,
 )
+from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 
 _ANNUAL_MAX_AGE_DAYS = 460
 
@@ -136,10 +136,10 @@ def build_employee_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Long-format workforce feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
+    """Long-format workforce panel using the approved raw/self-history view contract.
     Empty if the merged fundamentals/employee-count history is unavailable."""
     if headcount_history is None or headcount_history.empty or "as_of" not in headcount_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields = _employee_fields(headcount_history, trading_index)
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_fundamental_views(fields, peer_dict)

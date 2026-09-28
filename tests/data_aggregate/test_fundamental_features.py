@@ -22,13 +22,13 @@ import pytest
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
+from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _derived_fields,
     _self_history_z,
     build_fundamental_feature_panel,
-    build_state_panel,
     load_notes_num_scoped,
     load_pension_facts_scoped,
     load_tagged_facts,
@@ -162,7 +162,10 @@ def test_regime_state_flags_exact_and_raw():
     assert F["hyper_growth"].loc[d, "AAA"] == 0.0 and F["hyper_growth"].loc[d, "ZZZ"] == 1.0  # 0.60 > 0.25
 
     # flags enter the panel RAW as `f_<flag>` (not peer-standardized _vs_peers/_xs)
-    state = build_state_panel({k: F[k] for k in ("profitable", "fcf_positive", "negative_equity", "hyper_growth")})
+    state = build_fundamental_views(
+        {k: F[k] for k in ("profitable", "fcf_positive", "negative_equity", "hyper_growth")},
+        {},
+    )
     assert {"f_profitable", "f_fcf_positive", "f_negative_equity", "f_hyper_growth"}.issubset(state.columns)
     assert not any(c.endswith(("_vs_peers", "_xs")) for c in state.columns)
 
@@ -650,8 +653,7 @@ def test_distress_sga_ma_sbc_features_exact():
 
 
 def test_panel_emits_vs_hist_columns():
-    """End-to-end: the fundamental panel gains `f_<yield>_vs_hist` mean-reversion
-    columns (built with a small window so a short synthetic history suffices)."""
+    """End-to-end: only approved characteristics gain a self-history view."""
     fund = _synth_fundamentals()  # has revenue/netIncome/equity/fcf/ebitda/shares
     idx = pd.bdate_range("2019-01-01", "2020-06-01")
     n = len(idx)
@@ -669,12 +671,14 @@ def test_panel_emits_vs_hist_columns():
     )
 
     hist_cols = [c for c in panel.columns if c.endswith("_vs_hist")]
-    assert "f_earnings_yield_vs_hist" in panel.columns, f"no vs_hist columns: {list(panel.columns)}"
-    assert panel["f_earnings_yield_vs_hist"].notna().any(), "vs_hist column is entirely NaN"
+    assert "f_fcf_yield_vs_hist" in panel.columns, f"no vs_hist columns: {list(panel.columns)}"
+    assert panel["f_fcf_yield_vs_hist"].notna().any(), "vs_hist column is entirely NaN"
+    assert "f_earnings_yield_vs_hist" not in panel.columns
+    assert not any(column.endswith(("_vs_peers", "_xs")) for column in panel.columns)
 
     print("\n=== SANITY CHECK: panel self-history columns ===")
     print(f"  emitted {len(hist_cols)} f_*_vs_hist columns: {sorted(hist_cols)}")
-    print("  f_earnings_yield_vs_hist present with non-null values -> mean-reversion wired in. Validated.")
+    print("  approved f_fcf_yield history is populated; capped earnings-yield history and all peer/XS legs are absent.")
 
 
 # --------------------------------------------------------------------------- #
@@ -730,9 +734,9 @@ def test_accruals_and_profitability_passthrough_exact():
 
 
 # --------------------------------------------------------------------------- #
-# 11. Cross-sectional (_xs) percentile ranks across the universe               #
+# 11. Raw absolute levels survive across the universe                          #
 # --------------------------------------------------------------------------- #
-def test_xs_percentile_ranks_across_universe():
+def test_raw_levels_preserved_across_universe():
     fund = pd.DataFrame(
         [
             dict(ticker=t, as_of="2020-02-01", totalRevenue=100.0, netIncome=10.0, stockholdersEquity=50.0, freeCashflow=8.0, profitMargins=pm)
@@ -742,18 +746,16 @@ def test_xs_percentile_ranks_across_universe():
     idx = pd.bdate_range("2020-03-02", periods=3)
     panel = build_fundamental_feature_panel(fund, peer_dict={}, trading_index=idx, stock_close=None)
     d = idx[-1]
-    xs = panel[panel["date"] == d].set_index("ticker")["f_profitMargins_xs"]
+    raw = panel[panel["date"] == d].set_index("ticker")["f_profitMargins"]
 
-    # rank(pct) over [0.10, 0.20, 0.30] -> [1/3, 2/3, 1.0]
-    assert abs(xs["AAA"] - 1 / 3) < 1e-9
-    assert abs(xs["BBB"] - 2 / 3) < 1e-9
-    assert abs(xs["CCC"] - 1.0) < 1e-9
+    assert abs(raw["AAA"] - 0.10) < 1e-7
+    assert abs(raw["BBB"] - 0.20) < 1e-7
+    assert abs(raw["CCC"] - 0.30) < 1e-7
+    assert "f_profitMargins_xs" not in panel
+    assert "f_profitMargins_vs_peers" not in panel
 
-    print("\n=== SANITY CHECK: cross-sectional _xs percentile ===")
-    print(
-        f"  profitMargins [0.10,0.20,0.30] -> xs [{xs['AAA']:.3f},{xs['BBB']:.3f},{xs['CCC']:.3f}]"
-        " = [1/3,2/3,1] -> monotone universe percentile. Validated."
-    )
+    print("\n=== SANITY CHECK: raw fundamentals levels ===")
+    print("  profitMargins [0.10,0.20,0.30] survive unchanged; peer and XS encodings are absent.")
 
 
 # --------------------------------------------------------------------------- #

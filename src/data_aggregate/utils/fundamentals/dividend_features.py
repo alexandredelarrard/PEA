@@ -178,6 +178,7 @@ def build_dividend_feature_panel(
     stock_close: pd.DataFrame,
     level_factor: pd.DataFrame | None = None,
     fundamentals_history: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format dividend feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
     Empty if no dividend history is available."""
@@ -185,4 +186,4 @@ def build_dividend_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
     close = stock_close.reindex(trading_index)
     fields = _dividend_fields(dividends_history, close, fundamentals_history, level_factor)
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_peer_relative_panel(fields, peer_dict, availability=availability)

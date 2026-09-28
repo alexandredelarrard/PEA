@@ -32,6 +32,12 @@ import pytest
 from pandas._typing import Scalar
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.directors import (
+    board_aggregates,
+    fill_director_attributes,
+    merge_board_aggregates,
+)
 from src.data_aggregate.utils.governance.staleness import (
     GOVERNANCE_EVENT_MAX_AGE_DAYS,
     LEGACY_EXEMPT_FROM_EXPIRY,
@@ -75,8 +81,8 @@ def test_expiry_boundary_on_both_tiers():
     assert pd.isna(v19), "a 19-month-old event survived"
 
     # the exact boundary: still alive on day 548, gone on day 549
-    assert _asof_value(capped, filed + pd.Timedelta(days=548), "AAA") == pytest.approx(0.11)
-    assert pd.isna(_asof_value(capped, filed + pd.Timedelta(days=549), "AAA"))
+    assert capped.loc[capped.index.asof(filed + pd.Timedelta(days=548)), "AAA"] == pytest.approx(0.11)
+    assert pd.isna(capped.loc[capped.index.asof(filed + pd.Timedelta(days=549)), "AAA"])
 
     # --- the LEVEL tier: a legacy field is on 1,095 days, NOT exempt and NOT on 548 ---
     # ⚠ This block asserted the opposite until 2026-09-08. It required `expire_stale` to return
@@ -151,6 +157,50 @@ def test_expiry_uses_the_filing_that_produced_the_cell():
     print(f"  expire_event_fields bite: {expired} of {before} non-null cells ({expired / before:.1%})")
     print("  CONCLUSION: the age is measured against the filing that PRODUCED the cell,")
     print("  which is the only reason a forward-filled frame can be expired at all.")
+
+
+def test_chained_carries_do_not_restart_the_ultimate_source_clock():
+    t0 = pd.Timestamp("2010-01-01")
+    t1 = t0 + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)
+    t2 = t1 + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)
+    t3 = t2 + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)
+    child = pd.DataFrame(
+        [
+            {"ticker": "AAA", "accession_number": "a0", "as_of": t0, "name": "Ann Alder", "other_public_company_boards": 2.0},
+            {"ticker": "AAA", "accession_number": "a1", "as_of": t1, "name": "Ann Alder", "other_public_company_boards": None},
+            {"ticker": "BBB", "accession_number": "b0", "as_of": t0, "name": "Bob Birch", "other_public_company_boards": 1.0},
+            {"ticker": "BBB", "accession_number": "b1", "as_of": t1, "name": "Bob Birch", "other_public_company_boards": 3.0},
+        ]
+    )
+    parent = pd.DataFrame(
+        [
+            {"ticker": ticker, "accession_number": f"{ticker[0].lower()}{i}", "as_of": date, "avg_other_public_boards": None}
+            for ticker in ("AAA", "BBB")
+            for i, date in enumerate((t0, t1, t2))
+        ]
+    )
+
+    filled, _ = fill_director_attributes(child)
+    merged, _ = merge_board_aggregates(parent, board_aggregates(filled))
+    history, _ = impute_def14a(merged)
+    idx = pd.date_range(t0, t3, freq="D")
+    daily = fundamentals_to_daily(history, "avg_other_public_boards", idx)
+    capped = expire_stale(
+        daily,
+        history,
+        "avg_other_public_boards",
+        max_age_days=LEVEL_MAX_AGE_DAYS,
+    )
+
+    assert capped.loc[t1, "AAA"] == pytest.approx(2.0)
+    assert pd.isna(capped.loc[t1 + pd.Timedelta(days=1), "AAA"])
+    assert pd.isna(capped.loc[t2, "AAA"])
+    assert capped.loc[t2, "BBB"] == pytest.approx(3.0)
+    assert pd.isna(capped.loc[t2 + pd.Timedelta(days=1), "BBB"])
+    print("\n=== SANITY CHECK: ultimate-source freshness across chained carry ===")
+    print("  AAA's t0 value survives exactly through t0+1095, then expires despite child,")
+    print("  aggregate and parent carry. BBB's genuine t1 filing reopens the same window.")
+    print("  CONCLUSION: transformations preserve provenance; only observations restart freshness.")
 
 
 def test_expiry_bite_on_real_def14a():

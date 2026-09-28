@@ -75,8 +75,7 @@ class StepCubeFundamentals(Step):
         # ONE point-in-time cache for all fundamental feature blocks.
         pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
 
-        merger = PanelMerger(self._log)
-        merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
+        merger = PanelMerger(self._log, anchor=frames.skeleton())
         merger.add(
             self._fundamental_panel(frames, fundamentals, earnings, pit),
             "peer-relative fundamental",
@@ -94,7 +93,7 @@ class StepCubeFundamentals(Step):
         merger.add(self._dividend_panel(frames, fundamentals), "dividend", "No dividend features built (missing dividend history).")
         self._log.info("Fundamental PitFrames cache: %s", pit.stats())
 
-        panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
+        panel = merger.to_long()
         del frames, fundamentals, earnings, pit
 
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
@@ -158,6 +157,7 @@ class StepCubeFundamentals(Step):
             pension_facts=load_pension_facts_scoped(self._context, frames.universe),
             notes_num=load_notes_num_scoped(self._context, frames.universe),
             pit=pit,
+            availability=frames.availability,
         )
 
     def _sector_kpi_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -166,7 +166,12 @@ class StepCubeFundamentals(Step):
         KPI is null unless its sector reported the inputs."""
         if fundamentals is None:
             return None
-        return build_sector_feature_panel(fundamentals, frames.peers, frames.trading_index)
+        return build_sector_feature_panel(
+            fundamentals,
+            frames.peers,
+            frames.trading_index,
+            availability=frames.availability,
+        )
 
     def _earnings_panel(self, frames: PriceFrames, earnings: pd.DataFrame | None) -> pd.DataFrame | None:
         """Forward EPS yield, expected EPS growth and realized surprise. Genuinely historical
@@ -175,7 +180,12 @@ class StepCubeFundamentals(Step):
         if earnings is None:
             return None
         return build_earnings_feature_panel(
-            earnings, frames.peers, frames.trading_index, stock_close=frames.close_split, level_factor=frames.level_factor
+            earnings,
+            frames.peers,
+            frames.trading_index,
+            stock_close=frames.close_split,
+            level_factor=frames.level_factor,
+            availability=frames.availability,
         )
 
     def _employee_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -185,7 +195,13 @@ class StepCubeFundamentals(Step):
         passed twice."""
         if fundamentals is None:
             return None
-        return build_employee_feature_panel(fundamentals, frames.peers, frames.trading_index, fundamentals_history=fundamentals)
+        return build_employee_feature_panel(
+            fundamentals,
+            frames.peers,
+            frames.trading_index,
+            fundamentals_history=fundamentals,
+            availability=frames.availability,
+        )
 
     def _dividend_panel(self, frames: PriceFrames, fundamentals: pd.DataFrame | None) -> pd.DataFrame | None:
         """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend
@@ -203,4 +219,5 @@ class StepCubeFundamentals(Step):
             stock_close=frames.close_split,
             level_factor=frames.level_factor,
             fundamentals_history=fundamentals,
+            availability=frames.availability,
         )

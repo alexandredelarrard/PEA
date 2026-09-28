@@ -16,7 +16,7 @@ import pandas as pd
 from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import ratio, sanitize
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, mask_to_availability
 from src.data_aggregate.utils.common.pit import (
     PitFrames,
     fiscal_change_to_daily,
@@ -1005,6 +1005,7 @@ def build_fundamental_feature_panel(
     notes_num: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
     pit: PitFrames | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build the long peer, cross-sectional, self-history, and regime panel."""
 
@@ -1030,6 +1031,7 @@ def build_fundamental_feature_panel(
         pit=pit,
     )
     fields = _postprocess_feature_frames(fields)
+    fields = {name: mask_to_availability(frame, availability) for name, frame in fields.items()}
 
     # regime state flags -> RAW `f_<name>`; everything else -> peer-relative.
     state_fields = {k: v for k, v in fields.items() if k in _STATE_FIELDS}

@@ -129,6 +129,21 @@ LEVEL_HORIZON_FIELDS: frozenset[str] = frozenset(
 LEGACY_EXEMPT_FROM_EXPIRY: frozenset[str] = LEVEL_HORIZON_FIELDS
 
 
+def source_date_column(field: str) -> str:
+    """Internal provenance column paired with a governance value."""
+    return f"{field}_source_as_of"
+
+
+def ultimate_source_dates(history: pd.DataFrame, field: str) -> pd.Series:
+    """Observation date for each non-null filing-grain value, including carried lineage."""
+    fallback = pd.to_datetime(history["as_of"], errors="coerce").where(history[field].notna())
+    column = source_date_column(field)
+    if column not in history.columns:
+        return fallback
+    explicit = pd.to_datetime(history[column], errors="coerce").where(history[field].notna())
+    return explicit.combine_first(fallback)
+
+
 def horizon_for(feature: str, default: int = GOVERNANCE_EVENT_MAX_AGE_DAYS) -> int:
     """The staleness horizon a feature is on, in days.
 
@@ -171,11 +186,12 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
     # with `last` (which skips NaN) -- so a cell's value comes from the last NON-NULL filing,
     # and its age must be measured against that same filing, not against a later empty one.
     h = history[["ticker", "as_of", field]].copy()
+    h["_source_as_of"] = ultimate_source_dates(history, field)
     h["as_of"] = pd.to_datetime(h["as_of"], errors="coerce")
     h = h.dropna(subset=["ticker", "as_of", field])
     if h.empty:
         return daily
-    h["_produced_at"] = h["as_of"].map(pd.Timestamp.toordinal).astype("float64")
+    h["_produced_at"] = h["_source_as_of"].map(pd.Timestamp.toordinal).astype("float64")
 
     produced = fundamentals_to_daily(h, "_produced_at", pd.DatetimeIndex(daily.index))
     if produced.empty:
@@ -186,7 +202,7 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
     age = produced.rsub(today, axis=0)
     # `> max_age` is False wherever the age is NaN (no filing yet), which is the right
     # answer: those cells are already NaN in `daily` and masking them changes nothing.
-    return daily.mask(age > float(max_age_days))
+    return daily.mask((age < 0) | (age > float(max_age_days)))
 
 
 def _expire_family(

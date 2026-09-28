@@ -355,6 +355,46 @@ def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
         )
 
 
+def test_catalogue_uses_the_python_modules_split_function(sqlite_store, tmp_path):
+    frame = _panel(
+        ["AAA"],
+        f_live=lambda i, t: float(i),
+        f_live_vs_peers=lambda i, t: float(i),
+        f_live_vs_hist=lambda i, t: float(i),
+        f_live_xs=lambda i, t: float(i),
+        f_undocumented=lambda i, t: float(i),
+    )
+    sqlite_store.save(PART, frame)
+    context = _Ctx(sqlite_store, _config())
+    path = tmp_path / "catalogue.py"
+    path.write_text(
+        "CATALOGUES = {'cube_part_momentum': {'live': 'documented', "
+        "'missing': 'catalogued but absent'}}\n"
+        "def split(column):\n"
+        "    base = column[2:] if column.startswith('f_') else column\n"
+        "    suffix = next((s for s in ('_vs_peers', '_vs_hist', '_xs') "
+        "if base.endswith(s)), '')\n"
+        "    return (base[:-len(suffix)] if suffix else base), suffix\n",
+        encoding="utf-8",
+    )
+
+    result = check_catalogue(context, PART, config=context.config, catalogue=path)
+
+    assert result.metrics["catalogued_not_live"] == ["missing"]
+    assert result.metrics["live_not_catalogued"] == ["undocumented"]
+    assert result.metrics["both"] == 1
+    assert result.metrics["resolved_live_columns"] == {
+        "f_live": "live",
+        "f_live_vs_peers": "live",
+        "f_live_vs_hist": "live",
+        "f_live_xs": "live",
+        "f_undocumented": "undocumented",
+    }
+    print("\n=== SANITY CHECK: catalogue split contract ===")
+    print("  raw, peer, history, and cross-sectional live columns resolve to one parent; missing and")
+    print("  undocumented remain visible. CONCLUSION: a module-defined naming convention is applied.")
+
+
 # --------------------------------------------------------------------------------------- #
 # timeseries                                                                              #
 # --------------------------------------------------------------------------------------- #

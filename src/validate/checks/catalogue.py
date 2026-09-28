@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import runpy
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,10 @@ _WHY = (
 )
 
 
-def _load(path: Path, table: str) -> dict[str, Any]:
+def _load(
+    path: Path,
+    table: str,
+) -> tuple[dict[str, Any], Callable[[str], tuple[str, str]] | None]:
     """The catalogue as `{field: description}`, from JSON or from a `.py`.
 
     A `.py` may expose either `CATALOGUE` (one table's sheet, as the per-report catalogues do)
@@ -65,18 +69,18 @@ def _load(path: Path, table: str) -> dict[str, Any]:
         namespace = runpy.run_path(str(path))
         registry = namespace.get("CATALOGUES")
         if isinstance(registry, dict) and table in registry:
-            return dict(registry[table])
+            return dict(registry[table]), namespace.get("split")
         entries = namespace.get("CATALOGUE")
         if not isinstance(entries, dict):
             known = sorted(registry) if isinstance(registry, dict) else []
             raise ValueError(
                 f"{path} exposes no dict named CATALOGUE" + (f", and its CATALOGUES registers {known} but not `{table}`" if known else "")
             )
-        return dict(entries)
+        return dict(entries), namespace.get("split")
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise ValueError(f"{path} is not a JSON object mapping field -> description")
-    return loaded
+    return loaded, None
 
 
 def _reconciling_prefix(catalogued: set[str], live: set[str]) -> tuple[str, str, int]:
@@ -124,7 +128,7 @@ def check_catalogue(
     if not path.exists():
         return CheckResult.abstained(CHECK, spec.name, f"--catalogue {path} does not exist")
     try:
-        entries = _load(path, spec.name)
+        entries, split = _load(path, spec.name)
     except (ValueError, json.JSONDecodeError, SyntaxError) as exc:
         return CheckResult.abstained(CHECK, spec.name, f"--catalogue {path}: {exc}")
     if not entries:
@@ -135,8 +139,13 @@ def check_catalogue(
     if not live:
         return CheckResult.abstained(CHECK, spec.name, "the table has no non-key column -- is it built?")
 
+    live_names: dict[str, list[str]] = {}
+    for column in live:
+        characteristic = split(column)[0] if callable(split) else column
+        live_names.setdefault(characteristic, []).append(column)
+
     catalogued = set(entries)
-    live_set = set(live)
+    live_set = set(live_names)
 
     # ⚠ Not one defect per feature twice over -- see `_reconciling_prefix`.
     if not (catalogued & live_set):
@@ -177,7 +186,7 @@ def check_catalogue(
             Finding.at(
                 4,
                 field=column,
-                observed=f"`{column}` is a live column with no catalogue entry",
+                observed=f"`{column}` maps from live column(s) {', '.join(live_names[column])} with no catalogue entry",
                 expected="every live column is described; an undocumented feature is one nobody can audit the definition of",
             )
         )
@@ -192,13 +201,22 @@ def check_catalogue(
             )
         )
 
-    scope = {"catalogue": str(path), "entries": len(entries), "live_columns": len(live), "pk": sorted(keys)}
+    scope = {
+        "catalogue": str(path),
+        "entries": len(entries),
+        "live_columns": len(live),
+        "live_characteristics": len(live_set),
+        "split": callable(split),
+        "pk": sorted(keys),
+    }
     metrics = {
         "entries": len(entries),
         "live_columns": len(live),
+        "live_characteristics": len(live_set),
         "both": len(catalogued & live_set),
         "catalogued_not_live": missing,
         "live_not_catalogued": undocumented,
         "blank_descriptions": blank,
+        "resolved_live_columns": {column: characteristic for characteristic, columns in live_names.items() for column in columns},
     }
     return CheckResult.measured(CHECK, spec.name, findings, scope=scope, metrics=metrics)

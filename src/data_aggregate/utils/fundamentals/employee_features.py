@@ -85,6 +85,7 @@ def build_employee_feature_panel(
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     fundamentals_history: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format workforce feature panel (`f_<name>_vs_peers`, `f_<name>_xs`).
     Empty if the employee-count history is unavailable.
@@ -98,4 +99,4 @@ def build_employee_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields = _employee_fields(headcount_history, trading_index, fundamentals_history)
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_peer_relative_panel(fields, peer_dict, availability=availability)

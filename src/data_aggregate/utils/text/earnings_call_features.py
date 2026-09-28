@@ -280,6 +280,7 @@ def build_earnings_call_feature_panel(
     sections: pd.DataFrame | None = None,
     embeddings: pd.DataFrame | None = None,
     per_call: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings-call feature panel (`f_ec_<kpi>_vs_peers`, `f_ec_<kpi>_xs`).
     Empty if the sentiment cache is unavailable/empty. When `embeddings` (the
@@ -309,7 +310,7 @@ def build_earnings_call_feature_panel(
             fields[col] = frame
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_peer_relative_panel(fields, peer_dict, availability=availability)
 
 
 def build_earnings_call_embedding_panel(
@@ -318,6 +319,7 @@ def build_earnings_call_embedding_panel(
     trading_index: pd.DatetimeIndex,
     sections: pd.DataFrame | None = None,
     ekpi: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """EMBEDDING-ONLY earnings-call feature panel (the OpenAI Q&A-coherence + quarter-to-quarter
     narrative-drift KPIs), as `f_ec_<kpi>_{xs,vs_peers}`. INDEPENDENT of the FinBERT/LM sentiment
@@ -348,4 +350,4 @@ def build_earnings_call_embedding_panel(
             fields[col] = frame
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_peer_relative_panel(fields, peer_dict, availability=availability)

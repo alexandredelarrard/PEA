@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.frames import ratio
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, mask_to_availability
 
 # how many trading days before a report the forward estimate is allowed to apply
 FWD_FILL_LIMIT = 95
@@ -197,6 +197,7 @@ def build_earnings_feature_panel(
     trading_index: pd.DatetimeIndex,
     stock_close: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings-expectation feature panel (`f_<name>_vs_peers`,
     `f_<name>_xs`). Empty if the earnings history or prices are unavailable."""
@@ -205,12 +206,12 @@ def build_earnings_feature_panel(
 
     prepped = _prep(earnings_history)
     fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor)
-    panel = build_peer_relative_panel(fields, peer_dict)
+    panel = build_peer_relative_panel(fields, peer_dict, availability=availability)
 
     # RAW calendar signal (NOT peer-relative): days since the most recent earnings.
     # Same meaning for every name, so it is emitted as a plain `f_days_since_earnings`
     # (the model splits/loads on the raw value; PEAD decays as this rises).
-    dse = days_since_earnings(prepped, trading_index)
+    dse = mask_to_availability(days_since_earnings(prepped, trading_index), availability)
     if not dse.empty and dse.notna().any().any():
         long = cast(pd.Series, dse.stack())
         long.index.set_names(["date", "ticker"], inplace=True)

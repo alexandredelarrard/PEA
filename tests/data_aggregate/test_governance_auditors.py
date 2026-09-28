@@ -20,6 +20,8 @@ from src.data_aggregate.utils.governance.auditors import (
     canonical_auditor_series,
     unrecognised_auditor_names,
 )
+from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.provisions_features import _auditor_history
 from src.data_store.schema import Tables
 
 
@@ -87,6 +89,38 @@ def test_the_aliases_a_first_pass_regex_would_miss():
         "than being pattern-matched into a big-4, and Arthur Andersen keeps its own value. "
         "Validated."
     )
+
+
+def test_auditor_since_year_is_carried_only_inside_the_canonical_firm_run():
+    raw = pd.DataFrame(
+        [
+            {"ticker": "AAA", "as_of": "2018-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 2000},
+            {"ticker": "AAA", "as_of": "2021-04-01", "auditor_name": None, "auditor_since_year": None},
+            {"ticker": "AAA", "as_of": "2022-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": None},
+            {"ticker": "AAA", "as_of": "2023-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 2000},
+            {"ticker": "BBB", "as_of": "2021-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 1999},
+            {"ticker": "BBB", "as_of": "2022-04-01", "auditor_name": "Deloitte LLP", "auditor_since_year": None},
+            {"ticker": "CCC", "as_of": "2020-04-01", "auditor_name": "Ernst & Young LLP", "auditor_since_year": None},
+            {"ticker": "CCC", "as_of": "2022-04-01", "auditor_name": "Ernst & Young LLP", "auditor_since_year": 2005},
+        ]
+    )
+
+    imputed, _ = impute_def14a(raw)
+    history = _auditor_history(imputed, {})
+    assert history is not None
+    aaa = history.loc[history["ticker"] == "AAA"].sort_values("as_of")
+    bbb = history.loc[history["ticker"] == "BBB"].sort_values("as_of")
+    ccc = history.loc[history["ticker"] == "CCC"].sort_values("as_of")
+
+    assert aaa["auditor_tenure_censored"].tolist() == [0.0, 0.0, 0.0]
+    assert bbb["auditor_tenure_censored"].tolist() == [0.0, 1.0]
+    assert ccc["auditor_tenure_censored"].tolist() == [1.0, 0.0]
+    assert aaa["auditor_changed"].fillna(0.0).sum() == 0.0
+    assert bbb["auditor_changed"].fillna(0.0).sum() == 1.0
+    print("\n=== SANITY CHECK: auditor start-year run boundary ===")
+    print("  same-firm and silent-name gaps remain disclosed; a new firm never inherits the prior year.")
+    print("  a later first disclosure stays forward-only and does not rewrite earlier censored output.")
+    print("  CONCLUSION: tenure basis is stable within, and isolated between, auditor runs.")
 
 
 def test_the_collapse_measured_on_the_live_archive():

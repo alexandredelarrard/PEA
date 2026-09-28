@@ -830,7 +830,7 @@ def build_superinvestor_feature_panel(
     _fill_sink(sink, contrib, fields, frames, availability)
     emission = {k: EMISSION[k] for k in fields if k in EMISSION}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
 
 
 def _fill_sink(

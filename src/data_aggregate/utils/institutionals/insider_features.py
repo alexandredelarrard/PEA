@@ -354,7 +354,7 @@ def build_insider_feature_panel(
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(t), len(buys), len(sells))
     emission = {k: v for k, v in EMISSION.items() if k in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
 
 
 # --------------------------------------------------------------------------- #

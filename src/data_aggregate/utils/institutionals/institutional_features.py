@@ -857,4 +857,4 @@ def build_institutional_feature_panel(
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     emission = {k: v for k, v in EMISSION.items() if k in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

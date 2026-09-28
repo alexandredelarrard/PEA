@@ -28,6 +28,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.assemble.cube import _betas_to_long
 from src.data_aggregate.utils.target.betas import (
     estimate_all_betas,
     estimate_betas_for_stock,
@@ -411,3 +412,18 @@ def test_market_gets_its_own_ridge_alpha():
         f"of its distance from 0.0 (expected {1 / 2.5:.3f})"
     )
     print("  -> the market column is shrunk on its own dial. Validated.")
+
+
+def test_persisted_betas_require_a_current_own_price():
+    dates = pd.bdate_range("2024-01-02", periods=4, name="date")
+    beta = pd.DataFrame({"beta_market": [np.nan, 0.8, 0.8, 0.8]}, index=dates)
+    active = pd.DataFrame({"AAA": [False, True, False, True]}, index=dates)
+
+    out = _betas_to_long({"AAA": beta}, availability=active)
+
+    assert out["date"].tolist() == [dates[1], dates[3]]
+    assert out["beta_market"].tolist() == [0.8, 0.8]
+
+    print("\n=== SANITY CHECK: beta persistence follows own-price availability ===")
+    print("  all-NaN pre-history and a finite forward-filled off-grid beta are absent.")
+    print("  CONCLUSION: beta carry cannot manufacture a ticker-date key.")

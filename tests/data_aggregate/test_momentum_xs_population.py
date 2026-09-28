@@ -17,8 +17,6 @@ the names that have been going up: 14,376 cells over 410 tickers whose median tr
 return is +21.36% against +3.87% where present.
 """
 
-from typing import cast
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -52,9 +50,7 @@ def test_collapse_is_flagged():
     bad = DATES[80]
     f.loc[bad, TICKERS[9:100]] = np.nan  # 9 of 100 survive
     thin = _thin_cross_sections({"rev_5": f})
-    row = f.loc[bad]
-    assert isinstance(row, pd.Series)
-    print(f"  population on {bad.date()} = {int(row.notna().sum())}/100 -> flagged={bool(thin.loc[bad, 'rev_5'])}")
+    print(f"  population on {bad.date()} = {int(f.loc[bad].notna().sum())}/100 -> flagged={bool(thin.loc[bad, 'rev_5'])}")
     assert thin.loc[bad, "rev_5"]
     assert thin["rev_5"].sum() == 1, "only the collapsed date"
 
@@ -189,6 +185,30 @@ def test_guard_runs_before_the_rank_not_after():
     assert on_bad.isna().all(), "a rank drawn from 9% of the universe must not be published"
 
 
+def test_price_availability_masks_momentum_before_ranking(monkeypatch):
+    dates = pd.bdate_range("2024-01-02", periods=2)
+    columns = ["AAA", "BBB", "CCC"]
+    raw = pd.DataFrame([[0.0, 10.0, 1_000.0], [0.0, 10.0, 0.0]], index=dates, columns=columns)
+    close = pd.DataFrame(100.0, index=dates, columns=columns)
+    close_split = close.copy()
+    close_split.loc[dates[0], "CCC"] = np.nan
+    monkeypatch.setattr(
+        "src.data_aggregate.utils.momentum.features.compute_raw_features",
+        lambda *args, **kwargs: {"signal": raw.copy()},
+    )
+
+    panel = build_feature_panel(close, close, close * 0.0, method="rank", close_split=close_split)
+    first = panel.loc[panel["date"] == dates[0]].set_index("ticker")["signal"]
+    second = panel.loc[panel["date"] == dates[1]].set_index("ticker")["signal"]
+
+    assert set(first.index) == {"AAA", "BBB"}
+    assert first.to_dict() == pytest.approx({"AAA": 0.5, "BBB": 1.0})
+    assert second["CCC"] == pytest.approx(0.5)
+    print("\n=== SANITY CHECK: momentum availability precedes ranking ===")
+    print("  inactive CCC=1000 is absent and cannot move peer ranks; active CCC=0 survives.")
+    print("  CONCLUSION: the observed-price mask, not numeric truthiness, owns participation.")
+
+
 # --------------------------------------------------------------------------- #
 # D-04: downside_vol_63 min_periods                                            #
 # --------------------------------------------------------------------------- #
@@ -228,7 +248,7 @@ def test_downside_vol_still_undefined_below_five_down_days():
     """min_periods=5, not 1: a standard deviation off one or two observations is noise."""
     idx = pd.bdate_range("2023-01-02", periods=200)
     prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
-    prices.iloc[80, 0] = float(cast(float, prices.iloc[80, 0])) * 0.99  # exactly ONE down day, far outside the last window
+    prices.iloc[80, 0] *= 0.99  # exactly ONE down day, far outside the last window
     raw = compute_raw_features(prices, prices, _sector_returns(prices))
     got = raw["downside_vol_63"].iloc[-1, 0]
     print(f"  monotone riser, 0 down days in the last 63 -> downside_vol_63={got}")

@@ -17,6 +17,7 @@ import logging
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import (
     DuplicateKeyError,
     FeatureCollisionError,
@@ -116,6 +117,57 @@ def test_two_panels_owning_the_same_feature_name_still_raise():
         "  'f_shared' emitted by two panels -> FeatureCollisionError naming the current "
         "owner and the newcomer, instead of a silent _x/_y split. Validated."
     )
+
+
+def test_anchor_removes_off_grid_zero_and_preserves_active_zero():
+    anchor = pd.DataFrame({"date": _DATES, "ticker": ["AAA", "AAA"]})
+    panel = pd.DataFrame(
+        {
+            "date": [_DATES[0], _DATES[0], _DATES[1]],
+            "ticker": ["AAA", "BBB", "AAA"],
+            "f_zero": [0.0, 0.0, 0.0],
+        }
+    )
+
+    anchored = PanelMerger(_LOG, anchor=anchor)
+    anchored.add(panel, "governance")
+    out = anchored.to_long()
+
+    assert list(out[["date", "ticker"]].itertuples(index=False, name=None)) == [(_DATES[0], "AAA"), (_DATES[1], "AAA")]
+    assert out["f_zero"].eq(0.0).all()
+
+    plain = PanelMerger(_LOG)
+    plain.add(panel, "governance")
+    assert len(plain.to_long()) == 3
+
+    print("\n=== SANITY CHECK: anchored panel merge ===")
+    print("  inactive BBB zero removed; two active AAA zeros preserved; unanchored merge keeps 3 rows.")
+    print("  CONCLUSION: availability is a key constraint, never a value/zero heuristic.")
+
+
+def test_availability_is_applied_before_peer_statistics():
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    tickers = list("ABCDE")
+    values = pd.DataFrame([[1.0, 2.0, 3.0, 1_000.0, 4.0], [1.0, 2.0, 3.0, 0.0, 4.0]], index=dates, columns=tickers)
+    active = pd.DataFrame(True, index=dates, columns=tickers)
+    active.loc[dates[0], "D"] = False
+    peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
+    emission = {"signal": "raw+peers"}
+
+    actual = build_peer_relative_panel({"signal": values}, peers, emission=emission, availability=active)
+    expected = build_peer_relative_panel({"signal": values.where(active)}, peers, emission=emission)
+    expected = expected[~((expected["date"] == dates[0]) & (expected["ticker"] == "D"))]
+
+    cols = ["date", "ticker", "f_signal", "f_signal_vs_peers"]
+    pd.testing.assert_frame_equal(
+        actual[cols].sort_values(["date", "ticker"]).reset_index(drop=True), expected[cols].sort_values(["date", "ticker"]).reset_index(drop=True)
+    )
+    assert not ((actual["date"] == dates[0]) & (actual["ticker"] == "D")).any()
+    assert actual.loc[(actual["date"] == dates[1]) & (actual["ticker"] == "D"), "f_signal"].iloc[0] == 0.0
+
+    print("\n=== SANITY CHECK: availability precedes peer statistics ===")
+    print("  inactive D=1000 is absent from rows and peer moments; active D=0 survives next day.")
+    print("  CONCLUSION: inactive names cannot contaminate active peer z-scores.")
 
 
 if __name__ == "__main__":

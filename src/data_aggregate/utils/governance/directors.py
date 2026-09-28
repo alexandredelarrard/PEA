@@ -81,6 +81,8 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    source_date_column,
+    ultimate_source_dates,
 )
 from src.utils.names import person_key
 
@@ -282,10 +284,12 @@ def _carry_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> Non
     cannot distinguish "nothing was missing" from "everything was refused". The two reasons are
     mutually exclusive: a cell with no prior disclosure has no age to test.
     """
-    gk = frame_column(out, "_pk")
+    gk = out["_pk"]
+    source_col = source_date_column(col)
+    out[source_col] = ultimate_source_dates(out, col)
     fwd = out.groupby(gk, sort=False)[col].ffill()
-    src = frame_column(out, "as_of").where(frame_column(out, col).notna()).groupby(gk, sort=False).ffill()
-    age = (frame_column(out, "as_of") - src).dt.days
+    src = out[source_col].groupby(gk, sort=False).ffill()
+    age = (out["as_of"] - src).dt.days
 
     gaps = frame_column(out, col).isna()
     candidate = gaps & fwd.notna()
@@ -293,6 +297,7 @@ def _carry_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> Non
     newly = candidate & within
 
     out.loc[newly, col] = fwd[newly]
+    out.loc[newly, source_col] = src[newly]
     out[f"{col}_imputed"] = newly.astype("float64")
     stats[f"child gaps: {col}"] = int(gaps.sum())
     stats[f"child carried: {col}"] = int(newly.sum())
@@ -315,7 +320,9 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     beside it, because the two disagree exactly where a SINGLE age is mis-extracted.
     """
 
-    obs = pd.DataFrame({"pk": frame_column(out, "_pk"), "as_of": frame_column(out, "as_of"), col: frame_column(out, col)})
+    source_col = source_date_column(col)
+    out[source_col] = ultimate_source_dates(out, col)
+    obs = pd.DataFrame({"pk": out["_pk"], "as_of": out["as_of"], col: out[col]})
     anchor = accrual_anchor(obs, col, key="pk", date="as_of")
     if anchor.empty:
         out[f"{col}_imputed"] = 0.0
@@ -324,6 +331,9 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     implied = accrue(frame_column(out, "as_of"), frame_column(out, "_pk"), anchor)
     newly = frame_column(out, col).isna() & implied.notna()
     out.loc[newly, col] = implied[newly]
+    prior = out[source_col].groupby(out["_pk"], sort=False).ffill()
+    future = out[source_col].groupby(out["_pk"], sort=False).bfill()
+    out.loc[newly, source_col] = prior.combine_first(future)[newly]
     out[f"{col}_imputed"] = newly.astype("float64")
     spread = accrual_dispersion(obs, col, key="pk", date="as_of")
     stats[f"child accrued: {col}"] = int(newly.sum())
@@ -417,13 +427,12 @@ def board_aggregates(df: pd.DataFrame) -> pd.DataFrame:
     for field, child in DERIVED_AGGREGATES.items():
         if child not in d.columns:
             continue
-        filled = cast(pd.Series, pd.to_numeric(frame_column(d, child), errors="coerce"))
-        groups = [frame_column(d, key) for key in keys]
-        out[field] = filled.groupby(groups, sort=False).mean()
-        reporting = cast(pd.Series, filled.notna().groupby(groups, sort=False).sum())
-        reporting_filed = cast(pd.Series, _raw_leg(d, child).notna().groupby(groups, sort=False).sum())
-        out[f"n_reporting_{field}"] = reporting.astype("int64")
-        out[f"n_reporting_{field}_filed"] = reporting_filed.astype("int64")
+        filled = pd.to_numeric(d[child], errors="coerce")
+        out[field] = filled.groupby([d[k] for k in keys], sort=False).mean()
+        observed = ultimate_source_dates(d, child).where(filled.notna())
+        out[source_date_column(field)] = observed.groupby([d[k] for k in keys], sort=False).min()
+        out[f"n_reporting_{field}"] = filled.notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
+        out[f"n_reporting_{field}_filed"] = _raw_leg(d, child).notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
     return out.reset_index()
 
 
@@ -459,22 +468,25 @@ def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple
         return parent, {}
     out = parent.copy()
     stats: dict[str, int] = {}
+    out["as_of"] = pd.to_datetime(out["as_of"], errors="coerce")
     fields = [f for f in DERIVED_AGGREGATES if f in out.columns]
     for f in fields:
-        source = pd.Series([None] * len(out), index=out.index, dtype=object)
-        source.loc[frame_column(out, f).notna()] = SOURCE_FILED
-        out[f"{f}_source"] = source
+        out[f"{f}_source"] = np.where(out[f].notna(), SOURCE_FILED, None)
+        out[source_date_column(f)] = ultimate_source_dates(out, f)
     if derived is None or derived.empty or "accession_number" not in out.columns:
         stats["skipped: no derived board aggregates (directors table absent)"] = 1
         return out, stats
 
-    out["as_of"] = pd.to_datetime(out["as_of"], errors="coerce")
     cols = ["ticker", "accession_number"]
     for f in fields:
-        take = [c for c in (f, f"n_reporting_{f}", f"n_reporting_{f}_filed") if c in derived.columns]
+        source_col = source_date_column(f)
+        take = [c for c in (f, source_col, f"n_reporting_{f}", f"n_reporting_{f}_filed") if c in derived.columns]
         if f not in take:
             continue
-        d = cast(pd.DataFrame, derived[cols + take]).rename(columns={f: f"_d_{f}"})
+        rename = {f: f"_d_{f}"}
+        if source_col in take:
+            rename[source_col] = f"_d_{source_col}"
+        d = derived[cols + take].rename(columns=rename)
         out = out.merge(d, on=cols, how="left")
         cand = cast(pd.Series, pd.to_numeric(frame_column(out, f"_d_{f}"), errors="coerce"))
         n_all = cast(pd.Series, pd.to_numeric(frame_column(out, f"n_reporting_{f}"), errors="coerce"))
@@ -486,6 +498,9 @@ def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple
         supply = parent_values.isna() & cand.notna()  # step 3
         moved = (cast(pd.Series, cand.loc[override]) - cast(pd.Series, out.loc[override, f])).abs()
         out.loc[override | supply, f] = cand[override | supply]
+        derived_source = f"_d_{source_col}"
+        if derived_source in out.columns:
+            out.loc[override | supply, source_col] = out.loc[override | supply, derived_source]
         out.loc[override | supply, f"{f}_source"] = SOURCE_DERIVED
         stats[f"{f}: filed and kept"] = int((frame_column(out, f"{f}_source") == SOURCE_FILED).sum())
         stats[f"{f}: derived OVERRODE a filed value"] = int(override.sum())

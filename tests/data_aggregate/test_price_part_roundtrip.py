@@ -50,11 +50,8 @@ def frames() -> dict:
     close = pd.DataFrame(
         100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(TICKERS))), axis=0)), index=idx, columns=pd.Index(TICKERS, name="ticker")
     )
-    ccc_column = close.columns.get_loc("CCC")
-    ddd_column = close.columns.get_loc("DDD")
-    assert isinstance(ccc_column, int) and isinstance(ddd_column, int)
-    close.iloc[:10, ccc_column] = np.nan  # late IPO
-    close.iloc[-8:, ddd_column] = np.nan  # delisting
+    close.iloc[:10, close.columns.get_loc("CCC")] = np.nan  # late IPO
+    close.iloc[-8:, close.columns.get_loc("DDD")] = np.nan  # delisting
     market = pd.Series(400.0, index=idx)
     market.iloc[25] = np.nan  # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)
@@ -114,7 +111,7 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
     back = load_price_frames(parts, peers={}, fields=ALL_PRICE_FIELDS)
 
     for field in ALL_PRICE_FIELDS:
-        expected = uni[field]
+        expected = uni[field].where(uni["close_split"].notna())
         got = getattr(back, field)
         # the long form drops all-NaN rows, so reindex onto the original grid before comparing
         got = got.reindex(index=expected.index, columns=expected.columns)
@@ -159,6 +156,27 @@ def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
     print("  fields=('close',) -> 1 frame materialised, 6 left None, market series absent")
     print("  require('volume') raises instead of a None-arithmetic TypeError deep in a builder")
     print("  CONCLUSION: a step only pays for the price fields it declares. Validated.")
+
+
+def test_price_part_keys_require_an_observed_split_adjusted_close(frames):
+    """Other price fields must not manufacture a row before listing or after delisting."""
+    uni, _ = _normalize(frames)
+    # A real zero on an active cell is data, not absence.
+    active_date = uni["close_split"]["AAA"].first_valid_index()
+    uni["volume"].loc[active_date, "AAA"] = 0.0
+
+    long = frames_to_long(uni)
+    keys = pd.MultiIndex.from_frame(long[["date", "ticker"]])
+    expected = uni["close_split"].notna().stack().loc[lambda s: s].index
+
+    assert keys.equals(expected)
+    zero = long.loc[(long["date"] == active_date) & (long["ticker"] == "AAA"), "volume"]
+    assert zero.iloc[0] == 0.0
+
+    print("\n=== SANITY CHECK: price-part availability keys ===")
+    print(f"  persisted keys={len(keys):,} == non-null close_split keys={len(expected):,}")
+    print("  active volume=0 survives; pre-IPO/post-delisting side fields do not create rows.")
+    print("  CONCLUSION: split-adjusted close, not truthiness or any side field, owns availability.")
 
 
 def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):

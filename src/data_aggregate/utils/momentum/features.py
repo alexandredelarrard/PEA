@@ -86,6 +86,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.frames import sanitize
 from src.data_aggregate.utils.common.level_basis import mask_seam_windows
+from src.data_aggregate.utils.common.panel import mask_to_availability
 from src.data_aggregate.utils.common.prices import forward_compound, momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import xs_standardize
 
@@ -496,6 +497,8 @@ def build_feature_panel(
         level_factor=level_factor,
         seams=seams,
     )
+    availability = (close_split if close_split is not None else close_total).notna()
+    raw = {name: mask_to_availability(frame, availability) for name, frame in raw.items()}
     raw = _null_thin_cross_sections(raw)
     std = {name: xs_standardize(f, method) for name, f in raw.items()}
 
@@ -506,5 +509,5 @@ def build_feature_panel(
         s.name = name
         long_frames.append(s)
 
-    panel = pd.concat(long_frames, axis=1).reset_index()
+    panel = pd.concat(long_frames, axis=1).dropna(how="all").reset_index()
     return panel

@@ -64,8 +64,7 @@ class StepCubeText(Step):
         window = plan_window(self._store, Tables.cube_part_text, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store))
         frames = self._load_frames(window.since)
 
-        merger = PanelMerger(self._log)
-        merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
+        merger = PanelMerger(self._log, anchor=frames.skeleton())
         merger.add(self._sentiment_panel(frames), "earnings-call sentiment", "No earnings-call sentiment cache -> sentiment features skipped.")
         merger.add(
             self._embedding_panel(frames),
@@ -73,7 +72,7 @@ class StepCubeText(Step):
             "No earnings-call embeddings -> embedding features skipped (no transcripts / model or API key absent).",
         )
 
-        panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
+        panel = merger.to_long()
         del frames
         n = write_part(self._store, Tables.cube_part_text, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
@@ -91,11 +90,25 @@ class StepCubeText(Step):
         per_call = sentiment_kpis_streamed(self._context)  # per-ticker stream, bounded memory
         if per_call is None or per_call.empty:
             return None
-        return build_earnings_call_feature_panel(None, frames.peers, frames.trading_index, embeddings=None, per_call=per_call)
+        return build_earnings_call_feature_panel(
+            None,
+            frames.peers,
+            frames.trading_index,
+            embeddings=None,
+            per_call=per_call,
+            availability=frames.availability,
+        )
 
     def _embedding_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         embed_earnings_calls(self._context)  # lazy, no-op without an API key
         ekpi, asof = embedding_kpis_streamed(self._context)  # per-ticker stream, bounded memory
         if ekpi is None or ekpi.empty:
             return None
-        return build_earnings_call_embedding_panel(None, frames.peers, frames.trading_index, sections=asof, ekpi=ekpi)
+        return build_earnings_call_embedding_panel(
+            None,
+            frames.peers,
+            frames.trading_index,
+            sections=asof,
+            ekpi=ekpi,
+            availability=frames.availability,
+        )

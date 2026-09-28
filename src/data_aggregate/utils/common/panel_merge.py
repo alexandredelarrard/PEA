@@ -52,11 +52,19 @@ class DuplicateKeyError(ValueError):
 class PanelMerger:
     """Collect feature panels, then emit one long ['date', 'ticker', <features...>] frame."""
 
-    def __init__(self, log: logging.Logger | None = None, keys: Sequence[str] = tuple(PANEL_KEYS)) -> None:
+    def __init__(self, log: logging.Logger | None = None, keys: Sequence[str] = tuple(PANEL_KEYS), anchor: pd.DataFrame | None = None) -> None:
         self._log = log or logging.getLogger(__name__)
         self._keys = list(keys)
         self._frames: list[pd.DataFrame] = []
         self._owner: dict[str, str] = {}  # feature name -> the label that produced it
+        self._anchor: pd.MultiIndex | None = None
+        if anchor is not None:
+            missing = [key for key in self._keys if key not in anchor.columns]
+            if missing:
+                raise ValueError(f"anchor is missing the join key(s) {missing}")
+            if anchor.duplicated(self._keys).any():
+                raise DuplicateKeyError(f"anchor repeats {self._keys}")
+            self._anchor = pd.MultiIndex.from_frame(anchor[self._keys])
 
     @property
     def feature_columns(self) -> list[str]:
@@ -100,6 +108,8 @@ class PanelMerger:
         for c in features:
             self._owner[c] = label
         indexed = panel.set_index(self._keys)
+        if self._anchor is not None:
+            indexed = indexed.loc[indexed.index.isin(self._anchor)]
         self._frames.append(indexed[features] if len(features) != len(indexed.columns) else indexed)
         cov = indexed[features].notna().any(axis=1).mean()
         self._log.info("Merged %s %s features (row coverage %.1f%%)", len(features), label, 100 * cov)

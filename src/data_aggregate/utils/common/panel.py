@@ -30,6 +30,17 @@ from src.data_aggregate.utils.common.xs import (
 )
 
 
+def mask_to_availability(
+    frame: pd.DataFrame,
+    availability: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Mask a daily ticker frame to current own-price availability."""
+    if availability is None or frame.empty:
+        return frame
+    active = availability.reindex(index=frame.index, columns=frame.columns, fill_value=False)
+    return frame.where(active)
+
+
 def peer_relative(
     field_df: pd.DataFrame,
     peer_dict: dict,
@@ -160,7 +171,7 @@ def peer_relative(
 _EMISSION_MODES = ("raw", "raw+xs", "raw+peers")
 
 
-def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | None = None) -> pd.DataFrame:
+def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | None = None, availability: pd.DataFrame | None = None) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
     `f_<name>_xs` (universe percentile). Shared by every panel builder.
@@ -198,6 +209,7 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
         # the moment a single None reaches them. Coercion is the correct semantics here
         # (absent = NaN), not a workaround, and a no-op on already-float frames.
         fdf = fdf.apply(pd.to_numeric, errors="coerce")
+        fdf = mask_to_availability(fdf, availability)
         if fdf.empty or not fdf.notna().any().any():
             continue
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
@@ -233,4 +245,8 @@ def build_peer_relative_panel(fields: dict, peer_dict: dict, emission: dict | No
     # .copy() consolidates the many single-column blocks that concat(axis=1) leaves
     # behind, so the reset_index() column insert doesn't trip the "highly fragmented
     # DataFrame" PerformanceWarning once the panel has 100+ feature columns.
-    return pd.concat(long_frames, axis=1).copy().reset_index()
+    panel = pd.concat(long_frames, axis=1).copy()
+    if availability is not None:
+        active = availability.fillna(False).astype(bool).stack()
+        panel = panel.loc[panel.index.isin(active[active].index)]
+    return panel.reset_index()

@@ -664,6 +664,7 @@ def _auditor_history(hist: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame 
     since = pd.to_numeric(h["auditor_since_year"], errors="coerce") if "auditor_since_year" in h.columns else pd.Series(np.nan, index=h.index)
     lo, hi = _TENURE_YEAR_BAND
     since = since.where(since.between(lo, hi))
+    since = since.groupby(h["_run"], sort=False).ffill()
     disclosed_start = pd.to_datetime(since.map(lambda y: f"{int(y):04d}-01-01" if pd.notna(y) else None), errors="coerce")
     # Disclosed where it exists, the archive run-length otherwise. `combine_first` keeps the
     # disclosed leg wherever it survived the sanity band.

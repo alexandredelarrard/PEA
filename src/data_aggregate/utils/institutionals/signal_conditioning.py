@@ -354,4 +354,4 @@ def build_signal_conditioning_panel(
         return pd.DataFrame(columns=["date", "ticker"])
     logger.info("price-conditioning panel: %s of %s declared features built", len(fields), len(EMISSION))
     emission = {k: v for k, v in EMISSION.items() if k in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

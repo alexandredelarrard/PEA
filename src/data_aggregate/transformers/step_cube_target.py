@@ -107,7 +107,7 @@ class StepCubeTarget(Step):
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
         targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons, sector_groups, sector_excess, fundamentals, seams)
-        n = self._persist(targets, betas, window, calendar, max_h)
+        n = self._persist(targets, betas, window, calendar, max_h, price_frames.availability)
 
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
@@ -311,6 +311,7 @@ class StepCubeTarget(Step):
             vol_standardize=cfg.get("vol_standardize", False),
             market_cap=market_cap,
             seams=seams,
+            availability=frames.availability,
         )
 
         non_null = sum(int(df.notna().sum().sum()) for per in labels.values() for df in per.values())
@@ -330,8 +331,17 @@ class StepCubeTarget(Step):
         return labels
 
     # ---- persist ---- #
-    def _persist(self, labels: dict, betas: dict, window, calendar: pd.DatetimeIndex, max_h: int) -> int:
-        targets_wide, betas_long = labels_to_wide(labels), _betas_to_long(betas)
+    def _persist(
+        self,
+        labels: dict,
+        betas: dict,
+        window,
+        calendar: pd.DatetimeIndex,
+        max_h: int,
+        availability: pd.DataFrame,
+    ) -> int:
+        targets_wide = labels_to_wide(labels)
+        betas_long = _betas_to_long(betas, availability=availability)
 
         # targets: overwrite the trailing max_horizon window so MATURED labels refresh -- the
         # widest refresh in the pipeline (~90 trading days vs the backward-looking parts' 5).

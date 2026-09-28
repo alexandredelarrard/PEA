@@ -52,7 +52,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import peer_relative
+from src.data_aggregate.utils.common.panel import mask_to_availability, peer_relative
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     fundamentals_to_daily,
@@ -371,7 +371,7 @@ def _top5_history(exec_comp: pd.DataFrame | None, tally: dict[str, int]) -> pd.D
     return agg.reset_index(drop=True) if not agg.empty else None
 
 
-def _ceo_inside_own_denominator(def14a: pd.DataFrame | None, exec_comp: pd.DataFrame | None, tally: dict[str, int]) -> None:
+def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> None:
     """Count the filings whose CEO is NOT among the NEOs their own slice divides by.
 
     A `ceo_pay_slice` whose numerator sits outside its own denominator is an extraction defect,
@@ -423,7 +423,7 @@ def _ceo_inside_own_denominator(def14a: pd.DataFrame | None, exec_comp: pd.DataF
     tally["CPS misses: NEOs parsed but the CEO is not among them"] = int(len(missed) - no_rows)
 
 
-def _slice_history(comp_src: pd.DataFrame | None, top5: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, ceo_pay_slice]`, the CEO's share of the top five, in `(0, 1]`.
 
     A slice above 1 means the CEO is not inside their own denominator, which is an extraction
@@ -504,11 +504,15 @@ def _aligned(a: pd.DataFrame, b: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     return a[cols], b[cols]
 
 
-def _alignment_family(growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict, label: str) -> dict[str, pd.DataFrame]:
+def _alignment_family(
+    growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict, label: str, availability: pd.DataFrame | None = None
+) -> dict[str, pd.DataFrame]:
     """One pay-vs-performance leg: gap, peer misalignment, flag and severity."""
     pay, prf = _aligned(growth, perf)
     if pay.empty:
         return {}
+    pay = mask_to_availability(pay, availability)
+    prf = mask_to_availability(prf, availability)
     out = {
         f"pay_{label}_gap": pay - prf,
         f"pay_up_{label}_down": _flag_pair(pay, prf),
@@ -536,6 +540,7 @@ def pay_fields(
     close_total: pd.DataFrame | None,
     peer_dict: dict,
     idx: pd.DatetimeIndex,
+    availability: pd.DataFrame | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """(daily wide frames keyed by feature name, data-quality tallies).
 
@@ -605,7 +610,7 @@ def pay_fields(
         if rev_growth.empty:
             tally["skipped: no totalRevenue -> no revenue-based misalignment"] = 1
         else:
-            family7.update(_alignment_family(growth, rev_growth, peer_dict, "revenue"))
+            family7.update(_alignment_family(growth, rev_growth, peer_dict, "revenue", availability))
 
         ret = pd.DataFrame()
         if close_total is not None and not close_total.empty:
@@ -613,7 +618,7 @@ def pay_fields(
         if ret.empty:
             tally["skipped: no close_total -> no return-based misalignment"] = 1
         else:
-            family7.update(_alignment_family(growth, ret, peer_dict, "return"))
+            family7.update(_alignment_family(growth, ret, peer_dict, "return", availability))
 
         # Family 7 is a DIFFERENCE of a pay leg against a performance leg, so its provenance is
         # the pay leg's filing: the return moves daily but the package it is measured against

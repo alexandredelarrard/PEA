@@ -153,8 +153,7 @@ class StepCubeInstitutionals(Step):
         # so nothing here re-reads a source -- see `sink.py`.
         sink = ConditioningSink()
 
-        merger = PanelMerger(self._log)
-        merger.add(price_frames.skeleton().assign(_grid=1.0), "universe-grid")
+        merger = PanelMerger(self._log, anchor=price_frames.skeleton())
         merger.add(self._institutional_panel(price_frames, shares, splits), "institutional (13F)", "No institutional (13F) features built.")
         merger.add(
             self._superinvestor_panel(price_frames, shares, splits, sink), "superinvestor (elite 13F)", "No superinvestor (elite 13F) features built."
@@ -165,53 +164,7 @@ class StepCubeInstitutionals(Step):
         merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
         merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
 
-        return self._restrict_to_grid(merger.to_long()), window
-
-    def _restrict_to_grid(self, long: pd.DataFrame) -> pd.DataFrame:
-        """Keep only rows the universe grid put there, then drop the marker.
-
-        ⚠ THE `_grid` COLUMN WAS BEING DROPPED UNUSED, and that was a real hole.
-        `PanelMerger.to_long` is an OUTER-aligned concat, so every (date, ticker) a source
-        table carries but `cube_part_prices` does not was appended to the panel. Measured on
-        the 2026-09-11 full build: **12 tickers / 14,982 rows** with no price row anywhere --
-        `EA`, `EQR` and `AVB`, which are absent from `prices` entirely, plus nine recent
-        spin-offs (`GEV`, `KVUE`, `GEHC`, `VLTO`, `SOLV`, `SNDK`, `Q`, `HONA`, `FDXF`).
-
-        `assemble-cube` joins the parts onto a base built from `cube_part_prices`, so none of
-        those rows ever reached the model. They still mattered: this part is what Phase 2.8's
-        gates measure, every other part carries 491 tickers, and a coverage sheet computed
-        over 503 is a sheet about a universe that does not exist.
-
-        ⚠ THE RESTRICTION IS ON THE PAIR, NOT THE TICKER, and that is the bigger half of it.
-        Measured on the 2026-09-12 build it removes **565,895 rows across 202 tickers** --
-        mostly `AMZN`-class names on dates before their first price bar, where a 13F holding
-        or an insider filing exists and the price grid does not. Almost all of those were
-        already being discarded downstream as all-NaN rows (the write-side drop falls 31.6% ->
-        19.0%), so the net row change is small; what changes is that the panel now states the
-        same universe as every other part instead of arriving at it by accident.
-        """
-        if "_grid" not in long.columns:
-            return long
-        on_grid = long["_grid"].notna()
-        if not on_grid.all():
-            off = long.loc[~on_grid, ["date", "ticker"]].copy()
-            off["ticker"] = off["ticker"].astype(str)
-            on_tickers = set(long.loc[on_grid, "ticker"].astype(str))
-            # ⚠ SAY WHICH AXIS. Most of these are IN-universe tickers on a date the price grid
-            # does not cover -- before the name's first price bar, or after its last -- and
-            # only a few are tickers the grid has never heard of. A message that called AMZN
-            # "not in cube_part_prices" would send the next reader after a phantom.
-            never = sorted(set(off["ticker"]) - on_tickers)
-            self._log.warning(
-                "cube_part_institutionals: dropped %s row(s) off the price grid, across %s "
-                "ticker(s). %s of them appear nowhere in cube_part_prices (%s); the rest are "
-                "in-universe names on dates the grid does not cover.",
-                f"{int((~on_grid).sum()):,}",
-                off["ticker"].nunique(),
-                len(never),
-                ", ".join(never[:15]) or "none",
-            )
-        return long.loc[on_grid].drop(columns=["_grid"])
+        return merger.to_long(), window
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

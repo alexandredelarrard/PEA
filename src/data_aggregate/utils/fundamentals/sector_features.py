@@ -331,6 +331,7 @@ def build_sector_feature_panel(
     fundamentals: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format sector-KPI feature panel (`f_<kpi>_vs_peers`, `f_<kpi>_xs`).
 
@@ -350,4 +351,4 @@ def build_sector_feature_panel(
             fields[name] = daily
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    return build_peer_relative_panel(fields, peer_dict)
+    return build_peer_relative_panel(fields, peer_dict, availability=availability)

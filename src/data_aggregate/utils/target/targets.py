@@ -247,7 +247,10 @@ def _neutralizing_design(
     # ticker with no filing history is absent, not NaN), while `xs_project_out` runs its own
     # `reindex_like` AFTER this fill -- so an unaligned exposure would reach `np.linalg.lstsq`
     # carrying NaN and raise. This reindex is what makes the later one harmless.
-    exposures = [xs_z(f, clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None]
+    active = close_total.notna()
+    exposures = [
+        xs_z(f.where(active), clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None
+    ]
 
     # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
     # sector when only that level is supplied.
@@ -314,6 +317,7 @@ def build_targets_multi(
     vol_standardize: bool = False,
     market_cap: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> dict:
     """Compute the (expensive) factor-neutral residual ONCE per horizon and emit
     SEVERAL target versions from it, so the cube can store e.g. both the rank and the
@@ -367,11 +371,22 @@ def build_targets_multi(
             "alone would rebuild the exact defect this signature exists to prevent."
         )
 
+    if availability is not None:
+        availability = availability.reindex_like(close_total).fillna(False).astype(bool)
+        close_total = close_total.where(availability)
+        stock_ret = stock_ret.reindex_like(close_total).where(availability)
+        if market_cap is not None:
+            market_cap = market_cap.reindex_like(close_total).where(availability)
+        if sector_excess is not None:
+            sector_excess = sector_excess.reindex_like(close_total).where(availability)
+
     # horizon-independent, so it is built ONCE for all (horizon, label) pairs
     exposures, dummies = _neutralizing_design(close_total, betas, sector_groups, neutralize_momentum, market_cap, seams)
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
         eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h, sector_excess=sector_excess)
+        if availability is not None:
+            eps = eps.where(availability)
         if vol_standardize:
             # TODO: check if not needed to standardize by the idio vol, not the stock_ret
             eps = vol_standardize_epsilon(eps, stock_ret, h)

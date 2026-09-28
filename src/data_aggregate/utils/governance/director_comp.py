@@ -279,7 +279,7 @@ def _ceo_ratio(pay: pd.DataFrame, def14a: pd.DataFrame | None, tally: dict[str, 
         tally["skipped: no filing carries both a CEO total and a director median"] = 1
         return None
     den = m["median_director_pay"].where(m["median_director_pay"] > _MIN_DENOMINATOR)
-    num = m["ceo_total_comp"].where(m["ceo_total_comp"] > _MIN_NUMERATOR)
+    num = m["ceo_total_comp"].where(m["ceo_total_comp"] >= _MIN_NUMERATOR)
     m["ceo_to_director_pay_ratio"] = num / den
     m = m.replace([np.inf, -np.inf], np.nan)
     tally["ceo_to_director_pay_ratio: filings with both legs"] = int(m["ceo_to_director_pay_ratio"].notna().sum())

@@ -134,6 +134,39 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     )
 
 
+def test_target_availability_is_applied_before_cross_sectional_labels(monkeypatch):
+    idx = pd.bdate_range("2024-01-02", periods=2)
+    columns = ["AAA", "BBB", "CCC"]
+    close = pd.DataFrame(100.0, index=idx, columns=columns)
+    eps = pd.DataFrame([[0.0, 10.0, 1_000.0], [0.0, 10.0, 0.0]], index=idx, columns=columns)
+    availability = pd.DataFrame(True, index=idx, columns=columns)
+    availability.loc[idx[0], "CCC"] = False
+    monkeypatch.setattr(
+        "src.data_aggregate.utils.target.targets.compute_epsilon",
+        lambda *args, **kwargs: eps.copy(),
+    )
+
+    built = build_targets_multi(
+        close,
+        {},
+        pd.DataFrame(index=idx),
+        macro_cols=[],
+        horizons=(1,),
+        labels=("rank",),
+        min_names=1,
+        neutralize_momentum=False,
+        stock_ret=close * 0.0,
+        availability=availability,
+    )[1]["rank"]
+
+    assert pd.isna(built.loc[idx[0], "CCC"])
+    assert built.loc[idx[0], ["AAA", "BBB"]].tolist() == [0.5, 1.0]
+    assert built.loc[idx[1], "CCC"] == 0.5
+    print("\n=== SANITY CHECK: target availability precedes ranking ===")
+    print("  inactive CCC=1000 is excluded; when active at zero it participates normally.")
+    print("  CONCLUSION: target populations follow observed prices, not numeric values.")
+
+
 def test_forward_return_is_the_move_from_t_to_t_plus_horizon():
     """The economic definition, pinned: from a TOTAL-RETURN INDEX the raw forward return at
     t is level[t+h]/level[t] - 1 -- 'today's holding vs the holding in h days'.

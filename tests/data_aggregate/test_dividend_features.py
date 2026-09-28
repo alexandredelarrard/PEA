@@ -250,7 +250,7 @@ def test_incremental_dividend_window_reproduces_full_tail() -> None:
     print("\n=== SANITY CHECK: incremental dividend panel matches full tail ===")
     print(
         f"  {warmup} warm-up sessions preserve the 1,260-session CAGR shift plus its "
-        f"252-session TTM base; {len(full_tail)} rewritten/appended cells match. Validated."
+        f"252-session TTM base; {len(full_tail)} rewritten/appended rows match. Validated."
     )
 
 

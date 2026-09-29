@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
+from scripts.cube_institutionals_catalogue import INSTITUTIONALS
 from src.context import get_config_context
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_store.schema import Table, Tables
 from src.utils.config import read_config
 from src.validate.checks.catalogue import _load as load_catalogue
@@ -34,6 +36,7 @@ from src.validate.checks.timeseries import _frozen_legs, _hole_condition, _known
 from src.validate.io import CHUNK_ROWS
 from src.validate.result import jsonable
 from src.validate.spec import load_spec
+from src.validate.utils.outliers import modified_zscore
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +59,129 @@ SOURCE_TABLES: tuple[Table, ...] = (
     Tables.sec_13d,
     Tables.sec_13g,
 )
+PROVISIONAL_PEERS = ("ic_inst_ownership_pct", "ic_shortvol_ratio_20d")
+SUFFIXES = (("_vs_peers", "peer"), ("_xs", "cross_sectional"), ("_hist", "historical"))
+
+# Explicit economics, not name heuristics. Import-time equality makes a newly catalogued
+# characteristic fail loudly until somebody classifies it.
+_EVENT = {
+    "ic_inst_cluster_buying",
+    "ic_super_new_top10",
+    "ic_insider_cluster_buy_120d",
+    "ic_act_initial_13d",
+    "ic_act_repeat_activist",
+    "ic_act_purpose_board",
+    "ic_act_purpose_strategic",
+    "ic_bo_new_holder",
+    "ic_bo_escalation_13g_to_13d",
+    "ic_bo_de_escalation_13d_to_13g",
+    "ic_shortvol_high_x_weak_price",
+    "ic_shortvol_high_x_strong_price",
+}
+_COUNT = {
+    "ic_inst_holders",
+    "ic_super_holders",
+    "ic_super_top10_holders",
+    "ic_super_quarters_held",
+    "ic_super_initiations",
+    "ic_super_full_exits",
+    "ic_super_exit_after_top10",
+    "ic_insider_distinct_buyers_120d",
+    "ic_bo_holder_count",
+    "ic_xs_bullish_actor_count",
+}
+_AGE = {"ic_act_campaign_age_days", "ic_sig_super_age_days", "ic_sig_insider_age_days", "ic_sig_act_age_days"}
+_SUPPORT = {
+    "ic_super_sp500_share",
+    "ic_shortvol_market_coverage",
+    "ic_xs_bullish_available_family_count",
+    "ic_xs_bearish_available_family_count",
+}
+_BOUNDED = {
+    "ic_inst_new_buyer_ratio",
+    "ic_inst_exit_ratio",
+    "ic_inst_concentration",
+    "ic_inst_net_options_ratio",
+    "ic_inst_ownership_pct",
+    "ic_super_conviction_weight",
+    "ic_super_max_conviction",
+    "ic_insider_purchase_pct_prior",
+    "ic_insider_net_buy_ratio_180d",
+    "ic_ftd_persistence_30d",
+    "ic_xs_bullish_family_ratio",
+    "ic_xs_bearish_family_ratio",
+    "ic_xs_conflict_ratio",
+}
+_UNSCALED_LEVEL = {"ic_super_selection_score"}
+_NORMALIZED = {
+    "ic_act_amendment_intensity",
+    "ic_ftd_pct_so",
+    "ic_ftd_to_adv20",
+    "ic_ftd_z252",
+    "ic_insider_buy_shares_so_180d",
+    "ic_insider_buy_value_mcap_180d",
+    "ic_insider_buy_value_mcap_60d",
+    "ic_insider_ceo_buy_mcap_180d",
+    "ic_insider_cfo_buy_mcap_180d",
+    "ic_insider_director_buy_mcap_180d",
+    "ic_insider_discretionary_sell_mcap_60d",
+    "ic_insider_owner_surprise_120d",
+    "ic_insider_planned_sell_mcap_60d",
+    "ic_inst_breadth_chg",
+    "ic_inst_flow_to_mcap",
+    "ic_inst_shares_chg",
+    "ic_inst_value_to_mcap",
+    "ic_shortvol_acceleration",
+    "ic_shortvol_ratio_20d",
+    "ic_shortvol_ratio_5d",
+    "ic_shortvol_ratio_60d",
+    "ic_shortvol_ratio_z252",
+    "ic_shortvol_turnover_20d",
+    "ic_sig_act_resid_ret_since",
+    "ic_sig_act_ret_since",
+    "ic_sig_act_vol_scaled_move",
+    "ic_sig_insider_max_dd_since_buy",
+    "ic_sig_insider_max_runup_since_buy",
+    "ic_sig_insider_price_vs_buy",
+    "ic_sig_insider_resid_ret_since",
+    "ic_sig_insider_ret_since",
+    "ic_sig_insider_vol_scaled_move",
+    "ic_sig_super_resid_ret_since",
+    "ic_sig_super_ret_since",
+    "ic_sig_super_vol_scaled_move",
+    "ic_super_breadth_chg",
+    "ic_super_conviction_chg",
+    "ic_super_conviction_weight_yoy",
+    "ic_super_flow_to_mcap",
+    "ic_super_holders_yoy",
+    "ic_super_rank_jump",
+    "ic_super_shares_chg",
+}
+CHARACTERISTIC_KIND = {
+    **{name: "event" for name in _EVENT},
+    **{name: "count" for name in _COUNT},
+    **{name: "age" for name in _AGE},
+    **{name: "support" for name in _SUPPORT},
+    **{name: "bounded" for name in _BOUNDED},
+    **{name: "unscaled-level" for name in _UNSCALED_LEVEL},
+    **{name: "normalized" for name in _NORMALIZED},
+}
+if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _AGE, _SUPPORT, _BOUNDED, _UNSCALED_LEVEL, _NORMALIZED))) != len(
+    INSTITUTIONALS
+):
+    raise RuntimeError("institutionals taxonomy must explicitly classify every catalogued characteristic")
+
+FAMILY_WARMUP_SESSIONS = {
+    "broad_13f": 0,
+    "elite_13f": 0,
+    "insider": 126,
+    "beneficial_ownership": 0,
+    "short_flow": 252,
+    "price_conditioning": 0,
+    "cross_source": 0,
+    "cross_source_control": 0,
+}
+ELIGIBILITY_FORMULA = "candidate_rows__first_supported_after_builder_warmup__last_supported_complete_through_v1"
 
 
 def _sha256(path: Path) -> str:
@@ -157,6 +283,54 @@ def _source_metadata(store: Any, table: Table) -> dict[str, Any]:
     }
 
 
+def _load_manifest(path: Path, as_of: str) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"manifest is not a JSON object: {path}")
+    if payload.get("table") != TABLE.name:
+        raise ValueError(f"manifest table is {payload.get('table')!r}, expected {TABLE.name!r}")
+    if pd.Timestamp(payload.get("as_of")).normalize() != pd.Timestamp(as_of).normalize():
+        raise ValueError(f"manifest as_of={payload.get('as_of')!r} does not match {as_of!r}")
+    snapshot = payload.get("snapshot") or {}
+    frozen = Path(str(snapshot.get("frozen", "")))
+    if not frozen.is_file() or not snapshot.get("sha256"):
+        raise ValueError("manifest must name an existing hash-bound frozen baseline")
+    if _sha256(frozen) != snapshot["sha256"]:
+        raise ValueError("manifest baseline hash does not match its frozen parquet")
+    return payload
+
+
+def _verify_source_identity(store: Any, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    recorded = {row.get("table"): row for row in manifest.get("source_tables") or []}
+    expected = {table.name for table in SOURCE_TABLES}
+    if set(recorded) != expected:
+        raise ValueError(f"manifest source tables differ: missing={sorted(expected - set(recorded))}, extra={sorted(set(recorded) - expected)}")
+    current = [_source_metadata(store, table) for table in SOURCE_TABLES]
+    changed = [row["table"] for row in current if jsonable(row) != recorded[row["table"]]]
+    if changed:
+        raise ValueError(f"source metadata changed since baseline freeze: {changed}")
+    return current
+
+
+def _read_projected(path: Path, columns: Sequence[str]) -> pd.DataFrame:
+    parquet = pq.ParquetFile(path)
+    parts = [batch.to_pandas() for batch in parquet.iter_batches(batch_size=CHUNK_ROWS, columns=list(columns))]
+    return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0] if parts else pd.DataFrame(columns=list(columns))
+
+
+def _feature_parts(column: str) -> tuple[str, str]:
+    body = column.removeprefix("f_")
+    suffix = "raw"
+    characteristic = body
+    for ending, label in SUFFIXES:
+        if body.endswith(ending):
+            suffix, characteristic = label, body.removesuffix(ending)
+            break
+    if characteristic not in INSTITUTIONALS or characteristic not in CHARACTERISTIC_KIND:
+        raise ValueError(f"no explicit institutionals taxonomy for {column!r} (characteristic {characteristic!r})")
+    return characteristic, suffix
+
+
 def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[str, Any]:
     meta_path = snapshot.parent / "meta.json"
     if not meta_path.is_file():
@@ -197,6 +371,72 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
     }
     _write_json(out / "input-manifest.json", manifest)
     return manifest
+
+
+def build_candidate(
+    config: str,
+    manifest_path: Path,
+    as_of: str,
+    out_cache: Path,
+    out: Path,
+    *,
+    compare_to: Path | None = None,
+    comparison_out: Path | None = None,
+) -> dict[str, Any]:
+    cutoff = pd.Timestamp(as_of).normalize()
+    manifest = _load_manifest(manifest_path, as_of)
+    config_node, context = get_config_context(config, use_cache=False, save=False)
+    sources = _verify_source_identity(context.store, manifest)
+    panel, window = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
+    if not window.is_full:
+        raise ValueError("build_panel(full=True) returned a non-full PartWindow")
+    if not set(KEYS).issubset(panel.columns):
+        raise ValueError(f"candidate panel is missing keys {sorted(set(KEYS) - set(panel.columns))}")
+    panel = panel.copy()
+    panel[TABLE.date_col] = pd.to_datetime(panel[TABLE.date_col], errors="coerce").dt.normalize()
+    if panel[KEYS].isna().any(axis=1).any():
+        raise ValueError("untrimmed candidate panel contains null keys")
+    panel = panel.loc[panel[TABLE.date_col] <= cutoff].reset_index(drop=True)
+    null_keys = int(panel[KEYS].isna().any(axis=1).sum())
+    duplicate_keys = int(panel.duplicated(KEYS, keep=False).sum())
+    if panel.empty or null_keys or duplicate_keys:
+        raise ValueError(f"candidate key assertion failed: rows={len(panel)}, null_key_rows={null_keys}, duplicate_key_rows={duplicate_keys}")
+    if panel[TABLE.date_col].max() > cutoff:
+        raise ValueError("candidate contains rows after its declared cutoff")
+
+    out_cache.parent.mkdir(parents=True, exist_ok=True)
+    panel.to_parquet(out_cache, index=False)
+    parquet, columns, dtypes = _schema(out_cache)
+    first_date, last_date, invalid_dates = _date_bounds(out_cache)
+    if invalid_dates:
+        raise ValueError(f"written candidate contains {invalid_dates} invalid dates")
+    metadata = {
+        "table": TABLE.name,
+        "as_of": cutoff,
+        "rows": int(parquet.metadata.num_rows),
+        "columns": columns,
+        "dtypes": dtypes,
+        "pk": KEYS,
+        "date_col": TABLE.date_col,
+        "first_date": first_date,
+        "last_date": last_date,
+        "snapshot": str(out_cache.resolve()),
+        "snapshot_sha256": _sha256(out_cache),
+        "snapshot_bytes": out_cache.stat().st_size,
+        "manifest": str(manifest_path.resolve()),
+        "manifest_sha256": _sha256(manifest_path),
+        "source_tables": sources,
+        "builder": "StepCubeInstitutionals.build_panel(full=True)",
+        "write_contract": "parquet artifact only; StepCubeInstitutionals.run/write_part not called",
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    _write_json(out / "candidate-metadata.json", metadata)
+    comparison: dict[str, Any] | None = None
+    if compare_to is not None:
+        if comparison_out is None:
+            raise ValueError("--comparison-out is required with --compare-to")
+        comparison = compare_refactor(compare_to, out_cache, comparison_out)
+    return {"status": "fail" if comparison and comparison["status"] == "fail" else "pass", "metadata": metadata, "comparison": comparison}
 
 
 def _keys(path: Path) -> tuple[pd.DataFrame, np.ndarray, int, int]:
@@ -615,6 +855,438 @@ def validate_candidate(config: str, snapshot: Path, metadata_path: Path, catalog
     return summary
 
 
+def _requested_decision(characteristic: str, suffix: str) -> str:
+    decisions = {
+        "raw": "keep_raw",
+        "historical": "keep_historical_normalization",
+        "cross_sectional": "remove_cross_sectional_normalization",
+    }
+    if suffix == "peer":
+        return "provisional_peer_pending_diagnostics" if characteristic in PROVISIONAL_PEERS else "remove_peer_normalization"
+    if suffix not in decisions:
+        raise ValueError(f"no explicit decision for suffix {suffix!r}")
+    return decisions[suffix]
+
+
+def _peer_slice(frame: pd.DataFrame, raw: str, peer: str) -> dict[str, Any]:
+    raw_values = pd.to_numeric(frame[raw], errors="coerce")
+    peer_values = pd.to_numeric(frame[peer], errors="coerce")
+    overlap = np.isfinite(raw_values) & np.isfinite(peer_values)
+    raw_support = np.isfinite(raw_values)
+    correlation = float(raw_values[overlap].corr(peer_values[overlap])) if overlap.sum() >= 2 else None
+    concentrations: list[float] = []
+    maxima: list[float] = []
+    for _, group in frame.loc[overlap].assign(_peer=peer_values[overlap]).groupby("date", sort=False):
+        absolute = group["_peer"].abs().to_numpy(dtype="float64")
+        total = float(absolute.sum())
+        if total > 0:
+            weights = absolute / total
+            concentrations.append(float(np.square(weights).sum()))
+            maxima.append(float(weights.max()))
+    return {
+        "rows": len(frame),
+        "raw_supported_rows": int(raw_support.sum()),
+        "same_date_overlap_rows": int(overlap.sum()),
+        "same_date_overlap_share": float(overlap.sum() / raw_support.sum()) if raw_support.sum() else None,
+        "raw_peer_correlation": correlation,
+        "abs_score_weight_hhi_proxy": float(np.mean(concentrations)) if concentrations else None,
+        "abs_score_max_weight_proxy": float(np.mean(maxima)) if maxima else None,
+    }
+
+
+def _peer_diagnostic(snapshot: Path, characteristic: str, columns: list[str]) -> dict[str, Any]:
+    raw, peer = f"f_{characteristic}", f"f_{characteristic}_vs_peers"
+    if raw not in columns or peer not in columns:
+        return {
+            "characteristic": characteristic,
+            "status": "abstain",
+            "reason": f"candidate is missing {raw if raw not in columns else peer}",
+        }
+    frame = _read_projected(snapshot, [*KEYS, raw, peer])
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame = frame.sort_values(KEYS, kind="stable")
+    raw_change = pd.to_numeric(frame[raw], errors="coerce").groupby(frame["ticker"]).diff()
+    peer_change = pd.to_numeric(frame[peer], errors="coerce").groupby(frame["ticker"]).diff()
+    unchanged_jump = raw_change.eq(0) & peer_change.notna() & peer_change.ne(0)
+    unique_dates = pd.Index(sorted(frame["date"].dropna().unique()))
+    midpoint = unique_dates[len(unique_dates) // 2] if len(unique_dates) else pd.NaT
+    early = _peer_slice(frame.loc[frame["date"] < midpoint], raw, peer) if pd.notna(midpoint) else {}
+    late = _peer_slice(frame.loc[frame["date"] >= midpoint], raw, peer) if pd.notna(midpoint) else {}
+    whole = _peer_slice(frame, raw, peer)
+    return {
+        "characteristic": characteristic,
+        "status": "pass",
+        "reason": "",
+        **whole,
+        "unchanged_subject_score_jumps": int(unchanged_jump.sum()),
+        "unchanged_subject_score_jump_share": float(unchanged_jump.mean()) if len(frame) else None,
+        "unchanged_subject_score_jump_p99": float(peer_change[unchanged_jump].abs().quantile(0.99)) if unchanged_jump.any() else None,
+        "chronological_midpoint": midpoint,
+        "early_overlap_share": early.get("same_date_overlap_share"),
+        "late_overlap_share": late.get("same_date_overlap_share"),
+        "early_correlation": early.get("raw_peer_correlation"),
+        "late_correlation": late.get("raw_peer_correlation"),
+        "early_hhi_proxy": early.get("abs_score_weight_hhi_proxy"),
+        "late_hhi_proxy": late.get("abs_score_weight_hhi_proxy"),
+    }
+
+
+def _model_folds(snapshot: Path, features: list[str]) -> pd.DataFrame:
+    dates = pd.DatetimeIndex(sorted(_read_projected(snapshot, [TABLE.date_col])[TABLE.date_col].dropna().unique()))
+    groups = [pd.DatetimeIndex(group) for group in np.array_split(dates, min(5, len(dates))) if len(group)]
+    if not groups:
+        return pd.DataFrame()
+    ends = pd.DatetimeIndex([group[-1] for group in groups])
+    state = [
+        {"fold": index + 1, "start": group[0], "end": group[-1], "rows": 0, "tickers": set(), "nonnull": 0, "cells": 0}
+        for index, group in enumerate(groups)
+    ]
+    parquet = pq.ParquetFile(snapshot)
+    wanted = [*KEYS, *features]
+    for batch in parquet.iter_batches(batch_size=CHUNK_ROWS, columns=wanted):
+        frame = batch.to_pandas()
+        stamps = pd.to_datetime(frame[TABLE.date_col], errors="coerce")
+        fold_ids = np.searchsorted(ends.to_numpy(), stamps.to_numpy(), side="left")
+        for index, entry in enumerate(state):
+            mask = fold_ids == index
+            if not mask.any():
+                continue
+            part = frame.loc[mask]
+            entry["rows"] += len(part)
+            entry["tickers"].update(map(str, part["ticker"].dropna().unique()))
+            entry["nonnull"] += int(part[features].notna().sum().sum()) if features else 0
+            entry["cells"] += len(part) * len(features)
+    return pd.DataFrame(
+        [
+            {
+                "fold": entry["fold"],
+                "start": entry["start"],
+                "end": entry["end"],
+                "rows": entry["rows"],
+                "tickers": len(entry["tickers"]),
+                "feature_cells": entry["cells"],
+                "feature_nonnull_share": entry["nonnull"] / entry["cells"] if entry["cells"] else None,
+            }
+            for entry in state
+        ]
+    )
+
+
+def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: Path) -> dict[str, Any]:
+    read_config(config)
+    manifest = _load_manifest(manifest_path, as_of)
+    _, candidate_columns, candidate_dtypes = _schema(snapshot)
+    first_date, last_date, invalid_dates = _date_bounds(snapshot)
+    if invalid_dates or (last_date is not None and last_date.normalize() > pd.Timestamp(as_of).normalize()):
+        raise ValueError("candidate dates are invalid or beyond the taxonomy cutoff")
+    baseline = manifest.get("snapshot") or {}
+    baseline_columns = list(baseline.get("columns") or [])
+    baseline_dtypes = dict(baseline.get("dtypes") or {})
+    if not set(KEYS).issubset(baseline_columns):
+        raise ValueError("manifest baseline schema is missing panel keys")
+
+    decisions: list[dict[str, Any]] = []
+    candidate_set = set(candidate_columns)
+    for column in baseline_columns:
+        if column in KEYS:
+            continue
+        characteristic, suffix = _feature_parts(column)
+        replacement = f"f_{characteristic}"
+        decisions.append(
+            {
+                "baseline_column": column,
+                "characteristic": characteristic,
+                "suffix": suffix,
+                "family": INSTITUTIONALS[characteristic][0],
+                "kind": CHARACTERISTIC_KIND[characteristic],
+                "requested_decision": _requested_decision(characteristic, suffix),
+                "decision_rule_id": "raw_plus_interpretable_history__peer_only_if_diagnostics_survive_v1",
+                "final_presence": column in candidate_set,
+                "exact_final_presence": column in candidate_set,
+                "retained_raw_presence": replacement in candidate_set,
+                "final_column": column if column in candidate_set else replacement if replacement in candidate_set else None,
+            }
+        )
+    decision_frame = pd.DataFrame(decisions)
+    if len(decision_frame) != len(baseline_columns) - len(KEYS):
+        raise ValueError("baseline feature reconciliation is incomplete")
+
+    schema_diff = {
+        "table": TABLE.name,
+        "as_of": as_of,
+        "baseline_columns": baseline_columns,
+        "candidate_columns": candidate_columns,
+        "added": sorted(candidate_set - set(baseline_columns)),
+        "removed": sorted(set(baseline_columns) - candidate_set),
+        "column_order_equal": baseline_columns == candidate_columns,
+        "dtype_changes": {
+            column: {"baseline": baseline_dtypes[column], "candidate": candidate_dtypes[column]}
+            for column in set(baseline_dtypes) & set(candidate_dtypes)
+            if baseline_dtypes[column] != candidate_dtypes[column]
+        },
+        "snapshot_sha256": _sha256(snapshot),
+        "manifest_sha256": _sha256(manifest_path),
+        "first_date": first_date,
+        "last_date": last_date,
+        "reconciled_baseline_features": len(decision_frame),
+    }
+    peer_frame = pd.DataFrame([_peer_diagnostic(snapshot, characteristic, candidate_columns) for characteristic in PROVISIONAL_PEERS])
+    fold_frame = _model_folds(snapshot, [column for column in candidate_columns if column not in KEYS])
+    out.mkdir(parents=True, exist_ok=True)
+    decision_frame.to_csv(out / "feature-decisions.csv", index=False)
+    _write_json(out / "schema-diff.json", schema_diff)
+    peer_frame.to_csv(out / "peer-diagnostics.csv", index=False)
+    fold_frame.to_csv(out / "model-fold-diagnostics.csv", index=False)
+    return {"status": "pass", "features": len(decision_frame), "peer_rows": len(peer_frame), "fold_rows": len(fold_frame)}
+
+
+_COVERAGE_BUCKETS = ("100%", "70%-<100%", "50%-<70%", "30%-<50%", "<=30%", "no-support")
+
+
+def _coverage_bucket(numerator: int, denominator: int) -> str:
+    if denominator == 0:
+        return "no-support"
+    share = numerator / denominator
+    if np.isclose(share, 1.0):
+        return "100%"
+    if share >= 0.7:
+        return "70%-<100%"
+    if share >= 0.5:
+        return "50%-<70%"
+    if share > 0.3:
+        return "30%-<50%"
+    return "<=30%"
+
+
+def _analysis_frames(
+    snapshot: Path, keys: pd.DataFrame, features: list[str], recent_sessions: int
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, dict[str, Any]]]:
+    dates = pd.DatetimeIndex(sorted(keys[TABLE.date_col].dropna().unique()))
+    recent_dates = set(dates[-min(recent_sessions, len(dates)) :])
+    recent_mask = keys[TABLE.date_col].isin(recent_dates).to_numpy()
+    ticker_positions = {str(ticker): np.asarray(positions, dtype="int64") for ticker, positions in keys.groupby("ticker", sort=False).indices.items()}
+    coverage_rows: list[dict[str, Any]] = []
+    distribution_rows: list[dict[str, Any]] = []
+    outlier_rows: list[dict[str, Any]] = []
+    drift_rows: list[dict[str, Any]] = []
+    split_rows: list[dict[str, Any]] = []
+    all_stats: dict[str, dict[str, Any]] = {}
+    for index, feature in enumerate(features, start=1):
+        characteristic, _ = _feature_parts(feature)
+        family = INSTITUTIONALS[characteristic][0]
+        values = pd.to_numeric(_read_projected(snapshot, [feature])[feature], errors="coerce")
+        array = values.to_numpy(dtype="float64")
+        present = np.isfinite(array)
+        stats = profile_stats(values, None)
+        all_stats[feature] = stats
+        distribution_rows.append({"feature": feature, "characteristic": characteristic, "family": family, **stats})
+
+        scores = modified_zscore(array)
+        extreme_positions = np.flatnonzero(present & (scores > 3.5))
+        for position in extreme_positions[np.argsort(scores[extreme_positions])[-10:][::-1]]:
+            outlier_rows.append(
+                {
+                    "feature": feature,
+                    "ticker": keys.iloc[position]["ticker"],
+                    "date": keys.iloc[position][TABLE.date_col],
+                    "value": float(array[position]),
+                    "modified_z": float(scores[position]),
+                }
+            )
+
+        for ticker, positions in ticker_positions.items():
+            supported = positions[present[positions]]
+            if not len(supported):
+                coverage_rows.append(
+                    {
+                        "feature": feature,
+                        "characteristic": characteristic,
+                        "family": family,
+                        "ticker": ticker,
+                        "eligibility_formula_id": ELIGIBILITY_FORMULA,
+                        "family_warmup_sessions": FAMILY_WARMUP_SESSIONS[family],
+                        "observed_warmup_candidate_rows": None,
+                        "first_support": None,
+                        "complete_through": None,
+                        "full_numerator": 0,
+                        "full_eligible_denominator": 0,
+                        "full_share": None,
+                        "full_bucket": "no-support",
+                        "recent_numerator": 0,
+                        "recent_eligible_denominator": 0,
+                        "recent_share": None,
+                        "recent_bucket": "no-support",
+                    }
+                )
+                continue
+            first_support = keys.iloc[supported[0]][TABLE.date_col]
+            complete_through = keys.iloc[supported[-1]][TABLE.date_col]
+            group_dates = keys.iloc[positions][TABLE.date_col]
+            eligible = positions[(group_dates >= first_support).to_numpy() & (group_dates <= complete_through).to_numpy()]
+            recent_eligible = eligible[recent_mask[eligible]]
+            full_numerator = int(present[eligible].sum())
+            recent_numerator = int(present[recent_eligible].sum())
+            full_denominator, recent_denominator = len(eligible), len(recent_eligible)
+            coverage_rows.append(
+                {
+                    "feature": feature,
+                    "characteristic": characteristic,
+                    "family": family,
+                    "ticker": ticker,
+                    "eligibility_formula_id": ELIGIBILITY_FORMULA,
+                    "family_warmup_sessions": FAMILY_WARMUP_SESSIONS[family],
+                    "observed_warmup_candidate_rows": int(np.flatnonzero(positions == supported[0])[0]),
+                    "first_support": first_support,
+                    "complete_through": complete_through,
+                    "full_numerator": full_numerator,
+                    "full_eligible_denominator": full_denominator,
+                    "full_share": full_numerator / full_denominator if full_denominator else None,
+                    "full_bucket": _coverage_bucket(full_numerator, full_denominator),
+                    "recent_numerator": recent_numerator,
+                    "recent_eligible_denominator": recent_denominator,
+                    "recent_share": recent_numerator / recent_denominator if recent_denominator else None,
+                    "recent_bucket": _coverage_bucket(recent_numerator, recent_denominator),
+                }
+            )
+
+        history_values = array[~recent_mask]
+        recent_values = array[recent_mask]
+        history_ok = history_values[np.isfinite(history_values)]
+        recent_ok = recent_values[np.isfinite(recent_values)]
+        history_sd = float(history_ok.std(ddof=1)) if len(history_ok) > 1 else 0.0
+        history_mean = float(history_ok.mean()) if len(history_ok) else None
+        recent_mean = float(recent_ok.mean()) if len(recent_ok) else None
+        drift_rows.append(
+            {
+                "feature": feature,
+                "history_n": len(history_ok),
+                "recent_n": len(recent_ok),
+                "history_mean": history_mean,
+                "recent_mean": recent_mean,
+                "history_null_share": float(1 - len(history_ok) / len(history_values)) if len(history_values) else None,
+                "recent_null_share": float(1 - len(recent_ok) / len(recent_values)) if len(recent_values) else None,
+                "mean_shift_history_sd": (
+                    (recent_mean - history_mean) / history_sd if history_mean is not None and recent_mean is not None and history_sd > 0 else None
+                ),
+            }
+        )
+        for split, sample in (("history", history_values), ("recent", recent_values)):
+            finite = sample[np.isfinite(sample)]
+            split_rows.append(
+                {
+                    "feature": feature,
+                    "split": split,
+                    "rows": len(sample),
+                    "n_finite": len(finite),
+                    "null_share": float(1 - len(finite) / len(sample)) if len(sample) else None,
+                    "mean": float(finite.mean()) if len(finite) else None,
+                    "p50": float(np.median(finite)) if len(finite) else None,
+                    "min": float(finite.min()) if len(finite) else None,
+                    "max": float(finite.max()) if len(finite) else None,
+                }
+            )
+        if index % 20 == 0 or index == len(features):
+            log.info("analyze candidate: %d/%d columns", index, len(features))
+    return (
+        pd.DataFrame(coverage_rows),
+        pd.DataFrame(distribution_rows),
+        pd.DataFrame(outlier_rows, columns=["feature", "ticker", "date", "value", "modified_z"]),
+        pd.DataFrame(drift_rows),
+        pd.DataFrame(split_rows),
+        all_stats,
+    )
+
+
+def _coverage_summary(coverage: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for feature, group in coverage.groupby("feature", sort=False):
+        for horizon in ("full", "recent"):
+            counts = group[f"{horizon}_bucket"].value_counts()
+            for bucket in _COVERAGE_BUCKETS:
+                rows.append({"feature": feature, "horizon": horizon, "bucket": bucket, "tickers": int(counts.get(bucket, 0))})
+    return pd.DataFrame(rows)
+
+
+def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of: str, recent_sessions: int, out: Path) -> dict[str, Any]:
+    if table != TABLE.name:
+        raise ValueError(f"this driver analyzes {TABLE.name}, not {table!r}")
+    if recent_sessions <= 0:
+        raise ValueError("--recent-sessions must be positive")
+    manifest = _load_manifest(manifest_path, as_of)
+    config_node = read_config(config)
+    spec = load_spec(config_node, TABLE)
+    _, columns, _ = _schema(snapshot)
+    if not set(KEYS).issubset(columns):
+        raise ValueError("candidate snapshot is missing panel keys")
+    keys = _read_projected(snapshot, KEYS)
+    keys[TABLE.date_col] = pd.to_datetime(keys[TABLE.date_col], errors="coerce").dt.normalize()
+    if keys[KEYS].isna().any(axis=1).any() or keys.duplicated(KEYS).any():
+        raise ValueError("candidate keys are null or duplicated")
+    if keys[TABLE.date_col].max() > pd.Timestamp(as_of).normalize():
+        raise ValueError("candidate contains dates after --as-of")
+    features = _numeric_columns(snapshot)
+    if not features:
+        raise ValueError("candidate has no numeric institutional feature")
+
+    coverage, distributions, outliers, drift, splits, stats = _analysis_frames(snapshot, keys, features, recent_sessions)
+    coverage_summary = _coverage_summary(coverage)
+    redundancy = _redundancy(snapshot, stats, spec.redundancy_r)
+    leakage = _leakage(keys, {"as_of": manifest["as_of"]})
+    out.mkdir(parents=True, exist_ok=True)
+    frames = {
+        "coverage.csv": coverage,
+        "coverage-summary.csv": coverage_summary,
+        "distributions.csv": distributions,
+        "outliers.csv": outliers,
+        "drift.csv": drift,
+        "chronological-split-diagnostics.csv": splits,
+    }
+    for name, frame in frames.items():
+        frame.to_csv(out / name, index=False)
+    _write_json(out / "redundancy.json", redundancy)
+    _write_json(out / "leakage.json", leakage)
+
+    expected_rows = {name: len(frame) for name, frame in frames.items()}
+    actual_rows = {name: len(pd.read_csv(out / name)) for name in frames}
+    expected_artifacts = [*frames, "redundancy.json", "leakage.json"]
+    missing = [name for name in expected_artifacts if not (out / name).is_file()]
+    reconciliation = {
+        "pass": not missing and expected_rows == actual_rows and len(coverage) == len(features) * keys["ticker"].nunique(),
+        "expected_artifacts": expected_artifacts,
+        "missing_artifacts": missing,
+        "expected_rows": expected_rows,
+        "actual_rows": actual_rows,
+        "coverage_expected_rows": len(features) * int(keys["ticker"].nunique()),
+        "coverage_actual_rows": len(coverage),
+    }
+    summary = {
+        "status": "pass" if reconciliation["pass"] else "fail",
+        "table": TABLE.name,
+        "as_of": as_of,
+        "recent_sessions": recent_sessions,
+        "snapshot": str(snapshot.resolve()),
+        "snapshot_sha256": _sha256(snapshot),
+        "manifest": str(manifest_path.resolve()),
+        "manifest_sha256": _sha256(manifest_path),
+        "rows": len(keys),
+        "tickers": int(keys["ticker"].nunique()),
+        "features": len(features),
+        "eligibility": {
+            "formula_id": ELIGIBILITY_FORMULA,
+            "candidate_rows_only": True,
+            "first_support": "first finite value per feature and ticker after the builder's own warmup",
+            "observed_warmup": "candidate trading rows before first finite support, recorded per feature and ticker",
+            "complete_through": "last finite supported candidate row per feature and ticker",
+            "absent_aggregate_rows_eligible": False,
+            "family_warmup_sessions": FAMILY_WARMUP_SESSIONS,
+        },
+        "leakage_status": leakage["status"],
+        "artifact_reconciliation": reconciliation,
+    }
+    _write_json(out / "analysis-summary.json", summary)
+    return summary
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -636,6 +1308,31 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--metadata", type=Path, required=True)
     validate.add_argument("--catalogue", type=Path, required=True)
     validate.add_argument("--out", type=Path, required=True)
+
+    build = commands.add_parser("build-candidate")
+    build.add_argument("--config", required=True)
+    build.add_argument("--manifest", type=Path, required=True)
+    build.add_argument("--as-of", required=True)
+    build.add_argument("--out-cache", type=Path, required=True)
+    build.add_argument("--out", type=Path, required=True)
+    build.add_argument("--compare-to", type=Path)
+    build.add_argument("--comparison-out", type=Path)
+
+    classify = commands.add_parser("taxonomy")
+    classify.add_argument("--config", required=True)
+    classify.add_argument("--snapshot", type=Path, required=True)
+    classify.add_argument("--manifest", type=Path, required=True)
+    classify.add_argument("--as-of", required=True)
+    classify.add_argument("--out", type=Path, required=True)
+
+    analysis = commands.add_parser("analyze")
+    analysis.add_argument("--config", required=True)
+    analysis.add_argument("--table", required=True)
+    analysis.add_argument("--snapshot", type=Path, required=True)
+    analysis.add_argument("--manifest", type=Path, required=True)
+    analysis.add_argument("--as-of", required=True)
+    analysis.add_argument("--recent-sessions", type=int, required=True)
+    analysis.add_argument("--out", type=Path, required=True)
     return parser
 
 
@@ -650,8 +1347,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = compare_refactor(args.before, args.after, args.out)
             log.info("%s compare-refactor -> %s", report["status"].upper(), args.out)
             return 0 if report["status"] == "pass" else 1
-        summary = validate_candidate(args.config, args.snapshot, args.metadata, args.catalogue, args.out)
-        log.info("%s validate-candidate -> %s", summary["status"].upper(), args.out)
+        if args.command == "validate-candidate":
+            summary = validate_candidate(args.config, args.snapshot, args.metadata, args.catalogue, args.out)
+        elif args.command == "build-candidate":
+            summary = build_candidate(
+                args.config,
+                args.manifest,
+                args.as_of,
+                args.out_cache,
+                args.out,
+                compare_to=args.compare_to,
+                comparison_out=args.comparison_out,
+            )
+        elif args.command == "taxonomy":
+            summary = taxonomy(args.config, args.snapshot, args.manifest, args.as_of, args.out)
+        else:
+            summary = analyze(args.config, args.table, args.snapshot, args.manifest, args.as_of, args.recent_sessions, args.out)
+        log.info("%s %s -> %s", summary["status"].upper(), args.command, args.out)
         return 0 if summary["status"] == "pass" else 1
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
         log.error("%s failed: %s", args.command, exc)

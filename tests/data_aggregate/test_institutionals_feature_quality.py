@@ -248,3 +248,237 @@ def test_validate_candidate_timeseries_fails_on_an_interior_hole(tmp_path: Path,
     assert result["status"] == "fail"
     assert result["metrics"]["n_holes"] == 1
     print("SANITY: the parquet-only time-series gate files a six-session interior feature hole without consulting live values.")
+
+
+def _write_manifest(path: Path, snapshot: Path, metadata: dict[str, object], store: object, as_of: str) -> None:
+    payload = {
+        "status": "pass",
+        "table": "cube_part_institutionals",
+        "as_of": as_of,
+        "snapshot": {
+            "frozen": str(snapshot.resolve()),
+            "sha256": metadata["snapshot_sha256"],
+            "rows": metadata["rows"],
+            "columns": metadata["columns"],
+            "dtypes": metadata["dtypes"],
+            "first_date": metadata["first_date"],
+            "last_date": metadata["last_date"],
+        },
+        "source_tables": [quality._source_metadata(store, table) for table in quality.SOURCE_TABLES],
+    }
+    path.write_text(json.dumps(quality.jsonable(payload)), encoding="utf-8")
+
+
+def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path: Path, monkeypatch: object) -> None:
+    baseline = tmp_path / "baseline.parquet"
+    source = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "ticker": ["AAA", "AAA"],
+            "f_ic_inst_holders": [1.0, 2.0],
+        }
+    )
+    baseline_meta = _write_snapshot(baseline, source)
+    store = _MetadataOnlyStore()
+    manifest = tmp_path / "input-manifest.json"
+    _write_manifest(manifest, baseline, baseline_meta, store, "2024-01-03")
+    calls: list[bool] = []
+
+    class _Step:
+        def __init__(self, context: object, config: object) -> None:
+            self.context = context
+
+        def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, object]:
+            calls.append(full)
+            future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
+            return pd.concat([source, future], ignore_index=True), SimpleNamespace(is_full=True)
+
+        def run(self, full: bool = False) -> None:
+            raise AssertionError("run/write path must not be called")
+
+    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (SimpleNamespace(), SimpleNamespace(store=store)))
+    monkeypatch.setattr(quality, "StepCubeInstitutionals", _Step)
+    candidate = tmp_path / "candidate.parquet"
+    out = tmp_path / "build"
+
+    assert (
+        quality.main(
+            [
+                "build-candidate",
+                "--config",
+                "configs",
+                "--manifest",
+                str(manifest),
+                "--as-of",
+                "2024-01-03",
+                "--out-cache",
+                str(candidate),
+                "--out",
+                str(out),
+                "--compare-to",
+                str(baseline),
+                "--comparison-out",
+                str(out / "comparison.json"),
+            ]
+        )
+        == 0
+    )
+    metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
+    assert calls == [True]
+    assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
+    assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
+    assert json.loads((out / "comparison.json").read_text(encoding="utf-8"))["status"] == "pass"
+    stale = json.loads(manifest.read_text(encoding="utf-8"))
+    stale["source_tables"][0]["rows"] += 1
+    stale_manifest = tmp_path / "stale-manifest.json"
+    stale_manifest.write_text(json.dumps(stale), encoding="utf-8")
+    assert (
+        quality.main(
+            [
+                "build-candidate",
+                "--config",
+                "configs",
+                "--manifest",
+                str(stale_manifest),
+                "--as-of",
+                "2024-01-03",
+                "--out-cache",
+                str(tmp_path / "must-not-build.parquet"),
+                "--out",
+                str(tmp_path / "must-not-build"),
+            ]
+        )
+        == 2
+    )
+    assert calls == [True]
+    print("SANITY: candidate build used build_panel(full=True), trimmed the future row, wrote no table, and matched the frozen baseline exactly.")
+
+
+def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.parquet"
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2024-01-02", periods=8),
+            "ticker": ["AAA"] * 8,
+            "f_ic_inst_ownership_pct": np.linspace(0.1, 0.8, 8),
+            "f_ic_inst_ownership_pct_vs_peers": np.linspace(-1.0, 1.0, 8),
+            "f_ic_shortvol_ratio_20d": np.linspace(0.2, 0.5, 8),
+            "f_ic_shortvol_ratio_20d_vs_peers": np.linspace(1.0, -1.0, 8),
+            "f_ic_inst_holders_xs": np.linspace(0.1, 0.9, 8),
+            "f_ic_act_initial_13d": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    )
+    metadata = _write_snapshot(baseline, frame)
+    manifest = tmp_path / "input-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            quality.jsonable(
+                {
+                    "table": "cube_part_institutionals",
+                    "as_of": "2024-01-11",
+                    "snapshot": {"frozen": str(baseline.resolve()), "sha256": metadata["snapshot_sha256"], **metadata},
+                    "source_tables": [],
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    candidate = tmp_path / "candidate.parquet"
+    frame.drop(columns=["f_ic_inst_holders_xs"]).to_parquet(candidate, index=False)
+    out = tmp_path / "taxonomy"
+
+    assert (
+        quality.main(
+            [
+                "taxonomy",
+                "--config",
+                "configs",
+                "--snapshot",
+                str(candidate),
+                "--manifest",
+                str(manifest),
+                "--as-of",
+                "2024-01-11",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    decisions = pd.read_csv(out / "feature-decisions.csv")
+    peers = pd.read_csv(out / "peer-diagnostics.csv")
+    schema = json.loads((out / "schema-diff.json").read_text(encoding="utf-8"))
+    assert len(decisions) == len(frame.columns) - 2
+    assert decisions.set_index("baseline_column").loc["f_ic_inst_holders_xs", "requested_decision"] == "remove_cross_sectional_normalization"
+    assert decisions.set_index("baseline_column").loc["f_ic_act_initial_13d", "kind"] == "event"
+    assert set(peers["characteristic"]) == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
+    assert schema["removed"] == ["f_ic_inst_holders_xs"]
+    assert (out / "model-fold-diagnostics.csv").exists()
+    print(
+        "SANITY: taxonomy reconciled every baseline feature, used explicit event/normalization decisions, and measured only the two provisional peers."
+    )
+
+
+def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_path: Path, monkeypatch: object) -> None:
+    snapshot = tmp_path / "candidate.parquet"
+    dates = pd.bdate_range("2024-01-02", periods=10)
+    frame = pd.DataFrame(
+        {
+            "date": np.tile(dates, 2),
+            "ticker": ["AAA"] * 10 + ["BBB"] * 10,
+            "f_ic_inst_holders": [np.nan, 1.0, 2.0, np.nan, 4.0, 5.0, 6.0, 7.0, np.nan, np.nan] + [np.nan] * 10,
+            "f_ic_act_initial_13d": [np.nan, np.nan, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [np.nan] * 10,
+        }
+    )
+    metadata = _write_snapshot(snapshot, frame)
+    manifest = tmp_path / "input-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            quality.jsonable(
+                {
+                    "table": "cube_part_institutionals",
+                    "as_of": "2024-01-15",
+                    "snapshot": {"frozen": str(snapshot.resolve()), "sha256": metadata["snapshot_sha256"], **metadata},
+                    "source_tables": [],
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "analysis"
+    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("live context consulted")))
+
+    assert (
+        quality.main(
+            [
+                "analyze",
+                "--config",
+                "configs",
+                "--table",
+                "cube_part_institutionals",
+                "--snapshot",
+                str(snapshot),
+                "--manifest",
+                str(manifest),
+                "--as-of",
+                "2024-01-15",
+                "--recent-sessions",
+                "3",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    coverage = pd.read_csv(out / "coverage.csv")
+    holder = coverage[(coverage["feature"] == "f_ic_inst_holders") & (coverage["ticker"] == "AAA")].iloc[0]
+    unsupported = coverage[(coverage["feature"] == "f_ic_inst_holders") & (coverage["ticker"] == "BBB")].iloc[0]
+    assert (holder["full_numerator"], holder["full_eligible_denominator"]) == (6, 7)
+    assert unsupported["full_bucket"] == "no-support"
+    assert set(coverage["full_bucket"]) <= {"100%", "70%-<100%", "50%-<70%", "30%-<50%", "<=30%", "no-support"}
+    assert json.loads((out / "leakage.json").read_text(encoding="utf-8"))["status"] == "abstain"
+    summary = json.loads((out / "analysis-summary.json").read_text(encoding="utf-8"))
+    assert summary["artifact_reconciliation"]["pass"] is True
+    print(
+        "SANITY: analysis counted only present candidate trading rows inside first/last support, isolated no-support, and reconciled every artifact."
+    )

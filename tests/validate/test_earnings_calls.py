@@ -17,7 +17,13 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
     sqlite_store.save(
         Tables.earnings_surprises,
-        pd.DataFrame({"ticker": ["AAA", "BBB"], "earnings_date": pd.to_datetime(["2024-05-15", "2024-05-15"])}),
+        pd.DataFrame(
+            {
+                "ticker": ["AAA", "BBB"],
+                "earnings_date": pd.to_datetime(["2024-05-15", "2024-05-15"]),
+                "eps_actual": [1.0, 1.0],
+            }
+        ),
     )
     useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
     sections = pd.DataFrame(
@@ -40,7 +46,8 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     sqlite_store.save(Tables.cube_part_text, cube)
 
     context = cast(Context, SimpleNamespace(store=sqlite_store))
-    result = check_earnings_calls(context, Tables.cube_part_text, config=OmegaConf.load("configs/validate.yml"))
+    config = OmegaConf.merge(OmegaConf.load("configs/validate.yml"), OmegaConf.create({"train": {"end_date": "2022-01-01"}}))
+    result = check_earnings_calls(context, Tables.cube_part_text, config=config)
     coverage = cast(dict, result.metrics["coverage"])
     assert result.status == "pass"
     assert coverage["coverage_100pct"] == 1

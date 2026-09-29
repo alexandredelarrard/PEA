@@ -14,6 +14,8 @@ from typing import Any
 import pandas as pd
 
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
+from src.data_store.schema import Tables
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 _PREP = (
@@ -90,6 +92,28 @@ def test_ingest_skips_already_ingested(tmp_path):
     print(f"  3 cached, 2 already in DB -> ingested only {sorted(got)} (1 new)")
     print("  re-run with all present -> 0 saved, no re-parse (no more 'nothing happens' stall)")
     print(f"  force=True -> re-ingests all {len(forced)}. Validated.")
+
+
+def test_source_replacement_invalidates_sentiment_and_embedding_caches() -> None:
+    cached = pd.DataFrame({"ticker": ["AAA", "AAA"], "quarter": ["2025Q1", "2025Q2"], "tag": ["qa", "qa"]})
+    embeddings = pd.DataFrame({"ticker": ["AAA", "AAA"], "quarter": ["2025Q1", "2025Q2"], "section": ["qa", "qa"], "turn_index": [0, 0]})
+    store = FakeStore({Tables.earnings_call_sentiment: cached, Tables.earning_calls_embedding: embeddings})
+    context = types.SimpleNamespace(store=store)
+    replacement = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "quarter": ["2025Q1", "2025Q1"],
+            "tag": ["prepared_remarks", "qa"],
+            "text": [_PREP, _QA],
+        }
+    )
+
+    save_earnings_call_sections(context, replacement)
+
+    assert set(store.t[Tables.earnings_call_sentiment.name]["quarter"]) == {"2025Q2"}
+    assert set(store.t[Tables.earning_calls_embedding.name]["quarter"]) == {"2025Q2"}
+    print("\n=== SANITY CHECK: transcript replacement invalidates derivatives ===")
+    print("  replacing AAA 2025Q1 deletes only that call's sentiment and embedding rows. Validated.")
 
 
 if __name__ == "__main__":

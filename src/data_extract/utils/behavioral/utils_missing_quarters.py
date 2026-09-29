@@ -6,7 +6,7 @@ THE single definition of "which earnings-call quarters is each ticker still miss
 Every recent-gap source answers the same question before it spends a request, so the
 answer is computed ONCE, here, and handed to each source in priority order:
 
-    missing = missing_quarters_by_ticker(context)      <- one pass over HF + DB + disk + JSON
+    missing = missing_quarters_by_ticker(context)      <- one pass over HF + DB + disk
     rows, filled = fetch_roic_transcripts(context, missing=missing)   <- 1. clean JSON API
     missing = remaining_after(missing, filled)         <- drop what Roic just supplied
     build_transcript_index_by_ticker(context, missing=missing)        <- 2. fool HTML, last resort
@@ -23,8 +23,7 @@ could drift between the two sources, and `hf_latest_quarter_by_ticker` -- which 
              `since` floor when HF has nothing) up to the latest quarter that ticker has
              ACTUALLY REPORTED per `earnings_surprises` (falling back to the calendar
              quarter of today - grace when unknown), and
-  have     : quarters already on disk, already in `earnings_call_sections` (any source),
-             or already in the fool JSON index.
+  have     : quality-valid quarters already on disk or in `earnings_call_sections`.
 Names that hold no earnings call at all (NO_EARNINGS_CALL_TICKERS) are always empty.
 """
 
@@ -43,7 +42,6 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
-from src.data_extract.utils.behavioral.utils_behavior import _index_path, _load_index
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_store.schema import Tables
@@ -104,9 +102,8 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
     return valid
 
 
-def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
-    """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when the
-    table is not created yet -> resume on disk + JSON coverage."""
+def _db_quarters_by_ticker(context: Context) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Return quality-valid and malformed DB quarters separately."""
     try:
         db = context.store.load(
             Tables.earnings_call_sections,
@@ -116,15 +113,18 @@ def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
         )
     except KeyError:
         # An optional/uninitialized store can expose an empty frame with no schema.
-        return {}
+        return {}, {}
     if db is None:
-        return {}
-    out: dict[str, set] = {}
+        return {}, {}
+    valid: dict[str, set[str]] = {}
+    malformed: dict[str, set[str]] = {}
     for (ticker, quarter), call in db.groupby(["ticker", "quarter"], sort=False):
         sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
         if assess_earnings_call_sections(sections).valid:
-            out.setdefault(str(ticker), set()).add(str(quarter))
-    return out
+            valid.setdefault(str(ticker), set()).add(str(quarter))
+        else:
+            malformed.setdefault(str(ticker), set()).add(str(quarter))
+    return valid, malformed
 
 
 def _released_quarter_idx_by_ticker(context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
@@ -136,7 +136,7 @@ def _released_quarter_idx_by_ticker(context: Context, lag_days: int = EARNINGS_R
     picks up an early reporter the calendar heuristic would miss. {} when the table is unavailable
     (callers then fall back to the calendar `end_idx`)."""
     try:
-        es = context.store.load("earnings_surprises", columns=["ticker", "earnings_date"])
+        es = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date"])
     except Exception:
         return {}
     if es is None or es.empty or not {"ticker", "earnings_date"}.issubset(es.columns):
@@ -162,13 +162,13 @@ def _missing_for(
     end_idx: int,
     cache: Path,
     have_db: dict[str, set],
-    have_json: dict[str, set],
+    malformed_db: dict[str, set] | None = None,
     released: dict[str, int] | None = None,
 ) -> set[str]:
     """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
     HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest quarter
     the ticker has ACTUALLY REPORTED (`released[tk]` from earnings_surprises; falls back to the
-    calendar `end_idx` when unknown), MINUS what's already on disk / in the DB / in the JSON index.
+    calendar `end_idx` when unknown), MINUS what's already quality-valid on disk / in the DB.
     Tickers that hold no earnings call (NO_EARNINGS_CALL_TICKERS, e.g. Berkshire) return {} so they
     are never fetched or flagged as missing. Shared by the MF quote-page discovery AND the Roic
     fallback so the 'what's missing' definition can't drift."""
@@ -178,6 +178,12 @@ def _missing_for(
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
     tk_end = released.get(tk, end_idx) if released is not None else end_idx  # actual release, per ticker
     required = set(_quarters_between(gap_start, tk_end))
+    # A malformed stored call remains recoverable even when it lies at or before the HF
+    # frontier; otherwise the frontier would permanently hide it from ROIC/Fool retries.
+    for quarter in (malformed_db or {}).get(tk, set()):
+        parsed = _parse_quarter(quarter)
+        if parsed is not None and _quarter_index(*parsed) <= tk_end:
+            required.add(quarter)
     # An index URL is discovery state, not transcript coverage. Only valid parsed DB/disk
     # content closes the gap; malformed cached/indexed calls are retried.
     have = _local_quarters(cache, tk) | have_db.get(tk, set())
@@ -213,15 +219,15 @@ def missing_quarters_by_ticker(
     grace_days: int = EARNINGS_CALL_REPORT_GRACE_DAYS,
 ) -> dict[str, list[str]]:
     """{ticker: [missing quarter labels, oldest-first]} — the recent-gap quarters each ticker still
-    needs after the HF backbone + whatever is already on disk / in the DB / JSON index. Empty entries
+    needs after the HF backbone + whatever is already quality-valid on disk / in the DB. Empty entries
     are dropped.
 
     THE single source of truth for 'what to fetch', shared by the Roic API layer and the
     Motley Fool discovery. Call it ONCE per run and pass the result down (see the module
-    docstring): it reads the HF parquet horizon, the sections table, the transcript cache
-    and the fool JSON index, so re-deriving it per source is both slow and a chance for
+    docstring): it reads the HF parquet horizon, the sections table and transcript cache,
+    so re-deriving it per source is both slow and a chance for
     the two sources to disagree about what is missing."""
-    roster = context.store.load("sp500_tickers", columns=["ticker"])
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
     assert roster is not None
     universe = list(cast(pd.Series, roster["ticker"]))
     if tickers is not None:
@@ -231,16 +237,11 @@ def missing_quarters_by_ticker(
     end_idx = _latest_expected_quarter_index(grace_days)
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
-    have_db = _db_quarters_by_ticker(context)
+    have_db, malformed_db = _db_quarters_by_ticker(context)
     released = _released_quarter_idx_by_ticker(context)  # latest ACTUALLY-reported quarter per ticker
-    index = _load_index(_index_path(context))
-    have_json: dict[str, set] = {}
-    for r in index.values():
-        have_json.setdefault(str(r["ticker"]), set()).add(str(r["quarter"]))
-
     out: dict[str, list[str]] = {}
     for tk in universe:
-        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache, have_db, have_json, released)
+        miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache, have_db, malformed_db, released)
         if miss:
             out[tk] = sort_quarters(miss)
     return out

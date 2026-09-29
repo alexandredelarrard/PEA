@@ -26,7 +26,6 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames,
     load_price_frames,
@@ -85,23 +84,22 @@ class StepCubeText(Step):
         return int(override) if override is not None else self._part.warmup_trading_days
 
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
+        return load_price_frames(self._store, peers={}, fields=self._FIELDS, since=since)
 
     def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
         changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
         per_call = sentiment_kpis_streamed(self._context)
-        embedding = embedding_kpis_streamed(self._context)
+        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
+        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
+        embedding = embedding_kpis_streamed(self._context, tenure, lineage)
         if per_call is not None and not per_call.empty and embedding is not None and not embedding.empty:
             per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
         if per_call is None or per_call.empty:
             return pd.DataFrame(columns=["date", "ticker"]), changed
 
-        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
-        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
         per_call = attach_issuer_identity(per_call, tenure, lineage)
         panel = build_earnings_call_feature_panel(
             None,
-            frames.peers,
             frames.trading_index,
             per_call=per_call,
             availability=frames.availability,

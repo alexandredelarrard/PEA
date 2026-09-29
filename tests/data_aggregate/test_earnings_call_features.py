@@ -159,10 +159,8 @@ def test_malformed_or_incomplete_cached_call_is_missing() -> None:
 
 
 def test_panel_columns_lifetime_and_missingness():
-    tickers = ["A", "B", "C", "D", "E"]
-    peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}  # all mutual peers
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(_sentiment_frame(), peers, idx, sections=_sections_frame())
+    panel = build_earnings_call_feature_panel(_sentiment_frame(), idx, sections=_sections_frame())
     assert not panel.empty
     expected = {
         "date",
@@ -213,14 +211,13 @@ def test_panel_columns_lifetime_and_missingness():
 
 def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
-    tickers = ["A", "B", "C", "D", "E"]
-    peers = {ticker: {} for ticker in tickers}
-    calendar = pd.bdate_range("2023-01-02", "2023-09-29")
-    old = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
+    calendar = pd.bdate_range("2021-01-04", "2023-09-29")
+    assert len(calendar) >= 500
+    old = build_earnings_call_feature_panel(_sentiment_frame(), calendar, sections=_sections_frame())
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q2")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
-    revised = build_earnings_call_feature_panel(revised_sentiment, peers, calendar, sections=_sections_frame())
+    revised = build_earnings_call_feature_panel(revised_sentiment, calendar, sections=_sections_frame())
 
     class _Store:
         def __init__(self, rows: pd.DataFrame):
@@ -240,7 +237,7 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
 
     store = _Store(old)
     last = pd.Timestamp(old["date"].max())
-    default_refresh = calendar[-5]
+    default_refresh = calendar[-130]
     late_refresh = pd.Timestamp("2023-05-02")
     window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
     write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=late_refresh, drop_empty=True)
@@ -339,9 +336,35 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
     )
     ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "entity_id": ["E2"]})], ignore_index=True)
     assert attach_issuer_identity(calls.tail(1), ambiguous, ambiguous_lineage).empty
+    unresolved = pd.concat(
+        [tenure, pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["9"], "valid_from": ["2024-01-01"], "valid_to": [None]})],
+        ignore_index=True,
+    )
+    assert attach_issuer_identity(calls.tail(1), unresolved, lineage).empty
     assert attach_issuer_identity(calls.tail(1).assign(ticker="UNKNOWN"), tenure, lineage).empty
     print("\n=== SANITY CHECK: strict issuer identity ===")
     print("  half-open tenures preserve OLD->NEW deltas; unknown or ambiguous mappings are excluded. Validated.")
+
+
+def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
+    calendar = pd.bdate_range("2024-01-01", periods=100)
+    calls = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "quarter": ["2023Q4", "2024Q1"],
+            "as_of": pd.to_datetime(["2024-01-05", "2024-02-02"]),
+            "ec_tone": [0.1, 0.2],
+            "ec_qa_gap": [0.3, np.nan],
+            "total_words": [1000.0, 1100.0],
+        }
+    )
+    panel = build_earnings_call_feature_panel(None, calendar, per_call=calls)
+    observed = panel[panel["ticker"].eq("AAA")].set_index("date")
+    assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_qa_gap"] == 0.3
+    assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_qa_gap"])
+    assert observed.loc[pd.Timestamp("2024-02-05"), "f_ec_tone"] == np.float32(0.2)
+    print("\n=== SANITY CHECK: missing KPI supersedes stale signal ===")
+    print("  the newer valid call preserves its observed tone but resets its absent Q&A gap to NaN. Validated.")
 
 
 if __name__ == "__main__":

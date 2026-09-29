@@ -33,6 +33,7 @@ from tqdm import tqdm
 
 from src.constants.constants import ROIC_EARNINGS_LIST_URL, ROIC_EARNINGS_TRANSCRIPT_URL, ROIC_REQUEST_PAUSE
 from src.context import Context
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
 from src.data_extract.utils.behavioral.utils_missing_quarters import (
     _parse_quarter,
     missing_quarters_by_ticker,
@@ -156,7 +157,7 @@ def fetch_roic_transcripts(
                 rows.append({"ticker": ticker, "quarter": q, "tag": tag, "as_of": as_of or avail.get(q), "url": url, "text": text})
             got.add(q)  # only a quality-valid quarter counts as filled
         if rows:  # persist per ticker (resume-safe)
-            saved = context.store.save(_TABLE, pd.DataFrame(rows))
+            saved = save_earnings_call_sections(context, pd.DataFrame(rows))
             total_saved += saved
             filled[ticker] = got
             logger.info("Roic AI %s: +%d sections across %d quarter(s) %s", ticker, saved, len(got), sorted(got))

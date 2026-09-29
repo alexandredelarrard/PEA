@@ -39,6 +39,10 @@ from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet, ingest_hf_transcripts
 from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
 from src.data_extract.utils.behavioral.utils_behavior import _get, _index_path, _load_index, _sleep_pace
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
+    invalidate_earnings_call_derivatives,
+    save_earnings_call_sections,
+)
 
 # THE one gap definition -- never re-derived here (see utils_missing_quarters' docstring)
 from src.data_extract.utils.behavioral.utils_missing_quarters import (
@@ -464,7 +468,7 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
         logger.info("MF ingest: nothing new — %d cached transcript(s) already ingested.", skipped)
         return 0
     df = pd.DataFrame(rows)
-    saved = context.store.save(Tables.earnings_call_sections, df)
+    saved = save_earnings_call_sections(context, df)
     logger.info(
         "MF ingest: +%d sections from %d NEW transcripts (%d cached skipped, %d tickers) -> '%s'",
         saved,
@@ -478,14 +482,11 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
 
 def _invalidate_derived_calls(context: Context, missing: dict[str, list[str]]) -> int:
     """Drop cached features for calls the shared quality gate says need recovery."""
-    invalidated = 0
-    for ticker, quarters in missing.items():
-        if not quarters:
-            continue
-        where = {"ticker": ticker, "quarter": quarters}
-        invalidated += context.store.delete(Tables.earnings_call_sentiment, where)
-        invalidated += context.store.delete(Tables.earning_calls_embedding, where)
-    return invalidated
+    calls = pd.DataFrame(
+        [(ticker, quarter) for ticker, quarters in missing.items() for quarter in quarters],
+        columns=["ticker", "quarter"],
+    )
+    return invalidate_earnings_call_derivatives(context, calls)
 
 
 def download_earnings_calls(

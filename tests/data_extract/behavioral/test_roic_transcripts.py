@@ -121,11 +121,28 @@ def test_db_covered_quarter_excluded_from_fool_gap():
     end = _quarter_index(2026, 2)  # latest expected
     floor = _quarter_index(2025, 1)  # gap floor (no HF for this name)
     have_db = {"FRT": {"2025Q2"}}  # Roic already saved 2025Q2
-    miss = _missing_for("FRT", hf_latest={}, floor_idx=floor, end_idx=end, cache=Path("/does/not/exist"), have_db=have_db, have_json={})
+    miss = _missing_for("FRT", hf_latest={}, floor_idx=floor, end_idx=end, cache=Path("/does/not/exist"), have_db=have_db)
     assert "2025Q2" not in miss, "a DB-covered (Roic) quarter must NOT be in the fool gap"
     assert "2025Q1" in miss, "an uncovered quarter stays in the gap"
     print("\n=== SANITY CHECK: Roic-covered quarter excluded from fool gap ===")
     print(f"  DB has FRT 2025Q2 -> fool gap = {sorted(miss)} (2025Q2 dropped, 2025Q1 kept). Validated.")
+
+
+def test_malformed_db_quarter_before_hf_frontier_is_retried() -> None:
+    floor = _quarter_index(2025, 1)
+    end = _quarter_index(2025, 2)
+    missing = _missing_for(
+        "FRT",
+        hf_latest={"FRT": (2025, 2)},
+        floor_idx=floor,
+        end_idx=end,
+        cache=Path("/does/not/exist"),
+        have_db={},
+        malformed_db={"FRT": {"2024Q4"}},
+    )
+    assert missing == {"2024Q4"}
+    print("\n=== SANITY CHECK: malformed pre-frontier call retry ===")
+    print("  malformed 2024Q4 remains in the ROIC->Fool gap even behind a 2025Q2 HF frontier. Validated.")
 
 
 @pytest.mark.skipif(roic._api_key() is None, reason="no ROIC_API_KEY -> live Roic check skipped")

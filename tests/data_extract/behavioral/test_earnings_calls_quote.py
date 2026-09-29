@@ -194,17 +194,17 @@ def test_missing_for_uses_released_and_skips_no_call_tickers(tmp_path):
     q = mq._quarter_index
     floor = q(2024, 1)  # since-floor Q1'24
     end_idx = q(2025, 3)  # calendar guess = Q3'25
-    hf, db, js = {}, {}, {}  # no HF, nothing on disk/DB/JSON
+    hf, db = {}, {}  # no HF, nothing on disk/DB
     # (1) a ticker that has only reported through Q1'25 -> required stops at Q1'25 (not the Q3'25 guess)
     released = {"AAA": q(2025, 1)}
-    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
+    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q2" not in miss and "2025Q3" not in miss, miss
     assert {"2024Q1", "2024Q4", "2025Q1"}.issubset(miss)
     # a ticker absent from earnings_surprises -> falls back to the calendar end_idx (Q3'25 included)
-    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
+    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q3" in miss_fb
     # (2) Berkshire (no earnings call) -> nothing to fetch, regardless of dates
-    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
+    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, {}, released) == set()
 
 
 def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):

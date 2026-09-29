@@ -22,6 +22,7 @@ from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
+    embedding_kpis_streamed,
     split_qa_exchanges,
     split_qa_pairs,
     split_turns,
@@ -379,6 +380,56 @@ def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance()
     assert missing["ec_qa_coherence_mean"].isna().all(), "missing embedding provenance is incomparable"
     print("\n=== SANITY CHECK: embedding comparability ===")
     print("  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.")
+
+
+def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> None:
+    rows = []
+    for ticker, quarter, as_of, shift in (
+        ("OLD", "2023Q4", "2023-11-01", 0.0),
+        ("NEW", "2024Q1", "2024-02-01", 0.2),
+    ):
+        for section, tag, vector in (
+            ("prepared_remarks", "prepared_remarks", [1.0, shift + 0.1]),
+            ("qa", "question", [1.0, shift + 0.2]),
+            ("qa", "answer", [0.9, shift + 0.3]),
+        ):
+            rows.append(
+                {
+                    "issuer_id": "E1",
+                    "ticker": ticker,
+                    "quarter": quarter,
+                    "as_of": as_of,
+                    "section": section,
+                    "tag": tag,
+                    "exchange_idx": 0,
+                    "embedding": vector,
+                    "model": "m1",
+                }
+            )
+    got = build_embedding_kpis(pd.DataFrame(rows))
+    assert got is not None
+    newest = got[got["ticker"].eq("NEW")].iloc[0]
+    assert pd.notna(newest["ec_qa_qq_distance"])
+    assert pd.notna(newest["ec_prep_qq_distance"])
+
+    store = FakeStore()
+    store.t["earning_calls_embedding"] = pd.DataFrame(rows).drop(columns="issuer_id")
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "NEW"],
+            "issuer_cik": ["1", "2"],
+            "valid_from": ["2020-01-01", "2024-01-01"],
+            "valid_to": ["2024-01-01", None],
+        }
+    )
+    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
+    streamed = embedding_kpis_streamed(cast(Context, FakeCtx(store)), tenure, lineage)
+    assert streamed is not None
+    streamed_new = streamed[streamed["ticker"].eq("NEW")].iloc[0]
+    assert pd.notna(streamed_new["ec_qa_qq_distance"])
+    assert pd.notna(streamed_new["ec_prep_qq_distance"])
+    print("\n=== SANITY CHECK: issuer-level embedding continuity ===")
+    print("  OLD 2023Q4 -> NEW 2024Q1 produces both consecutive-quarter distances for issuer E1. Validated.")
 
 
 if __name__ == "__main__":

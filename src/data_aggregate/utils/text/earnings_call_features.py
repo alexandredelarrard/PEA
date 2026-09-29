@@ -283,15 +283,18 @@ def attach_issuer_identity(
         candidates = candidates[candidates["valid_to"].isna() | (date < candidates["valid_to"])]
         if candidates.empty:
             continue
-        identifiers = {entity.get(str(cik)) for cik in candidates["issuer_cik"]}
-        identifiers.discard(None)
-        if len(identifiers) == 1:
-            out.at[row_index, "issuer_id"] = identifiers.pop()
+        identifiers = [entity.get(str(cik)) for cik in candidates["issuer_cik"]]
+        if identifiers and all(identifier is not None for identifier in identifiers) and len(set(identifiers)) == 1:
+            out.at[row_index, "issuer_id"] = identifiers[0]
     return out[out["issuer_id"].notna()].copy()
 
 
 def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Place each KPI on the first trading session after release for exactly 66 sessions."""
+    """Place each KPI after release for 66 sessions on a complete trading calendar.
+
+    ``idx`` must span the source calls; a tail-only index would restart an expired call.
+    ``StepCubeText`` therefore computes on the full calendar and slices only at write time.
+    """
     if per_call.empty or idx.empty:
         return pd.DataFrame(index=idx)
     calendar = pd.DatetimeIndex(idx).normalize()
@@ -354,7 +357,6 @@ def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
 
 def build_earnings_call_feature_panel(
     sentiment: pd.DataFrame | None,
-    peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     sections: pd.DataFrame | None = None,
     embeddings: pd.DataFrame | None = None,
@@ -367,7 +369,7 @@ def build_earnings_call_feature_panel(
     the bounded-memory stream to skip re-deriving cached call KPIs.
     """
     if per_call is None:
-        if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns:
+        if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns or sections is None:
             return pd.DataFrame(columns=["date", "ticker"])
         per_call = _per_call_kpis(sentiment, sections)
     if per_call is None or per_call.empty:
@@ -376,7 +378,7 @@ def build_earnings_call_feature_panel(
     if ekpi is not None and not ekpi.empty:
         per_call = per_call.merge(ekpi, on=["ticker", "quarter"], how="left")
     per_call = prepare_earnings_call_kpis(per_call)
-    return _feature_panel_from_prepared(per_call, peer_dict, trading_index, availability)
+    return _feature_panel_from_prepared(per_call, trading_index, availability)
 
 
 def prepare_earnings_call_kpis(per_call: pd.DataFrame) -> pd.DataFrame:
@@ -398,16 +400,13 @@ def prepare_earnings_call_kpis(per_call: pd.DataFrame) -> pd.DataFrame:
     previous_words = grouped["total_words"].shift(1)
     length_delta = np.log(ordered["total_words"] / previous_words.where(previous_words > 0)).where(consecutive)
     per_call.loc[ordered.index, "ec_length_delta"] = length_delta.replace([np.inf, -np.inf], np.nan)
-    prior_ticker = grouped["ticker"].shift(1)
-    comparable_embedding_predecessor = consecutive & ordered["ticker"].eq(prior_ticker)
     for column in ("ec_qa_qq_distance", "ec_prep_qq_distance"):
-        per_call.loc[ordered.index, column] = ordered[column].where(comparable_embedding_predecessor)
+        per_call.loc[ordered.index, column] = ordered[column].where(consecutive)
     return per_call
 
 
 def _feature_panel_from_prepared(
     per_call: pd.DataFrame,
-    peer_dict: dict,
     trading_index: pd.DatetimeIndex,
     availability: pd.DataFrame | None,
 ) -> pd.DataFrame:
@@ -415,15 +414,15 @@ def _feature_panel_from_prepared(
     for col in _KPI_COLS:
         if col not in per_call.columns:
             continue
-        sub = per_call.loc[per_call[col].notna(), ["as_of", "ticker", col]]
-        if sub.empty:
+        sub = per_call[["as_of", "ticker", col]]
+        if sub[col].notna().sum() == 0:
             continue
         frame = _daily_frame(sub, col, trading_index)
         if frame is not None and not frame.empty and frame.notna().any().any():
             fields[col] = frame
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    panel = build_peer_relative_panel(fields, peer_dict, emission={name: "raw" for name in fields}, availability=availability)
+    panel = build_peer_relative_panel(fields, {}, emission={name: "raw" for name in fields}, availability=availability)
     for name in _KPI_COLS:
         column = f"f_{name}"
         if column not in panel.columns:

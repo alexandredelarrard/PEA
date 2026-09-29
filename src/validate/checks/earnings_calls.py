@@ -80,6 +80,8 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     assert roster is not None
     release_ranges: dict[str, tuple[int, int]] = {}
     if releases is not None:
+        release_date = pd.to_datetime(releases["earnings_date"], errors="coerce")
+        releases = releases[release_date.le(pd.Timestamp.today().normalize())]
         for ticker, group in releases.groupby("ticker", sort=False):
             indices = [value for value in group["earnings_date"].map(_quarter_index) if value is not None]
             if indices:
@@ -287,7 +289,7 @@ def check_earnings_calls(
                                 field=f"{left} / {right}",
                             )
                         )
-        train_end = pd.Timestamp(str(settings.train_end))
+        train_end = pd.Timestamp(str(config.train.end_date))
         recent_mask = sample["date"] > train_end
         recent = numeric[recent_mask]
         history = numeric[~recent_mask]
@@ -345,7 +347,7 @@ def check_earnings_calls(
         "distributions": distributions,
         "high_spearman_correlations": correlation,
         "train_vs_recent": drift,
-        "train_end": str(settings.train_end),
+        "train_end": str(config.train.end_date),
         "latest_sessions": latest_metrics,
         "signal_sessions": EARNINGS_CALL_SIGNAL_SESSIONS,
         "sample_rows": int(len(sample)),

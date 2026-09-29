@@ -501,15 +501,48 @@ def embed_earnings_calls(
     return earliest
 
 
-def embedding_kpis_streamed(context: Context) -> pd.DataFrame | None:
-    """Derive the embedding KPIs from the cache PER TICKER (bounded memory: one ticker's vectors in
-    RAM at a time, never the whole 1536-dim table)."""
+def embedding_kpis_streamed(
+    context: Context,
+    symbol_tenure: pd.DataFrame | None = None,
+    entity_lineage: pd.DataFrame | None = None,
+) -> pd.DataFrame | None:
+    """Derive embedding KPIs in bounded issuer-sized batches.
+
+    When issuer lineage is available, predecessor calls under an old symbol remain comparable
+    to the first call under a new symbol. The ticker-only fallback is retained for isolated tests
+    and unseeded stores.
+    """
     store = context.store
     kparts = []
-    for ticker in store.distinct(Tables.earning_calls_embedding, "ticker"):
-        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": ticker}, optional=True)
+    groups: list[tuple[str | None, list[str]]] = []
+    if symbol_tenure is not None and not symbol_tenure.empty and entity_lineage is not None and not entity_lineage.empty:
+        unique_lineage = entity_lineage.dropna(subset=["cik", "entity_id"]).copy()
+        unique_lineage["cik"] = unique_lineage["cik"].astype(str)
+        unique_lineage = unique_lineage.groupby("cik", as_index=False).filter(lambda group: group["entity_id"].astype(str).nunique() == 1)
+        mapped = symbol_tenure.assign(issuer_cik=symbol_tenure["issuer_cik"].astype(str)).merge(
+            unique_lineage[["cik", "entity_id"]].drop_duplicates("cik"),
+            left_on="issuer_cik",
+            right_on="cik",
+            how="inner",
+        )
+        groups = [(str(issuer_id), sorted(group["symbol"].astype(str).unique())) for issuer_id, group in mapped.groupby("entity_id", sort=False)]
+    if not groups:
+        groups = [(None, [str(ticker)]) for ticker in store.distinct(Tables.earning_calls_embedding, "ticker")]
+
+    for issuer_id, tickers in groups:
+        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tickers}, optional=True)
         if emb is None:
             continue
+        if issuer_id is not None:
+            # Local import avoids a module cycle: the feature module imports build_embedding_kpis.
+            from src.data_aggregate.utils.text.earnings_call_features import attach_issuer_identity
+
+            calls = emb[["ticker", "quarter", "as_of"]].drop_duplicates(["ticker", "quarter"])
+            calls = attach_issuer_identity(calls, symbol_tenure, entity_lineage)
+            calls = calls[calls["issuer_id"].eq(issuer_id)]
+            if calls.empty:
+                continue
+            emb = emb.merge(calls[["ticker", "quarter", "issuer_id"]], on=["ticker", "quarter"], how="inner")
         k = build_embedding_kpis(emb)
         if k is not None and not k.empty:
             kparts.append(k)
@@ -522,16 +555,25 @@ def embedding_kpis_streamed(context: Context) -> pd.DataFrame | None:
 # Stage 2: cheap per-build KPIs (coherence + quarter-to-quarter drift)         #
 # --------------------------------------------------------------------------- #
 def _pooled_section_vectors(turns: pd.DataFrame, section: str) -> pd.DataFrame:
-    """Mean-pool a call's turn embeddings for `section` -> one vector per (ticker, quarter)."""
-    columns = ["ticker", "quarter", "as_of", "embedding"] + (["model"] if "model" in turns.columns else [])
+    """Mean-pool a call's turn embeddings for `section` -> one vector per call."""
+    identity = "issuer_id" if "issuer_id" in turns.columns else "ticker"
+    columns = ["ticker", "quarter", "as_of", "embedding"]
+    columns += [column for column in ("model", "issuer_id") if column in turns.columns]
     s = turns[turns["section"] == section][columns]
     if s.empty:
         return pd.DataFrame(columns=["ticker", "quarter", "as_of", "vec"])
     out = []
-    for (tkr, q), g in s.groupby(["ticker", "quarter"], sort=False):
+    group_columns = ["issuer_id", "ticker", "quarter"] if identity == "issuer_id" else ["ticker", "quarter"]
+    for key, g in s.groupby(group_columns, sort=False):
+        if identity == "issuer_id":
+            issuer, tkr, q = key
+        else:
+            tkr, q = key
+            issuer = tkr
         vecs = [np.asarray(v, dtype="float64") for v in g["embedding"]]
         out.append(
             {
+                identity: issuer,
                 "ticker": tkr,
                 "quarter": q,
                 "as_of": g["as_of"].iloc[0],
@@ -548,9 +590,10 @@ def _qq_distance(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
     if pooled.empty:
         return pd.DataFrame(columns=["ticker", "quarter", name])
     pooled["as_of"] = pd.to_datetime(pooled["as_of"])
-    pooled = pooled.sort_values(["ticker", "as_of"])
+    identity = "issuer_id" if "issuer_id" in pooled.columns else "ticker"
+    pooled = pooled.sort_values([identity, "as_of"])
     out = []
-    for tkr, grp in pooled.groupby("ticker", sort=False):
+    for _, grp in pooled.groupby(identity, sort=False):
         previous = None
         for r in grp.itertuples(index=False):
             distance = np.nan
@@ -559,7 +602,7 @@ def _qq_distance(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
                 comparable = r.model == previous.model and len(r.vec) == len(previous.vec)
                 if consecutive and comparable:
                     distance = round(1.0 - cosine(cast(np.ndarray, r.vec), cast(np.ndarray, previous.vec)), 6)
-            out.append({"ticker": tkr, "quarter": r.quarter, name: distance})
+            out.append({"ticker": r.ticker, "quarter": r.quarter, name: distance})
             previous = r
     return pd.DataFrame(out)
 

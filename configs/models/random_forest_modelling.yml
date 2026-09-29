@@ -30,7 +30,6 @@ random_forest:
   - f_current_ratio_vs_peers
   - f_fixed_cost_coverage_margin_vs_peers
   - f_book_yield_xs
-  - f_ic_inst_flow_to_mcap_xs
   - f_intrinsic_yield_xs
   - f_intangible_amortization_share_vs_peers
   - f_fwd_eps_yield_xs
@@ -42,7 +41,7 @@ random_forest:
   - f_ic_insider_distinct_buyers_120d
   - f_dividend_growth_xs
   - f_sales_yield_xs
-  - f_ic_inst_shares_chg_xs
+  - f_ic_inst_shares_chg
   - f_debtToEquity_vs_peers
   - amihud_63
   - f_gross_profitability_vs_peers
@@ -53,8 +52,8 @@ random_forest:
   - f_y_margin_vs_ttm_xs
   - f_asset_growth_vs_peers
   - f_asset_age_vs_peers
-  - f_ic_super_shares_chg_xs
-  - f_ic_inst_concentration_xs
+  - f_ic_super_shares_chg
+  - f_ic_inst_concentration
   - f_acquisition_intensity_vs_peers
   - f_aoci_to_equity_vs_peers
   - f_eps_surprise_last_xs
@@ -94,11 +93,9 @@ random_forest:
     - f_ic_inst_exit_ratio
     - f_employee_growth_xs
     - f_fwd_eps_yield_xs
-    - f_ic_inst_flow_to_mcap
     - f_gmroi_xs
     - f_ic_insider_distinct_buyers_120d
     - f_eps_expectation_growth_xs
-    - f_ic_inst_flow_to_mcap_xs
     - volume_trend_63
     - f_q_margin_vs_ttm_xs
     - f_y_earnings_growth_xs
@@ -112,7 +109,7 @@ random_forest:
     - f_debtToEquity_vs_peers
     - f_intrinsic_yield_xs
     - f_revenueGrowth_xs
-    - f_ic_inst_shares_chg_xs
+    - f_ic_inst_shares_chg
     - f_eps_surprise_4q_avg_xs
     - f_dividend_growth_vs_peers
     - f_capex_to_dep_xs

@@ -70,8 +70,6 @@ _EVENT = {
     "ic_insider_cluster_buy_120d",
     "ic_act_initial_13d",
     "ic_act_repeat_activist",
-    "ic_act_purpose_board",
-    "ic_act_purpose_strategic",
     "ic_bo_new_holder",
     "ic_bo_escalation_13g_to_13d",
     "ic_bo_de_escalation_13d_to_13g",
@@ -88,9 +86,8 @@ _COUNT = {
     "ic_super_exit_after_top10",
     "ic_insider_distinct_buyers_120d",
     "ic_bo_holder_count",
-    "ic_xs_bullish_actor_count",
 }
-_AGE = {"ic_act_campaign_age_days", "ic_sig_super_age_days", "ic_sig_insider_age_days", "ic_sig_act_age_days"}
+_AGE = {"ic_sig_super_age_days", "ic_sig_insider_age_days", "ic_sig_act_age_days"}
 _SUPPORT = {
     "ic_super_sp500_share",
     "ic_shortvol_market_coverage",
@@ -108,16 +105,12 @@ _BOUNDED = {
     "ic_insider_purchase_pct_prior",
     "ic_insider_net_buy_ratio_180d",
     "ic_ftd_persistence_30d",
-    "ic_xs_bullish_family_ratio",
-    "ic_xs_bearish_family_ratio",
-    "ic_xs_conflict_ratio",
 }
 _UNSCALED_LEVEL = {"ic_super_selection_score"}
 _NORMALIZED = {
     "ic_act_amendment_intensity",
     "ic_ftd_pct_so",
     "ic_ftd_to_adv20",
-    "ic_ftd_z252",
     "ic_insider_buy_shares_so_180d",
     "ic_insider_buy_value_mcap_180d",
     "ic_insider_buy_value_mcap_60d",
@@ -128,14 +121,12 @@ _NORMALIZED = {
     "ic_insider_owner_surprise_120d",
     "ic_insider_planned_sell_mcap_60d",
     "ic_inst_breadth_chg",
-    "ic_inst_flow_to_mcap",
     "ic_inst_shares_chg",
     "ic_inst_value_to_mcap",
     "ic_shortvol_acceleration",
     "ic_shortvol_ratio_20d",
     "ic_shortvol_ratio_5d",
     "ic_shortvol_ratio_60d",
-    "ic_shortvol_ratio_z252",
     "ic_shortvol_turnover_20d",
     "ic_sig_act_resid_ret_since",
     "ic_sig_act_ret_since",
@@ -152,7 +143,6 @@ _NORMALIZED = {
     "ic_super_breadth_chg",
     "ic_super_conviction_chg",
     "ic_super_conviction_weight_yoy",
-    "ic_super_flow_to_mcap",
     "ic_super_holders_yoy",
     "ic_super_rank_jump",
     "ic_super_shares_chg",

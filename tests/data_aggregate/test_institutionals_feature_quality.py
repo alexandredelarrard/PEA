@@ -120,25 +120,24 @@ def test_validate_candidate_is_snapshot_only_and_writes_all_checks(tmp_path: Pat
         {
             "date": dates,
             "ticker": ["AAA"] * 4 + ["BBB"] * 4,
-            "f_ic_xs_bullish_family_ratio": [0.1, 0.2, 0.3, 0.4, 0.8, 0.7, 0.6, 0.5],
-            "f_ic_xs_bearish_family_ratio": [0.9, 0.3, 0.8, 0.2, 0.1, 0.7, 0.4, 0.6],
-            "f_ic_xs_conflict_ratio": [0.05, 0.2, 0.1, 0.4, 0.3, 0.15, 0.45, 0.25],
+            "f_ic_inst_new_buyer_ratio": [0.1, 0.2, 0.3, 0.4, 0.8, 0.7, 0.6, 0.5],
+            "f_ic_inst_exit_ratio": [0.9, 0.3, 0.8, 0.2, 0.1, 0.7, 0.4, 0.6],
+            "f_ic_inst_concentration": [0.05, 0.2, 0.1, 0.4, 0.3, 0.15, 0.45, 0.25],
             "f_ic_demo": [2.0, 1.0, 4.0, 3.0, 1.0, 4.0, 2.0, 5.0],
         }
     )
+    declared_bounds = quality.load_spec(quality.read_config("configs"), quality.TABLE).bounds
+    rng = np.random.default_rng(7)
+    for column, (lower, upper) in declared_bounds.items():
+        if column not in frame:
+            width = upper - lower
+            frame[column] = lower + width * (0.1 + 0.8 * rng.random(len(frame)))
     metadata = _write_snapshot(snapshot, frame)
     metadata_path = tmp_path / "candidate-meta.json"
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     catalogue = tmp_path / "catalogue.json"
     catalogue.write_text(
-        json.dumps(
-            {
-                "f_ic_xs_bullish_family_ratio": "bounded cross-source vote",
-                "f_ic_xs_bearish_family_ratio": "bounded cross-source vote",
-                "f_ic_xs_conflict_ratio": "bounded cross-source conflict",
-                "f_ic_demo": "fixture feature",
-            }
-        ),
+        json.dumps({column: "fixture feature" for column in frame.columns if column not in {"date", "ticker"}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("live context consulted")))
@@ -204,9 +203,9 @@ def test_validate_candidate_timeseries_fails_on_an_interior_hole(tmp_path: Path,
         {
             "date": pd.bdate_range("2024-01-02", periods=30),
             "ticker": "AAA",
-            "f_ic_xs_bullish_family_ratio": bullish,
-            "f_ic_xs_bearish_family_ratio": ((index * 7) % 29) / 29,
-            "f_ic_xs_conflict_ratio": ((index * index + 3) % 31) / 31,
+            "f_ic_inst_new_buyer_ratio": bullish,
+            "f_ic_inst_exit_ratio": ((index * 7) % 29) / 29,
+            "f_ic_inst_concentration": ((index * index + 3) % 31) / 31,
         }
     )
     metadata = _write_snapshot(snapshot, frame)
@@ -216,9 +215,9 @@ def test_validate_candidate_timeseries_fails_on_an_interior_hole(tmp_path: Path,
     catalogue.write_text(
         json.dumps(
             {
-                "f_ic_xs_bullish_family_ratio": "bounded cross-source vote",
-                "f_ic_xs_bearish_family_ratio": "bounded cross-source vote",
-                "f_ic_xs_conflict_ratio": "bounded cross-source conflict",
+                "f_ic_inst_new_buyer_ratio": "bounded new-buyer share",
+                "f_ic_inst_exit_ratio": "bounded exiting-holder share",
+                "f_ic_inst_concentration": "bounded ownership concentration",
             }
         ),
         encoding="utf-8",

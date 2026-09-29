@@ -20,6 +20,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_features import (
+    _daily_frame,
     _per_call_kpis,
     build_earnings_call_feature_panel,
     sentiment_kpis_streamed,
@@ -148,42 +149,79 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     )
 
 
-def test_panel_columns_and_leak_free():
+def test_panel_columns_lifetime_and_missingness():
     tickers = ["A", "B", "C", "D", "E"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}  # all mutual peers
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
     panel = build_earnings_call_feature_panel(_sentiment_frame(), peers, idx, sections=_sections_frame())
     assert not panel.empty
-    for kpi in ["ec_tone", "ec_tone_delta", "ec_qa_gap", "ec_uncertainty", "ec_vocab_novelty", "ec_length_delta"]:
-        assert f"f_{kpi}_xs" in panel.columns, f"missing f_{kpi}_xs"
-        assert f"f_{kpi}_vs_peers" in panel.columns, f"missing f_{kpi}_vs_peers"
+    expected = {
+        "date",
+        "ticker",
+        "f_ec_tone",
+        "f_ec_tone_vs_hist",
+        "f_ec_qa_gap",
+        "f_ec_qa_gap_vs_hist",
+        "f_ec_uncertainty",
+        "f_ec_uncertainty_vs_hist",
+        "f_ec_qa_coherence_mean",
+        "f_ec_qa_coherence_mean_vs_hist",
+        "f_ec_tone_delta",
+        "f_ec_length_delta",
+        "f_ec_qa_qq_distance",
+        "f_ec_prep_qq_distance",
+    }
+    assert set(panel.columns) == expected
+    assert not any(c.endswith(("_xs", "_vs_peers")) for c in panel.columns)
 
     panel["date"] = pd.to_datetime(panel["date"])
     a = panel[panel["ticker"] == "A"]
     first_call = pd.Timestamp("2023-02-01")
     # LEAK-FREE: nothing for A on/before the first call date; signal appears the NEXT day
-    a_tone = a[a["f_ec_tone_xs"].notna()]
+    a_tone = a[a["f_ec_tone"].notna()]
     assert a_tone["date"].min() > first_call
     assert a_tone["date"].min() == pd.Timestamp("2023-02-02")
-    # PERSISTENCE: the Q1 signal is carried forward to a date between Q1 and Q2
-    mid = pd.Timestamp("2023-03-15")
-    assert mid in set(a_tone["date"])
+    # 66 trading sessions are inclusive; session 67 expires rather than becoming a fake zero.
+    one = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-01"], "ec_tone": [0.0]})
+    daily = _daily_frame(one, "ec_tone", idx)
+    live = daily["A"].dropna()
+    assert len(live) == 66
+    assert (live == 0.0).all(), "a genuine zero must survive"
+    assert pd.isna(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"]), "session 67 must be NaN"
 
     print("\n=== SANITY CHECK: earnings-call features ===")
-    print(
-        f"  panel {panel.shape[0]} rows; KPIs f_ec_{{tone,tone_delta,qa_gap,uncertainty,vocab_novelty,length_delta}}}}_{{{{xs,vs_peers}}}} present."
-    )
+    print(f"  panel {panel.shape[0]} rows; exactly 12 raw/issuer-history EC features and no peer/cross-sectional variants.")
     print(
         f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
-        "(call 2023-02-01 + 1 trading day), carried forward to 2023-03-15. "
-        "Length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
-        "arithmetic + vocab-novelty direction validated in test_per_call_kpi_arithmetic."
+        "(call 2023-02-01 + 1 trading day); genuine zero survives for 66 sessions and "
+        "session 67 is NaN."
     )
+
+
+def test_issuer_history_is_prior_only_and_requires_four_observations() -> None:
+    from src.data_aggregate.utils.text import earnings_call_features as ec
+
+    history = getattr(ec, "_issuer_history_zscore", None)
+    assert history is not None, "prior-only issuer-history normalization is missing"
+    calls = pd.DataFrame(
+        {
+            "ticker": ["A"] * 5,
+            "quarter": [f"202{i}Q1" for i in range(5)],
+            "as_of": pd.date_range("2020-01-01", periods=5, freq="365D"),
+            "ec_tone": [1.0, 2.0, 3.0, 4.0, 100.0],
+        }
+    )
+    got = history(calls, "ec_tone")
+    assert got.iloc[:4].isna().all()
+    expected = (100.0 - 2.5) / np.std([1.0, 2.0, 3.0, 4.0], ddof=1)
+    assert math.isclose(float(got.iloc[4]), expected)
+    print("\n=== SANITY CHECK: issuer history ===")
+    print("  first four calls are NaN; fifth uses only the prior four with sample std. Validated.")
 
 
 if __name__ == "__main__":
     test_per_call_kpi_arithmetic()
-    test_panel_columns_and_leak_free()
+    test_panel_columns_lifetime_and_missingness()
     print("\n=== SANITY CHECK: earnings-call features ===")
     print(
         "  length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "

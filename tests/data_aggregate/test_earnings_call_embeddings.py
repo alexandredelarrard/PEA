@@ -231,8 +231,8 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     q1, q2 = kpi[kpi["quarter"] == "2024Q1"], kpi[kpi["quarter"] == "2024Q2"]
     assert q1["ec_qa_answer_ratio_qq"].isna().all(), "first quarter has no prior -> ratio QoQ NaN"
     assert (q2["ec_qa_answer_ratio_qq"] == 0.0).all(), "answer/question ratio unchanged QoQ -> delta 0"
-    assert q1["ec_qa_qq_sim"].isna().all(), "first quarter has no prior"
-    assert q2["ec_prep_qq_sim"].notna().all() and q2["ec_prep_qq_sim"].between(-1, 1).all()
+    assert q1["ec_qa_qq_distance"].isna().all(), "first quarter has no prior"
+    assert q2["ec_prep_qq_distance"].notna().all() and q2["ec_prep_qq_distance"].between(0, 2).all()
 
     print("\n=== SANITY CHECK: per-turn earnings-call embeddings (cleaned) ===")
     print(
@@ -252,7 +252,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
         f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
         f"{kpi['ec_qa_coherence_mean'].mean():.3f}; answer/question ratio {kpi['ec_qa_answer_ratio'].mean():.2f} "
         f"(QoQ delta {float(q2['ec_qa_answer_ratio_qq'].iloc[0]):.2f}); QoQ prepared drift "
-        f"2024Q2 {q2['ec_prep_qq_sim'].mean():.3f} (new AI-platform topic added)."
+        f"2024Q2 {q2['ec_prep_qq_distance'].mean():.3f} (new AI-platform topic added)."
     )
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
 
@@ -331,6 +331,36 @@ def test_force_reembed_drops_stale_turns():
     print(
         f"  injected 1 orphaned turn (seq=999); force re-embed dropped it -> {len(store.t[tbl])} rows == fresh parse {n0}. Stale turns cannot linger."
     )
+
+
+def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance() -> None:
+    rows = []
+    for quarter, value, model in (("2024Q1", [1.0, 0.0], "m1"), ("2024Q3", [0.0, 1.0], "m1")):
+        for seq, tag in enumerate(("question", "answer")):
+            rows.append(
+                {
+                    "ticker": "AAA",
+                    "quarter": quarter,
+                    "section": "qa",
+                    "tag": tag,
+                    "exchange_idx": 0,
+                    "embedding": value,
+                    "model": model,
+                    "as_of": "2024-01-01",
+                    "seq": seq,
+                }
+            )
+    got = build_embedding_kpis(pd.DataFrame(rows))
+    assert got is not None
+    assert got["ec_qa_qq_distance"].isna().all(), "a missing Q2 must not bridge Q1 to Q3"
+
+    mixed = pd.DataFrame(rows)
+    mixed.loc[mixed.index[-1], "model"] = "m2"
+    bad = build_embedding_kpis(mixed)
+    assert bad is not None
+    assert bad["ec_qa_coherence_mean"].isna().all(), "mixed embedding models are incomparable"
+    print("\n=== SANITY CHECK: embedding comparability ===")
+    print("  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.")
 
 
 if __name__ == "__main__":

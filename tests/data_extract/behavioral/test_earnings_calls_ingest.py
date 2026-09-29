@@ -47,7 +47,7 @@ def _seed_cache(tmp_path, pairs):
 def _ctx(tmp_path, existing_keys) -> Any:
     existing = pd.DataFrame(
         [
-            {"ticker": ticker, "quarter": quarter, "tag": tag, "text": text}
+            {"ticker": ticker, "quarter": quarter, "tag": tag, "as_of": "2025-05-01", "text": text}
             for ticker, quarter in existing_keys
             for tag, text in (("prepared_remarks", _PREP), ("qa", _QA))
         ]
@@ -139,6 +139,7 @@ def test_forced_malformed_refresh_replaces_old_signal_with_null_marker(tmp_path)
     assert len(marker) == 2
     assert set(marker["tag"]) == {"prepared_remarks", "qa"}
     assert set(marker["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert set(pd.to_datetime(marker["as_of"])) == {pd.Timestamp("2025-05-01")}
     assert marker[["sent_pos", "sent_neg", "sent_neu"]].isna().all().all()
     assert context.store.t[Tables.earning_calls_embedding.name].empty
     print("\n=== SANITY CHECK: malformed forced refresh ===")

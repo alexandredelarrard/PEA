@@ -32,6 +32,29 @@ def save_earnings_call_sections(context: Context, rows: pd.DataFrame) -> int:
     """
     if rows.empty:
         return 0
+    rows = rows.copy()
+    previous_dates: dict[tuple[str, str], object] = {}
+    if "as_of" in context.store.columns(Tables.earnings_call_sections):
+        for ticker, group in rows[["ticker", "quarter"]].drop_duplicates().groupby("ticker", sort=False):
+            previous = context.store.load(
+                Tables.earnings_call_sections,
+                ["ticker", "quarter", "as_of"],
+                where={"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()},
+                optional=True,
+            )
+            if previous is None:
+                continue
+            for (old_ticker, old_quarter), call in previous.groupby(["ticker", "quarter"], sort=False):
+                dates = pd.to_datetime(call["as_of"], errors="coerce").dropna()
+                if not dates.empty:
+                    previous_dates[(str(old_ticker), str(old_quarter))] = dates.iloc[0]
+    if "as_of" not in rows:
+        rows["as_of"] = pd.NaT
+    missing_date = pd.to_datetime(rows["as_of"], errors="coerce").isna()
+    recovered_dates = pd.to_datetime(
+        [previous_dates.get((str(ticker), str(quarter))) for ticker, quarter in rows.loc[missing_date, ["ticker", "quarter"]].to_numpy()]
+    )
+    rows.loc[missing_date, "as_of"] = recovered_dates
     invalidate_earnings_call_derivatives(context, rows)
     saved = context.store.save(Tables.earnings_call_sections, rows)
     markers = []

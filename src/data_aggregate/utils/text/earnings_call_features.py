@@ -181,6 +181,9 @@ def acknowledge_earnings_call_invalidations(context: Context) -> int:
     )
     if pending is None or pending.empty:
         return 0
+    pending = pending[pd.to_datetime(pending["as_of"], errors="coerce").notna()].copy()
+    if pending.empty:
+        return 0
     pending["model"] = EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL
     return context.store.save(Tables.earnings_call_sentiment, pending)
 

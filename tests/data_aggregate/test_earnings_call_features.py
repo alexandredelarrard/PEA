@@ -203,12 +203,13 @@ def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, mo
     marker = pd.DataFrame(
         [
             {
-                "ticker": "A",
+                "ticker": ticker,
                 "quarter": "2023Q1",
                 "tag": tag,
-                "as_of": "2023-02-01",
+                "as_of": as_of,
                 "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
             }
+            for ticker, as_of in (("A", "2023-02-01"), ("B", None))
             for tag in ("prepared_remarks", "qa")
         ]
     )
@@ -224,10 +225,14 @@ def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, mo
     assert acknowledge_earnings_call_invalidations(context) == 2
     handled = sqlite_store.load(Tables.earnings_call_sentiment)
     assert handled is not None
-    assert set(handled["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL}
+    by_ticker = handled.groupby("ticker")["model"].first().to_dict()
+    assert by_ticker == {
+        "A": EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
+        "B": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+    }
     assert score_earnings_calls(context) is None
     print("\n=== SANITY CHECK: malformed refresh handoff ===")
-    print("  invalid source date remains pending across scoring and is acknowledged only after the caller completes the cube write. Validated.")
+    print("  a dated invalidation is acknowledged only after the cube write; an undated marker remains pending. Validated.")
 
 
 def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_store, monkeypatch) -> None:

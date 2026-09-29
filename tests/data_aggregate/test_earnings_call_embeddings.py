@@ -18,10 +18,12 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import EARNINGS_CALL_EMBEDDING_MODEL
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
+    embedding_kpis_streamed,
     split_qa_exchanges,
     split_qa_pairs,
     split_turns,
@@ -216,6 +218,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
         "model",
         "run_at",
     }.issubset(emb.columns)
+    assert set(emb["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
     calls_after_first = stub.n_calls
     embed_earnings_calls(ctx, client=stub)  # re-run: incremental
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
@@ -224,13 +227,15 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     kpi = build_embedding_kpis(emb)
     assert kpi is not None
     kpi = kpi.sort_values(["ticker", "quarter"]).reset_index(drop=True)
-    assert (kpi["ec_n_qa"] == 2).all(), "2 exchanges per call"
-    assert (kpi["ec_n_answers"] == 3).all(), "3 answer turns per call (2 in ex0 + 1 in ex1)"
-    assert (kpi["ec_qa_answer_ratio"] == 1.5).all(), "3 answers / 2 questions = 1.5"
+    assert set(kpi) == {
+        "ticker",
+        "quarter",
+        "ec_qa_coherence_mean",
+        "ec_qa_qq_distance",
+        "ec_prep_qq_distance",
+    }
     assert kpi["ec_qa_coherence_mean"].between(-1, 1).all()
     q1, q2 = kpi[kpi["quarter"] == "2024Q1"], kpi[kpi["quarter"] == "2024Q2"]
-    assert q1["ec_qa_answer_ratio_qq"].isna().all(), "first quarter has no prior -> ratio QoQ NaN"
-    assert (q2["ec_qa_answer_ratio_qq"] == 0.0).all(), "answer/question ratio unchanged QoQ -> delta 0"
     assert q1["ec_qa_qq_distance"].isna().all(), "first quarter has no prior"
     assert q2["ec_prep_qq_distance"].notna().all() and q2["ec_prep_qq_distance"].between(0, 2).all()
 
@@ -250,8 +255,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     )
     print(
         f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
-        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; answer/question ratio {kpi['ec_qa_answer_ratio'].mean():.2f} "
-        f"(QoQ delta {float(q2['ec_qa_answer_ratio_qq'].iloc[0]):.2f}); QoQ prepared drift "
+        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; QoQ prepared drift "
         f"2024Q2 {q2['ec_prep_qq_distance'].mean():.3f} (new AI-platform topic added)."
     )
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
@@ -333,6 +337,42 @@ def test_force_reembed_drops_stale_turns():
     )
 
 
+def test_embedding_resume_requires_expected_model_and_reconciles_without_force() -> None:
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    first = StubClient()
+    embed_earnings_calls(ctx, client=first)
+    table = store.t["earning_calls_embedding"]
+    table["model"] = "legacy-or-other-model"
+    stale = table.iloc[[0]].copy()
+    stale["seq"] = 999
+    store.t["earning_calls_embedding"] = pd.concat([table, stale], ignore_index=True)
+
+    second = StubClient()
+    embed_earnings_calls(ctx, client=second)
+
+    refreshed = store.t["earning_calls_embedding"]
+    assert second.n_calls == 4
+    assert set(refreshed["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
+    assert not refreshed["seq"].eq(999).any()
+    print("\n=== SANITY CHECK: embedding cache provenance ===")
+    print("  wrong-model calls are not considered complete; normal resume re-embeds and removes orphaned legacy turns. Validated with a stub.")
+
+
+def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> None:
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    embed_earnings_calls(ctx, client=StubClient())
+    assert len(store.t["earning_calls_embedding"]) > 0
+    store.t["earnings_call_sections"]["text"] = "Thanks."
+    embed_earnings_calls(ctx, client=StubClient(), force=True)
+    assert store.t["earning_calls_embedding"].empty
+    print("\n=== SANITY CHECK: empty force re-parse ===")
+    print("  a call that now parses to zero turns deletes every previously cached turn. Validated.")
+
+
 def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance() -> None:
     rows = []
     for quarter, value, model in (("2024Q1", [1.0, 0.0], "m1"), ("2024Q3", [0.0, 1.0], "m1")):
@@ -359,8 +399,54 @@ def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance()
     bad = build_embedding_kpis(mixed)
     assert bad is not None
     assert bad["ec_qa_coherence_mean"].isna().all(), "mixed embedding models are incomparable"
+    missing_model = pd.DataFrame(rows).assign(model=None)
+    missing = build_embedding_kpis(missing_model)
+    assert missing is not None
+    assert missing["ec_qa_coherence_mean"].isna().all(), "missing embedding provenance is incomparable"
     print("\n=== SANITY CHECK: embedding comparability ===")
     print("  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.")
+
+
+def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> None:
+    rows = []
+    for ticker, quarter, as_of, shift in (
+        ("OLD", "2023Q4", "2023-11-01", 0.0),
+        ("NEW", "2024Q1", "2024-02-01", 0.2),
+    ):
+        for section, tag, vector in (
+            ("prepared_remarks", "prepared_remarks", [1.0, shift + 0.1]),
+            ("qa", "question", [1.0, shift + 0.2]),
+            ("qa", "answer", [0.9, shift + 0.3]),
+        ):
+            rows.append(
+                {
+                    "issuer_id": "E1",
+                    "ticker": ticker,
+                    "quarter": quarter,
+                    "as_of": as_of,
+                    "section": section,
+                    "tag": tag,
+                    "exchange_idx": 0,
+                    "embedding": vector,
+                    "model": EARNINGS_CALL_EMBEDDING_MODEL,
+                }
+            )
+    got = build_embedding_kpis(pd.DataFrame(rows))
+    assert got is not None
+    newest = got[got["ticker"].eq("NEW")].iloc[0]
+    assert pd.notna(newest["ec_qa_qq_distance"])
+    assert pd.notna(newest["ec_prep_qq_distance"])
+
+    store = FakeStore()
+    store.t["earning_calls_embedding"] = pd.DataFrame(rows).drop(columns="issuer_id")
+    identity = pd.DataFrame({"ticker": ["OLD", "NEW"], "quarter": ["2023Q4", "2024Q1"], "issuer_id": ["E1", "E1"]})
+    streamed = embedding_kpis_streamed(cast(Context, FakeCtx(store)), identity)
+    assert streamed is not None
+    streamed_new = streamed[streamed["ticker"].eq("NEW")].iloc[0]
+    assert pd.notna(streamed_new["ec_qa_qq_distance"])
+    assert pd.notna(streamed_new["ec_prep_qq_distance"])
+    print("\n=== SANITY CHECK: issuer-level embedding continuity ===")
+    print("  OLD 2023Q4 -> NEW 2024Q1 produces both consecutive-quarter distances for issuer E1. Validated.")
 
 
 if __name__ == "__main__":

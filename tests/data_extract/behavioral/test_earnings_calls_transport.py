@@ -111,9 +111,18 @@ def test_hf_failure_does_not_stop_roic_and_fool(monkeypatch):
     monkeypatch.setattr(fec, "build_transcript_index_by_ticker", _fool_index)
     monkeypatch.setattr(fec, "download_transcripts", lambda *a, **k: ran.append("download"))
 
-    fec.download_earnings_calls(context=cast(Any, None), tickers=["AIG"])  # must NOT raise
+    deleted: list[tuple[object, dict[str, object]]] = []
+
+    def _delete(table, where):
+        deleted.append((table, where))
+        return 1
+
+    context = types.SimpleNamespace(store=types.SimpleNamespace(delete=_delete))
+    fec.download_earnings_calls(context=cast(Any, context), tickers=["AIG"])  # must NOT raise
 
     assert ran == ["hf", "roic", "fool", "download"], f"every stage must still run, got {ran}"
+    assert len(deleted) == 2
+    assert all(where == {"ticker": "AIG", "quarter": ["2026Q1", "2026Q2"]} for _, where in deleted)
 
     print("\n=== SANITY CHECK: HF failure is non-fatal ===")
     print(

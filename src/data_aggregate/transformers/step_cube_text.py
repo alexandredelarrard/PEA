@@ -5,14 +5,13 @@ Earnings-call TEXT analysis -> `cube_part_text`.
 
 Two independent passes over the transcript archive:
 
-  SENTIMENT   local FinBERT-tone + Loughran-McDonald scoring (cached/incremental in
-              `earnings_call_sentiment`, so the GPU pass runs once), then the per-call KPIs:
-              tone level and momentum, the Q&A-vs-scripted candor gap, the hedging
-              (uncertainty) ratio, disclosure-length change and vocabulary novelty.
-  EMBEDDING   OpenAI embeddings (cached/incremental; a no-op without an API key), then the
-              Q&A-coherence (cosine of a question vs its answer) and quarter-to-quarter
-              narrative-drift KPIs. Independent of the sentiment pass -- its call dates come
-              from the embedding rows' own `as_of` -- so it needs no GPU tone model.
+SENTIMENT   local FinBERT-tone + Loughran-McDonald scoring (cached/incremental in
+            `earnings_call_sentiment`, so the GPU pass runs once), then tone, momentum,
+            Q&A-vs-scripted candor, hedging, and disclosure-length KPIs.
+EMBEDDING   OpenAI embeddings (cached/incremental; a no-op without an API key), then
+            Q&A coherence and consecutive-quarter narrative drift. The final contract
+            contains raw levels plus four prior-only issuer-history scores; peer and
+            cross-sectional variants are intentionally absent.
 
 MEMORY: neither pass preloads `earnings_call_sections`. Scoring streams the text per ticker
 and the KPIs stream back per ticker. Loading that table whole is precisely what OOM-killed
@@ -25,10 +24,8 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, plan_window, write_part
-from src.data_aggregate.utils.common.panel_merge import PanelMerger
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
     PriceFrames,
     load_price_frames,
@@ -39,7 +36,8 @@ from src.data_aggregate.utils.text.earnings_call_embeddings import (
     embedding_kpis_streamed,
 )
 from src.data_aggregate.utils.text.earnings_call_features import (
-    build_earnings_call_embedding_panel,
+    acknowledge_earnings_call_invalidations,
+    attach_issuer_identity,
     build_earnings_call_feature_panel,
     score_earnings_calls,
     sentiment_kpis_streamed,
@@ -61,54 +59,58 @@ class StepCubeText(Step):
         self._store = context.store
 
     def run(self, full: bool = False) -> None:
-        window = plan_window(self._store, Tables.cube_part_text, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store))
-        frames = self._load_frames(window.since)
-
-        merger = PanelMerger(self._log, anchor=frames.skeleton())
-        merger.add(self._sentiment_panel(frames), "earnings-call sentiment", "No earnings-call sentiment cache -> sentiment features skipped.")
-        merger.add(
-            self._embedding_panel(frames),
-            "earnings-call embedding",
-            "No earnings-call embeddings -> embedding features skipped (no transcripts / model or API key absent).",
+        calendar = load_trading_calendar(self._store)
+        window = plan_window(
+            self._store,
+            Tables.cube_part_text,
+            full=full,
+            warmup=self._warmup(),
+            trading_index=calendar,
+            refresh=PART_REFRESH_TRADING_DAYS,
         )
-
-        panel = merger.to_long()
+        # EC histories are sparse and five-year/prior-call based. Compute on the same full
+        # calendar for both paths; `write_part` alone slices the incremental tail.
+        frames = self._load_frames(None)
+        panel, changed = self._feature_panel(frames)
         del frames
-        n = write_part(self._store, Tables.cube_part_text, panel, window, drop_empty=True)
+        refresh_from = min(changed) + pd.offsets.BDay(1) if changed else None
+        if refresh_from is not None and window.refresh_from is not None:
+            refresh_from = min(refresh_from, window.refresh_from)
+        if panel.empty and refresh_from is not None and self._store.columns(Tables.cube_part_text):
+            # A forced source refresh can invalidate the only usable call.  There are no
+            # replacement rows to hand to ``write_part``, but the stale persisted tail must
+            # still be deleted from the first affected session onward.
+            self._store.append_tail(Tables.cube_part_text, panel, refresh_from, inclusive=True)
+            acknowledge_earnings_call_invalidations(self._context)
+            return
+        n = write_part(self._store, Tables.cube_part_text, panel, window, refresh_from=refresh_from, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
+        acknowledge_earnings_call_invalidations(self._context)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
+        return load_price_frames(self._store, peers={}, fields=self._FIELDS, since=since)
 
-    def _sentiment_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
-        score_earnings_calls(self._context)  # lazy, iterative, cache-incremental
-        per_call = sentiment_kpis_streamed(self._context)  # per-ticker stream, bounded memory
+    def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
+        changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
+        per_call = sentiment_kpis_streamed(self._context)
         if per_call is None or per_call.empty:
-            return None
-        return build_earnings_call_feature_panel(
+            return pd.DataFrame(columns=["date", "ticker"]), changed
+
+        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
+        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
+        per_call = attach_issuer_identity(per_call, tenure, lineage)
+        embedding = embedding_kpis_streamed(self._context, per_call[["ticker", "quarter", "issuer_id"]])
+        if embedding is not None and not embedding.empty:
+            per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
+        panel = build_earnings_call_feature_panel(
             None,
-            frames.peers,
             frames.trading_index,
-            embeddings=None,
             per_call=per_call,
             availability=frames.availability,
         )
-
-    def _embedding_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
-        embed_earnings_calls(self._context)  # lazy, no-op without an API key
-        ekpi, asof = embedding_kpis_streamed(self._context)  # per-ticker stream, bounded memory
-        if ekpi is None or ekpi.empty:
-            return None
-        return build_earnings_call_embedding_panel(
-            None,
-            frames.peers,
-            frames.trading_index,
-            sections=asof,
-            ekpi=ekpi,
-            availability=frames.availability,
-        )
+        return panel, changed

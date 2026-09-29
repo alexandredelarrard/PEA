@@ -834,9 +834,35 @@ EARNINGS_CALL_TAG_PREPARED = "prepared"  # a prepared-remarks (scripted) managem
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
+# A usable call needs both scored sections and at least this many words after removing
+# greetings/courtesy boilerplate. Model-facing signals live for one quarter only.
+EARNINGS_CALL_MIN_CLEAN_WORDS = 100
+EARNINGS_CALL_SIGNAL_SESSIONS = 66
+EARNINGS_CALL_FEATURES = (
+    "ec_tone",
+    "ec_tone_vs_hist",
+    "ec_qa_gap",
+    "ec_qa_gap_vs_hist",
+    "ec_uncertainty",
+    "ec_uncertainty_vs_hist",
+    "ec_qa_coherence_mean",
+    "ec_qa_coherence_mean_vs_hist",
+    "ec_tone_delta",
+    "ec_length_delta",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+)
 
 # SENTIMENT ANALYSIS
 FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
+# Bump when transcript preprocessing changes.  The sentiment cache PK does not
+# include the model, so a new label deliberately makes existing rows eligible
+# for one-time rescoring and replacement.
+EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "clean-v1"
+EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
+EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
+EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
+EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

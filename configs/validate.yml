@@ -18,6 +18,14 @@ validate:
     feature_cell_agreement: 0.99
     edge_rank_correlation: 0.99
 
+  earnings_calls:
+    signal_sessions: 66
+    redundancy_spearman_abs: 0.90
+    redundancy_fail_abs: 0.985
+    drift_psi_warn: 0.25
+    missingness_delta_warn: 0.10
+    recent_sessions: 20
+
   defaults:
     redundancy_r: 0.985
     # Exact equality is asked as `a != b`, not `|a-b| > tol`: "one column under two names" is a
@@ -163,6 +171,20 @@ validate:
     # amihud_63 == 0.006135 (rank 3 of 489) for 347. A stable rank is a stable value.
     cube_part_momentum:
       cadence: daily
+
+    # Earnings-call values are event observations, held for exactly 66 trading sessions
+    # after the one-session publication lag. Missing calls remain NaN; no absence-as-zero
+    # policy applies to this part, and no peer/cross-sectional suffix is emitted.
+    cube_part_text:
+      cadence: quarterly
+      bounds:
+        f_ec_tone: [-1.0, 1.0]
+        f_ec_qa_gap: [-2.0, 2.0]
+        f_ec_uncertainty: [0.0, 1.0]
+        f_ec_qa_coherence_mean: [-1.0, 1.0]
+        f_ec_tone_delta: [-2.0, 2.0]
+        f_ec_qa_qq_distance: [0.0, 2.0]
+        f_ec_prep_qq_distance: [0.0, 2.0]
 
     # 249 legs, 3,315,035 rows -- the widest part in the database. Both standardised views
     # exist here and the peer clip is legible in the data itself: of the 118 `_vs_peers` legs,

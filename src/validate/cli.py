@@ -132,6 +132,11 @@ leakage = _command("leakage", checks.check_leakage, "Horizon recession on the la
 clip = _command("clip", checks.check_clip, "On-clip share per peer-z leg and tie mass per percentile leg.")
 timeseries = _command("timeseries", checks.check_timeseries, "Per (ticker, leg): jumps, holes and frozen spells over the leg's own support.")
 bounds = _command("bounds", checks.check_bounds, "Declared [lo, hi] per leg; abstains when the table declares none.")
+earnings_calls = _command(
+    "earnings-calls",
+    checks.check_earnings_calls,
+    "EC transcript coverage, malformed calls, exact schema, distributions, redundancy and recent drift.",
+)
 
 
 @cli.command(help="Live columns vs a feature catalogue, asserted in BOTH directions.")

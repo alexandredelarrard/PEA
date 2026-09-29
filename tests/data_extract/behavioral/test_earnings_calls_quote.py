@@ -143,7 +143,9 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     # pre-seed CCC's gap quarter on disk so it is already complete
     ccc_dir = tmp_path / "call_transcripts" / "CCC"
     ccc_dir.mkdir(parents=True)
-    (ccc_dir / f"{end_q}.html").write_text("cached", encoding="utf-8")
+    useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    cached = f'<div class="transcript-content">CALL PARTICIPANTS\nJane Doe -- CEO\n{useful}\nQuestions and Answers\n{useful}</div>'
+    (ccc_dir / f"{end_q}.html").write_text(cached, encoding="utf-8")
 
     bbb_page = "x " + _t(f"{y}/06/01", f"bbb-q{q}-{y}")  # BBB's latest-quarter link
     calls: list[str] = []
@@ -192,17 +194,17 @@ def test_missing_for_uses_released_and_skips_no_call_tickers(tmp_path):
     q = mq._quarter_index
     floor = q(2024, 1)  # since-floor Q1'24
     end_idx = q(2025, 3)  # calendar guess = Q3'25
-    hf, db, js = {}, {}, {}  # no HF, nothing on disk/DB/JSON
+    hf, db = {}, {}  # no HF, nothing on disk/DB
     # (1) a ticker that has only reported through Q1'25 -> required stops at Q1'25 (not the Q3'25 guess)
     released = {"AAA": q(2025, 1)}
-    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
+    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q2" not in miss and "2025Q3" not in miss, miss
     assert {"2024Q1", "2024Q4", "2025Q1"}.issubset(miss)
     # a ticker absent from earnings_surprises -> falls back to the calendar end_idx (Q3'25 included)
-    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
+    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q3" in miss_fb
     # (2) Berkshire (no earnings call) -> nothing to fetch, regardless of dates
-    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
+    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, {}, released) == set()
 
 
 def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):

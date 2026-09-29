@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 from curl_cffi import requests as cr
 
 from src.context import Context
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_store.schema import Tables
@@ -225,11 +226,11 @@ def ingest_hf_transcripts(
             return 0
 
     path = download_hf_parquet(context)
-    roster = context.store.load("sp500_tickers", columns=["ticker"])
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
     assert roster is not None
     universe = set(cast(pd.Series, roster["ticker"]))
     keep = (universe & set(tickers)) if tickers is not None else universe
-    existing = _existing_keys(context)
+    existing = set() if force else _existing_keys(context)
     url = f"hf://{HF_TRANSCRIPTS_DATASET}"
 
     pf = pq.ParquetFile(path)
@@ -257,10 +258,10 @@ def ingest_hf_transcripts(
                     continue
                 buf.append({"ticker": tkr, "quarter": quarter, "tag": tag, "as_of": as_of, "url": url, "text": text})
         if len(buf) >= flush_rows:
-            total += context.store.save(_TABLE, pd.DataFrame(buf))
+            total += save_earnings_call_sections(context, pd.DataFrame(buf))
             buf = []
     if buf:
-        total += context.store.save(_TABLE, pd.DataFrame(buf))
+        total += save_earnings_call_sections(context, pd.DataFrame(buf))
     logger.warning(
         "HF transcripts: ingested %d sections from %d new calls (%d tickers) -> '%s'", total, seen_calls, len({k[0] for k in existing}), _TABLE
     )

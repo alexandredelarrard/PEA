@@ -23,16 +23,11 @@ Two stages, mirroring the FinBERT sentiment pipeline:
 
   2. build_embedding_kpis(embeddings) — the CHEAP per-build derivation of point-in-time KPIs
      DERIVED from the turn rows (nothing is precomputed at store time except the vectors):
-         * ec_qa_coherence_mean / _std — per exchange, the AVERAGE cosine of the question vs EACH of
-           its answer turns (how directly every answering exec addresses the question); the quarter
-           KPI is the mean & std of those per-exchange averages (average-of-averages / std-of-averages)
-         * ec_n_qa            — number of analyst Q&A exchanges
-         * ec_n_answers       — number of answer turns
-         * ec_qa_answer_ratio — answer turns / question turns (exec voices per question)
-         * ec_qa_answer_ratio_qq — quarter-to-quarter change of ec_qa_answer_ratio
+         * ec_qa_coherence_mean — per exchange, the AVERAGE cosine of the question vs EACH of
+           its answer turns; the quarter KPI is the mean of those exchange averages
          * ec_qa_qq_sim   — cosine(this quarter's POOLED q&a turns, prior quarter's)   (narrative
          * ec_prep_qq_sim — cosine(this quarter's POOLED prepared turns, prior quarter's)  drift)
-     These merge into the earnings-call feature panel and become `f_ec_*_{xs,vs_peers}`.
+     These merge into the exact raw/history earnings-call feature panel.
 """
 
 from __future__ import annotations
@@ -45,7 +40,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION
+from src.constants.constants import (
+    EARNINGS_CALL_EMBEDDING_MODEL,
+    EARNINGS_CALL_TAG_ANSWER,
+    EARNINGS_CALL_TAG_PREPARED,
+    EARNINGS_CALL_TAG_QUESTION,
+)
 from src.context import Context
 from src.data_store.schema import Tables
 
@@ -388,13 +388,20 @@ def _drop_stale_turns(store, log, counts: dict[tuple[str, str], int]) -> None:
 
 # columns the KPI derivation needs — everything BUT the bulky `text` (and the audit columns): a
 # projected read keeps the per-ticker KPI streaming from pulling the turn text it never uses.
-_KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding"]
+_KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding", "model"]
 
 
-def _embedded_calls(store) -> set[tuple[str, str]]:
+def _embedded_calls(store, cache_model: str) -> set[tuple[str, str]]:
     """(ticker, quarter) already embedded — reads ONLY the two key columns (never the 1536-dim
     vectors), so the done-set check costs almost nothing even on a million-row cache."""
-    df = store.load(Tables.earning_calls_embedding, ["ticker", "quarter"], optional=True)
+    if cache_model not in set(store.distinct(Tables.earning_calls_embedding, "model")):
+        return set()
+    df = store.load(
+        Tables.earning_calls_embedding,
+        ["ticker", "quarter"],
+        where={"model": cache_model},
+        optional=True,
+    )
     if df is None:
         return set()
     return set(map(tuple, df.drop_duplicates().to_numpy()))
@@ -440,8 +447,12 @@ def _yield_call_texts(context: Context, remaining: list[tuple[str, str]], sectio
 
 
 def embed_earnings_calls(
-    context: Context, sections: pd.DataFrame | None = None, model: str = "text-embedding-3-small", force: bool = False, client=None
-) -> None:
+    context: Context,
+    sections: pd.DataFrame | None = None,
+    model: str = EARNINGS_CALL_EMBEDDING_MODEL,
+    force: bool = False,
+    client=None,
+) -> pd.Timestamp | None:
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
     per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two
     key-column-only reads (sections vs. already-embedded — never the vectors or the text), then each
@@ -452,26 +463,31 @@ def embed_earnings_calls(
     store, log = context.store, context.log
     if client is None and not openai_api_key():
         log.warning("OPENAI/OPEN_AI_API_KEY not set -> earnings-call embedding skipped.")
-        return
+        return None
 
     universe = _calls_from_frame(sections) if sections is not None else _section_calls(store)
     if not universe:
         log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
-        return
-    done = set() if force else _embedded_calls(store)
+        return None
+    done = set() if force else _embedded_calls(store, model)
     remaining = [k for k in universe if tuple(k) not in done]
     if not remaining:
         log.info("Earnings-call embedding cache already complete (%d calls).", len(universe))
-        return
+        return None
 
     log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(remaining), model)
     n_new, counts = 0, {}
+    earliest: pd.Timestamp | None = None
     for tkr, q, qa_text, prep_text, aod in tqdm(_yield_call_texts(context, remaining, sections), "EC embeddings", total=len(remaining)):
         run_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         prep_turns = split_turns(prep_text, _PREP_TAG) if isinstance(prep_text, str) and prep_text.strip() else []
         mgmt = {t["person"].strip().lower() for t in prep_turns if t.get("person")}
         qa_turns = split_turns(qa_text, _QA_TAG, mgmt_names=mgmt) if isinstance(qa_text, str) and qa_text.strip() else []
         turns = prep_turns + qa_turns
+        counts[(tkr, q)] = len(turns)
+        changed = pd.to_datetime(aod, errors="coerce")
+        if pd.notna(changed):
+            earliest = changed if earliest is None else min(earliest, changed)
         if not turns:
             continue
         vectors = embed_texts([t["text"] for t in turns], model=model, client=client)
@@ -494,78 +510,142 @@ def embed_earnings_calls(
             for i, t in enumerate(turns)
         ]
         store.save(Tables.earning_calls_embedding, pd.DataFrame(rows))  # iterative per-call upsert
-        counts[(tkr, q)] = len(rows)
         n_new += len(rows)
-    if force and counts:  # re-embed may yield FEWER turns -> drop orphaned tail rows
+    if counts:  # parser-version migrations may yield FEWER turns -> drop orphaned legacy tails
         _drop_stale_turns(store, log, counts)
     log.info("Earnings-call embeddings: +%d turn rows -> '%s'.", n_new, Tables.earning_calls_embedding)
+    return earliest
 
 
-def embedding_kpis_streamed(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Derive the embedding KPIs from the cache PER TICKER (bounded memory: one ticker's vectors in
-    RAM at a time, never the whole 1536-dim table). Returns (kpi, as_of) small frames, or (None,
-    None) if the cache is empty. QoQ drift stays correct because a ticker's every quarter is loaded
-    together."""
+def embedding_kpis_streamed(
+    context: Context,
+    call_identity: pd.DataFrame | None = None,
+) -> pd.DataFrame | None:
+    """Derive embedding KPIs in bounded issuer-sized batches.
+
+    The caller supplies the already validated call-to-issuer map, so predecessor calls under an
+    old symbol remain comparable to the first call under a new symbol. The ticker-only fallback
+    is retained for isolated tests and unseeded stores.
+    """
     store = context.store
-    kparts, aparts = [], []
-    for tk in store.distinct(Tables.earning_calls_embedding, "ticker"):
-        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tk}, optional=True)
+    kparts = []
+    groups: list[tuple[str | None, list[str]]] = []
+    if call_identity is not None and not call_identity.empty:
+        groups = [
+            (str(issuer_id), sorted(group["ticker"].astype(str).unique())) for issuer_id, group in call_identity.groupby("issuer_id", sort=False)
+        ]
+    if not groups:
+        groups = [(None, [str(ticker)]) for ticker in store.distinct(Tables.earning_calls_embedding, "ticker")]
+
+    for issuer_id, tickers in groups:
+        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tickers}, optional=True)
         if emb is None:
             continue
+        emb = emb[emb["model"] == EARNINGS_CALL_EMBEDDING_MODEL]
+        if emb.empty:
+            continue
+        if issuer_id is not None:
+            calls = call_identity[call_identity["issuer_id"].astype(str).eq(issuer_id)]
+            if calls.empty:
+                continue
+            emb = emb.merge(calls[["ticker", "quarter", "issuer_id"]], on=["ticker", "quarter"], how="inner")
         k = build_embedding_kpis(emb)
         if k is not None and not k.empty:
             kparts.append(k)
-        aparts.append(emb[["ticker", "quarter", "as_of"]].drop_duplicates())
     if not kparts:
-        return None, None
-    return (pd.concat(kparts, ignore_index=True), pd.concat(aparts, ignore_index=True))
+        return None
+    return pd.concat(kparts, ignore_index=True)
 
 
 # --------------------------------------------------------------------------- #
 # Stage 2: cheap per-build KPIs (coherence + quarter-to-quarter drift)         #
 # --------------------------------------------------------------------------- #
 def _pooled_section_vectors(turns: pd.DataFrame, section: str) -> pd.DataFrame:
-    """Mean-pool a call's turn embeddings for `section` -> one vector per (ticker, quarter)."""
-    s = turns[turns["section"] == section][["ticker", "quarter", "as_of", "embedding"]]
+    """Mean-pool a call's turn embeddings for `section` -> one vector per call."""
+    identity = "issuer_id" if "issuer_id" in turns.columns else "ticker"
+    columns = ["ticker", "quarter", "as_of", "embedding"]
+    columns += [column for column in ("model", "issuer_id") if column in turns.columns]
+    s = turns[turns["section"] == section][columns]
     if s.empty:
         return pd.DataFrame(columns=["ticker", "quarter", "as_of", "vec"])
     out = []
-    for (tkr, q), g in s.groupby(["ticker", "quarter"], sort=False):
+    group_columns = ["issuer_id", "ticker", "quarter"] if identity == "issuer_id" else ["ticker", "quarter"]
+    for key, g in s.groupby(group_columns, sort=False):
+        if identity == "issuer_id":
+            issuer, tkr, q = key
+        else:
+            tkr, q = key
+            issuer = tkr
         vecs = [np.asarray(v, dtype="float64") for v in g["embedding"]]
-        out.append({"ticker": tkr, "quarter": q, "as_of": g["as_of"].iloc[0], "vec": np.mean(vecs, axis=0)})
+        out.append(
+            {
+                identity: issuer,
+                "ticker": tkr,
+                "quarter": q,
+                "as_of": g["as_of"].iloc[0],
+                "model": g["model"].iloc[0] if "model" in g else None,
+                "vec": np.mean(vecs, axis=0),
+            }
+        )
     return pd.DataFrame(out)
 
 
-def _qq_similarity(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
-    """Per (ticker, quarter): cosine(this call's POOLED section vector, the PRIOR call's), in
-    call order. NaN on a ticker's first call."""
+def _qq_distance(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
+    """Cosine distance to the immediately preceding fiscal quarter only."""
     pooled = _pooled_section_vectors(turns, section)
     if pooled.empty:
         return pd.DataFrame(columns=["ticker", "quarter", name])
     pooled["as_of"] = pd.to_datetime(pooled["as_of"])
-    pooled = pooled.sort_values(["ticker", "as_of"])
+    identity = "issuer_id" if "issuer_id" in pooled.columns else "ticker"
+    pooled = pooled.sort_values([identity, "as_of"])
     out = []
-    for tkr, grp in pooled.groupby("ticker", sort=False):
-        prev = None
+    for _, grp in pooled.groupby(identity, sort=False):
+        previous = None
         for r in grp.itertuples(index=False):
-            v = r.vec
-            similarity = np.nan if prev is None else round(cosine(cast(np.ndarray, v), cast(np.ndarray, prev)), 6)
-            out.append({"ticker": tkr, "quarter": r.quarter, name: similarity})
-            prev = v
+            distance = np.nan
+            if previous is not None:
+                consecutive = _quarter_number(r.quarter) - _quarter_number(previous.quarter) == 1
+                comparable = r.model == previous.model and len(r.vec) == len(previous.vec)
+                if consecutive and comparable:
+                    distance = round(1.0 - cosine(cast(np.ndarray, r.vec), cast(np.ndarray, previous.vec)), 6)
+            out.append({"ticker": r.ticker, "quarter": r.quarter, name: distance})
+            previous = r
     return pd.DataFrame(out)
+
+
+def _quarter_number(value: object) -> float:
+    text = str(value)
+    if len(text) == 6 and text[4] == "Q" and text[:4].isdigit() and text[5] in "1234":
+        return int(text[:4]) * 4 + int(text[5]) - 1
+    return np.nan
+
+
+def _comparable_embedding_calls(turns: pd.DataFrame) -> pd.DataFrame:
+    """Keep calls with one model, one positive finite vector dimension, and no zero vectors."""
+    valid: list[tuple[object, object]] = []
+    for key, group in turns.groupby(["ticker", "quarter"], sort=False):
+        vectors = [np.asarray(value, dtype="float64") for value in group["embedding"]]
+        model_values = group["model"] if "model" in group else pd.Series(dtype="object")
+        models = model_values.dropna().astype(str).nunique()
+        models_ok = len(model_values) == len(group) and model_values.notna().all() and models == 1
+        dimensions = {vector.size for vector in vectors}
+        vectors_ok = bool(vectors) and all(vector.size > 0 and np.isfinite(vector).all() and np.linalg.norm(vector) > 0 for vector in vectors)
+        if models_ok and len(dimensions) == 1 and vectors_ok:
+            valid.append(key)
+    if not valid:
+        return turns.iloc[0:0].copy()
+    keys = pd.MultiIndex.from_tuples(valid, names=["ticker", "quarter"])
+    current = pd.MultiIndex.from_frame(turns[["ticker", "quarter"]])
+    return turns[current.isin(keys)].copy()
 
 
 def _qa_coherence(turns: pd.DataFrame) -> pd.DataFrame:
     """Per (ticker, quarter):
-      * ec_qa_coherence_mean / _std — for each exchange, the AVERAGE cosine of the question vector
-        (mean of its question turns) vs EACH of its answer turns individually (how directly EVERY
-        answering exec addresses the question); the quarter KPI is the mean and the std of those
-        per-exchange averages (average-of-averages / std-of-averages).
-      * ec_n_qa            — # exchanges that have a question
-      * ec_n_answers       — # answer turns in the call
-      * ec_qa_answer_ratio — answer turns / question turns (how many exec voices pile onto a question)
-    Carries as_of so build_embedding_kpis can take the quarter-to-quarter delta of the ratio."""
-    cols = ["ticker", "quarter", "as_of", "ec_qa_coherence_mean", "ec_qa_coherence_std", "ec_n_qa", "ec_n_answers", "ec_qa_answer_ratio"]
+    * ec_qa_coherence_mean — for each exchange, the AVERAGE cosine of the question vector
+      (mean of its question turns) vs EACH of its answer turns individually (how directly EVERY
+      answering exec addresses the question); the quarter KPI is the mean of those
+      per-exchange averages. At least two mapped exchanges are required."""
+    cols = ["ticker", "quarter", "as_of", "ec_qa_coherence_mean"]
     qa = turns[turns["section"] == _QA_TAG]
     if qa.empty:
         return pd.DataFrame(columns=cols)
@@ -579,48 +659,26 @@ def _qa_coherence(turns: pd.DataFrame) -> pd.DataFrame:
                 continue
             qvec = np.mean(qv, axis=0)
             per_ex.append(float(np.mean([cosine(qvec, a) for a in av])))  # Q vs EACH answer, averaged
-        n_q = int((g["tag"] == EARNINGS_CALL_TAG_QUESTION).sum())
-        n_a = int((g["tag"] == EARNINGS_CALL_TAG_ANSWER).sum())
         rows.append(
             {
                 "ticker": tkr,
                 "quarter": q,
                 "as_of": g["as_of"].iloc[0],
-                "ec_qa_coherence_mean": round(float(np.mean(per_ex)), 6) if per_ex else np.nan,
-                "ec_qa_coherence_std": round(float(np.std(per_ex)), 6) if per_ex else np.nan,
-                "ec_n_qa": int(g.loc[g["tag"] == EARNINGS_CALL_TAG_QUESTION, "exchange_idx"].nunique()),
-                "ec_n_answers": n_a,
-                "ec_qa_answer_ratio": round(n_a / n_q, 6) if n_q else np.nan,
+                "ec_qa_coherence_mean": round(float(np.mean(per_ex)), 6) if len(per_ex) >= 2 else np.nan,
             }
         )
     return pd.DataFrame(rows)
 
 
-def _qq_delta(kpi: pd.DataFrame, col: str, name: str) -> pd.DataFrame:
-    """Per (ticker, quarter): `col` this call MINUS `col` the prior call (call order by as_of).
-    NaN on a ticker's first call. Requires an `as_of` column on `kpi`."""
-    if kpi.empty or col not in kpi.columns or "as_of" not in kpi.columns:
-        return pd.DataFrame(columns=["ticker", "quarter", name])
-    d = kpi[["ticker", "quarter", "as_of", col]].copy()
-    d["as_of"] = pd.to_datetime(d["as_of"])
-    d = d.sort_values(["ticker", "as_of"])
-    d[name] = d.groupby("ticker", sort=False)[col].diff()
-    return d[["ticker", "quarter", name]]
-
-
 def build_embedding_kpis(embeddings: pd.DataFrame | None) -> pd.DataFrame | None:
     """Per (ticker, quarter) earnings-call embedding KPIs derived from the turn rows:
-    ec_qa_coherence_mean/_std, ec_n_qa, ec_n_answers, ec_qa_answer_ratio, ec_qa_answer_ratio_qq
-    (quarter-to-quarter change of the answer/question ratio), ec_qa_qq_sim, ec_prep_qq_sim.
-    None if the cache is empty."""
+    Q&A coherence plus consecutive-quarter Q&A/prepared-text distances."""
     if embeddings is None or embeddings.empty:
         return None
-    kpi = _qa_coherence(embeddings)
-    kpi = kpi.merge(_qq_delta(kpi, "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq"), on=["ticker", "quarter"], how="left")
-    for section, name in ((_QA_TAG, "ec_qa_qq_sim"), (_PREP_TAG, "ec_prep_qq_sim")):
-        kpi = kpi.merge(_qq_similarity(embeddings, section, name), on=["ticker", "quarter"], how="outer")
-    kpi = kpi.drop(columns=["as_of"], errors="ignore")  # as_of was only for the QoQ ordering
-    for c in ("ec_n_qa", "ec_n_answers", "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq", "ec_qa_coherence_mean", "ec_qa_coherence_std"):
-        if c in kpi.columns:
-            kpi[c] = pd.to_numeric(kpi[c], errors="coerce")
+    keys = embeddings[["ticker", "quarter"]].drop_duplicates()
+    comparable = _comparable_embedding_calls(embeddings)
+    kpi = keys.merge(_qa_coherence(comparable), on=["ticker", "quarter"], how="left")
+    for section, name in ((_QA_TAG, "ec_qa_qq_distance"), (_PREP_TAG, "ec_prep_qq_distance")):
+        kpi = kpi.merge(_qq_distance(comparable, section, name), on=["ticker", "quarter"], how="left")
+    kpi = kpi.drop(columns=["as_of"], errors="ignore")
     return kpi

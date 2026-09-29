@@ -879,6 +879,55 @@ def test_a_filing_after_the_availability_date_is_revised_never_excluded():
     )
 
 
+def test_late_filers_do_not_rewrite_the_first_publication_pool_or_coverage_state():
+    """A rebuild with later filings must leave the already-public first snapshot unchanged."""
+
+    def filings(on_time: int) -> pd.DataFrame:
+        rows = []
+        for period in ("2021-09-30", "2022-03-31"):
+            filed = pd.Timestamp(period) + pd.Timedelta(days=40)
+            rows.extend(
+                {"cik": f"M{i}", "period": period, "filing_date": filed, "ticker": "Z", "shares": 100.0, "value_usd": 100.0} for i in range(10)
+            )
+        period = "2021-12-31"
+        early = pd.Timestamp(period) + pd.Timedelta(days=40)
+        late = pd.Timestamp(period) + pd.Timedelta(days=75)
+        rows.extend(
+            {
+                "cik": f"M{i}",
+                "period": period,
+                "filing_date": early if i < on_time else late,
+                "ticker": "A" if i == 0 else "Z",
+                "shares": 100.0,
+                "value_usd": 100.0,
+            }
+            for i in range(10)
+        )
+        return pd.DataFrame(rows)
+
+    six_public = filings(on_time=6)
+    six_only = six_public[~((six_public["period"] == "2021-12-31") & (six_public["filing_date"] > pd.Timestamp("2022-02-15")))]
+    rebuilt = _qf(_stamped(six_public), min_prior_holders=0)
+    truncated = _qf(_stamped(six_only), min_prior_holders=0)
+    period = pd.Timestamp("2021-12-31")
+    rebuilt_first = rebuilt[(rebuilt["ticker"] == "A") & (rebuilt["period"] == period)].iloc[0]
+    truncated_first = truncated[(truncated["ticker"] == "A") & (truncated["period"] == period)].iloc[0]
+    assert rebuilt_first["ic_inst_holders"] == truncated_first["ic_inst_holders"] == pytest.approx(1 / 6)
+    rebuilt_last = rebuilt[(rebuilt["ticker"] == "A") & (rebuilt["period"] == period)].iloc[-1]
+    assert rebuilt_last["ic_inst_holders"] == pytest.approx(1 / 10), "the public denominator must update from the late filer's date onward"
+
+    two_public = _qf(_stamped(filings(on_time=2)), min_prior_holders=0)
+    two_public_a = two_public[(two_public["ticker"] == "A") & (two_public["period"] == period)]
+    two_public_first = two_public_a.iloc[0]
+    assert np.isnan(two_public_first["ic_inst_holders"]), "two of ten public filers is a contemporaneous coverage hole"
+    assert two_public_a.iloc[-1]["ic_inst_holders"] == pytest.approx(1 / 10), "the repaired coverage state must become usable prospectively"
+    print(
+        "\n=== SANITY CHECK: 13F publication-time denominator and coverage ===\n"
+        "  Four later filers leave the first breadth at 1/6 then update it to 1/10; eight "
+        "later filers cannot retroactively hide a 2/10 coverage hole, but repair it prospectively. Validated."
+    )
+
+
 def test_the_materiality_gate_defers_a_revision_it_does_not_drop_it():
     """`F13_REVISION_MIN_MOVE` skips a DATE, never a filing -- because every emission is
     cumulative, so the next one sums the skipped filings in.

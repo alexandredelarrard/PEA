@@ -42,8 +42,8 @@ Data-quality rules
   basis before calculating share growth or manager buying.
 * `ic_inst_holders` is a breadth share:
   ticker holders divided by all distinct filers in the quarter.
-* Universe-wide coverage holes suppress both levels and deltas.
-* Universe-wide coverage breaks suppress deltas only.
+* Publication-time universe coverage holes suppress both levels and deltas.
+* Publication-time universe coverage breaks suppress deltas only.
 * Levels before `INST_LEVEL_FLOOR_PERIOD` and deltas before
   `INST_DELTA_FLOOR_PERIOD` are not emitted.
 * Ticker-level deltas are suppressed when the previous quarter has fewer than
@@ -158,22 +158,24 @@ EMISSION: dict[str, str] = {
 }
 
 
-def _coverage_periods(h: pd.DataFrame, break_pct: float) -> tuple[set, set, pd.DataFrame]:
-    """`(hole periods, break periods, the per-period filer table)` -- see the module docstring.
+def _coverage_states(h: pd.DataFrame, break_pct: float) -> pd.DataFrame:
+    """Public filer count and causal coverage flags at every `(period, as_of)` stamp.
 
-    A HOLE is a quarter under `1 - break_pct` of BOTH neighbours (missing data). A BREAK is any
-    quarter whose filer count moved more than `break_pct` against the one before it (a
-    discontinuity, which includes both sides of a hole and the 2013 regime start).
+    A downward break is a hole at that publication. A later filing may repair subsequent
+    revisions, but cannot rewrite the denominator or quality state already public earlier.
     """
-    filers = h.groupby("period")["cik"].nunique().sort_index()
-    table = pd.DataFrame({"filers": filers})
-    table["prev"] = filers.shift(1)
-    table["next"] = filers.shift(-1)
-    ratio = (filers - table["prev"]).abs() / table["prev"]
-    breaks = set(table.index[ratio > break_pct])
-    frac = 1.0 - break_pct
-    holes = set(table.index[(filers < frac * table["prev"]) & (filers < frac * table["next"])])
-    return holes, breaks, table
+    first_public = cast(pd.DataFrame, h.groupby(["period", "cik"], as_index=False)["as_of"].min())
+    new_filers = first_public.groupby(["period", "as_of"]).size().rename("new_filers")
+    stamps = h[["period", "as_of"]].drop_duplicates().set_index(["period", "as_of"]).sort_index()
+    table = stamps.join(new_filers, how="left")
+    table["filers"] = table["new_filers"].fillna(0).groupby(level="period").cumsum()
+    final_filers = table.groupby(level="period")["filers"].last()
+    previous = final_filers.shift(1)
+    table["prev"] = table.index.get_level_values("period").map(previous)
+    ratio = (table["filers"] - table["prev"]).abs() / table["prev"]
+    table["break"] = ratio > break_pct
+    table["hole"] = table["filers"] < (1.0 - break_pct) * table["prev"]
+    return table
 
 
 def _split_factors(h: pd.DataFrame, splits: pd.DataFrame | None) -> dict:
@@ -511,29 +513,6 @@ def _quarter_features(
     `test_emission_windows_do_not_overlap` asserts that clearance rather than trusting it.
     """
 
-    holes, breaks, coverage = _coverage_periods(h, break_pct)
-    if holes or breaks:
-        logger.info(
-            "13F coverage guard: %s hole quarter(s) %s (every feature nulled), %s break quarter(s) %s (deltas nulled). Filer counts: %s",
-            len(holes),
-            sorted(str(p.date()) for p in holes),
-            len(breaks),
-            sorted(str(p.date()) for p in breaks),
-            {str(p.date()): int(cast(Any, coverage.at[p, "filers"])) for p in sorted(holes | breaks)},
-        )
-
-    # D28: the denominator that turns the holder COUNT into a breadth share.
-    n_filers = coverage["filers"]
-
-    # ⚠ THE PRE-FLOOR CUT RUNS AFTER `_coverage_periods`, NEVER BEFORE IT. The guard is a
-    # statement about the TABLE's coverage, and it is what identifies 2013-06-30 as the regime
-    # start in the first place; cutting first would delete the evidence for the floor and then
-    # report a clean axis. Cutting here instead is provably free: every surviving period keeps
-    # its own `n_filers`, and `isin(holes | breaks)` below simply matches nothing for the
-    # periods that are gone.
-    h = cast(pd.DataFrame, h.loc[frame_column(h, "period") >= INST_LEVEL_FLOOR_PERIOD])
-    factors = _split_factors(h, splits)
-
     if "as_of" in h.columns:
         walk = h
     else:
@@ -545,6 +524,23 @@ def _quarter_features(
             SEC_13F_FILING_LAG_DAYS,
         )
         walk = h.assign(as_of=h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))
+
+    coverage = _coverage_states(walk, break_pct)
+    holes = coverage[coverage["hole"]]
+    breaks = coverage[coverage["break"]]
+    if not holes.empty or not breaks.empty:
+        logger.info(
+            "13F coverage guard: %s publication state(s) are holes (every feature nulled), %s are breaks (deltas nulled)",
+            len(holes),
+            len(breaks),
+        )
+    final_filers = coverage.groupby(level="period")["filers"].last()
+
+    # The coverage table must see the complete source history, including the pre-floor regime
+    # that establishes the predecessor count. Feature arithmetic starts at the declared floor.
+    walk = cast(pd.DataFrame, walk.loc[frame_column(walk, "period") >= INST_LEVEL_FLOOR_PERIOD])
+    factors = _split_factors(walk, splits)
+
     # `kind="stable"` keeps each stamp's rows in the order `clean_holdings` left them, which is
     # what makes the numeric aggregates reproducible across runs rather than merely close.
     walk = walk.sort_values(["ticker", "period", "as_of"], kind="stable")
@@ -570,8 +566,12 @@ def _quarter_features(
             puts = pdf["put_value"].to_numpy(dtype="float64")
             stamps = pdf["as_of"].to_numpy()
 
-            # END position of each availability date's block, so `[:k]` is "public by `k`".
-            ends = np.flatnonzero(np.r_[stamps[1:] != stamps[:-1], True]) + 1
+            # Every universe-wide filer arrival can move this ticker's breadth denominator or
+            # repair its coverage state even when that filer does not hold the ticker. Start at
+            # the ticker's own first filing so a future holding cannot create a zero history.
+            period_stamps = pd.DatetimeIndex(coverage.loc[p].index)
+            emission_stamps = period_stamps[period_stamps >= pd.Timestamp(stamps[0])]
+            ends = np.searchsorted(stamps, emission_stamps.to_numpy(), side="right")
             # Sorting the cik axis ONCE per period keeps the Herfindahl identical to the
             # `groupby("cik")` it replaces: with one row per (ticker, cik, period) the groups
             # are singletons, so the group sum is just the value in cik-sorted order.
@@ -583,8 +583,7 @@ def _quarter_features(
             # The prior quarter's counts, restated onto THIS quarter's split basis.
             factor = factors.get((ticker, p), 1.0) if has_prev else 1.0
             prev_shares = prev_total * factor if has_prev else np.nan
-            pool = float(cast(Any, n_filers.get(p, np.nan)))
-            prev_pool = float(cast(Any, n_filers.get(prev_period, np.nan))) if prev_period is not None else np.nan
+            prev_pool = float(cast(Any, final_filers.get(prev_period, np.nan))) if prev_period is not None else np.nan
             prev_share = n_prev / prev_pool if (has_prev and prev_pool > 0) else np.nan
 
             # Running per-filer counters, advanced row by row. The SET arithmetic
@@ -594,8 +593,9 @@ def _quarter_features(
             # bit-identical to a single-stamp aggregation of the same rows.
             n_both = inc = dec = 0
             at = 0
-            last_emitted = np.nan
-            for k in ends:
+            last_emitted = last_share = np.nan
+            last_hole = last_break = None
+            for stamp, k in zip(emission_stamps, ends, strict=True):
                 for cik, held in zip(cik_list[at:k], share_list[at:k], strict=False):
                     was = prev.get(cik)
                     if was is not None:
@@ -614,34 +614,39 @@ def _quarter_features(
                 # would make a quarter's total depend on how many times it was emitted, at
                 # ~1e-16 -- small, and a bit-identity claim that is quietly false.
                 inst_shares = float(shares[:k].sum())
+                holders = int(k)
+                coverage_state = coverage.loc[(pd.Timestamp(cast(Any, p)), stamp)]
+                pool = float(cast(Any, coverage_state["filers"]))
+                share = holders / pool if pool > 0 else np.nan
+                is_hole = bool(coverage_state["hole"])
+                is_break = bool(coverage_state["break"])
                 if np.isfinite(last_emitted):
                     move = abs(inst_shares - last_emitted) / last_emitted if last_emitted > 0 else np.inf
-                    if move < revision_min_move:
+                    state_changed = share != last_share or is_hole != last_hole or is_break != last_break
+                    if move < revision_min_move and not state_changed:
                         n_skipped += 1
                         continue
                     n_revisions += 1
 
-                holders = int(k)
                 inst_value = float(values[:k].sum())
                 call_v = float(calls[:k].sum())
                 put_v = float(puts[:k].sum())
                 total_invested = inst_value + call_v + put_v  # long equity + option exposure
                 opt_ratio = ((call_v - put_v) / total_invested) if total_invested > 0 else np.nan
-
                 # crowding: Herfindahl of managers' VALUE shares (high = few dominant holders)
                 mv = values[cik_order[cik_order < k]]
                 tot_mv = float(mv.sum())
                 hhi = float(((mv / tot_mv) ** 2).sum()) if tot_mv > 0 else np.nan
-                share = holders / pool if pool > 0 else np.nan
-
                 rows.append(
                     {
                         "ticker": ticker,
                         "period": pd.Timestamp(cast(Any, p)),
-                        "as_of": pd.Timestamp(stamps[k - 1]),
+                        "as_of": stamp,
                         # Carried only so the per-ticker coverage-onset guard can be applied
                         # vectorised below; dropped before the frame is returned.
                         "_prev_holders": float(n_prev) if has_prev else np.nan,
+                        "_coverage_hole": is_hole,
+                        "_coverage_break": is_break,
                         "ic_inst_holders": share,
                         "inst_shares": inst_shares,
                         "inst_value": inst_value,
@@ -657,6 +662,9 @@ def _quarter_features(
                     }
                 )
                 last_emitted = inst_shares
+                last_share = share
+                last_hole = is_hole
+                last_break = is_break
 
             # The next quarter differences against this one FULLY REVISED -- see the docstring.
             prev = dict(zip(cik_list, share_list, strict=False))
@@ -679,10 +687,10 @@ def _quarter_features(
     qf = pd.DataFrame(rows)
     if qf.empty:
         return qf
-    # D17 / the hole guard, applied on the PERIOD (never on the availability date: two
-    # quarters share no date, and the mask has to travel with the quarter it describes).
-    is_hole = frame_column(qf, "period").isin(list(holes))
-    is_break = frame_column(qf, "period").isin(list(breaks)) | is_hole
+    # D17 / the hole guard travels with the publication state that was observable then. A later
+    # revision can repair later rows but cannot unmask an earlier incomplete publication.
+    is_hole = qf.pop("_coverage_hole").astype(bool)
+    is_break = qf.pop("_coverage_break").astype(bool) | is_hole
     value_cols = ["inst_shares", "inst_value", "inst_value_flow"]
     for c in DELTA_FEATURES + ("inst_value_flow",):
         if c in qf.columns:

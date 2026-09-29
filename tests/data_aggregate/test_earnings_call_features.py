@@ -90,7 +90,7 @@ def _sections_frame() -> pd.DataFrame:
 
 
 def test_per_call_kpi_arithmetic():
-    per = _per_call_kpis(_sentiment_frame(), None)
+    per = prepare_earnings_call_kpis(_per_call_kpis(_sentiment_frame(), None))
     a = per[per["ticker"] == "A"].set_index("quarter")
 
     # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
@@ -131,20 +131,14 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
         "ec_tone",
         "ec_qa_gap",
         "ec_uncertainty",
-        "ec_tone_delta",
-        "ec_length_delta",
-        "ec_qa_tone_delta",
-        "ec_prep_tone_delta",
+        "total_words",
     ]
     for col in kpi_cols:
         s, b = m[f"{col}_s"].to_numpy(float), m[f"{col}_b"].to_numpy(float)
         ok = (np.isnan(s) & np.isnan(b)) | np.isclose(s, b, equal_nan=True)
         assert ok.all(), f"{col} differs streamed vs batch"
     print("\n=== SANITY CHECK: sentiment KPI streaming ===")
-    print(
-        f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
-        "KPIs (including consecutive-quarter tone and length deltas)."
-    )
+    print(f"  per-ticker streamed call metrics == whole-cache batch across {len(m)} calls x {len(kpi_cols)} fields.")
 
 
 def test_malformed_or_incomplete_cached_call_is_missing() -> None:

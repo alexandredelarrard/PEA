@@ -219,25 +219,9 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
             "ec_qa_gap": ec_qa_gap,
             "ec_uncertainty": ec_unc,
             "total_words": tot_w,
-            # per-section tone levels (helpers -> quarter-to-quarter tone deltas below)
-            "qa_tone_lvl": tone_tag[qa] if qa in tone_tag.columns else np.nan,
-            "prep_tone_lvl": tone_tag[prep] if prep in tone_tag.columns else np.nan,
         }
     ).reset_index()
-
-    # cross-call deltas in CALL ORDER (by call date), per ticker
-    per_q = per_q.sort_values(["ticker", "as_of"]).reset_index(drop=True)
-    g = per_q.groupby("ticker", sort=False)
-    previous_quarter = g["quarter"].shift(1)
-    consecutive = (per_q["quarter"].map(_quarter_number) - previous_quarter.map(_quarter_number)) == 1
-    per_q["ec_tone_delta"] = g["ec_tone"].diff().where(consecutive)
-    prev_words = g["total_words"].shift(1)
-    per_q["ec_length_delta"] = np.log(per_q["total_words"] / prev_words.where(prev_words > 0)).where(consecutive)
-    per_q["ec_length_delta"] = per_q["ec_length_delta"].replace([np.inf, -np.inf], np.nan)
-    # quarter-to-quarter tone distance, PER SECTION (qa vs qa, prepared vs prepared)
-    per_q["ec_qa_tone_delta"] = g["qa_tone_lvl"].diff().where(consecutive)
-    per_q["ec_prep_tone_delta"] = g["prep_tone_lvl"].diff().where(consecutive)
-    return per_q.drop(columns=["qa_tone_lvl", "prep_tone_lvl"])
+    return per_q.sort_values(["ticker", "as_of"]).reset_index(drop=True)
 
 
 def _quarter_number(value: object) -> float:

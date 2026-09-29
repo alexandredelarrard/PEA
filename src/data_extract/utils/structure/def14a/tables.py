@@ -547,6 +547,28 @@ def _promoted_header(header: list[str], rows: list[list[str]]) -> list[str] | No
     return None
 
 
+def _continued_sct_table(header: list[str], rows: list[list[str]]) -> tuple[list[str], list[list[str]]] | None:
+    """Join stranded SCT header rows without widening the global header limit.
+
+    KR 2015 needs seven header rows. The six-row runaway guard leaves ``Position | Year |
+    Salary | ... | Total`` in ``rows[0]`` while older KR filings strand several rows. Only
+    return when the joined header satisfies the existing SCT classifier and has a real Salary
+    column; ordinary first data rows therefore cannot trigger the fallback.
+    """
+    if len(rows) < 2:
+        return None
+    width = len(header)
+    for n_rows in range(1, min(_MAX_HEADER_ROWS, len(rows) - 1) + 1):
+        continued: list[str] = []
+        for column in range(width):
+            parts = [header[column], *(row[column] for row in rows[:n_rows])]
+            continued.append(" ".join(dict.fromkeys(part for part in parts if part)))
+        remaining = rows[n_rows:]
+        if SCT in classify_table(continued, remaining) and _has_salary_column(continued):
+            return continued, remaining
+    return None
+
+
 def _rows_are_people(rows: list[list[str]]) -> bool:
     """True when this table's rows are a ROSTER OF PEOPLE rather than a schedule of roles.
 
@@ -739,9 +761,15 @@ def classify_filing(raw_html: str | bytes) -> dict[str, tuple[list[str], list[li
         header, rows = merge_header_rows(grid)
         if not rows:
             continue
-        for target in classify_table(header, rows):
+        matched = classify_table(header, rows)
+        for target in matched:
             prefer = _PREFER.get(target)
             candidates.setdefault(target, []).append((bool(prefer(header)) if prefer else False, len(rows), -pos, header, rows))
+        if SCT not in matched:
+            continued = _continued_sct_table(header, rows)
+            if continued is not None:
+                continued_header, continued_rows = continued
+                candidates.setdefault(SCT, []).append((True, len(continued_rows), -pos, continued_header, continued_rows))
 
     best: dict[str, tuple[list[str], list[list[str]]]] = {}
     for target, cands in candidates.items():

@@ -221,6 +221,42 @@ def test_multi_row_header_merges_into_one_label():
     print(f"\n  4-row header -> {header} ('year' present, 1 data row kept)")
 
 
+def test_a_seventh_sct_header_row_beats_a_cash_bonus_percentage_table():
+    """KR 2015: the six-row runaway guard leaves the last header row in ``rows[0]``.
+
+    That row carries the statutory ``Position | Year | Salary | ... | Total`` labels.
+    Without the SCT-only continuation, a ten-row annual cash-bonus-percentage table is the
+    only candidate and the real compensation table disappears from the LLM payload.
+    """
+    decoy_rows = "".join(f"<tr><td>{year}</td><td>{100 + year % 9}.5%</td></tr>" for year in range(2005, 2015))
+    decoy = f"""<table>
+      <tr><th>Fiscal Year</th><th>Annual Cash Bonus Percentage</th></tr>
+      {decoy_rows}
+    </table>"""
+    sct = """<table>
+      <tr><th>Name and Principal</th><th>Fiscal</th><th></th><th>Stock</th>
+          <th>Option</th><th>Non-Equity Incentive Plan</th><th>All Other</th><th></th></tr>
+      <tr><th>Name and Principal</th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+      <tr><th>Name and Principal</th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+      <tr><th>Name and Principal</th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+      <tr><th>Name and Principal</th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+      <tr><th>Name and Principal</th><th></th><th></th><th></th><th></th><th></th><th></th><th></th></tr>
+      <tr><th>Position</th><th>Year</th><th>Salary</th><th>Awards</th>
+          <th>Awards</th><th>Compensation</th><th>Compensation</th><th>Total</th></tr>
+      <tr><td>W. Rodney McMullen</td><td>2014</td><td>1,123,393</td><td>3,740,251</td>
+          <td>1,951,394</td><td>2,441,546</td><td>232,602</td><td>12,987,582</td></tr>
+      <tr><td>J. Michael Schlotman</td><td>2014</td><td>745,313</td><td>1,490,700</td>
+          <td>520,372</td><td>1,103,750</td><td>113,922</td><td>5,896,878</td></tr>
+    </table>"""
+
+    header, rows = classify_filing(f"<html><body>{decoy}{sct}</body></html>")[SCT]
+    print("\n=== SANITY: seventh-row SCT header continuation ===")
+    print(f"  winner: {len(rows)} rows, header={header}")
+    assert _has_salary_column(header), "the cash-bonus percentage decoy won"
+    assert "fiscal year" in " ".join(header).lower()
+    assert any("McMullen" in cell for cell in rows[0])
+
+
 def test_rowspan_does_not_shift_following_rows_left():
     """edgartools ignores `rowspan` entirely, which shifts every subsequent row one column left
     for the rest of the table -- so a `Total` value lands under `All Other Compensation`."""

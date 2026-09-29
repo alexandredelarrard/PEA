@@ -5,6 +5,7 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
@@ -39,7 +40,7 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     sqlite_store.save(Tables.cube_part_text, cube)
 
     context = cast(Context, SimpleNamespace(store=sqlite_store))
-    result = check_earnings_calls(context, Tables.cube_part_text)
+    result = check_earnings_calls(context, Tables.cube_part_text, config=OmegaConf.load("configs/validate.yml"))
     coverage = cast(dict, result.metrics["coverage"])
     assert result.status == "pass"
     assert coverage["coverage_100pct"] == 1

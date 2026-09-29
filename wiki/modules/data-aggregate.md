@@ -37,6 +37,10 @@ tags:
 - [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) left-joins wide targets onto the feature-led base and writes chunks.
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns windows, targets, feature settings, and output switches.
 
+## Earnings-call feature contract
+
+`StepCubeText` combines cached sentiment and embedding call-grain metrics into exactly 12 model-facing columns: eight raw values and four prior-only issuer-history scores. Earnings-call features deliberately do not use peer or cross-sectional normalization because transcript availability is sparse and non-synchronous. Current cleaned prepared remarks and Q&A are the quality authority: both must be present, cached sentiment must be complete, cheap word/uncertainty metrics are refreshed from the current text, and embeddings are left-joined only onto quality-valid calls. A valid call becomes visible on the next trading session, remains available for 66 trading sessions, and then expires to null. Missing or malformed quarters remain null; a mathematically observed zero remains zero. Full and incremental runs both calculate on the complete trading calendar, while the shared writer alone slices the incremental refresh tail.
+
 ## Dependencies
 
 The module reads through [DataStore](./data-store.md), loads peer dictionaries from [peer deduction](./data-peers.md), and consumes the full set of normalized extract tables from [data extraction](./data-extract.md).

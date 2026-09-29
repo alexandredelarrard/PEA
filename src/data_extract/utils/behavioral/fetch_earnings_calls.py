@@ -476,6 +476,18 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
     return saved
 
 
+def _invalidate_derived_calls(context: Context, missing: dict[str, list[str]]) -> int:
+    """Drop cached features for calls the shared quality gate says need recovery."""
+    invalidated = 0
+    for ticker, quarters in missing.items():
+        if not quarters:
+            continue
+        where = {"ticker": ticker, "quarter": quarters}
+        invalidated += context.store.delete(Tables.earnings_call_sentiment, where)
+        invalidated += context.store.delete(Tables.earning_calls_embedding, where)
+    return invalidated
+
+
 def download_earnings_calls(
     context: Context,
     tickers: list[str] | None = None,
@@ -516,6 +528,9 @@ def download_earnings_calls(
 
     missing = missing_quarters_by_ticker(context, tickers=tickers, since=recent_since)
     logger.info("Recent gap: %d ticker(s) missing %d quarter(s) in total.", len(missing), sum(len(v) for v in missing.values()))
+    invalidated = _invalidate_derived_calls(context, missing)
+    if invalidated:
+        logger.info("Invalidated %d stale derived rows for missing/malformed calls.", invalidated)
 
     if use_roic:
         roic = fetch_roic_transcripts(context, tickers=tickers, missing=missing, since=recent_since)

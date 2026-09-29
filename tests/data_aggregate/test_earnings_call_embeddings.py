@@ -224,13 +224,15 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     kpi = build_embedding_kpis(emb)
     assert kpi is not None
     kpi = kpi.sort_values(["ticker", "quarter"]).reset_index(drop=True)
-    assert (kpi["ec_n_qa"] == 2).all(), "2 exchanges per call"
-    assert (kpi["ec_n_answers"] == 3).all(), "3 answer turns per call (2 in ex0 + 1 in ex1)"
-    assert (kpi["ec_qa_answer_ratio"] == 1.5).all(), "3 answers / 2 questions = 1.5"
+    assert set(kpi) == {
+        "ticker",
+        "quarter",
+        "ec_qa_coherence_mean",
+        "ec_qa_qq_distance",
+        "ec_prep_qq_distance",
+    }
     assert kpi["ec_qa_coherence_mean"].between(-1, 1).all()
     q1, q2 = kpi[kpi["quarter"] == "2024Q1"], kpi[kpi["quarter"] == "2024Q2"]
-    assert q1["ec_qa_answer_ratio_qq"].isna().all(), "first quarter has no prior -> ratio QoQ NaN"
-    assert (q2["ec_qa_answer_ratio_qq"] == 0.0).all(), "answer/question ratio unchanged QoQ -> delta 0"
     assert q1["ec_qa_qq_distance"].isna().all(), "first quarter has no prior"
     assert q2["ec_prep_qq_distance"].notna().all() and q2["ec_prep_qq_distance"].between(0, 2).all()
 
@@ -250,8 +252,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     )
     print(
         f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
-        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; answer/question ratio {kpi['ec_qa_answer_ratio'].mean():.2f} "
-        f"(QoQ delta {float(q2['ec_qa_answer_ratio_qq'].iloc[0]):.2f}); QoQ prepared drift "
+        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; QoQ prepared drift "
         f"2024Q2 {q2['ec_prep_qq_distance'].mean():.3f} (new AI-platform topic added)."
     )
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
@@ -372,6 +373,10 @@ def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance()
     bad = build_embedding_kpis(mixed)
     assert bad is not None
     assert bad["ec_qa_coherence_mean"].isna().all(), "mixed embedding models are incomparable"
+    missing_model = pd.DataFrame(rows).assign(model=None)
+    missing = build_embedding_kpis(missing_model)
+    assert missing is not None
+    assert missing["ec_qa_coherence_mean"].isna().all(), "missing embedding provenance is incomparable"
     print("\n=== SANITY CHECK: embedding comparability ===")
     print("  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.")
 

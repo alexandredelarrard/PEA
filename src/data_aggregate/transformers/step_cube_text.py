@@ -74,6 +74,8 @@ class StepCubeText(Step):
         panel, changed = self._feature_panel(frames)
         del frames
         refresh_from = min(changed) + pd.offsets.BDay(1) if changed else None
+        if refresh_from is not None and window.refresh_from is not None:
+            refresh_from = min(refresh_from, window.refresh_from)
         n = write_part(self._store, Tables.cube_part_text, panel, window, refresh_from=refresh_from, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
@@ -88,18 +90,9 @@ class StepCubeText(Step):
     def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
         changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
         per_call = sentiment_kpis_streamed(self._context)
-        embedding, as_of = embedding_kpis_streamed(self._context)
-        if embedding is not None and not embedding.empty and as_of is not None:
-            dates = as_of.drop_duplicates(["ticker", "quarter"])
-            embedding = embedding.merge(dates, on=["ticker", "quarter"], how="left")
-            per_call = (
-                embedding
-                if per_call is None or per_call.empty
-                else per_call.merge(embedding.drop(columns=["as_of"]), on=["ticker", "quarter"], how="outer")
-            )
-            if "as_of_x" in per_call.columns:
-                per_call["as_of"] = per_call["as_of_x"].fillna(per_call["as_of_y"])
-                per_call = per_call.drop(columns=["as_of_x", "as_of_y"])
+        embedding = embedding_kpis_streamed(self._context)
+        if per_call is not None and not per_call.empty and embedding is not None and not embedding.empty:
+            per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
         if per_call is None or per_call.empty:
             return pd.DataFrame(columns=["date", "ticker"]), changed
 

@@ -18,6 +18,15 @@ validate:
     feature_cell_agreement: 0.99
     edge_rank_correlation: 0.99
 
+  earnings_calls:
+    signal_sessions: 66
+    redundancy_spearman_abs: 0.90
+    redundancy_fail_abs: 0.985
+    train_end: "2023-12-31"
+    drift_psi_warn: 0.25
+    missingness_delta_warn: 0.10
+    recent_sessions: 20
+
   defaults:
     redundancy_r: 0.985
     # Exact equality is asked as `a != b`, not `|a-b| > tol`: "one column under two names" is a

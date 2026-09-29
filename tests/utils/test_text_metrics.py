@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from src.utils import text_metrics
 
 
@@ -17,6 +19,10 @@ def test_earnings_call_quality_uses_cleaned_sections_and_rejects_boilerplate() -
     assert not malformed.valid
     assert malformed.combined_word_count < 100
     assert malformed.reason
+
+    null_section = assess({"prepared_remarks": np.nan, "qa": useful})
+    assert not null_section.valid
+    assert null_section.cleaned_sections["prepared_remarks"] == ""
 
     print("\n=== SANITY CHECK: shared earnings-call quality gate ===")
     print(

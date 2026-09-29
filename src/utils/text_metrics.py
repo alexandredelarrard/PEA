@@ -548,7 +548,15 @@ _COURTESY_RE = re.compile(
 
 def clean_earnings_call_text(text: object) -> str:
     """Remove leading/trailing courtesy-only sentences and normalize whitespace."""
-    sentences = [s.strip() for s in _SENTENCE_RE.findall(re.sub(r"\s+", " ", str(text or "")).strip()) if s.strip()]
+    if text is None:
+        raw = ""
+    else:
+        try:
+            missing = bool(text != text)
+        except (TypeError, ValueError):
+            missing = True
+        raw = "" if missing else str(text)
+    sentences = [s.strip() for s in _SENTENCE_RE.findall(re.sub(r"\s+", " ", raw).strip()) if s.strip()]
     while sentences and "?" not in sentences[0] and len(sentences[0].split()) <= 22 and _COURTESY_RE.search(sentences[0]):
         sentences.pop(0)
     while sentences and "?" not in sentences[-1] and len(sentences[-1].split()) <= 22 and _COURTESY_RE.search(sentences[-1]):

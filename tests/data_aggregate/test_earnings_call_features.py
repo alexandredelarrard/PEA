@@ -4,9 +4,8 @@ Earnings-call sentiment/text FEATURES (src/data_aggregate/utils/earnings_call_fe
 Validates the pure feature layer on synthetic cache rows (no model/GPU):
   * the smart per-call KPI arithmetic (length-weighted tone, Q&A gap, uncertainty,
     tone delta vs prior call, disclosure-length delta),
-  * the peer-relative panel columns (f_ec_*_xs / _vs_peers),
-  * POINT-IN-TIME / leak-free alignment: a call on date d only affects features on
-    d+1 onward (transcript-publication lag), forward-filled until the next call.
+  * the exact raw and issuer-history feature contract,
+  * POINT-IN-TIME / leak-free alignment with a 66-session signal lifetime.
 """
 
 from __future__ import annotations
@@ -19,13 +18,17 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
+from src.data_aggregate.utils.common.incremental import PartWindow, write_part
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     _per_call_kpis,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
+    prepare_earnings_call_kpis,
     sentiment_kpis_streamed,
 )
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
 
@@ -70,8 +73,7 @@ def _sentiment_frame() -> pd.DataFrame:
 
 
 def _sections_frame() -> pd.DataFrame:
-    """prepared_remarks text per call for the vocabulary-novelty KPI (A: Q1≈Q2 similar,
-    Q3 a clear topic shift)."""
+    """Quality-valid prepared and Q&A text for every fixture call."""
     txt = {
         ("A", "2023Q1"): "cloud platform enterprise customers subscription revenue expansion",
         ("A", "2023Q2"): "cloud platform enterprise customers subscription revenue expansion margins",
@@ -88,7 +90,7 @@ def _sections_frame() -> pd.DataFrame:
 
 
 def test_per_call_kpi_arithmetic():
-    per = _per_call_kpis(_sentiment_frame(), _sections_frame())
+    per = _per_call_kpis(_sentiment_frame(), None)
     a = per[per["ticker"] == "A"].set_index("quarter")
 
     # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
@@ -104,10 +106,6 @@ def test_per_call_kpi_arithmetic():
     assert math.isnan(_number(a.loc["2023Q1", "ec_tone_delta"]))  # first call -> no prior
     # disclosure-length delta Q2 = log(1800/1500)
     assert abs(_number(a.loc["2023Q2", "ec_length_delta"]) - math.log(1800 / 1500)) < 1e-9
-    # vocabulary novelty: Q1 (first) NaN; Q2 low (near-identical); Q3 high (topic shift)
-    assert math.isnan(_number(a.loc["2023Q1", "ec_vocab_novelty"]))
-    assert _number(a.loc["2023Q2", "ec_vocab_novelty"]) < _number(a.loc["2023Q3", "ec_vocab_novelty"])
-    assert _number(a.loc["2023Q3", "ec_vocab_novelty"]) > 0.5
 
 
 class _Ctx:
@@ -118,7 +116,7 @@ class _Ctx:
 
 def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
-    computation — proving the streaming refactor preserves QoQ deltas + vocab novelty. Runs on a
+    computation — proving the streaming refactor preserves the retained QoQ deltas. Runs on a
     REAL DataStore, so the per-ticker `distinct` + WHERE-scoped reads are exercised for real."""
     sent, sec = _sentiment_frame(), _sections_frame()
     sqlite_store.save("earnings_call_sentiment", sent)
@@ -145,8 +143,25 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     print("\n=== SANITY CHECK: sentiment KPI streaming ===")
     print(
         f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
-        "KPIs (including consecutive-quarter tone and length deltas); discarded vocabulary novelty is not recomputed."
+        "KPIs (including consecutive-quarter tone and length deltas)."
     )
+
+
+def test_malformed_or_incomplete_cached_call_is_missing() -> None:
+    sentiment = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    valid_sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    incomplete = sentiment.query("tag == 'prepared_remarks'")
+    assert _per_call_kpis(incomplete, valid_sections).empty
+
+    malformed = valid_sections.copy()
+    malformed.loc[malformed["tag"] == "qa", "text"] = np.nan
+    assert _per_call_kpis(sentiment, malformed).empty
+
+    refreshed = _per_call_kpis(sentiment.assign(n_words=1), valid_sections)
+    expected_words = int(valid_sections["text"].str.split().str.len().sum())
+    assert int(refreshed["total_words"].iloc[0]) == expected_words
+    print("\n=== SANITY CHECK: current transcript quality dominates stale cache ===")
+    print("  incomplete/malformed calls produce no KPI row; stale cached word counts are refreshed. Validated.")
 
 
 def test_panel_columns_lifetime_and_missingness():
@@ -189,6 +204,10 @@ def test_panel_columns_lifetime_and_missingness():
     assert (live == 0.0).all(), "a genuine zero must survive"
     assert pd.isna(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"]), "session 67 must be NaN"
 
+    weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_tone": [0.2]})
+    weekend_daily = _daily_frame(weekend, "ec_tone", idx)
+    assert weekend_daily.loc[pd.Timestamp("2023-02-06"), "A"] == 0.2
+
     print("\n=== SANITY CHECK: earnings-call features ===")
     print(f"  panel {panel.shape[0]} rows; exactly 12 raw/issuer-history EC features and no peer/cross-sectional variants.")
     print(
@@ -198,21 +217,49 @@ def test_panel_columns_lifetime_and_missingness():
     )
 
 
-def test_full_calendar_tail_replay_is_bit_exact() -> None:
-    """The incremental text step recomputes the full calendar and slices only at write."""
+def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
+    """Exercise the real tail writer against a late correction and unchanged rerun."""
     tickers = ["A", "B", "C", "D", "E"]
     peers = {ticker: {} for ticker in tickers}
     calendar = pd.bdate_range("2023-01-02", "2023-09-29")
-    full = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
-    incremental_replay = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
-    refresh_from = calendar[-40]
-    expected = full[full["date"] >= refresh_from].reset_index(drop=True)
-    actual = incremental_replay[incremental_replay["date"] >= refresh_from].reset_index(drop=True)
+    old = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
+    revised_sentiment = _sentiment_frame()
+    mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q2")
+    revised_sentiment.loc[mask, "sent_pos"] += 0.05
+    revised = build_earnings_call_feature_panel(revised_sentiment, peers, calendar, sections=_sections_frame())
+
+    class _Store:
+        def __init__(self, rows: pd.DataFrame):
+            self.rows = rows.copy()
+
+        def columns(self, _table):
+            return list(self.rows.columns)
+
+        def replace(self, _table, rows):
+            self.rows = rows.copy()
+            return len(rows)
+
+        def append_tail(self, _table, tail, cutoff, *, inclusive):
+            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
+            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
+            return len(tail)
+
+    store = _Store(old)
+    last = pd.Timestamp(old["date"].max())
+    default_refresh = calendar[-5]
+    late_refresh = pd.Timestamp("2023-05-02")
+    window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
+    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=late_refresh, drop_empty=True)
+    expected = revised.sort_values(["date", "ticker"]).reset_index(drop=True)
+    actual = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
+    first = actual.copy()
+    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=late_refresh, drop_empty=True)
+    pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True)
     print("\n=== SANITY CHECK: earnings-call full/tail equivalence ===")
     print(
-        f"  full-calendar replay sliced at {refresh_from.date()} is bit-exact across "
-        f"{len(actual)} rows, including values, null masks, genuine zeros, and dtypes. Validated."
+        f"  a correction behind the default tail refreshed from {late_refresh.date()} and matched "
+        f"the {len(actual)}-row full rebuild bit-for-bit; unchanged rerun was idempotent. Validated."
     )
 
 
@@ -265,13 +312,50 @@ def test_issuer_history_survives_symbol_and_cik_change() -> None:
     print("  OLD/CIK1 -> NEW/CIK2 remains one issuer history through symbol and CIK change. Validated.")
 
 
+def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> None:
+    calls = pd.DataFrame(
+        {
+            "ticker": ["OLD", "NEW"],
+            "quarter": ["2023Q4", "2024Q1"],
+            "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"]),
+            "ec_tone": [0.2, 0.5],
+            "total_words": [1000.0, 2000.0],
+        }
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "NEW"],
+            "issuer_cik": ["1", "2"],
+            "valid_from": ["2020-01-01", "2024-01-01"],
+            "valid_to": ["2024-01-01", None],
+        }
+    )
+    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
+    prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, tenure, lineage))
+    newest = prepared.loc[prepared["ticker"] == "NEW"].iloc[0]
+    assert math.isclose(float(newest["ec_tone_delta"]), 0.3)
+    assert math.isclose(float(newest["ec_length_delta"]), math.log(2.0))
+
+    ambiguous = pd.concat(
+        [
+            tenure,
+            pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["3"], "valid_from": ["2024-01-01"], "valid_to": [None]}),
+        ],
+        ignore_index=True,
+    )
+    ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "entity_id": ["E2"]})], ignore_index=True)
+    assert attach_issuer_identity(calls.tail(1), ambiguous, ambiguous_lineage).empty
+    assert attach_issuer_identity(calls.tail(1).assign(ticker="UNKNOWN"), tenure, lineage).empty
+    print("\n=== SANITY CHECK: strict issuer identity ===")
+    print("  half-open tenures preserve OLD->NEW deltas; unknown or ambiguous mappings are excluded. Validated.")
+
+
 if __name__ == "__main__":
     test_per_call_kpi_arithmetic()
     test_panel_columns_lifetime_and_missingness()
     print("\n=== SANITY CHECK: earnings-call features ===")
     print(
         "  length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
-        "arithmetic correct; vocab novelty low for repeated text & high on a topic shift; "
-        "panel emits f_ec_*_xs + _vs_peers; features are leak-free (appear call-date +1 "
-        "trading day) and forward-filled to the next call. Validated."
+        "arithmetic correct; panel emits exactly 12 raw/history fields without peer/xs variants; "
+        "features are leak-free and expire after 66 trading sessions. Validated."
     )

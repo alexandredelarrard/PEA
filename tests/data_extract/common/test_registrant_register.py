@@ -242,3 +242,22 @@ def test_the_missing_register_file_is_not_an_error(tmp_path):
     assert load_registrants(str(tmp_path)) == {}
     print("\n=== SANITY CHECK: no register file -> no registrants ===")
     print("  OK: an absent file is empty, not an exception.")
+
+
+def test_the_approved_governance_cutovers_are_in_the_live_register():
+    """The three accepted governance repairs stay dated, explicit, and reviewable."""
+    registrants = load_registrants(CONFIG_DIR)
+    expected = {
+        "EVRG": (("0000054507", "0001711269"), "2018-06-04"),
+        "JCI": (("0000053669", "0000833444"), "2016-09-02"),
+        "PSKY": (("0000813828", "0002041610"), "2025-08-07"),
+    }
+
+    for ticker, (ciks, boundary) in expected.items():
+        assert registrants[ticker].all_ciks() == ciks
+        assert [str(value.date()) for value in registrants[ticker].boundaries] == [boundary]
+
+    print("\n=== SANITY CHECK: approved governance registrant chains ===")
+    for ticker, (ciks, boundary) in expected.items():
+        print(f"  {ticker}: {' -> '.join(ciks)} at {boundary}")
+    print("  OK: the three evidence-backed chains are exact and dated.")

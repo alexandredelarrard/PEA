@@ -548,7 +548,14 @@ def insider_transactions(
     "DB, no network. Run after `insider-transactions` has populated the cache.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def identity_tables(config_path: str) -> None:
+@click.option(
+    "--approve-rekey",
+    "approved_rekeys",
+    multiple=True,
+    metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
+    help="Acknowledge one exact older-CIK entity-id change reported by the safety manifest.",
+)
+def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """ONE command for BOTH tables, because they are one logical dimension and a half-built
     pair is a trap: `entity_lineage`'s candidate set is read off `symbol_tenure`, so a stale
     tenure table silently narrows the lineage table without either looking wrong.
@@ -558,8 +565,22 @@ def identity_tables(config_path: str) -> None:
     """
     _, context = _ctx(config_path)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
+    parsed_rekeys: set[tuple[str, str]] = set()
+    for value in approved_rekeys:
+        old, separator, new = value.partition(":")
+        if not separator or not old or not new:
+            raise click.BadParameter(
+                "expected OLD_ENTITY_ID:NEW_ENTITY_ID",
+                param_hint="--approve-rekey",
+            )
+        parsed_rekeys.add((old, new))
     build_symbol_tenure(context, cache, config_path)
-    build_entity_lineage(context, cache, config_path)
+    build_entity_lineage(
+        context,
+        cache,
+        config_path,
+        approved_rekeys=frozenset(parsed_rekeys),
+    )
 
 
 @cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")

@@ -520,8 +520,18 @@ def derive_entity_lineage(
     return out, blocked
 
 
-def build_entity_lineage(context: Context, cache: Path, config_dir: str | None = None) -> pd.DataFrame:
-    """Derive and REPLACE `entity_lineage`; returns the frame written."""
+def build_entity_lineage(
+    context: Context,
+    cache: Path,
+    config_dir: str | None = None,
+    *,
+    approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
+) -> pd.DataFrame:
+    """Derive and REPLACE `entity_lineage`; returns the frame written.
+
+    An older CIK changes the natural entity ID. Such a write stays fail-closed unless every
+    observed ``(old_entity_id, new_entity_id)`` pair is acknowledged exactly for this call.
+    """
     tenure = context.store.load(Tables.symbol_tenure, project=True)
     roster = context.store.load(Tables.sp500_tickers)
     assert tenure is not None and roster is not None
@@ -543,10 +553,14 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
         context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over {out['entity_id'].nunique()} entity(ies)")
     else:
         rekeys = detect_older_cik_rekeys(existing, out)
-        if rekeys:
+        actual_rekeys = frozenset((str(impact["old_entity_id"]), str(impact["new_entity_id"])) for impact in rekeys)
+        if rekeys and actual_rekeys != approved_rekeys:
             manifest = _write_rekey_manifest(config_dir or str(context.config_dir), rekeys)
             context.log.error(f"entity_lineage: older-CIK rekey stop; wrote impact manifest to {manifest}")
             raise EntityRekeyError(rekeys, manifest)
+        if actual_rekeys:
+            approved = ", ".join(f"{old}->{new}" for old, new in sorted(actual_rekeys))
+            context.log.warning(f"entity_lineage: applying explicitly approved older-CIK rekey(s): {approved}")
         old_map = dict(zip(existing["cik"].astype(str), existing["entity_id"].astype(str), strict=False))
         new_map = dict(zip(out["cik"].astype(str), out["entity_id"].astype(str), strict=False))
         changed = sorted(cik for cik in set(old_map) | set(new_map) if old_map.get(cik) != new_map.get(cik))

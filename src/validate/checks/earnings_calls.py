@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS
+from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SCORED_TAGS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.text_metrics import assess_earnings_call_sections
@@ -46,23 +46,28 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float]]:
 
     ratios: dict[str, float] = {}
     malformed = valid_calls = observed_calls = 0
-    for ticker in roster["ticker"].astype(str):
+    roster_tickers = roster["ticker"].astype(str).tolist()
+    valid_by_ticker: dict[str, set[str]] = {ticker: set() for ticker in roster_tickers}
+    for start in range(0, len(roster_tickers), 25):
+        batch = roster_tickers[start : start + 25]
         sections = context.store.load(
             Tables.earnings_call_sections,
             columns=["ticker", "quarter", "tag", "text"],
-            where={"ticker": ticker},
+            where={"ticker": batch, "tag": list(EARNINGS_CALL_SCORED_TAGS)},
             optional=True,
         )
-        valid: set[str] = set()
         if sections is not None:
-            for (_, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
+            for (ticker, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
                 observed_calls += 1
                 quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
                 if quality.valid:
-                    valid.add(str(quarter))
+                    valid_by_ticker[str(ticker)].add(str(quarter))
                     valid_calls += 1
                 else:
                     malformed += 1
+
+    for ticker in roster_tickers:
+        valid = valid_by_ticker[ticker]
         bounds = release_ranges.get(ticker)
         if bounds is None or bounds[1] < bounds[0]:
             continue

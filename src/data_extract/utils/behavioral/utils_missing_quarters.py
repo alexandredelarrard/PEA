@@ -35,7 +35,12 @@ from typing import cast
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from src.constants.constants import EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS
+from src.constants.constants import (
+    EARNINGS_CALL_REPORT_GRACE_DAYS,
+    EARNINGS_CALL_SCORED_TAGS,
+    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
+    NO_EARNINGS_CALL_TICKERS,
+)
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
 from src.data_extract.utils.behavioral.utils_behavior import _index_path, _load_index
@@ -102,7 +107,16 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
 def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
     """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when the
     table is not created yet -> resume on disk + JSON coverage."""
-    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "tag", "text"], optional=True)
+    try:
+        db = context.store.load(
+            Tables.earnings_call_sections,
+            columns=["ticker", "quarter", "tag", "text"],
+            where={"tag": list(EARNINGS_CALL_SCORED_TAGS)},
+            optional=True,
+        )
+    except KeyError:
+        # An optional/uninitialized store can expose an empty frame with no schema.
+        return {}
     if db is None:
         return {}
     out: dict[str, set] = {}

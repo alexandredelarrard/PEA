@@ -2,7 +2,7 @@
 earnings_call_features.py  (src/data_aggregate/utils/earnings_call_features.py)
 -------------------------------------------------------------------------------
 Turn the parsed earnings-call SECTIONS (`earnings_call_sections`: prepared_remarks /
-qa, one row per ticker·quarter·tag) into point-in-time, peer-relative model features.
+qa, one row per ticker·quarter·tag) into point-in-time raw and issuer-history features.
 
 Two stages:
 
@@ -13,12 +13,10 @@ Two stages:
      to the `earnings_call_sentiment` cache — PER TICKER, so an interrupted run never
      loses GPU work. Skipped cleanly if torch/transformers are unavailable.
 
-  2. build_earnings_call_feature_panel(...) — the CHEAP per-build derivation. From the
-     cached per-call scores (+ the section text for the vocabulary metric) it builds
-     the "smart" KPIs that characterize how a call's language changes, then aligns them
-     to the daily trading calendar (stamped on the call date, +1-day lag for the
-     transcript-publication delay, forward-filled until the next call) and expresses
-     each as `f_ec_<kpi>_{xs,vs_peers}` via the shared peer-relative builder.
+  2. build_earnings_call_feature_panel(...) — the cheap per-build derivation. From the
+     cached per-call scores it builds raw and prior-only issuer-history KPIs, aligns
+     them to the daily trading calendar with a one-session lag, and expires each call
+     after 66 trading sessions. Missing calls stay null; genuine zero signals stay zero.
 
 Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward):
     ec_tone            length-weighted call tone  P(pos) − P(neg)      (level)
@@ -27,8 +25,9 @@ Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward)
                        far above unscripted answers is a bearish tell)
     ec_uncertainty     length-weighted hedging ratio (LM uncertainty words)
     ec_length_delta    log(total words this call / prior call)         (disclosure Δ)
-    ec_vocab_novelty   1 − cosine(prepared-remarks bag-of-words vs prior call)
-                       (a new narrative / strategy shift)
+    ec_qa_coherence_mean   mean question/answer embedding cosine
+    ec_qa_qq_distance      1 − cosine(Q&A embedding vs prior consecutive quarter)
+    ec_prep_qq_distance    1 − cosine(prepared embedding vs prior consecutive quarter)
 """
 
 from __future__ import annotations
@@ -255,9 +254,13 @@ def attach_issuer_identity(
         if entity_lineage is not None and not entity_lineage.empty
         else {}
     )
+    by_symbol = {str(symbol): group for symbol, group in tenure.groupby(tenure["symbol"].astype(str), sort=False)}
     for row_index, row in out.iterrows():
         date = pd.to_datetime(row["as_of"], errors="coerce")
-        candidates = tenure[(tenure["symbol"].astype(str) == str(row["ticker"])) & (tenure["valid_from"] <= date)]
+        candidates = by_symbol.get(str(row["ticker"]))
+        if candidates is None:
+            continue
+        candidates = candidates[candidates["valid_from"] <= date]
         candidates = candidates[candidates["valid_to"].isna() | (candidates["valid_to"] >= date)]
         if candidates.empty:
             continue
@@ -328,22 +331,31 @@ def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
     together. Returns the per-call KPI frame, or None if the cache is empty."""
     store = context.store
     parts = []
-    for tk in store.distinct(Tables.earnings_call_sentiment, "ticker"):
-        s = store.load(Tables.earnings_call_sentiment, where={"ticker": tk}, optional=True)
-        if s is None:
+    tickers = list(store.distinct(Tables.earnings_call_sentiment, "ticker"))
+    for start in range(0, len(tickers), 25):
+        batch = tickers[start : start + 25]
+        scored = store.load(Tables.earnings_call_sentiment, where={"ticker": batch}, optional=True)
+        sections = store.load(
+            Tables.earnings_call_sections,
+            _SECTION_COLS,
+            where={"ticker": batch, "tag": list(EARNINGS_CALL_SCORED_TAGS)},
+            optional=True,
+        )
+        if scored is None or sections is None:
             continue
-        sections = store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tk}, optional=True)
-        if sections is None:
-            continue
-        valid = []
-        for (_, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
-            quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
-            if quality.valid:
-                valid.append(str(quarter))
-        if not valid:
-            continue
-        s = s[s["quarter"].astype(str).isin(valid)]
-        parts.append(_per_call_kpis(s, sections[sections["quarter"].astype(str).isin(valid)]))
+        for ticker, s in scored.groupby("ticker", sort=False):
+            ticker_sections = sections[sections["ticker"] == ticker]
+            valid = []
+            for (_, quarter), call in ticker_sections.groupby(["ticker", "quarter"], sort=False):
+                quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
+                if quality.valid:
+                    valid.append(str(quarter))
+            if not valid:
+                continue
+            s = s[s["quarter"].astype(str).isin(valid)]
+            # Vocabulary novelty is no longer model-facing; avoid tokenizing every archived
+            # prepared section merely to compute a discarded diagnostic.
+            parts.append(_per_call_kpis(s, None))
     if not parts:
         return None
     return pd.concat(parts, ignore_index=True)
@@ -358,12 +370,11 @@ def build_earnings_call_feature_panel(
     per_call: pd.DataFrame | None = None,
     availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Long-format earnings-call feature panel (`f_ec_<kpi>_vs_peers`, `f_ec_<kpi>_xs`).
-    Empty if the sentiment cache is unavailable/empty. When `embeddings` (the
-    `earning_calls_embedding` cache) is provided, the Q&A-coherence + quarter-to-quarter
-    embedding-drift KPIs are merged in and expressed on the same daily, peer-relative basis.
-    `per_call` may be supplied PRECOMPUTED (the memory-safe per-ticker stream,
-    `sentiment_kpis_streamed`) to skip re-deriving the per-call KPIs from the full cache here."""
+    """Build the exact 12-column raw/issuer-history daily feature contract.
+
+    Empty if the sentiment cache is unavailable. ``per_call`` may be supplied from
+    the bounded-memory stream to skip re-deriving cached call KPIs.
+    """
     if per_call is None:
         if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns:
             return pd.DataFrame(columns=["date", "ticker"])
@@ -373,13 +384,27 @@ def build_earnings_call_feature_panel(
     ekpi = build_embedding_kpis(embeddings)
     if ekpi is not None and not ekpi.empty:
         per_call = per_call.merge(ekpi, on=["ticker", "quarter"], how="left")
+    per_call = prepare_earnings_call_kpis(per_call)
+    return _feature_panel_from_prepared(per_call, peer_dict, trading_index, availability)
+
+
+def prepare_earnings_call_kpis(per_call: pd.DataFrame) -> pd.DataFrame:
+    """Add the exact raw/history KPI contract on the per-call grain."""
     per_call = per_call.copy()
     for col in _RAW_KPI_COLS:
         if col not in per_call.columns:
             per_call[col] = np.nan
     for col in _HISTORY_BASES:
         per_call[f"{col}_vs_hist"] = _issuer_history_zscore(per_call, col)
+    return per_call
 
+
+def _feature_panel_from_prepared(
+    per_call: pd.DataFrame,
+    peer_dict: dict,
+    trading_index: pd.DatetimeIndex,
+    availability: pd.DataFrame | None,
+) -> pd.DataFrame:
     fields: dict[str, pd.DataFrame] = {}
     for col in _KPI_COLS:
         if col not in per_call.columns:

@@ -5,14 +5,13 @@ Earnings-call TEXT analysis -> `cube_part_text`.
 
 Two independent passes over the transcript archive:
 
-  SENTIMENT   local FinBERT-tone + Loughran-McDonald scoring (cached/incremental in
-              `earnings_call_sentiment`, so the GPU pass runs once), then the per-call KPIs:
-              tone level and momentum, the Q&A-vs-scripted candor gap, the hedging
-              (uncertainty) ratio, disclosure-length change and vocabulary novelty.
-  EMBEDDING   OpenAI embeddings (cached/incremental; a no-op without an API key), then the
-              Q&A-coherence (cosine of a question vs its answer) and quarter-to-quarter
-              narrative-drift KPIs. Independent of the sentiment pass -- its call dates come
-              from the embedding rows' own `as_of` -- so it needs no GPU tone model.
+SENTIMENT   local FinBERT-tone + Loughran-McDonald scoring (cached/incremental in
+            `earnings_call_sentiment`, so the GPU pass runs once), then tone, momentum,
+            Q&A-vs-scripted candor, hedging, and disclosure-length KPIs.
+EMBEDDING   OpenAI embeddings (cached/incremental; a no-op without an API key), then
+            Q&A coherence and consecutive-quarter narrative drift. The final contract
+            contains raw levels plus four prior-only issuer-history scores; peer and
+            cross-sectional variants are intentionally absent.
 
 MEMORY: neither pass preloads `earnings_call_sections`. Scoring streams the text per ticker
 and the KPIs stream back per ticker. Loading that table whole is precisely what OOM-killed

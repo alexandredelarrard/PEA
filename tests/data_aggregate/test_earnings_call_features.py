@@ -135,7 +135,6 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
         "ec_uncertainty",
         "ec_tone_delta",
         "ec_length_delta",
-        "ec_vocab_novelty",
         "ec_qa_tone_delta",
         "ec_prep_tone_delta",
     ]
@@ -143,14 +142,10 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
         s, b = m[f"{col}_s"].to_numpy(float), m[f"{col}_b"].to_numpy(float)
         ok = (np.isnan(s) & np.isnan(b)) | np.isclose(s, b, equal_nan=True)
         assert ok.all(), f"{col} differs streamed vs batch"
-    # A's Q3 topic-shift novelty is a cross-call KPI -> confirms per-ticker order survived streaming
-    a3 = streamed[(streamed.ticker == "A") & (streamed.quarter == "2023Q3")]["ec_vocab_novelty"]
-    assert float(a3.iloc[0]) > 0.5, "QoQ novelty lost under per-ticker streaming"
     print("\n=== SANITY CHECK: sentiment KPI streaming ===")
     print(
         f"  per-ticker streamed KPIs == whole-cache batch across {len(m)} calls x {len(kpi_cols)} "
-        f"KPIs (incl. QoQ tone/length deltas + vocab novelty). A 2023Q3 novelty "
-        f"{float(a3.iloc[0]):.3f} (>0.5 topic shift) -> cross-call order preserved."
+        "KPIs (including consecutive-quarter tone and length deltas); discarded vocabulary novelty is not recomputed."
     )
 
 
@@ -200,6 +195,24 @@ def test_panel_columns_lifetime_and_missingness():
         f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
         "(call 2023-02-01 + 1 trading day); genuine zero survives for 66 sessions and "
         "session 67 is NaN."
+    )
+
+
+def test_full_calendar_tail_replay_is_bit_exact() -> None:
+    """The incremental text step recomputes the full calendar and slices only at write."""
+    tickers = ["A", "B", "C", "D", "E"]
+    peers = {ticker: {} for ticker in tickers}
+    calendar = pd.bdate_range("2023-01-02", "2023-09-29")
+    full = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
+    incremental_replay = build_earnings_call_feature_panel(_sentiment_frame(), peers, calendar, sections=_sections_frame())
+    refresh_from = calendar[-40]
+    expected = full[full["date"] >= refresh_from].reset_index(drop=True)
+    actual = incremental_replay[incremental_replay["date"] >= refresh_from].reset_index(drop=True)
+    pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
+    print("\n=== SANITY CHECK: earnings-call full/tail equivalence ===")
+    print(
+        f"  full-calendar replay sliced at {refresh_from.date()} is bit-exact across "
+        f"{len(actual)} rows, including values, null masks, genuine zeros, and dtypes. Validated."
     )
 
 

@@ -513,8 +513,8 @@ def embedding_kpis_streamed(context: Context) -> tuple[pd.DataFrame | None, pd.D
     together."""
     store = context.store
     kparts, aparts = [], []
-    for tk in store.distinct(Tables.earning_calls_embedding, "ticker"):
-        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tk}, optional=True)
+    for ticker in store.distinct(Tables.earning_calls_embedding, "ticker"):
+        emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": ticker}, optional=True)
         if emb is None:
             continue
         k = build_embedding_kpis(emb)

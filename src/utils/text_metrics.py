@@ -567,7 +567,8 @@ class EarningsCallQuality:
 
 def assess_earnings_call_sections(sections: Mapping[str, object]) -> EarningsCallQuality:
     """One shared validity decision for cached, stored, ROIC, and Fool calls."""
-    cleaned = {str(tag): clean_earnings_call_text(text) for tag, text in sections.items()}
+    scored = set(EARNINGS_CALL_SCORED_TAGS)
+    cleaned = {str(tag): clean_earnings_call_text(text) if str(tag) in scored else str(text or "") for tag, text in sections.items()}
     counts = {tag: word_count(cleaned.get(tag, "")) for tag in EARNINGS_CALL_SCORED_TAGS}
     missing = [tag for tag, count in counts.items() if count == 0]
     total = sum(counts.values())

@@ -34,7 +34,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from src.constants.constants import EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_CALL_REQUEST_PAUSE, FOOL_BASE
+from src.constants.constants import EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_CALL_REQUEST_PAUSE, EARNINGS_CALL_SCORED_TAGS, FOOL_BASE
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import download_hf_parquet, ingest_hf_transcripts
 from src.data_extract.utils.behavioral.fetch_roic_transcripts import fetch_roic_transcripts
@@ -409,7 +409,12 @@ def _existing_section_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already present in `earnings_call_sections` (from ANY source). Lets the MF
     ingest SKIP transcripts already parsed instead of re-reading + re-parsing every cached HTML each
     run. Empty set when the table is missing / unreadable (-> full ingest)."""
-    df = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "tag", "text"], optional=True)
+    df = context.store.load(
+        Tables.earnings_call_sections,
+        columns=["ticker", "quarter", "tag", "text"],
+        where={"tag": list(EARNINGS_CALL_SCORED_TAGS)},
+        optional=True,
+    )
     if df is None:
         return set()
     valid: set[tuple[str, str]] = set()

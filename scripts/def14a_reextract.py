@@ -45,13 +45,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.constants.constants import DEF14A_FORMS
 from src.context import Context, get_config_context
-from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.registrant import issuer_ciks, load_registrants
+from src.data_extract.utils.common.registrant import Registrant, issuer_ciks, load_registrants
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.structure.def14a.fetch import _payload_for, _subject_is_accepted
+from src.data_extract.utils.structure.def14a.fetch import (
+    _list_across_registrants,
+    _payload_for,
+    _subject_is_accepted,
+)
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_TABLES, _result_frames
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -156,7 +158,8 @@ def _tasks_for_ticker(
     company: str,
     want: set[str],
     accepted_subject_ciks: frozenset[str],
-) -> tuple[list[tuple[str, dict]], set[str]]:
+    cutovers: dict[str, Registrant],
+) -> tuple[list[tuple[str, dict]], set[str], set[str]]:
     """Fetch + carve this ticker's target filings on THIS thread; `(payload, meta)` per readable
     one.
 
@@ -167,18 +170,30 @@ def _tasks_for_ticker(
     the failure log unreadable.
     """
     try:
-        # The SAME listing call production makes, so `doc_url` / `txt_url` are the production
-        # URLs. `years` is the full configured window: a target accession can be 20 years old
-        # and a manifest-shaped window would simply not list it.
-        filings = list_filings(ctx, cik, DEF14A_FORMS, ctx.config.data_extract.years_history, company)
+        # Use production's dated registrant walk. A target accession can predate the roster CIK,
+        # and a current-CIK-only listing would silently make that exact repair impossible.
+        filings = _list_across_registrants(
+            ctx,
+            ticker,
+            cik,
+            company,
+            ctx.config.data_extract.years_history,
+            None,
+            cutovers,
+        )
     except Exception as e:  # noqa: BLE001 -- one ticker, not the run
         logger.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
-        return [], set()
+        return [], set(), set(want)
 
     todo = filings[filings["accession_number"].isin(want)]
-    missing = want - set(todo["accession_number"])
-    if missing:
-        logger.warning("%s: %d target accession(s) not in the EDGAR listing: %s", ticker, len(missing), sorted(missing)[:3])
+    unresolved = want - set(todo["accession_number"])
+    if unresolved:
+        logger.warning(
+            "%s: %d target accession(s) not in the EDGAR listing: %s",
+            ticker,
+            len(unresolved),
+            sorted(unresolved)[:3],
+        )
 
     out: list[tuple[str, dict]] = []
     rejected: set[str] = set()
@@ -190,7 +205,9 @@ def _tasks_for_ticker(
         payload = _payload_for(ctx, ticker, f)
         if payload:
             out.append((payload, {"ticker": ticker, "filing": f}))
-    return out, rejected
+        else:
+            unresolved.add(accession)
+    return out, rejected, unresolved
 
 
 def _backup_then_delete(ctx: Context, tables: tuple[Table, ...], accessions: set[str]) -> int:
@@ -217,7 +234,7 @@ def _remove_rejected_subjects(ctx: Context, accessions: set[str]) -> int:
     return _backup_then_delete(ctx, (Tables.def14a_llm, *_CHILD_TABLES.values()), accessions)
 
 
-def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int, int]:
+def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int, int, int]:
     """Re-extract `work`, batching ACROSS tickers so the pool stays full.
 
     ⚠ BATCHED ACROSS TICKERS, NOT ONE TICKER AT A TIME, and the difference is hours. Production
@@ -231,7 +248,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
     """
     cik_map = load_cik_mapping(ctx, sorted(work["ticker"].unique()))
     extractor = LLMExtractor(ctx, config, action="def14a", threads=workers)
-    ok, failed, rejected = 0, 0, 0
+    ok, failed, rejected, unresolved = 0, 0, 0, 0
     batch: list[tuple[str, dict]] = []
     done_tickers = 0
     cutovers = load_registrants()
@@ -265,11 +282,20 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         if not want:
             continue
         accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
-        tasks, rejected_accessions = _tasks_for_ticker(ctx, ticker, cik, company, want, accepted_subjects)
+        tasks, rejected_accessions, unresolved_accessions = _tasks_for_ticker(
+            ctx,
+            ticker,
+            cik,
+            company,
+            want,
+            accepted_subjects,
+            cutovers,
+        )
         batch.extend(tasks)
         if rejected_accessions:
             _remove_rejected_subjects(ctx, rejected_accessions)
             rejected += len(rejected_accessions)
+        unresolved += len(unresolved_accessions)
         done_tickers += 1
         # a full pool plus one wave of slack, so the last worker is never waiting for a carve
         if len(batch) >= workers * 2:
@@ -279,7 +305,13 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
             logger.info("progress: %d ticker(s) resolved, %d filing(s) done, %d failed", done_tickers, ok, failed)
 
     a, b = flush(batch)
-    return ok + a, failed + b, rejected
+    accounted = ok + a + failed + b + rejected + unresolved
+    requested = len(work.drop_duplicates(["ticker", "accession_number"]))
+    if accounted < requested:
+        unresolved += requested - accounted
+    elif accounted > requested:
+        raise RuntimeError(f"DEF 14A re-extraction accounting exceeded scope: {accounted}>{requested}")
+    return ok + a, failed + b, rejected, unresolved
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -315,12 +347,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = with_gpt_overrides(config, "def14a", model=args.model)
-    ok, failed, rejected = _extract(ctx, config, work, args.workers)
+    ok, failed, rejected, unresolved = _extract(ctx, config, work, args.workers)
     print(f"\nre-extracted    {ok} filing(s)")
     print(f"wrong subjects  {rejected} filing(s) removed")
     print(f"failed          {failed} filing(s)")
+    print(f"unresolved      {unresolved} filing(s)")
     print(f"actual cost     ~${ok * USD_PER_FILING:,.2f}")
-    return 0 if failed == 0 else 1
+    return 0 if failed == 0 and unresolved == 0 else 1
 
 
 if __name__ == "__main__":

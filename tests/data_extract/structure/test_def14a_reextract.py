@@ -53,3 +53,68 @@ def test_rejected_subject_backup_removes_parent_and_all_children(tmp_path, monke
     print("\n=== SANITY: wrong-subject DEF 14A family replacement ===")
     print(f"  backed up and removed one parent plus {len(tables) - 1} child families")
     print("  unrelated accession retained; second removal is an idempotent no-op")
+
+
+def test_target_tasks_use_the_production_registrant_walk(monkeypatch):
+    accession = "0000053669-15-000001"
+    filing = pd.DataFrame([{"accession_number": accession, "cik": "0000053669", "filing_date": "2015-01-01"}])
+    cutovers = {"JCI": object()}
+    seen = {}
+
+    def list_across(context, ticker, cik, company, years, since, registrations):
+        seen.update(
+            context=context,
+            ticker=ticker,
+            cik=cik,
+            company=company,
+            years=years,
+            since=since,
+            registrations=registrations,
+        )
+        return filing
+
+    monkeypatch.setattr(reextract, "_list_across_registrants", list_across)
+    monkeypatch.setattr(reextract, "_subject_is_accepted", lambda *args: True)
+    monkeypatch.setattr(reextract, "_payload_for", lambda *args: "payload")
+    context = SimpleNamespace(config=SimpleNamespace(data_extract=SimpleNamespace(years_history=31)))
+
+    tasks, rejected, unresolved = reextract._tasks_for_ticker(
+        context,
+        "JCI",
+        "0000833444",
+        "Johnson Controls",
+        {accession},
+        frozenset({"0000053669", "0000833444"}),
+        cutovers,
+    )
+
+    assert len(tasks) == 1 and tasks[0][1]["filing"]["cik"] == "0000053669"
+    assert not rejected and not unresolved
+    assert seen["registrations"] is cutovers and seen["since"] is None
+    print("\n=== SANITY: targeted DEF 14A follows dated registrant history ===")
+    print("  current JCI roster CIK -> predecessor-CIK accession found by production's segment walk")
+
+
+def test_missing_or_unreadable_targets_are_unresolved(monkeypatch):
+    listed = "0000053669-15-000001"
+    absent = "0000053669-14-000001"
+    filing = pd.DataFrame([{"accession_number": listed, "cik": "0000053669", "filing_date": "2015-01-01"}])
+    monkeypatch.setattr(reextract, "_list_across_registrants", lambda *args: filing)
+    monkeypatch.setattr(reextract, "_subject_is_accepted", lambda *args: True)
+    monkeypatch.setattr(reextract, "_payload_for", lambda *args: None)
+    context = SimpleNamespace(config=SimpleNamespace(data_extract=SimpleNamespace(years_history=31)))
+
+    tasks, rejected, unresolved = reextract._tasks_for_ticker(
+        context,
+        "JCI",
+        "0000833444",
+        "Johnson Controls",
+        {listed, absent},
+        frozenset({"0000053669", "0000833444"}),
+        {},
+    )
+
+    assert not tasks and not rejected
+    assert unresolved == {listed, absent}
+    print("\n=== SANITY: targeted DEF 14A cannot silently omit work ===")
+    print("  absent listing + unreadable payload are both surfaced as unresolved failures")

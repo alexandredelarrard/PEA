@@ -104,6 +104,7 @@ def _fake_8k_filing(
     items="2.02,9.01",
     primary_document="form8k.htm",
     obj=None,
+    text=None,
 ):
     filing = SimpleNamespace(
         accession_number=accession,
@@ -114,6 +115,7 @@ def _fake_8k_filing(
         primary_document=primary_document,
     )
     filing.obj = (lambda: obj) if obj is not None else (lambda: (_ for _ in ()).throw(RuntimeError("no parse")))
+    filing.text = (lambda: text) if text is not None else (lambda: (_ for _ in ()).throw(AssertionError("filing.text() must not be called")))
     return filing
 
 
@@ -153,6 +155,66 @@ def test_8k_amendment_flag_from_form_suffix():
     filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False))
     rows = _filing_row("MAA", "0000320193", filing)
     assert all(r["is_amendment"] == 1.0 for r in rows)
+
+
+class _CurrentReport(SimpleNamespace):
+    def __init__(self, item_text: str):
+        super().__init__(has_earnings=False, has_press_release=False)
+        self.item_text = item_text
+
+    def __getitem__(self, key: str) -> str:
+        assert key == "Item 5.07"
+        return self.item_text
+
+
+def test_8k_item_507_recovers_table_from_primary_document_when_structured_slice_is_stub():
+    stub = "The final voting results for each matter are set forth below."
+    primary = """Item 5.07.      Submission
+of Matters to a Vote of Security Holders.
+
+The final voting results for each matter are set forth below.
+
+Votes For      Votes Against      Votes Abstained
+1,234,567      23,456             1,234
+
+Item 9.01. Financial Statements and Exhibits.
+This text must not leak into Item 5.07.
+"""
+    filing = _fake_8k_filing(items="5.07,9.01", obj=_CurrentReport(stub), text=primary)
+
+    rows = _filing_row("TRV", "0000086312", filing)
+    item = next(row for row in rows if row["item"] == "5.07")
+
+    assert "1,234,567" in item["item_text"]
+    assert "This text must not leak" not in item["item_text"]
+
+
+def test_8k_item_507_preserves_complete_structured_text_without_reading_primary_document():
+    complete = "Final voting results below. Votes For 1,234,567; Votes Against 23,456; Votes Abstained 1,234."
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete))
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == complete
+
+
+def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
+    stub = "The final voting results are set forth below."
+    primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nNo results were included.\nSIGNATURES"
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == stub
+
+
+def test_8k_item_507_does_not_read_primary_document_without_results_follow_signal():
+    stub = "The annual meeting occurred on May 1, 2026."
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub))
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == stub
 
 
 def _fake_13d_filing(

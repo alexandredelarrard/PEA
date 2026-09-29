@@ -622,9 +622,10 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, full=full)
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")

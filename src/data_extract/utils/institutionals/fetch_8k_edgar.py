@@ -158,7 +158,7 @@ def build_ticker_8k_edgar(
     return {Tables.sec_8k: df.drop_duplicates(subset=list(Tables.sec_8k.pk), keep="last")}
 
 
-def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> None:
+def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
     run_edgar_fetch(
         context,
         tickers,
@@ -166,5 +166,6 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> 
         tables=(Tables.sec_8k,),
         build=build_ticker_8k_edgar,
         desc="8-K (edgartools)",
+        full=full,
         require_complete=True,
     )

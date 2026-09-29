@@ -15,7 +15,7 @@ import pandas as pd
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, fetch_8k_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     _carve_with,
@@ -70,6 +70,29 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         "fetchers; each step reads data_extract.years_history exactly once and passes it "
         "down. No fetcher reads the config itself. Validated."
     )
+
+
+def test_fetch_8k_edgar_forwards_full_history_to_shared_driver(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "src.data_extract.utils.institutionals.fetch_8k_edgar.run_edgar_fetch",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    fetch_8k_edgar(SimpleNamespace(), ["PSKY", "JCI", "EVRG"], 15, full=True)
+
+    assert calls == [
+        {
+            "tables": (Tables.sec_8k,),
+            "build": build_ticker_8k_edgar,
+            "desc": "8-K (edgartools)",
+            "full": True,
+            "require_complete": True,
+        }
+    ]
+    print("\n=== SANITY: 8-K full-history plumbing ===")
+    print("  fetch_8k_edgar(..., full=True) forwards the existing full-rescan flag to the shared EDGAR driver.")
 
 
 def _fake_8k_filing(

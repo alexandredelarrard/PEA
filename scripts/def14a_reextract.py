@@ -126,16 +126,22 @@ logger = logging.getLogger("def14a_reextract")
 
 def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:
     """The (ticker, accession_number, as_of) rows this run would re-extract."""
+    requested_accessions: set[str] | None = None
     if args.scope == "accessions":
         accs = [a.strip() for a in (args.accessions or "").split(",") if a.strip()]
         if not accs:
             raise SystemExit("--scope accessions needs --accessions A,B,C")
+        requested_accessions = set(accs)
         quoted = ", ".join(f"'{a}'" for a in accs)
         sql = f"SELECT ticker, accession_number, as_of::date AS as_of FROM def14a_llm WHERE accession_number IN ({quoted}) ORDER BY ticker, as_of"
     else:
         sql = SCOPES[args.scope]
 
     work = pd.read_sql(sql, ctx.store.engine)
+    if requested_accessions is not None:
+        missing = requested_accessions - set(work["accession_number"])
+        if missing:
+            raise SystemExit(f"requested accession(s) absent from def14a_llm: {', '.join(sorted(missing))}")
     if args.tickers:
         keep = {t.strip().upper() for t in args.tickers.split(",") if t.strip()}
         work = work[work["ticker"].isin(keep)]

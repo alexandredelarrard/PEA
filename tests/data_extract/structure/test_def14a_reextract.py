@@ -5,10 +5,33 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from scripts import def14a_reextract as reextract
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_TABLES
 from src.data_store.schema import Tables
+
+
+def test_explicit_accession_scope_refuses_a_partial_work_set(monkeypatch):
+    args = SimpleNamespace(
+        scope="accessions",
+        accessions="present,missing",
+        tickers=None,
+        limit=0,
+        per_ticker=1,
+    )
+    context = SimpleNamespace(store=SimpleNamespace(engine=object()))
+    monkeypatch.setattr(
+        reextract.pd,
+        "read_sql",
+        lambda *args, **kwargs: pd.DataFrame([{"ticker": "JCI", "accession_number": "present", "as_of": "2025-01-01"}]),
+    )
+
+    with pytest.raises(SystemExit, match="absent from def14a_llm: missing"):
+        reextract._work(context, args)
+
+    print("\n=== SANITY: exact-accession scope is fail-closed ===")
+    print("  one present + one absent request -> the run stops before any extraction")
 
 
 def test_rejected_subject_backup_removes_parent_and_all_children(tmp_path, monkeypatch):

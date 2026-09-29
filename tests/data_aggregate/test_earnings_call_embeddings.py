@@ -18,6 +18,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import EARNINGS_CALL_EMBEDDING_MODEL
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
@@ -217,6 +218,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
         "model",
         "run_at",
     }.issubset(emb.columns)
+    assert set(emb["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
     calls_after_first = stub.n_calls
     embed_earnings_calls(ctx, client=stub)  # re-run: incremental
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
@@ -335,6 +337,29 @@ def test_force_reembed_drops_stale_turns():
     )
 
 
+def test_embedding_resume_requires_expected_model_and_reconciles_without_force() -> None:
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    first = StubClient()
+    embed_earnings_calls(ctx, client=first)
+    table = store.t["earning_calls_embedding"]
+    table["model"] = "legacy-or-other-model"
+    stale = table.iloc[[0]].copy()
+    stale["seq"] = 999
+    store.t["earning_calls_embedding"] = pd.concat([table, stale], ignore_index=True)
+
+    second = StubClient()
+    embed_earnings_calls(ctx, client=second)
+
+    refreshed = store.t["earning_calls_embedding"]
+    assert second.n_calls == 4
+    assert set(refreshed["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
+    assert not refreshed["seq"].eq(999).any()
+    print("\n=== SANITY CHECK: embedding cache provenance ===")
+    print("  wrong-model calls are not considered complete; normal resume re-embeds and removes orphaned legacy turns. Validated with a stub.")
+
+
 def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> None:
     store = FakeStore()
     store.t["earnings_call_sections"] = _sections()
@@ -403,7 +428,7 @@ def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> N
                     "tag": tag,
                     "exchange_idx": 0,
                     "embedding": vector,
-                    "model": "m1",
+                    "model": EARNINGS_CALL_EMBEDDING_MODEL,
                 }
             )
     got = build_embedding_kpis(pd.DataFrame(rows))

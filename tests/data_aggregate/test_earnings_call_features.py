@@ -12,18 +12,27 @@ from __future__ import annotations
 
 import logging
 import math
+from types import SimpleNamespace
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
+import src.data_aggregate.transformers.step_cube_text as step_text
 import src.data_aggregate.utils.text.earnings_call_features as ec
-from src.constants.constants import EARNINGS_CALL_SENTIMENT_CACHE_MODEL, FINBERT_TONE_MODEL
+from src.constants.constants import (
+    EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+    FINBERT_TONE_MODEL,
+)
 from src.context import Context
+from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     _per_call_kpis,
+    acknowledge_earnings_call_invalidations,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
     prepare_earnings_call_kpis,
@@ -185,6 +194,97 @@ def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, 
     assert len(_per_call_kpis(refreshed, sections)) == 1
     print("\n=== SANITY CHECK: sentiment cache preprocessing version ===")
     print("  legacy raw-text rows are rejected; both cleaned sections are rescored and replace them. Validated.")
+
+
+def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, monkeypatch) -> None:
+    sections = pd.DataFrame(
+        [{"ticker": "A", "quarter": "2023Q1", "tag": tag, "as_of": "2023-02-01", "text": None} for tag in ("prepared_remarks", "qa")]
+    )
+    marker = pd.DataFrame(
+        [
+            {
+                "ticker": "A",
+                "quarter": "2023Q1",
+                "tag": tag,
+                "as_of": "2023-02-01",
+                "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+            }
+            for tag in ("prepared_remarks", "qa")
+        ]
+    )
+    sqlite_store.save(Tables.earnings_call_sections, sections)
+    sqlite_store.save(Tables.earnings_call_sentiment, marker)
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: None)
+    context = cast(Context, _Ctx(sqlite_store))
+
+    assert score_earnings_calls(context) == pd.Timestamp("2023-02-01")
+    still_pending = sqlite_store.load(Tables.earnings_call_sentiment)
+    assert still_pending is not None
+    assert set(still_pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert acknowledge_earnings_call_invalidations(context) == 2
+    handled = sqlite_store.load(Tables.earnings_call_sentiment)
+    assert handled is not None
+    assert set(handled["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL}
+    assert score_earnings_calls(context) is None
+    print("\n=== SANITY CHECK: malformed refresh handoff ===")
+    print("  invalid source date remains pending across scoring and is acknowledged only after the caller completes the cube write. Validated.")
+
+
+def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_store, monkeypatch) -> None:
+    stale = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2023-02-01", "2023-02-02", "2023-02-03"]),
+            "ticker": ["A", "A", "A"],
+            "f_ec_tone": [0.5, 0.5, 0.5],
+        }
+    )
+    sqlite_store.save(Tables.cube_part_text, stale)
+    sqlite_store.save(
+        Tables.earnings_call_sentiment,
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "A",
+                    "quarter": "2023Q1",
+                    "tag": tag,
+                    "as_of": "2023-02-01",
+                    "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+                }
+                for tag in ("prepared_remarks", "qa")
+            ]
+        ),
+    )
+    step = StepCubeText.__new__(StepCubeText)
+    step._store = sqlite_store
+    step._context = cast(Context, _Ctx(sqlite_store))
+    step._cfg = {"incremental": {}}
+    step._part = SimpleNamespace(warmup_trading_days=5)
+    step._load_frames = lambda _since: object()
+    step._feature_panel = lambda _frames: (
+        pd.DataFrame(columns=["date", "ticker", "f_ec_tone"]),
+        [pd.Timestamp("2023-02-01")],
+    )
+    monkeypatch.setattr(step_text, "load_trading_calendar", lambda _store: pd.bdate_range("2023-02-01", periods=3))
+    monkeypatch.setattr(
+        step_text,
+        "plan_window",
+        lambda *_args, **_kwargs: PartWindow(
+            last=pd.Timestamp("2023-02-03"),
+            since=pd.Timestamp("2023-02-01"),
+            refresh_from=pd.Timestamp("2023-02-03"),
+        ),
+    )
+
+    step.run()
+
+    remaining = sqlite_store.load(Tables.cube_part_text)
+    assert remaining is not None
+    assert remaining["date"].tolist() == [pd.Timestamp("2023-02-01")]
+    marker = sqlite_store.load(Tables.earnings_call_sentiment)
+    assert marker is not None
+    assert set(marker["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL}
+    print("\n=== SANITY CHECK: malformed correction clears persisted output ===")
+    print("  an empty rebuilt panel deletes every stale row from call+1 onward, then acknowledges the durable marker. Validated.")
 
 
 def test_panel_columns_lifetime_and_missingness():

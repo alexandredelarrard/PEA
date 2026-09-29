@@ -41,6 +41,8 @@ from src.constants.constants import (
     EARNINGS_CALL_FEATURES,
     EARNINGS_CALL_SCORED_TAGS,
     EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
     EARNINGS_CALL_SIGNAL_SESSIONS,
 )
 from src.context import Context
@@ -128,26 +130,32 @@ def score_earnings_calls(
         log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
         return None
     sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
+    pending = store.load(
+        Tables.earnings_call_sentiment,
+        where={"model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL},
+        optional=True,
+    )
+    pending_dates = pd.to_datetime(pending["as_of"], errors="coerce").dropna() if pending is not None else pd.Series(dtype="datetime64[ns]")
+    earliest = pd.Timestamp(pending_dates.min()) if not pending_dates.empty else None
     done_df = store.load(
         Tables.earnings_call_sentiment,
         ["ticker", "quarter", "tag"],
-        where={"model": EARNINGS_CALL_SENTIMENT_CACHE_MODEL},
+        where={"model": [EARNINGS_CALL_SENTIMENT_CACHE_MODEL, EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL]},
         optional=True,
     )
     done = set() if done_df is None else set(map(tuple, done_df.drop_duplicates().to_numpy()))
     todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
     if todo_keys.empty:
         log.info("Earnings-call sentiment cache already complete.")
-        return None
+        return earliest
 
     engine = get_sentiment_engine(log)
     if engine is None:  # torch/transformers/model unavailable
         log.warning("Sentiment model unavailable -> %d sections left unscored; earnings-call features will be skipped.", len(todo_keys))
-        return None
+        return earliest
 
     log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
     n_new = 0
-    earliest: pd.Timestamp | None = None
     for _tkr, grp in _yield_sections_to_score(context, todo_keys, sections, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
@@ -158,6 +166,23 @@ def score_earnings_calls(
                 earliest = changed if earliest is None else min(earliest, changed)
     log.info("Earnings-call sentiment: +%d newly scored rows -> '%s'.", n_new, Tables.earnings_call_sentiment)
     return earliest
+
+
+def acknowledge_earnings_call_invalidations(context: Context) -> int:
+    """Mark malformed-source refreshes handled only after the cube write succeeds.
+
+    A crash before acknowledgement leaves the marker pending, so the next run repeats
+    the same inclusive repair instead of losing the historical correction.
+    """
+    pending = context.store.load(
+        Tables.earnings_call_sentiment,
+        where={"model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL},
+        optional=True,
+    )
+    if pending is None or pending.empty:
+        return 0
+    pending["model"] = EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL
+    return context.store.save(Tables.earnings_call_sentiment, pending)
 
 
 # --------------------------------------------------------------------------- #

@@ -40,7 +40,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION
+from src.constants.constants import (
+    EARNINGS_CALL_EMBEDDING_MODEL,
+    EARNINGS_CALL_TAG_ANSWER,
+    EARNINGS_CALL_TAG_PREPARED,
+    EARNINGS_CALL_TAG_QUESTION,
+)
 from src.context import Context
 from src.data_store.schema import Tables
 
@@ -386,10 +391,17 @@ def _drop_stale_turns(store, log, counts: dict[tuple[str, str], int]) -> None:
 _KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding", "model"]
 
 
-def _embedded_calls(store) -> set[tuple[str, str]]:
+def _embedded_calls(store, cache_model: str) -> set[tuple[str, str]]:
     """(ticker, quarter) already embedded — reads ONLY the two key columns (never the 1536-dim
     vectors), so the done-set check costs almost nothing even on a million-row cache."""
-    df = store.load(Tables.earning_calls_embedding, ["ticker", "quarter"], optional=True)
+    if cache_model not in set(store.distinct(Tables.earning_calls_embedding, "model")):
+        return set()
+    df = store.load(
+        Tables.earning_calls_embedding,
+        ["ticker", "quarter"],
+        where={"model": cache_model},
+        optional=True,
+    )
     if df is None:
         return set()
     return set(map(tuple, df.drop_duplicates().to_numpy()))
@@ -435,7 +447,11 @@ def _yield_call_texts(context: Context, remaining: list[tuple[str, str]], sectio
 
 
 def embed_earnings_calls(
-    context: Context, sections: pd.DataFrame | None = None, model: str = "text-embedding-3-small", force: bool = False, client=None
+    context: Context,
+    sections: pd.DataFrame | None = None,
+    model: str = EARNINGS_CALL_EMBEDDING_MODEL,
+    force: bool = False,
+    client=None,
 ) -> pd.Timestamp | None:
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
     per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two
@@ -453,7 +469,7 @@ def embed_earnings_calls(
     if not universe:
         log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
         return None
-    done = set() if force else _embedded_calls(store)
+    done = set() if force else _embedded_calls(store, model)
     remaining = [k for k in universe if tuple(k) not in done]
     if not remaining:
         log.info("Earnings-call embedding cache already complete (%d calls).", len(universe))
@@ -495,7 +511,7 @@ def embed_earnings_calls(
         ]
         store.save(Tables.earning_calls_embedding, pd.DataFrame(rows))  # iterative per-call upsert
         n_new += len(rows)
-    if force and counts:  # re-embed may yield FEWER turns -> drop orphaned tail rows
+    if counts:  # parser-version migrations may yield FEWER turns -> drop orphaned legacy tails
         _drop_stale_turns(store, log, counts)
     log.info("Earnings-call embeddings: +%d turn rows -> '%s'.", n_new, Tables.earning_calls_embedding)
     return earliest
@@ -524,6 +540,9 @@ def embedding_kpis_streamed(
     for issuer_id, tickers in groups:
         emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tickers}, optional=True)
         if emb is None:
+            continue
+        emb = emb[emb["model"] == EARNINGS_CALL_EMBEDDING_MODEL]
+        if emb.empty:
             continue
         if issuer_id is not None:
             calls = call_identity[call_identity["issuer_id"].astype(str).eq(issuer_id)]

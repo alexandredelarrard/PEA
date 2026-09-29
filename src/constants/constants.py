@@ -860,6 +860,9 @@ FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
 # for one-time rescoring and replacement.
 EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "clean-v1"
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
+EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
+EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
+EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

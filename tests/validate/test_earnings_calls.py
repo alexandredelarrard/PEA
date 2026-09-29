@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_store.schema import Tables
-from src.validate.checks.earnings_calls import check_earnings_calls
+from src.validate.checks.earnings_calls import _coverage, check_earnings_calls
 
 
 def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_store) -> None:
@@ -56,3 +56,53 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     assert result.scope["feature_columns"] == 12
     print("\n=== SANITY CHECK: dedicated earnings-call validator ===")
     print("  exact 12-column schema measured; one valid call is 100% covered and one malformed call remains <50%. Validated.")
+
+
+def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_store) -> None:
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
+    sqlite_store.save(
+        Tables.entity_lineage,
+        pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E2"]}),
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["OLD", "OLD", "NEW"],
+                "issuer_cik": ["1", "2", "1"],
+                "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01"],
+                "valid_to": ["2024-04-01", None, None],
+                "n_filings": [10, 10, 10],
+            }
+        ),
+    )
+    events = [
+        ("OLD", "2023-11-15", "2023Q4"),
+        ("NEW", "2024-02-15", "2024Q1"),
+        ("OLD", "2024-08-15", "2024Q3"),  # reused OLD now belongs to E2, not NEW/E1
+    ]
+    sqlite_store.save(
+        Tables.earnings_surprises,
+        pd.DataFrame({"ticker": [event[0] for event in events], "earnings_date": [event[1] for event in events]}),
+    )
+    useful = "Revenue growth demand margin guidance cash flow customer outlook remained strong. " * 12
+    sqlite_store.save(
+        Tables.earnings_call_sections,
+        pd.DataFrame(
+            [
+                {"ticker": ticker, "quarter": quarter, "as_of": date, "tag": tag, "text": useful}
+                for ticker, date, quarter in events
+                for tag in ("prepared_remarks", "qa")
+            ]
+        ),
+    )
+
+    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store)))
+
+    assert summary["roster_tickers"] == 2
+    assert summary["structural_no_call_tickers"] == ["BRK-B"]
+    assert summary["tickers_measured"] == 1
+    assert ratios["NEW"] == 1.0
+    assert len(valid_dates["NEW"]) == 2
+    print("\n=== SANITY CHECK: point-in-time coverage identity ===")
+    print("  OLD history follows E1 into NEW, reused OLD/E2 events are excluded, and BRK-B is structural—not a source failure. Validated.")

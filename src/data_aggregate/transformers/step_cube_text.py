@@ -36,6 +36,7 @@ from src.data_aggregate.utils.text.earnings_call_embeddings import (
     embedding_kpis_streamed,
 )
 from src.data_aggregate.utils.text.earnings_call_features import (
+    acknowledge_earnings_call_invalidations,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
     score_earnings_calls,
@@ -75,9 +76,17 @@ class StepCubeText(Step):
         refresh_from = min(changed) + pd.offsets.BDay(1) if changed else None
         if refresh_from is not None and window.refresh_from is not None:
             refresh_from = min(refresh_from, window.refresh_from)
+        if panel.empty and refresh_from is not None and self._store.columns(Tables.cube_part_text):
+            # A forced source refresh can invalidate the only usable call.  There are no
+            # replacement rows to hand to ``write_part``, but the stale persisted tail must
+            # still be deleted from the first affected session onward.
+            self._store.append_tail(Tables.cube_part_text, panel, refresh_from, inclusive=True)
+            acknowledge_earnings_call_invalidations(self._context)
+            return
         n = write_part(self._store, Tables.cube_part_text, panel, window, refresh_from=refresh_from, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
+        acknowledge_earnings_call_invalidations(self._context)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

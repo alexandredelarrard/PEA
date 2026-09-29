@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.constants.constants import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
 from src.data_store.schema import Tables
@@ -134,10 +135,14 @@ def test_forced_malformed_refresh_replaces_old_signal_with_null_marker(tmp_path)
     sections = dict(zip(current["tag"], current["text"], strict=False))
     assert saved == 2
     assert not assess_earnings_call_sections(sections).valid
-    assert context.store.t[Tables.earnings_call_sentiment.name].empty
+    marker = context.store.t[Tables.earnings_call_sentiment.name]
+    assert len(marker) == 2
+    assert set(marker["tag"]) == {"prepared_remarks", "qa"}
+    assert set(marker["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert marker[["sent_pos", "sent_neg", "sent_neu"]].isna().all().all()
     assert context.store.t[Tables.earning_calls_embedding.name].empty
     print("\n=== SANITY CHECK: malformed forced refresh ===")
-    print("  refreshed malformed HTML replaces the old valid call with a retryable null marker and clears both derived caches. Validated.")
+    print("  refreshed malformed HTML clears embeddings and leaves a pending null marker that forces historical cube repair. Validated.")
 
 
 if __name__ == "__main__":

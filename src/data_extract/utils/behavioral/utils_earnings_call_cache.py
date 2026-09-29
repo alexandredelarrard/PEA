@@ -34,7 +34,7 @@ def save_earnings_call_sections(context: Context, rows: pd.DataFrame) -> int:
         return 0
     rows = rows.copy()
     previous_dates: dict[tuple[str, str], object] = {}
-    if "as_of" in context.store.columns(Tables.earnings_call_sections):
+    if hasattr(context.store, "columns") and "as_of" in context.store.columns(Tables.earnings_call_sections):
         for ticker, group in rows[["ticker", "quarter"]].drop_duplicates().groupby("ticker", sort=False):
             previous = context.store.load(
                 Tables.earnings_call_sections,

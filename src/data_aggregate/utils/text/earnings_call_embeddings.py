@@ -441,7 +441,7 @@ def _yield_call_texts(context: Context, remaining: list[tuple[str, str]], sectio
 
 def embed_earnings_calls(
     context: Context, sections: pd.DataFrame | None = None, model: str = "text-embedding-3-small", force: bool = False, client=None
-) -> None:
+) -> pd.Timestamp | None:
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
     per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two
     key-column-only reads (sections vs. already-embedded — never the vectors or the text), then each
@@ -452,20 +452,21 @@ def embed_earnings_calls(
     store, log = context.store, context.log
     if client is None and not openai_api_key():
         log.warning("OPENAI/OPEN_AI_API_KEY not set -> earnings-call embedding skipped.")
-        return
+        return None
 
     universe = _calls_from_frame(sections) if sections is not None else _section_calls(store)
     if not universe:
         log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
-        return
+        return None
     done = set() if force else _embedded_calls(store)
     remaining = [k for k in universe if tuple(k) not in done]
     if not remaining:
         log.info("Earnings-call embedding cache already complete (%d calls).", len(universe))
-        return
+        return None
 
     log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(remaining), model)
     n_new, counts = 0, {}
+    earliest: pd.Timestamp | None = None
     for tkr, q, qa_text, prep_text, aod in tqdm(_yield_call_texts(context, remaining, sections), "EC embeddings", total=len(remaining)):
         run_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         prep_turns = split_turns(prep_text, _PREP_TAG) if isinstance(prep_text, str) and prep_text.strip() else []
@@ -473,6 +474,9 @@ def embed_earnings_calls(
         qa_turns = split_turns(qa_text, _QA_TAG, mgmt_names=mgmt) if isinstance(qa_text, str) and qa_text.strip() else []
         turns = prep_turns + qa_turns
         counts[(tkr, q)] = len(turns)
+        changed = pd.to_datetime(aod, errors="coerce")
+        if pd.notna(changed):
+            earliest = changed if earliest is None else min(earliest, changed)
         if not turns:
             continue
         vectors = embed_texts([t["text"] for t in turns], model=model, client=client)
@@ -499,6 +503,7 @@ def embed_earnings_calls(
     if force and counts:  # re-embed may yield FEWER turns -> drop orphaned tail rows
         _drop_stale_turns(store, log, counts)
     log.info("Earnings-call embeddings: +%d turn rows -> '%s'.", n_new, Tables.earning_calls_embedding)
+    return earliest
 
 
 def embedding_kpis_streamed(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:

@@ -22,6 +22,7 @@ from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     _per_call_kpis,
+    attach_issuer_identity,
     build_earnings_call_feature_panel,
     sentiment_kpis_streamed,
 )
@@ -221,6 +222,34 @@ def test_issuer_history_is_prior_only_and_requires_four_observations() -> None:
     assert math.isclose(float(got.iloc[4]), expected)
     print("\n=== SANITY CHECK: issuer history ===")
     print("  first four calls are NaN; fifth uses only the prior four with sample std. Validated.")
+
+
+def test_issuer_history_survives_symbol_and_cik_change() -> None:
+    from src.data_aggregate.utils.text.earnings_call_features import _issuer_history_zscore
+
+    calls = pd.DataFrame(
+        {
+            "ticker": ["OLD"] * 4 + ["NEW"],
+            "as_of": pd.to_datetime(["2020-02-01", "2021-02-01", "2022-02-01", "2023-02-01", "2024-02-01"]),
+            "ec_tone": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "NEW"],
+            "issuer_cik": ["1", "2"],
+            "valid_from": ["2019-01-01", "2024-01-01"],
+            "valid_to": ["2023-12-31", None],
+            "n_filings": [20, 10],
+        }
+    )
+    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
+    identified = attach_issuer_identity(calls, tenure, lineage)
+    score = _issuer_history_zscore(identified, "ec_tone")
+    assert identified["issuer_id"].eq("E1").all()
+    assert score.iloc[:4].isna().all() and pd.notna(score.iloc[4])
+    print("\n=== SANITY CHECK: issuer lineage ===")
+    print("  OLD/CIK1 -> NEW/CIK2 remains one issuer history through symbol and CIK change. Validated.")
 
 
 if __name__ == "__main__":

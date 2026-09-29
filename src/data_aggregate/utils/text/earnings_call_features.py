@@ -98,7 +98,9 @@ def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, sections
             yield tkr, g
 
 
-def score_earnings_calls(context: Context, sections: pd.DataFrame | None = None, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS) -> None:
+def score_earnings_calls(
+    context: Context, sections: pd.DataFrame | None = None, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS
+) -> pd.Timestamp | None:
     """Ensure every high-signal section has a cached FinBERT tone score. MEMORY-SAFE + incremental:
     the REMAINING sections are found by comparing two key-column-only reads (section keys vs. the
     already-scored keys — never the transcript text), then each remaining ticker's text is read,
@@ -114,28 +116,33 @@ def score_earnings_calls(context: Context, sections: pd.DataFrame | None = None,
     )
     if keys is None or keys.empty:
         log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
-        return
+        return None
     sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
     done_df = store.load(Tables.earnings_call_sentiment, ["ticker", "quarter", "tag"], optional=True)
     done = set() if done_df is None else set(map(tuple, done_df.drop_duplicates().to_numpy()))
     todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
     if todo_keys.empty:
         log.info("Earnings-call sentiment cache already complete.")
-        return
+        return None
 
     engine = get_sentiment_engine(log)
     if engine is None:  # torch/transformers/model unavailable
         log.warning("Sentiment model unavailable -> %d sections left unscored; earnings-call features will be skipped.", len(todo_keys))
-        return
+        return None
 
     log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
     n_new = 0
+    earliest: pd.Timestamp | None = None
     for _tkr, grp in _yield_sections_to_score(context, todo_keys, sections, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
             store.save(Tables.earnings_call_sentiment, scored)  # iterative per-ticker upsert
             n_new += len(scored)
+            changed = pd.to_datetime(scored["as_of"], errors="coerce").min()
+            if pd.notna(changed):
+                earliest = changed if earliest is None else min(earliest, changed)
     log.info("Earnings-call sentiment: +%d newly scored rows -> '%s'.", n_new, Tables.earnings_call_sentiment)
+    return earliest
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +234,37 @@ def _issuer_history_zscore(per_call: pd.DataFrame, value_col: str) -> pd.Series:
             std = prior.std(ddof=1)
             if pd.notna(values.iloc[position]) and std > 0:
                 out.loc[row_index] = (values.iloc[position] - prior.mean()) / std
+    return out
+
+
+def attach_issuer_identity(
+    per_call: pd.DataFrame,
+    symbol_tenure: pd.DataFrame | None,
+    entity_lineage: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Attach the point-in-time economic issuer used by the history normalization."""
+    out = per_call.copy()
+    out["issuer_id"] = out["ticker"].astype(str)
+    if symbol_tenure is None or symbol_tenure.empty:
+        return out
+    tenure = symbol_tenure.copy()
+    tenure["valid_from"] = pd.to_datetime(tenure["valid_from"], errors="coerce")
+    tenure["valid_to"] = pd.to_datetime(tenure["valid_to"], errors="coerce")
+    entity = (
+        dict(zip(entity_lineage["cik"].astype(str), entity_lineage["entity_id"].astype(str), strict=False))
+        if entity_lineage is not None and not entity_lineage.empty
+        else {}
+    )
+    for row_index, row in out.iterrows():
+        date = pd.to_datetime(row["as_of"], errors="coerce")
+        candidates = tenure[(tenure["symbol"].astype(str) == str(row["ticker"])) & (tenure["valid_from"] <= date)]
+        candidates = candidates[candidates["valid_to"].isna() | (candidates["valid_to"] >= date)]
+        if candidates.empty:
+            continue
+        order = [column for column in ("n_filings", "valid_from") if column in candidates]
+        chosen = candidates.sort_values(order).iloc[-1] if order else candidates.iloc[-1]
+        cik = str(chosen["issuer_cik"])
+        out.at[row_index, "issuer_id"] = entity.get(cik, f"E{cik}")
     return out
 
 

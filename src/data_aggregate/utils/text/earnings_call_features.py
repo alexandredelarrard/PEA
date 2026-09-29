@@ -54,6 +54,20 @@ from src.utils.text_metrics import assess_earnings_call_sections, uncertainty_ra
 
 _SECTION_COLS = ["ticker", "quarter", "tag", "as_of", "text"]  # never SELECT * : `text` is huge
 
+# SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
+_RAW_KPI_COLS = [
+    "ec_tone",
+    "ec_qa_gap",
+    "ec_uncertainty",
+    "ec_qa_coherence_mean",
+    "ec_tone_delta",
+    "ec_length_delta",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+]
+_HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
+_KPI_COLS = list(EARNINGS_CALL_FEATURES)
+
 
 # --------------------------------------------------------------------------- #
 # Stage 1: incremental, cached FinBERT scoring                                  #
@@ -351,21 +365,6 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) 
         stop = min(start + EARNINGS_CALL_SIGNAL_SESSIONS, len(calendar))
         frame.loc[calendar[start:stop], str(row.ticker)] = getattr(row, value_col)
     return frame
-
-
-# SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
-_RAW_KPI_COLS = [
-    "ec_tone",
-    "ec_qa_gap",
-    "ec_uncertainty",
-    "ec_qa_coherence_mean",
-    "ec_tone_delta",
-    "ec_length_delta",
-    "ec_qa_qq_distance",
-    "ec_prep_qq_distance",
-]
-_HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
-_KPI_COLS = list(EARNINGS_CALL_FEATURES)
 
 
 def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:

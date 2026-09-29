@@ -458,7 +458,9 @@ def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd
 def _mask_unknown_windows(fields: dict[str, pd.DataFrame], masks: dict[str, pd.DataFrame]) -> None:
     for name, unknown in masks.items():
         if name in fields:
-            fields[name] = fields[name].mask(unknown.reindex_like(fields[name]).fillna(False))
+            field = fields[name]
+            aligned = unknown.reindex(index=field.index, columns=field.columns, fill_value=False).astype(bool)
+            fields[name] = field.mask(aligned)
 
 
 def _over(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:

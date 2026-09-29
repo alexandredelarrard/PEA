@@ -218,6 +218,14 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
             transaction_date="2015-01-02",
         ),
         _txn(
+            accession_number="other-ticker-priced",
+            ticker="BBB",
+            owner_cik="0002",
+            transaction_code=known_code,
+            filing_date="2015-01-05",
+            transaction_date="2015-01-02",
+        ),
+        _txn(
             accession_number="unpriced",
             transaction_code=unknown_code,
             filing_date=unknown_day,
@@ -226,13 +234,14 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
             value_usd=np.nan,
         ),
     ]
-    fh, close = _prices()
+    fh, close = _prices(("AAA", "BBB"))
     panel = build_insider_feature_panel(
-        make_frames(TRADING_INDEX, _peers(), close_split=close),
+        make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
         shares_out_history=fh,
         complete_through=TRADING_INDEX.max(),
-    ).set_index("date")
+    )
+    panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
     affected = ratio.loc[unknown_day : unknown_day + pd.Timedelta(days=179)]
     after = ratio.loc[unknown_day + pd.Timedelta(days=180) :]

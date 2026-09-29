@@ -48,11 +48,12 @@ import pandas as pd
 from src.constants.constants import DEF14A_FORMS
 from src.context import Context, get_config_context
 from src.data_extract.utils.common.edgar_fillings import list_filings
+from src.data_extract.utils.common.registrant import issuer_ciks, load_registrants
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.structure.def14a.fetch import _payload_for
+from src.data_extract.utils.structure.def14a.fetch import _payload_for, _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_TABLES, _result_frames
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmTask
@@ -148,7 +149,14 @@ def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:
     return work.reset_index(drop=True)
 
 
-def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str, want: set[str]) -> list[tuple[str, dict]]:
+def _tasks_for_ticker(
+    ctx: Context,
+    ticker: str,
+    cik: str,
+    company: str,
+    want: set[str],
+    accepted_subject_ciks: frozenset[str],
+) -> tuple[list[tuple[str, dict]], set[str]]:
     """Fetch + carve this ticker's target filings on THIS thread; `(payload, meta)` per readable
     one.
 
@@ -165,7 +173,7 @@ def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str, want: s
         filings = list_filings(ctx, cik, DEF14A_FORMS, ctx.config.data_extract.years_history, company)
     except Exception as e:  # noqa: BLE001 -- one ticker, not the run
         logger.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
-        return []
+        return [], set()
 
     todo = filings[filings["accession_number"].isin(want)]
     missing = want - set(todo["accession_number"])
@@ -173,14 +181,43 @@ def _tasks_for_ticker(ctx: Context, ticker: str, cik: str, company: str, want: s
         logger.warning("%s: %d target accession(s) not in the EDGAR listing: %s", ticker, len(missing), sorted(missing)[:3])
 
     out: list[tuple[str, dict]] = []
+    rejected: set[str] = set()
     for _, f in todo.iterrows():
+        accession = str(f["accession_number"])
+        if accepted_subject_ciks and not _subject_is_accepted(ctx, ticker, f, accepted_subject_ciks):
+            rejected.add(accession)
+            continue
         payload = _payload_for(ctx, ticker, f)
         if payload:
             out.append((payload, {"ticker": ticker, "filing": f}))
-    return out
+    return out, rejected
 
 
-def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int]:
+def _backup_then_delete(ctx: Context, tables: tuple[Table, ...], accessions: set[str]) -> int:
+    """Back up and delete exact accession rows from each table; return rows removed."""
+    if not accessions:
+        return 0
+    ordered = sorted(accessions)
+    removed = 0
+    for table in tables:
+        existing = ctx.store.load(table, where={"accession_number": ordered}, optional=True)
+        if existing is not None and len(existing):
+            BACKUP.mkdir(parents=True, exist_ok=True)
+            stamp = f"{table.name}_{ordered[0]}_{len(ordered)}"
+            existing.to_csv(BACKUP / f"{stamp}.csv", index=False)
+        n = ctx.store.delete(table, {"accession_number": ordered})
+        removed += n
+        if n:
+            logger.info("cleared %d row(s) from %s (backed up)", n, table.name)
+    return removed
+
+
+def _remove_rejected_subjects(ctx: Context, accessions: set[str]) -> int:
+    """Remove a known wrong-subject parent and its four child families, recoverably."""
+    return _backup_then_delete(ctx, (Tables.def14a_llm, *_CHILD_TABLES.values()), accessions)
+
+
+def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int, int]:
     """Re-extract `work`, batching ACROSS tickers so the pool stays full.
 
     ⚠ BATCHED ACROSS TICKERS, NOT ONE TICKER AT A TIME, and the difference is hours. Production
@@ -194,9 +231,10 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
     """
     cik_map = load_cik_mapping(ctx, sorted(work["ticker"].unique()))
     extractor = LLMExtractor(ctx, config, action="def14a", threads=workers)
-    ok, failed = 0, 0
+    ok, failed, rejected = 0, 0, 0
     batch: list[tuple[str, dict]] = []
     done_tickers = 0
+    cutovers = load_registrants()
 
     def flush(pending: list[tuple[str, dict]]) -> tuple[int, int]:
         """Delete the children of the filings in `pending`, then extract and save them."""
@@ -212,15 +250,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         # it -- turning a filing that had 11 director-pay rows into one that has none, which is
         # exactly the defect this run exists to fix. The backup makes that recoverable instead
         # of permanent, and it costs one CSV per batch.
-        for table in _CHILD_TABLES.values():
-            existing = ctx.store.load(table, where={"accession_number": accs}, optional=True)
-            if existing is not None and len(existing):
-                BACKUP.mkdir(parents=True, exist_ok=True)
-                stamp = f"{table.name}_{accs[0]}_{len(accs)}"
-                existing.to_csv(BACKUP / f"{stamp}.csv", index=False)
-            n = ctx.store.delete(table, {"accession_number": accs})
-            if n:
-                logger.info("cleared %d row(s) from %s (backed up)", n, table.name)
+        _backup_then_delete(ctx, tuple(_CHILD_TABLES.values()), set(accs))
         tasks = [
             LlmTask(seq=i, payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta=meta) for i, (payload, meta) in enumerate(pending)
         ]
@@ -234,7 +264,12 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         want = set(work.loc[work["ticker"] == ticker, "accession_number"])
         if not want:
             continue
-        batch.extend(_tasks_for_ticker(ctx, ticker, cik, company, want))
+        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
+        tasks, rejected_accessions = _tasks_for_ticker(ctx, ticker, cik, company, want, accepted_subjects)
+        batch.extend(tasks)
+        if rejected_accessions:
+            _remove_rejected_subjects(ctx, rejected_accessions)
+            rejected += len(rejected_accessions)
         done_tickers += 1
         # a full pool plus one wave of slack, so the last worker is never waiting for a carve
         if len(batch) >= workers * 2:
@@ -244,7 +279,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
             logger.info("progress: %d ticker(s) resolved, %d filing(s) done, %d failed", done_tickers, ok, failed)
 
     a, b = flush(batch)
-    return ok + a, failed + b
+    return ok + a, failed + b, rejected
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -280,8 +315,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = with_gpt_overrides(config, "def14a", model=args.model)
-    ok, failed = _extract(ctx, config, work, args.workers)
+    ok, failed, rejected = _extract(ctx, config, work, args.workers)
     print(f"\nre-extracted    {ok} filing(s)")
+    print(f"wrong subjects  {rejected} filing(s) removed")
     print(f"failed          {failed} filing(s)")
     print(f"actual cost     ~${ok * USD_PER_FILING:,.2f}")
     return 0 if failed == 0 else 1

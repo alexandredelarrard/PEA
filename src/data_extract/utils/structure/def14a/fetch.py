@@ -59,6 +59,7 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
+from edgar import Filing
 from omegaconf import DictConfig
 from tqdm import tqdm
 
@@ -66,7 +67,12 @@ from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.registrant import Registrant, load_registrants
+from src.data_extract.utils.common.registrant import (
+    Registrant,
+    header_subject_ciks,
+    issuer_ciks,
+    load_registrants,
+)
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
@@ -132,6 +138,52 @@ def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None
     except Exception as e:  # noqa: BLE001 -- one filing, not the run
         logger.warning("%s %s: DEF 14A filing could not be read (%s)", ticker, filing.get("filing_date", ""), e)
         return None
+
+
+def _filing_subject_ciks(filing: pd.Series) -> frozenset[str]:
+    """Read a listed filing's SGML subject CIKs through the shared header reader."""
+    candidate = Filing(
+        cik=int(str(filing["cik"])),
+        company=str(filing.get("company_name", "")),
+        form=str(filing["form"]),
+        filing_date=pd.Timestamp(filing["filing_date"]).date().isoformat(),
+        accession_no=str(filing["accession_number"]),
+    )
+    return header_subject_ciks(candidate)
+
+
+def _subject_is_accepted(
+    context: Context,
+    ticker: str,
+    filing: pd.Series,
+    accepted_subject_ciks: frozenset[str],
+) -> bool:
+    """Reject only a known subject that is outside the accepted registrant entity."""
+    accession = str(filing["accession_number"])
+    filer_cik = str(filing["cik"]).zfill(10)
+    try:
+        context.ensure_edgar_identity()
+        subjects = _filing_subject_ciks(filing)
+    except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
+        context.log.info(
+            "%s: DEF 14A accession %s subject header unavailable (%s); continuing",
+            ticker,
+            accession,
+            exc,
+        )
+        return True
+    if not subjects or not subjects.isdisjoint(accepted_subject_ciks):
+        return True
+    context.log.warning(
+        "%s: rejecting DEF 14A accession %s before extraction; filer CIK %s; "
+        "subject CIK(s) %s; accepted entity CIK(s) %s; reason=subject_cik_disjoint",
+        ticker,
+        accession,
+        filer_cik,
+        ",".join(sorted(subjects)),
+        ",".join(sorted(accepted_subject_ciks)),
+    )
+    return False
 
 
 def _list_across_registrants(
@@ -341,6 +393,7 @@ def fetch_def14a_llm(
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
         # `list_since=None` (full-rescan runs) lists the FULL years_history window so a MISSING
         # filing anywhere in the history is discovered; otherwise only filings from the manifest's
         # last run date onward are listed. The accession skip below then sends ONLY the
@@ -360,6 +413,8 @@ def fetch_def14a_llm(
         for _, f in filings.iterrows():
             accession = f["accession_number"]
             if accession in seen or accession in done:
+                continue
+            if accepted_subjects and not _subject_is_accepted(context, ticker, f, accepted_subjects):
                 continue
             done.add(accession)
             todo.append(f)

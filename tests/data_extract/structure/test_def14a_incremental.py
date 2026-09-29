@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
-from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date
+from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date, _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten
 from src.data_store.store import DataStore
 from tests.data_extract.fake_context import extract_config
@@ -51,6 +51,107 @@ def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
         "  all requested present -> skip; a missing ticker (NVDA) -> NOT skipped "
         "(re-processes it); no meta -> re-scan. date+count bug fixed. Validated."
     )
+
+
+def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
+    """A dissident filer is valid when the proxy subject is the intended issuer."""
+    import logging
+
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    filing = pd.Series(
+        {
+            "cik": "0002041610",
+            "company_name": "Paramount Skydance Corp",
+            "form": "DEFC14A",
+            "filing_date": pd.Timestamp("2026-02-17"),
+            "accession_number": "0001104659-26-016573",
+        }
+    )
+    identity_calls: list[bool] = []
+    context = SimpleNamespace(
+        log=logging.getLogger("test.def14a.subject"),
+        ensure_edgar_identity=lambda: identity_calls.append(True),
+    )
+    accepted = frozenset({"0000813828", "0002041610"})
+    caplog.set_level(logging.INFO, logger="test.def14a.subject")
+
+    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
+    assert _subject_is_accepted(context, "PSKY", filing, accepted) is False
+    assert all(value in caplog.text for value in ("PSKY", filing["accession_number"], filing["cik"], "0001437107", "subject_cik_disjoint"))
+
+    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0000813828"}))
+    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
+
+    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset())
+    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
+
+    def _unreadable(_):
+        raise ValueError("no SGML header")
+
+    monkeypatch.setattr(mod, "_filing_subject_ciks", _unreadable)
+    assert _subject_is_accepted(context, "PSKY", filing, accepted) is True
+    assert len(identity_calls) == 4
+
+    print("\n=== SANITY: DEF 14A subject guard ===")
+    print("  WBD subject rejected; intended-issuer dissident and unknown headers retained")
+    print("  OK: only known disjoint subjects are blocked before paid extraction")
+
+
+def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
+    import logging
+
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
+    context: Any = SimpleNamespace(
+        store=store,
+        log=logging.getLogger("test.def14a.subject.loop"),
+        paths={"DATA_STORE": tmp_path},
+        config=extract_config(data_extract={"years_history": 15}),
+        ensure_edgar_identity=lambda: None,
+    )
+    filing = pd.DataFrame(
+        [
+            {
+                "cik": "0002041610",
+                "company_name": "Paramount Skydance Corp",
+                "form": "DEFC14A",
+                "filing_date": pd.Timestamp("2026-02-17"),
+                "period_of_report": "2026-02-17",
+                "accession_number": "0001104659-26-016573",
+                "doc_url": "unused",
+                "txt_url": "unused",
+            }
+        ]
+    )
+    llm_tasks: list[object] = []
+    payload_calls: list[str] = []
+
+    class FakeLLM:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_extraction(self, tasks, **kwargs):
+            del kwargs
+            llm_tasks.extend(tasks)
+            return []
+
+    monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
+    monkeypatch.setattr(mod, "_is_up_to_date", lambda *_: False)
+    monkeypatch.setattr(
+        mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "company_name": "Paramount Skydance Corp"}])
+    )
+    monkeypatch.setattr(mod, "_list_across_registrants", lambda *_: filing)
+    monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
+    monkeypatch.setattr(mod, "_payload_for", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
+
+    mod.fetch_def14a_llm(context, context.config, ["PSKY"], model="gpt-5-mini")
+
+    assert payload_calls == [] and llm_tasks == []
+    print("\n=== SANITY: wrong-subject filing stops before the LLM ===")
+    print("  WBD accession produced zero payload fetches and zero LLM tasks")
+    print("  OK: rejection precedes document carving and paid extraction")
 
 
 def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):

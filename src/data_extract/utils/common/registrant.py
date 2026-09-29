@@ -481,7 +481,7 @@ def _atom_text(entry: ElementTree.Element, name: str) -> str | None:
     return value.strip() if value and value.strip() else None
 
 
-def _header_subject_ciks(filing: object) -> frozenset[str]:
+def header_subject_ciks(filing: object) -> frozenset[str]:
     """Read schedule subject CIKs from the SGML header, before ``filing.obj()``."""
     header = getattr(filing, "header", None)
     companies = getattr(header, "subject_companies", ()) or ()
@@ -500,7 +500,7 @@ def filter_schedule_subject_filings(
     stats = {"candidates": len(candidates), "subject_matches": 0, "unknown_headers": 0}
     for filing in candidates:
         try:
-            subjects = _header_subject_ciks(filing)
+            subjects = header_subject_ciks(filing)
         except Exception:  # noqa: BLE001 -- the full object guard is the safe fallback
             subjects = frozenset()
         if subjects:

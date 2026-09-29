@@ -6,7 +6,6 @@ import logging
 from collections.abc import Sequence
 
 import pandas as pd
-from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -20,13 +19,12 @@ SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstanding
 def load_full_price_frames(
     store: DataStore,
     context: Context,
-    config: DictConfig,
     fields: Sequence[str],
 ) -> PriceFrames:
-    """Load the institutional part's full-calendar price inputs."""
+    """Load full-calendar price inputs from the already-persisted peer dependency."""
     return load_price_frames(
         store,
-        peers=load_peers_or_raise(context, config),
+        peers=load_peers_or_raise(context),
         fields=fields,
         since=None,
     )

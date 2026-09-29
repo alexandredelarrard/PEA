@@ -29,6 +29,11 @@ def _write_snapshot(path: Path, frame: pd.DataFrame) -> dict[str, object]:
     }
 
 
+def _write_peer_cache(path: Path) -> dict[str, object]:
+    path.write_text(json.dumps({"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}), encoding="utf-8")
+    return quality._peer_metadata(path)
+
+
 class _MetadataOnlyStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -62,7 +67,10 @@ def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, mo
     metadata = _write_snapshot(snapshot, frame)
     (snapshot.parent / "meta.json").write_text(json.dumps(metadata), encoding="utf-8")
     store = _MetadataOnlyStore()
-    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (None, SimpleNamespace(store=store)))
+    peer_cache = tmp_path / "sector-peers.json"
+    _write_peer_cache(peer_cache)
+    context = SimpleNamespace(store=store, paths={"SECTOR_PEERS_PATH": peer_cache})
+    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (None, context))
 
     out = tmp_path / "frozen"
     assert quality.main(["freeze-baseline", "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]) == 0
@@ -72,6 +80,7 @@ def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, mo
     assert frozen.read_bytes() == snapshot.read_bytes()
     assert manifest["status"] == "pass"
     assert manifest["snapshot"]["sha256"] == hashlib.sha256(frozen.read_bytes()).hexdigest()
+    assert manifest["peer_cache"]["sha256"] == hashlib.sha256((out / "peer-baskets.json").read_bytes()).hexdigest()
     assert set(store.calls) <= {"exists", "columns", "row_count", "bounds"}
     assert quality.main(["freeze-baseline", "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]) == 0
     assert [path.name for path in out.glob("*.parquet")] == ["baseline.parquet"]
@@ -264,6 +273,7 @@ def _write_manifest(path: Path, snapshot: Path, metadata: dict[str, object], sto
             "last_date": metadata["last_date"],
         },
         "source_tables": [quality._source_metadata(store, table) for table in quality.SOURCE_TABLES],
+        "peer_cache": _write_peer_cache(path.with_name("peer-baskets.json")),
     }
     path.write_text(json.dumps(quality.jsonable(payload)), encoding="utf-8")
 
@@ -295,7 +305,8 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         def run(self, full: bool = False) -> None:
             raise AssertionError("run/write path must not be called")
 
-    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (SimpleNamespace(), SimpleNamespace(store=store)))
+    context = SimpleNamespace(store=store, paths={})
+    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (SimpleNamespace(), context))
     monkeypatch.setattr(quality, "StepCubeInstitutionals", _Step)
     candidate = tmp_path / "candidate.parquet"
     out = tmp_path / "build"
@@ -326,6 +337,8 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     assert calls == [True]
     assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
     assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
+    assert context.paths["SECTOR_PEERS_PATH"] == tmp_path / "peer-baskets.json"
+    assert metadata["peer_cache"]["sha256"] == quality._sha256(context.paths["SECTOR_PEERS_PATH"])
     assert json.loads((out / "comparison.json").read_text(encoding="utf-8"))["status"] == "pass"
     stale = json.loads(manifest.read_text(encoding="utf-8"))
     stale["source_tables"][0]["rows"] += 1
@@ -377,6 +390,7 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
                     "as_of": "2024-01-11",
                     "snapshot": {"frozen": str(baseline.resolve()), "sha256": metadata["snapshot_sha256"], **metadata},
                     "source_tables": [],
+                    "peer_cache": _write_peer_cache(tmp_path / "peer-baskets.json"),
                 }
             )
         ),
@@ -439,6 +453,7 @@ def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_pat
                     "as_of": "2024-01-15",
                     "snapshot": {"frozen": str(snapshot.resolve()), "sha256": metadata["snapshot_sha256"], **metadata},
                     "source_tables": [],
+                    "peer_cache": _write_peer_cache(tmp_path / "peer-baskets.json"),
                 }
             )
         ),

@@ -178,7 +178,6 @@ class StepCubeInstitutionals(Step):
         return institutional_inputs.load_full_price_frames(
             self._store,
             self._context,
-            self._config,
             self._FIELDS,
         )
 

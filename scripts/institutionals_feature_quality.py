@@ -182,6 +182,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _peer_metadata(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"peer cache does not exist: {path}")
+    return {
+        "frozen": str(path.resolve()),
+        "sha256": _sha256(path),
+        "bytes": path.stat().st_size,
+    }
+
+
+def _manifest_peer_path(manifest: dict[str, Any]) -> Path:
+    recorded = manifest.get("peer_cache") or {}
+    path = Path(str(recorded.get("frozen", "")))
+    if not path.is_file() or not recorded.get("sha256"):
+        raise ValueError("manifest must name an existing hash-bound frozen peer cache")
+    if _sha256(path) != recorded["sha256"] or path.stat().st_size != int(recorded.get("bytes", -1)):
+        raise ValueError("manifest peer cache identity does not match its frozen artifact")
+    return path
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(jsonable(payload), indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
@@ -287,6 +307,7 @@ def _load_manifest(path: Path, as_of: str) -> dict[str, Any]:
         raise ValueError("manifest must name an existing hash-bound frozen baseline")
     if _sha256(frozen) != snapshot["sha256"]:
         raise ValueError("manifest baseline hash does not match its frozen parquet")
+    _manifest_peer_path(payload)
     return payload
 
 
@@ -332,11 +353,17 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
     verified = _verified_snapshot(snapshot, metadata, as_of=cutoff)
 
     _, context = get_config_context(config, use_cache=False, save=False)
-    sources = [_source_metadata(context.store, table) for table in SOURCE_TABLES]
     out.mkdir(parents=True, exist_ok=True)
     frozen_path = out / "baseline.parquet"
     if not frozen_path.exists():
         shutil.copy2(snapshot, frozen_path)
+    peer_source = Path(context.paths["SECTOR_PEERS_PATH"])
+    frozen_peer = out / "peer-baskets.json"
+    if not frozen_peer.exists():
+        shutil.copy2(peer_source, frozen_peer)
+    elif _sha256(peer_source) != _sha256(frozen_peer):
+        raise ValueError("live peer cache changed after the baseline peer artifact was frozen")
+    sources = [_source_metadata(context.store, table) for table in SOURCE_TABLES]
     if _sha256(frozen_path) != verified["snapshot_sha256"]:
         raise OSError("existing baseline hash differs from source snapshot")
     frozen_meta = {**verified, "as_of": cutoff, "snapshot": frozen_path.name}
@@ -357,7 +384,8 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
             "last_date": verified["last_date"],
         },
         "source_tables": sources,
-        "source_contract": "DataStore exists/columns/row_count/bounds metadata only; no table values were read",
+        "peer_cache": {"source": str(peer_source.resolve()), **_peer_metadata(frozen_peer)},
+        "source_contract": "DataStore exists/columns/row_count/bounds metadata only plus immutable peer-cache bytes; no table values were read",
     }
     _write_json(out / "input-manifest.json", manifest)
     return manifest
@@ -376,6 +404,8 @@ def build_candidate(
     cutoff = pd.Timestamp(as_of).normalize()
     manifest = _load_manifest(manifest_path, as_of)
     config_node, context = get_config_context(config, use_cache=False, save=False)
+    peer_path = _manifest_peer_path(manifest)
+    context.paths["SECTOR_PEERS_PATH"] = peer_path
     sources = _verify_source_identity(context.store, manifest)
     panel, window = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
     if not window.is_full:
@@ -416,6 +446,7 @@ def build_candidate(
         "manifest": str(manifest_path.resolve()),
         "manifest_sha256": _sha256(manifest_path),
         "source_tables": sources,
+        "peer_cache": manifest["peer_cache"],
         "builder": "StepCubeInstitutionals.build_panel(full=True)",
         "write_contract": "parquet artifact only; StepCubeInstitutionals.run/write_part not called",
     }

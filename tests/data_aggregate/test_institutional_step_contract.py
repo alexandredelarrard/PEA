@@ -94,8 +94,8 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     fake_step._config = config
     fake_step._store = store
 
-    def load_peers(actual_context: object, actual_config: object) -> dict[str, dict[str, float]]:
-        calls["peers"] = {"context": actual_context, "config": actual_config}
+    def load_peers(actual_context: object) -> dict[str, dict[str, float]]:
+        calls["peers"] = {"context": actual_context}
         return peers
 
     def load_prices(actual_store: object, *, peers: object, fields: object, since: object) -> object:
@@ -108,7 +108,7 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     assert step._load_frames() is price_frames
     assert step._load_shares_out() is shares
     assert calls == {
-        "peers": {"context": context, "config": config},
+        "peers": {"context": context},
         "prices": {
             "store": store,
             "peers": peers,

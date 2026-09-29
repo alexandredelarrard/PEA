@@ -52,8 +52,8 @@ they already owned.
 Availability
 ------------
 The module emits the history supported by `sec13f_manager_holdings`, which
-starts at 2011-09-30. Any family-level cutoff required to handle the separate
-all-filer coverage break is applied outside this module.
+starts at 2011-09-30. When supplied, `InstitutionalAvailability` sets a later
+family boundary for the persisted panel and every derived sink output.
 """
 
 from __future__ import annotations
@@ -766,6 +766,9 @@ def build_superinvestor_feature_panel(
     contrib = attach_split_factor(_contributions(conv, state, sel), splits)
     if contrib.empty:
         return empty
+    family_start = pd.Timestamp(contrib["avail"].min()).normalize()
+    if availability is not None:
+        family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
     levels, _grid = _aggregate(contrib, st, stale_quarters)
 
     fields = {name: fundamentals_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
@@ -780,8 +783,16 @@ def build_superinvestor_feature_panel(
             if not frame.empty and frame.notna().any().any():
                 fields[str(kind)] = frame
 
+    for name, frame in fields.items():
+        feature_start = family_start
+        if availability is not None and name in ("ic_super_conviction_chg", "ic_super_full_exits"):
+            feature_start = max(
+                feature_start,
+                availability.derived_date(name, dependencies=((Tables.sec13f_manager_holdings, None),)),
+            )
+        fields[name] = frame.where(pd.Series(frame.index >= feature_start, index=frame.index), axis=0)
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
-    _fill_sink(sink, contrib, fields, frames, availability)
+    _fill_sink(sink, contrib, fields, frames, availability, family_start)
     emission = {name: EMISSION[name] for name in fields}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
@@ -793,6 +804,7 @@ def _fill_sink(
     fields: dict[str, pd.DataFrame],
     frames: PriceFrames,
     availability: InstitutionalAvailability | None,
+    family_start: pd.Timestamp,
 ) -> None:
     """Hand the derived panels this family's event dates, bullish actors and signal frames.
 
@@ -802,12 +814,13 @@ def _fill_sink(
     metadata: a manager whose portfolio weight in the name ROSE (an initiation counts, since
     `prev_w` is absent), which is an act rather than a restatement.
 
-    `avail` is already `max(period + 45d, filing_date)` per manager, so nothing here is
-    visible before the filing that disclosed it.
+    `avail` is already `max(period + 45d, filing_date)` per manager. `family_start` also
+    enforces the configured source boundary without inventing a disclosure on that date.
     """
     if sink is None or contrib is None or contrib.empty:
         return
-    live = contrib["held"].fillna(False).to_numpy(dtype=bool) & (contrib["sel"] > 0).to_numpy()
+    visible = (pd.to_datetime(contrib["avail"]) >= family_start).to_numpy()
+    live = visible & contrib["held"].fillna(False).to_numpy(dtype=bool) & (contrib["sel"] > 0).to_numpy()
     disclosures = contrib.loc[live, ["ticker", "avail"]].rename(columns={"avail": "date"})
     sink.add_events("super", disclosures.drop_duplicates())
     added = live & (contrib["w"].fillna(0.0) > contrib["prev_w"].fillna(0.0)).to_numpy()
@@ -818,6 +831,7 @@ def _fill_sink(
         listed = frames.close_split.reindex(index=idx, columns=columns).notna()
     else:
         listed = pd.DataFrame(True, index=idx, columns=columns)
+    family_started = InstitutionalAvailability.date_mask(idx, columns, family_start)
     signal_fields = dict(fields)
     signal_masks: dict[str, pd.DataFrame] = {}
     for name in ("ic_super_conviction_chg", "ic_super_full_exits"):
@@ -830,7 +844,7 @@ def _fill_sink(
                 idx,
                 columns,
                 dependencies=((Tables.sec13f_manager_holdings, None),),
-                requirements=(listed,),
+                requirements=(listed, family_started),
             )
             if availability is not None
             else raw.notna()

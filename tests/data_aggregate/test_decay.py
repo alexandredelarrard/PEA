@@ -6,9 +6,11 @@ is 0 on ~99.9% of ticker-days, a peer basket of all-zeros has zero dispersion, a
 feature, not a weak one. These tests pin the three properties that are decisions rather than
 details (trading-day clock, event stacking, NaN-before-first-event) plus the half-life itself.
 """
+
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -28,6 +30,7 @@ def _events(rows) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- half-life
+
 
 def test_halflife_is_exact_in_trading_days():
     """A single unit event reads exactly 0.5 after `halflife` TRADING days and 0.25 after two.
@@ -61,6 +64,7 @@ def test_default_magnitude_is_one_when_no_column_is_given():
 
 # ------------------------------------------------------------------- V6: NaN, never 0
 
+
 def test_v6_nan_before_the_first_event_never_zero():
     """No 13D ever filed here, versus one filed and fully decayed, are DIFFERENT facts.
 
@@ -77,8 +81,7 @@ def test_v6_nan_before_the_first_event_never_zero():
 def test_v6_is_per_ticker_not_global():
     """A late-arriving ticker keeps its own NaN prefix; another ticker's event must not end it."""
     idx = _grid(300)
-    out = decay_events(_events([(idx[10], "AAA", 1.0), (idx[200], "BBB", 1.0)]),
-                       idx, 21, magnitude_col="magnitude")
+    out = decay_events(_events([(idx[10], "AAA", 1.0), (idx[200], "BBB", 1.0)]), idx, 21, magnitude_col="magnitude")
     assert out["BBB"].iloc[:200].isna().all()
     assert out["BBB"].iloc[200:].notna().all()
     assert out["AAA"].iloc[10:].notna().all()
@@ -101,6 +104,7 @@ def test_v6_survives_underflow_to_zero():
 
 # ------------------------------------------------------- V7: monotone decay + stacking
 
+
 def test_v7_strictly_decreasing_with_no_new_event():
     idx = _grid(300)
     out = decay_events(_events([(idx[10], "AAA", 1.0)]), idx, 63, magnitude_col="magnitude")
@@ -112,44 +116,44 @@ def test_events_stack_rather_than_overwrite():
     """Two 13D amendments a month apart must SUM. A last-event-wins rule would read an
     escalating campaign -- the actual signal -- as no news at all."""
     idx, hl = _grid(300), 63
-    a, b = idx[10], idx[31]                      # ~one month of trading days apart
-    both = decay_events(_events([(a, "AAA", 1.0), (b, "AAA", 1.0)]), idx, hl,
-                        magnitude_col="magnitude")
+    a, b = idx[10], idx[31]  # ~one month of trading days apart
+    both = decay_events(_events([(a, "AAA", 1.0), (b, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
     only_a = decay_events(_events([(a, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
     only_b = decay_events(_events([(b, "AAA", 1.0)]), idx, hl, magnitude_col="magnitude")
-    on_b = both.loc[b, "AAA"]
-    assert on_b > only_a.loc[b, "AAA"] and on_b > only_b.loc[b, "AAA"]
+    on_b = float(cast(Any, both.loc[b, "AAA"]))
+    only_a_on_b = float(cast(Any, only_a.loc[b, "AAA"]))
+    only_b_on_b = float(cast(Any, only_b.loc[b, "AAA"]))
+    assert on_b > only_a_on_b and on_b > only_b_on_b
     # and it is exactly additive, not merely larger
-    assert on_b == pytest.approx(only_a.loc[b, "AAA"] + only_b.loc[b, "AAA"])
+    assert on_b == pytest.approx(only_a_on_b + only_b_on_b)
 
 
 def test_two_events_on_the_same_day_sum():
     """`np.add.at` rather than fancy-index assignment: plain assignment keeps only the last."""
     idx = _grid(100)
-    out = decay_events(_events([(idx[5], "AAA", 1.0), (idx[5], "AAA", 2.0)]), idx, 21,
-                       magnitude_col="magnitude")
+    out = decay_events(_events([(idx[5], "AAA", 1.0), (idx[5], "AAA", 2.0)]), idx, 21, magnitude_col="magnitude")
     assert out.loc[idx[5], "AAA"] == pytest.approx(3.0)
 
 
 # ------------------------------------------------------------------- point-in-time edges
 
+
 def test_a_non_trading_day_event_lands_on_the_next_trading_day():
     """Rounding a weekend filing BACKWARDS onto Friday would be a look-ahead: Saturday's news
     could not be acted on until Monday."""
-    idx = _grid(60, start="2024-01-01")                    # business days from a Monday
+    idx = _grid(60, start="2024-01-01")  # business days from a Monday
     saturday = pd.Timestamp("2024-01-13")
     monday = pd.Timestamp("2024-01-15")
     out = decay_events(_events([(saturday, "AAA", 1.0)]), idx, 21, magnitude_col="magnitude")
     assert out.loc[monday, "AAA"] == pytest.approx(1.0)
-    assert out["AAA"].loc[:pd.Timestamp("2024-01-12")].isna().all()
+    assert out["AAA"].loc[: pd.Timestamp("2024-01-12")].isna().all()
 
 
 def test_events_after_the_grid_are_dropped_not_clamped():
     """Clamping a future filing onto the last day would inject information the grid has not
     reached. The ticker simply has no event yet, so its whole column stays NaN."""
     idx = _grid(50)
-    out = decay_events(_events([(idx[-1] + pd.Timedelta(days=90), "AAA", 1.0)]), idx, 21,
-                       magnitude_col="magnitude")
+    out = decay_events(_events([(idx[-1] + pd.Timedelta(days=90), "AAA", 1.0)]), idx, 21, magnitude_col="magnitude")
     assert out.empty or "AAA" not in out.columns or out["AAA"].isna().all()
 
 
@@ -163,12 +167,13 @@ def test_nan_magnitude_keeps_the_event_at_unit_weight():
 def test_empty_and_invalid_inputs():
     idx = _grid(50)
     assert decay_events(_events([]), idx, 21, magnitude_col="magnitude").empty
-    assert decay_events(None, idx, 21).empty
+    assert decay_events(cast(pd.DataFrame, None), idx, 21).empty
     with pytest.raises(ValueError, match="halflife"):
         decay_events(_events([(idx[0], "AAA", 1.0)]), idx, 0, magnitude_col="magnitude")
 
 
 # --------------------------------------------------------------------------- performance
+
 
 def test_full_grid_decays_in_seconds_not_minutes():
     """500 tickers x ~15 trading years. The recursion is O(days x tickers); the rejected
@@ -176,10 +181,9 @@ def test_full_grid_decays_in_seconds_not_minutes():
     idx = _grid(3800)
     rng = np.random.default_rng(0)
     tickers = [f"T{i:03d}" for i in range(500)]
-    ev = pd.DataFrame({
-        "date": idx[rng.integers(0, len(idx), 20_000)],
-        "ticker": rng.choice(tickers, 20_000),
-        "magnitude": rng.uniform(0.5, 5.0, 20_000)})
+    ev = pd.DataFrame(
+        {"date": idx[rng.integers(0, len(idx), 20_000)], "ticker": rng.choice(tickers, 20_000), "magnitude": rng.uniform(0.5, 5.0, 20_000)}
+    )
     t0 = time.perf_counter()
     out = decay_events(ev, idx, 63, magnitude_col="magnitude")
     elapsed = time.perf_counter() - t0
@@ -188,6 +192,7 @@ def test_full_grid_decays_in_seconds_not_minutes():
 
 
 # ------------------------------------------------------------------- panel emission map
+
 
 def _fields_and_peers():
     idx = _grid(40)
@@ -225,11 +230,11 @@ def test_the_raw_leg_carries_the_untouched_value():
     """Not winsorized, not clipped: that treatment belongs to the z-score. A conviction weight
     is a quantity in its own units and trimming it destroys what it was emitted for."""
     fields, peers = _fields_and_peers()
-    fields["sig"].iloc[0, 0] = 999.0                      # a value winsorize_xs would trim
+    fields["sig"].iloc[0, 0] = 999.0  # a value winsorize_xs would trim
     panel = build_peer_relative_panel(fields, peers, emission={"sig": "raw"})
     got = panel.loc[panel["ticker"] == "AAA", "f_sig"].iloc[0]
     assert got == pytest.approx(999.0)
-    assert panel["f_sig"].dtype == np.float32          # float32 like every other leg
+    assert panel["f_sig"].dtype == np.float32  # float32 like every other leg
 
 
 def test_a_field_left_out_of_the_map_keeps_the_default():

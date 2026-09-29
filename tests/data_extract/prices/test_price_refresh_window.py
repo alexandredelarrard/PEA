@@ -14,13 +14,13 @@ every ticker's history is contiguous up to its max. Two live failures proved it 
 `_refresh_floor` fixes both by making every run re-pull the trailing week. These tests pin
 the arithmetic and the two clamps that keep it from over-reaching.
 """
+
 import pandas as pd
 
-from src.data_extract.utils.prices.fetch_prices import (
-    PRICE_REFRESH_TRADING_DAYS, _chunk_response_to_frames, _refresh_floor)
+from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS, _chunk_response_to_frames, _refresh_floor
 
-UNTIL = pd.Timestamp("2026-09-04")          # a Friday
-WINDOW_START = pd.Timestamp("2011-09-04")   # 15 years back
+UNTIL = pd.Timestamp("2026-09-04")  # a Friday
+WINDOW_START = pd.Timestamp("2011-09-04")  # 15 years back
 FLOOR = UNTIL - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
 
 
@@ -51,7 +51,7 @@ def test_floor_never_narrows_an_older_frontier():
 def test_floor_is_clamped_at_window_start():
     """A short `years_history` is still respected: the floor may look back from `until`, but
     never widen the configured history."""
-    narrow = pd.Timestamp("2026-09-02")     # window_start only 2 days back
+    narrow = pd.Timestamp("2026-09-02")  # window_start only 2 days back
     got = _refresh_floor(pd.Timestamp("2026-09-03"), UNTIL, narrow)
     print(f"  window_start=2026-09-02 -> since={got.date()}")
     assert got == narrow
@@ -70,8 +70,7 @@ def test_unserved_ticker_is_warned_not_swallowed(caplog):
     to serve a ticker used to `continue` in silence, so a truncated response looked exactly
     like a complete one."""
     idx = pd.DatetimeIndex(["2026-09-03", "2026-09-04"], name="Date")
-    cols = pd.MultiIndex.from_product([["AAPL"], ["Open", "High", "Low", "Close",
-                                                  "Adj Close", "Volume"]])
+    cols = pd.MultiIndex.from_product([["AAPL"], ["Open", "High", "Low", "Close", "Adj Close", "Volume"]])
     data = pd.DataFrame(1.0, index=idx, columns=cols)
 
     with caplog.at_level("WARNING"):

@@ -16,19 +16,21 @@ Checks here:
   * the universe column order is deterministic and sorted (it used to come from a `set`, so it
     varied with PYTHONHASHSEED across processes -- and each CLI sub-step is its own process).
 """
-from __future__ import annotations
 
-import logging
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_store.schema import Tables
 from src.data_aggregate.utils.common.price_frames import (
-    ALL_FIELDS, frames_to_long, load_price_frames, load_trading_calendar,
+    ALL_FIELDS,
+    frames_to_long,
+    load_price_frames,
+    load_trading_calendar,
     universe_columns,
 )
+from src.data_store.schema import Tables
 
 TICKERS = ["AAA", "BBB", "CCC", "DDD"]
 # the VALUE fields only -- `date`/`ticker` are the join keys `load_price_frames` adds itself,
@@ -46,23 +48,25 @@ def frames() -> dict:
     idx = pd.bdate_range("2024-01-01", periods=60, name="date")
     rng = np.random.default_rng(11)
     close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(TICKERS))), axis=0)),
-        index=idx, columns=pd.Index(TICKERS, name="ticker"))
-    close.iloc[:10, close.columns.get_loc("CCC")] = np.nan          # late IPO
-    close.iloc[-8:, close.columns.get_loc("DDD")] = np.nan          # delisting
+        100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), len(TICKERS))), axis=0)), index=idx, columns=pd.Index(TICKERS, name="ticker")
+    )
+    close.iloc[:10, close.columns.get_loc("CCC")] = np.nan  # late IPO
+    close.iloc[-8:, close.columns.get_loc("DDD")] = np.nan  # delisting
     market = pd.Series(400.0, index=idx)
-    market.iloc[25] = np.nan                                        # interior calendar hole
+    market.iloc[25] = np.nan  # interior calendar hole
     volume = pd.DataFrame(rng.lognormal(14, 0.4, close.shape), index=idx, columns=close.columns)
-    return {"close_split": close,
-            # a non-payer: on it the two bases are IDENTICAL by construction, which is the
-            # cleanest possible round-trip fixture -- any divergence is a code fault.
-            "close_total": close,
-            # "open", not "open_": the canonical field name in price_frames.ALL_FIELDS
-            "open": close.shift(1).bfill() * 1.001,
-            "high": close * 1.01,
-            "low": close * 0.99,
-            "volume": volume,
-            "market": market}
+    return {
+        "close_split": close,
+        # a non-payer: on it the two bases are IDENTICAL by construction, which is the
+        # cleanest possible round-trip fixture -- any divergence is a code fault.
+        "close_total": close,
+        # "open", not "open_": the canonical field name in price_frames.ALL_FIELDS
+        "open": close.shift(1).bfill() * 1.001,
+        "high": close * 1.01,
+        "low": close * 0.99,
+        "volume": volume,
+        "market": market,
+    }
 
 
 def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
@@ -93,8 +97,8 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     uni["level_factor"] = lvl.where(uni["close_split"].notna())
     # a deterministic stand-in for compute_sector_returns (equal-weight mean of the others)
     uni["sector_ret"] = pd.DataFrame(
-        {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe},
-        index=idx, columns=pd.Index(universe, name="ticker"))
+        {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe}, index=idx, columns=pd.Index(universe, name="ticker")
+    )
     return uni, idx
 
 
@@ -107,12 +111,11 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
     back = load_price_frames(parts, peers={}, fields=ALL_PRICE_FIELDS)
 
     for field in ALL_PRICE_FIELDS:
-        expected = uni[field]
+        expected = uni[field].where(uni["close_split"].notna())
         got = getattr(back, field)
         # the long form drops all-NaN rows, so reindex onto the original grid before comparing
         got = got.reindex(index=expected.index, columns=expected.columns)
-        pd.testing.assert_frame_equal(got, expected, check_exact=True, check_dtype=True,
-                                      check_names=True)
+        pd.testing.assert_frame_equal(got, expected, check_exact=True, check_dtype=True, check_names=True)
 
     assert back.trading_index.equals(idx)
     # the calendar now comes from cube_part_prices' OWN dates, not a second market part
@@ -122,13 +125,16 @@ def test_price_part_round_trip_is_bit_identical(frames, sqlite_store):
         assert not hasattr(back, gone), f"PriceFrames still carries {gone}"
 
     print("\n=== SANITY CHECK: cube_part_prices round-trip ===")
-    print(f"  {len(ALL_PRICE_FIELDS)} wide fields over {len(idx)} dates x "
-          f"{len(back.universe)} tickers (ONE part table, no market twin)")
-    print(f"  float64 preserved: {all(getattr(back, f).dtypes.eq('float64').all() for f in ALL_PRICE_FIELDS)}"
-          f" | index/column names intact | calendar from cube_part_prices == the in-memory one")
-    print("  CONCLUSION: persisting and reloading the price grid reproduces the in-memory frames "
-          "bit-for-bit (check_exact=True), so every downstream step sees identical prices. "
-          "Validated.")
+    print(f"  {len(ALL_PRICE_FIELDS)} wide fields over {len(idx)} dates x {len(back.universe)} tickers (ONE part table, no market twin)")
+    print(
+        f"  float64 preserved: {all(getattr(back, f).dtypes.eq('float64').all() for f in ALL_PRICE_FIELDS)}"
+        f" | index/column names intact | calendar from cube_part_prices == the in-memory one"
+    )
+    print(
+        "  CONCLUSION: persisting and reloading the price grid reproduces the in-memory frames "
+        "bit-for-bit (check_exact=True), so every downstream step sees identical prices. "
+        "Validated."
+    )
 
 
 def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
@@ -152,6 +158,27 @@ def test_projected_read_leaves_other_fields_none(frames, sqlite_store):
     print("  CONCLUSION: a step only pays for the price fields it declares. Validated.")
 
 
+def test_price_part_keys_require_an_observed_split_adjusted_close(frames):
+    """Other price fields must not manufacture a row before listing or after delisting."""
+    uni, _ = _normalize(frames)
+    # A real zero on an active cell is data, not absence.
+    active_date = uni["close_split"]["AAA"].first_valid_index()
+    uni["volume"].loc[active_date, "AAA"] = 0.0
+
+    long = frames_to_long(uni)
+    keys = pd.MultiIndex.from_frame(long[["date", "ticker"]])
+    expected = uni["close_split"].notna().stack().loc[lambda s: s].index
+
+    assert keys.equals(expected)
+    zero = long.loc[(long["date"] == active_date) & (long["ticker"] == "AAA"), "volume"]
+    assert zero.iloc[0] == 0.0
+
+    print("\n=== SANITY CHECK: price-part availability keys ===")
+    print(f"  persisted keys={len(keys):,} == non-null close_split keys={len(expected):,}")
+    print("  active volume=0 survives; pre-IPO/post-delisting side fields do not create rows.")
+    print("  CONCLUSION: split-adjusted close, not truthiness or any side field, owns availability.")
+
+
 def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):
     uni, idx = _normalize(frames)
     hole = frames["close_split"].index[25]
@@ -169,8 +196,9 @@ def test_interior_calendar_hole_is_dropped_and_universe_is_sorted(frames):
         universe_columns(["NOT_LISTED"], frames["close_split"])
 
     print("\n=== SANITY CHECK: calendar hole + deterministic universe ===")
-    print(f"  interior {hole.date()} hole (market series missing) dropped: "
-          f"{len(frames['close_split'].index)} -> {len(idx)} dates")
+    print(f"  interior {hole.date()} hole (market series missing) dropped: {len(frames['close_split'].index)} -> {len(idx)} dates")
     print(f"  universe from a shuffled ticker list is stable and sorted: {a}")
-    print("  CONCLUSION: the universe no longer comes from a set, so column order (and therefore "
-          "float summation order) is identical across processes. Validated.")
+    print(
+        "  CONCLUSION: the universe no longer comes from a set, so column order (and therefore "
+        "float summation order) is identical across processes. Validated."
+    )

@@ -10,23 +10,25 @@ by `_MIN_INTERVAL` across all threads (so the global rate never exceeds SEC's
 limit), while the network transfer happens outside the lock so downloads from a
 ThreadPoolExecutor overlap. This is what lets the EDGAR fetchers parallelize.
 """
+
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from collections.abc import Collection
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 import requests
 
-from src.data_store.schema import Tables
 from src.context import Context
 from src.data_extract.utils.common.registrant import load_registrants
+from src.data_store.schema import Table, Tables
 
-_MIN_INTERVAL = 0.11          # ~9 req/sec, safely under SEC's 10/sec limit
-_DEFAULT_TIMEOUT = 30         # seconds; avoid a hung socket stalling a worker
+_MIN_INTERVAL = 0.11  # ~9 req/sec, safely under SEC's 10/sec limit
+_DEFAULT_TIMEOUT = 30  # seconds; avoid a hung socket stalling a worker
 _rate_lock = threading.Lock()
-_next_slot = [0.0]            # monotonic time of the next allowed request start
+_next_slot = [0.0]  # monotonic time of the next allowed request start
 
 
 def _reserve_slot() -> None:
@@ -56,7 +58,7 @@ def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
 # Incremental-extraction helpers                                              #
 # --------------------------------------------------------------------------- #
 def today_iso() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def existing_filings(context: Context, table) -> frozenset[str]:
@@ -73,14 +75,14 @@ def existing_filings(context: Context, table) -> frozenset[str]:
     return frozenset(str(a) for a in context.store.distinct(table, "accession_number"))
 
 
-def bulk_ingested_quarters(store, table: str) -> set[str]:
+def bulk_ingested_quarters(store, table: Table | str) -> set[str]:
     """Distinct source-zip `quarter` tags already stored in a bulk table -> the
     set of quarters an incremental re-run can SKIP (a past quarter's data set is
     final once the quarter ends). Empty when the table doesn't exist yet."""
     return {str(q) for q in store.distinct(table, "quarter")}
 
 
-def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
+def load_processed_universe(cache_dir: Path, table: Table | str) -> set[str]:
     """The ticker universe a bulk table was last built against (sidecar JSON). Used
     to decide whether cached zips must be re-parsed to back-fill NEW tickers.
     Comparing to the processed set (not to the tickers that happened to file) is
@@ -94,18 +96,15 @@ def load_processed_universe(cache_dir: Path, table: str) -> set[str]:
         return set()
 
 
-def save_processed_universe(cache_dir: Path, table: str, universe: set[str]) -> None:
-    (cache_dir / f"{table}_universe.json").write_text(
-        json.dumps({"universe": sorted(universe), "saved": today_iso()}),
-        encoding="utf-8")
+def save_processed_universe(cache_dir: Path, table: Table | str, universe: Collection[str]) -> None:
+    (cache_dir / f"{table}_universe.json").write_text(json.dumps({"universe": sorted(universe), "saved": today_iso()}), encoding="utf-8")
 
 
 #: The `sp500_tickers` projection every SEC fetcher resolves its universe through. Module-level
 #: so a test fixture standing in for that table can be built FROM it -- a fixture that pinned its
 #: own column list passed while production read a column the fixture never wrote, and the
 #: resulting `KeyError` surfaced only as an unrelated-looking driver failure.
-CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector",
-                                     "industry_group", "sub_industry")
+CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector", "industry_group", "sub_industry")
 
 
 def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.DataFrame:
@@ -119,14 +118,15 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     it duplicated `sp500_tickers` AND mismapped active tickers (e.g. XOM -> a non-filing
     "ExxonMobil Holdings Corp" shell).
     """
-    df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS),
-                            where={"ticker": list(tickers)} if tickers is not None else None)
-    
+    df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS), where={"ticker": list(tickers)} if tickers is not None else None)
+    assert df is not None
+
     # SEC URLs need the 10-digit zero-padded CIK
     df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
     if "company_name" not in df.columns and "name" in df.columns:
         df["company_name"] = df["name"]
     return df
+
 
 def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dict[str, str]:
     """CIK -> ticker, INCLUDING every predecessor CIK in the registrant register.
@@ -161,11 +161,11 @@ def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dic
     """
     if cikmap.empty or "ticker" not in cikmap.columns:
         return {}
-    out = {str(c): str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"])}
+    out = {str(c): str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"], strict=False)}
     universe = set(out.values())
     for ticker, entry in load_registrants(config_dir).items():
         if ticker.upper() not in universe:
-            continue                       # a register entry for a ticker this run is not
-        for cik in entry.all_ciks():       # walking adds nothing and would widen the map
+            continue  # a register entry for a ticker this run is not
+        for cik in entry.all_ciks():  # walking adds nothing and would widen the map
             out.setdefault(cik, ticker.upper())
     return out

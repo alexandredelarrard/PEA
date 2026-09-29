@@ -59,6 +59,7 @@ different days, so at any date the set mixes decisions taken at each manager's o
 filing. Concentration's 0.97 stickiness keeps the drift small; `selection_diagnostics`
 reports it and the test asserts it stays in band.
 """
+
 from __future__ import annotations
 
 import logging
@@ -80,7 +81,7 @@ logger = logging.getLogger(__name__)
 #: `filing_lag_days` is near-degenerate besides (25/50/75 percentiles 41/45/45 days, with a
 #: 1,311-day back-filing tail that makes its rank IC untrustworthy).
 _LEGS: tuple[tuple[str, bool], ...] = (
-    ("n_positions", False),      # ascending=False -> fewest positions ranks highest
+    ("n_positions", False),  # ascending=False -> fewest positions ranks highest
     ("eff_n", False),
     ("top10_weight", True),
 )
@@ -101,21 +102,17 @@ def _latest_per_avail(state: pd.DataFrame) -> pd.DataFrame:
     or two periods caught up on in one go). Resolving that by frame order would make the
     whole selection order-coupled, which is the defect `manager_stock_conviction`'s rank
     tie-break already had to fix once."""
-    return (state.sort_values(["cik", "avail", "period"])
-            .drop_duplicates(["cik", "avail"], keep="last"))
+    return state.sort_values(["cik", "avail", "period"]).drop_duplicates(["cik", "avail"], keep="last")
 
 
-def _wide(state: pd.DataFrame, column: str, grid: pd.DatetimeIndex,
-          ciks: pd.Index) -> pd.DataFrame:
+def _wide(state: pd.DataFrame, column: str, grid: pd.DatetimeIndex, ciks: pd.Index) -> pd.DataFrame:
     """`column` per `(availability date x manager)`, forward-filled -- each manager's latest
     PUBLIC value at every date on the grid. The same point-in-time join `_effective` performs
     for the ticker aggregates, applied to the manager axis instead."""
-    return (state.pivot(index="avail", columns="cik", values=column)
-            .reindex(index=grid, columns=ciks).ffill())
+    return state.pivot(index="avail", columns="cik", values=column).reindex(index=grid, columns=ciks).ffill()
 
 
-def manager_concentration_score(state: pd.DataFrame,
-                                eligible: pd.Series | None = None) -> pd.DataFrame:
+def manager_concentration_score(state: pd.DataFrame, eligible: pd.Series | None = None) -> pd.DataFrame:
     """Point-in-time concentration per `(cik, period)`.
 
     `state` is `manager_quarter_state` output with an `avail` column -- the date the filing
@@ -136,15 +133,13 @@ def manager_concentration_score(state: pd.DataFrame,
     """
     need = set(_KEYS) | {leg for leg, _ in _LEGS}
     if state.empty or not need.issubset(state.columns):
-        return pd.DataFrame({"score": _empty("score", "float64"),
-                             "n_public": _empty("n_public", "float64")})
+        return pd.DataFrame({"score": _empty("score", "float64"), "n_public": _empty("n_public", "float64")})
     st = state.dropna(subset=["avail"]).sort_values(["cik", "period"]).copy()
     if eligible is not None:
         keep = eligible.reindex(pd.MultiIndex.from_frame(st[["cik", "period"]]))
         st = st[keep.fillna(False).to_numpy()]
     if st.empty:
-        return pd.DataFrame({"score": _empty("score", "float64"),
-                             "n_public": _empty("n_public", "float64")})
+        return pd.DataFrame({"score": _empty("score", "float64"), "n_public": _empty("n_public", "float64")})
 
     grid = pd.DatetimeIndex(sorted(st["avail"].unique()))
     ciks = pd.Index(sorted(st["cik"].unique()), name="cik")
@@ -155,22 +150,24 @@ def manager_concentration_score(state: pd.DataFrame,
         live = wide.notna() if live is None else (live & wide.notna())
         pct = wide.rank(axis=1, pct=True, ascending=ascending)
         total = pct if total is None else total + pct
+    assert total is not None and live is not None
     score = (total / float(len(_LEGS))).where(live)
     n_public = live.sum(axis=1).astype("float64")
 
-    r = grid.get_indexer(st["avail"])
-    c = ciks.get_indexer(st["cik"])
-    out = pd.DataFrame(
-        {"score": score.to_numpy()[r, c], "n_public": n_public.to_numpy()[r]},
-        index=pd.MultiIndex.from_frame(st[["cik", "period"]]))
-    logger.info("concentration score: %s manager-quarters over %s availability dates, "
-                "pool %s-%s managers", len(out), len(grid),
-                int(n_public.min()), int(n_public.max()))
+    r = grid.get_indexer(pd.Index(st["avail"]))
+    c = ciks.get_indexer(pd.Index(st["cik"]))
+    out = pd.DataFrame({"score": score.to_numpy()[r, c], "n_public": n_public.to_numpy()[r]}, index=pd.MultiIndex.from_frame(st[["cik", "period"]]))
+    logger.info(
+        "concentration score: %s manager-quarters over %s availability dates, pool %s-%s managers",
+        len(out),
+        len(grid),
+        int(n_public.min()),
+        int(n_public.max()),
+    )
     return out
 
 
-def eligibility(state: pd.DataFrame, roster_at: Callable[[pd.Timestamp], set[str]],
-                min_quarters: int = 4, min_positions: int = 0) -> pd.Series:
+def eligibility(state: pd.DataFrame, roster_at: Callable[[pd.Timestamp], set[str]], min_quarters: int = 4, min_positions: int = 0) -> pd.Series:
     """Boolean per `(cik, period)`: may this manager-quarter be scored at all?
 
     ⚠ `min_positions` DEFAULTS TO 0, NOT TO THE 3 THE PLAN PROPOSED, AND THE REASON IS
@@ -205,14 +202,13 @@ def eligibility(state: pd.DataFrame, roster_at: Callable[[pd.Timestamp], set[str
     st = state.sort_values(["cik", "period"]).copy()
     st["n_prior"] = st.groupby("cik").cumcount()
     listed = {p: roster_at(pd.Timestamp(p)) for p in st["period"].unique()}
-    on_roster = np.fromiter((c in listed[p] for c, p in zip(st["cik"], st["period"])),
-                            dtype=bool, count=len(st))
-    npos = pd.to_numeric(st.get("n_index_positions", pd.Series(0, index=st.index)),
-                         errors="coerce").fillna(0)
-    ok = pd.Series(on_roster
-                   & (st["n_prior"] >= min_quarters).to_numpy()
-                   & (npos >= min_positions).to_numpy(),
-                   index=pd.MultiIndex.from_frame(st[["cik", "period"]]), name="eligible")
+    on_roster = np.fromiter((c in listed[p] for c, p in zip(st["cik"], st["period"], strict=False)), dtype=bool, count=len(st))
+    npos = pd.to_numeric(st.get("n_index_positions", pd.Series(0, index=st.index)), errors="coerce").fillna(0)
+    ok = pd.Series(
+        on_roster & (st["n_prior"] >= min_quarters).to_numpy() & (npos >= min_positions).to_numpy(),
+        index=pd.MultiIndex.from_frame(st[["cik", "period"]]),
+        name="eligible",
+    )
     return ok.reindex(idx).fillna(False)
 
 
@@ -271,9 +267,11 @@ def selection_diagnostics(sel: pd.Series, state: pd.DataFrame) -> pd.DataFrame:
     # integer bitwise inversion -- `~True` is -2, which is truthy, so every date reported
     # its full selected set as churn.
     prev = chosen.shift(1, fill_value=False).astype(bool)
-    return pd.DataFrame({
-        "date": grid,
-        "n_public": live.notna().sum(axis=1).to_numpy(),
-        "n_selected": chosen.sum(axis=1).to_numpy(),
-        "churn": ((chosen & ~prev).sum(axis=1) + (~chosen & prev).sum(axis=1)).to_numpy(),
-    })
+    return pd.DataFrame(
+        {
+            "date": grid,
+            "n_public": live.notna().sum(axis=1).to_numpy(),
+            "n_selected": chosen.sum(axis=1).to_numpy(),
+            "churn": ((chosen & ~prev).sum(axis=1) + (~chosen & prev).sum(axis=1)).to_numpy(),
+        }
+    )

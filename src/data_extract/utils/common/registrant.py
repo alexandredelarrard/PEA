@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote_plus
 from xml.etree import ElementTree
 
@@ -112,9 +112,7 @@ class Registrant:
         for segment in self.segments:
             if segment.covers(date):
                 return segment
-        raise ValueError(
-            f"registrant[{self.ticker}]: no segment covers {date} " "-- the chain is not contiguous, which the loader should have caught"
-        )
+        raise ValueError(f"registrant[{self.ticker}]: no segment covers {date} -- the chain is not contiguous, which the loader should have caught")
 
     def all_ciks(self) -> tuple[str, ...]:
         """Every CIK in the chain, oldest first. This is the UNION set for event forms."""
@@ -166,7 +164,7 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
 
     raw = entry.get("segments")
     if not isinstance(raw, list) or len(raw) < 2:
-        raise ValueError(f"registrant[{ticker}]: `segments` must be a list of at least 2 " "entries -- one segment is not a boundary.")
+        raise ValueError(f"registrant[{ticker}]: `segments` must be a list of at least 2 entries -- one segment is not a boundary.")
 
     segments: list[Segment] = []
     for i, seg in enumerate(raw):
@@ -177,9 +175,9 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
             )
         first, last = i == 0, i == len(raw) - 1
         if first and "valid_from" in seg:
-            raise ValueError(f"registrant[{ticker}] segment 0: the oldest segment must omit " "`valid_from` -- the chain is open at the old end.")
+            raise ValueError(f"registrant[{ticker}] segment 0: the oldest segment must omit `valid_from` -- the chain is open at the old end.")
         if last and "valid_to" in seg:
-            raise ValueError(f"registrant[{ticker}] segment {i}: the newest segment must omit " "`valid_to` -- the chain is open at the new end.")
+            raise ValueError(f"registrant[{ticker}] segment {i}: the newest segment must omit `valid_to` -- the chain is open at the new end.")
         if not first and "valid_from" not in seg:
             raise ValueError(f"registrant[{ticker}] segment {i}: missing `valid_from`.")
         if not last and "valid_to" not in seg:
@@ -483,9 +481,9 @@ def _atom_text(entry: ElementTree.Element, name: str) -> str | None:
     return value.strip() if value and value.strip() else None
 
 
-def _header_subject_ciks(filing: object) -> frozenset[str]:
+def header_subject_ciks(filing: object) -> frozenset[str]:
     """Read schedule subject CIKs from the SGML header, before ``filing.obj()``."""
-    header = filing.header
+    header = getattr(filing, "header", None)
     companies = getattr(header, "subject_companies", ()) or ()
     raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
     return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
@@ -502,7 +500,7 @@ def filter_schedule_subject_filings(
     stats = {"candidates": len(candidates), "subject_matches": 0, "unknown_headers": 0}
     for filing in candidates:
         try:
-            subjects = _header_subject_ciks(filing)
+            subjects = header_subject_ciks(filing)
         except Exception:  # noqa: BLE001 -- the full object guard is the safe fallback
             subjects = frozenset()
         if subjects:
@@ -568,7 +566,7 @@ def resolve_schedule_subject_filings(
                 span_days = int((window_end - window_start).days) + 1
                 if span_days > 366:
                     logger.info(
-                        "%s: schedule search reached offset %d for subject CIK %s, form %s; " "partitioning %s..%s into complete one-year windows",
+                        "%s: schedule search reached offset %d for subject CIK %s, form %s; partitioning %s..%s into complete one-year windows",
                         ticker,
                         start,
                         cik,
@@ -593,7 +591,7 @@ def resolve_schedule_subject_filings(
                 older_end = (window_start + (window_end - window_start) / 2).normalize()
                 newer_start = older_end + pd.Timedelta(days=1)
                 logger.info(
-                    "%s: schedule search reached offset %d for subject CIK %s, form %s; " "bisecting %s..%s into complete date windows",
+                    "%s: schedule search reached offset %d for subject CIK %s, form %s; bisecting %s..%s into complete date windows",
                     ticker,
                     start,
                     cik,
@@ -619,10 +617,12 @@ def resolve_schedule_subject_filings(
                     lambda url=url: download_text(url),
                     label=f"{ticker} {family} offset {start}",
                 )
+                if payload is None:
+                    raise ValueError("SEC Atom response was empty")
                 root = ElementTree.fromstring(payload)
             except Exception as exc:  # noqa: BLE001 -- completeness is the contract
                 raise ScheduleDiscoveryIncompleteError(
-                    f"{ticker}: schedule search failed for subject CIK {cik}, form " f"{family}, offset {start}: {exc!r}"
+                    f"{ticker}: schedule search failed for subject CIK {cik}, form {family}, offset {start}: {exc!r}"
                 ) from exc
             window_pages += 1
             entries = root.findall("atom:entry", _ATOM_NAMESPACE)
@@ -631,7 +631,7 @@ def resolve_schedule_subject_filings(
             for entry in entries:
                 form = _atom_text(entry, "filing-type")
                 accession = _atom_text(entry, "accession-number")
-                filing_date = pd.to_datetime(_atom_text(entry, "filing-date"), errors="coerce")
+                filing_date = pd.to_datetime(cast(Any, _atom_text(entry, "filing-date")), errors="coerce")
                 file_number = _atom_text(entry, "file-number")
                 if (
                     form not in target_forms
@@ -665,7 +665,7 @@ def resolve_schedule_subject_filings(
 
     if start_date is None:
         raise ScheduleDiscoveryIncompleteError(
-            f"{ticker}: subject-first schedule discovery requires a finite start date so " "deep result sets can be split without truncation"
+            f"{ticker}: subject-first schedule discovery requires a finite start date so deep result sets can be split without truncation"
         )
     for cik in sorted(subject_ciks):
         for family in families:
@@ -674,7 +674,7 @@ def resolve_schedule_subject_filings(
             candidates.update(found)
 
     filtered, stats = filter_schedule_subject_filings(list(candidates.values()), subject_ciks)
-    filtered.sort(key=lambda filing: pd.Timestamp(filing.filing_date))
+    filtered.sort(key=lambda filing: pd.Timestamp(cast(Any, filing).filing_date))
     logger.info(
         "%s: subject-first schedules -- %d page(s), %d owner-side row(s) excluded from Atom "
         "metadata, %d candidate(s), %d subject match(es), %d unknown header(s), %d retained "
@@ -735,7 +735,7 @@ def drop_rows_outside_segment(
     dropped = int((~keep).sum())
     if dropped:
         logger.info(
-            "registrant split: dropped %d bulk row(s) filed outside their segment " "(%s)",
+            "registrant split: dropped %d bulk row(s) filed outside their segment (%s)",
             dropped,
             ", ".join(sorted(set(df.loc[~keep, ticker_col].astype(str)))),
         )

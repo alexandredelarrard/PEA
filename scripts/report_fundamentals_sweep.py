@@ -22,28 +22,28 @@ Sections, each answering one of Phase 4c's own questions:
 
     "$PY" scripts/report_fundamentals_sweep.py [--in DIR] [--roster in_sample|both]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import pandas as pd                                                    # noqa: E402
+import pandas as pd  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IN = ROOT / "data" / "fundamentals_sweep"
 
-from src.constants.constants import (                                  # noqa: E402
-    FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME)
+from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
 
 #: The join key a value is compared on across the two resolution settings. It is the FACT's
 #: identity, not the row's: same filing, same field, same period shape, same window. Anything
 #: coarser pools two periods; anything finer (the route, the concept) is what we are measuring.
-JOIN_KEY = ["ticker", "accession_number", "field", "duration_type",
-            "period_start", "period_end"]
+JOIN_KEY = ["ticker", "accession_number", "field", "duration_type", "period_start", "period_end"]
 
 #: A relative difference above this is "material" and must be named rather than counted.
 MATERIAL = 0.02
@@ -87,8 +87,7 @@ def section_route_mix(strict: pd.DataFrame) -> None:
     fallback = mix.get("tag_fallback", 0) / total if total else 0.0
     verdict = "PASS" if fallback < TAG_FALLBACK_GATE else "FAIL"
     print(f"  {'-' * 44}")
-    print(f"  valued rows {total:,} | tag_fallback {fallback:.2%} "
-          f"vs the {TAG_FALLBACK_GATE:.0%} architecture gate -> {verdict}")
+    print(f"  valued rows {total:,} | tag_fallback {fallback:.2%} vs the {TAG_FALLBACK_GATE:.0%} architecture gate -> {verdict}")
     print("  (the gate applies to `tag_fallback` alone; `tag_primary` is the catalogue's own")
     print("   first choice with no linkbase arc, which is expected for any non-roll-up leaf)")
 
@@ -100,42 +99,36 @@ def section_before_after(ledger: pd.DataFrame) -> pd.DataFrame:
     print("=" * 78)
     strict = ledger[ledger["prefer_structure"]]
     lax = ledger[~ledger["prefer_structure"]]
-    cols = JOIN_KEY + ["fiscal_year", "resolution_method", "source_concept", "value",
-                       "dc_code"]
-    merged = strict[cols].merge(lax[cols], on=JOIN_KEY, suffixes=("_after", "_before"),
-                                how="outer", indicator=True)
+    cols = JOIN_KEY + ["fiscal_year", "resolution_method", "source_concept", "value", "dc_code"]
+    merged = strict[cols].merge(lax[cols], on=JOIN_KEY, suffixes=("_after", "_before"), how="outer", indicator=True)
     both = merged[merged["_merge"] == "both"].copy()
     print(f"  facts present in both resolutions : {len(both):,}")
     print(f"  present only AFTER the guard      : {(merged['_merge'] == 'left_only').sum():,}")
-    print(f"  present only BEFORE the guard     : "
-          f"{(merged['_merge'] == 'right_only').sum():,}  <- the guard's coverage cost")
+    print(f"  present only BEFORE the guard     : {(merged['_merge'] == 'right_only').sum():,}  <- the guard's coverage cost")
 
     both["route_changed"] = both["resolution_method_after"] != both["resolution_method_before"]
     both["concept_changed"] = both["source_concept_after"] != both["source_concept_before"]
     scale = both[["value_after", "value_before"]].abs().max(axis=1)
-    both["relative"] = ((both["value_after"] - both["value_before"]).abs()
-                        / scale.where(scale > 0))
+    both["relative"] = (both["value_after"] - both["value_before"]).abs() / scale.where(scale > 0)
     both["value_agreed"] = both["relative"].fillna(0) <= 1e-9
 
-    print(f"\n  route changed on {both['route_changed'].mean():.3%} of shared facts "
-          f"({int(both['route_changed'].sum()):,} rows)")
+    print(f"\n  route changed on {both['route_changed'].mean():.3%} of shared facts ({int(both['route_changed'].sum()):,} rows)")
     print(f"  value agreed to the dollar on {both['value_agreed'].mean():.3%}")
     moved = both[~both["value_agreed"]]
-    print(f"  values that MOVED: {len(moved):,}  "
-          f"(material, >{MATERIAL:.0%}: {int((moved['relative'] > MATERIAL).sum()):,})")
+    print(f"  values that MOVED: {len(moved):,}  (material, >{MATERIAL:.0%}: {int((moved['relative'] > MATERIAL).sum()):,})")
 
     print("\n  by fiscal year:")
-    print(f"    {'year':6s} {'facts':>8s} {'route chg':>10s} {'value agree':>12s} "
-          f"{'moved':>7s} {'material':>9s}")
+    print(f"    {'year':6s} {'facts':>8s} {'route chg':>10s} {'value agree':>12s} {'moved':>7s} {'material':>9s}")
     # `fiscal_year` is not in JOIN_KEY, so the merge suffixed it; the two sides agree by
     # construction (same fact) and the `_after` copy is the one production produced.
     both["fiscal_year"] = pd.to_numeric(both["fiscal_year_after"], errors="coerce")
-    for year, group in both.dropna(subset=["fiscal_year"]).groupby(
-            lambda i: int(both.loc[i, "fiscal_year"]), sort=True):
+    for year, group in both.dropna(subset=["fiscal_year"]).groupby(lambda i: int(cast(int, both.at[i, "fiscal_year"])), sort=True):
         mv = group[~group["value_agreed"]]
-        print(f"    {int(year):<6d} {len(group):8,d} {group['route_changed'].mean():9.2%} "
-              f"{group['value_agreed'].mean():11.3%} {len(mv):7,d} "
-              f"{int((mv['relative'] > MATERIAL).sum()):9,d}")
+        print(
+            f"    {int(cast(int, year)):<6d} {len(group):8,d} {group['route_changed'].mean():9.2%} "
+            f"{group['value_agreed'].mean():11.3%} {len(mv):7,d} "
+            f"{int((mv['relative'] > MATERIAL).sum()):9,d}"
+        )
     return both
 
 
@@ -145,17 +138,20 @@ def section_material_disagreements(both: pd.DataFrame) -> None:
     if moved.empty:
         print("    none")
         return
-    grouped = (moved.groupby(["ticker", "field"])
-               .agg(rows=("relative", "size"), median_rel=("relative", "median"),
-                    max_rel=("relative", "max"),
-                    after=("source_concept_after", lambda s: s.dropna().iloc[0]
-                           if s.notna().any() else None),
-                    before=("source_concept_before", lambda s: s.dropna().iloc[0]
-                            if s.notna().any() else None))
-               .sort_values("rows", ascending=False))
-    for (ticker, field), row in grouped.iterrows():
-        print(f"    {ticker:6s} {field:22s} {int(row['rows']):4d} rows  "
-              f"median {row['median_rel']:8.2%}  max {row['max_rel']:9.2%}")
+    grouped = (
+        moved.groupby(["ticker", "field"])
+        .agg(
+            rows=("relative", "size"),
+            median_rel=("relative", "median"),
+            max_rel=("relative", "max"),
+            after=("source_concept_after", lambda s: s.dropna().iloc[0] if s.notna().any() else None),
+            before=("source_concept_before", lambda s: s.dropna().iloc[0] if s.notna().any() else None),
+        )
+        .sort_values("rows", ascending=False)
+    )
+    for key, row in grouped.iterrows():
+        ticker, field = cast(tuple[str, str], key)
+        print(f"    {ticker:6s} {field:22s} {int(row['rows']):4d} rows  median {row['median_rel']:8.2%}  max {row['max_rel']:9.2%}")
         print(f"           before: {row['before']}")
         print(f"           after : {row['after']}")
 
@@ -168,31 +164,31 @@ def section_guard_census(strict: pd.DataFrame) -> None:
     retained = _adjustment_flag(strict["adjustment"], "role_only_retained")
     undeclared = _adjustment_flag(strict["adjustment"], "undeclared_rejected")
     print("  half 1 -- the note-role test (`is_note_only`):")
-    print(f"    withheld a candidate on {int(rejected.sum()):,} rows "
-          f"({rejected.mean():.3%} of {len(strict):,})")
-    print(f"    resolved ONLY after giving in on {int(retained.sum()):,} rows "
-          f"({retained.mean():.3%})  <- flagged, never lost")
+    print(f"    withheld a candidate on {int(rejected.sum()):,} rows ({rejected.mean():.3%} of {len(strict):,})")
+    print(f"    resolved ONLY after giving in on {int(retained.sum()):,} rows ({retained.mean():.3%})  <- flagged, never lost")
     print("  half 2 -- the DECLAREDNESS test (an undeclared tag loses to route 3b):")
-    print(f"    reordered onto the leaf sum on {int(undeclared.sum()):,} rows "
-          f"({undeclared.mean():.3%})")
+    print(f"    reordered onto the leaf sum on {int(undeclared.sum()):,} rows ({undeclared.mean():.3%})")
     if undeclared.any():
         hits = strict[undeclared]
         print("    by (ticker, field):")
-        for (ticker, field), n in (hits.groupby(["ticker", "field"]).size()
-                                   .sort_values(ascending=False).items()):
-            withheld = sorted({c for blob in hits[(hits["ticker"] == ticker)
-                                                  & (hits["field"] == field)]["adjustment"]
-                               for c in json.loads(blob).get("undeclared_rejected", [])})
-            print(f"      {ticker:6s} {field:20s} {int(n):5d} rows  withheld "
-                  f"{', '.join(withheld)}")
+        for key, n in hits.groupby(["ticker", "field"]).size().sort_values(ascending=False).items():
+            ticker, field = cast(tuple[str, str], key)
+            withheld = sorted(
+                {
+                    c
+                    for blob in hits[(hits["ticker"] == ticker) & (hits["field"] == field)]["adjustment"]
+                    for c in json.loads(blob).get("undeclared_rejected", [])
+                }
+            )
+            print(f"      {ticker:6s} {field:20s} {int(n):5d} rows  withheld {', '.join(withheld)}")
     if rejected.any():
         print("\n  which candidates were withheld, and from which field:")
         hits = strict[rejected]
         pairs: dict[tuple[str, str], set[str]] = {}
-        for field, blob in zip(hits["field"], hits["adjustment"]):
+        for field, blob in zip(hits["field"], hits["adjustment"], strict=False):
             for concept in json.loads(blob).get("role_rejected", []):
                 pairs.setdefault((field, concept), set())
-        counts = (hits.assign(_n=1).groupby("field")["_n"].sum().sort_values(ascending=False))
+        counts = hits.assign(_n=1).groupby("field")["_n"].sum().sort_values(ascending=False)
         for field, n in counts.items():
             concepts = sorted({c for (f, c) in pairs if f == field})
             print(f"    {field:22s} {int(n):5d} rows   {', '.join(concepts)[:110]}")
@@ -206,43 +202,47 @@ def section_duplicates(strict: pd.DataFrame) -> None:
     print("4. 4c.3 DUPLICATE-FACT CENSUS  (finer `decimals` wins; disagreements recorded)")
     print("=" * 78)
     flag = _adjustment_flag(strict["adjustment"], "duplicate_fact")
-    print(f"  rows where one filing tagged a (concept, period) twice at TWO DIFFERENT "
-          f"values: {int(flag.sum()):,} ({flag.mean():.4%})")
+    print(f"  rows where one filing tagged a (concept, period) twice at TWO DIFFERENT values: {int(flag.sum()):,} ({flag.mean():.4%})")
     if not flag.any():
         print("  none -- the tie-break never had to discriminate on this ledger")
         return
     hits = strict[flag]
     rows = []
-    for ticker, field, blob in zip(hits["ticker"], hits["field"], hits["adjustment"]):
+    for ticker, field, blob in zip(hits["ticker"], hits["field"], hits["adjustment"], strict=False):
         for d in json.loads(blob).get("duplicate_fact", []):
             kept, dropped = abs(float(d["kept"])), abs(float(d["dropped"]))
             scale = max(kept, dropped)
-            rows.append({"ticker": ticker, "field": field, "concept": d["concept"],
-                         "kept": d["kept"], "dropped": d["dropped"],
-                         "kept_decimals": d["kept_decimals"],
-                         "dropped_decimals": d["dropped_decimals"],
-                         "relative": (abs(kept - dropped) / scale) if scale else 0.0})
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "field": field,
+                    "concept": d["concept"],
+                    "kept": d["kept"],
+                    "dropped": d["dropped"],
+                    "kept_decimals": d["kept_decimals"],
+                    "dropped_decimals": d["dropped_decimals"],
+                    "relative": (abs(kept - dropped) / scale) if scale else 0.0,
+                }
+            )
     frame = pd.DataFrame(rows)
-    print(f"  distinct duplicate facts: {len(frame):,}  |  median disagreement "
-          f"{frame['relative'].median():.4%}  max {frame['relative'].max():.4%}")
+    print(f"  distinct duplicate facts: {len(frame):,}  |  median disagreement {frame['relative'].median():.4%}  max {frame['relative'].max():.4%}")
     print("\n  by (ticker, field), worst first:")
-    grouped = (frame.groupby(["ticker", "field"])
-               .agg(n=("relative", "size"), max_rel=("relative", "max"))
-               .sort_values("max_rel", ascending=False).head(20))
-    for (ticker, field), row in grouped.iterrows():
+    grouped = (
+        frame.groupby(["ticker", "field"]).agg(n=("relative", "size"), max_rel=("relative", "max")).sort_values("max_rel", ascending=False).head(20)
+    )
+    for key, row in grouped.iterrows():
+        ticker, field = cast(tuple[str, str], key)
         print(f"    {ticker:6s} {field:22s} {int(row['n']):4d}  worst {row['max_rel']:8.4%}")
     print("\n  a sample, showing which precision won:")
     for r in frame.sort_values("relative", ascending=False).head(6).itertuples():
         print(f"    {r.ticker:6s} {r.field:18s} {r.concept}")
-        print(f"           kept {r.kept:>18,.0f} (decimals {r.kept_decimals})  "
-              f"dropped {r.dropped:>18,.0f} (decimals {r.dropped_decimals})")
+        print(f"           kept {r.kept:>18,.0f} (decimals {r.kept_decimals})  dropped {r.dropped:>18,.0f} (decimals {r.dropped_decimals})")
 
 
 #: The six balance-sheet DETAIL fields 4c.4 must scope by regime. Reg S-X 5-02 requires the
 #: caption only "when appropriate", so a bank, insurer, broker-dealer or REIT that omits them
 #: is compliant, not incomplete -- and 346 in-sample "holes" are exactly this.
-DETAIL_FIELDS = ["accountsPayable", "accountsReceivable", "ppeGross",
-                 "accumulatedDepreciation", "intangiblesExGoodwill", "minorityInterest"]
+DETAIL_FIELDS = ["accountsPayable", "accountsReceivable", "ppeGross", "accumulatedDepreciation", "intangiblesExGoodwill", "minorityInterest"]
 
 
 def section_regime_coverage(strict: pd.DataFrame) -> None:
@@ -257,11 +257,9 @@ def section_regime_coverage(strict: pd.DataFrame) -> None:
         print("  no rows for these fields in the ledger")
         return
     regimes = sorted(strict["regime"].dropna().unique())
-    tickers_per_regime = (strict.dropna(subset=["regime"]).groupby("regime")["ticker"]
-                          .nunique())
+    tickers_per_regime = strict.dropna(subset=["regime"]).groupby("regime")["ticker"].nunique()
     print(f"    {'field':26s} " + " ".join(f"{r[:11]:>12s}" for r in regimes))
-    print(f"    {'(tickers)':26s} "
-          + " ".join(f"{int(tickers_per_regime.get(r, 0)):>12d}" for r in regimes))
+    print(f"    {'(tickers)':26s} " + " ".join(f"{int(tickers_per_regime.get(r, 0)):>12d}" for r in regimes))
     for field in DETAIL_FIELDS:
         cells = []
         for regime in regimes:
@@ -269,8 +267,7 @@ def section_regime_coverage(strict: pd.DataFrame) -> None:
             if not n_total:
                 cells.append(f"{'-':>12s}")
                 continue
-            have = frame[(frame["field"] == field) & (frame["regime"] == regime)
-                         & frame["value"].notna()]["ticker"].nunique()
+            have = frame[(frame["field"] == field) & (frame["regime"] == regime) & frame["value"].notna()]["ticker"].nunique()
             cells.append(f"{have}/{n_total} {have / n_total:5.0%}".rjust(12))
         print(f"    {field:26s} " + " ".join(cells))
     print("\n  a 0% cell in a non-industrial regime is the structural absence 4c.4 registers;")
@@ -297,14 +294,12 @@ def section_long_term_debt(strict: pd.DataFrame) -> None:
             print(f"  {ticker:7s} {len(group):6d} {0:7d}  NEVER RESOLVES -- {codes}")
             continue
         mix = v["source_concept"].value_counts(normalize=True)
-        parts = ", ".join(f"{c.split(':')[-1]} {s:.0%}" for c, s in mix.head(3).items())
+        parts = ", ".join(f"{cast(str, c).split(':')[-1]} {s:.0%}" for c, s in mix.head(3).items())
         print(f"  {ticker:7s} {len(group):6d} {len(v):7d}  {parts}")
     hits = valued[valued["source_concept"].astype(str).str.endswith(":LongTermDebt")]
-    print(f"\n  rows resolved on the CONTAMINATED concept `us-gaap:LongTermDebt`: "
-          f"{len(hits):,} across {hits['ticker'].nunique()} ticker(s)")
+    print(f"\n  rows resolved on the CONTAMINATED concept `us-gaap:LongTermDebt`: {len(hits):,} across {hits['ticker'].nunique()} ticker(s)")
     if len(hits):
-        print("    " + ", ".join(f"{t}({n})" for t, n
-                                 in hits.groupby("ticker").size().items()))
+        print("    " + ", ".join(f"{t}({n})" for t, n in hits.groupby("ticker").size().items()))
     print("\n  tickers with NO longTermDebt value at all (the periodicity/absence question):")
     never = sorted(set(frame["ticker"]) - set(valued["ticker"]))
     print(f"    {never or 'none'}")
@@ -339,14 +334,12 @@ def section_axp(strict: pd.DataFrame) -> None:
             print(f"           {n:4d}  {concept}{mark}")
         # Are both Rule 9-04 legs actually reported by this filer, anywhere?
         every = strict[strict["ticker"] == ticker]
-        legs = {leg: int(every["source_concept"].astype(str)
-                         .str.endswith(f":{leg}").sum()) for leg in NINE_OH_FOUR_LEGS}
+        legs = {leg: int(every["source_concept"].astype(str).str.endswith(f":{leg}").sum()) for leg in NINE_OH_FOUR_LEGS}
         print(f"           Rule 9-04 legs used as a source_concept anywhere: {legs}")
     print("\n  NOTE: a leg used as a `roll_up` child shows up in `roll_up_children`, not in")
     print("  `source_concept`, so a zero above is not proof of absence -- check the bank")
     print("  regime's roll_up rows below.")
-    bank_sum = strict[(strict["field"] == "totalRevenue")
-                      & (strict["resolution_method"] == "linkbase_sum")]
+    bank_sum = strict[(strict["field"] == "totalRevenue") & (strict["resolution_method"] == "linkbase_sum")]
     if not bank_sum.empty:
         print("\n  totalRevenue rows resolved by linkbase_sum (the two-leg bank roll-up):")
         for ticker, group in bank_sum.groupby("ticker"):
@@ -373,7 +366,7 @@ def section_ambiguous_duration(strict):
         per_ticker = []
         try:
             q, _ttm, _inst = build_periods(group, catalogue, refusals=per_ticker)
-        except Exception as exc:                                        # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             print(f"  {ticker:6s} build_periods FAILED {type(exc).__name__}: {exc}")
             continue
         refusals.extend({**r, "ticker": ticker} for r in per_ticker)
@@ -383,10 +376,9 @@ def section_ambiguous_duration(strict):
     print(f"  total D1b refusals: {len(frame)}")
     if not frame.empty:
         for r in frame.sort_values(["ticker", "field", "period_end"]).itertuples():
-            print(f"    {r.ticker:6s} {r.field:16s} {str(r.period_end)[:10]}  "
-                  f"{float(r.value) / 1e6:>12,.1f}M  known_from {str(r.known_from)[:10]}")
-        print(f"\n  distinct (ticker, field, period): "
-              f"{frame.groupby(['ticker', 'field', 'period_end']).ngroups}")
+            r = cast(Any, r)
+            print(f"    {r.ticker:6s} {r.field:16s} {str(r.period_end)[:10]}  {float(r.value) / 1e6:>12,.1f}M  known_from {str(r.known_from)[:10]}")
+        print(f"\n  distinct (ticker, field, period): {frame.groupby(['ticker', 'field', 'period_end']).ngroups}")
         print(f"  tickers affected: {sorted(frame['ticker'].unique())}")
     if not quarters:
         return pd.DataFrame()
@@ -395,6 +387,7 @@ def section_ambiguous_duration(strict):
     for basis, n in allq["basis"].value_counts().items():
         print(f"    {basis:20s} {n:8,d}  {n / len(allq):6.2%}")
     return allq
+
 
 def section_form_coverage(strict):
     """Is the 10-Q half of the ledger actually there, and does any field carry a DIFFERENT
@@ -413,8 +406,7 @@ def section_form_coverage(strict):
     print(f"  {'form':10s} {'filings':>8s} {'rows':>9s} {'valued':>9s}")
     for form, group in strict.groupby("form", sort=True):
         valued = int(group["value"].notna().sum())
-        print(f"  {str(form):10s} {group['accession_number'].nunique():8,d} "
-              f"{len(group):9,d} {valued:9,d}")
+        print(f"  {str(form):10s} {group['accession_number'].nunique():8,d} {len(group):9,d} {valued:9,d}")
 
     valued = strict[strict["value"].notna()].copy()
     valued["is_q"] = valued["form"].astype(str).str.startswith("10-Q")
@@ -433,14 +425,19 @@ def section_form_coverage(strict):
             continue
         k = set(group.loc[~group["is_q"], "resolution_method"])
         q = set(group.loc[group["is_q"], "resolution_method"])
-        rows.append({"ticker": ticker, "field": field,
-                     "in_10k": f"{','.join(sorted(k))} {sorted(k_c)}",
-                     "in_10q": f"{','.join(sorted(q))} {sorted(q_c)}",
-                     "n_10k": int((~group["is_q"]).sum()), "n_10q": int(group["is_q"].sum())})
+        rows.append(
+            {
+                "ticker": ticker,
+                "field": field,
+                "in_10k": f"{','.join(sorted(k))} {sorted(k_c)}",
+                "in_10q": f"{','.join(sorted(q))} {sorted(q_c)}",
+                "n_10k": int((~group["is_q"]).sum()),
+                "n_10q": int(group["is_q"].sum()),
+            }
+        )
     print(f"\n  (ticker, field) pairs whose 10-K and 10-Q CONCEPTS are disjoint: {len(rows)}")
     for r in sorted(rows, key=lambda d: -(d["n_10k"] + d["n_10q"]))[:25]:
-        print(f"    {r['ticker']:6s} {r['field']:20s} 10-K[{r['n_10k']:4d}] {r['in_10k']:19s}"
-              f" | 10-Q[{r['n_10q']:4d}] {r['in_10q']}")
+        print(f"    {r['ticker']:6s} {r['field']:20s} 10-K[{r['n_10k']:4d}] {r['in_10k']:19s} | 10-Q[{r['n_10q']:4d}] {r['in_10q']}")
     if rows:
         print("  Each of these must be named: a disjoint route set means the FORM chose the")
         print("  basis, which is a step the growth features would carry as signal.")
@@ -490,8 +487,7 @@ def section_annual_footing(strict, quarters):
     # that reason.
     annual = strict[(strict["duration_type"] == "annual") & strict["value"].notna()].copy()
     annual["filing_date"] = pd.to_datetime(annual["filing_date"])
-    annual = (annual.sort_values("filing_date")
-              .drop_duplicates(subset=["ticker", "field", "period_end"], keep="last"))
+    annual = annual.sort_values("filing_date").drop_duplicates(subset=["ticker", "field", "period_end"], keep="last")
 
     q = quarters[quarters["field"].isin(additive) & quarters["value"].notna()].copy()
     q["period_end"] = pd.to_datetime(q["period_end"])
@@ -511,73 +507,84 @@ def section_annual_footing(strict, quarters):
         summed = float(grp["value"].sum())
         scale = max(abs(reported), abs(summed))
         q4 = grp.sort_values("period_end").iloc[-1]
-        rows.append({"ticker": ticker, "field": field, "fiscal_year": year,
-                     "summed": summed, "reported": reported,
-                     "relative": abs(summed - reported) / scale if scale else 0.0,
-                     "q4_basis": q4["basis"],
-                     # A sum and an annual of equal magnitude and opposite sign is a SIGN
-                     # CONVENTION defect, not a footing failure, and pooling the two hides
-                     # both. Phase 5b's `sign_convention` owns this population.
-                     "sign_flip": (summed * reported < 0
-                                   and abs(abs(summed) - abs(reported)) <= 0.02 * scale),
-                     "independent": q4["basis"] not in DERIVED_Q4})
+        rows.append(
+            {
+                "ticker": ticker,
+                "field": field,
+                "fiscal_year": year,
+                "summed": summed,
+                "reported": reported,
+                "relative": abs(summed - reported) / scale if scale else 0.0,
+                "q4_basis": q4["basis"],
+                # A sum and an annual of equal magnitude and opposite sign is a SIGN
+                # CONVENTION defect, not a footing failure, and pooling the two hides
+                # both. Phase 5b's `sign_convention` owns this population.
+                "sign_flip": (summed * reported < 0 and abs(abs(summed) - abs(reported)) <= 0.02 * scale),
+                "independent": q4["basis"] not in DERIVED_Q4,
+            }
+        )
     frame = pd.DataFrame(rows)
     if frame.empty:
         print("  no complete four-quarter years at all -- Phase 4 is NOT done")
         return frame
-    print(f"  complete four-quarter years found: {len(frame):,} "
-          f"across {frame['ticker'].nunique()} tickers and {frame['field'].nunique()} fields")
+    print(f"  complete four-quarter years found: {len(frame):,} across {frame['ticker'].nunique()} tickers and {frame['field'].nunique()} fields")
 
     flips = frame[frame.sign_flip]
     if not flips.empty:
-        print(f"\nSIGN-CONVENTION cases excluded from the rates below: {len(flips)} "
-              f"(equal magnitude, opposite sign -- a different defect class)")
+        print(f"\nSIGN-CONVENTION cases excluded from the rates below: {len(flips)} (equal magnitude, opposite sign -- a different defect class)")
         for r in flips.sort_values(["ticker", "field"]).itertuples():
-            print(f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  "
-                  f"summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M")
+            r = cast(Any, r)
+            print(f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M")
     frame = frame[~frame.sign_flip]
-    for label, sub in (("INDEPENDENT (Q4 as-reported by the filer)", frame[frame.independent]),
-                       ("tautological (Q4 derived from the identity)", frame[~frame.independent]),
-                       ("pooled", frame)):
+    for label, sub in (
+        ("INDEPENDENT (Q4 as-reported by the filer)", frame[frame.independent]),
+        ("tautological (Q4 derived from the identity)", frame[~frame.independent]),
+        ("pooled", frame),
+    ):
         if sub.empty:
             print(f"\n  {label}: 0 points")
             continue
         r = sub["relative"]
         print(f"\n  {label}: {len(sub):,} points")
-        print(f"    exact to the dollar {(r < 1e-9).mean():7.2%} | within 0.1% "
-              f"{(r < 0.001).mean():7.2%} | within 0.5% {(r < 0.005).mean():7.2%} | "
-              f"within 1% {(r < 0.01).mean():7.2%} | within 2% {(r < 0.02).mean():7.2%}")
+        print(
+            f"    exact to the dollar {(r < 1e-9).mean():7.2%} | within 0.1% "
+            f"{(r < 0.001).mean():7.2%} | within 0.5% {(r < 0.005).mean():7.2%} | "
+            f"within 1% {(r < 0.01).mean():7.2%} | within 2% {(r < 0.02).mean():7.2%}"
+        )
         print(f"    median error {r.median():.6%}   worst {r.max():.2%}")
 
     independent = frame[frame.independent]
     if not independent.empty:
         print("\n  INDEPENDENT set, per field (the three weakest fields on every other")
         print("  measure are totalRevenue, operatingIncome and incomeTaxExpense):")
-        per_field = (independent.groupby("field")["relative"]
-                     .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(),
-                          median="median", worst="max")
-                     .sort_values("within_2pc"))
+        per_field = (
+            independent.groupby("field")["relative"]
+            .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(), median="median", worst="max")
+            .pipe(lambda result: cast(Any, result).sort_values("within_2pc"))
+        )
         print(f"    {'field':24s} {'n':>5s} {'within 2%':>10s} {'median':>10s} {'worst':>9s}")
         for field, row in per_field.iterrows():
-            print(f"    {field:24s} {int(row['n']):5d} {row['within_2pc']:10.2%} "
-                  f"{row['median']:10.4%} {row['worst']:9.2%}")
+            print(f"    {field:24s} {int(row['n']):5d} {row['within_2pc']:10.2%} {row['median']:10.4%} {row['worst']:9.2%}")
 
         print("\n  INDEPENDENT set, per ticker, worst first:")
-        per_ticker = (independent.groupby("ticker")["relative"]
-                      .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(), worst="max")
-                      .sort_values(["within_2pc", "worst"], ascending=[True, False]))
+        per_ticker = (
+            independent.groupby("ticker")["relative"]
+            .agg(n="size", within_2pc=lambda s: (s < 0.02).mean(), worst="max")
+            .pipe(lambda result: cast(Any, result).sort_values(["within_2pc", "worst"], ascending=[True, False]))
+        )
         for ticker, row in per_ticker.head(15).iterrows():
-            print(f"    {ticker:6s} n={int(row['n']):4d}  within 2% {row['within_2pc']:7.2%}"
-                  f"  worst {row['worst']:8.2%}")
+            print(f"    {ticker:6s} n={int(row['n']):4d}  within 2% {row['within_2pc']:7.2%}  worst {row['worst']:8.2%}")
 
         print("\n  every INDEPENDENT failure beyond 2%, named -- each needs a mechanism:")
-        bad = independent[independent["relative"] > 0.02].sort_values("relative",
-                                                                     ascending=False)
+        bad = independent[independent["relative"] > 0.02].sort_values("relative", ascending=False)
         print(f"    {len(bad)} of {len(independent)} ({len(bad) / len(independent):.2%})")
         for r in bad.head(40).itertuples():
-            print(f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  "
-                  f"summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M  "
-                  f"{r.relative:8.2%}  q4={r.q4_basis}")
+            r = cast(Any, r)
+            print(
+                f"    {r.ticker:6s} {r.field:20s} FY{int(r.fiscal_year)}  "
+                f"summed {r.summed / 1e6:>13,.1f}M  filer {r.reported / 1e6:>13,.1f}M  "
+                f"{r.relative:8.2%}  q4={r.q4_basis}"
+            )
     print("\n  A restatement is the EXPECTED cause of a residual here and is not a defect:")
     print("  we compare against the FIRST-FILED annual, and 4.53% of annual windows move")
     print("  more than 2% between a filer's first and last filing of the same year.")
@@ -588,25 +595,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--in", dest="in_dir", default=str(DEFAULT_IN))
     parser.add_argument("-c", "--config-dir", default="./configs")
-    parser.add_argument("--roster", default="all",
-                        help="in_sample | out_of_sample | both | all (default: whatever "
-                             "ledgers exist)")
+    parser.add_argument("--roster", default="all", help="in_sample | out_of_sample | both | all (default: whatever ledgers exist)")
     args = parser.parse_args()
 
     tickers: set[str] | None = None
     if args.roster != "all":
-        path = (Path(args.config_dir) / FUNDAMENTALS_CATALOGUE_SUBDIR
-                / FUNDAMENTALS_ROSTERS_FILENAME)
+        path = Path(args.config_dir) / FUNDAMENTALS_CATALOGUE_SUBDIR / FUNDAMENTALS_ROSTERS_FILENAME
         blob = json.loads(path.read_text(encoding="utf-8"))
-        names = (["in_sample", "out_of_sample"] if args.roster == "both"
-                 else [args.roster])
+        names = ["in_sample", "out_of_sample"] if args.roster == "both" else [args.roster]
         tickers = {t for name in names for t in blob[name]}
 
     ledger = load_ledger(Path(args.in_dir), tickers)
     strict = ledger[ledger["prefer_structure"]]
-    print(f"ledger: {len(ledger):,} rows | {ledger['ticker'].nunique()} tickers | "
-          f"{ledger['accession_number'].nunique():,} filings | "
-          f"fiscal {int(ledger['fiscal_year'].min())}-{int(ledger['fiscal_year'].max())}")
+    print(
+        f"ledger: {len(ledger):,} rows | {ledger['ticker'].nunique()} tickers | "
+        f"{ledger['accession_number'].nunique():,} filings | "
+        f"fiscal {int(ledger['fiscal_year'].min())}-{int(ledger['fiscal_year'].max())}"
+    )
 
     section_route_mix(strict)
     both = section_before_after(ledger)

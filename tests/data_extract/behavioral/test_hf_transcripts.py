@@ -8,29 +8,44 @@ each row's verbatim `content` + speaker-segmented `structured_content` is parsed
 participants), so downstream sentiment features are source-agnostic. Tests the pure row->sections
 parser (no download / DB) + a best-effort live check on real dataset rows.
 """
+
 from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
+from src.data_store.schema import Tables
+from tests.conftest import FakeStore
 
 
 def _synthetic_row():
-    prepared = ("Jane Cook, CEO: Thank you and good afternoon everyone. We delivered a record "
-                "quarter with revenue up 12% and expanding margins across every segment. " * 4)
-    cfo = ("John Roe, CFO: Turning to the financials, operating cash flow reached a new high and "
-           "we returned capital to shareholders through buybacks and dividends. " * 4)
-    qa = ("Sam Analyst: Congratulations on the quarter. Can you talk about demand trends into next "
-          "year and the margin outlook? Jane Cook, CEO: Sure, demand remains strong and we expect "
-          "continued operating leverage. " * 4)
-    content = ("Operator: Good afternoon, and welcome to the Acme Corp Fourth Quarter earnings "
-               "conference call. All lines are muted.\n"
-               f"{prepared}\n{cfo}\n"
-               "Operator: We will now begin the question-and-answer session. Our first question "
-               "comes from Sam Analyst.\n"
-               f"{qa}")
+    prepared = (
+        "Jane Cook, CEO: Thank you and good afternoon everyone. We delivered a record "
+        "quarter with revenue up 12% and expanding margins across every segment. " * 4
+    )
+    cfo = (
+        "John Roe, CFO: Turning to the financials, operating cash flow reached a new high and "
+        "we returned capital to shareholders through buybacks and dividends. " * 4
+    )
+    qa = (
+        "Sam Analyst: Congratulations on the quarter. Can you talk about demand trends into next "
+        "year and the margin outlook? Jane Cook, CEO: Sure, demand remains strong and we expect "
+        "continued operating leverage. " * 4
+    )
+    content = (
+        "Operator: Good afternoon, and welcome to the Acme Corp Fourth Quarter earnings "
+        "conference call. All lines are muted.\n"
+        f"{prepared}\n{cfo}\n"
+        "Operator: We will now begin the question-and-answer session. Our first question "
+        "comes from Sam Analyst.\n"
+        f"{qa}"
+    )
     structured = [
         {"speaker": "Operator", "text": "Good afternoon, and welcome..."},
         {"speaker": "Jane Cook, CEO", "text": prepared},
@@ -55,34 +70,37 @@ def test_row_sections_and_participants():
     assert out["participants"] == "Jane Cook, CEO\nJohn Roe, CFO\nSam Analyst"
 
     # participants helper directly
-    assert hf._participants_text([{"speaker": "Operator", "text": "x"},
-                                  {"speaker": "E - Bob", "text": "y"},
-                                  {"speaker": "Bob", "text": "z"}]) == "Bob"
+    assert (
+        hf._participants_text([{"speaker": "Operator", "text": "x"}, {"speaker": "E - Bob", "text": "y"}, {"speaker": "Bob", "text": "z"}]) == "Bob"
+    )
     # content too short + no structured -> empty (skipped downstream)
     assert hf.row_sections("tiny", None) == {}
 
     print("\n=== SANITY CHECK: HF transcript row -> sections ===")
     print(f"  sections: {sorted(out)}  participants={out['participants'].split(chr(10))}")
-    print(f"  prepared_remarks {len(out['prepared_remarks'])} chars (mgmt only), "
-          f"qa {len(out['qa'])} chars (hand-off + analyst)")
-    print("  full always kept; split via the shared operator Q&A-marker; 'A - ' role prefix "
-          "stripped, Operator excluded from participants. Validated.")
+    print(f"  prepared_remarks {len(out['prepared_remarks'])} chars (mgmt only), qa {len(out['qa'])} chars (hand-off + analyst)")
+    print(
+        "  full always kept; split via the shared operator Q&A-marker; 'A - ' role prefix stripped, Operator excluded from participants. Validated."
+    )
 
 
 def test_row_sections_on_real_dataset_rows():
     """Best-effort: parse a few REAL rows from the live dataset (skips if HF is unreachable)."""
+
     def fetch(url):
         try:
             import requests
+
             return requests.get(url, timeout=40).text
         except Exception:
             try:
                 from curl_cffi import requests as cr
+
                 return cr.get(url, timeout=40, impersonate="chrome", verify=False).text
             except Exception:
                 return None
-    body = fetch("https://datasets-server.huggingface.co/rows?dataset=kurry/"
-                 "sp500_earnings_transcripts&config=default&split=train&offset=0&length=6")
+
+    body = fetch("https://datasets-server.huggingface.co/rows?dataset=kurry/sp500_earnings_transcripts&config=default&split=train&offset=0&length=6")
     if not body:
         pytest.skip("HF datasets-server unreachable")
     try:
@@ -100,16 +118,17 @@ def test_row_sections_on_real_dataset_rows():
             n_split += 1
     assert n_full == len(rows), f"only {n_full}/{len(rows)} real rows produced a `full` section"
     print("\n=== SANITY CHECK: HF row->sections on REAL dataset rows ===")
-    print(f"  {len(rows)} real transcripts: {n_full}/{len(rows)} have `full`, "
-          f"{n_split}/{len(rows)} split into prepared_remarks + qa.")
-    print("  CONCLUSION: real 2005-2025 dataset rows parse into the standard sections; the "
-          "backbone is source-compatible with the Motley Fool path. Validated.")
+    print(f"  {len(rows)} real transcripts: {n_full}/{len(rows)} have `full`, {n_split}/{len(rows)} split into prepared_remarks + qa.")
+    print(
+        "  CONCLUSION: real 2005-2025 dataset rows parse into the standard sections; the "
+        "backbone is source-compatible with the Motley Fool path. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Backbone-present short-circuit (the "0 new calls" stall fix)                  #
 # --------------------------------------------------------------------------- #
-def _ctx(minmax):
+def _ctx(minmax) -> Any:
     """A store whose `bounds` returns the given (min_quarter, max_quarter).
 
     Was a fake ENGINE returning a fake result row -- only meaningful while the check issued
@@ -130,22 +149,68 @@ def test_hf_backbone_presence_detection():
     assert hf._hf_backbone_already_ingested(_ctx((None, None)))[0] is False
     print("\n=== SANITY CHECK: HF backbone presence detection ===")
     print(f"  thresholds: min <= {hf.HF_BACKBONE_EARLY_QUARTER}, max >= {hf.HF_BACKBONE_LATE_QUARTER}")
-    print("  2005Q1..2026Q2 -> present; 2023Q2..2026Q4 -> absent; 2005Q1..2018Q4 -> absent; "
-          "empty -> absent. Validated.")
+    print("  2005Q1..2026Q2 -> present; 2023Q2..2026Q4 -> absent; 2005Q1..2018Q4 -> absent; empty -> absent. Validated.")
 
 
 def test_hf_ingest_short_circuits_when_present(monkeypatch):
     # when the backbone is present, ingest must return 0 WITHOUT downloading/scanning the parquet
     def boom(*a, **k):
         raise AssertionError("download_hf_parquet must NOT be called when backbone is present")
+
     monkeypatch.setattr(hf, "download_hf_parquet", boom)
 
     saved = hf.ingest_hf_transcripts(_ctx(("2005Q1", "2026Q2")))
     assert saved == 0
 
     print("\n=== SANITY CHECK: HF ingest short-circuits on full backbone ===")
-    print("  table spans 2005Q1..2026Q2 -> ingest returned 0 and NEVER touched the 1.8GB parquet "
-          "(download_hf_parquet not called). No more multi-minute '0 new calls' stall. Validated.")
+    print(
+        "  table spans 2005Q1..2026Q2 -> ingest returned 0 and NEVER touched the 1.8GB parquet "
+        "(download_hf_parquet not called). No more multi-minute '0 new calls' stall. Validated."
+    )
+
+
+def test_hf_force_replaces_existing_call_and_invalidates_derivatives(monkeypatch) -> None:
+    content, structured = _synthetic_row()
+
+    class _Batch:
+        def to_pylist(self):
+            return [
+                {
+                    "symbol": "AAA",
+                    "quarter": 1,
+                    "year": 2024,
+                    "date": "2024-05-01",
+                    "content": content,
+                    "structured_content": structured,
+                }
+            ]
+
+    class _Parquet:
+        def iter_batches(self, **_kwargs):
+            return [_Batch()]
+
+    monkeypatch.setattr(hf, "download_hf_parquet", lambda context: Path("unused.parquet"))
+    monkeypatch.setattr(hf.pq, "ParquetFile", lambda path: _Parquet())
+    old = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    sections = pd.DataFrame([{"ticker": "AAA", "quarter": "2024Q1", "tag": tag, "text": old} for tag in ("prepared_remarks", "qa")])
+    stale = pd.DataFrame({"ticker": ["AAA"], "quarter": ["2024Q1"], "tag": ["qa"]})
+    store = FakeStore(
+        {
+            Tables.sp500_tickers: pd.DataFrame({"ticker": ["AAA"]}),
+            Tables.earnings_call_sections: sections,
+            Tables.earnings_call_sentiment: stale,
+            Tables.earning_calls_embedding: stale.assign(section="qa", turn_index=0),
+        }
+    )
+    context = types.SimpleNamespace(store=store)
+
+    saved = hf.ingest_hf_transcripts(context, force=True)
+
+    assert saved > 0
+    assert store.t[Tables.earnings_call_sentiment.name].empty
+    assert store.t[Tables.earning_calls_embedding.name].empty
+    print("\n=== SANITY CHECK: forced HF replacement ===")
+    print("  force=True re-ingests an existing call and clears its stale sentiment and embedding rows. Validated.")
 
 
 if __name__ == "__main__":

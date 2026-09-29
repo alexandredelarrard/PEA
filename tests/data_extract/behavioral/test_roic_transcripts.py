@@ -10,12 +10,14 @@ Priority: HF backbone -> Roic AI (recent gap) -> Motley Fool (last resort). Thes
   * a best-effort LIVE check that FRT / PM / MTD all have their recent quarters on Roic.
 Transport is mocked; the live test skips without a ROIC API key.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 import types
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -28,7 +30,7 @@ from src.data_extract.utils.behavioral.utils_missing_quarters import (
 )
 
 
-def _ctx(saved: list):
+def _ctx(saved: list) -> Any:
     store = types.SimpleNamespace(save=lambda t, df: (saved.append(df), len(df))[1])
     return types.SimpleNamespace(store=store, log=logging.getLogger("roic-test"))
 
@@ -36,16 +38,15 @@ def _ctx(saved: list):
 def test_roic_fills_missing_covered_only(monkeypatch):
     monkeypatch.setenv("ROIC_API_KEY", "test-key")
     # FRT is missing 2025Q2/Q3 and Roic HAS both; ZZZ is missing 2025Q2 but Roic has NOTHING
-    monkeypatch.setattr(roic, "missing_quarters_by_ticker",
-                        lambda ctx, tickers=None, since="2025-01-01": {
-                            "FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]})
+    monkeypatch.setattr(
+        roic, "missing_quarters_by_ticker", lambda ctx, tickers=None, since="2025-01-01": {"FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]}
+    )
 
     def _fake_list(ticker, apikey):
         return {"2025Q2": "2025-05-01", "2025Q3": "2025-08-01"} if ticker == "FRT" else {}
 
     def _fake_tx(ticker, quarter, apikey):
-        secs = {"full": "operator " * 80, "prepared_remarks": "ceo remarks " * 80,
-                "qa": "analyst question ceo answer " * 40}
+        secs = {"full": "operator " * 80, "prepared_remarks": "ceo remarks " * 80, "qa": "analyst question ceo answer " * 40}
         return secs, "2025-05-01"
 
     monkeypatch.setattr(roic, "roic_list_quarters", _fake_list)
@@ -57,14 +58,15 @@ def test_roic_fills_missing_covered_only(monkeypatch):
     assert result.saved > 0 and saved, "Roic should have saved FRT's covered quarters"
     rows = pd.concat(saved, ignore_index=True)
     got = set(map(tuple, rows[["ticker", "quarter"]].drop_duplicates().to_numpy()))
-    assert got == {("FRT", "2025Q2"), ("FRT", "2025Q3")}, got     # ZZZ left for fool
+    assert got == {("FRT", "2025Q2"), ("FRT", "2025Q3")}, got  # ZZZ left for fool
     assert set(rows["tag"]).issubset({"full", "prepared_remarks", "qa", "participants"})
     # what it FILLED is reported back, so the caller can subtract it from the shared gap
     assert result.filled == {"FRT": {"2025Q2", "2025Q3"}}, result.filled
 
     print("\n=== SANITY CHECK: Roic fills missing (covered) quarters ===")
-    print(f"  FRT missing 2025Q2/Q3 & on Roic -> saved {sorted(got)}; "
-          "ZZZ missing but NOT on Roic -> nothing saved (falls through to fool). Validated.")
+    print(
+        f"  FRT missing 2025Q2/Q3 & on Roic -> saved {sorted(got)}; ZZZ missing but NOT on Roic -> nothing saved (falls through to fool). Validated."
+    )
 
 
 def test_shared_gap_is_computed_once_and_handed_down(monkeypatch):
@@ -81,10 +83,13 @@ def test_shared_gap_is_computed_once_and_handed_down(monkeypatch):
 
     monkeypatch.setattr(roic, "missing_quarters_by_ticker", _must_not_be_called)
     # Roic covers FRT's Q2 only; ZZZ not at all
-    monkeypatch.setattr(roic, "roic_list_quarters",
-                        lambda t, k: {"2025Q2": "2025-05-01"} if t == "FRT" else {})
-    monkeypatch.setattr(roic, "roic_transcript_sections",
-                        lambda t, q, k: ({"full": "operator " * 80}, "2025-05-01"))
+    monkeypatch.setattr(roic, "roic_list_quarters", lambda t, k: {"2025Q2": "2025-05-01"} if t == "FRT" else {})
+    useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    monkeypatch.setattr(
+        roic,
+        "roic_transcript_sections",
+        lambda t, q, k: ({"prepared_remarks": useful, "qa": useful}, "2025-05-01"),
+    )
 
     missing = {"FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]}
     result = roic.fetch_roic_transcripts(_ctx([]), missing=missing, pause=0.0)
@@ -113,15 +118,31 @@ def test_no_key_is_noop(monkeypatch):
 
 def test_db_covered_quarter_excluded_from_fool_gap():
     """Once Roic writes a quarter to the DB, the SHARED gap logic drops it -> fool won't refetch it."""
-    end = _quarter_index(2026, 2)              # latest expected
-    floor = _quarter_index(2025, 1)            # gap floor (no HF for this name)
-    have_db = {"FRT": {"2025Q2"}}              # Roic already saved 2025Q2
-    miss = _missing_for("FRT", hf_latest={}, floor_idx=floor, end_idx=end,
-                        cache=Path("/does/not/exist"), have_db=have_db, have_json={})
+    end = _quarter_index(2026, 2)  # latest expected
+    floor = _quarter_index(2025, 1)  # gap floor (no HF for this name)
+    have_db = {"FRT": {"2025Q2"}}  # Roic already saved 2025Q2
+    miss = _missing_for("FRT", hf_latest={}, floor_idx=floor, end_idx=end, cache=Path("/does/not/exist"), have_db=have_db)
     assert "2025Q2" not in miss, "a DB-covered (Roic) quarter must NOT be in the fool gap"
     assert "2025Q1" in miss, "an uncovered quarter stays in the gap"
     print("\n=== SANITY CHECK: Roic-covered quarter excluded from fool gap ===")
     print(f"  DB has FRT 2025Q2 -> fool gap = {sorted(miss)} (2025Q2 dropped, 2025Q1 kept). Validated.")
+
+
+def test_malformed_db_quarter_before_hf_frontier_is_retried() -> None:
+    floor = _quarter_index(2025, 1)
+    end = _quarter_index(2025, 2)
+    missing = _missing_for(
+        "FRT",
+        hf_latest={"FRT": (2025, 2)},
+        floor_idx=floor,
+        end_idx=end,
+        cache=Path("/does/not/exist"),
+        have_db={},
+        malformed_db={"FRT": {"2024Q4"}},
+    )
+    assert missing == {"2024Q4"}
+    print("\n=== SANITY CHECK: malformed pre-frontier call retry ===")
+    print("  malformed 2024Q4 remains in the ROIC->Fool gap even behind a 2025Q2 HF frontier. Validated.")
 
 
 @pytest.mark.skipif(roic._api_key() is None, reason="no ROIC_API_KEY -> live Roic check skipped")
@@ -129,6 +150,7 @@ def test_roic_live_frt_pm_mtd():
     """Best-effort LIVE check: FRT, PM, MTD all have recent (2025+) quarters on Roic AI, and a
     transcript fetch parses into sections. Paced for the 5 req/min free tier."""
     key = roic._api_key()
+    assert key is not None
     coverage = {}
     for t in ["FRT", "PM", "MTD"]:
         avail = roic.roic_list_quarters(t, key)
@@ -141,7 +163,7 @@ def test_roic_live_frt_pm_mtd():
         if not recent and t == "FRT":
             pytest.skip("Roic unreachable (empty response for FRT) -> live check skipped")
         assert recent, f"{t}: Roic returned no 2025+ quarters"
-        time.sleep(13)                                     # respect 5 req/min
+        time.sleep(13)  # respect 5 req/min
     # fetch + parse one recent transcript end-to-end
     q = coverage["FRT"][-1]
     sections, as_of = roic.roic_transcript_sections("FRT", q, key)
@@ -150,10 +172,10 @@ def test_roic_live_frt_pm_mtd():
     print("\n=== SANITY CHECK: Roic LIVE coverage FRT/PM/MTD ===")
     for t, qs in coverage.items():
         print(f"  {t}: {qs}")
-    print(f"  FRT {q} parsed sections: {sorted(sections)} (as_of {as_of}). "
-          "Roic covers these names' recent quarters (fool has none). Validated.")
+    print(f"  FRT {q} parsed sections: {sorted(sections)} (as_of {as_of}). Roic covers these names' recent quarters (fool has none). Validated.")
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))

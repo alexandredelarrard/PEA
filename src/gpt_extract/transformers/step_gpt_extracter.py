@@ -8,12 +8,14 @@ lands in -- belongs to the caller. This class owns only the parts every LLM extr
 shares: configuration, API keys, provider clients, the `.md` prompt templates and the usage
 accounting. A new extraction action is two `.md` files and a schema class, not a new client.
 """
+
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from threading import Lock
-from typing import Any, Mapping, Sequence, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -21,7 +23,10 @@ from pydantic import BaseModel
 
 from src.context import Context
 from src.gpt_extract.utils.embeddings import (
-    EMBEDDING_BATCH_SIZE, EMBEDDING_MAX_CHARS, EMBEDDING_MODEL, embed_texts,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_CHARS,
+    EMBEDDING_MODEL,
+    embed_texts,
 )
 from src.gpt_extract.utils.providers import GeminiProvider, OpenAIProvider, _Provider
 from src.gpt_extract.utils.usage import UsageTracker
@@ -51,9 +56,9 @@ _PROVIDER_CLASSES: dict[str, type] = {
 }
 
 
-def with_gpt_overrides(config: DictConfig, action: str, model: str | None = None,
-                       max_chars: int | None = None,
-                       cache: bool | None = None) -> DictConfig:
+def with_gpt_overrides(
+    config: DictConfig, action: str, model: str | None = None, max_chars: int | None = None, cache: bool | None = None
+) -> DictConfig:
     """`config` with per-call overrides folded into its `gpt` branch.
 
     A caller pins a model or a budget for research without editing `configs/gpt.yml`, and
@@ -69,7 +74,7 @@ def with_gpt_overrides(config: DictConfig, action: str, model: str | None = None
         overrides["cache"] = cache
     if not overrides:
         return config
-    return OmegaConf.merge(config, OmegaConf.create({"gpt": overrides}))
+    return cast(DictConfig, OmegaConf.merge(config, OmegaConf.create({"gpt": overrides})))
 
 
 class GptExtracter(Step):
@@ -86,8 +91,8 @@ class GptExtracter(Step):
         self.max_token = gpt.get("max_token")
         self.threads = int(gpt.get("threads") or 1)
         self.cache = bool(gpt.get("cache", True))
-        self.reasoning_models = set(OmegaConf.to_container(gpt.get("reasoning_models"))
-                                    if gpt.get("reasoning_models") is not None else [])
+        reasoning_models = OmegaConf.to_container(gpt.get("reasoning_models")) if gpt.get("reasoning_models") is not None else []
+        self.reasoning_models = set(cast(Sequence[str], reasoning_models))
         self.max_chars: Mapping[str, int] = gpt.get("max_chars") or {}
         self.embedding: Mapping[str, Any] = gpt.get("embedding") or {}
 
@@ -118,14 +123,13 @@ class GptExtracter(Step):
             raise FileNotFoundError(f"Provided path {path} is a directory, not a file")
         if not os.path.exists(path):
             raise FileNotFoundError(f"Missing prompt file {path}")
-        with open(path, "r", encoding="utf-8") as fp:
+        with open(path, encoding="utf-8") as fp:
             return fp.read()
 
     def read_prompts(self, action: str) -> tuple[str, str]:
         """`{action}_system_prompt.md` + `{action}_prompt.md`."""
         self.action = action
-        self.system_prompt = self.read_prompt_file(
-            self.prompt_path / f"{action}_system_prompt.md")
+        self.system_prompt = self.read_prompt_file(self.prompt_path / f"{action}_system_prompt.md")
         self.user_prompt = self.read_prompt_file(self.prompt_path / f"{action}_prompt.md")
         return self.system_prompt, self.user_prompt
 
@@ -139,8 +143,7 @@ class GptExtracter(Step):
         provider compiles the schema into a constrained decoder, so restating it in the
         prompt buys nothing and would add ~4,200 tokens per call on `Def14AExtract`.
         """
-        schema_note = (f"the `{schema.__name__}` schema, which the API enforces on the "
-                       "response" if schema is not None else "the requested schema")
+        schema_note = f"the `{schema.__name__}` schema, which the API enforces on the response" if schema is not None else "the requested schema"
         system = self.system_prompt.replace("{_format}", schema_note)
         user = self.user_prompt.replace("{query}", payload)
         return system, user
@@ -148,7 +151,7 @@ class GptExtracter(Step):
     def truncate(self, payload: str, action: str | None = None) -> str:
         """Cut the payload to this action's `config.gpt.max_chars` budget."""
         limit = self.max_chars.get(action or self.action or "")
-        return payload[:int(limit)] if limit else payload
+        return payload[: int(limit)] if limit else payload
 
     # -------------------------------------------------------------------- keys --- #
 
@@ -173,8 +176,7 @@ class GptExtracter(Step):
     def available_methodes(self) -> list[str]:
         """The providers that actually have a usable key, so a run can degrade to one
         provider instead of raising."""
-        return [m for m in self.llm_model
-                if m in _KEYLESS or self.api_keys.get(m)]
+        return [m for m in self.llm_model if m in _KEYLESS or self.api_keys.get(m)]
 
     def _require_key(self, methode: str) -> None:
         """Raise unless THIS provider has a key.
@@ -184,7 +186,7 @@ class GptExtracter(Step):
         nothing.
         """
         if methode not in _KEYLESS and not self.api_keys.get(methode):
-            raise EnvironmentError(
+            raise OSError(
                 f"No API key for provider '{methode}'. Add one to the .env file "
                 f"(any variable whose name contains {' or '.join(_KEY_PATTERNS.get(methode, ()))})."
             )
@@ -199,8 +201,7 @@ class GptExtracter(Step):
             self.api_keys_index[methode] = (index + 1) % len(keys)
         return index
 
-    def initialize_client(self, methode: str | None = None,
-                          key_index: int | None = None) -> _Provider:
+    def initialize_client(self, methode: str | None = None, key_index: int | None = None) -> _Provider:
         """One provider bound to one API key.
 
         `key_index` is USED, not merely computed: the version this replaces advanced a
@@ -210,8 +211,7 @@ class GptExtracter(Step):
         methode = methode or self.default_api
         if methode not in _PROVIDER_CLASSES:
             raise ValueError(
-                f"No adapter for provider '{methode}'. Implement `_Provider` and register "
-                f"it; known providers are {sorted(_PROVIDER_CLASSES)}."
+                f"No adapter for provider '{methode}'. Implement `_Provider` and register it; known providers are {sorted(_PROVIDER_CLASSES)}."
             )
         self._require_key(methode)
 
@@ -231,14 +231,12 @@ class GptExtracter(Step):
             reasoning=model in self.reasoning_models,
             base_url=_LOCAL_BASE_URL if methode == "local" else None,
         )
-        self._log.info("initialized client=%s model=%s key=%d/%d",
-                       methode, model, key_index + 1, max(len(keys), 1))
+        self._log.info("initialized client=%s model=%s key=%d/%d", methode, model, key_index + 1, max(len(keys), 1))
         return provider
 
     # ----------------------------------------------------------------- extract --- #
 
-    def extract(self, schema: type[T], payload: str, provider: _Provider | None = None,
-                action: str | None = None) -> T:
+    def extract(self, schema: type[T], payload: str, provider: _Provider | None = None, action: str | None = None) -> T:
         """Fill `schema` from `payload`. The single-shot path -- no queues, no threads."""
         provider = provider or self.initialize_client()
         system, user = self.build_prompt(self.truncate(payload, action), schema)

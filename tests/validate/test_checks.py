@@ -16,11 +16,12 @@ store facade under test is the production one.
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.data_store.schema import Tables
@@ -52,12 +53,13 @@ class _Ctx:
         self.store, self.config = store, config
 
 
-def _config(**defaults):
+def _config(**defaults: Any) -> DictConfig:
     """The REAL `configs/validate.yml`, with `defaults` overridden per test.
 
     Loading the shipped file is deliberate: it makes every one of these tests a check that
     the config still carries every key `TableSpec` requires."""
-    config = OmegaConf.create({"validate": OmegaConf.load("configs/validate.yml")["validate"], "data_extract": {"redundant_ticks": []}})
+    loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
+    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"], "data_extract": {"redundant_ticks": []}}))
     for key, value in defaults.items():
         config.validate.defaults[key] = value
     return config
@@ -84,7 +86,7 @@ def test_grain_finds_a_duplicated_declared_key(sqlite_store, capsys):
     # `save` upserts on the pk and would silently collapse the duplicate -- the whole point
     # is a table that HAS one, so it goes in as a raw append.
     doubled.to_sql("cube_part_momentum", sqlite_store.engine, index=False)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     result = check_grain(context, PART, config=context.config)
 
@@ -121,9 +123,9 @@ def test_coverage_files_the_hole_and_not_the_declared_exclusions(sqlite_store, c
 
     # AAA complete; BBB missing three sessions in the middle of its own span.
     panel = _panel(["AAA", "BBB"], f_x=lambda i, t: float(i))
-    holed = panel.drop(panel[(panel["ticker"] == "BBB") & panel["date"].isin(SESSIONS[20:23])].index)
+    holed = panel.drop(panel[(panel["ticker"] == "BBB") & panel["date"].isin(list(SESSIONS[20:23]))].index)
     sqlite_store.save(PART, holed)
-    context = _Ctx(sqlite_store, _config(universe_expected=2))
+    context: Any = _Ctx(sqlite_store, _config(universe_expected=2))
 
     result = check_coverage(context, PART, config=context.config)
 
@@ -163,10 +165,10 @@ def test_profile_finds_the_dead_constant_and_infinite_legs(sqlite_store, capsys)
         f_good=lambda i, t: float(i) + (0.5 if t == "BBB" else 0.0),
         f_dead=lambda i, t: None,
         f_const=lambda i, t: 1.0,
-        f_inf=lambda i, t: (np.inf if i == 3 else float(i)),
+        f_inf=lambda i, t: np.inf if i == 3 else float(i),
     )
     sqlite_store.save(PART, frame)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     result = check_profile(context, PART, config=context.config, group=2)
 
@@ -195,9 +197,9 @@ def test_profile_finds_the_dead_constant_and_infinite_legs(sqlite_store, capsys)
 # --------------------------------------------------------------------------------------- #
 def test_bounds_abstains_undeclared_and_names_the_worst_violation(sqlite_store, capsys):
     """Exit 3 with no declaration; with one, the count AND one (ticker, date, value)."""
-    frame = _panel(["AAA", "BBB"], f_pct=lambda i, t: (140.0 if (t == "BBB" and i == 11) else -3.0 if (t == "AAA" and i == 2) else float(i)))
+    frame = _panel(["AAA", "BBB"], f_pct=lambda i, t: 140.0 if (t == "BBB" and i == 11) else -3.0 if (t == "AAA" and i == 2) else float(i))
     sqlite_store.save(PART, frame)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     # 1. `cube_part_momentum` declares no bounds -> the check must refuse to answer.
     with pytest.raises(UndeclaredTableError) as undeclared:
@@ -249,19 +251,19 @@ def test_redundancy_matches_pandas_and_names_the_duplicated_leg(sqlite_store, ca
     frame.loc[frame.index[10:18], "f_free"] = np.nan
     frame.loc[frame.index[20:24], "f_x"] = np.nan
     sqlite_store.save(PART, frame)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     result = check_redundancy(context, PART, config=context.config, chunksize=17)  # many chunks, so the accumulation is exercised
 
     legs = ["f_copy", "f_free", "f_near", "f_x"]
-    reference = frame[legs].corr()
+    reference = cast(pd.DataFrame, frame[legs]).corr()
     got = {(p["a"], p["b"]): p for p in result.metrics["top_pairs"]}
     for (a, b), pair in got.items():
-        assert pair["r"] == pytest.approx(reference.loc[a, b], abs=1e-10), (a, b)
+        assert pair["r"] == pytest.approx(float(cast(Any, reference.loc[a, b])), abs=1e-10), (a, b)
 
     identical = [p for p in result.metrics["top_pairs"] if p["identical"]]
     assert len(identical) == 1 and {identical[0]["a"], identical[0]["b"]} == {"f_x", "f_copy"}
-    assert identical[0]["n"] == identical[0]["exact_equal"] == int(frame["f_x"].notna().sum())
+    assert identical[0]["n"] == identical[0]["exact_equal"] == int(cast(Any, frame["f_x"].notna().sum()))
     assert max(f.score for f in result.findings) == 10
     assert ("f_free", "f_x") not in got and ("f_x", "f_free") not in got
     with capsys.disabled():
@@ -289,7 +291,7 @@ def test_clip_finds_the_clip_mass_and_the_plateau(sqlite_store, capsys):
     sqlite_store.save(PART, frame)
     config = _config(min_tickers_xs=10)
     config.validate.tables[PART.name] = {"xs_suffix": "_xs", "peer_suffix": "_vs_peers", "clip_peer": 8.0}
-    context = _Ctx(sqlite_store, config)
+    context: Any = _Ctx(sqlite_store, config)
 
     result = check_clip(context, PART, config=config)
 
@@ -319,7 +321,7 @@ def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
     """The dead catalogued name scores higher than the undocumented live one, and both fire."""
     frame = _panel(["AAA"], f_live=lambda i, t: float(i), f_undocumented=lambda i, t: 1.0 * i)
     sqlite_store.save(PART, frame)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     path = tmp_path / "catalogue.json"
     path.write_text(
@@ -353,6 +355,46 @@ def test_catalogue_asserts_both_directions(sqlite_store, tmp_path, capsys):
         )
 
 
+def test_catalogue_uses_the_python_modules_split_function(sqlite_store, tmp_path):
+    frame = _panel(
+        ["AAA"],
+        f_live=lambda i, t: float(i),
+        f_live_vs_peers=lambda i, t: float(i),
+        f_live_vs_hist=lambda i, t: float(i),
+        f_live_xs=lambda i, t: float(i),
+        f_undocumented=lambda i, t: float(i),
+    )
+    sqlite_store.save(PART, frame)
+    context = _Ctx(sqlite_store, _config())
+    path = tmp_path / "catalogue.py"
+    path.write_text(
+        "CATALOGUES = {'cube_part_momentum': {'live': 'documented', "
+        "'missing': 'catalogued but absent'}}\n"
+        "def split(column):\n"
+        "    base = column[2:] if column.startswith('f_') else column\n"
+        "    suffix = next((s for s in ('_vs_peers', '_vs_hist', '_xs') "
+        "if base.endswith(s)), '')\n"
+        "    return (base[:-len(suffix)] if suffix else base), suffix\n",
+        encoding="utf-8",
+    )
+
+    result = check_catalogue(context, PART, config=context.config, catalogue=path)
+
+    assert result.metrics["catalogued_not_live"] == ["missing"]
+    assert result.metrics["live_not_catalogued"] == ["undocumented"]
+    assert result.metrics["both"] == 1
+    assert result.metrics["resolved_live_columns"] == {
+        "f_live": "live",
+        "f_live_vs_peers": "live",
+        "f_live_vs_hist": "live",
+        "f_live_xs": "live",
+        "f_undocumented": "undocumented",
+    }
+    print("\n=== SANITY CHECK: catalogue split contract ===")
+    print("  raw, peer, history, and cross-sectional live columns resolve to one parent; missing and")
+    print("  undocumented remain visible. CONCLUSION: a module-defined naming convention is applied.")
+
+
 # --------------------------------------------------------------------------------------- #
 # timeseries                                                                              #
 # --------------------------------------------------------------------------------------- #
@@ -373,7 +415,7 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
 
     frame = _panel(["AAA", "BBB"], f_hole=hole, f_jump=jump, f_flat=lambda i, t: 5.0)
     sqlite_store.save(PART, frame)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     result = check_timeseries(context, PART, config=context.config)
 
@@ -414,7 +456,7 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
     conditional = _panel(
         ["SMCI"],
         f_ic_sig_insider_age_days=lambda i, t: 200.0 if 6 <= i < 12 else 10.0,
-        f_ic_sig_insider_price_vs_buy=lambda i, t: (np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i)),
+        f_ic_sig_insider_price_vs_buy=lambda i, t: np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i),
         f_ic_shortvol_ratio_5d=lambda i, t: np.nan if 15 <= i < 21 else float(i),
         f_ic_shortvol_ratio_20d=lambda i, t: np.nan if 15 <= i < 24 else float(i),
     )
@@ -423,15 +465,15 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
         {
             "ticker": "SMCI",
             "fields": ["f_ic_shortvol_"],
-            "start": str(SESSIONS[15].date()),
-            "end": str(SESSIONS[20].date()),
+            "start": str(cast(pd.Timestamp, SESSIONS[15]).date()),
+            "end": str(cast(pd.Timestamp, SESSIONS[20]).date()),
             "reason": "known source suspension in this synthetic interval",
         },
         {
             "ticker": "SMCI",
             "fields": ["f_ic_shortvol_ratio_20d"],
-            "start": str(SESSIONS[15].date()),
-            "end": str(SESSIONS[23].date()),
+            "start": str(cast(pd.Timestamp, SESSIONS[15]).date()),
+            "end": str(cast(pd.Timestamp, SESSIONS[23]).date()),
             "reason": "20-session source gap plus warm-up after the source resumed",
         },
     ]
@@ -472,7 +514,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     evidence that the table is clean."""
     prices = _panel(["AAA", "BBB"], close=lambda i, t: 100.0 + i)[["date", "ticker", "close"]]
     prices.to_sql("prices", sqlite_store.engine, index=False)
-    last_session = SESSIONS[-1]
+    last_session = cast(pd.Timestamp, SESSIONS[-1])
 
     def label(offset):  # non-null until `offset` sessions from the end
         return lambda i, t: float(i) if i < len(SESSIONS) - offset else np.nan
@@ -485,7 +527,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
         ["AAA", "BBB"], f_ret_h30=label(5), f_ret_h60=label(10), f_ret_h90=label(15), f_vol_h30=label(5), f_vol_h60=label(10), f_vol_h90=label(15)
     )
     sqlite_store.save(Tables.cube_part_targets, clean)
-    context = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config())
 
     ok = check_leakage(context, Tables.cube_part_targets, config=context.config)
     ladder = [e for e in ok.metrics["horizon_ladder"] if e["family"] == "f_ret"]
@@ -494,7 +536,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
     assert [e["horizon_days"] for e in ladder] == [30, 60, 90]
     # 5 sessions apart, asserted in the CALENDAR days the ladder reports -- a business-day
     # grid makes those two different numbers, and the check must not silently mean sessions.
-    step = (SESSIONS[34] - SESSIONS[29]).days
+    step = (cast(pd.Timestamp, SESSIONS[34]) - cast(pd.Timestamp, SESSIONS[29])).days
     assert all(e["recedes_by"] == step for e in ladder[1:])
     assert all(e["days_behind_last_price"] > 0 for e in ladder)
     assert "pit_sources" in ok.reason, "cube_part_targets declares none -- say so, do not pass"

@@ -14,35 +14,34 @@ frame.
 Warm-up 1320 trading days: `seasonal_h*` reaches back `close.shift(252 * seasonal_years=5)`
 = 1260, which is the binding look-back in the whole cube.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import (COLUMNS_CHANGED,
-                                                         PART_REFRESH_TRADING_DAYS,
-                                                         plan_window, write_part)
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
 from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames, load_price_frames, load_trading_calendar,
+    PriceFrames,
+    load_price_frames,
+    load_trading_calendar,
 )
 from src.data_aggregate.utils.momentum.features import build_feature_panel
+from src.data_store.schema import Tables
 from src.utils.step import Step
 
 
 class StepCubeMomentum(Step):
-
     # `ret` is read from the part rather than recomputed: build_feature_panel used to derive
     # it internally from close, duplicating what the price step already persisted
     # BOTH price bases: `close_total` for every return-shaped feature, `close_split` for the
     # four that subtract or multiply an `open`/`high`/`low`/`volume` (all split-adjusted
     # only). See the basis table at the top of momentum/features.py.
-    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume",
-               "ret", "sector_ret", "level_factor")
+    _FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "level_factor")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -60,10 +59,14 @@ class StepCubeMomentum(Step):
         # built from the newest, least settled prices -- and a strictly-after append can never
         # revisit it. The live table stopped ON a date whose features were ranked over 45 of
         # 491 tickers, and only a `--full` rebuild would have cleared it.
-        window = plan_window(self._store, Tables.cube_part_momentum, full=full,
-                             warmup=self._warmup(),
-                             trading_index=load_trading_calendar(self._store),
-                             refresh=PART_REFRESH_TRADING_DAYS)
+        window = plan_window(
+            self._store,
+            Tables.cube_part_momentum,
+            full=full,
+            warmup=self._warmup(),
+            trading_index=load_trading_calendar(self._store),
+            refresh=PART_REFRESH_TRADING_DAYS,
+        )
         frames = self._load_frames(window.since)
         panel = self._price_panel(frames)
         del frames
@@ -76,30 +79,41 @@ class StepCubeMomentum(Step):
         return int(override) if override is not None else self._part.warmup_trading_days
 
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(
-            self._store, peers=load_peers_or_raise(self._context, self._config),
-            fields=self._FIELDS, since=since)
+        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=self._FIELDS, since=since)
 
     def _price_panel(self, frames: PriceFrames) -> pd.DataFrame:
         frames.require("close_split", "close_total", "open", "sector_ret", "ret")
+        assert frames.close_total is not None
+        assert frames.open is not None
+        assert frames.sector_ret is not None
         seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         # a SKIP here is not cosmetic: it means the register no longer matches this build's
         # `close_total`, so the window that would have been masked is being emitted fabricated.
-        self._log.info("Seam masks: %s of %s registered null_ret entries measured on "
-                       "close_total (%s ticker(s))",
-                       sum(len(v) for v in seams.values()), listed, len(seams))
+        self._log.info(
+            "Seam masks: %s of %s registered null_ret entries measured on close_total (%s ticker(s))",
+            sum(len(v) for v in seams.values()),
+            listed,
+            len(seams),
+        )
         panel = build_feature_panel(
-            frames.close_total, frames.open, frames.sector_ret,
+            frames.close_total,
+            frames.open,
+            frames.sector_ret,
             method=self._cfg.features.standardize_method,
-            high=frames.high, low=frames.low, volume=frames.volume,
+            high=frames.high,
+            low=frames.low,
+            volume=frames.volume,
             seasonal_horizons=[int(h) for h in self._cfg.targets.horizons],
             returns=frames.ret,
             close_split=frames.close_split,
             level_factor=frames.level_factor,
             seams=seams,
         )
-        self._log.info("Price feature panel: %s rows, %s features (volume liquidity: %s)",
-                       len(panel), len(panel.columns) - 2,
-                       "yes" if frames.volume is not None else "no")
+        self._log.info(
+            "Price feature panel: %s rows, %s features (volume liquidity: %s)",
+            len(panel),
+            len(panel.columns) - 2,
+            "yes" if frames.volume is not None else "no",
+        )
         return panel

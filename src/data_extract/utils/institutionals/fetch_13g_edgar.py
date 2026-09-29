@@ -213,7 +213,7 @@ def _doc_url(filing) -> str | None:
         primary = getattr(filing, "primary_document", None)
         cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
         if accession and primary and cik_raw:
-            url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/" f"{accession.replace('-', '')}/{primary}"
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{accession.replace('-', '')}/{primary}"
     return str(url) if url else None
 
 

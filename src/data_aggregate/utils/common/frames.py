@@ -19,6 +19,7 @@ NOT collapsed into one function:
 `safe_div`'s third parameter therefore keeps its exact name (`den_positive`) and stays
 positional, because `sector_features` passes it positionally throughout.
 """
+
 from __future__ import annotations
 
 from typing import TypeVar
@@ -29,7 +30,7 @@ import pandas as pd
 Shaped = TypeVar("Shaped", pd.Series, pd.DataFrame)
 
 
-def sanitize(x: Shaped) -> Shaped:
+def sanitize[Shaped: (pd.Series, pd.DataFrame)](x: Shaped) -> Shaped:
     """+/-inf -> NaN. Was `features._safe`, and the tail of ~40 inline `.replace` calls."""
     return x.replace([np.inf, -np.inf], np.nan)
 

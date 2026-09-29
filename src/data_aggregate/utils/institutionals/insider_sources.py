@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
 
@@ -39,7 +41,7 @@ def overlay_insider_sources(
     bulk_accessions = set(bulk["accession_number"].dropna().astype(str))
     cutoff = as_quarter(bulk_authoritative_through)
     live_quarters = pd.to_datetime(live["filing_date"], errors="coerce").dt.to_period("Q")
-    approved = live_quarters.le(cutoff) if cutoff is not None else pd.Series(False, index=live.index)
+    approved = live_quarters.le(cast(Any, cutoff)) if cutoff is not None else pd.Series(False, index=live.index)
     overlaps_bulk = live["accession_number"].astype(str).isin(bulk_accessions)
     live_winning_accessions = set(live.loc[overlaps_bulk & ~approved, "accession_number"].dropna().astype(str))
     kept_bulk = bulk[~bulk["accession_number"].astype(str).isin(live_winning_accessions)]

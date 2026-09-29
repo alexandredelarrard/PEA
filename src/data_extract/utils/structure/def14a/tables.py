@@ -35,12 +35,13 @@ Three cell-level defects are fixed here because they corrupt CLASSIFICATION, not
   * a `$` alone in its own `<td>` doubles the effective column count and desynchronises the
     column map (the GE / CAT mechanism, 3 of 4 numeric columns dropped).
 """
+
 from __future__ import annotations
 
 import html
 import logging
 import re
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 import lxml.html
 
@@ -211,8 +212,7 @@ def _drop_layout_cells(rows: list[list[str]]) -> list[list[str]]:
         return rows
     width = max(len(r) for r in rows)
     padded = [r + [""] * (width - len(r)) for r in rows]
-    keep = [i for i in range(width)
-            if any(c and not _CURRENCY_ONLY_RE.match(c) for c in (r[i] for r in padded))]
+    keep = [i for i in range(width) if any(c and not _CURRENCY_ONLY_RE.match(c) for c in (r[i] for r in padded))]
     return [[r[i] for i in keep] for r in padded] if keep else []
 
 
@@ -235,8 +235,7 @@ def _parse(raw_html: str | bytes):
     try:
         return lxml.html.fromstring(data)
     except Exception as e:
-        logger.warning("def14a_tables: could not parse filing markup (%s: %s)",
-                       type(e).__name__, e)
+        logger.warning("def14a_tables: could not parse filing markup (%s: %s)", type(e).__name__, e)
         return None
 
 
@@ -307,8 +306,7 @@ def _drop_spacer_columns(header: list[str], data: list[list[str]]) -> tuple[list
     """
     if not data:
         return header, data
-    keep = [i for i in range(len(header))
-            if any((r[i] or "").strip() and not _CURRENCY_ONLY_RE.match(r[i]) for r in data)]
+    keep = [i for i in range(len(header)) if any((r[i] or "").strip() and not _CURRENCY_ONLY_RE.match(r[i]) for r in data)]
     if not keep:
         return header, data
 
@@ -334,6 +332,7 @@ def _drop_spacer_columns(header: list[str], data: list[list[str]]) -> tuple[list
 # whole design: each signature carries a must-REJECT clause, and the fee labels are matched
 # EXACTLY rather than as substrings.
 
+
 def _blob(cells: Iterable[str]) -> str:
     return " | ".join(c.lower() for c in cells if c)
 
@@ -343,15 +342,12 @@ def _has(blob: str, *needles: str) -> bool:
 
 
 #: SEC-mandated SCT columns. `Total` alone is far too common to count.
-_SCT_COLS = ("salary", "stock award", "option award", "non-equity incentive",
-             "all other compensation", "bonus")
+_SCT_COLS = ("salary", "stock award", "option award", "non-equity incentive", "all other compensation", "bonus")
 #: The Pay-versus-Performance table also has a Year column and dollar columns. Its giveaway
 #: phrase is regulatory and exact, so rejecting on it is safe.
-_PVP_MARKERS = ("compensation actually paid", "value of initial fixed",
-                "peer group total shareholder")
+_PVP_MARKERS = ("compensation actually paid", "value of initial fixed", "peer group total shareholder")
 #: A CD&A "target pay" / "realized pay" table mimics the SCT header.
-_ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay",
-                    "target annual", "target direct compensation")
+_ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay", "target annual", "target direct compensation")
 #: The OTHER Item 402 tables that carry `Stock Awards` / `Option Awards` columns and the word
 #: "Year", and therefore satisfy the SCT rule without being an SCT. Measured on PG's 2026 proxy:
 #: its `Outstanding Equity at Fiscal Year End` table (402(f)) outscored the real SCT on data
@@ -361,15 +357,22 @@ _ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay",
 #: 402(c) header -- note "non-equity incentive plan compensation" contains "equity incentive
 #: plan" but never "equity incentive plan awards", so the SCT itself is not rejected.
 _OTHER_402_MARKERS = (
-    "outstanding equity", "unexercised options", "have not vested", "option expiration",
-    "equity incentive plan awards", "value realized", "shares acquired on",
-    "years credited service", "present value of accumulated", "aggregate earnings",
-    "aggregate withdrawals", "executive contributions",
+    "outstanding equity",
+    "unexercised options",
+    "have not vested",
+    "option expiration",
+    "equity incentive plan awards",
+    "value realized",
+    "shares acquired on",
+    "years credited service",
+    "present value of accumulated",
+    "aggregate earnings",
+    "aggregate withdrawals",
+    "executive contributions",
 )
 #: The cash-retainer column, whatever the filer calls it. `Cash Fees` and `Retainer` are the
 #: labels edgartools' synonym list misses.
-_DIR_FEE_COLS = ("fees earned or paid in cash", "fees earned", "cash fees", "retainer",
-                 "fees paid in cash", "annual retainer")
+_DIR_FEE_COLS = ("fees earned or paid in cash", "fees earned", "cash fees", "retainer", "fees paid in cash", "annual retainer")
 #: `Restricted Stock Units` and `Share Awards` are what nulled CAT's and GE's stock column.
 _DIR_STOCK_COLS = ("stock award", "restricted stock unit", "share award", "stock unit award")
 #: EVERY mandated NON-CASH column of an Item 402(k) table, not just the equity ones.
@@ -395,9 +398,15 @@ _DIR_STOCK_COLS = ("stock award", "restricted stock unit", "share award", "stock
 #: that has it AND a fee column AND no `salary` column is not an SCT, and see the structural
 #: argument on the rule itself.
 _DIR_PAY_COLS = _DIR_STOCK_COLS + (
-    "option award", "fees earned or paid in stock", "fees paid in stock",
-    "all other compensation", "non-equity incentive", "change in pension",
-    "deferred compensation", "deferred stock", "restricted share",
+    "option award",
+    "fees earned or paid in stock",
+    "fees paid in stock",
+    "all other compensation",
+    "non-equity incentive",
+    "change in pension",
+    "deferred compensation",
+    "deferred stock",
+    "restricted share",
 )
 #: Words that label the ROWS of a director-fee SCHEDULE -- `Board Chair | $30,000`, `Audit
 #: Committee Member | $15,000` -- which is the one table a relaxed rule could plausibly pick up
@@ -407,36 +416,80 @@ _DIR_PAY_COLS = _DIR_STOCK_COLS + (
 #: also admitting LNT's 2-row `Year | Annual Retainer for Board Service | Board Chair | ...`
 #: fee schedule.
 _DIR_ROLE_ROW_WORDS = (
-    "chair", "member", "committee", "lead independent", "board service", "retainer",
-    "each director", "non-employee director", "per meeting", "presiding", "vice chair",
-    "audit", "compensation", "nominating", "governance", "total", "aggregate", "all direct",
+    "chair",
+    "member",
+    "committee",
+    "lead independent",
+    "board service",
+    "retainer",
+    "each director",
+    "non-employee director",
+    "per meeting",
+    "presiding",
+    "vice chair",
+    "audit",
+    "compensation",
+    "nominating",
+    "governance",
+    "total",
+    "aggregate",
+    "all direct",
 )
 #: A board is 6-20 people; the NEO table this must never be is 5 by regulation. Three is the
 #: floor for calling a set of rows a roster at all.
 _DIR_MIN_PEOPLE_ROWS = 3
 #: EXACT fee-category labels. Substring matching is what produced 23 wrong picks.
-_FEE_LABELS = ("audit fees", "audit-related fees", "audit related fees", "tax fees",
-               "all other fees", "other fees")
+_FEE_LABELS = ("audit fees", "audit-related fees", "audit related fees", "tax fees", "all other fees", "other fees")
 #: Percent-column labels, measured across the corpus rather than guessed. LMT writes
 #: `Percent of Outstanding Shares` and AMAT `Shares Beneficially Owned Percent`, neither of
 #: which contains "of class" -- between them that was 6 of the 13 missed >=5% tables. The bare
 #: "percent" / "%" tokens are safe here only because the >=5% rule ALSO requires a share column
 #: and either a named institution or a 5% reference.
-_PCT_COLS = ("percent of class", "% of class", "percent of shares", "percentage of class",
-             "percent of common stock", "% of outstanding", "percent of outstanding",
-             "owned percent", "percent", "% of total", "% owned")
+_PCT_COLS = (
+    "percent of class",
+    "% of class",
+    "percent of shares",
+    "percentage of class",
+    "percent of common stock",
+    "% of outstanding",
+    "percent of outstanding",
+    "owned percent",
+    "percent",
+    "% of total",
+    "% owned",
+)
 #: Share-count column labels. `Amount of Common Stock` (LMT) and `Amount and Nature` are the
 #: two that do not contain the word "shares".
-_SHARE_COLS = ("number of shares", "shares beneficially owned", "amount and nature",
-               "shares owned", "beneficial ownership", "number of common shares",
-               "amount of common stock", "amount of shares", "common stock owned",
-               # bare "Common Stock" is LMT's entire share-column label. Safe only because
-               # the insider rule ALSO requires an "as a group" row, which is highly specific.
-               "common stock")
+_SHARE_COLS = (
+    "number of shares",
+    "shares beneficially owned",
+    "amount and nature",
+    "shares owned",
+    "beneficial ownership",
+    "number of common shares",
+    "amount of common stock",
+    "amount of shares",
+    "common stock owned",
+    # bare "Common Stock" is LMT's entire share-column label. Safe only because
+    # the insider rule ALSO requires an "as a group" row, which is highly specific.
+    "common stock",
+)
 #: Institutions that appear in essentially every >=5% table.
-_INSTITUTIONS = ("blackrock", "vanguard", "state street", "fmr llc", "fidelity",
-                 "t. rowe price", "capital research", "capital group", "wellington",
-                 "massachusetts financial", "dodge & cox", "geode", "berkshire hathaway")
+_INSTITUTIONS = (
+    "blackrock",
+    "vanguard",
+    "state street",
+    "fmr llc",
+    "fidelity",
+    "t. rowe price",
+    "capital research",
+    "capital group",
+    "wellington",
+    "massachusetts financial",
+    "dodge & cox",
+    "geode",
+    "berkshire hathaway",
+)
 
 
 def _exact_cell_match(cells: Iterable[str], labels: tuple[str, ...]) -> int:
@@ -494,6 +547,28 @@ def _promoted_header(header: list[str], rows: list[list[str]]) -> list[str] | No
     return None
 
 
+def _continued_sct_table(header: list[str], rows: list[list[str]]) -> tuple[list[str], list[list[str]]] | None:
+    """Join stranded SCT header rows without widening the global header limit.
+
+    KR 2015 needs seven header rows. The six-row runaway guard leaves ``Position | Year |
+    Salary | ... | Total`` in ``rows[0]`` while older KR filings strand several rows. Only
+    return when the joined header satisfies the existing SCT classifier and has a real Salary
+    column; ordinary first data rows therefore cannot trigger the fallback.
+    """
+    if len(rows) < 2:
+        return None
+    width = len(header)
+    for n_rows in range(1, min(_MAX_HEADER_ROWS, len(rows) - 1) + 1):
+        continued: list[str] = []
+        for column in range(width):
+            parts = [header[column], *(row[column] for row in rows[:n_rows])]
+            continued.append(" ".join(dict.fromkeys(part for part in parts if part)))
+        remaining = rows[n_rows:]
+        if SCT in classify_table(continued, remaining) and _has_salary_column(continued):
+            return continued, remaining
+    return None
+
+
 def _rows_are_people(rows: list[list[str]]) -> bool:
     """True when this table's rows are a ROSTER OF PEOPLE rather than a schedule of roles.
 
@@ -543,8 +618,7 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
     # colspan (`['', '', '', 'Audit Fees', 'Audit Fees', ...]`), leaving `r[0]` empty, which
     # hid its fee table on all 3 of its filings.
     lead_cells = [c for r in rows for c in r[:_FEE_LABEL_COLS]]
-    n_fee = max(_exact_cell_match(header, _FEE_LABELS),
-                _exact_cell_match(lead_cells, _FEE_LABELS))
+    n_fee = max(_exact_cell_match(header, _FEE_LABELS), _exact_cell_match(lead_cells, _FEE_LABELS))
     if n_fee >= 2:
         # the footnote table repeats the same labels with prose bodies and numbered rows
         footnoted = sum(1 for lab in labels if _FOOTNOTE_ROW_RE.match(lab))
@@ -553,8 +627,7 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
 
     # ---- SCT: a Year column AND >=1 mandated SCT column, and NOT another Item 402 table ----
     if _has(hb, "year") and _has(hb, *_SCT_COLS):
-        if (not _has(ab, *_PVP_MARKERS) and not _has(hb, *_ALT_PAY_MARKERS)
-                and not _has(hb, *_OTHER_402_MARKERS)):
+        if not _has(ab, *_PVP_MARKERS) and not _has(hb, *_ALT_PAY_MARKERS) and not _has(hb, *_OTHER_402_MARKERS):
             # a Salary column is the discriminator against the DIRECTOR table
             if _has(hb, "salary") or not _has(hb, *_DIR_FEE_COLS):
                 matched.append(SCT)
@@ -597,10 +670,12 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
     promoted = _promoted_header(header, rows)
     if promoted is not None:
         dir_hb = _blob(promoted)
-    if (_has(dir_hb, *_DIR_FEE_COLS)
-            and not _has(dir_hb, "salary") and not _has(ab, *_PVP_MARKERS)
-            and ((_has(dir_hb, *_DIR_PAY_COLS) and _has(dir_hb, "total"))
-                 or _rows_are_people(rows))):
+    if (
+        _has(dir_hb, *_DIR_FEE_COLS)
+        and not _has(dir_hb, "salary")
+        and not _has(ab, *_PVP_MARKERS)
+        and ((_has(dir_hb, *_DIR_PAY_COLS) and _has(dir_hb, "total")) or _rows_are_people(rows))
+    ):
         matched.append(DIRECTOR_COMP)
 
     # ---- ownership: two targets, and ONE table may serve both (see the docstring) ----
@@ -624,8 +699,7 @@ def classify_table(header: list[str], rows: list[list[str]]) -> list[str]:
 #: format labels columns `(a) (b) (c)`, so KLAC's real SCT column reads `Salary ($) (c)` and a
 #: pattern allowing only `(\d+)` rejects it -- which silently handed six KLAC filings a 5-row
 #: CD&A table in place of their 15-row SCT.
-_SALARY_TAIL_RE = re.compile(
-    r"\bsalary\b\s*(?:\(\s*[\$%]\s*\))?\s*(?:\(\s*\w{1,3}\s*\)\s*)*[\s*†‡§]*$", re.I)
+_SALARY_TAIL_RE = re.compile(r"\bsalary\b\s*(?:\(\s*[\$%]\s*\))?\s*(?:\(\s*\w{1,3}\s*\)\s*)*[\s*†‡§]*$", re.I)
 #: A unit marker right after the label. Its presence is what licenses a LONG cell: a colspan'd
 #: table title propagates into every cell, so a genuine column can read
 #: `Summary Compensation Table Annual Compensation Salary ($)` (57 chars, 8 words).
@@ -687,10 +761,15 @@ def classify_filing(raw_html: str | bytes) -> dict[str, tuple[list[str], list[li
         header, rows = merge_header_rows(grid)
         if not rows:
             continue
-        for target in classify_table(header, rows):
+        matched = classify_table(header, rows)
+        for target in matched:
             prefer = _PREFER.get(target)
-            candidates.setdefault(target, []).append(
-                (bool(prefer(header)) if prefer else False, len(rows), -pos, header, rows))
+            candidates.setdefault(target, []).append((bool(prefer(header)) if prefer else False, len(rows), -pos, header, rows))
+        if SCT not in matched:
+            continued = _continued_sct_table(header, rows)
+            if continued is not None:
+                continued_header, continued_rows = continued
+                candidates.setdefault(SCT, []).append((True, len(continued_rows), -pos, continued_header, continued_rows))
 
     best: dict[str, tuple[list[str], list[list[str]]]] = {}
     for target, cands in candidates.items():
@@ -704,9 +783,7 @@ def classify_filing(raw_html: str | bytes) -> dict[str, tuple[list[str], list[li
 
 def _log_runner_up(target: str, n_best: int, n_runner: int, runner_header: list[str]) -> None:
     """Name the rejected candidate so a wrong pick is diagnosable from the log alone."""
-    logger.debug(
-        "def14a_tables: %s kept a %d-row table over a %d-row candidate (%s)",
-        target, n_best, n_runner, " | ".join(runner_header[:6]))
+    logger.debug("def14a_tables: %s kept a %d-row table over a %d-row candidate (%s)", target, n_best, n_runner, " | ".join(runner_header[:6]))
 
 
 # --------------------------------------------------------------------------- #

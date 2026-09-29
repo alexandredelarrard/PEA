@@ -53,6 +53,8 @@ the real-filing evidence is the measurement recorded above and in the two docstr
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import reason_codes as rc
@@ -79,7 +81,7 @@ CATALOGUE = load_catalogue("./configs")
 #: ORCL's own role, verbatim from 0001193125-18-201034. Verbatim because the guard is a
 #: naming heuristic over filer-authored strings: a placeholder would test the regex against
 #: a string we invented rather than against the one that actually shipped.
-_SEGMENT_ROLE = "http://www.oracle.com/20180531/taxonomy/role/" "DisclosureSEGMENTINFORMATIONRECONCILIATIONDetails"
+_SEGMENT_ROLE = "http://www.oracle.com/20180531/taxonomy/role/DisclosureSEGMENTINFORMATIONRECONCILIATIONDetails"
 _INCOME_ROLE = "http://x/role/ConsolidatedStatementsOfIncome"
 
 _ARC_COLS = ["concept", "concept_taxonomy", "parent_concept", "parent_taxonomy", "weight", "role_uri", "menucat", "is_abstract", "arc_filter"]
@@ -120,7 +122,7 @@ def _arcs(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
 #: perfectly ordinary income statement beside it that never mentions it.
 _ORCL_ARCS = _arcs(
     [
-        ("GrossProfit", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest", _SEGMENT_ROLE, "Details"),
+        ("GrossProfit", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", _SEGMENT_ROLE, "Details"),
         ("CostsAndExpenses", "OperatingIncomeLoss", _INCOME_ROLE, "Statements"),
     ]
 )
@@ -160,7 +162,7 @@ def test_a_segment_only_concept_is_found_on_the_unfiltered_linkbase():
     assert "GrossProfit" in found
     assert "CostsAndExpenses" not in found
     print("\n=== SANITY CHECK: segment_only_concepts ===")
-    print(f"  GrossProfit withheld: {'GrossProfit' in found}; the income-statement node " f"CostsAndExpenses withheld: {'CostsAndExpenses' in found}")
+    print(f"  GrossProfit withheld: {'GrossProfit' in found}; the income-statement node CostsAndExpenses withheld: {'CostsAndExpenses' in found}")
     print("  Read off the UNFILTERED frame, so the dropped arc is still evidence.")
     print("  Validated.")
 
@@ -175,7 +177,7 @@ def test_the_parent_a_segment_note_reconciles_to_is_never_withheld():
     10-Q 0001564590-18-023315 its real consolidated pretax element carries no arc except as
     the parent of the segment note's `GrossProfit`.
     """
-    parent = "IncomeLossFromContinuingOperationsBeforeIncomeTaxes" "ExtraordinaryItemsNoncontrollingInterest"
+    parent = "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
     found = segment_only_concepts(_ORCL_ARCS)
     assert parent not in found
     assert "GrossProfit" in found
@@ -197,7 +199,7 @@ def test_orcl_gross_profit_resolves_to_a_reason_coded_null_not_a_segment_margin(
     print("\n=== SANITY CHECK: cluster 876ab8a57bd8 ===")
     print(f"  before: {before.method} on {before.concept} -> FY2018 stored")
     print("          24,287,000,000, the sum of three SEGMENT margins")
-    print(f"  after:  unresolved, dc_code={after.dc_code}, " f"segment_rejected={list(after.segment_rejected)}")
+    print(f"  after:  unresolved, dc_code={after.dc_code}, segment_rejected={list(after.segment_rejected)}")
     print("  Oracle presents no gross-profit subtotal, so a reason-coded NULL is the")
     print("  correct answer. Validated.")
 
@@ -214,7 +216,7 @@ def test_the_refusal_is_not_relaxable_unlike_the_note_guard():
     after = _resolve(_ORCL_ARCS, {"GrossProfit"}, frozenset({"GrossProfit"}))
     assert not after.resolved and not after.role_only_retained
     print("\n=== SANITY CHECK: no relaxation pass restores it ===")
-    print(f"  resolved={after.resolved}, role_only_retained={after.role_only_retained}, " f"dc_code={after.dc_code}. Validated.")
+    print(f"  resolved={after.resolved}, role_only_retained={after.role_only_retained}, dc_code={after.dc_code}. Validated.")
 
 
 def test_a_concept_on_a_face_statement_is_never_segment_only():
@@ -292,7 +294,7 @@ def test_an_unknown_fiscal_end_refuses_nothing():
     """Absence of a bound is not a bound of zero: a row with no `fiscal_end` has nothing
     to be stale against, and refusing there would null every ticker's first event."""
     row = pd.Series({"period_end": pd.Timestamp("2020-01-31"), "value": 1.0})
-    assert not _is_stale(row, pd.NaT)
+    assert not _is_stale(row, cast(Any, pd.NaT))
     assert not _is_stale(pd.Series({"period_end": pd.NaT, "value": 1.0}), pd.Timestamp("2020-01-31"))
     print("\n=== SANITY CHECK: NaT on either side refuses nothing ===")
     print("  no fiscal_end -> no refusal; no period_end -> no refusal. Validated.")
@@ -303,7 +305,7 @@ def test_the_stale_code_is_an_absence_not_a_qualifier():
     a qualifier means a value is present and a gate would stop looking for one."""
     assert rc.STALE_TTM in rc.ALL_CODES and rc.STALE_TTM not in rc.IS_QUALIFIER
     print("\n=== SANITY CHECK: stale_ttm is an absence code ===")
-    print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, " f"in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
+    print(f"  in ALL_CODES={rc.STALE_TTM in rc.ALL_CODES}, in IS_QUALIFIER={rc.STALE_TTM in rc.IS_QUALIFIER}. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -326,8 +328,9 @@ def test_a_filer_that_never_tags_gross_profit_gets_the_derived_number():
     visible = _facts([("totalRevenue", "2026-05-31", 67_357e6), ("costOfRevenue", "2026-05-31", 23_021e6)])
     got = _gross_profit_identity(row, visible)
     assert got == 44_336e6
+    assert got is not None
     print("\n=== SANITY CHECK: the derivation, on ORCL's FY2026 numbers ===")
-    print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin " f"{got / row['totalRevenue']:.1%}")
+    print(f"  67,357 - 23,021 = {got / 1e6:,.0f}  ->  margin {got / row['totalRevenue']:.1%}")
     print("  Oracle files no gross-profit line; this is how every vendor has the number.")
     print("  Validated.")
 
@@ -355,7 +358,7 @@ def test_a_filer_that_agrees_within_rounding_still_gets_the_derivation():
     row = {"totalRevenue": 110.0, "costOfRevenue": 66.0, "grossProfit": None}
     assert _gross_profit_identity(row, visible) == 44.0
     print("\n=== SANITY CHECK: the tolerance absorbs rounding, not disagreement ===")
-    print(f"  0.5% apart vs a {GROSS_PROFIT_IDENTITY_TOLERANCE:.0%} band -> derived. " "Validated.")
+    print(f"  0.5% apart vs a {GROSS_PROFIT_IDENTITY_TOLERANCE:.0%} band -> derived. Validated.")
 
 
 def test_an_identity_short_one_term_is_not_an_approximation_of_itself():
@@ -424,7 +427,7 @@ def test_cost_of_revenue_can_reach_route_3b_at_all():
     # `CostsAndExpenses` carries weight 1.0.
     assert roll_up["leaf_weight"] == 1.0
     print("\n=== SANITY CHECK: costOfRevenue is route-3b eligible ===")
-    print(f"  anchor={roll_up['anchor']} role={roll_up['anchor_role']} " f"leaf_weight={roll_up['leaf_weight']} groups={len(roll_up['any_of'])}")
+    print(f"  anchor={roll_up['anchor']} role={roll_up['anchor_role']} leaf_weight={roll_up['leaf_weight']} groups={len(roll_up['any_of'])}")
     print("  Validated.")
 
 

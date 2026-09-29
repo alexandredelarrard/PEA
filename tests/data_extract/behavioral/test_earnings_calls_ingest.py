@@ -9,10 +9,15 @@ nothing happens" stall). Verified with a tiny on-disk cache + a fake store.
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import pandas as pd
 
+from src.constants.constants import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
+from src.data_store.schema import Tables
+from src.utils.text_metrics import assess_earnings_call_sections
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 _PREP = (
@@ -39,8 +44,14 @@ def _seed_cache(tmp_path, pairs):
     return cache
 
 
-def _ctx(tmp_path, existing_keys):
-    existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys else pd.DataFrame(columns=["ticker", "quarter"])
+def _ctx(tmp_path, existing_keys) -> Any:
+    existing = pd.DataFrame(
+        [
+            {"ticker": ticker, "quarter": quarter, "tag": tag, "as_of": "2025-05-01", "text": text}
+            for ticker, quarter in existing_keys
+            for tag, text in (("prepared_remarks", _PREP), ("qa", _QA))
+        ]
+    )
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
@@ -83,6 +94,56 @@ def test_ingest_skips_already_ingested(tmp_path):
     print(f"  3 cached, 2 already in DB -> ingested only {sorted(got)} (1 new)")
     print("  re-run with all present -> 0 saved, no re-parse (no more 'nothing happens' stall)")
     print(f"  force=True -> re-ingests all {len(forced)}. Validated.")
+
+
+def test_source_replacement_invalidates_sentiment_and_embedding_caches() -> None:
+    cached = pd.DataFrame({"ticker": ["AAA", "AAA"], "quarter": ["2025Q1", "2025Q2"], "tag": ["qa", "qa"]})
+    embeddings = pd.DataFrame({"ticker": ["AAA", "AAA"], "quarter": ["2025Q1", "2025Q2"], "section": ["qa", "qa"], "turn_index": [0, 0]})
+    store = FakeStore({Tables.earnings_call_sentiment: cached, Tables.earning_calls_embedding: embeddings})
+    context = types.SimpleNamespace(store=store)
+    replacement = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "quarter": ["2025Q1", "2025Q1"],
+            "tag": ["prepared_remarks", "qa"],
+            "text": [_PREP, _QA],
+        }
+    )
+
+    save_earnings_call_sections(context, replacement)
+
+    assert set(store.t[Tables.earnings_call_sentiment.name]["quarter"]) == {"2025Q2"}
+    assert set(store.t[Tables.earning_calls_embedding.name]["quarter"]) == {"2025Q2"}
+    print("\n=== SANITY CHECK: transcript replacement invalidates derivatives ===")
+    print("  replacing AAA 2025Q1 deletes only that call's sentiment and embedding rows. Validated.")
+
+
+def test_forced_malformed_refresh_replaces_old_signal_with_null_marker(tmp_path) -> None:
+    cache = _seed_cache(tmp_path, [("AAA", "2025Q1")])
+    (cache / "AAA" / "2025Q1.html").write_text(
+        '<html><body><div class="transcript-content">Thanks.</div></body></html>',
+        encoding="utf-8",
+    )
+    context = _ctx(tmp_path, existing_keys=[("AAA", "2025Q1")])
+    stale = pd.DataFrame({"ticker": ["AAA"], "quarter": ["2025Q1"], "tag": ["qa"]})
+    context.store.t[Tables.earnings_call_sentiment.name] = stale.copy()
+    context.store.t[Tables.earning_calls_embedding.name] = stale.assign(section="qa", turn_index=0)
+
+    saved = fe.ingest_earnings_calls(context, force=True)
+
+    current = context.store.t[Tables.earnings_call_sections.name]
+    sections = dict(zip(current["tag"], current["text"], strict=False))
+    assert saved == 2
+    assert not assess_earnings_call_sections(sections).valid
+    marker = context.store.t[Tables.earnings_call_sentiment.name]
+    assert len(marker) == 2
+    assert set(marker["tag"]) == {"prepared_remarks", "qa"}
+    assert set(marker["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert set(pd.to_datetime(marker["as_of"])) == {pd.Timestamp("2025-05-01")}
+    assert marker[["sent_pos", "sent_neg", "sent_neu"]].isna().all().all()
+    assert context.store.t[Tables.earning_calls_embedding.name].empty
+    print("\n=== SANITY CHECK: malformed forced refresh ===")
+    print("  refreshed malformed HTML clears embeddings and leaves a pending null marker that forces historical cube repair. Validated.")
 
 
 if __name__ == "__main__":

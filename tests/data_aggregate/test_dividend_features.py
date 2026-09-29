@@ -79,8 +79,8 @@ def test_dividend_fields_economics_and_pit():
 
     print("\n=== SANITY CHECK: dividend economics + point-in-time ===")
     print(
-        f"  P0 yield={F['dividend_yield'].loc[t,'P0']:.3f} growth={F['dividend_growth'].loc[t,'P0']:.2f} "
-        f"shareholder={F['shareholder_yield'].loc[t,'P0']:.3f} (>div, buyback); "
+        f"  P0 yield={F['dividend_yield'].loc[t, 'P0']:.3f} growth={F['dividend_growth'].loc[t, 'P0']:.2f} "
+        f"shareholder={F['shareholder_yield'].loc[t, 'P0']:.3f} (>div, buyback); "
         f"N0 yield=0, shareholder<0 (issuer). Future dividend didn't change past value. Validated."
     )
 
@@ -135,11 +135,11 @@ def test_reconcile_sources_5y_growth_payout_coverage():
 
     print("\n=== SANITY CHECK: dividend source reconciliation + 5y growth + safety ===")
     print(
-        f"  A yield (src A) {F['dividend_yield'].loc[t,'A']:.4f} ~= dividendsPaid/mcap "
-        f"{src_b_yield_A:.4f} (two sources agree); B_ONLY yield {F['dividend_yield'].loc[t,'B_ONLY']:.3f} "
-        f"gap-filled from source B; A 5y CAGR {F['dividend_growth_5y'].loc[t,'A']:.3f}~0.10; "
-        f"B_ONLY payout {F['dividend_payout_ratio'].loc[t,'B_ONLY']:.2f}, coverage "
-        f"{F['dividend_coverage'].loc[t,'B_ONLY']:.2f}<1 (unsafe) < A {F['dividend_coverage'].loc[t,'A']:.2f}. Validated."
+        f"  A yield (src A) {F['dividend_yield'].loc[t, 'A']:.4f} ~= dividendsPaid/mcap "
+        f"{src_b_yield_A:.4f} (two sources agree); B_ONLY yield {F['dividend_yield'].loc[t, 'B_ONLY']:.3f} "
+        f"gap-filled from source B; A 5y CAGR {F['dividend_growth_5y'].loc[t, 'A']:.3f}~0.10; "
+        f"B_ONLY payout {F['dividend_payout_ratio'].loc[t, 'B_ONLY']:.2f}, coverage "
+        f"{F['dividend_coverage'].loc[t, 'B_ONLY']:.2f}<1 (unsafe) < A {F['dividend_coverage'].loc[t, 'A']:.2f}. Validated."
     )
 
 

@@ -18,6 +18,7 @@ Beverage -- so this file pins a reviewed judgement and not merely the code's own
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -538,7 +539,7 @@ def test_d19_roster_proxy_is_dated_and_redundant_share_class_is_excluded():
 
 
 def test_d19_disagreement_raises_and_the_allowlist_suppresses_only_its_own_ticker():
-    frames = dict(
+    frames: dict[str, Any] = dict(
         lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000900", "E0000000900", "roster")]),
         tenure=_tenure([("AAA", "0000000700", pd.Timestamp("2006-01-01"), None, 500), ("BBB", "0000000800", pd.Timestamp("2006-01-01"), None, 500)]),
         roster=_roster([("AAA", "0000000100"), ("BBB", "0000000900")]),
@@ -563,7 +564,7 @@ def test_an_empty_table_is_a_loud_raise_not_an_empty_map(empty):
     """`load_registrants` returns {} for a missing file, which is right for an OPTIONAL
     curated layer. These tables are mandatory: an empty one would make `owns()` reject every
     predecessor row in the panel and nothing would say so."""
-    frames = dict(
+    frames: dict[str, Any] = dict(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 5)]),
         roster=_roster([("AAA", "0000000100")]),
@@ -601,7 +602,8 @@ def test_load_identity_caches_per_context_and_not_across_them():
             "sp500_tickers": _roster([(ticker, cik)]),
         }
 
-    first, second = _Ctx(frames("0000000100", "AAA")), _Ctx(frames("0000000900", "BBB"))
+    first: Any = _Ctx(frames("0000000100", "AAA"))
+    second: Any = _Ctx(frames("0000000900", "BBB"))
     a, b = load_identity(first, CONFIG_DIR), load_identity(second, CONFIG_DIR)
     assert load_identity(first, CONFIG_DIR) is a  # same context -> cached instance
     refreshed = load_identity(first, CONFIG_DIR, refresh=True)
@@ -720,8 +722,8 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     counts, wrong = {"KEEP": 0, "MOVE": 0, "DROP": 0}, []
     rows = {"KEEP": 0, "MOVE": 0, "DROP": 0}
     for entry in flagged.itertuples():
-        key = (entry.ticker, entry.issuer_cik)
-        resolved = live.entity_ticker(entry.issuer_cik)
+        key = (str(entry.ticker), str(entry.issuer_cik))
+        resolved = live.entity_ticker(str(entry.issuer_cik))
         if key in KEEP_GROUPS:
             expected, kind = entry.ticker, "KEEP"
         elif key in MOVE_GROUPS:
@@ -729,15 +731,15 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
         else:
             expected, kind = None, "DROP"
         counts[kind] += 1
-        rows[kind] += entry.rows
+        rows[kind] += int(str(entry.rows))
         if resolved != expected:
             wrong.append((key, entry.issuer_name, expected, resolved))
     assert not wrong, f"{len(wrong)} group(s) resolved against the reviewed verdict: {wrong}"
 
     print("\n=== SANITY CHECK: all 102 flagged groups ===")
-    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  " "genuine predecessors, retained by entity_lineage")
-    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  " "relabelled onto the universe ticker that owns them")
-    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  " "another company -- quarantined")
+    print(f"  KEEP {counts['KEEP']:>3} groups {rows['KEEP']:>7,} rows  genuine predecessors, retained by entity_lineage")
+    print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  relabelled onto the universe ticker that owns them")
+    print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  another company -- quarantined")
     print("  OK: every one of the 102 matches the verdict read from the issuer name")
     print("  -> A register-only cut would have deleted the 25,635 KEEP rows.")
 
@@ -797,6 +799,6 @@ def test_no_live_entity_holds_two_universe_tickers(live):
     assert len(live.ticker_by_entity) == len(live.roster_cik) == 500
 
     print("\n=== SANITY CHECK: one entity per universe ticker ===")
-    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, " "0 collisions")
+    print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, 0 collisions")
     print("  OK: no entity can relabel one universe ticker's rows onto another")
     print("  -> load_identity would have raised before returning if it could.")

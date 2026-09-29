@@ -10,6 +10,7 @@ votes, for a filing whose `item_text` was truncated. Two rules, both measured:
 2. Drop any nominee whose name is not printed in the source, or whose numbers are all
    absent from it.
 """
+
 from __future__ import annotations
 
 import re
@@ -44,10 +45,12 @@ _MIN_ITEM_TEXT_CHARS = 400
 #: and is stored as a flag rather than used to choose between filings.
 _PRELIMINARY_RE = re.compile(
     r"(?i)\b(preliminary|estimated\s+(?:preliminary\s+)?voting|"
-    r"subject\s+to\s+(?:final\s+)?certification|not\s+yet\s+certified)\b")
+    r"subject\s+to\s+(?:final\s+)?certification|not\s+yet\s+certified)\b"
+)
 
 #: The four role buckets a nominee lands in. `unmatched` is a bucket, not an error: it is
 #: how the join's failure rate stays measurable instead of being silently folded into
+
 
 # --------------------------------------------------------------------------- #
 # Rule 1 -- the fabrication guard                                              #
@@ -123,8 +126,7 @@ def _name_in_source(name: str | None, text: str) -> bool:
     haystack = _norm_space(text)
     if _norm_space(cleaned) in haystack:
         return True
-    tokens = [t for t in re.findall(r"[a-z]+", cleaned.lower())
-              if len(t) > 1 and t not in _WEAK_NAME_TOKENS]
+    tokens = [t for t in re.findall(r"[a-z]+", cleaned.lower()) if len(t) > 1 and t not in _WEAK_NAME_TOKENS]
     return bool(tokens) and all(t in haystack for t in tokens)
 
 
@@ -166,4 +168,3 @@ def _grounded_nominees(proposal: ProposalVote, text: str) -> tuple[list[dict], i
             continue
         kept.append({"name": name, **votes})
     return kept, rejected
-

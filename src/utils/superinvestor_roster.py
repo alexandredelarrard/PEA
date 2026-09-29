@@ -20,9 +20,11 @@ dropped, six of whom carry real 13F history and two of whom (Arlington Value,
 Wintergreen) are exactly the concentrated managers a concentration selector ranks
 highest. Survivorship bias correlated with the selection rule is the worst kind.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 
@@ -55,14 +57,13 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
     roster yet", not an empty roster to be silently ffilled backwards."""
     df = _load(context)
     if df is None:
-        logger.warning("`%s` is empty -- run `data_extract superinvestors --seed`.",
-                       Tables.superinvestor_roster)
+        logger.warning("`%s` is empty -- run `data_extract superinvestors --seed`.", Tables.superinvestor_roster)
         return None
     if as_of is not None:
         df = df[df["snapshot_date"] <= pd.Timestamp(as_of)]
         if df.empty:
             return None
-    return df[df["snapshot_date"] == df["snapshot_date"].max()]
+    return cast(pd.DataFrame, df[df["snapshot_date"] == df["snapshot_date"].max()])
 
 
 def roster_as_of(context: Context, as_of=None) -> set[str]:
@@ -86,8 +87,7 @@ def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
     if snap is None:
         return {}
     out: dict[str, str] = {}
-    for code, name, raw in snap.sort_values("dataroma_code")[
-            ["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
+    for _code, name, raw in snap.sort_values("dataroma_code")[["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
         if (cik := pad_cik(raw)) and cik not in out:
             out[cik] = str(name)
     return out
@@ -102,7 +102,10 @@ def first_snapshot_date(context: Context) -> pd.Timestamp | None:
     the oldest roster backwards is a compromise, but the alternative is today's roster,
     which is the survivorship bias this table exists to remove."""
     df = _load(context)
-    return None if df is None else pd.Timestamp(df["snapshot_date"].min())
+    if df is None:
+        return None
+    snapshot_dates = cast(pd.Series, df["snapshot_date"])
+    return cast(pd.Timestamp, pd.Timestamp(snapshot_dates.min()))
 
 
 def roster_cik_union(context: Context) -> set[str]:

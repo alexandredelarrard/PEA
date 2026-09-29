@@ -24,7 +24,7 @@ Every major `src/` package owns a `step_*.py` orchestrator. A step:
 
 Class names use `StepPascalCase`; files use `step_snake_case.py`. Strategies are the deliberate exception and implement [Strategy.run](../../src/strategies/base.py).
 
-Do not cross-import between sibling `src/` packages. Shared logic belongs in [src/utils](../../src/utils/). The sanctioned service exception is [src/gpt_extract](../../src/gpt_extract/), which centralizes LLM clients, prompts, and embeddings.
+Do not cross-import between sibling `src/` packages. Shared logic belongs in the [runtime and shared utilities](../modules/runtime-and-shared-utils.md) package. The sanctioned service exception is [src/gpt_extract](../../src/gpt_extract/), which centralizes LLM clients, prompts, and embeddings.
 
 ## Functions and types
 
@@ -34,7 +34,23 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in [sr
 - Use explicit variable names. DataFrame variables may use a clear `df_...` prefix.
 - Split large routines into helpers with one purpose.
 - Reuse a helper only when the abstraction is already real; package-local helpers are preferable to speculative global utilities.
-- Function and method names are lower snake case.
+- Functions and methods use lower snake case (`N802`); arguments use lower snake case (`N803`); local variables inside functions use lower snake case (`N806`); exception classes end in `Error` (`N818`). Capitals are reserved for module-level constants and class names.
+- Prefer Python 3.13 syntax. Write unions as `A | B`, including runtime checks such as `isinstance(value, A | B)`. The runtime-check form is a project convention even though Ruff 0.16.9 removed `UP038`.
+
+## Ruff and Pyright contract
+
+[pyproject.toml](../../pyproject.toml) is the Ruff source of truth. Ruff selects `E`, `W`, `F`, `I`, `B`, `N`, and `UP`, uses a 150-character formatter width, and ignores only `E501` so long URLs and prose comments do not fail lint. The formatter owns layout and import sorting; do not hand-format around it.
+
+The enabled rules mean, in particular:
+
+- imports stay at module scope and in Ruff order (`E402`, `I`);
+- `zip()` calls state their length contract with `strict=True` or `strict=False` (`B905`);
+- names follow the `N802`, `N803`, `N806`, and `N818` rules above; and
+- obsolete syntax is upgraded for the repository's Python 3.13 runtime (`UP`).
+
+[pyrightconfig.json](../../pyrightconfig.json) resolves the project-local `.venv`, which points to the Poetry environment. Keep that link valid and keep third-party typing packages, including `pandas-stubs`, synchronized with the runtime packages. Fix typing at the narrowest truthful boundary with annotations, explicit `None` checks, protocols, or targeted `cast()` calls. Do not add repository-wide suppressions or blanket missing-import ignores.
+
+Airflow DAGs are the narrow exception: they run in the separate Python 3.12 Airflow environment, so a DAG may carry a file-scoped Pyright suppression only for imports and DSL attributes supplied by that environment. Application and test modules must remain clean without that exception.
 
 ## Docstrings and comments
 

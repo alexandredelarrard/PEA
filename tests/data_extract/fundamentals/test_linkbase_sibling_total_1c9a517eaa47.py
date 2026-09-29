@@ -92,8 +92,7 @@ def test_mcd_shape_total_beside_a_larger_leg_is_refused_as_the_total():
     assert resolution.sibling_rejected == ((f"us-gaap:{TOTAL}", f"us-gaap:{PPE}"),)
     assert resolution.dc_code is None, "a refusal must never manufacture a NULL"
     print(
-        f"MCD shape: route={resolution.method}, capex now reads the $2,393.7M "
-        f"'Capital expenditures' leg, not the $540.9M restaurant-acquisition line"
+        f"MCD shape: route={resolution.method}, capex now reads the $2,393.7M 'Capital expenditures' leg, not the $540.9M restaurant-acquisition line"
     )
 
 
@@ -115,7 +114,7 @@ def test_aapl_shape_total_beside_a_smaller_leg_stays_on_route_1():
     assert resolution.method == LINKBASE_TOTAL
     assert resolution.concept == f"us-gaap:{TOTAL}"
     assert resolution.sibling_rejected == ()
-    print(f"AAPL shape: route={resolution.method}, capex stays ${9_571:,}M and is NOT " f"replaced by the ${1_107:,}M intangibles leg")
+    print(f"AAPL shape: route={resolution.method}, capex stays ${9_571:,}M and is NOT replaced by the ${1_107:,}M intangibles leg")
 
 
 # --------------------------------------------------------------------------- #
@@ -151,7 +150,7 @@ def test_a_refusal_never_fires_without_an_answer_to_hand_off_to():
 
     assert resolution.dc_code is None
     assert resolution.method == LINKBASE_TOTAL
-    print(f"no leaf sum available: route={resolution.method}, dc_code={resolution.dc_code} " f"-- the value is kept rather than nulled")
+    print(f"no leaf sum available: route={resolution.method}, dc_code={resolution.dc_code} -- the value is kept rather than nulled")
 
 
 # --------------------------------------------------------------------------- #
@@ -172,4 +171,4 @@ def test_peak_magnitudes_is_absolute_and_period_agnostic():
     assert peaks[PPE] == 1_853_700_000.0
     assert peaks[TOTAL] == 3_100_000.0
     assert scope.peak_magnitudes(pd.DataFrame()) == {}
-    print(f"peak_magnitudes: {PPE}={peaks[PPE]:,.0f} (absolute, across 2 periods), " f"{TOTAL}={peaks[TOTAL]:,.0f}")
+    print(f"peak_magnitudes: {PPE}={peaks[PPE]:,.0f} (absolute, across 2 periods), {TOTAL}={peaks[TOTAL]:,.0f}")

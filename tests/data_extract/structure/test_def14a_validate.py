@@ -22,37 +22,47 @@ What is kept is what both DEF 14A paths still use:
 The pay-ratio identity is NOT untested -- it moved to `def14a_impute._reconcile_rows` and is
 covered by `tests/data_aggregate/test_def14a_impute.py`.
 """
+
 from __future__ import annotations
 
 import math
 
 from src.data_extract.utils.structure.def14a.validate import (
-    DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
-    is_subtotal_holder, repair_main_row, rescale_block, sum_fee_total,
+    DEF14A_AUDIT_FEE_MIN_PLAUSIBLE,
+    clean_holder_name,
+    clean_person_name,
+    clean_text,
+    is_subtotal_holder,
+    repair_main_row,
+    rescale_block,
+    sum_fee_total,
 )
 
 _NAN = float("nan")
 
 #: The LLM path's fee columns -- the block `rescale_block` now guards.
-_FEE_COLS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax",
-             "audit_fees_other", "auditor_fees", "auditor_fees_prior"]
+_FEE_COLS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other", "auditor_fees", "auditor_fees_prior"]
 
 
 def _ecd(**over) -> dict:
     """A `sec_def14a` (ECD) row as `fetch_def14a_edgar` now builds it."""
     base = {
-        "company_name": "COCA COLA CO", "peo_name": "James Quincey",
+        "company_name": "COCA COLA CO",
+        "peo_name": "James Quincey",
         "peo_names_all": "James Quincey",
         "company_selected_measure_name": "Organic revenue growth",
         "net_income": 13_137_000_000.0,
-        "peo_total_comp": 31_208_165.0, "peo_actually_paid_comp": 61_649_669.0,
-        "neo_avg_total_comp": 9_524_407.0, "neo_avg_actually_paid_comp": 12_000_000.0,
+        "peo_total_comp": 31_208_165.0,
+        "peo_actually_paid_comp": 61_649_669.0,
+        "neo_avg_total_comp": 9_524_407.0,
+        "neo_avg_actually_paid_comp": 12_000_000.0,
     }
     base.update(over)
     return base
 
 
 # ── text / key normalisation (used by BOTH paths) ───────────────────────────
+
 
 def test_clean_text_collapses_source_html_whitespace_runs():
     # GE's real company_selected_measure_name.
@@ -93,10 +103,8 @@ def test_address_only_holder_name_is_dropped():
 
 
 def test_address_is_stripped_off_institutional_holder_name():
-    assert clean_holder_name(
-        "The Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355") == "The Vanguard Group"
-    assert clean_holder_name(
-        "BlackRock, Inc. 55 East 52nd Street New York, NY 10055") == "BlackRock, Inc."
+    assert clean_holder_name("The Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355") == "The Vanguard Group"
+    assert clean_holder_name("BlackRock, Inc. 55 East 52nd Street New York, NY 10055") == "BlackRock, Inc."
 
 
 def test_subtotal_pseudo_holders_are_recognised():
@@ -109,18 +117,24 @@ def test_subtotal_pseudo_holders_are_recognised():
 
 # ── unit rescale (now the LLM path's safety net) ────────────────────────────
 
+
 def test_fee_block_in_thousands_is_rescaled_to_dollars():
     """KO's 2026 proxy: the '(in thousands)' header was missed, so the SAME fee read as
     32,104,000 from the 2025 proxy came back as 32,104. The whole block moves together --
     rescaling cell by cell would invent a table whose components no longer sum to its total."""
-    row = {"audit_fees_audit": 30_587.0, "auditor_fees_prior": 32_104.0,
-           "audit_fees_audit_related": 4_834.0, "audit_fees_tax": 6_760.0,
-           "audit_fees_other": 85.0, "auditor_fees": 42_266.0}
+    row = {
+        "audit_fees_audit": 30_587.0,
+        "auditor_fees_prior": 32_104.0,
+        "audit_fees_audit_related": 4_834.0,
+        "audit_fees_tax": 6_760.0,
+        "audit_fees_other": 85.0,
+        "auditor_fees": 42_266.0,
+    }
     rescale_block(row, _FEE_COLS, DEF14A_AUDIT_FEE_MIN_PLAUSIBLE)
     assert row["audit_fees_audit"] == 30_587_000.0
-    assert row["auditor_fees_prior"] == 32_104_000.0        # == KO 2025's current-year audit fee
+    assert row["auditor_fees_prior"] == 32_104_000.0  # == KO 2025's current-year audit fee
     assert row["auditor_fees"] == 42_266_000.0
-    assert row["audit_fees_other"] == 85_000.0              # whole block moves together
+    assert row["audit_fees_other"] == 85_000.0  # whole block moves together
 
 
 def test_dollar_fee_block_is_left_alone():
@@ -131,6 +145,7 @@ def test_dollar_fee_block_is_left_alone():
 
 
 # ── the ECD row ─────────────────────────────────────────────────────────────
+
 
 def test_implausible_net_income_is_nulled_not_guessed():
     """SBUX FY2025 arrives as 1856.4 (raw value '1856.4', decimals='1', unit_ref='usd' -- tagged
@@ -176,11 +191,8 @@ def test_repairs_are_pure_and_do_not_mutate_the_input():
 _PARTS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other"]
 
 
-def _fees(total: float | None, audit: float | None, related: float | None,
-          tax: float | None, other: float | None) -> dict:
-    return {"auditor_fees": total, "audit_fees_audit": audit,
-            "audit_fees_audit_related": related, "audit_fees_tax": tax,
-            "audit_fees_other": other}
+def _fees(total: float | None, audit: float | None, related: float | None, tax: float | None, other: float | None) -> dict:
+    return {"auditor_fees": total, "audit_fees_audit": audit, "audit_fees_audit_related": related, "audit_fees_tax": tax, "audit_fees_other": other}
 
 
 def test_a_total_that_is_really_the_audit_line_is_rebuilt_from_the_categories():

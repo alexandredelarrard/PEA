@@ -29,6 +29,7 @@ a diff a human reads first, because a wrong boundary cannot raise.
     "$PY" scripts/build_registrant_register.py --classified _out/oracle3.json --out proposed.json
     "$PY" scripts/build_registrant_register.py --classified _out/oracle3.json --merge
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,9 +43,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.context import get_config_context                                       # noqa: E402
-from src.data_extract.utils.common.registrant import (                           # noqa: E402
-    REGISTRANT_CONFIG_FILENAME, REGISTRANT_CONFIG_SUBDIR, load_registrants)
+from src.context import get_config_context  # noqa: E402
+from src.data_extract.utils.common.registrant import REGISTRANT_CONFIG_FILENAME, REGISTRANT_CONFIG_SUBDIR, load_registrants  # noqa: E402
 
 #: The forms that define the seam. A consolidating filing is the one that speaks for the whole
 #: business over a period, so the first one the successor makes is the first period it owns.
@@ -59,11 +59,10 @@ def windows(context, cik: str) -> dict:
 
     try:
         filings = list(Company(int(cik)).get_filings(form=CONSOLIDATING_FORMS))
-    except Exception as e:                                   # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         return {"error": str(e), "dates": []}
     dates = sorted(pd.Timestamp(f.filing_date) for f in filings)
-    return {"dates": dates, "n": len(dates),
-            "first": dates[0] if dates else None, "last": dates[-1] if dates else None}
+    return {"dates": dates, "n": len(dates), "first": dates[0] if dates else None, "last": dates[-1] if dates else None}
 
 
 #: How long a predecessor may keep filing consolidating forms after the successor's first one
@@ -78,8 +77,7 @@ def windows(context, cik: str) -> dict:
 SUBSIDIARY_OVERLAP_MONTHS = 18
 
 
-def boundary_for(context, ticker: str, pred: dict,
-                 succ: dict) -> tuple[pd.Timestamp | None, str]:
+def boundary_for(context, ticker: str, pred: dict, succ: dict) -> tuple[pd.Timestamp | None, str]:
     """The seam, and the sentence that justifies it.
 
     ⚠ TWO SHAPES, TWO RULES, AND USING ONE RULE FOR BOTH LOSES FILINGS SILENTLY.
@@ -101,8 +99,7 @@ def boundary_for(context, ticker: str, pred: dict,
     blends nothing, because there is nothing after it to blend.
     """
     if not succ["dates"]:
-        return None, ("the successor has filed no 10-K/10-Q, so no seam can be measured -- "
-                      "it has not yet reported as the registrant")
+        return None, ("the successor has filed no 10-K/10-Q, so no seam can be measured -- it has not yet reported as the registrant")
     if not pred["dates"]:
         return None, "the predecessor filed no 10-K/10-Q, which contradicts oracle 3"
 
@@ -112,8 +109,7 @@ def boundary_for(context, ticker: str, pred: dict,
         kept = [d for d in pred["dates"] if d < cut]
         dropped = [d for d in pred["dates"] if d >= cut]
         if not kept:
-            return None, (f"the successor's first 10-K/10-Q ({cut.date()}) precedes every "
-                          "predecessor filing -- the two CIKs are the wrong way round")
+            return None, (f"the successor's first 10-K/10-Q ({cut.date()}) precedes every predecessor filing -- the two CIKs are the wrong way round")
         return cut, (
             f"boundary = the successor's first consolidating filing, {cut.date()}, because the "
             f"predecessor kept filing 10-K/10-Q for {overlap_months:.0f} months past it "
@@ -121,7 +117,8 @@ def boundary_for(context, ticker: str, pred: dict,
             f"therefore a CONTINUING SUBSIDIARY. Those {len(dropped)} are correctly excluded "
             f"from the parent's accounts by the dated split and correctly admitted as events "
             f"by the union. The predecessor keeps {len(kept)} filings "
-            f"({kept[0].date()} .. {kept[-1].date()})")
+            f"({kept[0].date()} .. {kept[-1].date()})"
+        )
 
     # ⚠ THIS BRANCH IS SAFE BUT NOT ALWAYS RIGHT, AND APO IS THE EXCEPTION. It never loses a
     # predecessor filing, and where the successor ALSO filed for a pre-boundary period it
@@ -146,12 +143,19 @@ def boundary_for(context, ticker: str, pred: dict,
             "%s: the successor filed %d consolidating reports BEFORE the proposed boundary "
             "%s (%s .. %s). If that is a full quarterly series it was already the parent and "
             "this boundary is too late -- adjudicate against oracle 4's comparative year, as "
-            "APO required.", ticker, len(succ_before), cut.date(),
-            succ_before[0].date(), succ_before[-1].date())
+            "APO required.",
+            ticker,
+            len(succ_before),
+            cut.date(),
+            succ_before[0].date(),
+            succ_before[-1].date(),
+        )
     if not succ_after:
-        return None, (f"the successor has filed no 10-K/10-Q on or after {cut.date()}, the day "
-                      "after the predecessor's last -- so it has not yet reported as the "
-                      "registrant and there is no seam to draw")
+        return None, (
+            f"the successor has filed no 10-K/10-Q on or after {cut.date()}, the day "
+            "after the predecessor's last -- so it has not yet reported as the "
+            "registrant and there is no seam to draw"
+        )
     return cut, (
         f"boundary = the day after the predecessor's LAST consolidating filing, {cut.date()}. "
         f"It kept filing until {pred['last'].date()}, only {overlap_months:.0f} months past "
@@ -160,7 +164,8 @@ def boundary_for(context, ticker: str, pred: dict,
         f"{len(pred['dates'])} of its filings are kept ({pred['first'].date()} .. "
         f"{pred['last'].date()}). The successor contributes {len(succ_after)} filings from "
         f"{succ_after[0].date()}; its {len(succ['dates']) - len(succ_after)} earlier filing(s) "
-        "are the shell's own pre-merger reports and are deliberately excluded")
+        "are the shell's own pre-merger reports and are deliberately excluded"
+    )
 
 
 def build(context, record: dict) -> dict | None:
@@ -174,36 +179,48 @@ def build(context, record: dict) -> dict | None:
 
     prof = record.get("predecessor", {})
     o4 = record.get("oracle4")
-    o3 = (f"Found by the co-indexed filer scan on {record.get('co_indexed_on')} of the "
-          f"successor's registrant-filed documents nearest the boundary. It filed "
-          f"{prof.get('n_proxies_before')} proxies of its own before the seam (last "
-          f"{prof.get('last_proxy_before')}), so it was the public registrant, and its filing "
-          f"rate went {prof.get('n_before_window')} -> {prof.get('n_after_window')} "
-          f"({prof.get('rate_ratio')}x) across it.")
-    o4s = (f" Chosen over {len(record.get('candidates', [])) - 1} other collapsing "
-           f"predecessor(s) by the comparative-column test: {o4['why']}" if o4 else "")
+    o3 = (
+        f"Found by the co-indexed filer scan on {record.get('co_indexed_on')} of the "
+        f"successor's registrant-filed documents nearest the boundary. It filed "
+        f"{prof.get('n_proxies_before')} proxies of its own before the seam (last "
+        f"{prof.get('last_proxy_before')}), so it was the public registrant, and its filing "
+        f"rate went {prof.get('n_before_window')} -> {prof.get('n_after_window')} "
+        f"({prof.get('rate_ratio')}x) across it."
+    )
+    o4s = (
+        f" Chosen over {len(record.get('candidates', [])) - 1} other collapsing predecessor(s) by the comparative-column test: {o4['why']}"
+        if o4
+        else ""
+    )
 
-    return {"kind": "reorganisation", "segments": [
-        {"cik": pred_cik, "valid_to": str(cut.date()),
-         "evidence": f"PROPOSED 2026-09-10. {record.get('predecessor_name')} (CIK {pred_cik}), "
-                     f"the pre-boundary registrant. {o3}{o4s} {why}."},
-        {"cik": succ_cik, "valid_from": str(cut.date()),
-         "evidence": f"PROPOSED 2026-09-10. The successor, CIK {succ_cik}. Its own archive "
-                     f"starts {record.get('own_first')} "
-                     f"({record.get('own_lead_days')} d before the truncation) with "
-                     f"{record.get('own_active_before')} filings older than the "
-                     f"pre-registration grace window, and it has filed {succ['n']} 10-K/10-Q "
-                     f"from {succ['first'].date()}."}]}
+    return {
+        "kind": "reorganisation",
+        "segments": [
+            {
+                "cik": pred_cik,
+                "valid_to": str(cut.date()),
+                "evidence": f"PROPOSED 2026-09-10. {record.get('predecessor_name')} (CIK {pred_cik}), the pre-boundary registrant. {o3}{o4s} {why}.",
+            },
+            {
+                "cik": succ_cik,
+                "valid_from": str(cut.date()),
+                "evidence": f"PROPOSED 2026-09-10. The successor, CIK {succ_cik}. Its own archive "
+                f"starts {record.get('own_first')} "
+                f"({record.get('own_lead_days')} d before the truncation) with "
+                f"{record.get('own_active_before')} filings older than the "
+                f"pre-registration grace window, and it has filed {succ['n']} 10-K/10-Q "
+                f"from {succ['first'].date()}.",
+            },
+        ],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default="./configs")
     p.add_argument("--classified", required=True, help="detect_registrant_cutovers --out JSON")
     p.add_argument("--out", help="write the proposal here")
-    p.add_argument("--merge", action="store_true",
-                   help="merge the proposal INTO the live register (a risk-zone write)")
+    p.add_argument("--merge", action="store_true", help="merge the proposal INTO the live register (a risk-zone write)")
     p.add_argument("-t", "--tickers", default="", help="restrict to these")
     args = p.parse_args(argv)
 
@@ -223,13 +240,11 @@ def main(argv: list[str] | None = None) -> int:
         entry = build(context, r)
         if entry:
             proposed[r["ticker"]] = entry
-            print(f"{r['ticker']:6} {entry['segments'][0]['cik']} -> "
-                  f"{entry['segments'][1]['cik']}  at {entry['segments'][1]['valid_from']}")
+            print(f"{r['ticker']:6} {entry['segments'][0]['cik']} -> {entry['segments'][1]['cik']}  at {entry['segments'][1]['valid_from']}")
 
     print(f"\n{len(proposed)} proposed entr(y|ies)")
     if args.out:
-        Path(args.out).write_text(json.dumps(proposed, indent=2, ensure_ascii=False) + "\n",
-                                  encoding="utf-8")
+        Path(args.out).write_text(json.dumps(proposed, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"wrote {args.out}")
 
     if args.merge:
@@ -241,15 +256,13 @@ def main(argv: list[str] | None = None) -> int:
         blob.update(proposed)
         # `_README` first, then tickers alphabetically -- a stable order so a later merge is a
         # clean diff rather than a reshuffle.
-        ordered = {"_README": blob["_README"],
-                   **{k: blob[k] for k in sorted(k for k in blob if not k.startswith("_"))}}
-        path.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8")
+        ordered = {"_README": blob["_README"], **{k: blob[k] for k in sorted(k for k in blob if not k.startswith("_"))}}
+        path.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"merged into {path}")
         # Re-read through the loader: a merge that produces a register the validator refuses
         # must fail HERE, not in tonight's extraction run.
-        load_registrants.__wrapped__ if hasattr(load_registrants, "__wrapped__") else None
         from src.data_extract.utils.common.registrant import _registrants_at
+
         _registrants_at.cache_clear()
         print(f"validated: {len(load_registrants(str(context.config_dir)))} entries load")
     return 0

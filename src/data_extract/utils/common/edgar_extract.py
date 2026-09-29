@@ -32,10 +32,10 @@ def html_to_text(raw: str) -> str:
     raw = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw)
     raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
     raw = re.sub(r"(?i)</(p|div|tr|td|th|table|li|h[1-6])>", " ", raw)
-    raw = re.sub(r"<[^>]+>", " ", raw)            # remaining tags
+    raw = re.sub(r"<[^>]+>", " ", raw)  # remaining tags
     text = html.unescape(raw)
-    text = text.replace("\xa0", " ")              # non-breaking space
-    text = text.replace("​", "").replace("﻿", "")   # zero-width spaces (proxy tables)
+    text = text.replace("\xa0", " ")  # non-breaking space
+    text = text.replace("​", "").replace("﻿", "")  # zero-width spaces (proxy tables)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\s*\n\s*", "\n", text)
     return text.strip()
@@ -63,10 +63,12 @@ def _flat(text: str) -> str:
 # match a service-territory "population of ~982,000 people" (AES). Both nouns stay, but
 # the poisoned collocations are excluded here rather than penalised later, because a
 # reserve table has no competing candidate to lose to.
-_EMP_NOUN = (r"employees|persons|associates|colleagues|team\s+members|teammates|"
-             r"workers(?![’']?\s*(?:compensation|comp\b))|"
-             r"staff\s+members|crew\s+members|workforce|personnel|people")
-_NUM = r"\d{1,3}(?:,\d{3})+|\d{4,}|\d{1,3}(?:\.\d+)?"    # 161,000 | 12300 | 62.3
+_EMP_NOUN = (
+    r"employees|persons|associates|colleagues|team\s+members|teammates|"
+    r"workers(?![’']?\s*(?:compensation|comp\b))|"
+    r"staff\s+members|crew\s+members|workforce|personnel|people"
+)
+_NUM = r"\d{1,3}(?:,\d{3})+|\d{4,}|\d{1,3}(?:\.\d+)?"  # 161,000 | 12300 | 62.3
 # The separator accepts "/" so a slashed qualifier chain is bridged: AES writes
 # "8,336 full time/permanent employees", where a `\s*`-only separator stopped at the
 # slash, left the sentence with NO candidate, and handed the row to a service-territory
@@ -78,36 +80,68 @@ _QUAL = r"(?:(?:full|part)[-\s]?time|regular|salaried|hourly|temporary|permanent
 # number and CF was stored as 100 employees for 2012-2019 against a true ~2,500.
 _SPLIT_RE = re.compile(
     rf"({_NUM})\s*((?:full|part)[-\s]?time)\s+and\s+({_NUM})\s*((?:full|part)[-\s]?time)"
-    rf"\s*(?:{_EMP_NOUN})\b", re.I)
+    rf"\s*(?:{_EMP_NOUN})\b",
+    re.I,
+)
 # comparative "N1 and N2 [qual]* employees, respectively" (two fiscal years) -> the
 # CURRENT year is the FIRST number, so capture N1 (the adjacent-to-noun form would
 # otherwise return the prior year, e.g. KO "65,900 and 69,700 employees").
-_CMP_RE = re.compile(
-    rf"({_NUM})\s*(thousand|million)?\s+and\s+(?:{_NUM})\s*(?:thousand|million)?\s*(?:{_QUAL}){{0,3}}(?:{_EMP_NOUN})\b", re.I)
+_CMP_RE = re.compile(rf"({_NUM})\s*(thousand|million)?\s+and\s+(?:{_NUM})\s*(?:thousand|million)?\s*(?:{_QUAL}){{0,3}}(?:{_EMP_NOUN})\b", re.I)
 _FWD_RE = re.compile(rf"({_NUM})\s*(thousand|million)?\s*(?:{_QUAL}){{0,5}}(?:{_EMP_NOUN})\b", re.I)
 # "(average/total) number of [qual] employees [was/:] N" — high precision via the
 # "number of" prefix; also catches table rows where the number directly follows the
 # noun with no connector (e.g. NSC "Average number of employees 30,456 29,482 ...").
 _NUMOF_RE = re.compile(
     rf"number of\s+(?:{_QUAL}){{0,3}}(?:{_EMP_NOUN})\b\s*"
-    rf"(?:was|were|is|are|:|of|approximately|about|totaled)?\s*({_NUM})\s*(thousand|million)?", re.I)
+    rf"(?:was|were|is|are|:|of|approximately|about|totaled)?\s*({_NUM})\s*(thousand|million)?",
+    re.I,
+)
 _BWD_RE = re.compile(
     rf"(?:{_EMP_NOUN})\b[^.]{{0,55}}?\b(?:was|were|of|is|are|totaled|numbered|approximately|about|at|:)\s+"
-    rf"(?:approximately\s+|about\s+)?({_NUM})\s*(thousand|million)?", re.I)
-_BAD_PRE = ("stock", "purchase plan", "benefit", "pension", "401(k)",
-            "retirement", "savings plan", "stockholders", "shareholders",
-            "restricted stock", "option", "per share", "shares", "payroll")
+    rf"(?:approximately\s+|about\s+)?({_NUM})\s*(thousand|million)?",
+    re.I,
+)
+_BAD_PRE = (
+    "stock",
+    "purchase plan",
+    "benefit",
+    "pension",
+    "401(k)",
+    "retirement",
+    "savings plan",
+    "stockholders",
+    "shareholders",
+    "restricted stock",
+    "option",
+    "per share",
+    "shares",
+    "payroll",
+)
 # SUBSET contexts (union / pension / segment counts) — a real total headcount is not
 # one of these, so penalize when they surround the number (e.g. KO "400 employees ...
 # covered by collective bargaining", CAT "18,000 active participants").
-_SUBSET = ("union", "collective bargaining", "represented by", "covered by", "participants",
-           "bargaining", "unionized", "subject to collective", "party to",
-           # a headcount quoted while describing a business being sold/closed is a
-           # SUBSET, not the company total (Citi 2026: "divested ... approximately 800
-           # employees" outscored the real "approximately 226,000 full-time employees")
-           "divest", "sold", "disposal", "discontinued", "closure", "acquired from",
-           # service-territory / customer populations, not staff
-           "population")
+_SUBSET = (
+    "union",
+    "collective bargaining",
+    "represented by",
+    "covered by",
+    "participants",
+    "bargaining",
+    "unionized",
+    "subject to collective",
+    "party to",
+    # a headcount quoted while describing a business being sold/closed is a
+    # SUBSET, not the company total (Citi 2026: "divested ... approximately 800
+    # employees" outscored the real "approximately 226,000 full-time employees")
+    "divest",
+    "sold",
+    "disposal",
+    "discontinued",
+    "closure",
+    "acquired from",
+    # service-territory / customer populations, not staff
+    "population",
+)
 # Currency + table markers: a number sitting in a financial table is not a headcount.
 _TABLE_PRE = ("$", "in thousands", "in millions", "per share", "reserve")
 
@@ -129,8 +163,11 @@ def _emp_value(raw: str, unit: str | None, tail: str) -> int:
 # "<subject> had/employs approximately N" — the subject is usually the company NAME
 # ("Citi had approximately 226,000..."), not the literal "we", which is why the old
 # `"we had"` test scored that sentence 0 and let an 800-employee divestiture win.
-_HAD_RE = re.compile(r"\b(?:had|have|has|employs?|employed|employing)\b\s*$|"
-                     r"\b(?:had|have|has|employs?|employed|employing)\b[^.]{0,25}$", re.I)
+_HAD_RE = re.compile(
+    r"\b(?:had|have|has|employs?|employed|employing)\b\s*$|"
+    r"\b(?:had|have|has|employs?|employed|employing)\b[^.]{0,25}$",
+    re.I,
+)
 
 
 def _emp_ctx_score(pre: str) -> int:
@@ -141,7 +178,7 @@ def _emp_ctx_score(pre: str) -> int:
         s += 2
     if any(k in pre for k in ("we had", "we employ", "employed", "workforce", "we have", "had a total")):
         s += 2
-    elif _HAD_RE.search(pre):        # "<company> had approximately ..." — same claim
+    elif _HAD_RE.search(pre):  # "<company> had approximately ..." — same claim
         s += 2
     if any(k in pre for k in ("full-time", "full time", "part-time")):
         s += 1
@@ -171,13 +208,13 @@ def extract_employee_count(text: str) -> int | None:
     # so the candidate value is their SUM (2,400 full-time + 100 part-time = 2,500).
     for m in _SPLIT_RE.finditer(t):
         ns, ne = m.start(1), m.end(3)
-        val = (_emp_value(m.group(1), None, "") + _emp_value(m.group(3), None, ""))
+        val = _emp_value(m.group(1), None, "") + _emp_value(m.group(3), None, "")
         if not (100 <= val <= 5_000_000):
             continue
-        pre = tl[max(0, ns - 60):ns]
+        pre = tl[max(0, ns - 60) : ns]
         if any(b in pre for b in _BAD_PRE) or any(b in pre for b in _TABLE_PRE):
             continue
-        score = 4 + _emp_ctx_score(pre)                 # outranks every single-number form
+        score = 4 + _emp_ctx_score(pre)  # outranks every single-number form
         if score > best_score or (score == best_score and val > (best or 0)):
             best, best_score = val, score
 
@@ -185,20 +222,20 @@ def extract_employee_count(text: str) -> int | None:
         for m in regex.finditer(t):
             unit = m.group(2)
             ns, ne = m.start(1), m.end(1)
-            val = _emp_value(m.group(1), unit, tl[ne:ne + 40])
-            if val < 100 or val > 5_000_000:            # sanity band for S&P 500
+            val = _emp_value(m.group(1), unit, tl[ne : ne + 40])
+            if val < 100 or val > 5_000_000:  # sanity band for S&P 500
                 continue
-            pre = tl[max(0, ns - 60):ns]
-            post = tl[ne:ne + 45]
+            pre = tl[max(0, ns - 60) : ns]
+            post = tl[ne : ne + 45]
             score = base + _emp_ctx_score(pre)
             if any(b in pre for b in _BAD_PRE):
                 score -= 6
             if any(b in pre for b in _TABLE_PRE):
-                score -= 6                              # $ / "in thousands" -> a table row
+                score -= 6  # $ / "in thousands" -> a table row
             if any(sub in pre or sub in post for sub in _SUBSET):
-                score -= 6                              # union / pension / segment subset
+                score -= 6  # union / pension / segment subset
             if not unit and "thousand" not in post and 1990 <= val <= 2035:
-                score -= 3                              # likely a calendar year, not a count
+                score -= 3  # likely a calendar year, not a count
             # On a TIE the larger count wins. A total headcount is by construction the
             # biggest workforce number in the filing, whereas the spurious ties are all
             # subsets of it (Citi: 800 divested vs 226,000 total, both scoring 4).

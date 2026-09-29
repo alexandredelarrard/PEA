@@ -12,12 +12,21 @@ exactly what this package replaced (one of them still carried a stale 8,000-char
 Adding an action = two `.md` files in `prompt_templates/` + a schema class + a table.
 Adding a provider = implement `_Provider`, add a key pattern, add an `llm_model` entry.
 """
+
 from src.gpt_extract.utils.embeddings import (
-    EMBEDDING_BATCH_SIZE, EMBEDDING_MAX_CHARS, EMBEDDING_MODEL, cosine, embed_texts,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MAX_CHARS,
+    EMBEDDING_MODEL,
+    cosine,
+    embed_texts,
     openai_api_key,
 )
 
 __all__ = [
-    "EMBEDDING_BATCH_SIZE", "EMBEDDING_MAX_CHARS", "EMBEDDING_MODEL",
-    "cosine", "embed_texts", "openai_api_key",
+    "EMBEDDING_BATCH_SIZE",
+    "EMBEDDING_MAX_CHARS",
+    "EMBEDDING_MODEL",
+    "cosine",
+    "embed_texts",
+    "openai_api_key",
 ]

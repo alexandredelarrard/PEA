@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import click
 
@@ -49,7 +50,7 @@ TABLE_KWARGS = dict(required=True, help="Table to validate, as named in `Tables`
 
 OUT_ARGS = ("-o", "--out")
 OUT_KWARGS = dict(
-    required=True, help="Run directory -- _cache/, _out/ and plots/ are created inside it. " "Use reports/validate/<slug>; NEVER a path under src/."
+    required=True, help="Run directory -- _cache/, _out/ and plots/ are created inside it. Use reports/validate/<slug>; NEVER a path under src/."
 )
 
 
@@ -57,13 +58,13 @@ def _shared(fn: Callable) -> Callable:
     """The options every check command takes. Declared once so `--out` cannot mean two
     things in two commands."""
     for decorator in (
-        click.option(*CONFIG_ARGS, **CONFIG_KWARGS),
-        click.option(*TICKERS_ARGS, **TICKERS_KWARGS),
+        click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS)),
+        click.option(*TICKERS_ARGS, **cast(dict[str, Any], TICKERS_KWARGS)),
         click.option(
             "--cache/--no-cache", "use_cache", default=True, show_default=True, help="Read the `pull` snapshot in <out>/_cache when one exists."
         ),
-        click.option(*OUT_ARGS, **OUT_KWARGS),
-        click.option(*TABLE_ARGS, **TABLE_KWARGS),
+        click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS)),
+        click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS)),
     ):
         fn = decorator(fn)
     return fn
@@ -75,9 +76,9 @@ def cli() -> None:
 
 
 @cli.command(help="Stream one table into <out>/_cache/<table>.parquet, reused by every check.")
-@click.option(*TABLE_ARGS, **TABLE_KWARGS)
-@click.option(*OUT_ARGS, **OUT_KWARGS)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TABLE_ARGS, **cast(dict[str, Any], TABLE_KWARGS))
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def pull(table: str, out: str, config_path: str) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     started = time.perf_counter()
@@ -131,6 +132,11 @@ leakage = _command("leakage", checks.check_leakage, "Horizon recession on the la
 clip = _command("clip", checks.check_clip, "On-clip share per peer-z leg and tie mass per percentile leg.")
 timeseries = _command("timeseries", checks.check_timeseries, "Per (ticker, leg): jumps, holes and frozen spells over the leg's own support.")
 bounds = _command("bounds", checks.check_bounds, "Declared [lo, hi] per leg; abstains when the table declares none.")
+earnings_calls = _command(
+    "earnings-calls",
+    checks.check_earnings_calls,
+    "EC transcript coverage, malformed calls, exact schema, distributions, redundancy and recent drift.",
+)
 
 
 @cli.command(help="Live columns vs a feature catalogue, asserted in BOTH directions.")
@@ -140,7 +146,7 @@ bounds = _command("bounds", checks.check_bounds, "Declared [lo, hi] per leg; abs
     "catalogue_path",
     default=None,
     type=click.Path(path_type=Path),
-    help="JSON mapping field -> description, or a .py exposing a dict named CATALOGUE. " "Absent -> the check abstains.",
+    help="JSON mapping field -> description, or a .py exposing a dict named CATALOGUE. Absent -> the check abstains.",
 )
 def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config_path: str, catalogue_path: Path | None) -> None:
     _run(checks.check_catalogue, table, out, use_cache, config_path, tickers, catalogue=catalogue_path)
@@ -157,8 +163,8 @@ def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config
     is_flag=True,
     help="Ignore the retained EDGAR replay cache and fetch the quarter again.",
 )
-@click.option(*OUT_ARGS, **OUT_KWARGS)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def insider_parity(
     quarter: str,
     workers: int,
@@ -176,5 +182,5 @@ def insider_parity(
         refresh_replay=refresh_replay,
     )
     json_path, markdown_path = write_reconciliation_report(out, result)
-    click.echo(f"insider parity {result['quarter']}: " f"{'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
+    click.echo(f"insider parity {result['quarter']}: {'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
     sys.exit(0 if result["passed"] else 1)

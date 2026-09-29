@@ -12,14 +12,20 @@ Two thresholds here are load-bearing and measured, not tuned:
                         is the TOC entry, not the section
   `_DIRECTOR_MAX_FRAC`  the director-window ceiling
 """
+
 from __future__ import annotations
 
 import logging
 import re
 
 from src.data_extract.utils.structure.def14a.tables import (
-    AUDIT_FEES, DIRECTOR_COMP, OWNERSHIP_5PCT, OWNERSHIP_INSIDER, SCT,
-    classify_filing, to_tsv,
+    AUDIT_FEES,
+    DIRECTOR_COMP,
+    OWNERSHIP_5PCT,
+    OWNERSHIP_INSIDER,
+    SCT,
+    classify_filing,
+    to_tsv,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,7 +34,7 @@ logger = logging.getLogger(__name__)
 # precise text, so each section is capped tightly to just its data (the Summary Comp
 # Table and pay-ratio/auditor lines are compact; only the director bios run long). Total
 # ~51k chars vs the old ~122k -> ~2.5x cheaper / faster with no loss of the target fields.
-_CONTEXT_PRE = 500        # chars of context before the anchor match
+_CONTEXT_PRE = 500  # chars of context before the anchor match
 
 # Content-based patterns that reliably mark the START of each section's actual data.
 # These match real content (biographical text, table rows, share tables) rather than
@@ -53,10 +59,14 @@ _DIRECTOR_CONTENT_RE = re.compile(
 # "Awards" column — for the rare filing whose SCT title doesn't survive flattening.
 _COMPENSATION_TITLE_RE = re.compile(
     r"Summary\s+Compensation\s+Table"
-    r"(?=[\s\S]{0,1800}?\b20\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})", re.I)
+    r"(?=[\s\S]{0,1800}?\b20\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})",
+    re.I,
+)
 _COMPENSATION_CONTENT_RE = re.compile(
     r"\bSalary\b\s*(?:\(\$\)|\$|\d|Bonus|Stock|Option|Awards)"
-    r"(?=[\s\S]{0,400}?\bTotal\b(?!\s*(?:Cash|Direct|Realized)))(?=[\s\S]{0,400}?Awards)", re.I)
+    r"(?=[\s\S]{0,400}?\bTotal\b(?!\s*(?:Cash|Direct|Realized)))(?=[\s\S]{0,400}?Awards)",
+    re.I,
+)
 # Ownership: the target line is "all directors and executive officers as a group"; else a
 # beneficial-ownership row (a share count of 5+ digits then a percent). Requiring the
 # "beneficially"/"as a group" context avoids false matches on $-amount narratives.
@@ -78,16 +88,16 @@ _OWNERSHIP_CONTENT_RE = re.compile(
 # following digit/decimal or a thousands comma ("45,000") but still allows a grammatical trailing
 # comma ("Alice Johnson, 58, has served ...").
 _DIRECTOR_ROW_RE = re.compile(
-    r"\bAge\b[:*\s]{0,4}(?:4\d|5\d|6\d|7\d|8\d)(?![\d.]|,\d)"   # "Age 62" / "Age: 70" / "Age** 60"
+    r"\bAge\b[:*\s]{0,4}(?:4\d|5\d|6\d|7\d|8\d)(?![\d.]|,\d)"  # "Age 62" / "Age: 70" / "Age** 60"
     r"|\b[A-Z][a-zA-Z]+,\s+(?:4\d|5\d|6\d|7\d|8\d)(?![\d.]|,\d)"  # "Douglas, 62" rows (name, age)
-    r"|\bDirector\s+Since\b",                                     # "Director Since" column / label
+    r"|\bDirector\s+Since\b",  # "Director Since" column / label
     re.I,
 )
 _OWNERSHIP_ROW_RE = re.compile(
-    r"\b\d[\d,]{4,}\b\s*(?:\(\d+\)\s*)?(?:\*|\d{1,2}(?:\.\d+)?\s*%)"   # share count + percent/'*'
+    r"\b\d[\d,]{4,}\b\s*(?:\(\d+\)\s*)?(?:\*|\d{1,2}(?:\.\d+)?\s*%)"  # share count + percent/'*'
     r"|\b(?:BlackRock|Vanguard|State\s+Street|FMR\s+LLC|T\.?\s*Rowe\s+Price|"
     r"Capital\s+(?:Research|Group)|Wellington|Massachusetts\s+Financial|Dodge\s*&\s*Cox)\b"  # 5% holders
-    r"|\bas\s+a\s+group\b",                                            # insider summary row
+    r"|\bas\s+a\s+group\b",  # insider summary row
     re.I,
 )
 
@@ -215,14 +225,14 @@ _TABLE_TARGETS = (
 #: BEFORE the fee table, HUBB / ROK 149k / 165k away) and B now owns the table anyway, so this
 #: window only has to reach the PROSE disclosures.
 _ANCHOR_SECTIONS = (
-    ("DIRECTOR NOMINEES",      _DIRECTOR_ROW_RE,  _DIRECTOR_CONTENT_RE,     _DIRECTOR_ANCHORS,     False, _TOC_SKIP_FRAC, 20_000, _DIRECTOR_MAX_FRAC),
-    ("CORPORATE GOVERNANCE",   None,              None,                     _GOVERNANCE_ANCHORS,   False, _TOC_SKIP_FRAC,  6_000, None),
-    ("PAY RATIO & MEDIAN PAY", None,              _PAYRATIO_CONTENT_RE,     _PAYRATIO_ANCHORS,     False, _TOC_SKIP_FRAC,  4_500, None),
-    ("SAY ON PAY",             None,              _SAYONPAY_CONTENT_RE,     _SAYONPAY_ANCHORS,     False, 0.0,             4_500, None),
+    ("DIRECTOR NOMINEES", _DIRECTOR_ROW_RE, _DIRECTOR_CONTENT_RE, _DIRECTOR_ANCHORS, False, _TOC_SKIP_FRAC, 20_000, _DIRECTOR_MAX_FRAC),
+    ("CORPORATE GOVERNANCE", None, None, _GOVERNANCE_ANCHORS, False, _TOC_SKIP_FRAC, 6_000, None),
+    ("PAY RATIO & MEDIAN PAY", None, _PAYRATIO_CONTENT_RE, _PAYRATIO_ANCHORS, False, _TOC_SKIP_FRAC, 4_500, None),
+    ("SAY ON PAY", None, _SAYONPAY_CONTENT_RE, _SAYONPAY_ANCHORS, False, 0.0, 4_500, None),
     # ---- fallbacks: emitted only when the table classifier found nothing ----
     ("EXECUTIVE COMPENSATION", None, (_COMPENSATION_TITLE_RE, _COMPENSATION_CONTENT_RE), _COMPENSATION_ANCHORS, False, _TOC_SKIP_FRAC, 7_000, None),
-    ("SECURITY OWNERSHIP",     _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE,    _OWNERSHIP_ANCHORS,    False, _TOC_SKIP_FRAC, 10_000, None),
-    ("AUDITOR FEES",           None,              _AUDITOR_CONTENT_RE,      _AUDITOR_ANCHORS,      False, _TOC_SKIP_FRAC,  2_500, None),
+    ("SECURITY OWNERSHIP", _OWNERSHIP_ROW_RE, _OWNERSHIP_CONTENT_RE, _OWNERSHIP_ANCHORS, False, _TOC_SKIP_FRAC, 10_000, None),
+    ("AUDITOR FEES", None, _AUDITOR_CONTENT_RE, _AUDITOR_ANCHORS, False, _TOC_SKIP_FRAC, 2_500, None),
 )
 
 
@@ -267,7 +277,7 @@ def _densest_window(
 
 def _find_content_section(
     text: str,
-    content_re: "re.Pattern | tuple[re.Pattern, ...] | None",
+    content_re: re.Pattern | tuple[re.Pattern, ...] | None,
     fallback_anchors: tuple[str, ...],
     context_pre: int = _CONTEXT_PRE,
     last_occurrence: bool = False,
@@ -290,8 +300,7 @@ def _find_content_section(
     last year's result in an early "voting matters" panel, and A-2016's sits at 4.2%. A floor
     is only correct for the sections that are NEVER in the front matter.
     """
-    patterns = (() if content_re is None
-                else content_re if isinstance(content_re, tuple) else (content_re,))
+    patterns = () if content_re is None else content_re if isinstance(content_re, tuple) else (content_re,)
     min_pos = int(len(text) * toc_frac) if toc_frac > 0 else 0
     for pattern in patterns:
         matches = [m for m in pattern.finditer(text) if m.start() >= min_pos]
@@ -308,7 +317,7 @@ def _find_content_section(
             p = low.find(anchor, start)
             if p == -1:
                 break
-            after = text[p + len(anchor): p + len(anchor) + 200]
+            after = text[p + len(anchor) : p + len(anchor) + 200]
             letter_ratio = sum(c.isalpha() for c in after[:100]) / max(len(after[:100]), 1)
             if letter_ratio > 0.20:
                 return max(0, p - context_pre)
@@ -383,14 +392,12 @@ def prepare_def14a_sections(html: str, text: str) -> str:
     for label, dense_re, content_re, anchors, use_last, toc_frac, chars, max_frac in _ANCHOR_SECTIONS:
         if label in fallbacks and not fallbacks[label]:
             continue
-        pos = (_densest_window(text, dense_re, chars, max_frac=max_frac)
-               if dense_re is not None else -1)
+        pos = _densest_window(text, dense_re, chars, max_frac=max_frac) if dense_re is not None else -1
         if pos == -1:
-            pos = _find_content_section(text, content_re, anchors,
-                                        last_occurrence=use_last, toc_frac=toc_frac)
+            pos = _find_content_section(text, content_re, anchors, last_occurrence=use_last, toc_frac=toc_frac)
         if pos == -1:
             continue
-        parts.append(f"\n\n=== {label} ===\n{text[pos:min(len(text), pos + chars)]}")
+        parts.append(f"\n\n=== {label} ===\n{text[pos : min(len(text), pos + chars)]}")
         from_a.append(label)
 
     # the auditor's NAME, positioned on B's fee table (its own small slice, because the name
@@ -405,8 +412,7 @@ def prepare_def14a_sections(html: str, text: str) -> str:
     missing = [lbl for lbl, _ in _TABLE_TARGETS if lbl not in from_b]
     # This log line is the diagnostic that tells you a FORMAT ERA broke: a target that
     # silently moves from B to A across a filer's template change shows up here first.
-    logger.debug("def14a carve: B=%s | A=%s | no-table=%s | %d chars",
-                 ",".join(from_b) or "-", ",".join(from_a) or "-",
-                 ",".join(missing) or "-", len(payload))
+    logger.debug(
+        "def14a carve: B=%s | A=%s | no-table=%s | %d chars", ",".join(from_b) or "-", ",".join(from_a) or "-", ",".join(missing) or "-", len(payload)
+    )
     return payload
-

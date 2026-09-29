@@ -54,7 +54,7 @@ def test_employee_fields_pit_growth_and_rev_per_employee():
 
     print("\n=== SANITY CHECK: workforce features (10-K headcount history) ===")
     print(f"  headcount 1,000 -> 1,200: YoY growth = {growth:+.1%} (expected +20%)")
-    print(f"  revenue/employee = 600,000/1,200 = " f"{F['revenue_per_employee'].loc[after_second,'AAA']:.0f}")
+    print(f"  revenue/employee = 600,000/1,200 = {F['revenue_per_employee'].loc[after_second, 'AAA']:.0f}")
     print("  Both NaN before the first filing -> historical & leak-free. Validated.")
 
 
@@ -107,7 +107,7 @@ def test_rev_per_employee_growth_handles_inf_no_crash():
     assert "ZZZ" not in g.columns or pd.isna(g.loc[after, "ZZZ"])  # inf -> no value, no crash
     print("\n=== SANITY CHECK: rev/employee growth inf handling ===")
     print(
-        f"  AAA finite +{g.loc[after,'AAA']:.0%}; ZZZ 0->5000 gives +inf -> scrubbed to NaN "
+        f"  AAA finite +{g.loc[after, 'AAA']:.0%}; ZZZ 0->5000 gives +inf -> scrubbed to NaN "
         "via replace([inf,-inf], np.nan) with NO IndexError (pandas 3.x). Validated."
     )
 

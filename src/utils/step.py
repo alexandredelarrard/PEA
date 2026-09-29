@@ -1,16 +1,17 @@
 import logging
-from abc import abstractmethod
-from omegaconf import DictConfig
 import warnings
+from abc import abstractmethod
 from datetime import datetime
+
+from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.string import camel_to_snake
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-class Step:
 
+class Step:
     def __init__(
         self,
         config: DictConfig,

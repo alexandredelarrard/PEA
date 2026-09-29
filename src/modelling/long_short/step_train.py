@@ -1,21 +1,21 @@
 import gc
-import numpy as np
 import json
 import pickle
-import pandas as pd
 from datetime import datetime, timedelta
-from omegaconf import DictConfig
-import lightgbm as lgb
+from typing import Any, cast
 
-from src.data_store.schema import Tables
-from src.utils.step import Step
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from omegaconf import DictConfig
+
+from src.constants.constants import PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE
 from src.context import Context
-from src.constants.constants import (PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE)
-from src.data_aggregate.utils.assemble.cube import (panel_from_cube, target_column,
-                                                    horizons_in, is_meta_column)
+from src.data_aggregate.utils.assemble.cube import horizons_in, is_meta_column, panel_from_cube, target_column
+from src.data_store.schema import Tables
+from src.modelling.long_short.utils import baselines, diagnostics
 from src.modelling.long_short.utils import model as ml
-from src.modelling.long_short.utils import baselines
-from src.modelling.long_short.utils import diagnostics
+from src.utils.step import Step
 
 
 class StepModelling(Step):
@@ -52,13 +52,13 @@ class StepModelling(Step):
         ROWS (label IS NOT NULL, pushed into SQL) -- cross-validates, trains, saves, scores it for
         the blend, and FREES it before the next, so peak memory is a single horizon's panel."""
         self._full_history = full_history
-        self._setup()                        # columns + horizons; NO cube data loaded
-        self._process_horizons()             # per-horizon: load -> CV -> train -> save-score -> free
-        self.blend_and_generate_signal()     # blend the small per-horizon score frames
+        self._setup()  # columns + horizons; NO cube data loaded
+        self._process_horizons()  # per-horizon: load -> CV -> train -> save-score -> free
+        self.blend_and_generate_signal()  # blend the small per-horizon score frames
         self.log_feature_importance()
         self.save_models()
         self.save_outputs()
-        self._save_run_diagnostics_kpis()    # run-level kpis (needs the blend weights)
+        self._save_run_diagnostics_kpis()  # run-level kpis (needs the blend weights)
 
     # ------------------------------------------------------------------ #
     def _setup(self):
@@ -79,7 +79,8 @@ class StepModelling(Step):
             raise FileNotFoundError(
                 f"The cube carries no 'target_{self.target_type}_h*' column at all. Run "
                 f"StepBuildCube first (and confirm build_cube.targets.labels includes "
-                f"'{self.target_type}').")
+                f"'{self.target_type}')."
+            )
 
         # per-member column sets = configured allow-list INTERSECTED with what the cube actually has
         # (from the schema; no data scan). Each member/horizon keeps its own (possibly leaner) set.
@@ -96,21 +97,27 @@ class StepModelling(Step):
             allcols |= set(self.linear_cols_by_h[h]) | set(self.lgbm_cols_by_h[h]) | set(self.rf_cols_by_h[h])
         self.feature_cols = sorted(allcols)
         if not self.linear_cols and not self.lgbm_cols:
-            raise ValueError("No configured features present in the cube; check "
-                             "linear_modelling.yml / lgbm_modelling.yml `columns`.")
+            raise ValueError("No configured features present in the cube; check linear_modelling.yml / lgbm_modelling.yml `columns`.")
         self._panel_cols = list(dict.fromkeys(self.feature_cols + self.categorical_cols))
-        self._log.info("Setup: horizons=%s target_type=%s models=%s | features -> "
-                       "linear:%d lgbm:%d (+%d cats) union:%d", self.horizons,
-                       self.target_type, self.model_types, len(self.linear_cols), len(self.lgbm_cols),
-                       len(self.categorical_cols), len(self.feature_cols))
+        self._log.info(
+            "Setup: horizons=%s target_type=%s models=%s | features -> linear:%d lgbm:%d (+%d cats) union:%d",
+            self.horizons,
+            self.target_type,
+            self.model_types,
+            len(self.linear_cols),
+            len(self.lgbm_cols),
+            len(self.categorical_cols),
+            len(self.feature_cols),
+        )
         if dropped:
             # WARNING, not info: a configured column that the cube does not have is a silently
             # SHRUNK feature set, and the model trains and scores anyway. Fourteen `f_ic_*`
             # names in these three files outlived the features they referred to and nothing
             # said so, which is the same silence that let 39 dead features sit in the cube
             # through 68 green tests.
-            self._log.warning("modelling.yml columns absent from the cube -- the feature set is "
-                              "SMALLER than configured (%d dropped): %s", len(dropped), dropped)
+            self._log.warning(
+                "modelling.yml columns absent from the cube -- the feature set is SMALLER than configured (%d dropped): %s", len(dropped), dropped
+            )
 
     def _distinct_horizons(self, cube_cols: set[str]) -> list[int]:
         """Horizons the cube has a label COLUMN for, from the schema alone — no data scan.
@@ -138,14 +145,11 @@ class StepModelling(Step):
         column is what keeps the loaded row count to this horizon's labelled rows."""
         store = self._context.store
         tcol = target_column(self.target_type, horizon)
-        raw = store.load(Tables.cube, columns=self._load_cols_for(tcol),
-                         where={tcol: store.NOT_NULL},
-                         optional=True)
+        raw = store.load(Tables.cube, columns=self._load_cols_for(tcol), where={tcol: store.NOT_NULL}, optional=True)
         if raw is None:
             return None
         raw = self._downcast_f32(raw)
-        panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column,
-                                feature_cols=self._panel_cols, target_type=self.target_type)
+        panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column, feature_cols=self._panel_cols, target_type=self.target_type)
         raw = None
         tr = self._config.get("train", None)
         if tr:
@@ -238,7 +242,7 @@ class StepModelling(Step):
             return sp
         if c and c.get("columns"):
             return list(c.columns)
-        return self._lgbm_columns(horizon)   # default: RF reuses the LightGBM feature set
+        return self._lgbm_columns(horizon)  # default: RF reuses the LightGBM feature set
 
     def _union_all_columns(self) -> list[str]:
         """Every column any member might use at ANY horizon: each member's default
@@ -267,25 +271,26 @@ class StepModelling(Step):
         numeric allow-list and categoricals that exist in the cube. No target column — each
         horizon appends its own via `_load_cols_for`. Returns (load_cols, dropped) where
         `dropped` are configured names absent from the cube."""
-        wanted = self._union_all_columns()   # default + every columns_by_horizon override
+        wanted = self._union_all_columns()  # default + every columns_by_horizon override
         cats = self._lgbm_categoricals()
         requested = wanted + cats
         meta = ["date", "ticker"]
         feats = [c for c in requested if c in cube_cols and not is_meta_column(c)]
         dropped = [c for c in requested if c not in cube_cols]
-        load_cols = list(dict.fromkeys(meta + feats))          # de-dup, keep order
+        load_cols = list(dict.fromkeys(meta + feats))  # de-dup, keep order
         return load_cols, dropped
 
     def _load_cols_for(self, target_col: str) -> list[str]:
         """The shared projection plus the ONE label column this horizon trains on."""
         return list(dict.fromkeys(self._load_cols + [target_col]))
 
-    def _load_cube_where_labelled(self, load_cols: list[str], target_col: str
-                                  ) -> pd.DataFrame:
+    def _load_cube_where_labelled(self, load_cols: list[str], target_col: str) -> pd.DataFrame:
         """SELECT the projected columns for rows whose target is non-null."""
         store = self._context.store
-        return store.load(Tables.cube, columns=load_cols,
-                          where={target_col: store.NOT_NULL})
+        panel = store.load(Tables.cube, columns=load_cols, where={target_col: store.NOT_NULL})
+        if panel is None:
+            raise RuntimeError(f"'{Tables.cube}' returned no labelled panel for {target_col}")
+        return panel
 
     def _select_categoricals(self, available: list[str]) -> list[str]:
         """Categorical columns (`inputs.categoricals` in modellling.yml, e.g. sector /
@@ -343,36 +348,37 @@ class StepModelling(Step):
         absent = [f for f in feature_map if f not in lgb_feats]
         typos = [f for f in absent if f not in allow]
         if typos:
-            self._log.warning("Monotone constraint on feature(s) not in inputs.columns "
-                              "(typo?): %s", typos)
+            self._log.warning("Monotone constraint on feature(s) not in inputs.columns (typo?): %s", typos)
         elif absent:
-            self._log.info("%d monotone constraint(s) inactive (feature not in the current "
-                           "cube; applies after a rebuild)", len(absent))
+            self._log.info("%d monotone constraint(s) inactive (feature not in the current cube; applies after a rebuild)", len(absent))
         return constraints
 
     def _train_kwargs(self, horizon=None) -> dict:
         c = self._lgb_cfg()
         kw = {
             "params": {
-                "learning_rate": c.learning_rate, "max_depth": c.max_depth,
+                "learning_rate": c.get("learning_rate"),
+                "max_depth": c.get("max_depth"),
                 "num_leaves": c.get("num_leaves", 31),
                 # subsample (=bagging_fraction) only takes effect when bagging_freq>0
-                "subsample": c.subsample, "bagging_freq": c.get("bagging_freq", 0),
-                "colsample_bytree": c.colsample_bytree,
-                "min_child_samples": c.min_child_samples,
-                "lambda_l1": c.lambda_l1, "lambda_l2": c.lambda_l2,
+                "subsample": c.get("subsample"),
+                "bagging_freq": c.get("bagging_freq", 0),
+                "colsample_bytree": c.get("colsample_bytree"),
+                "min_child_samples": c.get("min_child_samples"),
+                "lambda_l1": c.get("lambda_l1"),
+                "lambda_l2": c.get("lambda_l2"),
                 # deterministic training keyed on the pipeline's global seed so a
                 # rerun reproduces results bit-for-bit (see model.train_ranker)
                 "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
                 "deterministic": True,
                 "force_row_wise": True,
             },
-            "num_boost_round": c.num_boost_round,
+            "num_boost_round": c.get("num_boost_round"),
             "early_stopping_rounds": int(c.get("early_stopping_rounds", ml.EARLY_STOPPING_ROUNDS)),
             # early-stop metric: lgbm-config `eval_metric` wins, else legacy model.eval_metric
             "eval_metric": c.get("eval_metric") or self._config.model.get("eval_metric", "rmse"),
         }
-        monotone = self._monotone_constraints(self._lgb_feats(horizon))   # LightGBM member, at this horizon
+        monotone = self._monotone_constraints(self._lgb_feats(horizon))  # LightGBM member, at this horizon
         if monotone is not None:
             kw["params"]["monotone_constraints"] = monotone
         wd = self._config.model.get("weight_decay")
@@ -384,8 +390,7 @@ class StepModelling(Step):
         wd = self._config.model.get("weight_decay")
         return float(wd.half_life_years) if (wd and wd.get("enabled", False)) else None
 
-    def _fit_one(self, kind: str, train: pd.DataFrame, valid: pd.DataFrame | None,
-                 horizon=None):
+    def _fit_one(self, kind: str, train: pd.DataFrame, valid: pd.DataFrame | None, horizon=None):
         """Fit ONE model family at `horizon` (each member resolves its own
         horizon-specific column set; see build_panels). LightGBM uses the purged
         validation fold for IC early stopping; the linear baselines ignore it."""
@@ -396,17 +401,27 @@ class StepModelling(Step):
             lin = lin if lin is not None else self.linear_cols
             # linear member: its OWN numeric columns (categoricals are LightGBM-native)
             return baselines.train_linear(
-                train, lin, self.label_column, kind=kind,
-                alpha=float(lc.get("alpha", 1e-3)), l1_ratio=float(lc.get("l1_ratio", 0.5)),
-                max_iter=int(lc.get("max_iter", 1000)), tol=float(lc.get("tol", 1e-6)),
-                half_life_years=self._half_life())
+                train,
+                lin,
+                self.label_column,
+                kind=kind,
+                alpha=float(lc.get("alpha", 1e-3)),
+                l1_ratio=float(lc.get("l1_ratio", 0.5)),
+                max_iter=int(lc.get("max_iter", 1000)),
+                tol=float(lc.get("tol", 1e-6)),
+                half_life_years=self._half_life(),
+            )
         if kind == "random_forest":
             return self._fit_rf(train, horizon)
         # LightGBM member: numeric + categorical, with native categorical splits
-        return ml.train_ranker(train, self._lgb_feats(horizon), self.label_column,
-                               valid_panel=valid,
-                               categorical_features=self.categorical_cols or None,
-                               **self._train_kwargs(horizon))
+        return ml.train_ranker(
+            train,
+            self._lgb_feats(horizon),
+            self.label_column,
+            valid_panel=valid,
+            categorical_features=self.categorical_cols or None,
+            **self._train_kwargs(horizon),
+        )
 
     def _fit_rf(self, train: pd.DataFrame, horizon=None):
         """Random Forest = LightGBM in `boosting='rf'` mode: bagged INDEPENDENT trees, a FIXED
@@ -414,27 +429,38 @@ class StepModelling(Step):
         LightGBM monotone map + categoricals; NaNs handled natively."""
         rf = self._rf_cfg()
         params = {
-            "objective": "regression", "metric": "rmse", "boosting": rf.get("boosting", "rf"),
+            "objective": "regression",
+            "metric": "rmse",
+            "boosting": rf.get("boosting", "rf"),
             "bagging_fraction": float(rf.get("bagging_fraction", 0.7)),
             "bagging_freq": int(rf.get("bagging_freq", 1)),
             "feature_fraction": float(rf.get("feature_fraction", 0.6)),
-            "max_depth": int(rf.get("max_depth", 8)), "num_leaves": int(rf.get("num_leaves", 127)),
+            "max_depth": int(rf.get("max_depth", 8)),
+            "num_leaves": int(rf.get("num_leaves", 127)),
             "min_child_samples": int(rf.get("min_child_samples", 50)),
-            "lambda_l1": float(rf.get("lambda_l1", 0.0)), "lambda_l2": float(rf.get("lambda_l2", 1.0)),
-            "verbosity": -1, "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
-            "deterministic": True, "force_row_wise": True,
+            "lambda_l1": float(rf.get("lambda_l1", 0.0)),
+            "lambda_l2": float(rf.get("lambda_l2", 1.0)),
+            "verbosity": -1,
+            "seed": int(self._config.get("seed", ml.DEFAULT_SEED)),
+            "deterministic": True,
+            "force_row_wise": True,
         }
         feats = self._rf_feats(horizon)
-        mono = self._monotone_constraints(feats)   # aligned to THIS member's (horizon) feature order
+        mono = self._monotone_constraints(feats)  # aligned to THIS member's (horizon) feature order
         if mono is not None and len(mono) == len(feats):
             params["monotone_constraints"] = mono
-        return ml.train_ranker(train, feats, self.label_column, valid_panel=None,
-                               params=params, num_boost_round=int(rf.get("num_boost_round", 500)),
-                               categorical_features=self.categorical_cols or None,
-                               half_life_years=self._half_life())
+        return ml.train_ranker(
+            train,
+            feats,
+            self.label_column,
+            valid_panel=None,
+            params=params,
+            num_boost_round=int(rf.get("num_boost_round", 500)),
+            categorical_features=self.categorical_cols or None,
+            half_life_years=self._half_life(),
+        )
 
-    def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None,
-                    horizon=None) -> dict:
+    def _fit_models(self, train: pd.DataFrame, valid: pd.DataFrame | None, horizon=None) -> dict:
         """Fit every configured family at `horizon` -> {kind: model}. Averaged at
         predict time. Each member resolves its own horizon-specific column set."""
         return {kind: self._fit_one(kind, train, valid, horizon) for kind in self.model_types}
@@ -444,16 +470,15 @@ class StepModelling(Step):
         train the final ensemble, save it, score it for the blend, run its diagnostics, then FREE
         the panel before the next horizon. Peak memory is one horizon, not the whole cube."""
         self.models, self.cv_results, self.horizon_ic = {}, {}, {}
-        self.member_ic = {}          # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
-        self.oos_predictions = {}    # {h: concatenated OOS ENSEMBLE preds}  -> IC-over-time diag
-        self._score_frames = []      # small per-horizon blend inputs (date,ticker,z_h,member cols)
-        self._diag_summaries = {}    # {h: diagnostics summary} -> the run-level kpis.{json,csv}
+        self.member_ic = {}  # {h: {member_name: {mean_ic, ic_ir}}}  per-model CV IC
+        self.oos_predictions = {}  # {h: concatenated OOS ENSEMBLE preds}  -> IC-over-time diag
+        self._score_frames = []  # small per-horizon blend inputs (date,ticker,z_h,member cols)
+        self._diag_summaries = {}  # {h: diagnostics summary} -> the run-level kpis.{json,csv}
         train_ends = []
         run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") if self._context.save else None
         self._run_stamp = run_stamp
         if self._half_life():
-            self._log.info("Time-decay sample weights enabled (half_life=%.1f years)",
-                           self._half_life())
+            self._log.info("Time-decay sample weights enabled (half_life=%.1f years)", self._half_life())
 
         for h in self.horizons:
             panel = self._load_horizon_panel(h)
@@ -461,11 +486,9 @@ class StepModelling(Step):
                 # two ways to land here now: the train window excludes every labelled row, or
                 # the horizon's label column exists but is entirely NaN (which the schema-only
                 # `_distinct_horizons` cannot tell apart from a populated one).
-                self._log.warning("horizon %s: no labelled rows in the cube or the train "
-                                  "window -> skipped", h)
+                self._log.warning("horizon %s: no labelled rows in the cube or the train window -> skipped", h)
                 continue
-            self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel),
-                           panel["ticker"].nunique(), panel["date"].nunique())
+            self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
             train_ends.append(panel["date"].max())
             self._cv_one_horizon(h, panel)
             self.models[h] = self._train_final_one(h, panel)
@@ -473,20 +496,19 @@ class StepModelling(Step):
             if run_stamp:
                 self._horizon_diagnostics(h, panel, run_stamp)
             panel = None
-            gc.collect()                        # hand this horizon's panel back before the next load
+            gc.collect()  # hand this horizon's panel back before the next load
 
         if not self.models:
             raise RuntimeError("No horizon produced a model (empty cube / train window?).")
         self._train_end_effective = max(train_ends, default=None)
-        self._log.info("Trained %s horizons x %s (%s)", len(self.models),
-                       len(self.model_types), self.model_types)
+        self._log.info("Trained %s horizons x %s (%s)", len(self.models), len(self.model_types), self.model_types)
 
     def _cv_one_horizon(self, h, panel: pd.DataFrame):
         """Purged walk-forward CV for ONE horizon; records IC (ensemble + per-member) + OOS preds."""
         cfg = self._config.model
-        embargo = (cfg.cv.embargo or h)          # embargo must be >= horizon
+        embargo = cfg.cv.embargo or h  # embargo must be >= horizon
         fold_results = []
-        member_folds: dict[str, list] = {}       # member_name -> [per-fold daily_ic dicts]
+        member_folds: dict[str, list] = {}  # member_name -> [per-fold daily_ic dicts]
         oos_frames = []
         for train_days, test_days in ml.purged_wf_splits(panel["date"], cfg.cv.n_splits, embargo):
             train = panel[panel["date"].isin(train_days)]
@@ -500,12 +522,17 @@ class StepModelling(Step):
             # ~sqrt(horizon) and long horizons look artificially strong
             fold_results.append(ml.daily_ic(test, preds, self.label_column, horizon=h))
             for name, mpred in members.items():
-                member_folds.setdefault(name, []).append(
-                    ml.daily_ic(test, mpred, self.label_column, horizon=h))
-            oos_frames.append(pd.DataFrame({
-                "date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy(),
-                "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy(),
-            }))
+                member_folds.setdefault(name, []).append(ml.daily_ic(test, mpred, self.label_column, horizon=h))
+            oos_frames.append(
+                pd.DataFrame(
+                    {
+                        "date": test["date"].to_numpy(),
+                        "ticker": test["ticker"].to_numpy(),
+                        "pred": preds.to_numpy(),
+                        self.label_column: test[self.label_column].to_numpy(),
+                    }
+                )
+            )
 
         self.cv_results[h] = fold_results
         if oos_frames:
@@ -519,8 +546,7 @@ class StepModelling(Step):
             m_ic = np.nanmean([r["mean_ic"] for r in folds]) if folds else np.nan
             m_ir = np.nanmean([r["ic_ir"] for r in folds]) if folds else np.nan
             self.member_ic[h][name] = {"mean_ic": m_ic, "ic_ir": m_ir}
-            self._log.info("horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f",
-                           h, name, m_ic, m_ir)
+            self._log.info("horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f", h, name, m_ic, m_ir)
 
     def _train_final_one(self, h, panel: pd.DataFrame) -> dict:
         """Fit the full ensemble ({kind: model}) for one horizon on its whole panel."""
@@ -550,8 +576,7 @@ class StepModelling(Step):
         random_forest]` -- no PDP, no SHAP, no KPIs, and no error either. `isinstance` is the
         honest test (random_forest is also an `lgb.Booster`, via `boosting='rf'`), so renaming
         or adding a tree member can never switch the diagnostics off again."""
-        return {name: m for name, m in (self.models.get(h) or {}).items()
-                if isinstance(m, lgb.Booster)}
+        return {name: m for name, m in (self.models.get(h) or {}).items() if isinstance(m, lgb.Booster)}
 
     def _member_feature_cols(self, h) -> dict:
         """`{member_name: feature list}` for this horizon's boosters, taken from the booster
@@ -564,8 +589,7 @@ class StepModelling(Step):
         ens = self.horizon_ic.get(h, {})
 
         full_train_end = datetime.today() - timedelta(days=30 + 30)
-        train_end = (full_train_end.strftime("%Y-%m-%d") if getattr(self, "_full_history", False)
-                          else self._config.train.end_date)
+        train_end = full_train_end.strftime("%Y-%m-%d") if getattr(self, "_full_history", False) else self._config.train.end_date
         # `self._log`, not `self._context.log`: the Step's own logger, as everywhere else in
         # src. This was the only `_context.log` call in the codebase, and it took the whole
         # per-horizon diagnostics block down with it -- `_horizon_diagnostics` swallows
@@ -580,8 +604,7 @@ class StepModelling(Step):
             "train_start": self._config.train.start_date,
             "train_end": train_end,
             "full_history": bool(getattr(self, "_full_history", False)),
-            "members": {name: {"cv_mean_ic": m.get("mean_ic"), "cv_ic_ir": m.get("ic_ir")}
-                        for name, m in (self.member_ic.get(h) or {}).items()},
+            "members": {name: {"cv_mean_ic": m.get("mean_ic"), "cv_ic_ir": m.get("ic_ir")} for name, m in (self.member_ic.get(h) or {}).items()},
         }
 
     def _horizon_diagnostics(self, h, panel: pd.DataFrame, run_stamp: str):
@@ -595,30 +618,43 @@ class StepModelling(Step):
         if not boosters:
             # LOUD, not silent: an ensemble of linear members only has no PDP/SHAP to give,
             # and the previous silence is exactly why the missing artifacts went unnoticed.
-            self._log.warning("horizon %s diagnostics: no tree member in the ensemble %s -> "
-                              "no SHAP/PDP possible (add 'lgbm' or 'random_forest' to "
-                              "model.ensemble)", h, self.model_types)
+            self._log.warning(
+                "horizon %s diagnostics: no tree member in the ensemble %s -> no SHAP/PDP possible (add 'lgbm' or 'random_forest' to model.ensemble)",
+                h,
+                self.model_types,
+            )
             return
         run_dir = self._context.paths["OUTPUT_DIR"] / "diagnostics" / run_stamp
         try:
             summary = diagnostics.save_horizon_diagnostics(
-                horizon=h, booster=None, panel=panel,
-                feature_cols=self._lgb_feats(h), out_dir=run_dir / f"h{h}",
+                horizon=h,
+                booster=None,
+                panel=panel,
+                feature_cols=self._lgb_feats(h),
+                out_dir=run_dir / f"h{h}",
                 oos_predictions=self.oos_predictions.get(h),
-                boosters=boosters, feature_cols_by_member=self._member_feature_cols(h),
+                boosters=boosters,
+                feature_cols_by_member=self._member_feature_cols(h),
                 kpis=self._horizon_kpis(h),
-                label_name=self.label_column, top_n=int(diag.get("top_n_features", 15)),
+                label_name=self.label_column,
+                top_n=int(diag.get("top_n_features", 15)),
                 shap_sample=int(diag.get("shap_sample", 2000)),
-                pdp_grid=int(diag.get("pdp_grid", 30)), logger=self._log,
+                pdp_grid=int(diag.get("pdp_grid", 30)),
+                logger=self._log,
             )
             self._diag_summaries[int(h)] = summary
-            self._log.info("horizon %s diagnostics -> %s | %s | OOS IC %+.4f over %d days", h,
-                           run_dir / f"h{h}",
-                           ", ".join(f"{n}: {m['n_pdp']} PDPs, shap={m['shap_available']}"
-                                     f"({m['shap_rows']} rows)"
-                                     for n, m in summary["members"].items()),
-                           summary["ic_mean"], summary["ic_days"])
-        except Exception as e:                       # noqa: BLE001 - diagnostics are best-effort
+            self._log.info(
+                "horizon %s diagnostics -> %s | %s | OOS IC %+.4f over %d days",
+                h,
+                run_dir / f"h{h}",
+                ", ".join(
+                    f"{name}: {member.get('n_pdp', 0)} PDPs, shap={member.get('shap_available', False)}({member.get('shap_rows', 0)} rows)"
+                    for name, member in summary["members"].items()
+                ),
+                summary["ic_mean"],
+                summary["ic_days"],
+            )
+        except Exception as e:  # noqa: BLE001 - diagnostics are best-effort
             self._log.warning("horizon %s diagnostics failed: %s", h, e)
 
     def _save_run_diagnostics_kpis(self):
@@ -633,17 +669,20 @@ class StepModelling(Step):
         try:
             diagnostics.save_run_kpis(
                 run_dir,
-                {"run_stamp": self._run_stamp, "model_types": list(self.model_types),
-                 "target_type": self.target_type,
-                 "horizons": self._diag_summaries},
-                logger=self._log)
-        except Exception as e:                       # noqa: BLE001
+                {
+                    "run_stamp": self._run_stamp,
+                    "model_types": list(self.model_types),
+                    "target_type": self.target_type,
+                    "horizons": self._diag_summaries,
+                },
+                logger=self._log,
+            )
+        except Exception as e:  # noqa: BLE001
             self._log.warning("run-level diagnostics KPIs failed: %s", e)
 
     def _horizon_weights(self) -> dict:
         """IR-weight horizons; floor negatives at 0, fall back to equal if all <=0."""
-        irs = {h: max(0.0, self.horizon_ic[h]["ic_ir"]) for h in self.models
-               if np.isfinite(self.horizon_ic[h]["ic_ir"])}
+        irs = {h: max(0.0, self.horizon_ic[h]["ic_ir"]) for h in self.models if np.isfinite(self.horizon_ic[h]["ic_ir"])}
         total = sum(irs.values())
         if total <= 0:
             return {h: 1.0 / len(self.models) for h in self.models}
@@ -660,6 +699,8 @@ class StepModelling(Step):
         blended = None
         for df in self._score_frames:
             blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
+        if blended is None:
+            raise RuntimeError("No horizon score frame was produced")
 
         zcols = [f"z_{h}" for h in self.models]
         w = np.array([weights[h] for h in self.models])
@@ -668,45 +709,43 @@ class StepModelling(Step):
         mask = ~np.isnan(z)
         wmat = np.where(mask, w, 0.0)
         wsum = wmat.sum(axis=1)
-        blended["combined"] = np.where(wsum > 0,
-                                       np.nansum(np.where(mask, z * w, 0.0), axis=1) / np.where(wsum > 0, wsum, 1),
-                                       np.nan)
+        blended["combined"] = np.where(wsum > 0, np.nansum(np.where(mask, z * w, 0.0), axis=1) / np.where(wsum > 0, wsum, 1), np.nan)
         # final per-day cross-sectional rank -> tradeable relative signal
         blended["signal"] = blended.groupby("date")["combined"].rank(pct=True)
         self.predictions = blended
 
-        last_date = blended["date"].max()
+        last_date = pd.Timestamp(blended["date"].max())
         latest = blended[blended["date"] == last_date].sort_values("signal", ascending=False)
         self.signal = latest.set_index("ticker")["signal"]
         self.signal_date = last_date
-        self._log.info("Blended signal for %s (%s names)",
-                       pd.Timestamp(last_date).date(), self.signal.notna().sum())
+        self._log.info("Blended signal for %s (%s names)", pd.Timestamp(last_date).date(), self.signal.notna().sum())
 
     def log_feature_importance(self):
         """Aggregate gain importance across horizon models -> which features matter."""
         try:
             imp = {}
-            for h, models in self.models.items():
+            for _h, models in self.models.items():
                 for model in models.values():
                     # LightGBM gain vs |coef| for the linear baselines; normalize
                     # each member to sum 1 first so the two scales are comparable.
-                    gains = (ml.feature_importance(model, list(model.feature_names))
-                             if isinstance(model, lgb.Booster)
-                             else baselines.linear_importance(model))
+                    gains = (
+                        ml.feature_importance(model, list(getattr(model, "feature_names", model.feature_name())))
+                        if isinstance(model, lgb.Booster)
+                        else baselines.linear_importance(model)
+                    )
                     s = pd.Series(gains, dtype=float)
                     tot = s.sum()
                     if tot > 0:
                         s = s / tot
                     for f, g in s.items():
                         imp[f] = imp.get(f, 0.0) + float(g)
-            imp_s = pd.Series(imp).sort_values(ascending=False)
+            imp_s = pd.Series(imp, dtype=float).sort_values(ascending=False)
             imp_s = imp_s / imp_s.sum()
             self.feature_importance = imp_s
             top = imp_s.head(15)
             self._log.info("Top features by gain:\n%s", top.round(4).to_string())
-            fund_share = imp_s[[f for f in imp_s.index if f.startswith("f_")]].sum()
-            self._log.info("Peer-relative fundamentals share of importance: %.1f%%",
-                           100 * fund_share)
+            fund_share = float(imp_s[[f for f in imp_s.index if str(f).startswith("f_")]].sum())
+            self._log.info("Peer-relative fundamentals share of importance: %.1f%%", 100 * fund_share)
         except Exception as e:  # feature_importance helper may not exist in ml
             self._log.warning("Feature importance unavailable: %s", e)
             self.feature_importance = None
@@ -714,7 +753,7 @@ class StepModelling(Step):
     def save_outputs(self):
         out = self._cfg.output
         # full rebuild each run -> replace the predictions table
-        self._context.store.replace("predictions", self.predictions)
+        self._context.store.replace("predictions", cast(pd.DataFrame, self.predictions))
         self._log.info("Saved predictions to DB table 'predictions'")
 
         if not self._context.save:
@@ -745,13 +784,14 @@ class StepModelling(Step):
                 path = ml.member_model_path(models_dir, h, kind)
                 if isinstance(model, lgb.Booster):
                     model.save_model(str(path))
-                else:                               # linear baseline -> pickle
+                else:  # linear baseline -> pickle
                     with path.open("wb") as f:
                         pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+        train_end_effective = getattr(self, "_train_end_effective", None)
         meta = {
             "horizons": [int(h) for h in self.models],
-            "feature_cols": list(self.feature_cols),        # union (backtest panel + fallback)
+            "feature_cols": list(self.feature_cols),  # union (backtest panel + fallback)
             "linear_cols": list(getattr(self, "linear_cols", [])),
             "lgbm_cols": list(getattr(self, "lgbm_cols", [])),
             "rf_cols": list(getattr(self, "rf_cols", [])),
@@ -765,15 +805,14 @@ class StepModelling(Step):
             "model_types": list(self.model_types),
             "train_start": self._config.train.start_date,
             # full-history run records the ACTUAL latest trained date; normal run keeps the config cutoff
-            "train_end": (pd.Timestamp(self._train_end_effective).strftime("%Y-%m-%d")
-                          if getattr(self, "_full_history", False)
-                          and getattr(self, "_train_end_effective", None) is not None
-                          else self._config.train.end_date),
+            "train_end": (
+                pd.Timestamp(train_end_effective).strftime("%Y-%m-%d")
+                if getattr(self, "_full_history", False) and train_end_effective is not None
+                else self._config.train.end_date
+            ),
             "full_history": bool(getattr(self, "_full_history", False)),
             # blend weights for the backtest (IC_IR per horizon, floored at 0)
-            "train_ic_ir": {int(h): (float(self.horizon_ic[h]["ic_ir"])
-                                     if np.isfinite(self.horizon_ic[h]["ic_ir"]) else 0.0)
-                            for h in self.models},
+            "train_ic_ir": {int(h): (float(self.horizon_ic[h]["ic_ir"]) if np.isfinite(self.horizon_ic[h]["ic_ir"]) else 0.0) for h in self.models},
         }
         (models_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
         self._log.info("Saved %d models + metadata.json to %s", len(self.models), models_dir)
@@ -798,7 +837,8 @@ class StepModelling(Step):
                 if not p.exists():
                     continue
                 if kind in ml.BOOSTER_MEMBER_KINDS:
-                    b = lgb.Booster(model_file=str(p)); b.feature_names = b.feature_name()
+                    b = lgb.Booster(model_file=str(p))
+                    cast(Any, b).feature_names = b.feature_name()
                     members[kind] = b
                 else:
                     with p.open("rb") as f:
@@ -810,8 +850,7 @@ class StepModelling(Step):
         return meta, models
 
     def _latest_cube_dates(self, n_dates: int) -> list[pd.Timestamp]:
-        dates = self._context.store.distinct(Tables.cube, "date", order="desc",
-                                             limit=int(n_dates))
+        dates = self._context.store.distinct(Tables.cube, "date", order="desc", limit=int(n_dates))
         return sorted(pd.Timestamp(d).normalize() for d in dates)
 
     @staticmethod
@@ -858,8 +897,7 @@ class StepModelling(Step):
         cube_cols = self._cube_columns()
         want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
         load_cols = list(dict.fromkeys(["date", "ticker"] + want))
-        cube = self._context.store.load(
-            Tables.cube, columns=load_cols, since=start, optional=True)
+        cube = self._context.store.load(Tables.cube, columns=load_cols, since=start, optional=True)
         if cube is None or cube.empty:
             raise RuntimeError(f"No cube rows on/after {start.date()}.")
 
@@ -868,19 +906,17 @@ class StepModelling(Step):
         present = [c for c in (feat_cols + cat_cols) if c in cube.columns]
         missing = [c for c in (feat_cols + cat_cols) if c not in cube.columns]
         panel = cube[["date", "ticker"] + present].copy()
-        if missing:                                          # add any absent model feature as NaN (one concat)
-            panel = pd.concat(
-                [panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
+        if missing:  # add any absent model feature as NaN (one concat)
+            panel = pd.concat([panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
         keys = panel[["date", "ticker"]]
 
         long_rows: list[pd.DataFrame] = []
-        ens_wide = None                       # per-horizon ensemble z, for the cross-horizon blend
+        ens_wide = None  # per-horizon ensemble z, for the cross-horizon blend
         for h, members in models.items():
             scores, member_preds = ml.ensemble_predict(members, panel, feat_cols)
             # every MEMBER, then the horizon's ENSEMBLE — all per-day z-scored so they are
             # comparable across horizons and members
-            per_model = {**{name: p.to_numpy() for name, p in member_preds.items()},
-                         PREDICTION_MODEL_ENSEMBLE: scores.to_numpy()}
+            per_model = {**{name: p.to_numpy() for name, p in member_preds.items()}, PREDICTION_MODEL_ENSEMBLE: scores.to_numpy()}
             for name, raw in per_model.items():
                 long_rows.append(self._prediction_rows(keys, raw, h, name, predicted_at))
             ez = keys.copy()
@@ -898,34 +934,38 @@ class StepModelling(Step):
         mask = ~np.isnan(z)
         wv = np.array([w[h] for h in hs])
         wsum = np.where(mask, wv, 0.0).sum(axis=1)
-        blend = np.where(wsum > 0,
-                         np.nansum(np.where(mask, z * wv, 0.0), axis=1) / np.where(wsum > 0, wsum, 1),
-                         np.nan)
+        blend = np.where(wsum > 0, np.nansum(np.where(mask, z * wv, 0.0), axis=1) / np.where(wsum > 0, wsum, 1), np.nan)
         # the blend has no single horizon, so it is stamped with the IR-WEIGHTED AVERAGE horizon
         # (rounded) -- the average distance into the future the signal is actually about.
         blend_h = int(round(sum(w[h] * h for h in hs))) if hs else 0
-        long_rows.append(self._prediction_rows(ens_wide[["date", "ticker"]], blend, blend_h,
-                                               PREDICTION_MODEL_BLENDED, predicted_at))
+        long_rows.append(self._prediction_rows(ens_wide[["date", "ticker"]], blend, blend_h, PREDICTION_MODEL_BLENDED, predicted_at))
 
         out = pd.concat(long_rows, ignore_index=True)
-        out = out.sort_values(["date", "model", "horizon", "rank"],
-                             ascending=[True, True, True, False]).reset_index(drop=True)
+        out = out.sort_values(["date", "model", "horizon", "rank"], ascending=[True, True, True, False]).reset_index(drop=True)
         self._context.store.replace(Tables.predictions_latest, out)
 
-        last = out[(out["date"] == out["date"].max())
-                   & (out["model"] == PREDICTION_MODEL_BLENDED)]
-        self._log.info("predict_latest: %d row(s) -> '%s' | as-of %s | horizons %s x models %s | "
-                       "blend weights %s", len(out), Tables.predictions_latest,
-                       [str(d.date()) for d in dates], sorted(out["horizon"].unique()),
-                       sorted(out["model"].unique()), {h: round(w[h], 3) for h in hs})
-        self._log.info("blended (h~%d) on %s: %d names, predicts_for %s, pred range [%.3f, %.3f]",
-                       blend_h, out["date"].max().date(), len(last),
-                       last["predicts_for"].max().date() if not last.empty else None,
-                       float(last["pred"].min()), float(last["pred"].max()))
+        last = out[(out["date"] == out["date"].max()) & (out["model"] == PREDICTION_MODEL_BLENDED)]
+        self._log.info(
+            "predict_latest: %d row(s) -> '%s' | as-of %s | horizons %s x models %s | blend weights %s",
+            len(out),
+            Tables.predictions_latest,
+            [str(d.date()) for d in dates],
+            sorted(out["horizon"].unique()),
+            sorted(out["model"].unique()),
+            {h: round(w[h], 3) for h in hs},
+        )
+        self._log.info(
+            "blended (h~%d) on %s: %d names, predicts_for %s, pred range [%.3f, %.3f]",
+            blend_h,
+            out["date"].max().date(),
+            len(last),
+            last["predicts_for"].max().date() if not last.empty else None,
+            float(last["pred"].min()),
+            float(last["pred"].max()),
+        )
         return out
 
-    def _prediction_rows(self, keys: pd.DataFrame, raw: np.ndarray, horizon, model: str,
-                         predicted_at: pd.Timestamp) -> pd.DataFrame:
+    def _prediction_rows(self, keys: pd.DataFrame, raw: np.ndarray, horizon, model: str, predicted_at: pd.Timestamp) -> pd.DataFrame:
         """One (horizon, model) slice as long rows: per-day z-scored `pred` + its cross-sectional
         `rank`, stamped with when it was predicted and which date it is about."""
         df = keys.copy()
@@ -935,5 +975,4 @@ class StepModelling(Step):
         df["predicts_for"] = df["date"].map(lambda d: self.predicts_for(d, horizon))
         df["pred"] = ml.per_day_zscore(np.asarray(raw, dtype="float64"), df["date"].to_numpy())
         df["rank"] = df.groupby("date")["pred"].rank(pct=True)
-        return df[["predicted_at", "date", "ticker", "horizon", "model", "predicts_for",
-                   "pred", "rank"]]
+        return df[["predicted_at", "date", "ticker", "horizon", "model", "predicts_for", "pred", "rank"]]

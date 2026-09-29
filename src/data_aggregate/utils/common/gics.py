@@ -26,33 +26,32 @@ already carries (one static 2026-vintage embedding basket applied over the whole
 so it adds no new KIND of bias to the panel. A point-in-time GICS history would fix both at
 once and neither alone is worth a separate vendor feed.
 """
+
 from __future__ import annotations
 
 import logging
 
 import pandas as pd
 
-from src.data_store.schema import Tables
 from src.context import Context
+from src.data_store.schema import Tables
 
 GICS_COLUMNS = ("sector", "industry_group")
-
 
 
 def load_gics_maps(context: Context) -> dict[str, dict[str, str]]:
     """{"sector": {ticker: group}, "industry_group": {...}} -- only the columns present and
     populated in `sp500_tickers`."""
     ref = context.store.load(Tables.sp500_tickers)
+    assert ref is not None
     maps: dict[str, dict[str, str]] = {}
     for col in GICS_COLUMNS:
         if not ref.empty and col in ref.columns:
-            maps[col] = {str(t): str(g) for t, g in zip(ref["ticker"], ref[col])
-                         if pd.notna(g) and str(g).strip()}
+            maps[col] = {str(t): str(g) for t, g in zip(ref["ticker"], ref[col], strict=False) if pd.notna(g) and str(g).strip()}
     return maps
 
 
-def attach_gics_columns(df: pd.DataFrame, context: Context,
-                        log: logging.Logger | None = None) -> pd.DataFrame:
+def attach_gics_columns(df: pd.DataFrame, context: Context, log: logging.Logger | None = None) -> pd.DataFrame:
     """Attach `sector` / `industry_group` as the STRING group names, keyed on `ticker`.
 
     What `sector_gates.row_gate` needs and never had. The gate fails CLOSED on a missing
@@ -71,17 +70,14 @@ def attach_gics_columns(df: pd.DataFrame, context: Context,
     tickers = out["ticker"].astype(str)
     for col in GICS_COLUMNS:
         if col not in maps:
-            log.warning("%s has no populated '%s' -> the sector KPIs scoped on it stay "
-                        "gated off", Tables.sp500_tickers, col)
+            log.warning("%s has no populated '%s' -> the sector KPIs scoped on it stay gated off", Tables.sp500_tickers, col)
             continue
         out[col] = tickers.map(maps[col])
-        log.info("Attached GICS '%s' to %s: %d/%d rows classified",
-                 col, Tables.fundamentals_history, int(out[col].notna().sum()), len(out))
+        log.info("Attached GICS '%s' to %s: %d/%d rows classified", col, Tables.fundamentals_history, int(out[col].notna().sum()), len(out))
     return out
 
 
-def apply_categorical_codes(df: pd.DataFrame, context: Context,
-                            log: logging.Logger | None = None) -> pd.DataFrame:
+def apply_categorical_codes(df: pd.DataFrame, context: Context, log: logging.Logger | None = None) -> pd.DataFrame:
     """Attach GICS sector / industry_group as INTEGER category codes (deterministic sorted
     mapping; unknown / NaN -> -1)."""
     log = log or logging.getLogger(__name__)
@@ -90,8 +86,8 @@ def apply_categorical_codes(df: pd.DataFrame, context: Context,
         if ref is None or col not in ref.columns:
             log.warning("%s has no '%s' -> categorical skipped", Tables.sp500_tickers, col)
             continue
-        m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string")))
+        m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string"), strict=False))
         cats = df["ticker"].astype(str).map(m).astype("category")
-        df[col] = cats.cat.codes.astype("int16")            # unknown / NaN -> -1
+        df[col] = cats.cat.codes.astype("int16")  # unknown / NaN -> -1
         log.info("Added categorical '%s' (%d categories)", col, cats.cat.categories.size)
     return df

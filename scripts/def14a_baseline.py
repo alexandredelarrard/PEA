@@ -18,13 +18,14 @@ filing bytes under `data/cache/def14a_probe/`.
 
     "$PY" scripts/def14a_baseline.py [-c ./configs] [--out DIR] [--tag baseline] [--no-cache-filings]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import random
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
 
 from src.constants.constants import DEF14A_FORMS, SEC_ARCHIVES_BASE_URL
 from src.context import get_config_context
@@ -46,8 +50,7 @@ RANDOM_SEED = 20260901
 
 #: 13 tickers each pinned to a NAMED defect the research measured, so the comparison proves
 #: "the known-wrong values are gone", not merely "fill went up".
-DEFECT_TICKERS = ["A", "AMAT", "PG", "SBUX", "BA", "NKE", "CAT", "PFE",
-                  "GE", "T", "XOM", "JPM", "AAPL"]
+DEFECT_TICKERS = ["A", "AMAT", "PG", "SBUX", "BA", "NKE", "CAT", "PFE", "GE", "T", "XOM", "JPM", "AAPL"]
 N_RANDOM = 10
 
 #: The six tables the plan compares, plus the Item 5.07 corpus Phase 5 works from. Snapshotting
@@ -57,15 +60,25 @@ N_RANDOM = 10
 SNAPSHOT_TABLES = {
     "def14a_llm": Tables.def14a_llm,
     "sec_def14a": Tables.def14a_edgar,
-    "sec_def14a_executive_comp": Tables.def14a_edgar_executive_comp,
-    "sec_def14a_director_comp": Tables.def14a_edgar_director_comp,
-    "sec_def14a_ownership": Tables.def14a_edgar_ownership,
-    "sec_def14a_votes": Tables.def14a_edgar_votes,
+    "sec_def14a_executive_comp": Tables.def14a_executive_comp,
+    "sec_def14a_director_comp": Tables.def14a_director_comp,
+    "sec_def14a_ownership": Tables.def14a_ownership,
+    "sec_def14a_votes": Tables.sec_8k_votes,
 }
 #: `item_text` is the only wide column and Phase 5 needs it, so the projection is explicit
 #: rather than a full read (AGENTS.md: never read a large table unprojected).
-SEC_8K_COLS = ["ticker", "cik", "accession_number", "form", "filing_date",
-               "period_of_report", "is_amendment", "primary_document", "item", "item_text"]
+SEC_8K_COLS = [
+    "ticker",
+    "cik",
+    "accession_number",
+    "form",
+    "filing_date",
+    "period_of_report",
+    "is_amendment",
+    "primary_document",
+    "item",
+    "item_text",
+]
 
 DEFAULT_OUT = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix"
 CACHE_DIR = ROOT / "data/cache/def14a_probe"
@@ -103,8 +116,7 @@ def snapshot_tables(context, tickers: list[str], out_dir: Path) -> dict[str, dic
         df.to_parquet(out_dir / f"{name}.parquet", index=False)
         summary[name] = _describe(df)
 
-    votes = context.store.load(Tables.sec_8k, columns=SEC_8K_COLS,
-                               where={"ticker": tickers, "item": "5.07"}, optional=True)
+    votes = context.store.load(Tables.sec_8k, columns=SEC_8K_COLS, where={"ticker": tickers, "item": "5.07"}, optional=True)
     votes = pd.DataFrame(columns=SEC_8K_COLS) if votes is None else votes
     votes.to_parquet(out_dir / "sec_8k_item507.parquet", index=False)
     summary["sec_8k_item507"] = _describe(votes)
@@ -150,7 +162,7 @@ def cache_filings(context, tickers: list[str], years: int, out_dir: Path) -> pd.
         ticker, cik = r["ticker"], r["cik"]
         try:
             filings = list_filings(context, cik, DEF14A_FORMS, years, r.get("company_name", ""))
-        except Exception as e:                              # a dead CIK must not stop the snapshot
+        except Exception as e:  # a dead CIK must not stop the snapshot
             print(f"  ! {ticker}: filing list failed ({e})")
             continue
 
@@ -176,14 +188,22 @@ def cache_filings(context, tickers: list[str], years: int, out_dir: Path) -> pd.
                         continue
                 saved[path.suffix] = path.name
 
-            rows.append({
-                "ticker": ticker, "cik": cik, "form": f["form"],
-                "filing_date": f["filing_date"], "period_of_report": f.get("period_of_report"),
-                "accession_number": f["accession_number"], "primary_document": primary,
-                "doc_url": f["doc_url"], "txt_url": txt_url,
-                "cache_htm": saved.get(".htm"), "cache_txt": saved.get(".txt"),
-                "pre_2001_empty_primary": not primary,
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "cik": cik,
+                    "form": f["form"],
+                    "filing_date": f["filing_date"],
+                    "period_of_report": f.get("period_of_report"),
+                    "accession_number": f["accession_number"],
+                    "primary_document": primary,
+                    "doc_url": f["doc_url"],
+                    "txt_url": txt_url,
+                    "cache_htm": saved.get(".htm"),
+                    "cache_txt": saved.get(".txt"),
+                    "pre_2001_empty_primary": not primary,
+                }
+            )
 
     index = pd.DataFrame(rows)
     index.to_parquet(out_dir / "filings.parquet", index=False)
@@ -218,15 +238,21 @@ def main() -> None:
     if not args.no_cache_filings:
         n_filings = len(cache_filings(context, tickers, config.data_extract.years_history, out_dir))
 
-    (out_dir / "manifest.json").write_text(json.dumps({
-        "snapshot_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "random_seed": RANDOM_SEED,
-        "defect_tickers": DEFECT_TICKERS,
-        "tickers": tickers,
-        "years_history": config.data_extract.years_history,
-        "tables": summary,
-        "filings_cached": n_filings,
-    }, indent=2), encoding="utf-8")
+    (out_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "snapshot_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                "random_seed": RANDOM_SEED,
+                "defect_tickers": DEFECT_TICKERS,
+                "tickers": tickers,
+                "years_history": config.data_extract.years_history,
+                "tables": summary,
+                "filings_cached": n_filings,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"\nmanifest -> {out_dir / 'manifest.json'}")
 
 

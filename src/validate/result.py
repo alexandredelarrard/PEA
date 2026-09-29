@@ -13,10 +13,12 @@ returns `abstain` and the CLI exits **3** -- a code no caller mistakes for a pas
 makes a number evidence rather than an assertion, and it is what `data-check.md`'s Method note
 is built from. A finding without its scope is a rumour with a decimal point.
 """
+
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 import numpy as np
@@ -57,9 +59,9 @@ def jsonable(value: Any) -> Any:
     has still measured nothing anybody can read."""
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [jsonable(v) for v in value]
-    if isinstance(value, (pd.Timestamp, dt.datetime, dt.date)):
+    if isinstance(value, pd.Timestamp | dt.datetime | dt.date):
         return value.isoformat()
     if isinstance(value, pd.Timedelta):
         return str(value)
@@ -69,7 +71,7 @@ def jsonable(value: Any) -> Any:
         # JSON has no NaN/Infinity; `null` is the only honest encoding and `allow_nan=False`
         # would abort the write instead.
         return None
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
     return str(value)
 
@@ -87,14 +89,12 @@ class Finding:
     ticker: str | None
     observed: str
     expected: str
-    evidence: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = dataclass_field(default_factory=dict)
 
     @classmethod
-    def at(cls, score: int, observed: str, expected: str, *, field: str | None = None,
-           ticker: str | None = None, **evidence: Any) -> "Finding":
+    def at(cls, score: int, observed: str, expected: str, *, field: str | None = None, ticker: str | None = None, **evidence: Any) -> Finding:
         """Build a finding with the severity derived from the score, so the two cannot drift."""
-        return cls(score=score, severity=severity_for(score), field=field, ticker=ticker,
-                   observed=observed, expected=expected, evidence=evidence)
+        return cls(score=score, severity=severity_for(score), field=field, ticker=ticker, observed=observed, expected=expected, evidence=evidence)
 
 
 @dataclass(frozen=True)
@@ -105,22 +105,22 @@ class CheckResult:
     table: str
     status: str
     reason: str = ""
-    scope: dict[str, Any] = field(default_factory=dict)
-    findings: list[Finding] = field(default_factory=list)
-    metrics: dict[str, Any] = field(default_factory=dict)
+    scope: dict[str, Any] = dataclass_field(default_factory=dict)
+    findings: list[Finding] = dataclass_field(default_factory=list)
+    metrics: dict[str, Any] = dataclass_field(default_factory=dict)
 
     @classmethod
-    def abstained(cls, check: str, table: str, reason: str, **scope: Any) -> "CheckResult":
+    def abstained(cls, check: str, table: str, reason: str, **scope: Any) -> CheckResult:
         return cls(check=check, table=table, status="abstain", reason=reason, scope=scope)
 
     @classmethod
-    def measured(cls, check: str, table: str, findings: list[Finding], *,
-                 scope: dict[str, Any], metrics: dict[str, Any], reason: str = "") -> "CheckResult":
+    def measured(
+        cls, check: str, table: str, findings: list[Finding], *, scope: dict[str, Any], metrics: dict[str, Any], reason: str = ""
+    ) -> CheckResult:
         """`pass` iff nothing above the `info` band was filed -- see `_FAIL_FLOOR`. A check
         that measured and found nothing is the only thing allowed to report a pass."""
         red = any(f.score >= _FAIL_FLOOR for f in findings)
-        return cls(check=check, table=table, status="fail" if red else "pass",
-                   reason=reason, scope=scope, findings=list(findings), metrics=metrics)
+        return cls(check=check, table=table, status="fail" if red else "pass", reason=reason, scope=scope, findings=list(findings), metrics=metrics)
 
     @property
     def worst_score(self) -> int:
@@ -146,19 +146,30 @@ class CheckResult:
         return line
 
     def to_json(self) -> dict[str, Any]:
-        return jsonable({
-            "check": self.check,
-            "table": self.table,
-            "status": self.status,
-            "exit_code": EXIT[self.status],
-            "reason": self.reason,
-            "worst_score": self.worst_score,
-            "scope": self.scope,
-            "findings": [{"score": f.score, "severity": f.severity, "field": f.field,
-                          "ticker": f.ticker, "observed": f.observed, "expected": f.expected,
-                          "evidence": f.evidence} for f in self.findings],
-            "metrics": self.metrics,
-        })
+        return jsonable(
+            {
+                "check": self.check,
+                "table": self.table,
+                "status": self.status,
+                "exit_code": EXIT[self.status],
+                "reason": self.reason,
+                "worst_score": self.worst_score,
+                "scope": self.scope,
+                "findings": [
+                    {
+                        "score": f.score,
+                        "severity": f.severity,
+                        "field": f.field,
+                        "ticker": f.ticker,
+                        "observed": f.observed,
+                        "expected": f.expected,
+                        "evidence": f.evidence,
+                    }
+                    for f in self.findings
+                ],
+                "metrics": self.metrics,
+            }
+        )
 
 
 def full_table_only(check: str, table: str, tickers: list[str] | None) -> CheckResult | None:
@@ -172,11 +183,13 @@ def full_table_only(check: str, table: str, tickers: list[str] | None) -> CheckR
     if not tickers:
         return None
     return CheckResult.abstained(
-        check, table,
+        check,
+        table,
         f"`{check}` always measures the full table, and -t/--tickers was given "
         f"({', '.join(tickers[:5])}{'...' if len(tickers) > 5 else ''}) -- a subset answer "
         f"under a table-wide finding is not a result. Drop -t, or use a per-ticker check.",
-        tickers=tickers)
+        tickers=tickers,
+    )
 
 
 def gate(result: CheckResult) -> tuple[bool, str]:

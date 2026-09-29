@@ -5,11 +5,7 @@ Resume helpers shared by the per-entity fetchers -- the "what do we already have
 read that every incremental fetcher does before it spends a request.
 
 `load_existing` replaces five byte-identical private copies, which differed only in
-the table name; google_trends and wiki_pageviews still use it (the others now resolve
-their frontier without reading the table -- see below). The normalisation matters and
-is easy to get wrong in a copy: dates must be `.normalize()`d, because the resume
-logic compares a stored timestamp against a fetched one and a stray time component
-silently re-downloads a day that is already there.
+the table name;
 
 `resume_since` generalizes the per-ticker `groupby(...)[date_col].max()` idiom that
 several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already
@@ -29,17 +25,18 @@ NOT here either: the three `_is_up_to_date` functions. They share a name but not
 meaning (business-day price freshness vs per-ticker DB coverage vs universe-size
 meta), so merging them would invent an abstraction that does not exist.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
 from src.context import Context
+from src.data_store.schema import Table
 
 __all__ = ["load_existing", "resume_since"]
 
 
-def load_existing(context: Context, table: str,
-                  date_col: str | None = "date") -> pd.DataFrame | None:
+def load_existing(context: Context, table: Table | str, date_col: str | None = "date") -> pd.DataFrame | None:
     """A fetcher's already-stored rows, or None when there is nothing to resume from.
 
     None (not an empty frame) is the contract the callers rely on to branch between
@@ -56,7 +53,7 @@ def load_existing(context: Context, table: str,
 
 def resume_since(
     context: Context,
-    table: str,
+    table: Table | str,
     tickers: list[str],
     years_history: int,
     ticker_col: str = "ticker",
@@ -76,7 +73,7 @@ def resume_since(
     needs its whole history, and self-correcting once it has rows. Pass **False**
     where absence is legitimate and PERMANENT: `dividends` never gets a row for a
     non-payer, so counting those would pin every run to the full window forever."""
-    
+
     history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     last_by_ticker = context.store.max_date_by(table, ticker_col, date_col)
     if not last_by_ticker:

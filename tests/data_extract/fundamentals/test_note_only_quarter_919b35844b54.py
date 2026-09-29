@@ -150,7 +150,9 @@ def test_the_refusal_is_recorded_on_the_covering_annual():
     assert "note_quarter_rejected" not in hosts["2009-12-31"], "a year with no refusal carries no marker"
 
     host = hosts["2011-12-31"]
-    blob = json.loads(_adjustment_json(Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host))
+    adjustment = _adjustment_json(Resolution(field="incomeTaxExpense", method=LINKBASE_TOTAL, concept=TAX), host)
+    assert adjustment is not None
+    blob = json.loads(adjustment)
     assert blob == {"note_quarter_rejected": [{"period_end": "2011-12-31", "value": 397_000_000.0}]}
     print(f"refusal recorded: FY2011's adjustment blob is {json.dumps(blob)}")
 
@@ -170,7 +172,7 @@ def test_asc270_schedule_keeps_all_four_quarters():
 
     assert after == before, "four siblings is a series, not a sentence"
     assert _quarter_ends(after) == {"2010-03-31", "2010-06-30", "2010-09-30", "2010-12-31"}
-    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, " f"Q4 revenue still $16,550M")
+    print(f"ASC 270 schedule: all {len(_quarter_ends(after))} quarters of 2010 kept, Q4 revenue still $16,550M")
 
 
 def test_a_10q_keeps_its_lone_quarter():

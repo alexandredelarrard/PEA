@@ -19,6 +19,7 @@ agreement test, because "we do not know who ran this company either year" is not
 the CEO did not change -- and reading it as evidence is exactly how a real transition slips
 past the guard. Every caller compares with an explicit not-None precondition.
 """
+
 from __future__ import annotations
 
 import re

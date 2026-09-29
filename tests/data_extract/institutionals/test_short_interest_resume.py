@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -58,7 +59,7 @@ def _identity() -> Identity:
     return build_identity(lineage, tenure, roster)
 
 
-def _context(store) -> SimpleNamespace:
+def _context(store) -> Any:
     return SimpleNamespace(store=store, log=logging.getLogger("test.regsho"))
 
 
@@ -67,7 +68,7 @@ def _regsho(day: str, rows: list[tuple[str, int, int]]) -> str:
     return head + "".join(f"{day}|{t}|{s}|0|{v}|Q\n" for t, s, v in rows)
 
 
-def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
+def test_resume_day_replays_a_bounded_tail_from_the_global_max(sqlite_store):
     ctx = _context(sqlite_store)
     # cold table -> full years_history window
     cold = si._resume_day(ctx, years_history=10)
@@ -85,12 +86,12 @@ def test_resume_day_is_the_day_after_the_global_max(sqlite_store):
         ),
     )
     # GLOBAL max is 2024-06-04 (BBB's) -- AAA lagging at 05-01 must NOT pull it back
-    assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-06-05")
+    assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-05-24")
 
     print("\n=== SANITY CHECK: RegSHO resume day ===")
     print(
         f"  cold table -> {cold.date()} (years_history); stored max 2024-06-04 -> "
-        "2024-06-05. A ticker stale at 2024-05-01 does not widen the window. Validated."
+        "2024-05-24 (7-session repair tail). AAA at 2024-05-01 does not widen it. Validated."
     )
 
 
@@ -141,7 +142,7 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
     # A 5-business-day window is non-empty on every day of the week, and serving the day-file
     # only ONCE keeps the assertion on "one new row" exact regardless of how many days the
     # range holds.
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: (pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5)))
+    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5))
     served: list[pd.Timestamp] = []
 
     def _one_day(day, session=None):
@@ -205,7 +206,7 @@ def test_fetch_day_reuses_the_supplied_http_session():
             calls.append((url, kwargs))
             return SimpleNamespace(status_code=200, text="payload")
 
-    assert si._fetch_day(pd.Timestamp("2026-09-22"), Session()) == "payload"
+    assert si._fetch_day(pd.Timestamp("2026-09-22"), cast(Any, Session())) == "payload"
     assert len(calls) == 1 and calls[0][0].endswith("CNMSshvol20260922.txt")
 
     print("\n=== SANITY CHECK: RegSHO connection reuse ===")

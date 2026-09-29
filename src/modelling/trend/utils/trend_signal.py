@@ -17,6 +17,7 @@ Method (Carver-style combined forecast, price-only — NO macro inputs):
   4. hold between rebalances; realized sleeve return nets turnover cost.
 All functions are point-in-time (a signal at t uses only prices up to t; it earns the t->t+1 return).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -25,27 +26,27 @@ import pandas as pd
 # The pure trend building blocks live in the SHARED util so the post-processing CTA
 # strategy + allocation backtest reuse them without cross-importing this modelling package.
 # Re-exported here so existing modelling imports keep working unchanged.
-from src.utils.trend import (                                       # noqa: F401
-    daily_vol, combined_forecast, vol_scaled_positions, sleeve_returns,
-    rebalanced as _rebalanced,
+from src.utils.trend import (  # noqa: F401
+    combined_forecast,
+    daily_vol,
+    sleeve_returns,
+    vol_scaled_positions,
 )
 
 _ANN: float = 252.0
 
 
-def value_forecast(close: pd.DataFrame, lookback: int = 1260, vol_window: int = 63,
-                   cap: float = 2.0) -> pd.DataFrame:
+def value_forecast(close: pd.DataFrame, lookback: int = 1260, vol_window: int = 63, cap: float = 2.0) -> pd.DataFrame:
     """Cross-asset VALUE = long-horizon mean reversion: cheap vs its own multi-year path -> long.
     It is the NEGATIVE of a long-lookback trend, vol-normalized exactly like `combined_forecast`
     so the two combine directly. Being long-horizon reversal, it is NEGATIVELY correlated with the
     3-12m trend -> it diversifies the whipsaw that hurt trend-alone in a choppy regime. date x asset."""
     dvol = daily_vol(close, vol_window)
-    long_ret = close.pct_change(lookback, fill_method=None)          # P_t/P_{t-L} - 1 over ~5y
+    long_ret = close.pct_change(lookback, fill_method=None)  # P_t/P_{t-L} - 1 over ~5y
     return (-long_ret / (dvol * np.sqrt(float(lookback)))).clip(lower=-cap, upper=cap)
 
 
-def carry_forecast(carry: pd.DataFrame, close: pd.DataFrame, vol_window: int = 63,
-                   cap: float = 2.0) -> pd.DataFrame:
+def carry_forecast(carry: pd.DataFrame, close: pd.DataFrame, vol_window: int = 63, cap: float = 2.0) -> pd.DataFrame:
     """Standardize a per-asset annualized CARRY (date x asset — e.g. bond curve slope 10y-3m, FX
     short-rate differential, commodity roll) into a comparable capped forecast: carry / annual vol
     (a carry-to-risk ratio). Positive carry -> long. Assets/dates with no carry stay NaN (then the
@@ -55,8 +56,7 @@ def carry_forecast(carry: pd.DataFrame, close: pd.DataFrame, vol_window: int = 6
     return (c / ann_vol).clip(lower=-cap, upper=cap)
 
 
-def combine_signals(forecasts: dict[str, pd.DataFrame], weights: dict[str, float] | None = None,
-                    cap: float = 2.0) -> pd.DataFrame:
+def combine_signals(forecasts: dict[str, pd.DataFrame], weights: dict[str, float] | None = None, cap: float = 2.0) -> pd.DataFrame:
     """NaN-aware weighted average of several capped forecasts (trend / value / carry), per cell.
     An asset missing a signal (NaN) falls back to the signals it does have. Re-capped. date x asset."""
     names = list(forecasts)
@@ -73,8 +73,7 @@ def combine_signals(forecasts: dict[str, pd.DataFrame], weights: dict[str, float
     return pd.DataFrame(out, index=base.index, columns=base.columns).clip(lower=-cap, upper=cap)
 
 
-def apply_class_budget(weights: pd.DataFrame, asset_class: dict[str, str],
-                       class_budgets: dict[str, float] | None = None) -> pd.DataFrame:
+def apply_class_budget(weights: pd.DataFrame, asset_class: dict[str, str], class_budgets: dict[str, float] | None = None) -> pd.DataFrame:
     """Risk-budget the per-asset trend weights ACROSS asset classes: each class carries its target
     budget (default = equal risk per class), split equally across the instruments within the class.
     Stops a class with many instruments (e.g. 3 commodities) from dominating one with few (1 equity

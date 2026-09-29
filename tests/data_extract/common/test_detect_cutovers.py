@@ -13,7 +13,10 @@ Synthetic fixtures throughout: these are the classifier's decision rules, not me
 the world. The measurements live in `test_registrant_live.py` and in the detector's own
 `--classify` output.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -26,17 +29,20 @@ BOUNDARY = "2019-03-20"
 # --------------------------------------------------------------------------- #
 # Oracle 2 -- the shell-name reading                                          #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(("contraname", "is_shell"), [
-    ("TWDC HOLDCO 613 CORP", True),
-    ("HALFMOON PARENT INC", True),
-    ("MONARCH ENERGY HOLDING INC", True),
-    ("VIRGINIA HOLDCO INC", True),
-    ("RELIANT ENERGY REGCO INC", True),
-    # Real companies, and real `namechangefrom` rows. A name change is NOT a shell.
-    ("AMVESCAP PLC/LONDON/", False),
-    ("BROADCOM LTD", False),
-    ("UPJOHN INC", False),
-])
+@pytest.mark.parametrize(
+    ("contraname", "is_shell"),
+    [
+        ("TWDC HOLDCO 613 CORP", True),
+        ("HALFMOON PARENT INC", True),
+        ("MONARCH ENERGY HOLDING INC", True),
+        ("VIRGINIA HOLDCO INC", True),
+        ("RELIANT ENERGY REGCO INC", True),
+        # Real companies, and real `namechangefrom` rows. A name change is NOT a shell.
+        ("AMVESCAP PLC/LONDON/", False),
+        ("BROADCOM LTD", False),
+        ("UPJOHN INC", False),
+    ],
+)
 def test_the_shell_name_reading(contraname, is_shell):
     """`TWDC HOLDCO 613 CORP` is not a company, it is a shell created for a reorganisation, and
     the word in its name says so. `AMVESCAP PLC` is a company that changed its name.
@@ -52,10 +58,9 @@ def test_the_shell_name_reading(contraname, is_shell):
 # --------------------------------------------------------------------------- #
 # The FPI test, and why it runs first                                         #
 # --------------------------------------------------------------------------- #
-def _doc(pairs: list[tuple[str, str]]) -> dict:
+def _doc(pairs: list[tuple[str, Any]]) -> dict:
     """A submissions document with everything inlined in `recent` and no archive pages."""
-    return {"filings": {"recent": {"form": [f for f, _ in pairs],
-                                   "filingDate": [d for _, d in pairs]}, "files": []}}
+    return {"filings": {"recent": {"form": [f for f, _ in pairs], "filingDate": [d for _, d in pairs]}, "files": []}}
 
 
 def test_a_foreign_private_issuer_is_not_a_cutover(monkeypatch):
@@ -66,9 +71,9 @@ def test_a_foreign_private_issuer_is_not_a_cutover(monkeypatch):
     ⚠ The FPI test runs BEFORE the shell-name oracle, and the ordering is the point. IVZ
     carries a Sharadar `namechangefrom AMVESCAP PLC/LONDON/` and would otherwise read as a
     reorganisation, but CIK 914208 is continuous from 1994 with 1,594 FPI filings."""
-    monkeypatch.setattr(detect, "all_filings", lambda ctx, doc:
-                        [("20-F", pd.Timestamp("2002-03-01") + pd.Timedelta(days=365 * i))
-                         for i in range(20)])
+    monkeypatch.setattr(
+        detect, "all_filings", lambda ctx, doc: [("20-F", pd.Timestamp("2002-03-01") + pd.Timedelta(days=365 * i)) for i in range(20)]
+    )
     got = detect.continuity(None, _doc([]), "2024-01-24")
     assert got["fpi_before"] >= detect.FPI_MIN_FILINGS
     print("\n=== SANITY CHECK: an FPI is classified before the shell-name oracle ===")
@@ -84,11 +89,9 @@ def test_the_fpi_count_reads_the_whole_archive_not_just_recent(monkeypatch):
     recent_only = [("8-K", pd.Timestamp("2020-01-01"))]
     monkeypatch.setattr(detect, "all_filings", lambda ctx, doc: old + recent_only)
     got = detect.continuity(None, _doc(recent_only), "2005-02-16")
-    assert got["fpi_before"] >= detect.FPI_MIN_FILINGS, (
-        "the archive pages were not counted -- this is the IVZ/RCL misclassification")
+    assert got["fpi_before"] >= detect.FPI_MIN_FILINGS, "the archive pages were not counted -- this is the IVZ/RCL misclassification"
     print("\n=== SANITY CHECK: FPI forms are counted over the whole archive ===")
-    print(f"  {got['fpi_before']} pre-boundary FPI filings found in the older pages, "
-          "0 of which are in `recent`.")
+    print(f"  {got['fpi_before']} pre-boundary FPI filings found in the older pages, 0 of which are in `recent`.")
 
 
 def test_a_pre_registered_shell_is_not_a_continuous_registrant(monkeypatch):
@@ -96,35 +99,35 @@ def test_a_pre_registered_shell_is_not_a_continuous_registrant(monkeypatch):
     completion -- Linde plc 517 days, DowDuPont 560, PSKY 316 -- so an early first filing is
     NORMAL for a real cutover. What no cutover has is a decade of the successor's own filings
     before the boundary, which is why the test counts ACTIVITY outside the grace window."""
-    shell = [("S-4", pd.Timestamp("2018-05-01")), ("S-4/A", pd.Timestamp("2018-06-01")),
-             ("CORRESP", pd.Timestamp("2018-07-01"))]
+    shell = [("S-4", pd.Timestamp("2018-05-01")), ("S-4/A", pd.Timestamp("2018-06-01")), ("CORRESP", pd.Timestamp("2018-07-01"))]
     monkeypatch.setattr(detect, "all_filings", lambda ctx, doc: shell)
     got = detect.continuity(None, _doc([]), "2018-10-31")
     assert got["own_active_before"] < detect.CONTINUOUS_MIN_FILINGS
     assert got["own_lead_days"] > 0, "the shell does predate the boundary -- that is the trap"
     print("\n=== SANITY CHECK: a pre-registered shell stays a cutover candidate ===")
-    print(f"  archive starts {got['own_lead_days']} d before the boundary but only "
-          f"{got['own_active_before']} filings sit outside the "
-          f"{detect.PRE_REGISTRATION_DAYS} d grace window.")
+    print(
+        f"  archive starts {got['own_lead_days']} d before the boundary but only "
+        f"{got['own_active_before']} filings sit outside the "
+        f"{detect.PRE_REGISTRATION_DAYS} d grace window."
+    )
 
 
 def test_a_continuous_registrant_is_not_a_cutover(monkeypatch):
     """BMY's 8-K starts 2000-04-19 while its proxy runs from 1996-03-18 under the same
     registrant. Nothing moved: 8-K was event-driven and rare before the 2004 item expansion.
     Hundreds of the CIK's own filings before the boundary is what says so."""
-    long_history = [("10-Q", pd.Timestamp("1994-01-01") + pd.Timedelta(days=25 * i))
-                    for i in range(90)]
+    long_history = [("10-Q", pd.Timestamp("1994-01-01") + pd.Timedelta(days=25 * i)) for i in range(90)]
     monkeypatch.setattr(detect, "all_filings", lambda ctx, doc: long_history)
     got = detect.continuity(None, _doc([]), "2000-04-19")
     assert got["own_active_before"] >= detect.CONTINUOUS_MIN_FILINGS
     print("\n=== SANITY CHECK: a continuous registrant is a non-defect ===")
-    print(f"  {got['own_active_before']} of its own filings predate the boundary by more than "
-          f"{detect.PRE_REGISTRATION_DAYS} d -> no register entry.")
+    print(f"  {got['own_active_before']} of its own filings predate the boundary by more than {detect.PRE_REGISTRATION_DAYS} d -> no register entry.")
 
 
 # --------------------------------------------------------------------------- #
 # The predecessor gate                                                        #
 # --------------------------------------------------------------------------- #
+
 
 def _run_profile(monkeypatch, pairs, boundary=BOUNDARY):
     monkeypatch.setattr(detect, "submissions", lambda ctx, cik: {})
@@ -153,8 +156,7 @@ def test_a_subsidiary_co_registrant_is_rejected_for_filing_no_proxy(monkeypatch)
     assert not got["ok"]
     assert "no proxy" in got["why"]
     print("\n=== SANITY CHECK: a subsidiary co-registrant is rejected ===")
-    print(f"  {got['n_before_window']} filings before the boundary, 0 proxies -> "
-          f"{got['why']}")
+    print(f"  {got['n_before_window']} filings before the boundary, 0 proxies -> {got['why']}")
 
 
 def test_an_unrelated_counterparty_is_rejected_for_not_stopping(monkeypatch):
@@ -163,9 +165,7 @@ def test_an_unrelated_counterparty_is_rejected_for_not_stopping(monkeypatch):
     proxies and most of its two-decade history predates 2025, so it passes a
     share-of-whole-archive test and outranks the real predecessor on size. What it did not do
     is stop filing -- measured 206 before / 293 after, a ratio of 1.42."""
-    pairs = (_stream("2015-01-01", "2026-06-01")
-             + _stream("2025-09-16", "2027-06-01", every_days=5)
-             + [("DEF 14A", pd.Timestamp("2018-04-01"))])
+    pairs = _stream("2015-01-01", "2026-06-01") + _stream("2025-09-16", "2027-06-01", every_days=5) + [("DEF 14A", pd.Timestamp("2018-04-01"))]
     got = _run_profile(monkeypatch, pairs, "2025-09-16")
     assert not got["ok"]
     assert "rate ROSE" in got["why"]
@@ -180,9 +180,11 @@ def test_the_apache_shape_is_still_accepted(monkeypatch):
     # Apache's real shape, measured 2026-09-10: 318 filings in the two years before the
     # boundary, 41 in the two years after, ratio 0.129 -- comfortably inside the 0.5 gate even
     # though it never stopped filing.
-    pairs = (_stream("2010-01-01", "2021-02-26", every_days=2)
-             + _stream("2021-05-07", "2023-02-01", every_days=18)
-             + [("DEF 14A", pd.Timestamp("2020-04-03"))])
+    pairs = (
+        _stream("2010-01-01", "2021-02-26", every_days=2)
+        + _stream("2021-05-07", "2023-02-01", every_days=18)
+        + [("DEF 14A", pd.Timestamp("2020-04-03"))]
+    )
     got = _run_profile(monkeypatch, pairs, "2021-03-01")
     assert got["ok"], f"the APA shape must survive the rate test: {got['why']}"
     print("\n=== SANITY CHECK: the APA shape (a predecessor that kept filing) ===")
@@ -197,8 +199,7 @@ def _facts(rows: dict[tuple[str, str], float]) -> dict:
     out: dict = {"facts": {"us-gaap": {}}}
     for (tag, end), val in rows.items():
         out["facts"]["us-gaap"].setdefault(tag, {"units": {"USD": []}})
-        out["facts"]["us-gaap"][tag]["units"]["USD"].append(
-            {"fp": "FY", "start": f"{int(end[:4]) - 1}-01-01", "end": end, "val": val})
+        out["facts"]["us-gaap"][tag]["units"]["USD"].append({"fp": "FY", "start": f"{int(end[:4]) - 1}-01-01", "end": end, "val": val})
     return out
 
 
@@ -212,18 +213,19 @@ def test_oracle4_picks_the_predecessor_whose_history_the_successor_restated(monk
     Measured on the real filings: CI resolved to Cigna Corp (12 of 12 annual facts agree,
     FY2017 revenue $41.806bn) rather than Express Scripts, and ICE to IntercontinentalExchange
     Inc (9 of 9, FY2012 $1.363bn) rather than NYSE Euronext -- overturning oracle 3 in both."""
-    succ = _facts({("Revenues", "2017-12-31"): 41_806_000_000.0,
-                   ("NetIncomeLoss", "2017-12-31"): 2_237_000_000.0})
-    right = _facts({("Revenues", "2017-12-31"): 41_806_000_000.0,
-                    ("NetIncomeLoss", "2017-12-31"): 2_237_000_000.0})
-    wrong = _facts({("Revenues", "2017-12-31"): 100_064_600_000.0,
-                    ("NetIncomeLoss", "2017-12-31"): 4_517_400_000.0})
+    succ = _facts({("Revenues", "2017-12-31"): 41_806_000_000.0, ("NetIncomeLoss", "2017-12-31"): 2_237_000_000.0})
+    right = _facts({("Revenues", "2017-12-31"): 41_806_000_000.0, ("NetIncomeLoss", "2017-12-31"): 2_237_000_000.0})
+    wrong = _facts({("Revenues", "2017-12-31"): 100_064_600_000.0, ("NetIncomeLoss", "2017-12-31"): 4_517_400_000.0})
     docs = {"0000000009": succ, "0000000001": right, "0000000002": wrong}
     monkeypatch.setattr(detect, "companyfacts", lambda ctx, cik: docs[str(cik).zfill(10)])
 
-    cands = [{"name": "wrong co", "cik": "0000000002", "co_indexed_on": 9, "profile": {}},
-             {"name": "right co", "cik": "0000000001", "co_indexed_on": 1, "profile": {}}]
-    winner, evidence = detect.oracle4_comparative(None, "0000000009", cands, "2018-09-21")
+    cands = [
+        {"name": "wrong co", "cik": "0000000002", "co_indexed_on": 9, "profile": {}},
+        {"name": "right co", "cik": "0000000001", "co_indexed_on": 1, "profile": {}},
+    ]
+    result = detect.oracle4_comparative(None, "0000000009", cands, "2018-09-21")
+    assert result is not None
+    winner, evidence = result
 
     assert winner["cik"] == "0000000001", "the larger/more co-indexed candidate must not win"
     assert evidence["matched"] == 2
@@ -239,8 +241,10 @@ def test_oracle4_abstains_before_xbrl(monkeypatch):
     predecessors attaches another company's accounts to the ticker on every consolidating
     form, which is the failure this register exists to prevent."""
     monkeypatch.setattr(detect, "companyfacts", lambda ctx, cik: {"facts": {"us-gaap": {}}})
-    cands = [{"name": "a", "cik": "0000000001", "co_indexed_on": 7, "profile": {}},
-             {"name": "b", "cik": "0000000002", "co_indexed_on": 2, "profile": {}}]
+    cands = [
+        {"name": "a", "cik": "0000000001", "co_indexed_on": 7, "profile": {}},
+        {"name": "b", "cik": "0000000002", "co_indexed_on": 2, "profile": {}},
+    ]
     assert detect.oracle4_comparative(None, "0000000009", cands, "2002-10-01") is None
     print("\n=== SANITY CHECK: oracle 4 abstains on a pre-XBRL boundary ===")
     print("  no comparative facts -> None -> `ambiguous`, not a guess. Validated.")
@@ -251,8 +255,10 @@ def test_oracle4_abstains_on_a_tie(monkeypatch):
     preference here would be exactly the silent guess the `ambiguous` class exists to stop."""
     same = _facts({("Revenues", "2017-12-31"): 1_000.0})
     monkeypatch.setattr(detect, "companyfacts", lambda ctx, cik: same)
-    cands = [{"name": "a", "cik": "0000000001", "co_indexed_on": 1, "profile": {}},
-             {"name": "b", "cik": "0000000002", "co_indexed_on": 1, "profile": {}}]
+    cands = [
+        {"name": "a", "cik": "0000000001", "co_indexed_on": 1, "profile": {}},
+        {"name": "b", "cik": "0000000002", "co_indexed_on": 1, "profile": {}},
+    ]
     assert detect.oracle4_comparative(None, "0000000009", cands, "2018-09-21") is None
     print("\n=== SANITY CHECK: oracle 4 abstains on a tie ===")
     print("  equal match counts -> None. Validated.")
@@ -281,18 +287,15 @@ def test_a_recent_ipo_is_not_flagged():
     assert cut_lag > detect.LAG_YEARS, "a real cutover must clear it"
 
     print("\n=== SANITY CHECK: negative control, a recent IPO ===")
-    print(f"  IPO      first price 2021-04-14, first filing 2021-05-13 -> lag {ipo_lag:.2f} y "
-          f"(threshold {detect.LAG_YEARS}) -> NOT flagged")
-    print(f"  cutover  first price 1995-09-01, first filing 2019-03-20 -> lag {cut_lag:.2f} y "
-          f"-> flagged")
+    print(f"  IPO      first price 2021-04-14, first filing 2021-05-13 -> lag {ipo_lag:.2f} y (threshold {detect.LAG_YEARS}) -> NOT flagged")
+    print(f"  cutover  first price 1995-09-01, first filing 2019-03-20 -> lag {cut_lag:.2f} y -> flagged")
     print("  OK: it is the price-vs-filing ASYMMETRY that fires, not archive length.")
 
 
 def test_the_screens_reference_the_price_table():
     """The structural half of the negative control: both screens must actually JOIN prices.
     A screen that stopped doing so would still return plausible-looking tickers."""
-    for name, sql in (("tight", detect.SCREEN_TIGHT), ("proxy", detect.SCREEN_PROXY),
-                      ("all_late", detect.SCREEN_ALL_LATE)):
+    for name, sql in (("tight", detect.SCREEN_TIGHT), ("proxy", detect.SCREEN_PROXY), ("all_late", detect.SCREEN_ALL_LATE)):
         assert "first_px" in sql and "FROM prices" in detect._SCREEN_CTES, name
         assert "365.25" in sql, f"{name} does not compute a lag in years"
     print("\n=== SANITY CHECK: every screen joins the price history ===")

@@ -155,7 +155,11 @@ import pandas as pd
 
 from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
 from src.data_aggregate.utils.governance.names import ceo_identity_series
-from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS,
+    source_date_column,
+    ultimate_source_dates,
+)
 
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards", "ceo_non_equity_incentive", "ceo_all_other_comp"]
 
@@ -212,7 +216,6 @@ CARRY_LEVELS = [
     "say_on_pay_support_pct",
     "median_employee_pay",
     "ceo_pay_ratio",
-    "auditor_since_year",
 ]
 #: Carried ONLY when the CEO named on the source row is the CEO named on THIS row (D31). A salary
 #: is a term of one person's CONTRACT, so carrying it across a succession states the outgoing
@@ -356,7 +359,7 @@ def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Ser
     property of `ffill` rather than of a guard that has to be remembered.
     """
     fwd = df[col].groupby(gk, sort=False).ffill()
-    src = df["as_of"].where(df[col].notna()).groupby(gk, sort=False).ffill()
+    src = ultimate_source_dates(df, col).groupby(gk, sort=False).ffill()
     return fwd, (df["as_of"] - src).dt.days
 
 
@@ -457,6 +460,7 @@ def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
     """
     if col not in df.columns:
         return
+    source = ultimate_source_dates(df, col).groupby(gk, sort=False).ffill()
     fwd, age = _carry(df, col, gk)
     candidate = df[col].isna() & fwd.notna()
     if col in CARRY_FORBIDDEN:
@@ -478,6 +482,9 @@ def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
     n = int(newly.sum())
     if n:
         df.loc[newly, col] = fwd[newly]
+        source_col = source_date_column(col)
+        if source_col in df.columns:
+            df.loc[newly, source_col] = source[newly]
         stats[f"carry: {col}"] = n
 
 

@@ -28,11 +28,13 @@ exists to avoid.
 
     "$PY" scripts/def14a_verify_checks.py [--dir reports/.../verify] [--strict]
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -40,17 +42,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.data_extract.utils.structure.def14a.gender import person_key
 
 DEFAULT_DIR = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/verify"
 
 #: Item 402(c)'s seven components. `total` is column (j).
-_SCT_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive",
-                   "pension_change", "other_compensation"]
-_DIR_COMPONENTS = ["fees_earned", "stock_awards", "option_awards", "non_equity_incentive",
-                   "pension_change", "other_compensation"]
-_FEE_PARTS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax",
-              "audit_fees_other"]
+_SCT_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation"]
+_DIR_COMPONENTS = ["fees_earned", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation"]
+_FEE_PARTS = ["audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other"]
 #: A filer rounds to the dollar; $10 absorbs that without absorbing a missing column.
 _TOL_USD = 10.0
 #: Pay ratio and fee identities are disclosed to fewer significant figures.
@@ -62,14 +64,12 @@ class Report:
         self.lines: list[str] = []
         self.rows: list[tuple[str, str, int, int, int]] = []
 
-    def add(self, cid: str, what: str, ok: int, bad: int, na: int,
-            detail: list[str] | None = None) -> None:
+    def add(self, cid: str, what: str, ok: int, bad: int, na: int, detail: list[str] | None = None) -> None:
         self.rows.append((cid, what, ok, bad, na))
         total = ok + bad
         rate = f"{100 * ok / total:.1f}%" if total else "n/a"
         print(f"  {cid:<5}{what:<52}{ok:>5} ok {bad:>4} bad {na:>4} n/a   {rate}")
-        self.lines += [f"### {cid} — {what}", "",
-                       f"- **{ok} pass / {bad} fail** ({rate}); {na} could not be evaluated", ""]
+        self.lines += [f"### {cid} — {what}", "", f"- **{ok} pass / {bad} fail** ({rate}); {na} could not be evaluated", ""]
         if detail:
             self.lines += detail + [""]
         for d in detail or []:
@@ -82,8 +82,7 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce")
 
 
-def _sum_identity(df: pd.DataFrame, parts: list[str], total: str,
-                  tol: float) -> tuple[int, int, int, list[str]]:
+def _sum_identity(df: pd.DataFrame, parts: list[str], total: str, tol: float) -> tuple[int, int, int, list[str]]:
     """Rows where the parts sum to the total.
 
     A row with only SOME components present cannot be expected to sum -- the shortfall is the
@@ -104,16 +103,19 @@ def _sum_identity(df: pd.DataFrame, parts: list[str], total: str,
     evaluable = tot.notna() & (n_present > 0)
     summed = comp.sum(axis=1, min_count=1)
     diff = (summed - tot).abs()
-    over = (summed - tot) > tol                      # impossible regardless of completeness
+    over = (summed - tot) > tol  # impossible regardless of completeness
     ok = int((evaluable & (diff <= tol)).sum())
     bad_mask = evaluable & ((complete & (diff > tol)) | over)
     detail = []
     for _, r in df[bad_mask].head(8).iterrows():
+        row_index = cast(Any, r.name)
         label = " ".join(str(r.get(k, "")) for k in ("ticker", "name", "fiscal_year") if k in r)
-        d = float(diff[r.name])
-        detail.append(f"- `{label.strip()}`: components sum off by **{d:,.0f}** "
-                      f"(total {float(tot[r.name]):,.0f}, "
-                      f"{int(n_present[r.name])}/{len(present)} components present)")
+        d = float(diff[row_index])
+        detail.append(
+            f"- `{label.strip()}`: components sum off by **{d:,.0f}** "
+            f"(total {float(tot[row_index]):,.0f}, "
+            f"{int(n_present[row_index])}/{len(present)} components present)"
+        )
     n_bad = int(bad_mask.sum())
     return ok, n_bad, int(len(df) - ok - n_bad), detail
 
@@ -139,17 +141,13 @@ def main() -> None:
     dirs = load("def14a_directors")
 
     print(f"\n=== SANITY: value-level checks on {len(parent)} filings ===")
-    print(f"  exec_comp {len(execs)} rows | director_comp {len(dcomp)} | "
-          f"ownership {len(own)} | directors {len(dirs)}\n")
+    print(f"  exec_comp {len(execs)} rows | director_comp {len(dcomp)} | ownership {len(own)} | directors {len(dirs)}\n")
     rep = Report()
 
     # C1 / C2 -- the filer's own arithmetic
-    rep.add("C1", "SCT components sum to `total` (+/- $10)",
-            *_sum_identity(execs, _SCT_COMPONENTS, "total", _TOL_USD))
-    rep.add("C1b", "director-comp components sum to `total` (+/- $10)",
-            *_sum_identity(dcomp, _DIR_COMPONENTS, "total", _TOL_USD))
-    rep.add("C2", "audit fee categories sum to `auditor_fees` (+/- $10)",
-            *_sum_identity(parent, _FEE_PARTS, "auditor_fees", _TOL_USD))
+    rep.add("C1", "SCT components sum to `total` (+/- $10)", *_sum_identity(execs, _SCT_COMPONENTS, "total", _TOL_USD))
+    rep.add("C1b", "director-comp components sum to `total` (+/- $10)", *_sum_identity(dcomp, _DIR_COMPONENTS, "total", _TOL_USD))
+    rep.add("C2", "audit fee categories sum to `auditor_fees` (+/- $10)", *_sum_identity(parent, _FEE_PARTS, "auditor_fees", _TOL_USD))
 
     # C3 -- parent scalar vs child table, the two places the same number is stored
     ok = bad = na = 0
@@ -182,8 +180,7 @@ def main() -> None:
                 ok += 1
             else:
                 bad += 1
-                detail.append(f"- `{p['ticker']}`: scalar {scalar:,.0f} vs SCT row "
-                              f"{child:,.0f} (off by {abs(child - scalar):,.0f})")
+                detail.append(f"- `{p['ticker']}`: scalar {scalar:,.0f} vs SCT row {child:,.0f} (off by {abs(child - scalar):,.0f})")
     rep.add("C3", "`ceo_total_comp` == the CEO's own SCT row total", ok, bad, na, detail[:8])
 
     # C4 -- the pay-ratio triplet
@@ -202,8 +199,7 @@ def main() -> None:
                 ok += 1
             else:
                 bad += 1
-                detail.append(f"- `{parent.at[i, 'ticker']}`: disclosed ratio {ratio[i]:,.0f} vs "
-                              f"{tot[i]:,.0f}/{med[i]:,.0f} = {implied:,.0f}")
+                detail.append(f"- `{parent.at[i, 'ticker']}`: disclosed ratio {ratio[i]:,.0f} vs {tot[i]:,.0f}/{med[i]:,.0f} = {implied:,.0f}")
     rep.add("C4", "ceo_pay_ratio == ceo_total_comp / median_employee_pay", ok, bad, na, detail[:8])
 
     # C5 -- board_size against the director rows actually extracted.
@@ -241,10 +237,8 @@ def main() -> None:
                 ok += 1
             else:
                 bad += 1
-                why = ("roster TRUNCATED -- directors missing" if gap < 0
-                       else "more rows than a year of turnover explains")
-                detail.append(f"- `{parent.at[i, 'ticker']}`: board_size {bs[i]:.0f} vs "
-                              f"{n} director rows ({gap:+.0f}, {why})")
+                why = "roster TRUNCATED -- directors missing" if gap < 0 else "more rows than a year of turnover explains"
+                detail.append(f"- `{parent.at[i, 'ticker']}`: board_size {bs[i]:.0f} vs {n} director rows ({gap:+.0f}, {why})")
     rep.add("C5", f"director rows within (board_size -1 .. +{excess_max})", ok, bad, na, detail[:8])
 
     # C6 -- humanly possible ages and tenures
@@ -258,11 +252,10 @@ def main() -> None:
                 continue
             bad_age = pd.notna(age[i]) and not (25 <= age[i] <= 95)
             bad_ten = pd.notna(ten[i]) and (ten[i] < 0 or ten[i] > 60)
-            impossible = (pd.notna(age[i]) and pd.notna(ten[i]) and ten[i] > age[i] - 20)
+            impossible = pd.notna(age[i]) and pd.notna(ten[i]) and ten[i] > age[i] - 20
             if bad_age or bad_ten or impossible:
                 bad += 1
-                detail.append(f"- `{dirs.at[i, 'ticker']}` {dirs.at[i, 'name']}: "
-                              f"age={age[i]}, tenure={ten[i]}")
+                detail.append(f"- `{dirs.at[i, 'ticker']}` {dirs.at[i, 'name']}: age={age[i]}, tenure={ten[i]}")
             else:
                 ok += 1
     rep.add("C6", "director age 25-95, tenure 0-60 and <= age-20", ok, bad, na, detail[:8])
@@ -279,14 +272,12 @@ def main() -> None:
                 ok += 1
             else:
                 bad += 1
-                detail.append(f"- `{own.at[i, 'ticker']}` {own.at[i, 'holder_name']}: "
-                              f"percent_of_class={pct[i]}")
+                detail.append(f"- `{own.at[i, 'ticker']}` {own.at[i, 'holder_name']}: percent_of_class={pct[i]}")
         agg = own.assign(p=pct).groupby("accession_number")["p"].sum(min_count=1)
         for acc, s in agg.items():
             if pd.notna(s) and s > 1.0:
                 detail.append(f"- accession `{acc}`: holder percents sum to {s:.2f} (> 1.0)")
-    rep.add("C7", "percent_of_class in (0, 1] (a fraction, not a percentage)",
-            ok, bad, na, detail[:8])
+    rep.add("C7", "percent_of_class in (0, 1] (a fraction, not a percentage)", ok, bad, na, detail[:8])
 
     # C8 -- say-on-pay is a fraction
     ok = bad = na = 0
@@ -316,11 +307,12 @@ def main() -> None:
     rep.add("C9", "every director with a gender has a gender_basis", ok, bad, na)
 
     # C10 -- primary keys
-    pks = {"def14a_executive_comp": (execs, ["ticker", "accession_number", "name", "fiscal_year"]),
-           "def14a_director_comp": (dcomp, ["ticker", "accession_number", "name"]),
-           "def14a_ownership": (own, ["ticker", "accession_number", "holder_name",
-                                      "holder_type"]),
-           "def14a_directors": (dirs, ["ticker", "accession_number", "name"])}
+    pks = {
+        "def14a_executive_comp": (execs, ["ticker", "accession_number", "name", "fiscal_year"]),
+        "def14a_director_comp": (dcomp, ["ticker", "accession_number", "name"]),
+        "def14a_ownership": (own, ["ticker", "accession_number", "holder_name", "holder_type"]),
+        "def14a_directors": (dirs, ["ticker", "accession_number", "name"]),
+    }
     ok = bad = 0
     detail = []
     for name, (df, pk) in pks.items():
@@ -338,21 +330,29 @@ def main() -> None:
     total_ok = sum(r[2] for r in rep.rows)
     total_bad = sum(r[3] for r in rep.rows)
     total_na = sum(r[4] for r in rep.rows)
-    print(f"\n  {total_ok} pass / {total_bad} fail / {total_na} not evaluable "
-          f"({100 * total_ok / max(total_ok + total_bad, 1):.1f}% of evaluable)")
+    print(f"\n  {total_ok} pass / {total_bad} fail / {total_na} not evaluable ({100 * total_ok / max(total_ok + total_bad, 1):.1f}% of evaluable)")
     print("  An identity failure is diagnostic: it names the row and the size of the gap, so it")
     print("  points at a column, not merely at a filing.")
 
-    md = ["# Value-level checks on the DEF 14A sample", "",
-          "Fill rates cannot tell a right number from a plausible wrong one. Every check here is "
-          "an **identity the filing itself must satisfy**, so a failure localises the defect.", "",
-          f"**{total_ok} pass / {total_bad} fail / {total_na} not evaluable** "
-          f"({100 * total_ok / max(total_ok + total_bad, 1):.1f}% of evaluable).", "",
-          "| check | what | pass | fail | n/a |", "|---|---|---|---|---|"]
+    md = [
+        "# Value-level checks on the DEF 14A sample",
+        "",
+        "Fill rates cannot tell a right number from a plausible wrong one. Every check here is "
+        "an **identity the filing itself must satisfy**, so a failure localises the defect.",
+        "",
+        f"**{total_ok} pass / {total_bad} fail / {total_na} not evaluable** ({100 * total_ok / max(total_ok + total_bad, 1):.1f}% of evaluable).",
+        "",
+        "| check | what | pass | fail | n/a |",
+        "|---|---|---|---|---|",
+    ]
     md += [f"| {c} | {w} | {o} | {b} | {n} |" for c, w, o, b, n in rep.rows]
-    md += ["", "A check whose two legs are both absent is counted as **not evaluable**, never as "
-           "a pass — an unevaluated check inflating a pass rate is the failure mode this file "
-           "exists to avoid.", ""] + rep.lines
+    md += [
+        "",
+        "A check whose two legs are both absent is counted as **not evaluable**, never as "
+        "a pass — an unevaluated check inflating a pass rate is the failure mode this file "
+        "exists to avoid.",
+        "",
+    ] + rep.lines
     out = Path(args.dir) / "CHECKS.md"
     out.write_text("\n".join(md), encoding="utf-8")
     print(f"  written -> {out}")

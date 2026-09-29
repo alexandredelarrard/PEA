@@ -20,11 +20,13 @@ in `reports/planning/active-tasks/2026-09-08-governance-fixes/phase-2-sct-sanity
     "$PY" scripts/def14a_sct_sanity.py [-c ./configs] [-t AAPL,JPM] [--show 60]
     "$PY" scripts/def14a_sct_sanity.py --write
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 
@@ -32,9 +34,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_extract.utils.structure.def14a.validate import (
-    DEF14A_SCT_PART_COLS, sanity_check_exec_comp, sct_reference,
+    DEF14A_SCT_PART_COLS,
+    sanity_check_exec_comp,
+    sct_reference,
 )
 from src.data_store.schema import Tables
 
@@ -43,8 +50,7 @@ from src.data_store.schema import Tables
 #: what keeps this from rewriting `def14a_json` (the largest column in the database) on every
 #: run just to change one float.
 _PK = ["ticker", "accession_number"]
-_COLS = _PK + ["as_of", "ceo_name_proxy", "ceo_total_comp", "ceo_pay_ratio",
-               "median_employee_pay", *DEF14A_SCT_PART_COLS]
+_COLS = _PK + ["as_of", "ceo_name_proxy", "ceo_total_comp", "ceo_pay_ratio", "median_employee_pay", *DEF14A_SCT_PART_COLS]
 #: The two columns the step is allowed to change. `ceo_salary` and the other components are
 #: read-only inputs: a negative component is the filer's own number (see `validate`).
 _WRITTEN = ["ceo_total_comp", "ceo_pay_ratio"]
@@ -61,30 +67,35 @@ def _decisions(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
         a = pd.to_numeric(after[col], errors="coerce")
         changed = (b.notna() & a.isna()) | (b.notna() & a.notna() & (b != a))
         for i in before.index[changed]:
-            rows.append({
-                "ticker": before.at[i, "ticker"],
-                "as_of": pd.to_datetime(before.at[i, "as_of"]).date(),
-                "ceo": before.at[i, "ceo_name_proxy"],
-                "column": col,
-                "before": b.at[i],
-                "after": a.at[i],
-                "action": "NULLED" if pd.isna(a.at[i]) else "REWRITTEN",
-                "sum_parts": parts.at[i] if col == "ceo_total_comp" else float("nan"),
-                "ceo_reference": ref.at[i] if col == "ceo_total_comp" else float("nan"),
-            })
+            rows.append(
+                {
+                    "ticker": before.at[i, "ticker"],
+                    "as_of": pd.to_datetime(cast(Any, before.at[i, "as_of"])).date(),
+                    "ceo": before.at[i, "ceo_name_proxy"],
+                    "column": col,
+                    "before": b.at[i],
+                    "after": a.at[i],
+                    "action": "NULLED" if pd.isna(a.at[i]) else "REWRITTEN",
+                    "sum_parts": parts.at[i] if col == "ceo_total_comp" else float("nan"),
+                    "ceo_reference": ref.at[i] if col == "ceo_total_comp" else float("nan"),
+                }
+            )
     return pd.DataFrame(rows)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-c", "--config", default="./configs")
-    ap.add_argument("-t", "--tickers", default=None,
-                    help="comma-separated subset. ⚠ A SUBSET CHANGES THE ANSWER: the neighbour "
-                         "reference is per (ticker, CEO), so restricting tickers is safe, but "
-                         "the tally will not match the full-table numbers in the plan.")
+    ap.add_argument(
+        "-t",
+        "--tickers",
+        default=None,
+        help="comma-separated subset. ⚠ A SUBSET CHANGES THE ANSWER: the neighbour "
+        "reference is per (ticker, CEO), so restricting tickers is safe, but "
+        "the tally will not match the full-table numbers in the plan.",
+    )
     ap.add_argument("--show", type=int, default=80, help="how many decisions to print")
-    ap.add_argument("--write", action="store_true",
-                    help="actually upsert the settled values. Omitted = dry run.")
+    ap.add_argument("--write", action="store_true", help="actually upsert the settled values. Omitted = dry run.")
     args = ap.parse_args()
 
     _, context = get_config_context(args.config, use_cache=False, save=False)
@@ -99,11 +110,12 @@ def main() -> int:
         print(f"def14a_llm is missing expected columns: {missing}")
         return 1
     before = store.load(Tables.def14a_llm, columns=_COLS)
+    if before is None:
+        raise RuntimeError("def14a_llm is unavailable")
     if args.tickers:
         wanted = {t.strip().upper() for t in args.tickers.split(",") if t.strip()}
         before = before[before["ticker"].isin(wanted)].copy()
-    print(f"loaded {len(before):,} rows / {before['ticker'].nunique()} tickers"
-          f"{' (SUBSET)' if args.tickers else ''}")
+    print(f"loaded {len(before):,} rows / {before['ticker'].nunique()} tickers{' (SUBSET)' if args.tickers else ''}")
 
     after, tally = sanity_check_exec_comp(before)
     print("\n--- tally ---")

@@ -13,6 +13,7 @@ momentum, betas and the labels at full weight.
 This module holds the one function that answers "the last close that has actually printed",
 so the clamp is defined once instead of at each call site.
 """
+
 from datetime import time
 from zoneinfo import ZoneInfo
 
@@ -42,8 +43,8 @@ def last_completed_session(now: pd.Timestamp | None = None) -> pd.Timestamp:
     et = et.tz_localize(MARKET_TZ) if et.tzinfo is None else et.tz_convert(MARKET_TZ)
 
     day = et.normalize().tz_localize(None)
-    if et.time() < US_MARKET_CLOSE_ET:      # today's close has not printed yet
+    if et.time() < US_MARKET_CLOSE_ET:  # today's close has not printed yet
         day -= pd.Timedelta(days=1)
-    while day.weekday() >= 5:               # roll back over the weekend
+    while day.weekday() >= 5:  # roll back over the weekend
         day -= pd.Timedelta(days=1)
     return day

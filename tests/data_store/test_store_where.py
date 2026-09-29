@@ -10,6 +10,7 @@ accession_number, ...)` and a ticker filter is therefore an index seek.
 
 SQLite-backed and self-contained: no live DB, no network.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -19,11 +20,13 @@ from sqlalchemy import create_engine
 from src.data_store.errors import TableMissingError
 from src.data_store.store import DataStore, read_table
 
-_FRAME = pd.DataFrame({
-    "ticker": ["AAPL", "AAPL", "MSFT", "ZBH", "ZBH", "ZBH"],
-    "field": ["totalRevenue", "netIncome", "totalRevenue", "totalRevenue", "netIncome", "depAmort"],
-    "value": [100.0, 20.0, 200.0, 300.0, 30.0, 5.0],
-})
+_FRAME = pd.DataFrame(
+    {
+        "ticker": ["AAPL", "AAPL", "MSFT", "ZBH", "ZBH", "ZBH"],
+        "field": ["totalRevenue", "netIncome", "totalRevenue", "totalRevenue", "netIncome", "depAmort"],
+        "value": [100.0, 20.0, 200.0, 300.0, 30.0, 5.0],
+    }
+)
 
 
 @pytest.fixture()
@@ -92,7 +95,7 @@ def test_where_value_is_bound_not_interpolated(store):
     SQL is matched literally instead of being executed."""
     out = read_table(store.engine, "facts", where={"ticker": "'; DROP TABLE facts; --"})
     assert out.empty
-    assert len(store.load("facts")) == len(_FRAME)     # table still there
+    assert len(store.load("facts")) == len(_FRAME)  # table still there
 
     print("\n=== SANITY CHECK: server-side where= filter ===")
     print("  fundamentals_facts on the live DB: 2,326,371 rows / 491 tickers.")

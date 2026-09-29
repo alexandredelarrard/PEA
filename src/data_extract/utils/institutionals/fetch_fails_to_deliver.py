@@ -48,7 +48,7 @@ _POLICY_MARKER = "__point_in_time_symbol_identity_v1__"
 #   * current path       -> 2017-06b onward
 #   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/" "frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
+SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path (>= 201706b uses the current path)
 SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
 

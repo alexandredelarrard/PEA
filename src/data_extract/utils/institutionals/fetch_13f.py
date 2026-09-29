@@ -13,6 +13,7 @@ CUSIP (OpenFIGI), never via unstandardized issuer names.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pandas as pd
 from edgar import get_filings
@@ -22,7 +23,6 @@ from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import period_of_report
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -30,9 +30,22 @@ from src.utils.string import pad_cik
 logger = logging.getLogger(__name__)
 
 # `quarter` is absent on purpose: it tagged the SOURCE bulk data set, not the period.
-_COLS = ["cik", "period", "filing_date", "ticker", "cusip", "shares", "value_usd",
-         "call_shares", "call_value", "put_shares", "put_value",
-         "debt_prn", "debt_value", "other_value"]
+_COLS = [
+    "cik",
+    "period",
+    "filing_date",
+    "ticker",
+    "cusip",
+    "shares",
+    "value_usd",
+    "call_shares",
+    "call_value",
+    "put_shares",
+    "put_value",
+    "debt_prn",
+    "debt_value",
+    "other_value",
+]
 
 # 13F `VALUE` is in $thousands or $ones depending on the schema the FILER used -- not on the
 # period, so the old pre/post-2023 date rule was wrong. edgartools infers the unit per filing
@@ -64,10 +77,8 @@ def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Se
     and the drift would be invisible: the columns would keep summing correctly while the label
     on the row said something else."""
     putcall = _pick(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
-    amttype = (_pick(infotable, "SSHPRNAMTTYPE", "Type")
-               .astype("string").str.strip().str.upper().fillna(""))
-    amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"),
-                        errors="coerce").fillna(0.0)
+    amttype = _pick(infotable, "SSHPRNAMTTYPE", "Type").astype("string").str.strip().str.upper().fillna("")
+    amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce").fillna(0.0)
     val = pd.to_numeric(_pick(infotable, "VALUE"), errors="coerce").fillna(0.0)
 
     is_call = putcall == "CALL"
@@ -77,8 +88,7 @@ def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Se
     is_stock = (~opt) & amttype.isin(["SH", "SHARES", ""])
     is_other = ~(opt | is_debt | is_stock)
 
-    return ({"common": is_stock, "call": is_call, "put": is_put,
-             "debt": is_debt, "other": is_other}, amt, val)
+    return ({"common": is_stock, "call": is_call, "put": is_put, "debt": is_debt, "other": is_other}, amt, val)
 
 
 def position_type(infotable: pd.DataFrame) -> pd.Series:
@@ -87,7 +97,7 @@ def position_type(infotable: pd.DataFrame) -> pd.Series:
     puts, calls and debt without re-deriving the classification."""
     masks, _, _ = _holding_masks(infotable)
     out = pd.Series("other", index=infotable.index, dtype="object")
-    for name in reversed(POSITION_TYPES):        # `common` applied last, so it wins any overlap
+    for name in reversed(POSITION_TYPES):  # `common` applied last, so it wins any overlap
         out = out.mask(masks[name], name)
     return out
 
@@ -101,15 +111,21 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
     is_stock, is_call = masks["common"], masks["call"]
     is_put, is_debt, is_other = masks["put"], masks["debt"], masks["other"]
 
-    return pd.DataFrame({
-        # canonical 9-char CUSIP so the map lookup and the ticker merge use ONE form
-        "cusip": _pick(infotable, "CUSIP").map(normalize_cusip),
-        "shares": amt.where(is_stock, 0.0),      "value_usd": val.where(is_stock, 0.0),
-        "call_shares": amt.where(is_call, 0.0),  "call_value": val.where(is_call, 0.0),
-        "put_shares": amt.where(is_put, 0.0),    "put_value": val.where(is_put, 0.0),
-        "debt_prn": amt.where(is_debt, 0.0),     "debt_value": val.where(is_debt, 0.0),
-        "other_value": val.where(is_other, 0.0),
-    })
+    return pd.DataFrame(
+        {
+            # canonical 9-char CUSIP so the map lookup and the ticker merge use ONE form
+            "cusip": _pick(infotable, "CUSIP").map(normalize_cusip),
+            "shares": amt.where(is_stock, 0.0),
+            "value_usd": val.where(is_stock, 0.0),
+            "call_shares": amt.where(is_call, 0.0),
+            "call_value": val.where(is_call, 0.0),
+            "put_shares": amt.where(is_put, 0.0),
+            "put_value": val.where(is_put, 0.0),
+            "debt_prn": amt.where(is_debt, 0.0),
+            "debt_value": val.where(is_debt, 0.0),
+            "other_value": val.where(is_other, 0.0),
+        }
+    )
 
 
 def _holdings_frame(cik, filing_date, period, infotable: pd.DataFrame) -> pd.DataFrame:
@@ -117,7 +133,7 @@ def _holdings_frame(cik, filing_date, period, infotable: pd.DataFrame) -> pd.Dat
     typed = _classify_holdings(infotable).dropna(subset=["cusip"])
     # a manager's several lines for the same security (split sub-accounts) become one row
     out = typed.groupby("cusip", as_index=False).sum(numeric_only=True)
-    out["cik"] = pad_cik(cik)      # the stored form; the PK join depends on matching it
+    out["cik"] = pad_cik(cik)  # the stored form; the PK join depends on matching it
     out["period"] = pd.Timestamp(period)
     out["filing_date"] = pd.Timestamp(filing_date)
     return out.dropna(subset=["period"])
@@ -130,21 +146,18 @@ def _read_filing(filing) -> pd.DataFrame:
         infotable = filing.obj().infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
-        return _holdings_frame(filing.cik, filing.filing_date,
-                               period_of_report(filing), infotable)
-    except Exception as e:                                        # noqa: BLE001
+        return _holdings_frame(filing.cik, filing.filing_date, period_of_report(filing), infotable)
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"13F {filing.accession_number}: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
 
-def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame,
-                     universe: set[str]) -> pd.DataFrame:
+def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
     out = holdings.merge(cmap, on="cusip", how="inner")
     return out[out["ticker"].isin(universe)]
 
 
-def _record(context: Context, tickers: list[str] | None, saved: int,
-            filing_window: tuple[str, str] | None) -> None:
+def _record(context: Context, tickers: list[str] | None, saved: int, filing_window: tuple[str, str] | None) -> None:
     """Log the run, as an incremental or as a backfill.
 
     A windowed run must NOT read as a normal incremental: `last_run_date` is a resume cutoff
@@ -155,13 +168,17 @@ def _record(context: Context, tickers: list[str] | None, saved: int,
     if filing_window is None:
         record_run(context, Tables.sec13f_hr, n_tickers, saved)
     else:
-        record_run(context, Tables.sec13f_hr, n_tickers, saved,
-                   backfill_window=tuple(filing_window))
+        record_run(context, Tables.sec13f_hr, n_tickers, saved, backfill_window=filing_window)
 
 
-def fetch_13f(context: Context, tickers: list[str] | None = None, years_history: int = 15,
-              save_every: int = 600, lookback_days: int = 7,
-              filing_window: tuple[str, str] | None = None) -> None:
+def fetch_13f(
+    context: Context,
+    tickers: list[str] | None = None,
+    years_history: int = 15,
+    save_every: int = 600,
+    lookback_days: int = 7,
+    filing_window: tuple[str, str] | None = None,
+) -> None:
     """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date`, minus
     `lookback_days`.
 
@@ -197,20 +214,17 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
         since, until = (pd.Timestamp(d).normalize() for d in filing_window)
         if since > until:
             raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
-        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- "
-                       f"the watermark is neither read nor advanced by this run")
+        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
     else:
         until = today
         watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
         if watermark is None:
             since = today - pd.DateOffset(years=years_history)
-            logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- "
-                           f"full history from {since:%Y-%m-%d}")
+            logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
         else:
             since = watermark - pd.Timedelta(days=lookback_days)
 
-    filings = get_filings(form=SEC_13F_FORMS,
-                          filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
+    filings = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
 
@@ -239,8 +253,10 @@ def fetch_13f(context: Context, tickers: list[str] | None = None, years_history:
                 saved += context.store.save(Tables.sec13f_hr, out[_COLS])
 
     if suspect:
-        logger.warning(f"13F: {suspect}/{saved} saved rows imply a share price outside "
-                       f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
-                       f"detection before trusting value_usd")
+        logger.warning(
+            f"13F: {suspect}/{saved} saved rows imply a share price outside "
+            f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
+            f"detection before trusting value_usd"
+        )
     logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
     _record(context, tickers, saved, filing_window)

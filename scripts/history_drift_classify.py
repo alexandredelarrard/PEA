@@ -8,6 +8,7 @@ passes --rebuild-history.
 It writes NOTHING: `diff_against_stored` is wrapped to capture the drift frame, and the guard's
 own ValueError is allowed to fire, which happens before any save.
 """
+
 from __future__ import annotations
 
 import sys
@@ -40,7 +41,7 @@ def main() -> None:
             continue
         except ValueError:
             pass
-        except Exception as e:                                  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             print(f"| {t} | ? | ? | ? | ? | ERROR {type(e).__name__}: {str(e)[:60]} |")
             continue
         d = captured.get("last")
@@ -49,8 +50,7 @@ def main() -> None:
             continue
         filled = int(d["stored"].isna().sum())
         rewritten = int(d["stored"].notna().sum())
-        verdict = ("**NULL-fill only** -- safe to rebuild" if rewritten == 0
-                   else f"⚠ **{rewritten} PUBLISHED VALUE(S) WOULD CHANGE** -- inspect")
+        verdict = "**NULL-fill only** -- safe to rebuild" if rewritten == 0 else f"⚠ **{rewritten} PUBLISHED VALUE(S) WOULD CHANGE** -- inspect"
         print(f"| {t} | {len(d)} | {d['as_of'].nunique()} | {filled} | {rewritten} | {verdict} |")
         if rewritten:
             print(d[d["stored"].notna()].head(12).to_string())

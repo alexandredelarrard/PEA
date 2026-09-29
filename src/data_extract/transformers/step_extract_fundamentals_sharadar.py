@@ -19,21 +19,21 @@ from __future__ import annotations
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.utils.step import Step
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
-    fetch_sharadar_actions, fetch_sharadar_fundamentals, fetch_sharadar_sp500,
+    fetch_sharadar_actions,
+    fetch_sharadar_fundamentals,
+    fetch_sharadar_sp500,
     fetch_sharadar_tickers,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
+from src.utils.step import Step
 
 
 class StepExtractFundamentalsSharadar(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
-    def run(self, tickers: list[str], *, full: bool = False,
-            config_dir: str | None = None) -> None:
+    def run(self, tickers: list[str], *, full: bool = False, config_dir: str | None = None) -> None:
         """The five stages, in dependency order. `full` re-pulls the whole configured window
         instead of resuming, and makes the merge DELETE before it rebuilds.
 
@@ -46,7 +46,7 @@ class StepExtractFundamentalsSharadar(Step):
         module-level default here would silently ignore `-c` for that path exactly as
         `context.py` used to.
         """
-        config_dir = config_dir or self._config_dir
+        config_dir = str(config_dir or self._config_dir)
         years = int(self._config.data_extract.sharadar_years_history)
 
         # 1. The entity dimension FIRST -- `permaticker`, `currency`, `category`. A full
@@ -58,8 +58,7 @@ class StepExtractFundamentalsSharadar(Step):
         #    the two sources are limited by different things -- the SEC walk by patience,
         #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
         #    costs one request and is counted, never retried.
-        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years,
-                                    full=full)
+        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full)
 
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
         fetch_sharadar_actions(self._context, years_history=years, full=full)
@@ -80,5 +79,4 @@ class StepExtractFundamentalsSharadar(Step):
         #    It reads `fundamentals_history_sec` too, which THIS step does not produce -- so
         #    the SEC-owned block is as fresh as the last `StepExtractFundamentals` run, not as
         #    this one. That is the stated coverage/freshness asymmetry (D14), not a bug.
-        build_merged_history(self._context, tickers=tickers, full=full,
-                             config_dir=config_dir)
+        build_merged_history(self._context, tickers=tickers, full=full, config_dir=config_dir)

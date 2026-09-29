@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+from typing import Any, cast
 
 import pandas as pd
 import requests
@@ -50,6 +51,7 @@ from src.data_store.errors import TableEmptyError
 from src.data_store.schema import Tables
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
+SHORT_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,7 @@ def _parse_regsho(text: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
 
     df = pd.read_csv(io.StringIO(text), sep="|")
-    df = df[df.get("Symbol").notna()] if "Symbol" in df.columns else df.iloc[0:0]
+    df = df[df["Symbol"].notna()] if "Symbol" in df.columns else df.iloc[0:0]
     if df.empty:
         return pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
     out = pd.DataFrame(
@@ -91,19 +93,20 @@ def _fetch_day(
 
 
 def _resume_day(context: Context, years_history: int = 15, full: bool = False) -> pd.Timestamp:
-    """The first day to download: the day after the GLOBAL stored max, or the full
-    `years_history` window on a cold table.
+    """The first day to download: a seven-session overlap from the GLOBAL stored max,
+    or the full `years_history` window on a cold table.
 
     Global and not per-ticker on purpose. A RegSHO day-file carries every symbol at once, so
     one lagging ticker would drag the whole download back to its own last date and re-fetch
-    days already stored for all the others.
+    days already stored for all the others. The bounded overlap repairs a failed interior
+    day even after a later day advanced the global maximum.
     """
 
     today = _today()
     stored_max = context.store.max_date(Tables.short_interest)
     if stored_max is None or full:
         return today - pd.DateOffset(years=years_history)
-    return stored_max + pd.Timedelta(days=1)
+    return stored_max - pd.tseries.offsets.BDay(SHORT_REFRESH_TRADING_DAYS)
 
 
 def _canonicalise_regsho(
@@ -140,9 +143,10 @@ def _stored_rows(
             return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
         kwargs["where"] = {"date": dates}
     try:
-        loaded = context.store.load(Tables.short_interest, **kwargs)
+        loaded = context.store.load(Tables.short_interest, **cast(dict[str, Any], kwargs))
     except TableEmptyError:
         return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"])
+    assert loaded is not None
     loaded["date"] = pd.to_datetime(loaded["date"])
     return loaded
 
@@ -236,7 +240,7 @@ def fetch_short_interest(
 
     if not full:
         context.store.save(Tables.short_interest, fresh)
-        logger.info(f"Saved {len(fresh)} new short-volume rows to DB table " f"'{Tables.short_interest}'")
+        logger.info(f"Saved {len(fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
         logger.info(f"RegSHO: {len(unresolved)} unresolved raw row(s) excluded")
         record_run(context, Tables.short_interest, len(tickers), len(fresh))
         return

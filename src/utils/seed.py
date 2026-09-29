@@ -1,7 +1,8 @@
 import logging
-from omegaconf import DictConfig
 import random
+
 from numpy import random as rd
+from omegaconf import DictConfig
 
 
 def set_seed(config: DictConfig):

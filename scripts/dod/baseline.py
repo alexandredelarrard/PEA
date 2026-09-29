@@ -20,10 +20,11 @@ Design notes
     count of the whole table, so `--tickers AAPL,JPM` must never overwrite a full baseline --
     that is how a "not decreased" gate gets quietly neutered.
 """
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 BASELINE_RELPATH = Path("reports") / "baselines" / "data_profile.json"
@@ -55,11 +56,10 @@ def save_profile_baseline(root: Path, data: dict) -> Path:
 def snapshot_from_profile(profile: dict) -> dict:
     """Reduce a full table profile to the few fields the gates compare."""
     return {
-        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "recorded_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rows": profile.get("rows"),
         "columns": sorted(profile.get("columns") or []),
-        "null_rate": {f: s.get("null_rate") for f, s in (profile.get("fields") or {}).items()
-                      if s.get("null_rate") is not None},
+        "null_rate": {f: s.get("null_rate") for f, s in (profile.get("fields") or {}).items() if s.get("null_rate") is not None},
         "date_min": profile.get("date_min"),
         "date_max": profile.get("date_max"),
         "scope": profile.get("scope"),

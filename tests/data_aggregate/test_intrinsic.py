@@ -5,13 +5,21 @@ constant-growth cash-flow stream, return NaN for cash-burning firms, and reject
 a terminal growth >= the discount rate. Then the daily wrapper must produce a
 point-in-time yield / per-share consistent with the market cap identity.
 """
+
 from __future__ import annotations
+
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.fundamentals.intrinsic import two_stage_dcf, intrinsic_value_daily
+from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily, two_stage_dcf
+
+
+def _number(value: object) -> float:
+    assert not isinstance(value, pd.Series | pd.DataFrame)
+    return float(cast(float, value))
 
 
 def _closed_form(fcf, g, r, gt, n):
@@ -33,8 +41,8 @@ def test_two_stage_dcf_matches_closed_form():
     assert abs(v.loc[idx[0], "BBB"] - exp_b) < 1e-6
 
     print("\n=== SANITY CHECK: two-stage DCF closed form ===")
-    print(f"  FCF100 g=0%%  -> V={v.loc[idx[0],'AAA']:.2f} (closed form {exp_a:.2f})")
-    print(f"  FCF250 g=8%%  -> V={v.loc[idx[0],'BBB']:.2f} (closed form {exp_b:.2f})")
+    print(f"  FCF100 g=0%%  -> V={v.loc[idx[0], 'AAA']:.2f} (closed form {exp_a:.2f})")
+    print(f"  FCF250 g=8%%  -> V={v.loc[idx[0], 'BBB']:.2f} (closed form {exp_b:.2f})")
     print("  DCF reproduces the analytic value exactly.")
 
 
@@ -43,7 +51,7 @@ def test_two_stage_dcf_nan_for_cash_burners():
     base = pd.DataFrame({"AAA": [-50.0], "BBB": [0.0]}, index=idx)
     growth = pd.DataFrame({"AAA": [0.05], "BBB": [0.05]}, index=idx)
     v = two_stage_dcf(base, growth, 0.10, 0.025, 5)
-    assert np.isnan(v.loc[idx[0], "AAA"]) and np.isnan(v.loc[idx[0], "BBB"])
+    assert np.isnan(_number(v.loc[idx[0], "AAA"])) and np.isnan(_number(v.loc[idx[0], "BBB"]))
     print("\n=== SANITY CHECK: cash-burning firms -> NaN intrinsic ===")
     print("  FCF<=0 has no cash-flow intrinsic value -> NaN, never a bogus number.")
 
@@ -59,18 +67,18 @@ def test_two_stage_dcf_rejects_terminal_above_discount():
 
 def test_intrinsic_value_daily_pit_and_identity():
     idx = pd.bdate_range("2020-01-01", "2020-06-01")
-    fund = pd.DataFrame({
-        "ticker": ["AAA", "AAA"],
-        "as_of": ["2019-06-03", "2020-03-02"],
-        "freeCashflow": [80.0, 100.0],
-        "revenueGrowth": [0.05, 0.05],
-        "sharesOutstanding": [1000.0, 1000.0],
-    })
+    fund = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "as_of": ["2019-06-03", "2020-03-02"],
+            "freeCashflow": [80.0, 100.0],
+            "revenueGrowth": [0.05, 0.05],
+            "sharesOutstanding": [1000.0, 1000.0],
+        }
+    )
     close = pd.DataFrame({"AAA": 2.0}, index=idx)
 
-    out = intrinsic_value_daily(fund, close, idx, discount_rate=0.10,
-                                terminal_growth=0.025, years=5,
-                                growth_cap=0.15, growth_floor=-0.10)
+    out = intrinsic_value_daily(fund, close, idx, discount_rate=0.10, terminal_growth=0.025, years=5, growth_cap=0.15, growth_floor=-0.10)
     d = pd.Timestamp("2020-04-01")
     exp_total = _closed_form(100.0, 0.05, 0.10, 0.025, 5)
     assert abs(out["total"].loc[d, "AAA"] - exp_total) < 1e-6
@@ -79,7 +87,6 @@ def test_intrinsic_value_daily_pit_and_identity():
     assert abs(out["yield"].loc[d, "AAA"] - exp_total / (1000.0 * 2.0)) < 1e-6
 
     print("\n=== SANITY CHECK: intrinsic_value_daily (PIT) ===")
-    print(f"  total={out['total'].loc[d,'AAA']:.1f}  per_share="
-          f"{out['per_share'].loc[d,'AAA']:.4f}  yield={out['yield'].loc[d,'AAA']:.4f}")
+    print(f"  total={out['total'].loc[d, 'AAA']:.1f}  per_share={out['per_share'].loc[d, 'AAA']:.4f}  yield={out['yield'].loc[d, 'AAA']:.4f}")
     print("  total/shares == per_share and total/mcap == yield (identity holds),")
     print("  and the value is keyed on the 2020-03-02 filing -> point-in-time.")

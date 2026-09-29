@@ -99,8 +99,8 @@ def test_regime_masks_earnings_metrics_but_keeps_robust_ones():
     print("\n=== SANITY CHECK: regime masking ===")
     print("  loss-maker ZZZ: earnings/fcf/ebitda/book yields -> NaN (undefined/non-monotone);")
     print(
-        f"  robust metrics kept: sales_yield={F['sales_yield'].loc[d,'ZZZ']:.4f}, "
-        f"gross_profitability={F['gross_profitability'].loc[d,'ZZZ']:.4f}. Validated."
+        f"  robust metrics kept: sales_yield={F['sales_yield'].loc[d, 'ZZZ']:.4f}, "
+        f"gross_profitability={F['gross_profitability'].loc[d, 'ZZZ']:.4f}. Validated."
     )
 
 
@@ -141,7 +141,7 @@ def test_loss_intensity_carries_what_the_earnings_mask_discards():
     print("\n=== SANITY CHECK: loss_intensity ===")
     print(
         f"  ZZZ loses 30 on a 2000 market cap -> loss_intensity="
-        f"{F['loss_intensity'].loc[d,'ZZZ']:.4f} (positive magnitude), while its "
+        f"{F['loss_intensity'].loc[d, 'ZZZ']:.4f} (positive magnitude), while its "
         f"earnings_yield stays NaN. AAA (profitable) -> NaN, not 0."
     )
     print(
@@ -325,7 +325,7 @@ def test_peer_relative_does_not_explode_on_degenerate_peers():
     assert abs(rel.loc[idx[1], "A"]) <= 8.0 + 1e-9, "near-degenerate std must be clipped"
 
     print("\n=== SANITY CHECK: peer-std explosion guard ===")
-    print(f"  identical peers -> {rel.loc[idx[0], 'A']}; near-degenerate -> " f"{rel.loc[idx[1], 'A']:.1f} (clipped to +-8, not 1e13).")
+    print(f"  identical peers -> {rel.loc[idx[0], 'A']}; near-degenerate -> {rel.loc[idx[1], 'A']:.1f} (clipped to +-8, not 1e13).")
 
 
 # --------------------------------------------------------------------------- #
@@ -356,10 +356,10 @@ def test_derived_valuation_and_dilution_exact():
 
     print("\n=== SANITY CHECK: derived valuation / dilution / R&D ===")
     print(
-        f"  AAA E/P={F['earnings_yield'].loc[d,'AAA']:.5f}  S/P={F['sales_yield'].loc[d,'AAA']:.5f}"
-        f"  EBITDA/EV={F['ebitda_to_ev'].loc[d,'AAA']:.5f}"
+        f"  AAA E/P={F['earnings_yield'].loc[d, 'AAA']:.5f}  S/P={F['sales_yield'].loc[d, 'AAA']:.5f}"
+        f"  EBITDA/EV={F['ebitda_to_ev'].loc[d, 'AAA']:.5f}"
     )
-    print(f"  R&D intensity={F['rd_intensity'].loc[d,'AAA']:.4f}  shares growth=" f"{F['shares_growth'].loc[d,'AAA']:.2%}  -> all match hand calc.")
+    print(f"  R&D intensity={F['rd_intensity'].loc[d, 'AAA']:.4f}  shares growth={F['shares_growth'].loc[d, 'AAA']:.2%}  -> all match hand calc.")
 
 
 def test_valuation_skipped_without_close():
@@ -399,7 +399,7 @@ def test_real_panel_wellformed_and_bounded(fundamental_panel):
     assert panel[vp].notna().mean().max() > 0.02, "vs_peers has no coverage at all"
 
     print("\n=== SANITY CHECK: real fundamental panel ===")
-    print(f"  {len(vp)} vs_peers + {len(xs)} xs features; " f"|vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (<=8), xs in [0,1].")
+    print(f"  {len(vp)} vs_peers + {len(xs)} xs features; |vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (<=8), xs in [0,1].")
     print(f"  core feature xs-coverage = {cov_xs:.0%}. Panel is well-formed.")
 
 
@@ -450,8 +450,8 @@ def test_headline_feature_signs_make_sense(fundamental_panel, real_pipeline):
 
     wrong = {f: mic for f, (mic, want) in decided.items() if np.sign(mic) != want}
     assert not wrong, f"wrong IC sign: { {f: f'{v:+.4f}' for f, v in wrong.items()} }"
-    assert decided, "no headline feature cleared the noise floor -- the sample universe is " "too small to say anything about IC signs"
-    print(f"  -> {len(decided)} feature(s) asserted, {len(inconclusive)} inconclusive on this " f"{df['ticker'].nunique()}-name sample.")
+    assert decided, "no headline feature cleared the noise floor -- the sample universe is too small to say anything about IC signs"
+    print(f"  -> {len(decided)} feature(s) asserted, {len(inconclusive)} inconclusive on this {df['ticker'].nunique()}-name sample.")
 
 
 # --------------------------------------------------------------------------- #
@@ -478,34 +478,36 @@ def test_yearly_ttm_features_computed_correctly():
     before_2020 = pd.Timestamp("2020-01-15")
     assert np.isnan(F["y_rev_growth"].loc[before_2020, "AAA"]), "y_rev_growth must be NaN before the second filing"
     after_2020 = pd.Timestamp("2020-03-02")  # Monday, in bdate_range
-    assert abs(F["y_rev_growth"].loc[after_2020, "AAA"] - 0.20) < 1e-9, f"expected +20% revenue growth, got {F['y_rev_growth'].loc[after_2020,'AAA']}"
+    assert abs(F["y_rev_growth"].loc[after_2020, "AAA"] - 0.20) < 1e-9, (
+        f"expected +20% revenue growth, got {F['y_rev_growth'].loc[after_2020, 'AAA']}"
+    )
 
     # ---- y_rev_growth_accel: change in YoY from period 2->3 ----
     assert "y_rev_growth_accel" in F, "y_rev_growth_accel missing"
     after_2021 = pd.Timestamp("2021-03-01")
     # 2020 YoY = 20%, 2021 YoY = 132/120-1 = 10% -> accel = 10% - 20% = -10%
-    assert (
-        abs(F["y_rev_growth_accel"].loc[after_2021, "AAA"] - (-0.10)) < 1e-9
-    ), f"expected accel=-10%, got {F['y_rev_growth_accel'].loc[after_2021,'AAA']}"
+    assert abs(F["y_rev_growth_accel"].loc[after_2021, "AAA"] - (-0.10)) < 1e-9, (
+        f"expected accel=-10%, got {F['y_rev_growth_accel'].loc[after_2021, 'AAA']}"
+    )
 
     # ---- y_earnings_growth ----
     assert "y_earnings_growth" in F, "y_earnings_growth missing"
-    assert (
-        abs(F["y_earnings_growth"].loc[after_2020, "AAA"] - 0.50) < 1e-9
-    ), f"expected +50% earnings growth, got {F['y_earnings_growth'].loc[after_2020,'AAA']}"
+    assert abs(F["y_earnings_growth"].loc[after_2020, "AAA"] - 0.50) < 1e-9, (
+        f"expected +50% earnings growth, got {F['y_earnings_growth'].loc[after_2020, 'AAA']}"
+    )
 
     # ---- y_margin_vs_ttm: YoY diff in profitMargins ----
     assert "y_margin_vs_ttm" in F, "y_margin_vs_ttm missing"
     expected_margin_chg = round(0.125 - 0.10, 9)
-    assert (
-        abs(F["y_margin_vs_ttm"].loc[after_2020, "AAA"] - expected_margin_chg) < 1e-9
-    ), f"expected margin chg={expected_margin_chg}, got {F['y_margin_vs_ttm'].loc[after_2020,'AAA']}"
+    assert abs(F["y_margin_vs_ttm"].loc[after_2020, "AAA"] - expected_margin_chg) < 1e-9, (
+        f"expected margin chg={expected_margin_chg}, got {F['y_margin_vs_ttm'].loc[after_2020, 'AAA']}"
+    )
 
     print("\n=== SANITY CHECK: yearly-TTM momentum features ===")
-    print(f"  y_rev_growth    2020={F['y_rev_growth'].loc[after_2020,'AAA']:.2%} (expected +20%)")
-    print(f"  y_rev_growth_accel 2021={F['y_rev_growth_accel'].loc[after_2021,'AAA']:.2%} (expected -10%)")
-    print(f"  y_earnings_growth 2020={F['y_earnings_growth'].loc[after_2020,'AAA']:.2%} (expected +50%)")
-    print(f"  y_margin_vs_ttm 2020={F['y_margin_vs_ttm'].loc[after_2020,'AAA']:.4f} (expected +0.025)")
+    print(f"  y_rev_growth    2020={F['y_rev_growth'].loc[after_2020, 'AAA']:.2%} (expected +20%)")
+    print(f"  y_rev_growth_accel 2021={F['y_rev_growth_accel'].loc[after_2021, 'AAA']:.2%} (expected -10%)")
+    print(f"  y_earnings_growth 2020={F['y_earnings_growth'].loc[after_2020, 'AAA']:.2%} (expected +50%)")
+    print(f"  y_margin_vs_ttm 2020={F['y_margin_vs_ttm'].loc[after_2020, 'AAA']:.4f} (expected +0.025)")
     print("  All NaN before second filing, correct values after -> strictly point-in-time. Validated.")
 
 
@@ -637,18 +639,18 @@ def test_distress_sga_ma_sbc_features_exact():
 
     print("\n=== SANITY CHECK: distress / S&M / M&A / SBC ===")
     print(
-        f"  net_debt/EBITDA={F['net_debt_to_ebitda'].loc[d,'AAA']:.3f}  "
-        f"interest_cov={F['interest_coverage'].loc[d,'AAA']:.1f}x  "
-        f"current={F['current_ratio'].loc[d,'AAA']:.1f}  "
-        f"cash/debt={F['cash_to_debt'].loc[d,'AAA']:.3f}"
+        f"  net_debt/EBITDA={F['net_debt_to_ebitda'].loc[d, 'AAA']:.3f}  "
+        f"interest_cov={F['interest_coverage'].loc[d, 'AAA']:.1f}x  "
+        f"current={F['current_ratio'].loc[d, 'AAA']:.1f}  "
+        f"cash/debt={F['cash_to_debt'].loc[d, 'AAA']:.3f}"
     )
     print(
-        f"  sga_intensity={F['sga_intensity'].loc[d,'AAA']:.3f}  "
-        f"op_leverage={F['operating_leverage'].loc[d,'AAA']:+.2%}  "
-        f"acq_intensity={F['acquisition_intensity'].loc[d,'AAA']:.3f}  "
-        f"intangibles_growth={F['intangibles_growth'].loc[d,'AAA']:+.0%}"
+        f"  sga_intensity={F['sga_intensity'].loc[d, 'AAA']:.3f}  "
+        f"op_leverage={F['operating_leverage'].loc[d, 'AAA']:+.2%}  "
+        f"acq_intensity={F['acquisition_intensity'].loc[d, 'AAA']:.3f}  "
+        f"intangibles_growth={F['intangibles_growth'].loc[d, 'AAA']:+.0%}"
     )
-    print(f"  sbc_intensity={F['sbc_intensity'].loc[d,'AAA']:.3f}  " f"sbc/OCF={F['sbc_to_ocf'].loc[d,'AAA']:.2f}")
+    print(f"  sbc_intensity={F['sbc_intensity'].loc[d, 'AAA']:.3f}  sbc/OCF={F['sbc_to_ocf'].loc[d, 'AAA']:.2f}")
     print("  All ratios match hand calc; growth NaN before 2nd filing -> point-in-time. Validated.")
 
 
@@ -727,9 +729,9 @@ def test_accruals_and_profitability_passthrough_exact():
 
     print("\n=== SANITY CHECK: accruals + profitability pass-through ===")
     print(
-        f"  accruals=(15-12)/120={F['accruals'].loc[d,'AAA']:.4f}; "
-        f"profitMargins={F['profitMargins'].loc[d,'AAA']}, ROE={F['returnOnEquity'].loc[d,'AAA']}, "
-        f"D/E={F['debtToEquity'].loc[d,'AAA']} -> exact."
+        f"  accruals=(15-12)/120={F['accruals'].loc[d, 'AAA']:.4f}; "
+        f"profitMargins={F['profitMargins'].loc[d, 'AAA']}, ROE={F['returnOnEquity'].loc[d, 'AAA']}, "
+        f"D/E={F['debtToEquity'].loc[d, 'AAA']} -> exact."
     )
 
 
@@ -908,10 +910,10 @@ def test_valuation_engine_kpis_exact():
 
     print("\n=== SANITY CHECK: valuation-engine KPIs ===")
     print(
-        f"  GEN PEGY={F['pegy'].loc[d,'GEN']:.3f} op_lev_elasticity={F['operating_leverage_elasticity'].loc[d,'GEN']:.2f} "
-        f"AltmanZ={F['altman_z'].loc[d,'GEN']:.3f}"
+        f"  GEN PEGY={F['pegy'].loc[d, 'GEN']:.3f} op_lev_elasticity={F['operating_leverage_elasticity'].loc[d, 'GEN']:.2f} "
+        f"AltmanZ={F['altman_z'].loc[d, 'GEN']:.3f}"
     )
-    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d,'REI']:.3f} (D&A leg only), NaN for the " f"non-REIT OIL -> GICS-gated.")
+    print(f"  REIT ffo_yield={F['ffo_yield'].loc[d, 'REI']:.3f} (D&A leg only), NaN for the non-REIT OIL -> GICS-gated.")
     print(
         "  implied_cap_rate / ebitdax_to_ev / net_debt_to_ebitdare are ABSENT: each reduced "
         "to a sector-masked `ebitda_to_ev` once its add-back leg proved missing. Validated."
@@ -944,9 +946,7 @@ def test_pegy_uses_projected_eps_growth():
     assert "pegy" not in F_ttm or np.isnan(F_ttm["pegy"].loc[d, "A"])
 
     print("\n=== SANITY CHECK: PEGY uses projected EPS growth ===")
-    print(
-        f"  projected growth 8% -> PEGY = 20/(8+0.2) = {F_proj['pegy'].loc[d,'A']:.3f}; " f"TTM fallback undefined here (single filing). Validated."
-    )
+    print(f"  projected growth 8% -> PEGY = 20/(8+0.2) = {F_proj['pegy'].loc[d, 'A']:.3f}; TTM fallback undefined here (single filing). Validated.")
 
 
 def test_true_enterprise_value_fully_diluted():
@@ -1010,7 +1010,7 @@ def test_true_enterprise_value_fully_diluted():
     print("\n=== SANITY CHECK: True (fully-diluted) enterprise value ===")
     print(
         f"  EV = 2200 FD-mcap + 50 debt + 10 leases + 5 minority - 25 cash = {ev:.0f}; "
-        f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d,'AAA']:.5f}; "
+        f"EBITDA/EV = 26/{ev:.0f} = {F['ebitda_to_ev'].loc[d, 'AAA']:.5f}; "
         f"FCF/EV = 12/{ev:.0f}. Diluted (not basic) shares; SBC excluded; short-term "
         f"investments counted ONCE (the old EV was 2225 and double-counted them). Exact."
     )
@@ -1146,8 +1146,8 @@ def test_panel_features_are_float32_for_memory():
     print("\n=== SANITY CHECK: fundamental panel memory (float32) ===")
     print(f"  {len(feat_cols)} feature columns, all float32; panel {panel.shape[0]} rows.")
     print(
-        f"  feature-block memory {mem32/1e6:.2f} MB vs float64 {mem64/1e6:.2f} MB "
-        f"(~{mem64/mem32:.1f}x smaller) -> halves the resident footprint that SIGKILL/-9'd "
+        f"  feature-block memory {mem32 / 1e6:.2f} MB vs float64 {mem64 / 1e6:.2f} MB "
+        f"(~{mem64 / mem32:.1f}x smaller) -> halves the resident footprint that SIGKILL/-9'd "
         "the aggregation on the full-history rebuild."
     )
 

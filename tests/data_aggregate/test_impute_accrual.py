@@ -20,6 +20,7 @@ It also discharges §3.6's "measure the marginal gain and STOP" obligation for
 `ceo_since_year`: the anchor is deliberately NOT applied to it, and the report says what
 applying it would be worth so that stays a modelling decision rather than a side effect.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -27,10 +28,15 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.governance.accrual import (
-    accrual_anchor, accrual_dispersion, accrue,
+    accrual_anchor,
+    accrual_dispersion,
+    accrue,
 )
 from src.data_aggregate.utils.governance.def14a_impute import (
-    CARRY_LEVELS, CARRY_MAX_DAYS, IDENTITY_GATED_CARRY, impute_def14a,
+    CARRY_LEVELS,
+    CARRY_MAX_DAYS,
+    IDENTITY_GATED_CARRY,
+    impute_def14a,
 )
 from src.data_aggregate.utils.governance.names import ceo_identity_series
 
@@ -43,12 +49,14 @@ def _row(ticker: str, as_of: str, **kw) -> dict:
 
 def test_accrual_anchor_extrapolates_and_resists_a_bad_observation():
     """A clock is recomputed, not interpolated — so edges fill and one bad value cannot bite."""
-    obs = pd.DataFrame([
-        {"pk": "AAA|cook|t", "as_of": "2015-04-01", "ceo_age": 55.0},
-        {"pk": "AAA|cook|t", "as_of": "2016-04-01", "ceo_age": 56.0},
-        {"pk": "AAA|cook|t", "as_of": "2017-04-01", "ceo_age": 75.0},   # a mis-extraction
-        {"pk": "AAA|cook|t", "as_of": "2018-04-01", "ceo_age": 58.0},
-    ])
+    obs = pd.DataFrame(
+        [
+            {"pk": "AAA|cook|t", "as_of": "2015-04-01", "ceo_age": 55.0},
+            {"pk": "AAA|cook|t", "as_of": "2016-04-01", "ceo_age": 56.0},
+            {"pk": "AAA|cook|t", "as_of": "2017-04-01", "ceo_age": 75.0},  # a mis-extraction
+            {"pk": "AAA|cook|t", "as_of": "2018-04-01", "ceo_age": 58.0},
+        ]
+    )
     anchor = accrual_anchor(obs, "ceo_age", key="pk", date="as_of")
     assert anchor["AAA|cook|t"] == pytest.approx(1960.0), "the median anchor moved with one bad row"
 
@@ -73,7 +81,7 @@ def test_ceo_age_never_interpolates_across_a_succession():
     """The D33 defect, reproduced and closed: no age is invented between two CEOs."""
     rows = [
         _row("AAA", "2015-04-01", ceo_age=60.0, ceo_name_proxy="Alice Adams"),
-        _row("AAA", "2016-04-01", ceo_age=np.nan, ceo_name_proxy=None),   # the gap
+        _row("AAA", "2016-04-01", ceo_age=np.nan, ceo_name_proxy=None),  # the gap
         _row("AAA", "2017-04-01", ceo_age=45.0, ceo_name_proxy="Bob Brown"),
         _row("AAA", "2018-04-01", ceo_age=46.0, ceo_name_proxy="Bob Brown"),
     ]
@@ -83,14 +91,13 @@ def test_ceo_age_never_interpolates_across_a_succession():
     # A plain interpolation would have written (60 + 45) / 2 = 52.5 -> 53 after rounding:
     # an age belonging to neither person. The anchor has no key for that row, so it stays NaN.
     assert pd.isna(gap), f"an age was invented across a CEO change: {gap}"
-    assert "ceo_age" not in CARRY_LEVELS, \
-        "ceo_age is back in CARRY_LEVELS — the D33 defect is reopened"
+    assert "ceo_age" not in CARRY_LEVELS, "ceo_age is back in CARRY_LEVELS — the D33 defect is reopened"
 
     # ...and where the CEO IS the same, the anchor fills, including at the EDGE
     same = [
         _row("BBB", "2015-04-01", ceo_age=50.0, ceo_name_proxy="Carol Clark"),
         _row("BBB", "2016-04-01", ceo_age=np.nan, ceo_name_proxy="Carol Clark"),
-        _row("BBB", "2017-04-01", ceo_age=52.0, ceo_name_proxy="C. Clark"),   # respelt
+        _row("BBB", "2017-04-01", ceo_age=52.0, ceo_name_proxy="C. Clark"),  # respelt
         _row("BBB", "2018-04-01", ceo_age=np.nan, ceo_name_proxy="Carol Clark"),  # TRAILING
     ]
     out2, _ = impute_def14a(pd.DataFrame(same))
@@ -112,15 +119,15 @@ def test_salary_gate_and_zero_diff_on_the_totals():
     """D31 on live data: the gate's cost, and the number §3.4's zero-diff guard turns on."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
 
-    assert IDENTITY_GATED_CARRY == frozenset({"ceo_salary"}), \
-        "the identity-gated carry set changed — D31 covers ceo_salary ONLY"
+    assert IDENTITY_GATED_CARRY == frozenset({"ceo_salary"}), "the identity-gated carry set changed — D31 covers ceo_salary ONLY"
 
     imp, stats = impute_def14a(raw)
     filled = int(stats.get("carry: ceo_salary", 0))
@@ -136,13 +143,10 @@ def test_salary_gate_and_zero_diff_on_the_totals():
     base = base.sort_values(["ticker", "as_of"])
     gb = base.groupby("ticker", sort=False)
     fwd = gb["ceo_salary"].ffill()
-    src = base["as_of"].where(base["ceo_salary"].notna()).groupby(base["ticker"],
-                                                                 sort=False).ffill()
+    src = base["as_of"].where(base["ceo_salary"].notna()).groupby(base["ticker"], sort=False).ffill()
     age = (base["as_of"] - src).dt.days
     ungated = int((base["ceo_salary"].isna() & fwd.notna() & (age <= CARRY_MAX_DAYS)).sum())
-    assert ungated == filled + declined, (
-        f"the gate's arithmetic does not close: {ungated} carryable != {filled} filled + "
-        f"{declined} declined")
+    assert ungated == filled + declined, f"the gate's arithmetic does not close: {ungated} carryable != {filled} filled + {declined} declined"
 
     # --- THE ZERO-DIFF QUESTION: did any ceo_total_comp cell appear because of it? ---
     # The counterfactual is the same pipeline with the gate's input removed: with no
@@ -161,7 +165,8 @@ def test_salary_gate_and_zero_diff_on_the_totals():
 
     assert unlocked == 0, (
         f"{unlocked} ceo_total_comp cells were unlocked by the salary carry — the legacy "
-        "`ceo_pay_growth` is no longer bit-identical and §3.4's zero-diff guard fails")
+        "`ceo_pay_growth` is no longer bit-identical and §3.4's zero-diff guard fails"
+    )
     assert moved == 0, f"{moved} ceo_total_comp cells changed VALUE"
     assert float(imp["comp_imputed"].sum()) == 0.0
 
@@ -170,10 +175,8 @@ def test_salary_gate_and_zero_diff_on_the_totals():
     print(f"    filled (source row names the SAME CEO)   : {filled}")
     print(f"    DECLINED (the CEO changed, or is unnamed): {declined}")
     print(f"    DECLINED separately, >{CARRY_MAX_DAYS}d stale : {stale}")
-    print(f"  ceo_salary fill rate: {raw['ceo_salary'].notna().mean():.1%} -> "
-          f"{imp['ceo_salary'].notna().mean():.1%}")
-    print(f"  >>> ceo_total_comp cells UNLOCKED by the salary fill: {unlocked}  (values "
-          f"moved: {moved})")
+    print(f"  ceo_salary fill rate: {raw['ceo_salary'].notna().mean():.1%} -> {imp['ceo_salary'].notna().mean():.1%}")
+    print(f"  >>> ceo_total_comp cells UNLOCKED by the salary fill: {unlocked}  (values moved: {moved})")
     print(f"  >>> comp_imputed population: {int(imp['comp_imputed'].sum())} rows")
     print("  CONCLUSION: D31 and §3.4's zero-diff guard do NOT collide. Not one row has")
     print("  salary as its ONLY absent component, so no total is derived from a carried")
@@ -197,16 +200,12 @@ def test_comp_imputed_fires_when_it_should():
     100, which is what 2016 could actually have known. The flag under test is unchanged; only
     the value it is stamped on top of is.
     """
-    others = {"ceo_bonus": 10.0, "ceo_stock_awards": 20.0, "ceo_option_awards": 30.0,
-              "ceo_non_equity_incentive": 40.0, "ceo_all_other_comp": 50.0}
+    others = {"ceo_bonus": 10.0, "ceo_stock_awards": 20.0, "ceo_option_awards": 30.0, "ceo_non_equity_incentive": 40.0, "ceo_all_other_comp": 50.0}
     rows = [
-        _row("AAA", "2015-04-01", ceo_salary=100.0, ceo_name_proxy="Alice Adams", **others,
-             ceo_total_comp=250.0),
+        _row("AAA", "2015-04-01", ceo_salary=100.0, ceo_name_proxy="Alice Adams", **others, ceo_total_comp=250.0),
         # salary NULL, total NULL, every other component present, same CEO both sides
-        _row("AAA", "2016-04-01", ceo_salary=np.nan, ceo_name_proxy="Alice Adams", **others,
-             ceo_total_comp=np.nan),
-        _row("AAA", "2017-04-01", ceo_salary=300.0, ceo_name_proxy="A. Adams", **others,
-             ceo_total_comp=450.0),
+        _row("AAA", "2016-04-01", ceo_salary=np.nan, ceo_name_proxy="Alice Adams", **others, ceo_total_comp=np.nan),
+        _row("AAA", "2017-04-01", ceo_salary=300.0, ceo_name_proxy="A. Adams", **others, ceo_total_comp=450.0),
     ]
     out, stats = impute_def14a(pd.DataFrame(rows))
     mid = out.loc[out["as_of"] == pd.Timestamp("2016-04-01")].iloc[0]
@@ -245,18 +244,20 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
     """
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
         # the revenue leg, so the TWELFTH feature (`ceo_pay_vs_revenue_growth`) is built too
         fund = ctx.store.load("fundamentals_history", optional=True)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
 
     from src.data_aggregate.utils.governance import def14a_impute as mod
     from src.data_aggregate.utils.governance.panel import (
-        _def14a_raw_fields, _governance_fields,
+        _def14a_raw_fields,
+        _governance_fields,
     )
     from src.data_aggregate.utils.governance.staleness import LEGACY_EXEMPT_FROM_EXPIRY
 
@@ -293,24 +294,20 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
     legacy_run, _ = mod.impute_def14a(raw)
     before = legacy_twelve(legacy_run, idx)
 
-    assert set(before) == set(after), (
-        f"the emitted feature set changed: {set(after) ^ set(before)}")
+    assert set(before) == set(after), f"the emitted feature set changed: {set(after) ^ set(before)}"
     diffs = {}
     for name in sorted(before):
         a, b = before[name], after[name]
         cols = a.columns.union(b.columns)
         a, b = a.reindex(columns=cols), b.reindex(columns=cols)
-        moved = int((~np.isclose(a.to_numpy(dtype="float64"), b.to_numpy(dtype="float64"),
-                                 equal_nan=True)).sum())
+        moved = int((~np.isclose(a.to_numpy(dtype="float64"), b.to_numpy(dtype="float64"), equal_nan=True)).sum())
         if moved:
             diffs[name] = moved
 
     assert not diffs, f"phase 2 moved cells in live features: {diffs}"
     # every emitted feature is one of the twelve, and every one of the twelve is exempt
     assert set(after) <= LEGACY_EXEMPT_FROM_EXPIRY, set(after) - LEGACY_EXEMPT_FROM_EXPIRY
-    assert len(after) == 12, (
-        f"expected all twelve legacy features, built {len(after)}: "
-        f"{sorted(LEGACY_EXEMPT_FROM_EXPIRY - set(after))} missing")
+    assert len(after) == 12, f"expected all twelve legacy features, built {len(after)}: {sorted(LEGACY_EXEMPT_FROM_EXPIRY - set(after))} missing"
 
     print("\n=== SANITY CHECK: the twelve legacy features, zero-diff (§3.4 / D3) ===")
     print(f"  daily grid {idx[0].date()}..{idx[-1].date()} ({len(idx)} days)")
@@ -328,9 +325,10 @@ def test_ceo_age_yield_and_the_ceo_since_year_marginal_gain():
     """What the anchor swap actually changed on `ceo_age`, and what §3.6 forbids doing next."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load("def14a_llm")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty:
         pytest.skip("def14a_llm empty")
@@ -379,33 +377,31 @@ def test_ceo_age_yield_and_the_ceo_since_year_marginal_gain():
 
     # --- §3.6: MEASURE the ceo_since_year gain and STOP. It is NOT applied. ---
     since_now = int(imp["ceo_since_year"].notna().sum())
-    s_obs = pd.DataFrame({"pk": pk, "as_of": base["as_of"],
-                          "_since": base["as_of"].dt.year - base["ceo_since_year"]})
+    s_obs = pd.DataFrame({"pk": pk, "as_of": base["as_of"], "_since": base["as_of"].dt.year - base["ceo_since_year"]})
     s_anchor = accrual_anchor(s_obs, "_since", key="pk", date="as_of")
     s_implied = accrue(base["as_of"], pk, s_anchor)
     would_fill = int((base["ceo_since_year"].isna() & s_implied.notna()).sum())
     still_na_after_impute = int(imp["ceo_since_year"].isna().sum())
 
     print("\n=== SANITY CHECK: ceo_age accrual yield + the ceo_since_year gain (§3.6) ===")
-    print(f"  ceo_age fill: {raw['ceo_age'].notna().mean():.1%} -> "
-          f"{imp['ceo_age'].notna().mean():.1%}   ({accrued} cells accrued)")
-    print(f"  the interpolation it REPLACED filled {int(old_fills.sum())} cells "
-          f"[plan: 1,597 — reproduces exactly], of which it interpolated across a CEO change:")
-    print(f"    BOUNDING (nearest disclosed name each side differs): "
-          f"{int(across_raw.sum())} raw / {int(across.sum())} keyed")
-    print(f"    ADJACENT (the two rows it ran BETWEEN name different CEOs): "
-          f"{int(adj_raw.sum())} raw / {int(adj.sum())} keyed")
+    print(f"  ceo_age fill: {raw['ceo_age'].notna().mean():.1%} -> {imp['ceo_age'].notna().mean():.1%}   ({accrued} cells accrued)")
+    print(
+        f"  the interpolation it REPLACED filled {int(old_fills.sum())} cells "
+        f"[plan: 1,597 — reproduces exactly], of which it interpolated across a CEO change:"
+    )
+    print(f"    BOUNDING (nearest disclosed name each side differs): {int(across_raw.sum())} raw / {int(across.sum())} keyed")
+    print(f"    ADJACENT (the two rows it ran BETWEEN name different CEOs): {int(adj_raw.sum())} raw / {int(adj.sum())} keyed")
     print("    (!) D33's figure of 103 reproduces on NEITHER basis, on the same table whose")
     print("      1,597 total DOES reproduce — so the defect is real and demonstrable but its")
     print("      published magnitude is not. On the strictest reading it is ~25x worse than")
     print("      103; on the loosest, ~8x smaller. The fix does not depend on which: an")
     print("      anchor keyed per PERSON cannot span a succession at any magnitude.")
-    print(f"  anchors with >1 observation: {len(multi)}; dispersion p50={multi.median():.0f} "
-          f"p90={multi.quantile(0.9):.0f} max={multi.max():.0f} years")
+    print(
+        f"  anchors with >1 observation: {len(multi)}; dispersion p50={multi.median():.0f} p90={multi.quantile(0.9):.0f} max={multi.max():.0f} years"
+    )
     print(f"    dispersion > 5 years (possible key collision): {int((multi > 5).sum())} keys")
     print("  --- ceo_since_year: MEASURED, DELIBERATELY NOT APPLIED (§3.6 / D30) ---")
-    print(f"    filled after impute: {since_now} ({imp['ceo_since_year'].notna().mean():.1%}), "
-          f"{still_na_after_impute} still NULL")
+    print(f"    filled after impute: {since_now} ({imp['ceo_since_year'].notna().mean():.1%}), {still_na_after_impute} still NULL")
     print(f"    the anchor would fill {would_fill} further cells")
     print("    NOT DONE: `ceo_since_year` feeds `ceo_tenure`, a LIVE monotone-list feature, so")
     print("    widening it changes a shipped feature's cells — D3 forbids that as a side")

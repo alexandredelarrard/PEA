@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import types
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -28,7 +29,7 @@ from src.data_extract.utils.behavioral import utils_missing_quarters as mq
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 
-def _ctx(tickers, tmp_path):
+def _ctx(tickers, tmp_path) -> Any:
     store = FakeStore({"sp500_tickers": pd.DataFrame({"ticker": list(tickers)})})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
@@ -66,6 +67,7 @@ def test_quote_discovery_filters_and_merges(tmp_path, monkeypatch):
     ctx = _ctx(["AAA", "BBB"], tmp_path)
 
     idx = fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", exchanges=("nasdaq", "nyse"), pause=0.0)
+    assert idx is not None
     got = {(r["ticker"], r["quarter"]) for r in idx.values()}
 
     assert ("AAA", "2025Q2") in got  # post-cutoff, own page -> kept
@@ -86,7 +88,7 @@ def test_quote_discovery_filters_and_merges(tmp_path, monkeypatch):
         "  since-filter drops pre-2025 (AAA 2024Q2); ticker-filter drops the foreign BBB link on "
         "AAA's page; NYSE fallback found BBB after nasdaq 404. Merged to transcript_index.json."
     )
-    print("  CONCLUSION: (ticker,quarter) -> exact MF URL via the quote page, uncapped, since a " "cutoff. Validated.")
+    print("  CONCLUSION: (ticker,quarter) -> exact MF URL via the quote page, uncapped, since a cutoff. Validated.")
 
 
 def test_quote_discovery_live(tmp_path):
@@ -99,19 +101,20 @@ def test_quote_discovery_live(tmp_path):
         idx = fe.build_transcript_index_by_ticker(ctx, since="2025-01-01", pause=0.8)
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"MF unreachable: {e}")
+    assert idx is not None
     if not idx:
         pytest.skip("no links returned (MF blocked)")
     by_tkr = {}
     for r in idx.values():
         by_tkr.setdefault(r["ticker"], []).append(r["quarter"])
     floor = mq._since_floor_index("2025-01-01")
-    assert all(
-        mq._quarter_index(*mq._parse_quarter(d["quarter"])) >= floor for d in idx.values()
-    ), "quarter-floor filter leaked pre-floor fiscal quarters"
+    assert all(mq._quarter_index(*cast(tuple[int, int], mq._parse_quarter(d["quarter"]))) >= floor for d in idx.values()), (
+        "quarter-floor filter leaked pre-floor fiscal quarters"
+    )
     print("\n=== SANITY CHECK: quote-page discovery on REAL MF pages ===")
     for t, qs in sorted(by_tkr.items()):
         print(f"  {t}: {sorted(set(qs), reverse=True)}")
-    print(f"  {len(idx)} transcript URLs >= {mq._index_to_quarter(floor)} across {len(by_tkr)} " "tickers, uncapped. Validated.")
+    print(f"  {len(idx)} transcript URLs >= {mq._index_to_quarter(floor)} across {len(by_tkr)} tickers, uncapped. Validated.")
 
 
 def _idx_to_tuple(idx: int) -> tuple[int, int]:
@@ -140,7 +143,9 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     # pre-seed CCC's gap quarter on disk so it is already complete
     ccc_dir = tmp_path / "call_transcripts" / "CCC"
     ccc_dir.mkdir(parents=True)
-    (ccc_dir / f"{end_q}.html").write_text("cached", encoding="utf-8")
+    useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    cached = f'<div class="transcript-content">CALL PARTICIPANTS\nJane Doe -- CEO\n{useful}\nQuestions and Answers\n{useful}</div>'
+    (ccc_dir / f"{end_q}.html").write_text(cached, encoding="utf-8")
 
     bbb_page = "x " + _t(f"{y}/06/01", f"bbb-q{q}-{y}")  # BBB's latest-quarter link
     calls: list[str] = []
@@ -153,6 +158,7 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     ctx = _ctx(["AAA", "BBB", "CCC"], tmp_path)
 
     idx = fe.build_transcript_index_by_ticker(ctx, pause=0.0)
+    assert idx is not None
     got = {(r["ticker"], r["quarter"]) for r in idx.values()}
 
     assert not any("/aaa/" in u for u in calls), "AAA (HF-complete) must NOT be requested"
@@ -164,8 +170,8 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     print("\n=== SANITY CHECK: HF-aware + local-folder gap (429 fix) ===")
     print(f"  latest expected quarter today = {end_q}")
     print(
-        f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{mq._index_to_quarter(end_idx-1)} but "
-        f"{end_q}.html on disk -> skipped | BBB HF@{mq._index_to_quarter(end_idx-2)} -> fetched"
+        f"  AAA HF@{end_q} (complete) -> skipped | CCC HF@{mq._index_to_quarter(end_idx - 1)} but "
+        f"{end_q}.html on disk -> skipped | BBB HF@{mq._index_to_quarter(end_idx - 2)} -> fetched"
     )
     print(f"  requests made: {[u.split('/quote/')[-1].rstrip('/') for u in calls]}")
     print(
@@ -188,24 +194,24 @@ def test_missing_for_uses_released_and_skips_no_call_tickers(tmp_path):
     q = mq._quarter_index
     floor = q(2024, 1)  # since-floor Q1'24
     end_idx = q(2025, 3)  # calendar guess = Q3'25
-    hf, db, js = {}, {}, {}  # no HF, nothing on disk/DB/JSON
+    hf, db = {}, {}  # no HF, nothing on disk/DB
     # (1) a ticker that has only reported through Q1'25 -> required stops at Q1'25 (not the Q3'25 guess)
     released = {"AAA": q(2025, 1)}
-    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, js, released)
+    miss = mq._missing_for("AAA", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q2" not in miss and "2025Q3" not in miss, miss
     assert {"2024Q1", "2024Q4", "2025Q1"}.issubset(miss)
     # a ticker absent from earnings_surprises -> falls back to the calendar end_idx (Q3'25 included)
-    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, js, released)
+    miss_fb = mq._missing_for("ZZZ", hf, floor, end_idx, tmp_path, db, {}, released)
     assert "2025Q3" in miss_fb
     # (2) Berkshire (no earnings call) -> nothing to fetch, regardless of dates
-    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, js, released) == set()
+    assert mq._missing_for("BRK-B", hf, floor, end_idx, tmp_path, db, {}, released) == set()
 
 
 def test_released_quarter_idx_maps_report_date_to_reported_quarter(tmp_path):
     """earnings_surprises report dates -> the fiscal quarter each ticker last REPORTED: a late-Apr
     report is Q1, an early-Feb report is the prior Q4 (report date shifted back ~45d)."""
     es = pd.DataFrame({"ticker": ["AAA", "AAA", "BBB"], "earnings_date": ["2025-01-30", "2025-04-25", "2025-02-05"]})
-    ctx = types.SimpleNamespace(store=FakeStore({"earnings_surprises": es}))
+    ctx: Any = types.SimpleNamespace(store=FakeStore({"earnings_surprises": es}))
     rel = mq._released_quarter_idx_by_ticker(ctx)
     assert rel["AAA"] == mq._quarter_index(2025, 1)  # latest = Apr-25 report -> Q1'25
     assert rel["BBB"] == mq._quarter_index(2024, 4)  # Feb-05 report -> prior Q4'24

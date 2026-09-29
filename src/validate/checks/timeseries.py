@@ -105,7 +105,7 @@ def _frozen_legs(spec: TableSpec, columns: list[str]) -> tuple[list[str], int | 
         return (
             legs,
             spec.frozen_min_days,
-            (f"the {len(legs)} leg(s) the table declares as rebuilt every session " f"(`daily_legs`), at >= {spec.frozen_min_days} identical days"),
+            (f"the {len(legs)} leg(s) the table declares as rebuilt every session (`daily_legs`), at >= {spec.frozen_min_days} identical days"),
         )
     if spec.cadence == "quarterly":
         if spec.ffill_horizon_days is None:
@@ -122,7 +122,7 @@ def _frozen_legs(spec: TableSpec, columns: list[str]) -> tuple[list[str], int | 
         return (
             list(columns),
             spec.ffill_horizon_days,
-            (f"every leg, at > {spec.ffill_horizon_days} identical days -- the declared ffill " f"horizon for this quarterly table"),
+            (f"every leg, at > {spec.ffill_horizon_days} identical days -- the declared ffill horizon for this quarterly table"),
         )
     return [], None, f"ABSTAINED -- {_WHY_FROZEN}"
 
@@ -154,13 +154,13 @@ def _measure(
         for k in np.flatnonzero((score > spec.jump_z) & material):
             found["jump"].append(
                 {
-                    "date": stamps[k],
-                    "value": float(support[k]),
-                    "previous": float(support[k - 1]) if k else float("nan"),
-                    "change": float(change[k]),
-                    "z": round(float(score[k]), 1),
+                    "date": stamps[int(k)],
+                    "value": float(support[int(k)]),
+                    "previous": float(support[int(k) - 1]) if k else float("nan"),
+                    "change": float(change[int(k)]),
+                    "z": round(float(score[int(k)]), 1),
                     "p1_p99_span": round(span, 6),
-                    "change_over_span": round(abs(float(change[k])) / span, 2),
+                    "change_over_span": round(abs(float(change[int(k)])) / span, 2),
                 }
             )
 
@@ -275,7 +275,7 @@ def check_timeseries(
     ticker_col = spec_t.ticker_col if spec_t.ticker_col in live else None
     if date_col is None or ticker_col is None:
         return CheckResult.abstained(
-            CHECK, spec_t.name, f"this is a (ticker x time) question and the table declares " f"date_col={date_col!r}, ticker_col={ticker_col!r}"
+            CHECK, spec_t.name, f"this is a (ticker x time) question and the table declares date_col={date_col!r}, ticker_col={ticker_col!r}"
         )
 
     columns = feature_columns(context, spec_t)

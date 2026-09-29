@@ -17,26 +17,31 @@ if __name__ == "__main__":
     # self.run()
 
 #####
-# extraction data -
-# TODO: short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)
-# TODO: insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec
-# TODO: earnings surprises starts 1999-08, but empty till ~2003
-# TODO: financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
-# TODO: fix volume to be adjusted to spinoffs in price
+# extraction data - TODO list
+# # TODO: short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)
+# # TODO: insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec. Done for the latest ones. So should be quick + add the Tickers fixed in gov
+# # TODO: earnings surprises starts 1999-08, but empty till ~2003
+# # TODO: financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
+# # TODO: fix volume to be adjusted to spinoffs in price
+# # TODO: fix EC extraction history and gaps. 2/3 are available today vs 90% potential
+# # TODO: fix employee count, lots of MVs and gaps. Play with LLM extract.
+# # TODO: fine tune def 14 data extraction
 
-# other
-# TODO: check data is consistent over time, even for latest 2026 month ?
-# TODO: what happens when new data pops between quarters on financials
-# TODO: include move from peers when new results are available -> move all peers info
-# TODO: refine modelling to be as stable as possible
-# TODO: review periods when IC drops for few weeks / months
-# TODO: add other strats decorrelated : - Super investors replica ?
+# other data checks
+# # TODO: check data is consistent over time, even for latest 2026 month ?
+# # TODO: check dag data extract and data aggregate run smoothly end to end
+# # TODO: Review the price split / spinoff over time (price validation)
+# # TODO: refine modelling to be as stable as possible
+# # TODO: review periods when IC drops for few weeks / months
+# # TODO: add other strats decorrelated : - Super investors replica ?
 
-# understanding
-# TODO: understand how the code handles the change of ticker / symbol over time for same company ?
-# TODO: understand if all the data extract are done per meta ticker or just the ticker itself -> need fixing
-# TODO: create a mask for fields of a ticker not existing before the date -> avoid z score being wrong
-# TODO: fix selection / survival bias for tickers out of sp500.
+# # Signals :
+# # TODO: include move from peers when new results are available -> move all peers info
+# # TODO: create variables based on clients stock move, geography graph, etc.
+
+# universe expand:
+# # TODO: fix selection / survival bias for tickers out of sp500.
+# # TODO: move to the russell 1000 and no bias there
 
 # docker run --rm -v database_pgdata:/volume alpine tar czf - -C /volume . > D:/database_pgdata.tar.gz
 

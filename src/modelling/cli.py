@@ -12,12 +12,15 @@ for this run (leaving them out uses the config as-is). The step trains one per-h
 (elasticnet + LightGBM + random_forest), saves the model artifacts + metadata.json (the backtest
 reads them back), the `predictions` / `cube_signal` tables, and the per-run diagnostics pictures.
 """
+
+from typing import Any, cast
+
 import click
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
-from src.utils.cli_helper import SpecialHelpOrder
 from src.modelling.long_short.step_train import StepModelling
+from src.utils.cli_helper import SpecialHelpOrder
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -25,11 +28,13 @@ def cli() -> None:
     """MODELLING — train the per-horizon long/short ensemble on the cube."""
 
 
-@cli.command(help="Train the per-horizon ensemble on the cube for the configured training window "
-                  "(modellling.yml train.start_date/end_date; override with --train-start/--train-end). "
-                  "Saves model artifacts + metadata.json + predictions + diagnostics.",
-             help_priority=1)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@cli.command(
+    help="Train the per-horizon ensemble on the cube for the configured training window "
+    "(modellling.yml train.start_date/end_date; override with --train-start/--train-end). "
+    "Saves model artifacts + metadata.json + predictions + diagnostics.",
+    help_priority=1,
+)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--train-start", default=None, help="Override train.start_date (YYYY-MM-DD).")
 @click.option("--train-end", default=None, help="Override train.end_date (YYYY-MM-DD).")
 def train(config_path: str, train_start: str | None, train_end: str | None) -> None:
@@ -43,22 +48,25 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
     StepModelling(context=context, config=config).run()
 
 
-@cli.command(help="PRODUCTION train on ALL history up to the latest cube date (no train_end cutoff, "
-                  "no OOS holdout). Runs after the backtest; the fitted model feeds `predict`.",
-             help_priority=2)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@cli.command(
+    help="PRODUCTION train on ALL history up to the latest cube date (no train_end cutoff, "
+    "no OOS holdout). Runs after the backtest; the fitted model feeds `predict`.",
+    help_priority=2,
+)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def full_train(config_path: str) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepModelling(context=context, config=config).run(full_history=True)
 
 
-@cli.command(help="Predict the latest cube date(s) per horizon (pred_h<h>) + the blended signal -> "
-                  "`predictions_latest` (consumed by the allocation DAG). Loads the full-trained "
-                  "artifacts from disk; no retraining.",
-             help_priority=3)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("--n-dates", default=1, show_default=True, type=int,
-              help="How many of the most recent cube dates to predict.")
+@cli.command(
+    help="Predict the latest cube date(s) per horizon (pred_h<h>) + the blended signal -> "
+    "`predictions_latest` (consumed by the allocation DAG). Loads the full-trained "
+    "artifacts from disk; no retraining.",
+    help_priority=3,
+)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--n-dates", default=1, show_default=True, type=int, help="How many of the most recent cube dates to predict.")
 def predict(config_path: str, n_dates: int) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepModelling(context=context, config=config).predict_latest(n_dates=n_dates)

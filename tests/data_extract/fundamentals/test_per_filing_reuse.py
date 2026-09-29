@@ -8,6 +8,7 @@ code that a later edit can silently reintroduce.
 `edgar.xbrl.XBRL.calculation_linkbase` carries no cache of its own, which is what makes the
 first of these worth pinning rather than trusting.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -36,11 +37,20 @@ class _CountingXbrl:
 
 
 def _linkbase() -> pd.DataFrame:
-    return pd.DataFrame([
-        {"concept": "Revenues", "concept_taxonomy": "us-gaap",
-         "parent_concept": "Parent", "parent_taxonomy": "us-gaap", "weight": 1.0,
-         "role_uri": "http://x/role/StatementOfIncome", "menucat": "Statements",
-         "is_abstract": False}])
+    return pd.DataFrame(
+        [
+            {
+                "concept": "Revenues",
+                "concept_taxonomy": "us-gaap",
+                "parent_concept": "Parent",
+                "parent_taxonomy": "us-gaap",
+                "weight": 1.0,
+                "role_uri": "http://x/role/StatementOfIncome",
+                "menucat": "Statements",
+                "is_abstract": False,
+            }
+        ]
+    )
 
 
 def test_one_calculation_linkbase_read_per_filing():
@@ -49,11 +59,11 @@ def test_one_calculation_linkbase_read_per_filing():
     to get them. `statement_arcs` now accepts the frame the caller already holds."""
     doubled = _CountingXbrl(_linkbase())
     xl.calculation_arcs(doubled)
-    xl.statement_arcs(doubled)                       # the old shape: reads it again
+    xl.statement_arcs(doubled)  # the old shape: reads it again
 
     once = _CountingXbrl(_linkbase())
     arcs = xl.calculation_arcs(once)
-    statements = xl.statement_arcs(once, arcs)       # the shape `rows_from_xbrl` uses
+    statements = xl.statement_arcs(once, arcs)  # the shape `rows_from_xbrl` uses
 
     assert doubled.reads == 2, "the two-view fixture no longer reproduces the old shape"
     assert once.reads == 1, f"the linkbase was parsed {once.reads} times for one filing"
@@ -69,13 +79,10 @@ def test_the_candidate_list_is_built_once_per_field(monkeypatch):
     `resolve_field` asked for it again in every pass and inside route 3b."""
     calls: list[str] = []
     original = xl._candidates
-    monkeypatch.setattr(xl, "_candidates",
-                        lambda spec, regime: (calls.append(spec.name),
-                                              original(spec, regime))[1])
+    monkeypatch.setattr(xl, "_candidates", lambda spec, regime: (calls.append(spec.name), original(spec, regime))[1])
 
     graph = xl.ArcGraph(xl.statement_arcs(_CountingXbrl(_linkbase())))
-    xl.resolve_field(CATALOGUE.field("totalRevenue"), graph, frozenset({"Revenues"}),
-                     CATALOGUE, regime=None)
+    xl.resolve_field(CATALOGUE.field("totalRevenue"), graph, frozenset({"Revenues"}), CATALOGUE, regime=None)
 
     assert len(calls) == 1, f"the candidate list was rebuilt {len(calls)} times"
 
@@ -87,18 +94,15 @@ def test_route_3b_is_entered_only_by_the_fields_that_declare_it():
     """`_leaf_sum`'s prologue used to run for all 48 extracted fields to discover that 45 of
     them declare no `roll_up.any_of`. Gating it is only safe if the three that DO declare one
     still enter -- so assert the membership, not just the count."""
-    declared = {name for name in CATALOGUE.extracted_fields
-                if xl._roll_up(CATALOGUE.field(name), None).get("any_of")}
-    assert declared == ROUTE_3B_FIELDS, (
-        f"route 3b's population moved: {sorted(declared)}")
+    declared = {name for name in CATALOGUE.extracted_fields if xl._roll_up(CATALOGUE.field(name), None).get("any_of")}
+    assert declared == ROUTE_3B_FIELDS, f"route 3b's population moved: {sorted(declared)}"
 
-    by_regime = {regime: sorted(
-        name for name in CATALOGUE.extracted_fields
-        if xl._roll_up(CATALOGUE.field(name), regime).get("any_of"))
-        for regime in CATALOGUE.regime_names}
+    by_regime = {
+        regime: sorted(name for name in CATALOGUE.extracted_fields if xl._roll_up(CATALOGUE.field(name), regime).get("any_of"))
+        for regime in CATALOGUE.regime_names
+    }
     for regime, names in by_regime.items():
-        assert ROUTE_3B_FIELDS <= set(names), (
-            f"regime {regime!r} would skip {sorted(ROUTE_3B_FIELDS - set(names))}")
+        assert ROUTE_3B_FIELDS <= set(names), f"regime {regime!r} would skip {sorted(ROUTE_3B_FIELDS - set(names))}"
 
     print("\n=== SANITY CHECK: fields route 3b applies to ===")
     print(f"  no regime: {sorted(declared)} of {len(CATALOGUE.extracted_fields)} extracted")

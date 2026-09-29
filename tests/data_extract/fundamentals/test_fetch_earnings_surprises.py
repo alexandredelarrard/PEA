@@ -5,30 +5,35 @@ The network download is not exercised here; what matters is the INCREMENTAL
 plan: unseen tickers get a full pull, stale tickers (no reported quarter within
 the refetch window) get a small top-up pull, and up-to-date tickers are skipped.
 """
+
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import (
-    _plan_fetch, _RECENT_LIMIT)
+from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch
 
 
 def test_plan_fetch_incremental():
     today = pd.Timestamp.today().normalize()
-    existing = pd.DataFrame({
-        "ticker": ["FRESH", "FRESH", "STALE", "NOACTUAL"],
-        "earnings_date": [today - pd.Timedelta(days=10),   # FRESH: reported recently
-                          today - pd.Timedelta(days=100),
-                          today - pd.Timedelta(days=200),   # STALE: last report old
-                          today + pd.Timedelta(days=20)],   # only a FUTURE estimate
-        "eps_estimate": [1.0, 1.0, 1.0, 2.0],
-        "eps_actual": [1.1, 1.0, 0.9, np.nan],              # NOACTUAL has no reported row
-        "surprise_pct": [10.0, 0.0, -10.0, np.nan],
-    })
+    existing = pd.DataFrame(
+        {
+            "ticker": ["FRESH", "FRESH", "STALE", "NOACTUAL"],
+            "earnings_date": [
+                today - pd.Timedelta(days=10),  # FRESH: reported recently
+                today - pd.Timedelta(days=100),
+                today - pd.Timedelta(days=200),  # STALE: last report old
+                today + pd.Timedelta(days=20),
+            ],  # only a FUTURE estimate
+            "eps_estimate": [1.0, 1.0, 1.0, 2.0],
+            "eps_actual": [1.1, 1.0, 0.9, np.nan],  # NOACTUAL has no reported row
+            "surprise_pct": [10.0, 0.0, -10.0, np.nan],
+        }
+    )
     tickers = ["FRESH", "STALE", "NOACTUAL", "NEW"]
     plan = dict(_plan_fetch(tickers, existing, full_limit=44, refetch_window_days=80))
 
@@ -39,8 +44,7 @@ def test_plan_fetch_incremental():
     assert plan["NOACTUAL"] == 44
 
     print("\n=== SANITY CHECK: incremental fetch plan ===")
-    print(f"  FRESH skipped; STALE={plan.get('STALE')} (top-up); "
-          f"NEW={plan.get('NEW')} (full); NOACTUAL={plan.get('NOACTUAL')} (full).")
+    print(f"  FRESH skipped; STALE={plan.get('STALE')} (top-up); NEW={plan.get('NEW')} (full); NOACTUAL={plan.get('NOACTUAL')} (full).")
     print("  Only what remains to extract is fetched -> no redundant re-downloads.")
 
 
@@ -61,15 +65,13 @@ def test_the_no_data_branch_returns_after_recording_exactly_one_run(monkeypatch)
     calls: list[tuple] = []
     saved: list = []
 
-    context = types.SimpleNamespace(
-        store=types.SimpleNamespace(load=lambda *a, **k: None,
-                                    save=lambda table, df: saved.append((table, df))),
+    context: Any = types.SimpleNamespace(
+        store=types.SimpleNamespace(load=lambda *a, **k: None, save=lambda table, df: saved.append((table, df))),
         log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
-        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15)))
+        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15)),
+    )
 
-    monkeypatch.setattr(surprises, "record_run",
-                        lambda ctx, table, n_tickers, rows, **k: calls.append(
-                            (table.name, n_tickers, rows)))
+    monkeypatch.setattr(surprises, "record_run", lambda ctx, table, n_tickers, rows, **k: calls.append((table.name, n_tickers, rows)))
     monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: None)
 
     # No exception is the assertion: this raised KeyError('ticker') before the `return`.
@@ -79,8 +81,6 @@ def test_the_no_data_branch_returns_after_recording_exactly_one_run(monkeypatch)
     assert calls[0][2] == 0, "an empty run must record rows_added=0"
     assert saved == [], "nothing to save -- the empty upsert is skipped with the crash"
 
-    print(f"\n=== SANITY CHECK: earnings-surprises empty branch ===")
-    print(f"  no cache + no Yahoo calendar -> returned cleanly, "
-          f"record_run called {len(calls)} time(s): {calls}")
-    print("  -> One run recorded with rows_added=0; the KeyError('ticker') fall-through is "
-          "gone.")
+    print("\n=== SANITY CHECK: earnings-surprises empty branch ===")
+    print(f"  no cache + no Yahoo calendar -> returned cleanly, record_run called {len(calls)} time(s): {calls}")
+    print("  -> One run recorded with rows_added=0; the KeyError('ticker') fall-through is gone.")

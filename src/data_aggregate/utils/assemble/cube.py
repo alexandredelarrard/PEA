@@ -74,7 +74,7 @@ def labels_to_wide(
     cols: dict[str, pd.Series] = {}
     for horizon, per in labels.items():
         if not isinstance(per, dict):
-            raise TypeError("labels must be {horizon: {label: DataFrame}} -- rebuild with " "build_targets_multi")
+            raise TypeError("labels must be {horizon: {label: DataFrame}} -- rebuild with build_targets_multi")
         for label, df in per.items():
             s = df.stack()
             s.index = s.index.set_names(["date", "ticker"])

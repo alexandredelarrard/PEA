@@ -10,10 +10,12 @@ measured what a stricter cap costs: 22,730 of 101,373 prepared-remarks turns (22
 1,411 Q&A turns are longer than 8,000 chars, the longest 74,550 -- an 8,000-char cap was
 comparing only each turn's opening fragment.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -49,18 +51,20 @@ def embed_texts(
     if not texts:
         return np.zeros((0, 0), dtype="float64")
     if client is None:
-        from openai import OpenAI                      # lazy: no import cost if stubbed
+        from openai import OpenAI  # lazy: no import cost if stubbed
+
         client = OpenAI(api_key=openai_api_key())
     vecs: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
-        chunk = [((t or " ").strip() or " ")[:max_chars] for t in texts[i:i + batch_size]]
+        chunk = [((t or " ").strip() or " ")[:max_chars] for t in texts[i : i + batch_size]]
         resp = client.embeddings.create(model=model, input=chunk)
-        vecs.extend(d.embedding for d in resp.data)    # resp.data preserves input order
+        vecs.extend(d.embedding for d in resp.data)  # resp.data preserves input order
     return np.asarray(vecs, dtype="float64")
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
     """Cosine similarity of two 1-D vectors (0.0 if either is degenerate)."""
-    a = np.asarray(a, dtype="float64"); b = np.asarray(b, dtype="float64")
+    a = np.asarray(a, dtype="float64")
+    b = np.asarray(b, dtype="float64")
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     return float(a @ b / (na * nb)) if na > 0 and nb > 0 else 0.0

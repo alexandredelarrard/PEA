@@ -17,6 +17,8 @@ Two kinds of test here, deliberately:
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -79,7 +81,7 @@ def test_close_split_is_the_split_adjusted_quote(store, ticker, day, split_px, t
     print(f"\n=== SANITY CHECK: {ticker} {day} basis ===")
     print(f"  close_split {got_split} (== Sharadar `price`, split-adjusted only)")
     print(f"  close_total {got_total} (== old `close`; D = {got_total / got_split:.4f})")
-    print("  Validated: the level basis and the return basis are distinct and correctly " "assigned.")
+    print("  Validated: the level basis and the return basis are distinct and correctly assigned.")
 
 
 def test_a_non_payer_has_identical_bases(store):
@@ -116,7 +118,7 @@ def test_the_dividend_factor_is_monotone_and_terminates_at_one(store):
     drops = int((np.diff(d) < -1e-3).sum())
     assert drops == 0, f"D(d) falls on {drops} day(s) -- it must be non-decreasing in date"
     assert d[-1] == pytest.approx(1.0, abs=1e-6), (
-        f"D(last row) = {d[-1]}, must be exactly 1.0 -- no dividends remain after the last " f"bar, so the two bases must coincide there"
+        f"D(last row) = {d[-1]}, must be exactly 1.0 -- no dividends remain after the last bar, so the two bases must coincide there"
     )
 
     print("\n=== SANITY CHECK: D(d) shape on KO ===")
@@ -152,7 +154,7 @@ def test_the_macro_leg_is_pinned_to_total_return():
     try:
         fm.download_ohlcv = _spy
         ctx = type("Ctx", (), {"log": type("L", (), {"info": lambda *a, **k: None, "warning": lambda *a, **k: None})()})()
-        fm._fetch_price_leg(ctx, pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05"))
+        fm._fetch_price_leg(cast(Any, ctx), pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05"))
     finally:
         fm.download_ohlcv = original
 
@@ -163,8 +165,8 @@ def test_the_macro_leg_is_pinned_to_total_return():
     )
 
     print("\n=== SANITY CHECK: macro basis pin ===")
-    print(f"  _fetch_price_leg -> download_ohlcv(auto_adjust={seen.get('auto_adjust')}, " f"actions={seen.get('actions')})")
-    print("  Validated: the equity leg's auto_adjust=False cannot drag the benchmark with " "it.")
+    print(f"  _fetch_price_leg -> download_ohlcv(auto_adjust={seen.get('auto_adjust')}, actions={seen.get('actions')})")
+    print("  Validated: the equity leg's auto_adjust=False cannot drag the benchmark with it.")
 
 
 # --------------------------------------------------------------------------- #
@@ -186,8 +188,8 @@ def test_forward_compound_and_forward_return_diverge_exactly_on_the_dividend():
     # a NON-PAYER: the price path IS the total-return path
     close_np = (1 + price_ret).cumprod() * 100.0
     h = 20
-    a = forward_compound(price_ret, h)["X"]
-    b = forward_return(close_np, h)["X"]
+    a = cast(pd.DataFrame, forward_compound(price_ret, h))["X"]
+    b = cast(pd.DataFrame, forward_return(close_np, h))["X"]
     both = a.notna() & b.notna()
     assert np.allclose(a[both], b[both], atol=1e-9), "they must agree when there is no dividend"
 
@@ -196,16 +198,16 @@ def test_forward_compound_and_forward_return_diverge_exactly_on_the_dividend():
     div.iloc[::63] = 0.005
     total_ret = price_ret["X"] + div
     close_payer = (1 + price_ret["X"]).cumprod() * 100.0  # PRICE path only
-    a_pay = forward_compound(total_ret.to_frame("X"), h)["X"]
-    b_pay = forward_return(close_payer.to_frame("X"), h)["X"]
+    a_pay = cast(pd.DataFrame, forward_compound(total_ret.to_frame("X"), h))["X"]
+    b_pay = cast(pd.DataFrame, forward_return(close_payer.to_frame("X"), h))["X"]
     valid = a_pay.notna() & b_pay.notna()
     gap = (a_pay[valid] - b_pay[valid]).mean()
 
     assert gap > 1e-4, f"the compounded TOTAL return must exceed the PRICE ratio for a payer; gap {gap:.6f}"
 
     print("\n=== SANITY CHECK: label formula ===")
-    print(f"  non-payer: forward_compound == forward_return to 1e-9 over " f"{int(both.sum())} windows")
-    print(f"  payer (0.5%/qtr): forward_compound exceeds the price ratio by " f"{gap:+.4%} per {h}-day window on average")
+    print(f"  non-payer: forward_compound == forward_return to 1e-9 over {int(both.sum())} windows")
+    print(f"  payer (0.5%/qtr): forward_compound exceeds the price ratio by {gap:+.4%} per {h}-day window on average")
     print("  Validated: the label change is exactly the dividends, and nothing else.")
 
 
@@ -258,7 +260,7 @@ def test_the_invariants_fire_on_a_deliberately_corrupted_ticker():
         f"invariant 2: {vintage.failed} rows"
     )
     print(f"  GOOD is untouched in both: {sorted(mcap.failing_tickers)}")
-    print("  Validated: both invariants detect an unapplied split and cluster it to the one " "ticker responsible.")
+    print("  Validated: both invariants detect an unapplied split and cluster it to the one ticker responsible.")
 
 
 def test_a_spinoff_ticker_fails_invariant_1_without_s_and_passes_with_it():
@@ -311,5 +313,5 @@ def test_a_spinoff_ticker_fails_invariant_1_without_s_and_passes_with_it():
         f"-> {100.0 / s_coef * 1e9 / 1e11 - 1:+.2%} without S"
     )
     print(f"  x S = {s_coef} -> ${100.0 / s_coef * s_coef * 1e9 / 1e9:.2f}bn, exact.")
-    print(f"  invariant 1: {mcap.raw_failed} rows fail without s_coef, {mcap.failed} with it; " f"CLEAN never implicated either way.")
+    print(f"  invariant 1: {mcap.raw_failed} rows fail without s_coef, {mcap.failed} with it; CLEAN never implicated either way.")
     print("  Validated: the factor fixes the spinoff row and touches nothing else.")

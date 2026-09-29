@@ -103,7 +103,7 @@ def test_insider_frontier_masks_only_the_insider_conditioning_family():
         frontiers={"insider": frontier},
     )
     tail = panel[panel["date"] > frontier]
-    insider_cols = [column for column in panel if column.startswith("f_ic_sig_insider_")]
+    insider_cols = [column for column in panel if str(column).startswith("f_ic_sig_insider_")]
     assert tail[insider_cols].isna().to_numpy().all()
     assert tail["f_ic_sig_super_age_days"].notna().any()
     print(
@@ -211,7 +211,7 @@ def test_every_declared_feature_is_emitted():
         if mode == "raw+xs":
             expected.add(f"f_{name}_xs")
     emitted = {c for c in panel.columns if c.startswith("f_")}
-    assert emitted == expected, f"missing {sorted(expected - emitted)}; " f"undeclared {sorted(emitted - expected)}"
+    assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
     for col in sorted(emitted):
         assert panel[col].notna().any(), f"{col} is declared, emitted and ALL-NaN"
     print("\n=== SANITY CHECK: ic_sig_* declared vs emitted ===")

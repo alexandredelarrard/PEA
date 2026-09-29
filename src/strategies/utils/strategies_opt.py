@@ -34,9 +34,11 @@ This builds, each rebalance:
 All the heavy math is in pure functions (optimize_day, vol_target_scale) so it
 is unit-tested; only the day loop touches state.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -50,37 +52,37 @@ _ANN = 252.0
 # --------------------------------------------------------------------------- #
 # Pure building blocks                                                         #
 # --------------------------------------------------------------------------- #
-def _neutralize(a: np.ndarray, X: np.ndarray, w_metric: np.ndarray) -> np.ndarray:
-    """GLS residual of `a` on columns of `X` using diagonal weights `w_metric`.
-    Zeros out a's components along each column of X in that metric."""
-    W = w_metric
-    XtW = X.T * W                       # (k,N)
-    coef = np.linalg.solve(XtW @ X + 1e-12 * np.eye(X.shape[1]), XtW @ a)
-    return a - X @ coef
+def _neutralize(a: np.ndarray, design: np.ndarray, w_metric: np.ndarray) -> np.ndarray:
+    """GLS residual of `a` on columns of `design` using diagonal weights `w_metric`.
+    Zeros out a's components along each column of the design in that metric."""
+    weighted_transpose = design.T * w_metric  # (k,N)
+    coef = np.linalg.solve(
+        weighted_transpose @ design + 1e-12 * np.eye(design.shape[1]),
+        weighted_transpose @ a,
+    )
+    return a - design @ coef
 
 
 def _sector_dummies(sector_labels) -> np.ndarray:
     """One-hot (n,k) matrix of sector membership. Missing labels go to a shared
     '__NA__' bucket so every name is constrained to exactly one group (the columns
     span the constant, so per-sector dollar-neutrality implies global neutrality)."""
-    labels = ["__NA__" if (l is None or (isinstance(l, float) and np.isnan(l))) else str(l)
-              for l in sector_labels]
+    labels = ["__NA__" if (label is None or (isinstance(label, float) and np.isnan(label))) else str(label) for label in sector_labels]
     uniq = list(dict.fromkeys(labels))
     idx = {u: i for i, u in enumerate(uniq)}
-    D = np.zeros((len(labels), len(uniq)))
-    for r, l in enumerate(labels):
-        D[r, idx[l]] = 1.0
-    return D
+    dummies = np.zeros((len(labels), len(uniq)))
+    for row, label in enumerate(labels):
+        dummies[row, idx[label]] = 1.0
+    return dummies
 
 
-def _neutralizer_X(n: int, beta: np.ndarray, beta_neutral: bool,
-                   sector_labels=None) -> np.ndarray:
+def _neutralizer_x(n: int, beta: np.ndarray, beta_neutral: bool, sector_labels=None) -> np.ndarray:
     """Design matrix the weights are made orthogonal to: sector one-hots (or a
     single constant for plain dollar-neutrality) plus the market beta. Sector
     one-hots => the book is dollar-neutral WITHIN each sector (net sector exposure
     ~ 0) -- the industry-group neutrality top market-neutral funds enforce."""
     if sector_labels is not None and len(sector_labels) == n:
-        base = _sector_dummies(sector_labels)          # spans the constant
+        base = _sector_dummies(sector_labels)  # spans the constant
     else:
         base = np.ones((n, 1))
     if beta_neutral:
@@ -88,21 +90,27 @@ def _neutralizer_X(n: int, beta: np.ndarray, beta_neutral: bool,
     return base
 
 
-def _optimize_cov(alpha: np.ndarray, X: np.ndarray, cov: np.ndarray) -> np.ndarray:
+def _optimize_cov(alpha: np.ndarray, design: np.ndarray, cov: np.ndarray) -> np.ndarray:
     """Full-covariance characteristic portfolio (correlation-aware generalization of the diagonal
     case): w = Σ⁻¹ (alpha − X (Xᵀ Σ⁻¹ X)⁻¹ Xᵀ Σ⁻¹ alpha) — residualize alpha against the
     neutrality columns X in the Σ⁻¹ metric, then weight by Σ⁻¹ (not D⁻¹). Correlated names are
     jointly down-weighted so the book doesn't double-count shared (idiosyncratic) risk."""
-    Sinv_a = np.linalg.solve(cov, alpha)                    # Σ⁻¹ a
-    Sinv_X = np.linalg.solve(cov, X)                        # Σ⁻¹ X
-    M = X.T @ Sinv_X                                        # Xᵀ Σ⁻¹ X
-    coef = np.linalg.solve(M + 1e-12 * np.eye(X.shape[1]), X.T @ Sinv_a)
-    return Sinv_a - Sinv_X @ coef                          # Σ⁻¹ (a − X coef)
+    inv_cov_alpha = np.linalg.solve(cov, alpha)  # Σ⁻¹ a
+    inv_cov_design = np.linalg.solve(cov, design)  # Σ⁻¹ X
+    projected = design.T @ inv_cov_design  # Xᵀ Σ⁻¹ X
+    coef = np.linalg.solve(projected + 1e-12 * np.eye(design.shape[1]), design.T @ inv_cov_alpha)
+    return inv_cov_alpha - inv_cov_design @ coef  # Σ⁻¹ (a − X coef)
 
 
-def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
-                 beta_neutral: bool = True, pos_cap: float | None = 0.03,
-                 sector_labels=None, cov: np.ndarray | None = None) -> np.ndarray:
+def optimize_day(
+    alpha: np.ndarray,
+    beta: np.ndarray,
+    var: np.ndarray,
+    beta_neutral: bool = True,
+    pos_cap: float | None = 0.03,
+    sector_labels=None,
+    cov: np.ndarray | None = None,
+) -> np.ndarray:
     """
     Closed-form mean-variance long/short weights with dollar (and optional beta
     and sector) neutrality.
@@ -121,26 +129,25 @@ def optimize_day(alpha: np.ndarray, beta: np.ndarray, var: np.ndarray,
     beta'w ~ 0 if beta_neutral. Scale is arbitrary here (set later by vol targeting).
     """
     n = len(alpha)
-    X = _neutralizer_X(n, beta, beta_neutral, sector_labels)
+    design = _neutralizer_x(n, beta, beta_neutral, sector_labels)
 
     if cov is not None:
-        w = _optimize_cov(alpha, X, cov)                   # Σ⁻¹ * residual alpha (correlation-aware)
+        w = _optimize_cov(alpha, design, cov)  # Σ⁻¹ * residual alpha (correlation-aware)
     else:
         var = np.clip(var, np.nanpercentile(var[np.isfinite(var)], 5) if np.isfinite(var).any() else 1e-6, None)
         invd = 1.0 / var
-        w = invd * _neutralize(alpha, X, invd)             # D⁻¹ * residual alpha (inverse-variance)
+        w = invd * _neutralize(alpha, design, invd)  # D⁻¹ * residual alpha (inverse-variance)
 
     if pos_cap is not None and n > 0:
         scale = np.sum(np.abs(w))
         if scale > 0:
-            w = w / scale                  # normalize gross to 1 before capping
+            w = w / scale  # normalize gross to 1 before capping
         w = np.clip(w, -pos_cap, pos_cap)
-        w = _neutralize(w, X, np.ones(n))  # restore neutrality after clipping
+        w = _neutralize(w, design, np.ones(n))  # restore neutrality after clipping
     return w
 
 
-def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool,
-                    pos_cap: float | None, sector_labels=None) -> np.ndarray:
+def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool, pos_cap: float | None, sector_labels=None) -> np.ndarray:
     """Clip |w| to `pos_cap` and restore neutrality (dollar / beta / sector),
     applied to the FINAL (vol-targeted) weights. The cap inside `optimize_day` is
     a PRE-scale shape limit; vol targeting then rescales the book, so without this
@@ -148,16 +155,15 @@ def enforce_pos_cap(w: np.ndarray, beta: np.ndarray, beta_neutral: bool,
     name reaches the cap (the usual case) this is a no-op."""
     if pos_cap is None:
         return w
-    X = _neutralizer_X(len(w), beta, beta_neutral, sector_labels)
-    return _neutralize(np.clip(w, -pos_cap, pos_cap), X, np.ones(len(w)))
+    design = _neutralizer_x(len(w), beta, beta_neutral, sector_labels)
+    return _neutralize(np.clip(w, -pos_cap, pos_cap), design, np.ones(len(w)))
 
 
-def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
-                     gross_cap: float = 3.0, cov: np.ndarray | None = None) -> np.ndarray:
+def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float, gross_cap: float = 3.0, cov: np.ndarray | None = None) -> np.ndarray:
     """Scale weights so the sleeve's ex-ante annualized idiosyncratic vol equals
     `target_ann_vol`, subject to a gross-leverage cap. Uses the full covariance
     (wᵀΣw, correlation-aware) when `cov` is given, else the diagonal sum(w²·var)."""
-    daily_var = float(w @ cov @ w) if cov is not None else float(np.sum((w ** 2) * var))
+    daily_var = float(w @ cov @ w) if cov is not None else float(np.sum((w**2) * var))
     ann_vol = np.sqrt(max(daily_var, 1e-18) * _ANN)
     if ann_vol <= 0:
         return w
@@ -169,8 +175,7 @@ def vol_target_scale(w: np.ndarray, var: np.ndarray, target_ann_vol: float,
     return w
 
 
-def shrunk_idio_cov(resid_window: np.ndarray, idio_var: np.ndarray,
-                    shrink: float) -> np.ndarray:
+def shrunk_idio_cov(resid_window: np.ndarray, idio_var: np.ndarray, shrink: float) -> np.ndarray:
     """Ledoit-Wolf-style shrunk idiosyncratic covariance (NxN, DAILY): a convex blend of the
     sample residual covariance and the DIAGONAL idiosyncratic-variance target,
         Σ = shrink · diag(idio_var) + (1 − shrink) · sample_cov(residuals),
@@ -178,17 +183,16 @@ def shrunk_idio_cov(resid_window: np.ndarray, idio_var: np.ndarray,
     `shrink` (toward the diagonal the diagonal-model already uses) makes Σ invertible and
     reduces EXACTLY to the inverse-variance risk model at shrink = 1."""
     x = np.nan_to_num(np.asarray(resid_window, float), nan=0.0)
-    S = np.cov(x, rowvar=False)
-    S = np.atleast_2d(S)
-    D = np.diag(np.asarray(idio_var, float))
-    n = D.shape[0]
-    Sig = float(shrink) * D + (1.0 - float(shrink)) * S
-    return Sig + 1e-10 * np.eye(n)                          # ridge -> guaranteed PD
+    sample_cov = np.atleast_2d(np.cov(x, rowvar=False))
+    diagonal = np.diag(np.asarray(idio_var, float))
+    n = diagonal.shape[0]
+    covariance = float(shrink) * diagonal + (1.0 - float(shrink)) * sample_cov
+    return covariance + 1e-10 * np.eye(n)  # ridge -> guaranteed PD
 
 
-def rebalance_idio_cov(stock_ret: pd.DataFrame, spy_ret: pd.Series, t, common: list[str],
-                       beta_vec: np.ndarray, idio_var: np.ndarray, window: int,
-                       shrink: float) -> np.ndarray:
+def rebalance_idio_cov(
+    stock_ret: pd.DataFrame, spy_ret: pd.Series, t, common: list[str], beta_vec: np.ndarray, idio_var: np.ndarray, window: int, shrink: float
+) -> np.ndarray:
     """Shrunk idiosyncratic covariance for `common` names from the trailing `window` daily
     returns up to t: residual_k = r_k − beta_k·r_spy (market removed), then `shrunk_idio_cov`."""
     hist = stock_ret.loc[:t, common].tail(window)
@@ -197,9 +201,16 @@ def rebalance_idio_cov(stock_ret: pd.DataFrame, spy_ret: pd.Series, t, common: l
     return shrunk_idio_cov(resid, idio_var, shrink)
 
 
-def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
-                     target_ann_vol: float, gross_cap: float, pos_cap: float | None,
-                     beta_neutral: bool, sector_map: dict | None = None) -> pd.Series:
+def risk_target_book(
+    aim: pd.Series,
+    beta_row: pd.Series,
+    var_row: pd.Series,
+    target_ann_vol: float,
+    gross_cap: float,
+    pos_cap: float | None,
+    beta_neutral: bool,
+    sector_map: dict | None = None,
+) -> pd.Series:
     """Re-scale the ACTUALLY-HELD book `aim` to the vol target and re-apply the
     caps, using the current day's risk model.
 
@@ -212,9 +223,7 @@ def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
 
     Only names with a finite beta AND variance today are risk-scaled; the rest of
     `aim` is preserved. A degenerate (all-zero) book is returned unchanged."""
-    names = [tk for tk in aim.index
-             if np.isfinite(var_row.get(tk, np.nan))
-             and np.isfinite(beta_row.get(tk, np.nan))]
+    names = [tk for tk in aim.index if np.isfinite(var_row.get(tk, np.nan)) and np.isfinite(beta_row.get(tk, np.nan))]
     if not names:
         return aim
     w = aim[names].to_numpy(float)
@@ -233,9 +242,9 @@ def risk_target_book(aim: pd.Series, beta_row: pd.Series, var_row: pd.Series,
 # --------------------------------------------------------------------------- #
 # Rolling risk inputs (self-contained: no dependency on cube betas)            #
 # --------------------------------------------------------------------------- #
-def regime_vol_scale(spy_ret: pd.Series, window: int = 63, target_vol: float = 0.15,
-                     floor: float = 0.3, cap: float = 1.5,
-                     min_periods: int | None = None) -> pd.Series:
+def regime_vol_scale(
+    spy_ret: pd.Series, window: int = 63, target_vol: float = 0.15, floor: float = 0.3, cap: float = 1.5, min_periods: int | None = None
+) -> pd.Series:
     """Point-in-time exposure multiplier that DE-RISKS the whole book when the market
     is volatile -- a standard volatility-control overlay (exposure inversely
     proportional to realized vol, the user's "weights ~ 1/vol" idea applied to the
@@ -254,9 +263,7 @@ def regime_vol_scale(spy_ret: pd.Series, window: int = 63, target_vol: float = 0
     return scale.fillna(1.0)
 
 
-def rolling_beta_var(stock_ret: pd.DataFrame, spy_ret: pd.Series,
-                     beta_window: int = 63, vol_window: int = 63,
-                     min_obs: int | None = None):
+def rolling_beta_var(stock_ret: pd.DataFrame, spy_ret: pd.Series, beta_window: int = 63, vol_window: int = 63, min_obs: int | None = None):
     """Trailing market beta and idiosyncratic daily variance per name (point-in-
     time: uses only past returns). idio var = var(stock) - beta^2 * var(spy).
 
@@ -284,47 +291,43 @@ def rolling_beta_var(stock_ret: pd.DataFrame, spy_ret: pd.Series,
 # Backtest engine with the optimizer + turnover-aware stepping                 #
 # --------------------------------------------------------------------------- #
 def simulate_portfolio_opt(
-    signal: pd.DataFrame,            # date x ticker cross-sectional score (z or rank)
+    signal: pd.DataFrame,  # date x ticker cross-sectional score (z or rank)
     stock_ret: pd.DataFrame,
     spy_ret: pd.Series,
     starting_capital: float = 1_000_000,
-    market_weight: float = 0.5,      # deliberate SPY beta sleeve
-    target_ann_vol: float = 0.08,    # alpha-sleeve ex-ante vol target
+    market_weight: float = 0.5,  # deliberate SPY beta sleeve
+    target_ann_vol: float = 0.08,  # alpha-sleeve ex-ante vol target
     beta_neutral: bool = True,
     pos_cap: float = 0.03,
     gross_cap: float = 3.0,
-    step: float = 0.35,              # partial trade toward target (turnover control)
-    no_trade_band: float = 0.0,      # skip per-name trades smaller than this
+    step: float = 0.35,  # partial trade toward target (turnover control)
+    no_trade_band: float = 0.0,  # skip per-name trades smaller than this
     beta_window: int = 63,
     vol_window: int = 63,
     fee_bps: float = 1.0,
     spread_bps: float = 5.0,
     rebalance_freq: int = 1,
-    sector_map: dict | None = None,   # ticker -> group (e.g. GICS industry group)
-    sector_neutral: bool = False,     # enforce net sector exposure ~ 0
-    risk_model: str = "diagonal",     # diagonal (inverse-variance) | covariance (correlation-aware)
-    cov_shrink: float = 0.5,          # shrink toward the diagonal for the covariance risk model
-    vol_scaling: bool = False,        # de-risk the whole book when the market is volatile
+    sector_map: dict | None = None,  # ticker -> group (e.g. GICS industry group)
+    sector_neutral: bool = False,  # enforce net sector exposure ~ 0
+    risk_model: str = "diagonal",  # diagonal (inverse-variance) | covariance (correlation-aware)
+    cov_shrink: float = 0.5,  # shrink toward the diagonal for the covariance risk model
+    vol_scaling: bool = False,  # de-risk the whole book when the market is volatile
     regime_target_vol: float = 0.15,  # SPY ann-vol at which exposure multiplier = 1
     regime_vol_window: int = 63,
     regime_scale_floor: float = 0.3,  # min exposure multiplier (deep vol spike)
-    regime_scale_cap: float = 1.5,    # max exposure multiplier (calm markets)
-    collect_weights: bool = False,    # stash the per-day held per-name weights on out.attrs["weights"]
+    regime_scale_cap: float = 1.5,  # max exposure multiplier (calm markets)
+    collect_weights: bool = False,  # stash the per-day held per-name weights on out.attrs["weights"]
 ) -> pd.DataFrame:
     cost_rate = (fee_bps + spread_bps) / 1e4
-    weights_hist: dict = {} if collect_weights else None
+    weights_hist: dict | None = {} if collect_weights else None
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
     smap = sector_map if (sector_neutral and sector_map) else None
-    reg_scale = (regime_vol_scale(spy_ret, regime_vol_window, regime_target_vol,
-                                  regime_scale_floor, regime_scale_cap)
-                 if vol_scaling else None)
+    reg_scale = regime_vol_scale(spy_ret, regime_vol_window, regime_target_vol, regime_scale_floor, regime_scale_cap) if vol_scaling else None
 
-    dates = sorted(d for d in signal.index
-                   if d in stock_ret.index and d in spy_ret.index
-                   and d in beta_df.index)
+    dates = sorted(d for d in signal.index if d in stock_ret.index and d in spy_ret.index and d in beta_df.index)
     tickers = list(stock_ret.columns)
     prev_w = pd.Series(0.0, index=tickers + ["SPY"])
-    V = spy_V = starting_capital
+    portfolio_value = benchmark_value = starting_capital
     rows = []
 
     target_alpha = pd.Series(0.0, index=tickers)
@@ -333,19 +336,16 @@ def simulate_portfolio_opt(
 
         if i % rebalance_freq == 0:
             s = signal.loc[t].dropna()
-            common = [tk for tk in s.index
-                      if tk in beta_df.columns
-                      and np.isfinite(beta_df.loc[t, tk]) and np.isfinite(var_df.loc[t, tk])]
+            common = [tk for tk in s.index if tk in beta_df.columns and np.isfinite(beta_df.loc[t, tk]) and np.isfinite(var_df.loc[t, tk])]
             if len(common) >= 10:
                 a = s[common].to_numpy(float)
-                a = (a - a.mean()) / (a.std() if a.std() > 0 else 1.0)   # centered z
+                a = (a - a.mean()) / (a.std() if a.std() > 0 else 1.0)  # centered z
                 b = beta_df.loc[t, common].to_numpy(float)
                 v = var_df.loc[t, common].to_numpy(float)
                 sec = [smap.get(tk) for tk in common] if smap else None
                 # correlation-aware risk model: build the shrunk idiosyncratic covariance for
                 # today's tradeable names (else None -> diagonal inverse-variance, as before)
-                cov = (rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink)
-                       if risk_model == "covariance" else None)
+                cov = rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink) if risk_model == "covariance" else None
                 w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec, cov=cov)
                 w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap, cov=cov)
                 # enforce pos_cap on the FINAL weights (vol targeting rescales the
@@ -362,9 +362,7 @@ def simulate_portfolio_opt(
 
         # risk-target the ACTUALLY-HELD book so realized vol/gross does not depend
         # on rebalance_freq (the partial step shrinks gross vs the target w*).
-        aim = risk_target_book(aim, beta_df.loc[t], var_df.loc[t],
-                               target_ann_vol, gross_cap, pos_cap, beta_neutral,
-                               sector_map=smap)
+        aim = risk_target_book(aim, beta_df.loc[t], var_df.loc[t], target_ann_vol, gross_cap, pos_cap, beta_neutral, sector_map=smap)
 
         w = pd.Series(0.0, index=tickers + ["SPY"])
         w[tickers] = aim.values
@@ -379,28 +377,39 @@ def simulate_portfolio_opt(
         turnover = (w - prev_w).abs().sum()
         cost = turnover * cost_rate
         r_stocks = stock_ret.loc[t1, tickers].fillna(0.0)
-        r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
+        raw_spy = float(cast(float, spy_ret.at[t1]))
+        r_spy = raw_spy if np.isfinite(raw_spy) else 0.0
         # split the P&L into its two sleeves so each param's effect is observable
-        alpha_ret = float((w[tickers] * r_stocks).sum())
-        mkt_ret = float(w["SPY"] * r_spy)
+        alpha_ret = float(cast(float, (w[tickers] * r_stocks).sum()))
+        mkt_ret = float(cast(float, w["SPY"]) * r_spy)
         gross = alpha_ret + mkt_ret
         net = gross - cost
-        V *= (1.0 + net)
-        spy_V *= (1.0 + r_spy)
-        rows.append({"date": t1, "gross_ret": gross, "cost": cost, "net_ret": net,
-                     "turnover": turnover, "portfolio_value": V, "spy_value": spy_V,
-                     # sleeve diagnostics (make the construction params visible)
-                     "alpha_ret": alpha_ret, "mkt_ret": mkt_ret,
-                     "alpha_gross": float(w[tickers].abs().sum()),
-                     "alpha_max_w": float(w[tickers].abs().max()),
-                     "regime_scale": rs})
+        portfolio_value *= 1.0 + net
+        benchmark_value *= 1.0 + r_spy
+        rows.append(
+            {
+                "date": t1,
+                "gross_ret": gross,
+                "cost": cost,
+                "net_ret": net,
+                "turnover": turnover,
+                "portfolio_value": portfolio_value,
+                "spy_value": benchmark_value,
+                # sleeve diagnostics (make the construction params visible)
+                "alpha_ret": alpha_ret,
+                "mkt_ret": mkt_ret,
+                "alpha_gross": float(w[tickers].abs().sum()),
+                "alpha_max_w": float(w[tickers].abs().max()),
+                "regime_scale": rs,
+            }
+        )
         if weights_hist is not None:
-            weights_hist[t1] = w[tickers].copy()               # held book (t->t1), for the blotter
+            weights_hist[t1] = w[tickers].copy()  # held book (t->t1), for the blotter
         prev_w = w
 
     out = pd.DataFrame(rows).set_index("date")
     if weights_hist:
-        out.attrs["weights"] = pd.DataFrame(weights_hist).T     # date x ticker held weights
+        out.attrs["weights"] = pd.DataFrame(weights_hist).T  # date x ticker held weights
 
     # Surface a silently-inactive alpha book instead of returning a flat curve.
     # (With market_weight=0 the SPY sleeve no longer masks a dead alpha sleeve.)
@@ -409,24 +418,45 @@ def simulate_portfolio_opt(
             "Alpha sleeve never established a position (avg gross ~0). Likely a "
             "degenerate signal (no cross-sectional dispersion) or < 10 names with a "
             "finite beta/variance on rebalance days. With market_weight=%.2f the "
-            "portfolio trades effectively nothing.", market_weight)
+            "portfolio trades effectively nothing.",
+            market_weight,
+        )
 
     return out
+
 
 # --------------------------------------------------------------------------- #
 # INTEGER-SHARE L/S: rebalance to a whole-share book, hold integer shares      #
 # between rebalances (you cannot hold/short a fraction of a share).            #
 # --------------------------------------------------------------------------- #
 def simulate_integer_ls(
-    signal: pd.DataFrame, stock_ret: pd.DataFrame, spy_ret: pd.Series, close: pd.DataFrame, *,
-    starting_capital: float = 1_000_000, target_ann_vol: float = 0.08, beta_neutral: bool = True,
-    pos_cap: float = 0.05, gross_cap: float = 3.0, beta_window: int = 63, vol_window: int = 63,
-    fee_bps: float = 1.0, spread_bps: float = 5.0, rebalance_freq: int = 63,
-    sector_map: dict | None = None, sector_neutral: bool = False,
-    risk_model: str = "diagonal", cov_shrink: float = 0.5,
-    gross_tol: float = 0.02, dollar_tol: float = 0.005, beta_tol: float = 0.02,
-    sector_tol: float = 0.03, int_method: str = "milp", share_cap_mult: float = 3.0,
-    time_limit: float = 10.0, long_fractional: bool = False,
+    signal: pd.DataFrame,
+    stock_ret: pd.DataFrame,
+    spy_ret: pd.Series,
+    close: pd.DataFrame,
+    *,
+    starting_capital: float = 1_000_000,
+    target_ann_vol: float = 0.08,
+    beta_neutral: bool = True,
+    pos_cap: float = 0.05,
+    gross_cap: float = 3.0,
+    beta_window: int = 63,
+    vol_window: int = 63,
+    fee_bps: float = 1.0,
+    spread_bps: float = 5.0,
+    rebalance_freq: int = 63,
+    sector_map: dict | None = None,
+    sector_neutral: bool = False,
+    risk_model: str = "diagonal",
+    cov_shrink: float = 0.5,
+    gross_tol: float = 0.02,
+    dollar_tol: float = 0.005,
+    beta_tol: float = 0.02,
+    sector_tol: float = 0.03,
+    int_method: str = "milp",
+    share_cap_mult: float = 3.0,
+    time_limit: float = 10.0,
+    long_fractional: bool = False,
 ) -> pd.DataFrame:
     """Market-neutral L/S with WHOLE-SHARE positions. At each rebalance: build the continuous
     optimal target (optimize_day + vol target + caps), then `integerize` it to integer shares
@@ -437,53 +467,81 @@ def simulate_integer_ls(
     cost_rate = (fee_bps + spread_bps) / 1e4
     beta_df, var_df = rolling_beta_var(stock_ret, spy_ret, beta_window, vol_window)
     smap = sector_map if (sector_neutral and sector_map) else None
-    dates = sorted(d for d in signal.index
-                   if d in stock_ret.index and d in spy_ret.index and d in beta_df.index and d in close.index)
+    dates = sorted(d for d in signal.index if d in stock_ret.index and d in spy_ret.index and d in beta_df.index and d in close.index)
     tickers = list(stock_ret.columns)
     shares = pd.Series(0.0, index=tickers)
     prev_shares = pd.Series(0.0, index=tickers)
-    V = spy_V = starting_capital
+    portfolio_value = benchmark_value = starting_capital
     rows, weights_hist = [], {}
 
     for i in range(len(dates) - 1):
         t, t1 = dates[i], dates[i + 1]
         if i % rebalance_freq == 0:
             s = signal.loc[t].dropna()
-            common = [tk for tk in s.index if tk in beta_df.columns
-                      and np.isfinite(beta_df.loc[t, tk]) and np.isfinite(var_df.loc[t, tk])
-                      and np.isfinite(close.loc[t, tk]) and close.loc[t, tk] > 0]
+            common = [
+                tk
+                for tk in s.index
+                if tk in beta_df.columns
+                and np.isfinite(float(cast(float, beta_df.at[t, tk])))
+                and np.isfinite(float(cast(float, var_df.at[t, tk])))
+                and np.isfinite(float(cast(float, close.at[t, tk])))
+                and float(cast(float, close.at[t, tk])) > 0
+            ]
             if len(common) >= 10:
-                a = s[common].to_numpy(float); a = (a - a.mean()) / (a.std() or 1.0)
+                a = s[common].to_numpy(float)
+                a = (a - a.mean()) / (a.std() or 1.0)
                 b = beta_df.loc[t, common].to_numpy(float)
                 v = var_df.loc[t, common].to_numpy(float)
                 sec = [smap.get(tk) for tk in common] if smap else None
-                cov = (rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink)
-                       if risk_model == "covariance" else None)
+                cov = rebalance_idio_cov(stock_ret, spy_ret, t, common, b, v, vol_window, cov_shrink) if risk_model == "covariance" else None
                 w_star = optimize_day(a, b, v, beta_neutral, pos_cap, sector_labels=sec, cov=cov)
                 w_star = vol_target_scale(w_star, v, target_ann_vol, gross_cap, cov=cov)
                 w_star = enforce_pos_cap(w_star, b, beta_neutral, pos_cap, sector_labels=sec)
                 tw = pd.Series(w_star, index=common)
-                n = integerize(tw, close.loc[t, common], starting_capital,
-                               beta=pd.Series(b, index=common),
-                               sector=(pd.Series(sec, index=common) if sec else None),
-                               gross_tol=gross_tol, dollar_tol=dollar_tol, beta_tol=beta_tol,
-                               sector_tol=sector_tol, share_cap_mult=share_cap_mult,
-                               time_limit=time_limit, method=int_method, long_fractional=long_fractional)
-                shares = pd.Series(0.0, index=tickers); shares[common] = n.reindex(common).to_numpy()
+                n = integerize(
+                    tw,
+                    cast(pd.Series, close.loc[t, common]).astype(float),
+                    starting_capital,
+                    beta=pd.Series(b, index=common),
+                    sector=(pd.Series(sec, index=common) if sec else None),
+                    gross_tol=gross_tol,
+                    dollar_tol=dollar_tol,
+                    beta_tol=beta_tol,
+                    sector_tol=sector_tol,
+                    share_cap_mult=share_cap_mult,
+                    time_limit=time_limit,
+                    method=int_method,
+                    long_fractional=long_fractional,
+                )
+                shares = pd.Series(0.0, index=tickers)
+                shares[common] = n.reindex(common).to_numpy()
 
         px_t = close.loc[t].reindex(tickers)
-        w = (shares * px_t / starting_capital).fillna(0.0)          # integer book -> weights (drift w/ price)
+        w = (shares * px_t / starting_capital).fillna(0.0)  # integer book -> weights (drift w/ price)
         turnover = float(((shares - prev_shares) * px_t).abs().sum() / starting_capital)
         cost = turnover * cost_rate
         r = stock_ret.loc[t1, tickers].fillna(0.0)
         r_spy = spy_ret.loc[t1] if np.isfinite(spy_ret.loc[t1]) else 0.0
         alpha_ret = float((w * r).sum())
         net = alpha_ret - cost
-        V *= (1.0 + net); spy_V *= (1.0 + r_spy)
-        rows.append({"date": t1, "gross_ret": alpha_ret, "cost": cost, "net_ret": net,
-                     "turnover": turnover, "portfolio_value": V, "spy_value": spy_V,
-                     "alpha_ret": alpha_ret, "mkt_ret": 0.0, "alpha_gross": float(w.abs().sum()),
-                     "alpha_max_w": float(w.abs().max()), "regime_scale": 1.0})
+        portfolio_value *= 1.0 + net
+        benchmark_value *= 1.0 + r_spy
+        rows.append(
+            {
+                "date": t1,
+                "gross_ret": alpha_ret,
+                "cost": cost,
+                "net_ret": net,
+                "turnover": turnover,
+                "portfolio_value": portfolio_value,
+                "spy_value": benchmark_value,
+                "alpha_ret": alpha_ret,
+                "mkt_ret": 0.0,
+                "alpha_gross": float(w.abs().sum()),
+                "alpha_max_w": float(w.abs().max()),
+                "regime_scale": 1.0,
+            }
+        )
         weights_hist[t1] = w.copy()
         prev_shares = shares
 
@@ -491,6 +549,8 @@ def simulate_integer_ls(
     if weights_hist:
         out.attrs["weights"] = pd.DataFrame(weights_hist).T
     if not out.empty and float(out["alpha_gross"].mean()) < 1e-6:
-        _log.warning("Integer L/S never established a position (avg gross ~0): capital likely too "
-                     "small for whole-share positions, or <10 tradeable names on rebalance days.")
+        _log.warning(
+            "Integer L/S never established a position (avg gross ~0): capital likely too "
+            "small for whole-share positions, or <10 tradeable names on rebalance days."
+        )
     return out

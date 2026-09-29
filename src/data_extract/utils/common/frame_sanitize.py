@@ -12,6 +12,7 @@ occasionally carries a stray `\\x00`.
 Shared rather than duplicated: this is a correctness invariant for every LLM-extract
 fetcher that writes filing text, and two copies of it are how one copy later drifts.
 """
+
 from __future__ import annotations
 
 import pandas as pd

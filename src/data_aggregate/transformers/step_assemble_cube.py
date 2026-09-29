@@ -135,7 +135,7 @@ class StepAssembleCube(Step):
         # silently shrinks the cube's feature set, so the two numbers must not be conflated
         if merged < len(FEATURE_PARTS):
             self._log.warning(
-                "Only %d of %d registered feature parts were merged -> the cube " "is missing the others' features.", merged, len(FEATURE_PARTS)
+                "Only %d of %d registered feature parts were merged -> the cube is missing the others' features.", merged, len(FEATURE_PARTS)
             )
         self._log.info("Merged %d/%d feature parts -> %s rows x %s feature columns", merged, len(FEATURE_PARTS), len(panel), len(panel.columns) - 2)
         return panel
@@ -174,7 +174,7 @@ class StepAssembleCube(Step):
         dup = int(targets.duplicated(["date", "ticker"]).sum())
         if dup:
             raise RuntimeError(
-                f"{Tables.cube_part_targets} has {dup} duplicate (date,ticker) rows " f"-- it must be WIDE by horizon. Re-run `build-target --full`."
+                f"{Tables.cube_part_targets} has {dup} duplicate (date,ticker) rows -- it must be WIDE by horizon. Re-run `build-target --full`."
             )
         return targets
 
@@ -215,7 +215,7 @@ class StepAssembleCube(Step):
                 Tables.cube_part_targets,
             )
         self._log.info(
-            "Saved cube to DB table '%s' (%s rows x %s columns, %s target columns, " "%.1f%% label coverage)",
+            "Saved cube to DB table '%s' (%s rows x %s columns, %s target columns, %.1f%% label coverage)",
             Tables.cube,
             total,
             len(base.columns) + len(label_cols) + len(base.index.names),

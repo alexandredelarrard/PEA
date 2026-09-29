@@ -44,25 +44,38 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_driver import period_of_report
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.institutionals.fetch_13f import (
-    _IMPLIED_PRICE_BAND, _classify_holdings, _pick, position_type)
+from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, _classify_holdings, _pick
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
 logger = logging.getLogger(__name__)
 
-_COLS = ["cik", "period", "filing_date", "cusip", "issuer_name", "title_of_class",
-         "position_type", "shares", "value_usd", "call_shares", "call_value",
-         "put_shares", "put_value", "debt_prn", "debt_value", "other_value"]
+_COLS = [
+    "cik",
+    "period",
+    "filing_date",
+    "cusip",
+    "issuer_name",
+    "title_of_class",
+    "position_type",
+    "shares",
+    "value_usd",
+    "call_shares",
+    "call_value",
+    "put_shares",
+    "put_value",
+    "debt_prn",
+    "debt_value",
+    "other_value",
+]
 
 #: The per-type value columns, in `POSITION_TYPES` order. `position_type` on a grouped row is
 #: whichever of these carries the most value -- see `_dominant_type`.
-_VALUE_BY_TYPE = {"common": "value_usd", "call": "call_value", "put": "put_value",
-                  "debt": "debt_value", "other": "other_value"}
+_VALUE_BY_TYPE = {"common": "value_usd", "call": "call_value", "put": "put_value", "debt": "debt_value", "other": "other_value"}
 
 
-class SuperinvestorRosterEmpty(RuntimeError):
+class SuperinvestorRosterEmptyError(RuntimeError):
     """`superinvestor_roster` holds no CIK. The roster IS this walk's entire input, so an empty
     one must stop the run rather than let it report success over zero managers -- the failure
     mode a warning would produce is a table that silently stops growing."""
@@ -76,16 +89,14 @@ def _dominant_type(grouped: pd.DataFrame) -> pd.Series:
     per-class VALUE COLUMNS keep the split. Those columns stay authoritative; this label just
     says what the row principally is, so a conviction query can exclude option and debt rows
     without unpacking five columns. Ties go to `common`, which `POSITION_TYPES` orders first."""
-    values = pd.DataFrame({name: grouped[col].fillna(0.0).abs()
-                           for name, col in _VALUE_BY_TYPE.items()})
+    values = pd.DataFrame({name: grouped[col].fillna(0.0).abs() for name, col in _VALUE_BY_TYPE.items()})
     # idxmax returns the FIRST column at the max, and _VALUE_BY_TYPE is built in POSITION_TYPES
     # order, so `common` already wins a tie -- including the all-zero row, which is a disclosed
     # position with no value rather than an 'other'.
     return values.idxmax(axis=1)
 
 
-def _manager_holdings_frame(cik: str, filing_date, period, infotable: pd.DataFrame
-                            ) -> pd.DataFrame:
+def _manager_holdings_frame(cik: str, filing_date, period, infotable: pd.DataFrame) -> pd.DataFrame:
     """One filing's info table -> one row per CUSIP, with NO universe filter. Pure.
 
     `issuer_name` / `title_of_class` are carried because they are the only human-readable handle
@@ -99,11 +110,9 @@ def _manager_holdings_frame(cik: str, filing_date, period, infotable: pd.DataFra
         return pd.DataFrame(columns=_COLS)
 
     numeric = [c for c in typed.columns if c not in ("cusip", "issuer_name", "title_of_class")]
-    out = typed.groupby("cusip", as_index=False).agg(
-        {**{c: "sum" for c in numeric},
-         "issuer_name": "first", "title_of_class": "first"})
+    out = typed.groupby("cusip", as_index=False).agg({**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"})
     out["position_type"] = _dominant_type(out)
-    out["cik"] = pad_cik(cik)          # the stored form; the PK join depends on matching it
+    out["cik"] = pad_cik(cik)  # the stored form; the PK join depends on matching it
     out["period"] = pd.Timestamp(period)
     out["filing_date"] = pd.Timestamp(filing_date)
     return out.dropna(subset=["period"])[_COLS]
@@ -116,9 +125,8 @@ def _read_filing(filing) -> pd.DataFrame:
         infotable = filing.obj().infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
-        return _manager_holdings_frame(filing.cik, filing.filing_date,
-                                       period_of_report(filing), infotable)
-    except Exception as e:                                          # noqa: BLE001
+        return _manager_holdings_frame(filing.cik, filing.filing_date, period_of_report(filing), infotable)
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"13F-manager {filing.accession_number}: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
@@ -141,10 +149,11 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
 
     ciks = sorted(roster_cik_union(context))
     if not ciks:
-        raise SuperinvestorRosterEmpty(
+        raise SuperinvestorRosterEmptyError(
             "superinvestor_roster is empty -- run `data_extract superinvestors --seed` first. "
-            "The roster is this walk's entire scope; there is nothing to fetch without it.")
-    names = roster_map_as_of(context)            # latest snapshot; only used for log lines
+            "The roster is this walk's entire scope; there is nothing to fetch without it."
+        )
+    names = roster_map_as_of(context)  # latest snapshot; only used for log lines
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     logger.info("13F managers: %d roster CIK(s), periods from %s", len(ciks), since.date())
 
@@ -166,7 +175,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     def _worker(name: str, cik: str) -> tuple[str, int, int]:
         try:
             filings = Company(cik).get_filings(form=SEC_13F_FORMS) or []
-        except Exception as e:                                      # noqa: BLE001 -- one manager
+        except Exception as e:  # noqa: BLE001 -- one manager
             context.log.warning("13F managers: %s (%s) listing failed (%s)", name, cik, e)
             return cik, 0, 0
         # oldest first, so an amendment filed later upserts OVER the original it restates
@@ -174,8 +183,11 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         frames = []
         for _, filing in dated:
             try:
-                period = pd.Timestamp(filing.period_of_report)
-            except Exception:                                       # noqa: BLE001
+                raw_period = filing.period_of_report
+                if raw_period is None:
+                    continue
+                period = pd.Timestamp(raw_period)
+            except Exception:  # noqa: BLE001
                 continue
             if pd.isna(period) or period < since:
                 continue
@@ -190,7 +202,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         suspect = _suspect_prices(book)
         try:
             saved = _save(book)
-        except Exception as e:                                      # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             context.log.warning("13F managers: %s (%s) save failed (%s)", name, cik, e)
             return cik, 0, 0
         return cik, saved, suspect
@@ -209,20 +221,27 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     # roster carries advisers that never did) from "we were throttled" (must be re-run).
     empty = [cik for cik, n, _ in results if n == 0]
     if empty:
-        known_filers = set(context.store.distinct(
-            Tables.sec13f_hr, "cik", where={"cik": [c.lstrip("0") for c in empty] + empty}))
+        known_filers = set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cik": [c.lstrip("0") for c in empty] + empty}))
         known = {c for c in empty if c in known_filers or c.lstrip("0") in known_filers}
         context.log.warning(
             "13F managers: %d/%d roster CIK(s) produced NO rows; %d of them have history in "
             "%s and must be re-run (throttling or a transient listing failure, not an absent "
-            "filer): %s", len(empty), len(ciks), len(known), Tables.sec13f_hr,
-            ", ".join(sorted(known)) or "none")
+            "filer): %s",
+            len(empty),
+            len(ciks),
+            len(known),
+            Tables.sec13f_hr,
+            ", ".join(sorted(known)) or "none",
+        )
 
     if suspect:
-        logger.warning("13F managers: %d/%d saved rows imply a share price outside %s -- check "
-                       "edgartools' per-filing $thousands detection before trusting value_usd",
-                       suspect, saved, _IMPLIED_PRICE_BAND)
-    logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s",
-                saved, len(ciks), Tables.sec13f_manager_holdings)
+        logger.warning(
+            "13F managers: %d/%d saved rows imply a share price outside %s -- check "
+            "edgartools' per-filing $thousands detection before trusting value_usd",
+            suspect,
+            saved,
+            _IMPLIED_PRICE_BAND,
+        )
+    logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_manager_holdings)
     record_run(context, Tables.sec13f_manager_holdings, len(ciks), saved)
     return saved

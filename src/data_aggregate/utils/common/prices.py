@@ -26,7 +26,10 @@ not accept a partial forward window (that would silently be a shorter horizon), 
 seasonality feature averages five prior years and would lose its newest year at the sample
 edge if it demanded a full one. Both call sites pass their own value explicitly.
 """
+
 from __future__ import annotations
+
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -39,9 +42,7 @@ from src.data_aggregate.utils.common.level_basis import mask_seam_windows
 MOMENTUM_SEAM_WINDOW = (252, 21)
 
 
-def momentum_characteristic(stock_close: pd.DataFrame, *,
-                            seams: dict[str, list[pd.Timestamp]] | None = None
-                            ) -> pd.DataFrame:
+def momentum_characteristic(stock_close: pd.DataFrame, *, seams: dict[str, list[pd.Timestamp]] | None = None) -> pd.DataFrame:
     """12-1 price momentum characteristic (skip the most recent month).
 
     Single source of truth, now actually shared: the momentum style factor, the
@@ -65,8 +66,7 @@ def momentum_characteristic(stock_close: pd.DataFrame, *,
     return mask_seam_windows(mom, seams, *MOMENTUM_SEAM_WINDOW)
 
 
-def trailing_vol(returns: pd.DataFrame, window: int,
-                 min_periods: int | None = None) -> pd.DataFrame:
+def trailing_vol(returns: pd.DataFrame, window: int, min_periods: int | None = None) -> pd.DataFrame:
     """Trailing realized volatility = rolling std of daily returns.
 
     `features` uses it directly (`vol_21`, `vol_63`); `factors` NEGATES it for the
@@ -89,20 +89,16 @@ def forward_return(total_return_index: pd.DataFrame, horizon: int) -> pd.DataFra
     return total_return_index.shift(-horizon) / total_return_index - 1.0
 
 
-def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int,
-                     min_periods: int | None = None):
+def forward_compound(daily: pd.Series | pd.DataFrame, horizon: int, min_periods: int | None = None):
     """Compounded forward return over t+1..t+h from a daily-return series/frame."""
     safe = daily.clip(lower=-0.999999)
-    log1p = np.log1p(safe)
+    log1p = cast(pd.Series | pd.DataFrame, np.log1p(safe))
     mp = horizon if min_periods is None else min_periods
     fwd = np.expm1(log1p[::-1].rolling(horizon, min_periods=mp).sum()[::-1].shift(-1))
     return fwd
 
 
-def forward_cumchange(level_change: pd.Series | pd.DataFrame, horizon: int,
-                      min_periods: int | None = None):
+def forward_cumchange(level_change: pd.Series | pd.DataFrame, horizon: int, min_periods: int | None = None):
     """Cumulative forward change over t+1..t+h from a daily-CHANGE series/frame."""
     mp = horizon if min_periods is None else min_periods
     return level_change[::-1].rolling(horizon, min_periods=mp).sum()[::-1].shift(-1)
-
-

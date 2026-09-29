@@ -42,7 +42,7 @@ YEARS_KWARGS = dict(
 # output. Shared by `prices` and `institutionals`.
 #
 REPORT_PATH_ARGS = ("--report", "report_path")
-REPORT_PATH_KWARGS = dict(default=None, help="Where to write the markdown report " "(default: reports/validate/<date>/<scope>.md).")
+REPORT_PATH_KWARGS = dict(default=None, help="Where to write the markdown report (default: reports/validate/<date>/<scope>.md).")
 
 NO_WRITE_ARGS = ("--no-write",)
 NO_WRITE_KWARGS = dict(is_flag=True, default=False, help="Print only; write no file.")
@@ -57,5 +57,5 @@ NO_WRITE_KWARGS = dict(is_flag=True, default=False, help="Print only; write no f
 # edited is never the one that is read.
 COVERAGE_FLOOR_ARGS = ("--coverage-floor",)
 COVERAGE_FLOOR_KWARGS = dict(
-    type=float, show_default=True, help="Coverage gate: a feature below this non-null share inside " "its availability window is listed for the cut."
+    type=float, show_default=True, help="Coverage gate: a feature below this non-null share inside its availability window is listed for the cut."
 )

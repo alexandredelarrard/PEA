@@ -30,6 +30,7 @@ Fees are split pro-rata: a row's fee is charged to a round trip in proportion to
 of that row's quantity the round trip consumed, so a partially-closed lot is only charged
 for the part that closed.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -41,10 +42,23 @@ import pandas as pd
 __all__ = ["LEDGER_COLUMNS", "round_trip_ledger"]
 
 LEDGER_COLUMNS = [
-    "trading_day", "sleeve", "ticker", "side", "run_time",
-    "shares", "price", "amount_invested", "fee",
-    "price_bought", "price_sold", "shares_closed", "closed_on",
-    "pnl", "pnl_closed_today", "position_usd", "shares_held",
+    "trading_day",
+    "sleeve",
+    "ticker",
+    "side",
+    "run_time",
+    "shares",
+    "price",
+    "amount_invested",
+    "fee",
+    "price_bought",
+    "price_sold",
+    "shares_closed",
+    "closed_on",
+    "pnl",
+    "pnl_closed_today",
+    "position_usd",
+    "shares_held",
 ]
 
 # The trading ledger (`Tables.strategy`): one row per (trading day, sleeve, ticker) move, with the
@@ -52,37 +66,40 @@ LEDGER_COLUMNS = [
 STRATEGY_SIDE_BUY = "BUY"
 STRATEGY_SIDE_SELL = "SELL"
 
+
 @dataclass
 class _Lot:
     """One open lot: `shares` at `price`, and which ledger row opened it."""
-    shares: float                     # always positive; direction is on the parent side
+
+    shares: float  # always positive; direction is on the parent side
     price: float
-    row: int                          # index into the ledger rows being built
+    row: int  # index into the ledger rows being built
     long: bool = True
 
 
 @dataclass
 class _Row:
     """A mutable ledger row while matching is in progress."""
+
     trading_day: pd.Timestamp
     sleeve: str
     ticker: str
     side: str
-    shares: float                     # absolute quantity traded by this move
+    shares: float  # absolute quantity traded by this move
     price: float
     amount_invested: float
     fee: float
     position_usd: float
     shares_held: float
     # filled by matching
-    opened_shares: float = 0.0        # of `shares`, how many OPENED a new lot
-    closed_shares: float = 0.0        # of `shares`, how many CLOSED an existing lot
-    exit_notional: float = 0.0        # share-weighted exit price accumulator (opening side)
-    entry_notional: float = 0.0       # share-weighted entry price accumulator (closing side)
-    lot_closed_shares: float = 0.0    # how many of THIS row's opened shares were later closed
+    opened_shares: float = 0.0  # of `shares`, how many OPENED a new lot
+    closed_shares: float = 0.0  # of `shares`, how many CLOSED an existing lot
+    exit_notional: float = 0.0  # share-weighted exit price accumulator (opening side)
+    entry_notional: float = 0.0  # share-weighted entry price accumulator (closing side)
+    lot_closed_shares: float = 0.0  # how many of THIS row's opened shares were later closed
     closed_on: pd.Timestamp | None = None
-    pnl: float = float("nan")         # this position's realized P&L (opening side)
-    pnl_today: float = float("nan")   # P&L booked by this move (closing side)
+    pnl: float = float("nan")  # this position's realized P&L (opening side)
+    pnl_today: float = float("nan")  # P&L booked by this move (closing side)
     _pnl_acc: float = 0.0
     _pnl_today_acc: float = 0.0
     _has_pnl: bool = False
@@ -103,7 +120,7 @@ def _match_one_name(moves: pd.DataFrame, rows: list[_Row]) -> None:
     for _, mv in moves.iterrows():
         row_idx = int(mv["_row"])
         row = rows[row_idx]
-        qty = float(mv["_signed_shares"])          # + buy / - sell
+        qty = float(mv["_signed_shares"])  # + buy / - sell
         price = float(mv["price"])
         remaining = abs(qty)
         opening_long = qty > 0
@@ -122,7 +139,7 @@ def _match_one_name(moves: pd.DataFrame, rows: list[_Row]) -> None:
             # opening row learns its exit price + P&L; closing row learns its cost basis
             open_row.exit_notional += exit_ * closed
             open_row.lot_closed_shares += closed
-            open_row.closed_on = mv["date"]        # blotter column; renamed to trading_day on output
+            open_row.closed_on = mv["date"]  # blotter column; renamed to trading_day on output
             open_row._pnl_acc += net
             open_row._has_pnl = True
 
@@ -142,8 +159,7 @@ def _match_one_name(moves: pd.DataFrame, rows: list[_Row]) -> None:
             row.opened_shares += remaining
 
 
-def round_trip_ledger(trades: pd.DataFrame, run_time: pd.Timestamp | None = None,
-                      instrument_col: str = "instrument") -> pd.DataFrame:
+def round_trip_ledger(trades: pd.DataFrame, run_time: pd.Timestamp | None = None, instrument_col: str = "instrument") -> pd.DataFrame:
     """Blotter -> position ledger (`LEDGER_COLUMNS`), one row per (trading_day, sleeve, ticker).
 
     `trades` is a `blotter.trade_blotter` frame: date, sleeve, instrument, side, shares_traded,
@@ -176,20 +192,24 @@ def round_trip_ledger(trades: pd.DataFrame, run_time: pd.Timestamp | None = None
 
     # fee BEFORE the sort, so it travels with its row (charging the full cost of the move:
     # commission + spread, which is what a real ledger deducts)
-    df["_fee"] = pd.to_numeric(
-        df["cost_usd"] if "cost_usd" in df.columns else df.get("fee_usd", 0.0),
-        errors="coerce").fillna(0.0)
+    fee_values = df["cost_usd"] if "cost_usd" in df.columns else df["fee_usd"] if "fee_usd" in df.columns else pd.Series(0.0, index=df.index)
+    df["_fee"] = pd.to_numeric(fee_values, errors="coerce").fillna(0.0)
     df = df.sort_values(["sleeve", "ticker", "date"]).reset_index(drop=True)
     df["_row"] = np.arange(len(df))
 
     rows: list[_Row] = [
-        _Row(trading_day=r["date"], sleeve=str(r["sleeve"]), ticker=str(r["ticker"]),
-             side=_side(r["_signed_shares"]), shares=abs(float(r["_signed_shares"])),
-             price=float(r["price"]),
-             amount_invested=abs(float(r["_signed_shares"])) * float(r["price"]),
-             fee=float(r["_fee"]),
-             position_usd=float(r.get("position_usd", np.nan)),
-             shares_held=float(r.get("shares_held", np.nan)))
+        _Row(
+            trading_day=r["date"],
+            sleeve=str(r["sleeve"]),
+            ticker=str(r["ticker"]),
+            side=_side(r["_signed_shares"]),
+            shares=abs(float(r["_signed_shares"])),
+            price=float(r["price"]),
+            amount_invested=abs(float(r["_signed_shares"])) * float(r["price"]),
+            fee=float(r["_fee"]),
+            position_usd=float(r.get("position_usd", np.nan)),
+            shares_held=float(r.get("shares_held", np.nan)),
+        )
         for _, r in df.iterrows()
     ]
 
@@ -207,19 +227,27 @@ def round_trip_ledger(trades: pd.DataFrame, run_time: pd.Timestamp | None = None
         other_shares = row.closed_shares + row.lot_closed_shares
         other = (row.entry_notional + row.exit_notional) / other_shares if other_shares > 1e-12 else np.nan
         buying = row.side == STRATEGY_SIDE_BUY
-        out.append({
-            "trading_day": row.trading_day, "sleeve": row.sleeve, "ticker": row.ticker,
-            "side": row.side, "run_time": stamp,
-            "shares": row.shares, "price": row.price,
-            "amount_invested": row.amount_invested, "fee": row.fee,
-            "price_bought": row.price if buying else other,
-            "price_sold": other if buying else row.price,
-            "shares_closed": other_shares if other_shares > 1e-12 else np.nan,
-            "closed_on": row.closed_on,
-            "pnl": row._pnl_acc if row._has_pnl else np.nan,
-            "pnl_closed_today": row._pnl_today_acc if row._has_pnl_today else np.nan,
-            "position_usd": row.position_usd, "shares_held": row.shares_held,
-        })
+        out.append(
+            {
+                "trading_day": row.trading_day,
+                "sleeve": row.sleeve,
+                "ticker": row.ticker,
+                "side": row.side,
+                "run_time": stamp,
+                "shares": row.shares,
+                "price": row.price,
+                "amount_invested": row.amount_invested,
+                "fee": row.fee,
+                "price_bought": row.price if buying else other,
+                "price_sold": other if buying else row.price,
+                "shares_closed": other_shares if other_shares > 1e-12 else np.nan,
+                "closed_on": row.closed_on,
+                "pnl": row._pnl_acc if row._has_pnl else np.nan,
+                "pnl_closed_today": row._pnl_today_acc if row._has_pnl_today else np.nan,
+                "position_usd": row.position_usd,
+                "shares_held": row.shares_held,
+            }
+        )
 
     led = pd.DataFrame(out, columns=LEDGER_COLUMNS)
     return led.sort_values(["trading_day", "sleeve", "ticker"]).reset_index(drop=True)

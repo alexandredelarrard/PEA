@@ -14,6 +14,7 @@ output and column.
 Unlike `test_refactor_regression.py` this needs no SEC `companyfacts` cache, so it runs on
 any machine (see `aggregate_fingerprint`'s docstring).
 """
+
 from __future__ import annotations
 
 import json
@@ -258,8 +259,7 @@ DECLARED_DRIFT: frozenset[str] = frozenset()
 @pytest.fixture(scope="module")
 def baseline() -> dict:
     if not BASELINE.exists():
-        pytest.skip(f"no baseline at {BASELINE.name}; run "
-                    "`python -m tests.data_aggregate.aggregate_fingerprint` first")
+        pytest.skip(f"no baseline at {BASELINE.name}; run `python -m tests.data_aggregate.aggregate_fingerprint` first")
     return json.loads(BASELINE.read_text(encoding="utf-8"))
 
 
@@ -289,13 +289,11 @@ def fingerprint_problems(old: dict, new: dict) -> list[str]:
     """
     problems: list[str] = []
     if set(old) != set(new):
-        problems.append(
-            f"outputs appeared/disappeared: only-before={sorted(set(old) - set(new))}, "
-            f"only-after={sorted(set(new) - set(old))}")
+        problems.append(f"outputs appeared/disappeared: only-before={sorted(set(old) - set(new))}, only-after={sorted(set(new) - set(old))}")
 
     changed: list[str] = []
     for name in sorted(set(old) & set(new)):
-        if name in DECLARED_DRIFT:          # predates commit 0053dc3 -- see DECLARED_DRIFT
+        if name in DECLARED_DRIFT:  # predates commit 0053dc3 -- see DECLARED_DRIFT
             continue
         a, b = old[name], new[name]
         if a["hash"] == b["hash"]:
@@ -307,8 +305,7 @@ def fingerprint_problems(old: dict, new: dict) -> list[str]:
             detail.append(f"    columns REMOVED: {gone[:12]}")
         if added:
             detail.append(f"    columns ADDED:   {added[:12]}")
-        moved = sorted(c for c in set(a["columns"]) & set(b["columns"])
-                       if a["per_column"].get(c) != b["per_column"].get(c))
+        moved = sorted(c for c in set(a["columns"]) & set(b["columns"]) if a["per_column"].get(c) != b["per_column"].get(c))
         if moved:
             detail.append(f"    VALUES changed in {len(moved)} column(s): {moved[:12]}")
         changed.append("\n".join(detail))
@@ -319,22 +316,24 @@ def fingerprint_problems(old: dict, new: dict) -> list[str]:
 
 def _fp(columns: dict[str, str], rows: int = 10) -> dict:
     """One fingerprint entry: `per_column` digests, and a `hash` that follows them."""
-    return {"rows": rows, "cols": len(columns), "columns": sorted(columns),
-            "per_column": dict(columns), "hash": "|".join(f"{k}={v}" for k, v in
-                                                          sorted(columns.items()))}
+    return {
+        "rows": rows,
+        "cols": len(columns),
+        "columns": sorted(columns),
+        "per_column": dict(columns),
+        "hash": "|".join(f"{k}={v}" for k, v in sorted(columns.items())),
+    }
 
 
-def test_the_gate_reports_a_set_change_AND_a_value_change_together():
+def test_the_gate_reports_a_set_change_and_a_value_change_together():
     """A run that BOTH gains/loses an output AND moves a value must report both, not the first.
 
     This is the regression that made the guard worthless: every phase of the governance plan
     adds or removes a feature, which is precisely when the value diff is the thing you need.
     Synthetic on purpose -- it is testing the comparison, not the aggregation.
     """
-    old = {"panel.kept":  _fp({"a": "digest-a", "b": "digest-b"}),
-           "panel.gone":  _fp({"z": "digest-z"})}
-    new = {"panel.kept":  _fp({"a": "digest-a", "b": "MOVED"}),
-           "panel.added": _fp({"y": "digest-y"})}
+    old = {"panel.kept": _fp({"a": "digest-a", "b": "digest-b"}), "panel.gone": _fp({"z": "digest-z"})}
+    new = {"panel.kept": _fp({"a": "digest-a", "b": "MOVED"}), "panel.added": _fp({"y": "digest-y"})}
 
     problems = fingerprint_problems(old, new)
 
@@ -347,15 +346,18 @@ def test_the_gate_reports_a_set_change_AND_a_value_change_together():
 
     # ...and each kind alone is still reported alone
     assert fingerprint_problems(old, old) == []
-    only_values = fingerprint_problems({"panel.kept": old["panel.kept"]},
-                                       {"panel.kept": new["panel.kept"]})
+    only_values = fingerprint_problems({"panel.kept": old["panel.kept"]}, {"panel.kept": new["panel.kept"]})
     assert len(only_values) == 1 and "VALUES changed" in only_values[0], only_values
 
-    print("\n[gate guard] a run with BOTH a set change and a value change reports 2 separate "
-          "problems: the appeared/disappeared list, and 'VALUES changed in 1 column(s)' on the "
-          "output the two runs share.")
-    print("    SANITY CHECK: the set check no longer short-circuits the value check, so a "
-          "deliberate feature add/remove can never hide a moved number again.")
+    print(
+        "\n[gate guard] a run with BOTH a set change and a value change reports 2 separate "
+        "problems: the appeared/disappeared list, and 'VALUES changed in 1 column(s)' on the "
+        "output the two runs share."
+    )
+    print(
+        "    SANITY CHECK: the set check no longer short-circuits the value check, so a "
+        "deliberate feature add/remove can never hide a moved number again."
+    )
 
 
 def test_aggregation_output_is_unchanged_by_the_refactor(baseline, current):
@@ -370,14 +372,10 @@ def test_aggregation_output_is_unchanged_by_the_refactor(baseline, current):
     prims = sorted(k for k in gated if k.startswith("prim."))
     labels = sorted(k for k in gated if k.startswith("label."))
     total_cols = sum(new[k]["cols"] for k in gated)
-    print(f"\n[aggregation guard] {len(gated)} of {len(new)} outputs identical to the baseline "
-          f"({total_cols} columns hashed)")
-    print(f"    {len(panels)} panel builders | {len(prims)} deduplicated primitives | "
-          f"{len(labels)} target labels")
-    print(f"    NOT gated ({len(DECLARED_DRIFT)}): "
-          f"{', '.join(sorted(DECLARED_DRIFT)) or 'nothing — every output is gated'}")
-    print("    SANITY CHECK: the data-layer refactor changed no number in any of the "
-          f"{len(gated)} gated aggregation outputs.")
+    print(f"\n[aggregation guard] {len(gated)} of {len(new)} outputs identical to the baseline ({total_cols} columns hashed)")
+    print(f"    {len(panels)} panel builders | {len(prims)} deduplicated primitives | {len(labels)} target labels")
+    print(f"    NOT gated ({len(DECLARED_DRIFT)}): {', '.join(sorted(DECLARED_DRIFT)) or 'nothing — every output is gated'}")
+    print(f"    SANITY CHECK: the data-layer refactor changed no number in any of the {len(gated)} gated aggregation outputs.")
 
 
 def test_declared_drift_list_is_still_accurate(baseline, current):
@@ -387,20 +385,18 @@ def test_declared_drift_list_is_still_accurate(baseline, current):
 
     This is the lesson `parts.py` records: `cube_part_attention` stayed in a hand-kept list
     after it left the DAG, and the status gate reported it missing on every run for months."""
-    stale = [name for name in sorted(DECLARED_DRIFT)
-             if baseline[name]["hash"] == current[name]["hash"]]
-    assert not stale, (
-        "DECLARED_DRIFT lists outputs that now MATCH the baseline -- remove them so they are "
-        f"gated again: {stale}")
+    stale = [name for name in sorted(DECLARED_DRIFT) if baseline[name]["hash"] == current[name]["hash"]]
+    assert not stale, f"DECLARED_DRIFT lists outputs that now MATCH the baseline -- remove them so they are gated again: {stale}"
 
     missing = sorted(DECLARED_DRIFT - set(baseline))
     assert not missing, f"DECLARED_DRIFT names outputs that do not exist: {missing}"
 
-    print(f"\n[drift list] all {len(DECLARED_DRIFT)} declared-drift outputs still differ from "
-          "the baseline, so none is silently un-gated.")
-    print("    SANITY CHECK: the exclusion list is exact -- it hides the 0053dc3 beta/label "
-          "change and nothing else. Regenerating the baseline will make this test demand its "
-          "removal.")
+    print(f"\n[drift list] all {len(DECLARED_DRIFT)} declared-drift outputs still differ from the baseline, so none is silently un-gated.")
+    print(
+        "    SANITY CHECK: the exclusion list is exact -- it hides the 0053dc3 beta/label "
+        "change and nothing else. Regenerating the baseline will make this test demand its "
+        "removal."
+    )
 
 
 def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
@@ -421,30 +417,54 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # the `cube-silently-degraded` shape and the reason this tuple is hand-maintained -- plus
     # the two derived panels Phase 2.6/2.7 added, `panel.signal_conditioning` and
     # `panel.cross_source`.
-    for must in ("panel.price", "panel.fundamental", "panel.sector", "panel.earnings",
-                 "panel.employee", "panel.dividend", "panel.governance",
-                 "panel.short_flow", "panel.institutional", "panel.superinvestor",
-                 "panel.insider", "panel.ownership", "panel.signal_conditioning",
-                 "panel.cross_source", "panel.betas", "panel.raw_features"):
+    for must in (
+        "panel.price",
+        "panel.fundamental",
+        "panel.sector",
+        "panel.earnings",
+        "panel.employee",
+        "panel.dividend",
+        "panel.governance",
+        "panel.short_flow",
+        "panel.institutional",
+        "panel.superinvestor",
+        "panel.insider",
+        "panel.ownership",
+        "panel.signal_conditioning",
+        "panel.cross_source",
+        "panel.betas",
+        "panel.raw_features",
+    ):
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
         assert baseline[must]["cols"] > 2, f"{must} has no feature columns"
 
     # every primitive the dedup sweep merges or moves
-    for must in ("prim.momentum_characteristic", "prim.mom_12_1_inline", "prim.trailing_vol",
-                 "prim.daily_returns", "prim.forward_windows", "prim.xs_standardize",
-                 # `prim.price_column_returns` became `prim.macro_factor_returns`: that helper
-                 # was deleted when the commodity/FX series moved to `prices_macro` under their
-                 # factor names, making its name->column remap the identity.
-                 "prim.ratio_helpers", "prim.safe_div", "prim.macro_factor_returns",
-                 "prim.quarter_features", "prim.pit", "prim.peer_relative_panel",
-                 # `prim.super_quarter_features` was here until Phase 2.2 deleted
-                 # `_super_quarter_features`; the elite panel is now built from these two
-                 # intermediates instead, and naming BOTH is what keeps the replacement as
-                 # protected as the thing it replaced. This tuple catching the vanished name
-                 # is the whole point of the test -- it failed on the 2026-09-10 regeneration
-                 # and had to be updated deliberately, which is the intended workflow.
-                 "prim.super_manager_state", "prim.super_conviction"):
+    for must in (
+        "prim.momentum_characteristic",
+        "prim.mom_12_1_inline",
+        "prim.trailing_vol",
+        "prim.daily_returns",
+        "prim.forward_windows",
+        "prim.xs_standardize",
+        # `prim.price_column_returns` became `prim.macro_factor_returns`: that helper
+        # was deleted when the commodity/FX series moved to `prices_macro` under their
+        # factor names, making its name->column remap the identity.
+        "prim.ratio_helpers",
+        "prim.safe_div",
+        "prim.macro_factor_returns",
+        "prim.quarter_features",
+        "prim.pit",
+        "prim.peer_relative_panel",
+        # `prim.super_quarter_features` was here until Phase 2.2 deleted
+        # `_super_quarter_features`; the elite panel is now built from these two
+        # intermediates instead, and naming BOTH is what keeps the replacement as
+        # protected as the thing it replaced. This tuple catching the vanished name
+        # is the whole point of the test -- it failed on the 2026-09-10 regeneration
+        # and had to be updated deliberately, which is the intended workflow.
+        "prim.super_manager_state",
+        "prim.super_conviction",
+    ):
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
 
@@ -475,22 +495,27 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     slice_cols = set(baseline["input.fundamentals_slice"].get("columns", []))
     assert len(slice_cols) >= 80, f"frozen slice is a stub: {len(slice_cols)} columns"
     for must, why in (
-            ("sector", "sector_gates.row_gate fails CLOSED without it -> every sector KPI off"),
-            ("industry_group", "the finer gate, same failure mode"),
-            ("revenueGrowth", "a CUBE_TIME_COLUMN: only the cube can compute it"),
-            ("earningsGrowth", "ditto"),
-            ("employees_sec", "the whole workforce family reads this exact name"),
-            ("intangibles", "the ROIC deduction; the bare `goodwill` is written by no producer"),
-            ("dividendsPaid", "payout_ratio and sustainable_growth_rate both need its sign")):
+        ("sector", "sector_gates.row_gate fails CLOSED without it -> every sector KPI off"),
+        ("industry_group", "the finer gate, same failure mode"),
+        ("revenueGrowth", "a CUBE_TIME_COLUMN: only the cube can compute it"),
+        ("earningsGrowth", "ditto"),
+        ("employees_sec", "the whole workforce family reads this exact name"),
+        ("intangibles", "the ROIC deduction; the bare `goodwill` is written by no producer"),
+        ("dividendsPaid", "payout_ratio and sustainable_growth_rate both need its sign"),
+    ):
         assert must in slice_cols, f"frozen fundamentals slice has no `{must}` -- {why}"
 
-    print(f"\n[coverage] {len(panels)} panels + {len(prims)} deduplicated primitives + "
-          f"{len(labels)} labels + the frozen fundamentals input "
-          f"({len(slice_cols)} columns, enrichments included)")
-    print(f"    SANITY CHECK: all {len(panels)} panel builders and all {len(prims)} "
-          "to-be-merged primitives are fingerprinted and non-empty, so no dedup step is "
-          "unguarded. (The counts are read off the baseline, not typed: the previous literal "
-          "'13 panel builders' was already wrong by three.)")
+    print(
+        f"\n[coverage] {len(panels)} panels + {len(prims)} deduplicated primitives + "
+        f"{len(labels)} labels + the frozen fundamentals input "
+        f"({len(slice_cols)} columns, enrichments included)"
+    )
+    print(
+        f"    SANITY CHECK: all {len(panels)} panel builders and all {len(prims)} "
+        "to-be-merged primitives are fingerprinted and non-empty, so no dedup step is "
+        "unguarded. (The counts are read off the baseline, not typed: the previous literal "
+        "'13 panel builders' was already wrong by three.)"
+    )
 
 
 def test_momentum_dedup_is_provably_identical(baseline):
@@ -500,7 +525,8 @@ def test_momentum_dedup_is_provably_identical(baseline):
     hashes ever diverge, the two definitions have drifted and the dedup is NOT safe."""
     a = baseline["prim.momentum_characteristic"]["hash"]
     b = baseline["prim.mom_12_1_inline"]["hash"]
-    assert a == b, ("features.mom_12_1 and factors.momentum_characteristic no longer agree "
-                    f"({a[:12]} vs {b[:12]}) -> the momentum dedup would change output")
+    assert a == b, (
+        f"features.mom_12_1 and factors.momentum_characteristic no longer agree ({a[:12]} vs {b[:12]}) -> the momentum dedup would change output"
+    )
     print(f"\n[dedup precheck] momentum_characteristic == inline mom_12_1 ({a[:12]})")
     print("    SANITY CHECK: the momentum dedup is bit-identical by construction. Validated.")

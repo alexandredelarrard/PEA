@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -75,7 +76,7 @@ def _known_fields(table: Table) -> set[str]:
 
 def _date(value: object, label: str) -> pd.Timestamp:
     try:
-        parsed = pd.Timestamp(value)
+        parsed = pd.Timestamp(cast(Any, value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} must be an ISO date, got {value!r}") from exc
     if pd.isna(parsed):
@@ -148,7 +149,7 @@ class InstitutionalAvailability:
                     raise KeyError(f"Unknown field {field_name!r} for {name}")
                 field_start = _date(raw_date, f"{name}.{field_name}")
                 if field_start < start:
-                    raise ValueError(f"{name}.{field_name} starts {field_start.date()} before " f"the table default {start.date()}")
+                    raise ValueError(f"{name}.{field_name} starts {field_start.date()} before the table default {start.date()}")
                 fields[field_name] = field_start
             tables[name] = _TableAvailability(start=start, fields=fields)
 

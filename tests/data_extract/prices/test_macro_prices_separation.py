@@ -17,19 +17,21 @@ Guarantees:
   (3) prices and dividends stay DECOUPLED: `fetch_price_history` writes clean OHLCV and never
       the `dividends` table.
 """
+
 from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_PRICE_SERIES
 from src.data_extract.step_extract_all_data import StepExtractAllData
+from src.data_extract.utils.prices import fetch_dividends as fd
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp
-from src.data_extract.utils.prices import fetch_dividends as fd
 from src.data_store.schema import Tables
 
 
@@ -44,16 +46,17 @@ def test_equity_universe_is_sp500_tickers_only(sqlite_store):
         _log=logging.getLogger("test"),
     )
     # bind the method to a fake self (avoids constructing the sub-steps / hitting the DB)
-    tickers = StepExtractAllData._resolve_tickers(fake)
+    tickers = StepExtractAllData._resolve_tickers(cast(Any, fake))
 
-    assert tickers == ["AAPL", "MSFT", "XOM"]                    # universe only, sorted
+    assert tickers == ["AAPL", "MSFT", "XOM"]  # universe only, sorted
     for symbol in MACRO_PRICE_SERIES:
         assert symbol not in tickers, f"{symbol} leaked into the equity universe"
 
     print("\n=== SANITY CHECK: equity universe is sp500_tickers only ===")
     print(f"  _resolve_tickers -> {tickers}")
-    print(f"  none of {list(MACRO_PRICE_SERIES)} present -- and there is no longer an "
-          f"`other_tickers` config key that could put them there. Validated.")
+    print(
+        f"  none of {list(MACRO_PRICE_SERIES)} present -- and there is no longer an `other_tickers` config key that could put them there. Validated."
+    )
 
 
 def test_fetch_macro_writes_only_prices_macro(sqlite_store, monkeypatch):
@@ -61,23 +64,18 @@ def test_fetch_macro_writes_only_prices_macro(sqlite_store, monkeypatch):
     dates = pd.bdate_range("2024-01-01", periods=4)
 
     def _fake_price_leg(context, since, until):
-        return pd.DataFrame({"equity_tr": [400.0, 401.0, 402.0, 403.0],
-                             "vix": [14.0, 15.0, 13.0, 16.0]}, index=dates)
+        return pd.DataFrame({"equity_tr": [400.0, 401.0, 402.0, 403.0], "vix": [14.0, 15.0, 13.0, 16.0]}, index=dates)
 
     def _fake_fred_leg(since):
-        return pd.DataFrame({"yield_10y": [4.0, 4.1, 4.2, 4.3],
-                             "cash_rate": [5.0, 5.0, 5.0, 4.9],
-                             "yield_2y": [3.5, 3.6, 3.7, 3.8]}, index=dates)
+        return pd.DataFrame({"yield_10y": [4.0, 4.1, 4.2, 4.3], "cash_rate": [5.0, 5.0, 5.0, 4.9], "yield_2y": [3.5, 3.6, 3.7, 3.8]}, index=dates)
 
     monkeypatch.setattr(fm, "_fetch_price_leg", _fake_price_leg)
     monkeypatch.setattr(fm, "_fetch_fred_leg", _fake_fred_leg)
     monkeypatch.setattr(fm, "record_run", lambda *a, **k: None)
     monkeypatch.setenv("FRED_API_KEY", "test-key")
 
-    ctx = SimpleNamespace(store=sqlite_store,
-                          log=SimpleNamespace(info=lambda *a, **k: None,
-                                              warning=lambda *a, **k: None))
-    fm.fetch_macro(ctx, years_history=31)
+    ctx = SimpleNamespace(store=sqlite_store, log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
+    fm.fetch_macro(cast(Any, ctx), years_history=31)
 
     saved = sqlite_store.load(Tables.prices_macro)
     assert set(saved.columns) == {"date", "ticker", "close"}
@@ -86,22 +84,27 @@ def test_fetch_macro_writes_only_prices_macro(sqlite_store, monkeypatch):
     assert not {"open", "high", "low", "volume"} & set(saved.columns)
     series = sorted(saved["ticker"].unique())
     assert "equity_tr" in series and "vix" in series
-    assert "yield_curve_10y2y" in series and "bond_10y_tr" in series   # derived came through
+    assert "yield_curve_10y2y" in series and "bond_10y_tr" in series  # derived came through
 
     print("\n=== SANITY CHECK: fetch_macro writes only prices_macro ===")
     print(f"  {len(saved)} rows, schema {sorted(saved.columns)}, series {series}")
-    print(f"  `prices` table exists: {sqlite_store.exists(Tables.prices)} (must be False). "
-          f"Validated.")
+    print(f"  `prices` table exists: {sqlite_store.exists(Tables.prices)} (must be False). Validated.")
 
 
 def _yf_frame(ticker: str, dividend: float | None = None) -> pd.DataFrame:
     """A normalized yfinance response. `actions=False` (the price path) returns OHLCV only;
     pass `dividend` to get the `actions=True` shape the dividend path asks for."""
-    df = pd.DataFrame({
-        "date": pd.to_datetime(["2024-03-01"]), "ticker": [ticker],
-        "open": [10.0], "high": [11.0], "low": [9.0], "close": [10.5],
-        "volume": [1_000_000.0],
-    })
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-03-01"]),
+            "ticker": [ticker],
+            "open": [10.0],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "volume": [1_000_000.0],
+        }
+    )
     if dividend is not None:
         df["dividends"] = [dividend]
         df["stock splits"] = [0.0]
@@ -115,7 +118,7 @@ def test_price_fetch_writes_clean_ohlcv_and_never_the_dividends_table(sqlite_sto
     monkeypatch.setattr(fp, "record_run", lambda *a, **k: None)
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fp.fetch_price_history(ctx, tickers=["AAPL"], years_history=15)
+    fp.fetch_price_history(cast(Any, ctx), tickers=["AAPL"], years_history=15)
 
     # assert on what LANDED, not on the return value: these fetchers write to the store and
     # their return is incidental (fetch_macro returns None outright)
@@ -125,8 +128,10 @@ def test_price_fetch_writes_clean_ohlcv_and_never_the_dividends_table(sqlite_sto
     assert list(saved["ticker"]) == ["AAPL"]
 
     print("\n=== SANITY CHECK: prices holds clean OHLCV ===")
-    print(f"  fetch_price_history(['AAPL']) -> prices cols {sorted(saved.columns)}; "
-          f"dividends table created: {sqlite_store.exists(Tables.dividends)}. Validated.")
+    print(
+        f"  fetch_price_history(['AAPL']) -> prices cols {sorted(saved.columns)}; "
+        f"dividends table created: {sqlite_store.exists(Tables.dividends)}. Validated."
+    )
 
 
 def test_actions_and_basis_are_explicit_per_caller():
@@ -146,52 +151,50 @@ def test_actions_and_basis_are_explicit_per_caller():
         return []
 
     import src.data_extract.utils.prices.fetch_prices as mod
+
     original = mod._download_price_chunk
     try:
         mod._download_price_chunk = _spy_chunk
         since, until = pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05")
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0,
-                           auto_adjust=False, actions=False)        # the price path
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading dividends",
-                           auto_adjust=False, actions=True)         # the ex-date path
-        mod.download_ohlcv(list(MACRO_PRICE_SERIES), since, until, pause=0.0,
-                           desc="Downloading macro/market prices",
-                           auto_adjust=True, actions=False)         # the macro path
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, auto_adjust=False, actions=False)  # the price path
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading dividends", auto_adjust=False, actions=True)  # the ex-date path
+        mod.download_ohlcv(
+            list(MACRO_PRICE_SERIES), since, until, pause=0.0, desc="Downloading macro/market prices", auto_adjust=True, actions=False
+        )  # the macro path
     finally:
         mod._download_price_chunk = original
 
     assert seen == [(False, False), (True, False), (False, True)], f"flags {seen}"
 
     print("\n=== SANITY CHECK: actions + auto_adjust per caller ===")
-    print(f"  price path  -> actions={seen[0][0]}, auto_adjust={seen[0][1]}  "
-          f"(clean OHLCV; Close AND Adj Close both arrive anyway)")
+    print(f"  price path  -> actions={seen[0][0]}, auto_adjust={seen[0][1]}  (clean OHLCV; Close AND Adj Close both arrive anyway)")
     print(f"  ex-dates    -> actions={seen[1][0]}, auto_adjust={seen[1][1]}")
-    print(f"  macro path  -> actions={seen[2][0]}, auto_adjust={seen[2][1]}  "
-          f"(TOTAL RETURN -- SPY is stored as equity_tr and every label is measured "
-          f"against it)")
-    print("  No caller can pick a basis by accident, and none can leak an ex-date into "
-          "`prices`. Validated.")
+    print(
+        f"  macro path  -> actions={seen[2][0]}, auto_adjust={seen[2][1]}  "
+        f"(TOTAL RETURN -- SPY is stored as equity_tr and every label is measured "
+        f"against it)"
+    )
+    print("  No caller can pick a basis by accident, and none can leak an ex-date into `prices`. Validated.")
 
 
 def test_dividend_fetch_is_the_only_ex_date_writer(sqlite_store, monkeypatch):
     """Carried over unchanged from the old file. Asserts the `dividends` table schema that
     `sql/schema.sql` / `Tables.dividends` declare: [date, ticker, dividends]."""
-    monkeypatch.setattr(fd, "download_ohlcv",
-                        lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
+    monkeypatch.setattr(fd, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
     monkeypatch.setattr(fd, "record_run", lambda *a, **k: None)
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fd.fetch_dividends(ctx, tickers=["AAPL"], years_history=15)
+    fd.fetch_dividends(cast(Any, ctx), tickers=["AAPL"], years_history=15)
 
     saved = sqlite_store.load(Tables.dividends)
     assert list(saved.columns) == ["date", "ticker", "dividends"]
     assert len(saved) == 1
 
     print("\n=== SANITY CHECK: dividend fetcher ===")
-    print(f"  fetch_dividends(['AAPL']) -> {len(saved)} row in `dividends`, "
-          f"schema {list(saved.columns)}. Validated.")
+    print(f"  fetch_dividends(['AAPL']) -> {len(saved)} row in `dividends`, schema {list(saved.columns)}. Validated.")
 
 
 if __name__ == "__main__":
     import pytest
+
     raise SystemExit(pytest.main([__file__, "-v", "-s"]))

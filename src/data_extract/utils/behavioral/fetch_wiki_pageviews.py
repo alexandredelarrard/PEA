@@ -10,24 +10,25 @@ CSV; unmatched/failed articles are skipped. Network is isolated in
 `_fetch_article`; parsing (`_json_to_long`) and title cleaning
 (`_company_to_article`) are pure and unit-tested.
 """
+
 from __future__ import annotations
 
 import re
+from typing import cast
+from urllib.parse import quote
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
-from src.constants.constants import DATE_FORMAT_COMPACT, _HEADERS
+from src.constants.constants import _HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
-from src.utils import polite_http as ph          # per-host paced inter-request sleep
-from src.utils.crawler import Crawler
 from src.data_extract.utils.common.incremental import load_existing
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
+from src.utils import polite_http as ph  # per-host paced inter-request sleep
+from src.utils.crawler import Crawler
 
-_API = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
-        "en.wikipedia/all-access/user/{article}/daily/{start}/{end}")
+_API = "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/{article}/daily/{start}/{end}"
 
 # shared crawler for Wikimedia: impersonate=False (a FRIENDLY API — send our descriptive contact
 # UA, don't spoof a browser) + IP rotation over PEA_SCRAPE_PROXIES on a block + fast retry.
@@ -39,9 +40,13 @@ def _wiki_crawler() -> Crawler:
     if _WIKI_CRAWLER is None:
         _WIKI_CRAWLER = Crawler(retries=5, backoff=1.0, timeout=30, impersonate=False)
     return _WIKI_CRAWLER
+
+
 _SUFFIXES = re.compile(
     r"\b(inc|inc\.|incorporated|corp|corp\.|corporation|company|co|co\.|ltd|"
-    r"plc|holdings|group|the|class [abc]|&)\b", re.IGNORECASE)
+    r"plc|holdings|group|the|class [abc]|&)\b",
+    re.IGNORECASE,
+)
 
 
 def _company_to_article(name: str) -> str:
@@ -82,9 +87,11 @@ def _wiki_search(query: str) -> str | None:
     mocking. Searching the full (cleaned) COMPANY name biases the hit to the company
     article (e.g. 'The Coca-Cola Company') over the brand ('Coca-Cola')."""
     # IP-rotating crawler with the descriptive contact UA (Wikimedia is a friendly API).
-    data = _wiki_crawler().get_json(_SEARCH_API, headers=_HEADERS, params={
-        "action": "query", "list": "search", "srsearch": query,
-        "srlimit": 1, "srnamespace": 0, "format": "json"})
+    data = _wiki_crawler().get_json(
+        _SEARCH_API,
+        headers=_HEADERS,
+        params={"action": "query", "list": "search", "srsearch": query, "srlimit": 1, "srnamespace": 0, "format": "json"},
+    )
     if not data:
         return None
     hits = data.get("query", {}).get("search", [])
@@ -100,7 +107,7 @@ def _resolve_wiki_article(name: str, search_fn=_wiki_search) -> str:
     cleaned = _clean_company_name(name)
     try:
         title = search_fn(cleaned)
-    except Exception:                                            # noqa: BLE001
+    except Exception:  # noqa: BLE001
         title = None
     return (title or cleaned).replace(" ", "_")
 
@@ -109,22 +116,24 @@ def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
     """Wikimedia 'items' list -> [date, ticker, pageviews]. Pure."""
     if not items:
         return pd.DataFrame(columns=["date", "ticker", "pageviews"])
-    rows = [{"date": pd.to_datetime(str(it["timestamp"])[:8], format="%Y%m%d"),
-             "ticker": ticker, "pageviews": float(it.get("views", 0))}
-            for it in items if it.get("timestamp")]
+    rows = [
+        {"date": pd.to_datetime(str(it["timestamp"])[:8], format="%Y%m%d"), "ticker": ticker, "pageviews": float(it.get("views", 0))}
+        for it in items
+        if it.get("timestamp")
+    ]
     return pd.DataFrame(rows)
 
 
 def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     """Network call, isolated for mocking. Returns the 'items' list ([] on miss)."""
-    url = _API.format(article=requests.utils.quote(article, safe=""), start=start, end=end)
-    data = _wiki_crawler().get_json(url, headers=_HEADERS)     # IP-rotating crawler, contact UA
+    url = _API.format(article=quote(article, safe=""), start=start, end=end)
+    data = _wiki_crawler().get_json(url, headers=_HEADERS)  # IP-rotating crawler, contact UA
     return data.get("items", []) if data else []
 
 
-def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
-                         years_history: int = 10, pause: float = 1.0,
-                         refetch_window_days: int = 2) -> pd.DataFrame:
+def fetch_wiki_pageviews(
+    context: Context, tickers: list[str] | None = None, years_history: int = 10, pause: float = 1.0, refetch_window_days: int = 2
+) -> pd.DataFrame:
     """Download daily pageviews for the S&P 500 names and upsert to the DB.
 
     Incremental (point-in-time): the last-extracted day is read PER TICKER from the stored
@@ -138,12 +147,12 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
     Pace: `pause` defaults to 1.0s so `sleep_pace` (base + 0.1-0.7 jitter, x any post-429
     per-host slowdown) never issues more than ~1 request/second to the Wikimedia API."""
     names = context.store.load("sp500_tickers")
+    assert names is not None
     if tickers is not None:
-        names = names[names["ticker"].isin(tickers)]
+        names = cast(pd.DataFrame, names[cast(pd.Series, names["ticker"]).isin(tickers)])
 
     existing = load_existing(context, "wiki_pageviews")
-    last_by_ticker = ({} if existing is None
-                      else existing.groupby("ticker")["date"].max().to_dict())
+    last_by_ticker = {} if existing is None else cast(pd.Series, existing.groupby("ticker")["date"].max()).to_dict()
     today = pd.Timestamp.today().normalize()
     default_start = today - pd.DateOffset(years=years_history)
     # pageviews for a day are available the next day; stop at yesterday
@@ -152,42 +161,44 @@ def fetch_wiki_pageviews(context: Context, tickers: list[str] | None = None,
 
     frames, skipped = [], 0
     for _, row in tqdm(list(names.iterrows()), desc="Wikipedia pageviews"):
-        last = last_by_ticker.get(row["ticker"])
+        ticker = str(row["ticker"])
+        last = last_by_ticker.get(ticker)
         # already current within the publication lag -> no API call at all
         if last is not None and (today - last).days <= refetch_window_days:
             skipped += 1
             continue
         start_ts = (last + pd.Timedelta(days=1)) if last is not None else default_start
-        if start_ts > end_ts:                       # nothing new to request
+        if start_ts > end_ts:  # nothing new to request
             skipped += 1
             continue
         # resolve the real Wikipedia article via search (handles 'Deere & Company' ->
         # John Deere, 'Alphabet Inc. (Class A)' -> Alphabet Inc., 'Home Depot (The)' ->
         # The Home Depot, ...); the naive suffix-strip is only the fallback.
-        article = _resolve_wiki_article(row["name"])
+        article = _resolve_wiki_article(str(row["name"]))
         try:
-            long = _json_to_long(
-                _fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end),
-                row["ticker"])
+            long = _json_to_long(_fetch_article(article, start_ts.strftime(DATE_FORMAT_COMPACT), end), ticker)
         except Exception as e:
             print(f"Wiki fetch failed for {row['ticker']} ({article}): {e}")
             continue
         if not long.empty:
             frames.append(long)
-        ph.sleep_pace(pause, _API)                       # per-host paced (honours 429 slowdown)
+        ph.sleep_pace(pause, _API)  # per-host paced (honours 429 slowdown)
     print(f"Wikipedia: {skipped}/{len(names)} tickers already current (skipped).")
 
-    parts = [df for df in (existing, *frames) if df is not None and not df.empty]
+    parts: list[pd.DataFrame] = [df for df in (existing, *frames) if df is not None and not df.empty]
     if not parts:
         print("No Wikipedia pageview data available.")
-        record_run(context, Tables.wiki_pageviews,len(names), 0)
+        record_run(context, Tables.wiki_pageviews, len(names), 0)
         return existing if existing is not None else pd.DataFrame(columns=["date", "ticker", "pageviews"])
-    out = (pd.concat(parts, ignore_index=True)
-           .drop_duplicates(subset=["ticker", "date"], keep="last")
-           .sort_values(["ticker", "date"]).reset_index(drop=True))
+    out = (
+        pd.concat(parts, ignore_index=True)
+        .drop_duplicates(subset=["ticker", "date"], keep="last")
+        .sort_values(["ticker", "date"])
+        .reset_index(drop=True)
+    )
     new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if not new.empty:
         context.store.save("wiki_pageviews", new)
     print(f"Saved {len(new)} new Wikipedia pageview rows to DB table 'wiki_pageviews'")
-    record_run(context, Tables.wiki_pageviews,len(names), len(new))
+    record_run(context, Tables.wiki_pageviews, len(names), len(new))
     return out

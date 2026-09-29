@@ -67,8 +67,8 @@ def test_every_part_has_an_owning_substep_and_cli_command():
     print("\n=== SANITY CHECK: part registry <-> sub-steps <-> CLI ===")
     for cmd in PART_COMMANDS:
         print(f"  {cmd:<20} {OWNER[cmd].__name__:<24} -> {', '.join(by_cmd[cmd])}")
-    print(f"  + assemble-cube -> cube | cube-status (JSON) | build-cube (all {len(OWNER)} in one " "process)")
-    print("  CONCLUSION: every part has exactly one owning sub-step and CLI command, and every " "command is registered. Validated.")
+    print(f"  + assemble-cube -> cube | cube-status (JSON) | build-cube (all {len(OWNER)} in one process)")
+    print("  CONCLUSION: every part has exactly one owning sub-step and CLI command, and every command is registered. Validated.")
 
 
 def test_every_substep_constructs_and_binds_its_part(sqlite_store):
@@ -111,8 +111,7 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
         assert isinstance(step._part.name, str), "CubePart.name must stay a plain str"
     print("\n=== SANITY CHECK: sub-step construction ===")
     print(
-        f"  all {len(OWNER)} sub-steps construct and bind a registered part: "
-        f"{ {c: OWNER[c](context=ctx, config=config)._part.name for c in OWNER} }"
+        f"  all {len(OWNER)} sub-steps construct and bind a registered part: { {c: OWNER[c](context=ctx, config=config)._part.name for c in OWNER} }"
     )
     print("  CONCLUSION: the registry lookup in every __init__ resolves. Validated.")
 
@@ -139,7 +138,7 @@ def test_substep_price_fields_are_declared_and_valid():
     # which is the other half of a correct level and is not a price at all.
     for name in ("StepCubeFundamentals", "StepCubeText"):
         assert "close_total" not in declared[name], (
-            f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must never take " f"the total-return series"
+            f"{name} builds LEVELS (market cap, EV, per-share ratios), so it must never take the total-return series"
         )
     for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert not ({"open", "high", "low"} & set(declared[name])), f"{name} does not build bars, so materialising the OHLC range is pure memory"
@@ -163,7 +162,7 @@ def test_substep_price_fields_are_declared_and_valid():
     # ratio) can be computed here even by accident, which is what licenses the return series.
     assert set(StepCubeGovernance._FIELDS) == {"close_split", "close_total"}
     assert "level_factor" not in StepCubeGovernance._FIELDS, (
-        "governance takes close_total, so it must not also hold the level factor -- the pair " "is what a market-cap/EV computation needs"
+        "governance takes close_total, so it must not also hold the level factor -- the pair is what a market-cap/EV computation needs"
     )
 
     print("\n=== SANITY CHECK: declared price-field projections ===")
@@ -263,4 +262,4 @@ def test_monolithic_build_runs_each_registered_command_once_in_order():
     assert len(calls) == len(set(calls)), f"a build step ran more than once: {calls}"
     print("\n=== SANITY CHECK: monolithic cube build ordering ===")
     print(f"  {' -> '.join(calls)}")
-    print("  CONCLUSION: every registered builder ran exactly once in registry order, then " "assembly. Validated.")
+    print("  CONCLUSION: every registered builder ran exactly once in registry order, then assembly. Validated.")

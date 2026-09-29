@@ -16,6 +16,7 @@ too, otherwise a series that never downloaded would never be retried.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 
@@ -25,7 +26,7 @@ from src.data_store.schema import Tables
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 
-def _ctx(df):
+def _ctx(df) -> Any:
     return SimpleNamespace(store=FakeStore({Tables.prices_macro: df}))
 
 

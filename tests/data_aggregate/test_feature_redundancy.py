@@ -173,7 +173,7 @@ def test_no_two_features_are_the_same_signal(feature_frames):
             break
 
     print("\n=== SANITY CHECK: cross-feature redundancy ===")
-    print(f"  {mat.shape[1]} features x {len(mat):,} (date, ticker) cells, " f"ceiling |r| >= {CORRELATION_CEILING}")
+    print(f"  {mat.shape[1]} features x {len(mat):,} (date, ticker) cells, ceiling |r| >= {CORRELATION_CEILING}")
     print("  most-correlated surviving pairs:")
     for a, b, r in top:
         print(f"    {r:.6f}  {a} <-> {b}")
@@ -182,7 +182,7 @@ def test_no_two_features_are_the_same_signal(feature_frames):
         for a, b, r in offenders:
             print(f"    {r:.6f}  {a} <-> {b}")
     else:
-        print("  no pair reaches the ceiling -> no feature is a computational no-op " "of another. Validated.")
+        print("  no pair reaches the ceiling -> no feature is a computational no-op of another. Validated.")
     for a, b, r in allowed:
         print(f"  documented near-duplicate: {r:.6f}  {a} <-> {b} (EBIT vs EBITDA numerator)")
         assert r < 0.9999, f"{a} and {b} became effectively exact aliases: r={r:.6f}"

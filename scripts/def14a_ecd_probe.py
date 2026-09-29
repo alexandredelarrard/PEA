@@ -20,6 +20,7 @@ No LLM. `filing.xbrl()` is one archive fetch per filing, cached by edgartools th
 
     "$PY" scripts/def14a_ecd_probe.py [-c ./configs] [--tickers BA,NKE,SBUX,AAPL] [--out FILE]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,6 +32,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
 
 from src.context import get_config_context
 
@@ -115,18 +119,17 @@ def main() -> None:
     args = ap.parse_args()
 
     _config, context = get_config_context(args.config, use_cache=False, save=False)
-    context.ensure_edgar_identity()          # SEC blocks a request without a descriptive UA
-    from edgar import Company                              # noqa: E402  (needs the identity set)
+    context.ensure_edgar_identity()  # SEC blocks a request without a descriptive UA
+    from edgar import Company  # noqa: E402  (needs the identity set)
 
-    targets = ([(t.split(":")[0], int(t.split(":")[1]), "requested")
-                for t in args.targets.split(",")] if args.targets else list(DEFAULT_TARGETS))
+    targets = [(t.split(":")[0], int(t.split(":")[1]), "requested") for t in args.targets.split(",")] if args.targets else list(DEFAULT_TARGETS)
 
     out: list[str] = []
     for ticker, year, why in targets:
         print(f"\n>>> {ticker} {year}: {why}")
         try:
             filings = Company(ticker).get_filings(form=["DEF 14A", "DEF 14C"])
-            picked = [f for f in filings if f.filing_date.year == year]
+            picked = [f for f in filings if pd.Timestamp(f.filing_date).year == year]
             if not picked:
                 print(f"    no {year} proxy found")
                 continue

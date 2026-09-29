@@ -89,7 +89,7 @@ class StepBuildCube(Step):
             self._log.info(result.summary())
         ok, reason = gate(report)
         if not ok:
-            raise RuntimeError(f"price adjustment basis gate FAILED -> refusing to build the " f"cube on it. {reason}")
+            raise RuntimeError(f"price adjustment basis gate FAILED -> refusing to build the cube on it. {reason}")
         self._log.info("Price basis gate passed: %s", reason)
 
     def cube_parts_status(self) -> dict:

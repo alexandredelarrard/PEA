@@ -21,6 +21,7 @@ Two traps this module exists to close:
    missing column and no warning. Every response header is validated against the expected
    contract; a missing column raises.
 """
+
 from __future__ import annotations
 
 import io
@@ -47,8 +48,7 @@ SHARADAR_API_KEY_ENV = "SHARADAR_API_KEY"
 # becomes TEXT, and every later ticker's real number is then stored as a string. Measured
 # live on `minorityInterest` / `restrictedCash`: VRT created them TEXT and APA's values came
 # back as '1997000000.0'.
-SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod",
-                       "fiscalperiod", "lastupdated")
+SHARADAR_ID_COLUMNS = ("ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod", "lastupdated")
 
 
 def vendor_symbol(ticker: str) -> str:
@@ -99,12 +99,10 @@ def canonical_symbols(tickers: pd.Series) -> pd.Series:
     `sharadar_actions` (25,141 tickers), 921 already carry a dash and ZERO of them collide
     with a rewritten dot-form.
     """
-    return tickers.astype(str).str.replace(_SHARE_CLASS_SYMBOL,
-                                           lambda m: m.group(0).replace(".", "-"),
-                                           regex=True)
+    return tickers.astype(str).str.replace(_SHARE_CLASS_SYMBOL, lambda m: m.group(0).replace(".", "-"), regex=True)
 
 
-class NotEntitled(RuntimeError):
+class NotEntitledError(RuntimeError):
     """HTTP 403 -- the subscription does not cover this ticker/table.
 
     An exception rather than a `None` return because `None` already means "no data / the
@@ -123,7 +121,8 @@ def _api_key() -> str:
     if not key:
         raise RuntimeError(
             f"{SHARADAR_API_KEY_ENV} is not set. Add it to .env (note the spelling: "
-            f"SHAR-A-DAR, not SHARDAR) -- the Sharadar fetchers cannot run without it.")
+            f"SHAR-A-DAR, not SHARDAR) -- the Sharadar fetchers cannot run without it."
+        )
     return key
 
 
@@ -139,8 +138,7 @@ def _parse_csv(text: str, *, keep_default_na: bool) -> pd.DataFrame:
     return pd.read_csv(io.StringIO(text), keep_default_na=keep_default_na)
 
 
-def _validate_header(context: Context, table: str, df: pd.DataFrame,
-                     expect_columns: tuple[str, ...]) -> None:
+def _validate_header(context: Context, table: str, df: pd.DataFrame, expect_columns: tuple[str, ...]) -> None:
     """Raise unless the response header IS the expected contract, both ways."""
     got = tuple(df.columns)
     if got == tuple(expect_columns):
@@ -153,10 +151,10 @@ def _validate_header(context: Context, table: str, df: pd.DataFrame,
             f"({len(got)} columns received, {len(expect_columns)} expected). "
             f"Missing: {missing or 'none'}. Unexpected: {extra or 'none'}. "
             f"`fields=` drops an unavailable field silently, so this is a real change in "
-            f"the feed, not a transient error.")
+            f"the feed, not a transient error."
+        )
     # Same set, different order: harmless, but say so rather than hide it.
-    context.log.warning("Sharadar %s: column ORDER changed vs the stored contract "
-                        "(same %d columns); reindexing to the contract.", table, len(got))
+    context.log.warning("Sharadar %s: column ORDER changed vs the stored contract (same %d columns); reindexing to the contract.", table, len(got))
 
 
 def _page(context: Context, url: str, params: dict) -> str | None:
@@ -165,23 +163,23 @@ def _page(context: Context, url: str, params: dict) -> str | None:
     resp = get_once(url, params=params, timeout=_TIMEOUT)
     code = getattr(resp, "status_code", None) if resp is not None else None
     if code == 200:
+        assert resp is not None
         return resp.text
     if code == 403:
-        raise NotEntitled(str(params.get("ticker") or url))
+        raise NotEntitledError(str(params.get("ticker") or url))
     # Transport error, 5xx, 429, 404 -- worth exactly one retrying call.
     context.log.debug("Sharadar %s -> %s; falling back to the retrying GET", url, code)
     retried = http_get(url, params=params, timeout=_TIMEOUT, retries=3)
     return retried.text if retried is not None else None
 
 
-def sharadar_get(context: Context, table: str, /, *,
-                 expect_columns: tuple[str, ...] | None = None,
-                 keep_default_na: bool = True,
-                 **filters) -> pd.DataFrame | None:
+def sharadar_get(
+    context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters
+) -> pd.DataFrame | None:
     """`GET {SHARADAR_BASE_URL}/data/{table}` with `filters`, paged, as a DataFrame.
 
     `None` means the request failed; an EMPTY frame means the filters matched no rows.
-    `NotEntitled` is raised on 403.
+    `NotEntitledError` is raised on 403.
 
     The caller MUST pass an explicit `date.gte` for any table with a date column: the API
     defaults `from` to "1 year ago" and `sort` to `date.desc`, so omitting either silently

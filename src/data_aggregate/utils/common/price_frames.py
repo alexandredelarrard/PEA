@@ -32,16 +32,16 @@ The repo convention is already *features float32, raw inputs float64* (see
 `panel.build_peer_relative_panel` and `frames.downcast_float32` for the feature side, and
 the `prices` table itself for the input side). This is a raw input.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import pandas as pd
 
 from src.data_store.schema import Tables
-from src.data_aggregate.utils.common import data_utils as du
 from src.data_store.store import DataStore
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,8 @@ logger = logging.getLogger(__name__)
 #: `utils/common/level_basis.py` -- the SPINOFF adjustment Yahoo applied to `close_split` that
 #: `sharesOutstanding` does not carry. `close_split` alone is right for splits and short by
 #: `S` for spinoffs, so any LEVEL must multiply by it and no RETURN may.
-ALL_FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret",
-              "sector_ret", "level_factor")
+ALL_FIELDS = ("close_split", "close_total", "open", "high", "low", "volume", "ret", "sector_ret", "level_factor")
+
 
 @dataclass(frozen=True, slots=True)
 class PriceFrames:
@@ -75,6 +75,7 @@ class PriceFrames:
     sub-steps keep their frames LOCAL to `run()`, this is what stops seven sequential
     sub-steps accumulating seven sub-steps' worth of memory.
     """
+
     trading_index: pd.DatetimeIndex
     universe: tuple[str, ...]
     peers: dict[str, dict[str, float]]
@@ -97,9 +98,12 @@ class PriceFrames:
         hundred lines deep."""
         missing = [f for f in fields if getattr(self, f, None) is None]
         if missing:
-            raise ValueError(
-                f"PriceFrames was loaded without {missing}; pass fields={tuple(fields)} "
-                "to load_price_frames")
+            raise ValueError(f"PriceFrames was loaded without {missing}; pass fields={tuple(fields)} to load_price_frames")
+
+    @property
+    def availability(self) -> pd.DataFrame | None:
+        """True where split-adjusted close is observed; None for non-price test frames."""
+        return None if self.close_split is None else self.close_split.notna()
 
     def skeleton(self) -> pd.DataFrame:
         """The (date, ticker) grid of cells that HAVE a price -- what the merge-based panel
@@ -109,10 +113,9 @@ class PriceFrames:
         pattern by construction (one response, one upsert), but `close_split` is the one that
         is never null when the other is -- `close_total` is derived from it."""
         self.require("close_split")
-        s = self.close_split.reset_index()
+        s = self.close_split.where(self.availability).reset_index()
         idx_col = s.columns[0]
-        m = (s.melt(id_vars=idx_col, var_name="ticker", value_name="_v")
-             .dropna(subset=["_v"]).rename(columns={idx_col: "date"}))
+        m = s.melt(id_vars=idx_col, var_name="ticker", value_name="_v").dropna(subset=["_v"]).rename(columns={idx_col: "date"})
         return m[["date", "ticker"]].reset_index(drop=True)
 
 
@@ -122,13 +125,19 @@ def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
     Rows where every value column is NULL are dropped (a ticker that had not listed yet
     contributes nothing)."""
 
+    close = universe_fields.get("close_split")
+    if close is None:
+        raise ValueError("frames_to_long requires close_split to define ticker availability")
+    active = close.notna()
     frames = []
     for field, wide in universe_fields.items():
         if wide is None or wide.empty:
             continue
+        wide = wide.where(active.reindex(index=wide.index, columns=wide.columns, fill_value=False))
         s = wide.stack(future_stack=True)
         s.index = s.index.set_names(["date", "ticker"])
-        frames.append(s.rename(field))
+        s.name = field
+        frames.append(s)
 
     prices = pd.concat(frames, axis=1)
     return prices.dropna(how="all").reset_index()
@@ -144,10 +153,8 @@ def load_trading_calendar(store: DataStore) -> pd.DatetimeIndex:
     (`SELECT DISTINCT date`), so the incremental window can be decided BEFORE the wide read."""
     dates = store.distinct(Tables.cube_part_prices, "date")
     if not dates:
-        raise RuntimeError(f"{Tables.cube_part_prices} is missing or empty -> run "
-                           "`data_aggregate build-prices` first")
-    return pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(dates)).dt.normalize().unique()),
-                            name="date")
+        raise RuntimeError(f"{Tables.cube_part_prices} is missing or empty -> run `data_aggregate build-prices` first")
+    return pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(dates)).dt.normalize().unique()), name="date")
 
 
 def load_price_frames(
@@ -167,9 +174,11 @@ def load_price_frames(
     cols = ["date", "ticker"] + list(fields)
     long = store.load(Tables.cube_part_prices, columns=cols, since=since, optional=True)
     if long is None:
-        raise RuntimeError(f"{Tables.cube_part_prices} is missing or returned no rows"
-                           f"{f' since {pd.Timestamp(since).date()}' if since else ''}"
-                           " -> run `data_aggregate build-prices` first")
+        raise RuntimeError(
+            f"{Tables.cube_part_prices} is missing or returned no rows"
+            f"{f' since {pd.Timestamp(since).date()}' if since else ''}"
+            " -> run `data_aggregate build-prices` first"
+        )
     long["date"] = pd.to_datetime(long["date"], format="%Y-%m-%d")
 
     wide: dict[str, pd.DataFrame] = {}
@@ -183,7 +192,9 @@ def load_price_frames(
     del long
 
     return PriceFrames(
-        trading_index=idx, universe=universe, peers=peers,
+        trading_index=idx,
+        universe=universe,
+        peers=peers,
         close_split=wide.get("close_split"),
         close_total=wide.get("close_total"),
         open=wide.get("open"),

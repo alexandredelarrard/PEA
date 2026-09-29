@@ -9,6 +9,8 @@ emitted `f_*` columns against the module's own EMISSION map.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -73,7 +75,7 @@ def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
     # the lag means day 5's window is only readable on the NEXT grid day, so extend the index
     idx = pd.DatetimeIndex(pd.bdate_range("2023-01-02", periods=6))
     df = _shortvol_fields(hist, idx, None, None, None)
-    got = df["ic_shortvol_ratio_5d"].loc[idx[5], "A"]
+    got = float(cast(Any, df["ic_shortvol_ratio_5d"].loc[idx[5], "A"]))
     weighted = (4 * 90_000 + 1_000_000) / (4 * 100_000 + 10_000_000)
     naive = (4 * 0.9 + 0.1) / 5
     assert abs(got - weighted) < 1e-12
@@ -93,11 +95,12 @@ def test_publication_lag_is_one_trading_day():
         df
     )
     # heavily-shorted S0 has the highest ratio cross-sectionally
-    assert df["ic_shortvol_ratio_20d"].loc[dates[300]].idxmax() == "S0"
+    assert str(df["ic_shortvol_ratio_20d"].loc[dates[300]].idxmax()) == "S0"
     short = hist.pivot_table(index="date", columns="ticker", values="short_volume", aggfunc="sum")
     total = hist.pivot_table(index="date", columns="ticker", values="total_volume", aggfunc="sum")
-    expected = (short.rolling(20, min_periods=10).sum() / total.rolling(20, min_periods=10).sum()).loc[dates[299], "S0"]
-    assert np.isclose(df["ic_shortvol_ratio_20d"].loc[dates[300], "S0"], expected), "lag broken"
+    expected = float(cast(Any, (short.rolling(20, min_periods=10).sum() / total.rolling(20, min_periods=10).sum()).loc[dates[299], "S0"]))
+    got = float(cast(Any, df["ic_shortvol_ratio_20d"].loc[dates[300], "S0"]))
+    assert np.isclose(got, expected), "lag broken"
     assert SHORTVOL_PUB_LAG == 1
     print("\n=== SANITY CHECK: RegSHO 1-day publication lag ===")
     print(
@@ -142,9 +145,9 @@ def test_ftd_absent_date_is_nan_and_absent_ticker_is_zero():
     # LO never appears in the file at all -> it is not a column of the source pivot
     assert "HI" in ratio.columns
     # HI on a covered date, read after the publication lag: a real number
-    assert np.isfinite(ratio.loc[idx[FTD_PUB_LAG + 30], "HI"])
+    assert np.isfinite(float(cast(Any, ratio.loc[idx[FTD_PUB_LAG + 30], "HI"])))
     # a date the file does not cover: NaN, not 0
-    assert np.isnan(ratio.loc[idx[-1], "HI"])
+    assert np.isnan(float(cast(Any, ratio.loc[idx[-1], "HI"])))
     print("\n=== SANITY CHECK: FTD coverage semantics ===")
     print(
         f"  file covers {len(covered)} of {len(idx)} grid days: HI reads "
@@ -207,7 +210,7 @@ def test_panel_columns_match_the_emission_map():
         elif mode == "raw+peers":
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
-    assert emitted == expected, f"missing {sorted(expected - emitted)}; " f"undeclared {sorted(emitted - expected)}"
+    assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
     for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d_xs", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
     # the three bounded ratios stay in [0, 1]
@@ -283,7 +286,7 @@ def test_coverage_above_one_is_nulled_as_a_physical_impossibility():
     cov = _shortvol_fields(regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
     last = idx[-1]
     assert cov.loc[last, "GOOD"] == pytest.approx(0.25, rel=1e-6), "a real reading is kept"
-    assert np.isnan(cov.loc[last, "REUSED"]), "3.0x the tape is impossible and must be NaN"
+    assert np.isnan(float(cast(Any, cov.loc[last, "REUSED"]))), "3.0x the tape is impossible and must be NaN"
     assert not (cov == 1.0).any().any(), "nulled, never clipped to 1.0"
     print("\n=== SANITY CHECK: coverage ceiling ===")
-    print(f"  GOOD reads {cov.loc[last, 'GOOD']:.2f}; a ticker whose RegSHO volume is 3x the " f"tape reads NaN rather than 3.0. Validated.")
+    print(f"  GOOD reads {cov.loc[last, 'GOOD']:.2f}; a ticker whose RegSHO volume is 3x the tape reads NaN rather than 3.0. Validated.")

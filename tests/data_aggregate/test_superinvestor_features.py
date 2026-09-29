@@ -19,6 +19,7 @@ one, each of which was a real defect caught by measurement rather than a hypothe
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -218,7 +219,7 @@ def test_rank_in_book_is_independent_of_row_order():
     ties = a.groupby(["cik", "period"])["value_usd"].transform(lambda s: s.duplicated(keep=False)).sum()
     flipped = int((merged["rank_in_book_a"] != merged["rank_in_book_b"]).sum())
     print("\n=== SANITY CHECK: deterministic ranks ===")
-    print(f"  {len(merged)} rows compared, {ties} of them tied on value_usd " f"(the 8 equal non-universe positions)")
+    print(f"  {len(merged)} rows compared, {ties} of them tied on value_usd (the 8 equal non-universe positions)")
     print(f"  ranks that changed when the input rows were shuffled: {flipped} (must be 0)")
     assert flipped == 0
     print("  tie-break is (value desc, cusip asc), a property of the filing. Validated.")
@@ -248,7 +249,7 @@ def test_each_manager_carries_its_own_availability_date():
     stamps = dict(zip(st["cik"], st["avail"], strict=False))
     print("\n=== SANITY CHECK: per-manager availability ===")
     for cik, a in sorted(stamps.items()):
-        print(f"  {cik}  filed {'2026-02-14' if cik.endswith('1') else '2026-08-01'} " f"-> public {a.date()}")
+        print(f"  {cik}  filed {'2026-02-14' if cik.endswith('1') else '2026-08-01'} -> public {a.date()}")
     assert stamps["0000000001"] == pd.Timestamp("2026-02-14")
     assert stamps["0000000002"] == pd.Timestamp("2026-08-01")
     print("  the deadline is a FLOOR, never a substitute for a late filing date. Validated.")
@@ -270,7 +271,7 @@ def test_a_superseded_backfiling_is_never_readable():
     print("  filed periods: 2025-09-30 (submitted 2027-01-15), 2025-12-31, 2026-03-31")
     print(f"  periods that are ever the manager's public state: {kept}")
     assert "2025-09-30" not in kept, "a superseded back-filing must be dropped"
-    print("  the 2027 submission never becomes readable: by then 2026-03-31 is the state. " "Validated.")
+    print("  the 2027 submission never becomes readable: by then 2026-03-31 is the state. Validated.")
 
 
 def test_the_panel_is_empty_before_the_first_filing_is_public():
@@ -282,8 +283,8 @@ def test_the_panel_is_empty_before_the_first_filing_is_public():
     after = panel[panel["date"] >= pd.Timestamp("2026-02-14")]
     print("\n=== SANITY CHECK: leak-free panel ===")
     print(f"  {len(panel):,} rows x {len(feats)} feature columns")
-    print(f"  rows before the first filing became public (2025-11-14): {len(before):,}, " f"all-NaN: {before[feats].isna().all().all()}")
-    print(f"  non-null feature cells after 2026-02-14: " f"{int(after[feats].notna().to_numpy().sum()):,}")
+    print(f"  rows before the first filing became public (2025-11-14): {len(before):,}, all-NaN: {before[feats].isna().all().all()}")
+    print(f"  non-null feature cells after 2026-02-14: {int(after[feats].notna().to_numpy().sum()):,}")
     assert before.empty or before[feats].isna().all().all()
     assert after[feats].notna().to_numpy().any()
     print("  Validated.")
@@ -316,7 +317,7 @@ def test_selection_ciks_reads_every_roster_shape():
     assert _selection_ciks({"managers": [{"cik": "2"}]}) == {"0000000002"}
     assert _selection_ciks(None) == set() and _selection_ciks({"managers": []}) == set()
     print("\n=== SANITY CHECK: roster shapes ===")
-    print("  {cik: name}, {cik_to_name: {...}} and the legacy {managers: [{cik}]} all " "resolve to padded CIKs; None/empty -> empty set. Validated.")
+    print("  {cik: name}, {cik_to_name: {...}} and the legacy {managers: [{cik}]} all resolve to padded CIKs; None/empty -> empty set. Validated.")
 
 
 class _Ctx:
@@ -333,12 +334,13 @@ def test_load_reads_only_roster_managers_from_the_book_table(sqlite_store):
     rows = _book("2025-12-31", "2026-02-14", 1000, 250)
     rows += _book("2025-12-31", "2026-02-14", 5, 5, cik="0000000009", n_other=0)  # not roster
     sqlite_store.save("sec13f_manager_holdings", pd.DataFrame(rows))
-    ctx = _Ctx(sqlite_store)
+    ctx = cast(Any, _Ctx(sqlite_store))
     out = load_superinvestor_holdings(ctx, _ROSTER)
+    assert out is not None
     assert set(out["cik"]) == {"0000000001"}, set(out["cik"])
     assert len(out) == 10, "the whole book must come back, not the universe slice"
     assert load_superinvestor_holdings(ctx, {"managers": []}) is None
     print("\n=== SANITY CHECK: filtered book read ===")
-    print(f"  {len(rows)} stored rows -> {len(out)} returned, all for roster CIK " f"0000000001; the non-roster manager is filtered server-side")
+    print(f"  {len(rows)} stored rows -> {len(out)} returned, all for roster CIK 0000000001; the non-roster manager is filtered server-side")
     print(f"  columns: {list(out.columns)}")
     print("  Validated.")

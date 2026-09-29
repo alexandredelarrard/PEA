@@ -26,6 +26,7 @@ G10 a measurement rather than an assertion.
     "$PY" scripts/def14a_phase6_runner.py [-c ./configs] [--proxy] [--ecd] [--votes]
                                           [--limit N] [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,19 +43,23 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
+
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
 from src.data_extract.utils.structure.votes.fetch import _SOURCE_COLS
-from src.data_extract.utils.structure.votes.flatten import _prepare_frame as _prepare_vote_frame, _proposal_rows
+from src.data_extract.utils.structure.votes.flatten import _prepare_frame as _prepare_vote_frame
+from src.data_extract.utils.structure.votes.flatten import _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
-from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
+from src.data_extract.utils.structure.votes.roles import _role_map
 from src.data_store.schema import Tables
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 
 PLAN = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix"
 BASELINE, NEW = PLAN / "baseline", PLAN / "new"
@@ -67,13 +72,13 @@ PRICE_IN, PRICE_CACHED_IN, PRICE_OUT = 0.25, 0.025, 2.00
 
 def _usd(t: dict) -> float:
     fresh = max(t["input_tokens"] - t["cached_input_tokens"], 0)
-    return (fresh * PRICE_IN + t["cached_input_tokens"] * PRICE_CACHED_IN
-            + t["output_tokens"] * PRICE_OUT) / 1e6
+    return (fresh * PRICE_IN + t["cached_input_tokens"] * PRICE_CACHED_IN + t["output_tokens"] * PRICE_OUT) / 1e6
 
 
 def _filings() -> pd.DataFrame:
     """Phase 0's cached filing index, restricted to rows whose HTML is actually on disk."""
     f = pd.read_parquet(BASELINE / "filings.parquet")
+
     # Pre-2001 filings carry `primaryDocument == ""`, so `_doc_url` builds a bare DIRECTORY
     # url and `cache_htm` holds a ~10 KB EDGAR FOLDER INDEX rather than the proxy. Phase 0
     # cached the real document as `.txt` alongside it (159,203 chars on A's 2000 filing, vs
@@ -87,8 +92,7 @@ def _filings() -> pd.DataFrame:
     # `.map`), and `bool(nan)` is TRUE. Same trap that made the Phase-3 gender consensus count
     # filled rows as overturned ones.
     def _pick(row: pd.Series) -> str:
-        for col in (("cache_txt", "cache_htm") if bool(row["pre_2001_empty_primary"])
-                    else ("cache_htm", "cache_txt")):
+        for col in ("cache_txt", "cache_htm") if bool(row["pre_2001_empty_primary"]) else ("cache_htm", "cache_txt"):
             n = row[col]
             if isinstance(n, str) and n and (CACHE_DIR / n).exists():
                 return str(CACHE_DIR / n)
@@ -97,8 +101,7 @@ def _filings() -> pd.DataFrame:
     f["path"] = f.apply(_pick, axis=1)
     have = f["path"].map(lambda p: isinstance(p, str) and bool(p))
     n_txt = int(f.loc[have, "path"].str.endswith(".txt").sum())
-    print(f"  reading {int(have.sum())} filings ({n_txt} from the .txt document, i.e. the "
-          f"pre-2001 filings whose primary document is a folder index)")
+    print(f"  reading {int(have.sum())} filings ({n_txt} from the .txt document, i.e. the pre-2001 filings whose primary document is a folder index)")
     missing = int((~have).sum())
     if missing:
         print(f"  NOTE: {missing} of {len(f)} indexed filings have no cached HTML — skipped")
@@ -108,8 +111,7 @@ def _filings() -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # --proxy : the LLM path                                                       #
 # --------------------------------------------------------------------------- #
-def run_proxy(context, config, model: str, limit: int | None, dry: bool,
-              workers: int) -> None:
+def run_proxy(context, config, model: str, limit: int | None, dry: bool, workers: int) -> None:
     filings = _filings()
     if limit:
         filings = filings.groupby("ticker", group_keys=False).head(limit)
@@ -118,8 +120,7 @@ def run_proxy(context, config, model: str, limit: int | None, dry: bool,
         print(filings.groupby("ticker").size().to_string())
         return
 
-    extractor = LLMExtractor(context, with_gpt_overrides(config, "def14a", model=model),
-                             action="def14a")
+    extractor = LLMExtractor(context, with_gpt_overrides(config, "def14a", model=model), action="def14a")
     parent: list[dict] = []
     children: dict[str, list[dict]] = {}
     payload_chars: list[int] = []
@@ -138,7 +139,7 @@ def run_proxy(context, config, model: str, limit: int | None, dry: bool,
             extract = extractor.extract(Def14AExtract, focused)
             row = _flatten(ticker, f, extract)
             kids = _child_frames(ticker, f, extract)
-        except Exception as e:                      # one filing must not cost the run
+        except Exception as e:  # one filing must not cost the run
             with lock:
                 failures.append(f"{ticker} {f['filing_date']}: {type(e).__name__}: {e}")
             return
@@ -150,9 +151,10 @@ def run_proxy(context, config, model: str, limit: int | None, dry: bool,
             done[0] += 1
             if done[0] % 25 == 0:
                 el = time.time() - t0
-                print(f"  {done[0]}/{len(filings)} filings, {el:.0f}s "
-                      f"({el / done[0]:.1f}s/filing), ${_usd(extractor.usage.totals):.2f} so far",
-                      flush=True)
+                print(
+                    f"  {done[0]}/{len(filings)} filings, {el:.0f}s ({el / done[0]:.1f}s/filing), ${_usd(extractor.usage.totals):.2f} so far",
+                    flush=True,
+                )
 
     # Concurrency is not an optimisation here, it is what makes the phase possible: measured
     # SERIALLY, one modern proxy takes ~94s (a 130k-char payload on a reasoning model), so 656
@@ -166,21 +168,21 @@ def run_proxy(context, config, model: str, limit: int | None, dry: bool,
     pd.DataFrame(parent).to_parquet(NEW / "def14a_llm.parquet", index=False)
     for name, rows in children.items():
         pd.DataFrame(rows).to_parquet(NEW / f"{name}.parquet", index=False)
-    (NEW / "payload.json").write_text(
-        json.dumps({"payload_chars": payload_chars}), encoding="utf-8")
+    (NEW / "payload.json").write_text(json.dumps({"payload_chars": payload_chars}), encoding="utf-8")
     _write_tokens("proxy", extractor.usage.totals, len(filings))
 
     print(f"\n  parent rows      : {len(parent)}")
     for name, rows in sorted(children.items()):
         print(f"  {name:<24}: {len(rows)}")
-    print(f"  payload chars    : mean {pd.Series(payload_chars).mean():,.0f} / "
-          f"median {pd.Series(payload_chars).median():,.0f} / "
-          f"max {max(payload_chars):,}")
+    print(
+        f"  payload chars    : mean {pd.Series(payload_chars).mean():,.0f} / "
+        f"median {pd.Series(payload_chars).median():,.0f} / "
+        f"max {max(payload_chars):,}"
+    )
     print(f"  failures         : {len(failures)}")
     for msg in failures[:10]:
         print(f"    - {msg}")
-    print(f"  spend            : ${_usd(extractor.usage.totals):.2f} over "
-          f"{extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
+    print(f"  spend            : ${_usd(extractor.usage.totals):.2f} over {extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
 
 
 # --------------------------------------------------------------------------- #
@@ -201,8 +203,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     manifest = json.loads((BASELINE / "manifest.json").read_text(encoding="utf-8"))
     tickers = manifest["tickers"]
     cutoff = pd.Timestamp("2023-01-01")
-    print(f"\n=== ECD: {len(tickers)} tickers, filings from {cutoff.date()} "
-          f"(needs live filing.xbrl()) ===")
+    print(f"\n=== ECD: {len(tickers)} tickers, filings from {cutoff.date()} (needs live filing.xbrl()) ===")
     if dry:
         print("  tickers:", ", ".join(tickers))
         return
@@ -210,7 +211,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     # The Phase-0 filing index only covers the 22 tickers that HAD a cached proxy, so XOM is
     # absent from it; resolve CIKs the way the pipeline does instead of from that artifact.
     cik_df = load_cik_mapping(context, tickers)
-    cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str)))
+    cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str), strict=False))
 
     rows: list[dict] = []
     for t in tickers[: limit or len(tickers)]:
@@ -251,6 +252,7 @@ def _parquet_role_source(ticker: str) -> dict[str, pd.DataFrame]:
     function is a pure function of these frames, and swapping where they come from is what
     makes the role join measurable BEFORE the tables it reads exist.
     """
+
     def _one(stem: str, cols: list[str]) -> pd.DataFrame:
         p = NEW / f"{stem}.parquet"
         if not p.exists():
@@ -264,32 +266,26 @@ def _parquet_role_source(ticker: str) -> dict[str, pd.DataFrame]:
 
     return {
         "ceo": _one("def14a_llm", ["ticker", "as_of", "ceo_name_proxy"]),
-        "exec": _one("def14a_executive_comp",
-                     ["ticker", "as_of", "name", "title", "fiscal_year"]),
+        "exec": _one("def14a_executive_comp", ["ticker", "as_of", "name", "title", "fiscal_year"]),
         "director": _one("def14a_director_comp", ["ticker", "as_of", "name"]),
     }
 
 
-
-def run_votes(context, config, model: str, limit: int | None, dry: bool,
-              workers: int) -> None:
+def run_votes(context, config, model: str, limit: int | None, dry: bool, workers: int) -> None:
     manifest = json.loads((BASELINE / "manifest.json").read_text(encoding="utf-8"))
     tickers = manifest["tickers"]
-    src = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS),
-                             where={"item": "5.07", "ticker": tickers})
+    src = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": "5.07", "ticker": tickers})
     src = src.sort_values(["ticker", "filing_date"]).reset_index(drop=True)
     if limit:
         src = src.groupby("ticker", group_keys=False).head(limit)
     reasons = src["item_text"].map(rejection_reason)
     todo = src[reasons.isna()]
-    print(f"\n=== VOTES: {len(src)} stored 5.07 filings, {len(todo)} readable "
-          f"({len(src) - len(todo)} refused before any LLM call) ===")
+    print(f"\n=== VOTES: {len(src)} stored 5.07 filings, {len(todo)} readable ({len(src) - len(todo)} refused before any LLM call) ===")
     print(reasons.dropna().value_counts().to_string() or "  (nothing refused)")
     if dry:
         return
 
-    extractor = LLMExtractor(context, with_gpt_overrides(config, "sec8k_votes", model=model),
-                             action="sec8k_votes")
+    extractor = LLMExtractor(context, with_gpt_overrides(config, "sec8k_votes", model=model), action="sec8k_votes")
     rows: list[dict] = []
     rejected = 0
     t0 = time.time()
@@ -306,8 +302,7 @@ def run_votes(context, config, model: str, limit: int | None, dry: bool,
     # Step 4 is about to write, so this measures the join that will actually run.
     role_sources = {str(t): _parquet_role_source(str(t)) for t in todo["ticker"].unique()}
     if not any(len(v["director"]) for v in role_sources.values()):
-        print("  WARNING: no director-comp rows in new/ — run --proxy first or the role map "
-              "will report everything as `unmatched`")
+        print("  WARNING: no director-comp rows in new/ — run --proxy first or the role map will report everything as `unmatched`")
 
     def one(f: pd.Series) -> None:
         ticker = str(f["ticker"])
@@ -326,8 +321,7 @@ def run_votes(context, config, model: str, limit: int | None, dry: bool,
             done[0] += 1
             if done[0] % 40 == 0:
                 el = time.time() - t0
-                print(f"  {done[0]}/{len(todo)} filings, {el:.0f}s, {len(rows)} rows, "
-                      f"${_usd(extractor.usage.totals):.2f}", flush=True)
+                print(f"  {done[0]}/{len(todo)} filings, {el:.0f}s, {len(rows)} rows, ${_usd(extractor.usage.totals):.2f}", flush=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(one, [f for _, f in todo.iterrows()]))
@@ -345,13 +339,11 @@ def run_votes(context, config, model: str, limit: int | None, dry: bool,
         if len(elections):
             nom = elections["n_nominees"].sum()
             unm = elections["n_nominees_unmatched"].sum()
-            print(f"  nominees               : {nom:,.0f}, unmatched {unm:,.0f} "
-                  f"({unm / nom:.1%}) <- the role join's honest error rate")
+            print(f"  nominees               : {nom:,.0f}, unmatched {unm:,.0f} ({unm / nom:.1%}) <- the role join's honest error rate")
         flag = out["nominee_sum_matches"].dropna()
         if len(flag):
             print(f"  nominee_sum_matches    : {flag.mean():.1%} of {len(flag)} computable rows")
-    print(f"  spend                  : ${_usd(extractor.usage.totals):.2f} over "
-          f"{extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
+    print(f"  spend                  : ${_usd(extractor.usage.totals):.2f} over {extractor.usage.totals['calls']} calls, {time.time() - t0:.0f}s")
 
 
 def _write_tokens(kind: str, totals: dict, n_filings: int) -> None:
@@ -360,8 +352,7 @@ def _write_tokens(kind: str, totals: dict, n_filings: int) -> None:
     p = NEW / "tokens.json"
     data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     data[kind] = {**totals, "filings": int(n_filings), "usd": round(_usd(totals), 4)}
-    data["_price_per_1m"] = {"input": PRICE_IN, "cached_input": PRICE_CACHED_IN,
-                             "output": PRICE_OUT}
+    data["_price_per_1m"] = {"input": PRICE_IN, "cached_input": PRICE_CACHED_IN, "output": PRICE_OUT}
     p.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
@@ -371,10 +362,8 @@ def main() -> None:
     ap.add_argument("--proxy", action="store_true")
     ap.add_argument("--ecd", action="store_true")
     ap.add_argument("--votes", action="store_true")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="cap filings per ticker (a cheap smoke test)")
-    ap.add_argument("--workers", type=int, default=12,
-                    help="concurrent LLM calls (serial is ~94s/proxy -> 17h for 656)")
+    ap.add_argument("--limit", type=int, default=None, help="cap filings per ticker (a cheap smoke test)")
+    ap.add_argument("--workers", type=int, default=12, help="concurrent LLM calls (serial is ~94s/proxy -> 17h for 656)")
     ap.add_argument("--dry-run", action="store_true", help="count the work, spend nothing")
     args = ap.parse_args()
 

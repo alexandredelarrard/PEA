@@ -9,12 +9,13 @@ per-PROCESS, so it must NOT run beside another walk.
 
     rtk "$PY" scripts/def14a_registrant_price.py
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
-from src.context import get_config_context
 from src.constants.constants import DEF14A_FORMS
+from src.context import get_config_context
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_store.schema import Tables
@@ -29,8 +30,7 @@ def main() -> None:
     years = int(config.data_extract.years_history)
     regs = load_registrants()
 
-    stored = frozenset(str(a) for a in
-                       context.store.distinct(Tables.def14a_llm, "accession_number"))
+    stored = frozenset(str(a) for a in context.store.distinct(Tables.def14a_llm, "accession_number"))
     print(f"`def14a_llm` already holds {len(stored):,} accessions\n")
     print("| ticker | segment cik | segment window | proxies listed | NOT yet stored |")
     print("|---|---|---|---:|---:|")
@@ -44,7 +44,7 @@ def main() -> None:
                 listed = new = 0
             else:
                 filed = pd.to_datetime(part["filing_date"])
-                part = part[filed.map(segment.covers)]        # the DATED SPLIT, not a union
+                part = part[filed.map(segment.covers)]  # the DATED SPLIT, not a union
                 listed = len(part)
                 new = int((~part["accession_number"].astype(str).isin(stored)).sum())
             grand_new += new
@@ -54,8 +54,7 @@ def main() -> None:
             mark = f"**{new}**" if new else "0"
             print(f"| {ticker} | {segment.cik} | {lo} .. {hi} | {listed} | {mark} |")
 
-    print(f"\n**{grand_new} filing(s) the register newly exposes** "
-          f"-> ~${grand_new * USD_PER_FILING:,.2f} at ${USD_PER_FILING}/filing")
+    print(f"\n**{grand_new} filing(s) the register newly exposes** -> ~${grand_new * USD_PER_FILING:,.2f} at ${USD_PER_FILING}/filing")
     movers = {t: n for t, n in per_ticker.items() if n}
     print(f"tickers that would gain rows: {movers or 'NONE'}")
 

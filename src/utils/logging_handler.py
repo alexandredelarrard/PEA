@@ -1,14 +1,14 @@
 import logging
 import sys
-from logging import LogRecord
-import click
 import time
-from pathlib import Path
 from contextlib import contextmanager
+from logging import LogRecord
+from pathlib import Path
+
+import click
 
 
 class ColorHandler(logging.StreamHandler):
-
     def __init__(self, stream=None, colors=None, **kwargs):
         # ⚠ A Windows console is cp1252, and `StreamHandler.emit` writes the formatted record
         # straight to it -- so ONE unencodable character raises UnicodeEncodeError inside emit
@@ -60,22 +60,17 @@ class ColorHandler(logging.StreamHandler):
 
 
 class MakeFileHandler(logging.FileHandler):
-
     def __init__(self, filename: str, encoding="utf-8"):
         filepath = Path(filename)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         version = time.strftime("%Y-%m-%d_%H")
 
-        versioned_filename = filepath.parent / (
-            filepath.stem + f"_{version}" + filepath.suffix
-        )
-        logging.FileHandler.__init__(
-            self, versioned_filename, mode="a", encoding=encoding, delay=False
-        )
+        versioned_filename = filepath.parent / (filepath.stem + f"_{version}" + filepath.suffix)
+        logging.FileHandler.__init__(self, versioned_filename, mode="a", encoding=encoding, delay=False)
 
 
 @contextmanager
-def all_loggingLdisabled(highest_level=logging.CRITICAL):
+def all_logging_disabled(highest_level=logging.CRITICAL):
     previous_level = logging.root.manager.disable
 
     logging.disable(highest_level)
@@ -84,3 +79,7 @@ def all_loggingLdisabled(highest_level=logging.CRITICAL):
         yield
     finally:
         logging.disable(previous_level)
+
+
+# Compatibility for the pre-Ruff public typo without re-declaring a mixed-case name.
+globals()["all_loggingLdisabled"] = all_logging_disabled

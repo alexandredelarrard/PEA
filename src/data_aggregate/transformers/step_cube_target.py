@@ -147,7 +147,7 @@ class StepCubeTarget(Step):
         row of every `d_*` column. ~15 narrow series over 31y, so the full read is cheap."""
         wide = load_macro_wide(self._store)
         if wide is None:
-            raise RuntimeError(f"'{Tables.prices_macro}' is missing or empty -> no market or " "macro factors. Run `data_extract macro` first.")
+            raise RuntimeError(f"'{Tables.prices_macro}' is missing or empty -> no market or macro factors. Run `data_extract macro` first.")
         return wide.set_index("date").sort_index()
 
     # ---- factor panel ---- #
@@ -162,9 +162,7 @@ class StepCubeTarget(Step):
         ffill BEFORE pct_change and then reindex, so a macro-calendar hole becomes a zero
         return rather than shifting the next day's return onto a two-day move."""
         if MACRO_MARKET_SERIES not in macro.columns:
-            raise RuntimeError(
-                f"'{MACRO_MARKET_SERIES}' missing from {Tables.prices_macro} -> " "no market factor, so betas and epsilon are undefined."
-            )
+            raise RuntimeError(f"'{MACRO_MARKET_SERIES}' missing from {Tables.prices_macro} -> no market factor, so betas and epsilon are undefined.")
         s = macro[MACRO_MARKET_SERIES].astype(float)
         s = s.reindex(s.index.union(calendar)).ffill()
         return s.pct_change(fill_method=None).reindex(calendar)

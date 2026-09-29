@@ -29,6 +29,7 @@ subsidiary, so every CET1 fact is qualified by `LegalEntityAxis`. That is also w
 that hook so the exclusion is a recorded decision rather than a silent loss; nothing in
 this pass uses it.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -40,7 +41,8 @@ DIMENSIONED_EXCEPTIONS: dict[str, str] = {
     "tier1CapitalRatio": (
         "ASC 942-505-50-1 requires regulatory capital for the holding company and each "
         "significant bank subsidiary, so every fact carries dei:LegalEntityAxis. This is "
-        "why SEC companyconcept 404s for CET1 on JPM/USB/BAC. Not extracted in this pass."),
+        "why SEC companyconcept 404s for CET1 on JPM/USB/BAC. Not extracted in this pass."
+    ),
 }
 
 #: edgartools names each axis column `dim_<prefix>_<AxisName>`.
@@ -50,9 +52,17 @@ _DIM_PREFIX = "dim_"
 #: facts frame -- the per-axis `dim_*` columns, labels, statement roles, footnote keys -- is
 #: either all-NaN once the undimensioned filter has run or is not consulted at all.
 _KEPT_COLUMNS: tuple[str, ...] = (
-    "concept", "numeric_value", "unit_ref", "decimals",
-    "period_type", "period_start", "period_end", "period_instant",
-    "fiscal_year", "fiscal_period", "balance",
+    "concept",
+    "numeric_value",
+    "unit_ref",
+    "decimals",
+    "period_type",
+    "period_start",
+    "period_end",
+    "period_instant",
+    "fiscal_year",
+    "fiscal_period",
+    "balance",
 )
 
 #: Units that are not a money/count amount this pipeline can store as a float. Per-share
@@ -156,11 +166,9 @@ def duration_concepts(facts: pd.DataFrame) -> frozenset[str]:
     """
     if facts.empty or "period_type" not in facts.columns:
         return frozenset()
-    kinds = (facts.assign(_bare=[bare_concept(c) for c in facts["concept"]])
-             .groupby("_bare")["period_type"].nunique(dropna=True))
+    kinds = facts.assign(_bare=[bare_concept(c) for c in facts["concept"]]).groupby("_bare")["period_type"].nunique(dropna=True)
     only_one = kinds[kinds == 1].index
-    first = (facts.assign(_bare=[bare_concept(c) for c in facts["concept"]])
-             .groupby("_bare")["period_type"].first())
+    first = facts.assign(_bare=[bare_concept(c) for c in facts["concept"]]).groupby("_bare")["period_type"].first()
     return frozenset(str(name) for name in only_one if first.get(name) == "duration")
 
 
@@ -179,8 +187,7 @@ def zero_only_concepts(facts: pd.DataFrame) -> frozenset[str]:
     """
     if facts.empty or "numeric_value" not in facts.columns:
         return frozenset()
-    grouped = (facts.assign(_bare=[bare_concept(c) for c in facts["concept"]])
-               .groupby("_bare")["numeric_value"])
+    grouped = facts.assign(_bare=[bare_concept(c) for c in facts["concept"]]).groupby("_bare")["numeric_value"]
     extremes = grouped.agg(["min", "max"])
     zero = extremes[(extremes["min"] == 0) & (extremes["max"] == 0)]
     return frozenset(str(name) for name in zero.index)
@@ -203,8 +210,5 @@ def peak_magnitudes(facts: pd.DataFrame) -> dict[str, float]:
     """
     if facts.empty or "numeric_value" not in facts.columns:
         return {}
-    peaks = (facts.assign(_bare=[bare_concept(c) for c in facts["concept"]])
-             .groupby("_bare")["numeric_value"].apply(lambda s: s.abs().max()))
-    return {str(name): float(value)
-            for name, value in peaks.items() if pd.notna(value)}
-
+    peaks = facts.assign(_bare=[bare_concept(c) for c in facts["concept"]]).groupby("_bare")["numeric_value"].apply(lambda s: s.abs().max())
+    return {str(name): float(value) for name, value in peaks.items() if pd.notna(value)}

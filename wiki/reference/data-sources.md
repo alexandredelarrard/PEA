@@ -37,7 +37,6 @@ This page is the source-facing operating contract: where data comes from, which 
 | Activist/passive stakes | SEC Schedule 13D/13G | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions`, `sec_13g` | institutional utilities |
 | Filing narrative | SEC 10-K/10-Q | `SEC_USER_AGENT` | `sec_filing_text` | structure utilities |
 | Short volume and settlement fails | FINRA RegSHO, SEC | none | `short_interest`, `sec_fails_to_deliver` | institutional utilities |
-| Retail attention | Wikipedia and Google Trends | none | `wiki_pageviews`, `google_trends` | [behavioral utilities](../../src/data_extract/utils/behavioral/) |
 | Earnings calls | HuggingFace, Roic AI, Motley Fool | none | `earnings_call_sections` | behavioral utilities |
 | Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | sentiment and embedding tables | behavioral and [gpt_extract](../../src/gpt_extract/) |
 
@@ -118,6 +117,8 @@ Both DEF 14A and vote extraction use the [SEC and LLM flow](../flows/sec-llm-ext
 ## Transcripts and attention data
 
 Earnings-call history combines a deep HuggingFace backbone with recent-gap sources. Transcript availability is later than the earnings event, and call sections retain speaker/Q&A structure. Expensive per-call sentiment is cached separately from cross-call cube features.
+
+A quarter counts as covered only when cleaned prepared remarks and Q&A are both present and contain at least 100 combined substantive words. File presence, an index key, or stored rows alone do not establish coverage. Missing and malformed calls are retried in the existing order: HuggingFace backbone, ROIC, then Motley Fool. A malformed stored call remains in the recovery set even when it lies at or before the HuggingFace frontier. Every source-section replacement invalidates the matching sentiment and embedding rows at the save boundary, so a repaired or valid-to-valid corrected transcript cannot retain stale derived values. An invalid replacement also writes a null pending marker; the text aggregate uses its call date to delete stale persisted signals and marks it handled only after that write succeeds. Only a quality-valid ROIC result closes the gap; otherwise Fool receives the same quarter. A result that remains malformed produces null features and stays retryable. Sentiment resume keys include the cleaned-text cache version, while embedding resume keys require the configured embedding model.
 
 Google Trends must be fetched in bounded windows before stitching because a long request can change its sampling frequency. Wikipedia and Google series have shorter usable histories than prices; long rolling windows therefore cover fewer observations.
 

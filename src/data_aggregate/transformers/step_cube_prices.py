@@ -24,40 +24,43 @@ locals are collected and the next sub-step starts from a clean slate.
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.data_store.schema import Tables
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
-from src.data_aggregate.utils.common.incremental import (COLUMNS_CHANGED,
-                                                         PART_REFRESH_TRADING_DAYS,
-                                                         plan_window, write_part)
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.level_basis import (
+    apply_level_bugfix,
+    apply_null_ret,
+    apply_return_seams,
+    apply_split_vintage,
+    describe,
+    genuine_splits,
+    level_factor,
+    load_bugfix,
+)
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
-from src.data_aggregate.utils.common.level_basis import (
-    apply_level_bugfix, apply_null_ret, apply_return_seams, apply_split_vintage, describe,
-    genuine_splits, level_factor, load_bugfix)
-from src.data_aggregate.utils.common.price_frames import frames_to_long, universe_columns
-from src.data_aggregate.utils.common.price_frames import load_trading_calendar
+from src.data_aggregate.utils.common.price_frames import frames_to_long, load_trading_calendar, universe_columns
 from src.data_peers.utils.sector_peers import compute_sector_returns
-
+from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
-PRICE_COLS = ['date', 'open', 'high', 'low', 'close_split', 'close_total', 'volume', 'ticker']
+PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
 #: The two `sharadar_actions` kinds `split_events` reads. Market-wide table, so the read is
 #: filtered to these or it drags back every action of every ticker Sharadar covers.
-ACTION_COLS = ['ticker', 'date', 'action', 'value']
+ACTION_COLS = ["ticker", "date", "action", "value"]
 #: Sharadar's as-reported quarterly dimension -- the only one whose `price` is a single dated
 #: observation rather than a period aggregate, so the only one a bar can be compared against.
-VENDOR_DIMENSION = 'ARQ' 
+VENDOR_DIMENSION = "ARQ"
+
 
 class StepCubePrices(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
-        
+
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_prices)
         self._store = context.store
@@ -72,12 +75,11 @@ class StepCubePrices(Step):
 
         window = self._plan_window(full)
         since = window.since
-        raw = self._store.load(Tables.prices, 
-                            since=since, 
-                            columns = PRICE_COLS)
-        self._log.info(f"Loading {Tables.prices} since={since if since else "full"}")
+        raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS)
+        assert raw is not None
+        self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
 
-        # long to wide format 
+        # long to wide format
         wide = self._pivot_fields(raw)
 
         # filter wide on trading days with close value
@@ -97,21 +99,19 @@ class StepCubePrices(Step):
         vendor = self._vendor_price()
         self._repair(wide, vendor)
 
-        returns =  self._daily_returns(wide["close_total"])
+        returns = self._daily_returns(wide["close_total"])
         # ⚠ AFTER `_daily_returns`, unlike the two repairs above, because it acts on the
         # RETURN itself rather than on a price leg the return is derived from.
         self._null_returns(returns)
 
         peers = self._peers()
         universe = self._universe_frames(wide, returns, peers)
-        universe["level_factor"] = self._level_factor(days_index, universe["close_split"],
-                                                      vendor)
+        universe["level_factor"] = self._level_factor(days_index, universe["close_split"], vendor)
         del raw, wide, returns
 
         # save it all
-        n = write_part(self._store, Tables.cube_part_prices,
-                          frames_to_long(universe), window)
-        
+        n = write_part(self._store, Tables.cube_part_prices, frames_to_long(universe), window)
+
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
 
@@ -130,20 +130,26 @@ class StepCubePrices(Step):
         if self._store.exists(Tables.cube_part_prices):
             idx = load_trading_calendar(self._store)
 
-        return plan_window(self._store, Tables.cube_part_prices, full=full,
-                           warmup=self._part.warmup_trading_days,
-                           trading_index=idx,
-                           refresh=PART_REFRESH_TRADING_DAYS)
+        return plan_window(
+            self._store,
+            Tables.cube_part_prices,
+            full=full,
+            warmup=self._part.warmup_trading_days,
+            trading_index=idx,
+            refresh=PART_REFRESH_TRADING_DAYS,
+        )
 
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
         pivot = du.prices_long_to_multiindex(raw)
-        return {"open":du.extract_field(pivot, "Open"),
-                "high":du.extract_field(pivot, "High"),
-                "low":du.extract_field(pivot, "Low"),
-                "close_split": du.extract_field(pivot, "CloseSplit"),
-                "close_total": du.extract_field(pivot, "CloseTotal"),
-                "volume": du.extract_field(pivot, "Volume")}
+        return {
+            "open": du.extract_field(pivot, "Open"),
+            "high": du.extract_field(pivot, "High"),
+            "low": du.extract_field(pivot, "Low"),
+            "close_split": du.extract_field(pivot, "CloseSplit"),
+            "close_total": du.extract_field(pivot, "CloseTotal"),
+            "volume": du.extract_field(pivot, "Volume"),
+        }
 
     def _trading_calendar(self, close_split: pd.DataFrame) -> pd.DatetimeIndex:
         """The market series' own calendar, read from `prices_macro` (the table that owns it).
@@ -154,16 +160,15 @@ class StepCubePrices(Step):
         if market is None:
             raise RuntimeError(
                 f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> the cube "
-                "trading calendar is undefined. Run `data_extract macro` first.")
+                "trading calendar is undefined. Run `data_extract macro` first."
+            )
         mask = du.get_trading_days(close_split, market, MACRO_MARKET_SERIES)
         idx = pd.DatetimeIndex(close_split.index[mask.to_numpy()], name="date")
-        self._log.info("Trading calendar: %d dates (%s .. %s)", len(idx),
-                       idx.min().date(), idx.max().date())
+        self._log.info("Trading calendar: %d dates (%s .. %s)", len(idx), idx.min().date(), idx.max().date())
         return idx
 
     @staticmethod
-    def _on_calendar(wide: dict[str, pd.DataFrame],
-                     idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    def _on_calendar(wide: dict[str, pd.DataFrame], idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
         """The price frames are sliced to the calendar; volume is REINDEXED (it may be
         missing on a date the price exists), matching the original behaviour."""
         out = {k: v.loc[idx] for k, v in wide.items() if k != "volume"}
@@ -182,18 +187,16 @@ class StepCubePrices(Step):
         self._log.info("Peer baskets ready for %s / %s tickers", n, len(peers))
         return peers
 
-    def _universe_frames(self, wide: dict[str, pd.DataFrame], returns: pd.DataFrame,
-                         peers: dict) -> dict[str, pd.DataFrame]:
+    def _universe_frames(self, wide: dict[str, pd.DataFrame], returns: pd.DataFrame, peers: dict) -> dict[str, pd.DataFrame]:
         """Restrict every frame to the analysis universe (SORTED -- see
         `universe_columns`), then add the persisted return and peer-basket return."""
-        
+
         universe = universe_columns(self._tickers, wide["close_split"])
         out = {k: v.reindex(columns=universe) for k, v in wide.items()}
         out["ret"] = returns.reindex(columns=universe)
         out["sector_ret"] = self._sector_returns(out["ret"], peers)
 
-        self._log.info("Normalized prices: %d dates x %d universe tickers",
-                       len(wide["close_split"]), len(universe))
+        self._log.info("Normalized prices: %d dates x %d universe tickers", len(wide["close_split"]), len(universe))
         return out
 
     def _vendor_price(self) -> pd.DataFrame | None:
@@ -203,25 +206,24 @@ class StepCubePrices(Step):
         Projected to the register's own tickers because this is a market-wide table and the
         entries name nine of them: the unfiltered read is ~1.4M rows to answer a question
         about a handful."""
-        named = sorted({*(self._bugfix.get("level_factor") or {}),
-                        *(self._bugfix.get("split_vintage") or {})})
+        named = sorted({*(self._bugfix.get("level_factor") or {}), *(self._bugfix.get("split_vintage") or {})})
         if not named:
             return None
-        frame = self._store.load(Tables.sharadar_fundamentals,
-                                 columns=["ticker", "date", "price"],
-                                 where={"dimension": VENDOR_DIMENSION, "ticker": named},
-                                 optional=True)
+        frame = self._store.load(
+            Tables.sharadar_fundamentals, columns=["ticker", "date", "price"], where={"dimension": VENDOR_DIMENSION, "ticker": named}, optional=True
+        )
         if frame is None or frame.empty:
-            self._log.warning("price bugfix: %s has no price for any of the %d registered "
-                              "tickers -- every entry will be SKIPPED unverified",
-                              Tables.sharadar_fundamentals, len(named))
+            self._log.warning(
+                "price bugfix: %s has no price for any of the %d registered tickers -- every entry will be SKIPPED unverified",
+                Tables.sharadar_fundamentals,
+                len(named),
+            )
             return None
         frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["date"]).astype("datetime64[ns]")
         return frame
 
-    def _repair(self, wide: dict[str, pd.DataFrame],
-                vendor: pd.DataFrame | None) -> None:
+    def _repair(self, wide: dict[str, pd.DataFrame], vendor: pd.DataFrame | None) -> None:
         """Defects in YAHOO's own price data that no event feed can express, from
         `configs/prices/yf_price_bugfix.json`.
 
@@ -240,10 +242,10 @@ class StepCubePrices(Step):
             return
         applied = apply_split_vintage(wide, self._bugfix, vendor, self._log.info)
         applied += apply_return_seams(wide, self._bugfix, self._log.info)
-        listed = (sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values())
-                  + sum(len(v) for v in (self._bugfix.get("return_seams") or {}).values()))
-        self._log.info("price bugfix: %d of %d registered price repair(s) applied",
-                       applied, listed)
+        listed = sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values()) + sum(
+            len(v) for v in (self._bugfix.get("return_seams") or {}).values()
+        )
+        self._log.info("price bugfix: %d of %d registered price repair(s) applied", applied, listed)
 
     def _null_returns(self, returns: pd.DataFrame) -> None:
         """The `null_ret` register shape: delete the fabricated one-bar returns `close_total`'s
@@ -256,11 +258,9 @@ class StepCubePrices(Step):
             return
         applied = apply_null_ret(returns, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
-        self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied",
-                       applied, listed)
+        self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied", applied, listed)
 
-    def _level_factor(self, idx: pd.DatetimeIndex, close_split: pd.DataFrame,
-                      vendor: pd.DataFrame | None = None) -> pd.DataFrame:
+    def _level_factor(self, idx: pd.DatetimeIndex, close_split: pd.DataFrame, vendor: pd.DataFrame | None = None) -> pd.DataFrame:
         """`S(d)` -- the SPINOFF price adjustment `close_split` carries and a share count does
         not. Computed ONCE here and persisted, rather than three times in three sub-steps.
 
@@ -274,19 +274,16 @@ class StepCubePrices(Step):
         value is NULL" a no-op and materialise a row for every (date, ticker) pair in the
         grid -- including years before a ticker listed.
         """
-        yf_splits = self._store.load(Tables.prices_splits,
-                                     columns=["ticker", "date", "ratio"], optional=True)
-        actions = self._store.load(Tables.sharadar_actions, columns=ACTION_COLS,
-                                   where={"action": [SHARADAR_ACTION_SPLIT,
-                                                     SHARADAR_ACTION_SPINOFF]},
-                                   optional=True)
+        yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], optional=True)
+        actions = self._store.load(
+            Tables.sharadar_actions, columns=ACTION_COLS, where={"action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}, optional=True
+        )
         genuine = genuine_splits(actions, yf_splits)
         factor = level_factor(idx, list(close_split.columns), yf_splits, genuine)
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the
         # price and its splits feed never said so -- so they multiply `S` rather than
         # replacing it, and land in the same stored column.
-        factor = apply_level_bugfix(factor, self._bugfix, vendor, close_split,
-                                    self._log.info)
+        factor = apply_level_bugfix(factor, self._bugfix, vendor, close_split, self._log.info)
         # Logged AFTER the mask, so the line describes what is actually STORED. Unmasked it
         # reports pre-listing cells and their factors dominate the ranking -- LVS x0.0038 and
         # VRSK x0.0200 both date from before those tickers had a single bar.

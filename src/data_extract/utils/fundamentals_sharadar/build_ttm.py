@@ -49,6 +49,7 @@ year of the filer's OWN period ends, so `TTM_SPAN_DAYS` guards the window on
 `reportperiod - reportperiod.shift(3)`. It is a tripwire against a spliced window, not a filter:
 it rejects nothing on today's data.
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,7 +59,14 @@ import pandas as pd
 
 from src.data_extract.utils.fundamentals.periods import TTM_QUARTERS
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    DURATION, INSTANT, MEAN, FieldMap, TranslationReport, apply_derived, deadjust_splits)
+    DURATION,
+    INSTANT,
+    MEAN,
+    FieldMap,
+    TranslationReport,
+    apply_derived,
+    deadjust_splits,
+)
 from src.utils.quarters import quarter_ordinal
 
 log = logging.getLogger(__name__)
@@ -108,8 +116,7 @@ def _one_row_per_quarter(frame: pd.DataFrame) -> pd.DataFrame:
     are two REAL quarters whose fiscal ends normalise onto one calendar quarter, and keying on
     the normalisation would DELETE one of them.
     """
-    return (frame.sort_values(["ticker", "reportperiod", "date"])
-                 .drop_duplicates(["ticker", "reportperiod"], keep="first"))
+    return frame.sort_values(["ticker", "reportperiod", "date"]).drop_duplicates(["ticker", "reportperiod"], keep="first")
 
 
 def _window_is_whole(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -146,11 +153,15 @@ def _window_is_whole(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return contiguous & spans_a_year, contiguous & ~spans_a_year
 
 
-def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
-              actions: pd.DataFrame | None = None,
-              yf_splits: pd.DataFrame | None = None,
-              quarter_columns: dict[str, str] | None = None,
-              report: TranslationReport | None = None) -> pd.DataFrame:
+def build_ttm(
+    frame: pd.DataFrame,
+    field_map: FieldMap,
+    *,
+    actions: pd.DataFrame | None = None,
+    yf_splits: pd.DataFrame | None = None,
+    quarter_columns: dict[str, str] | None = None,
+    report: TranslationReport | None = None,
+) -> pd.DataFrame:
     """Discrete ARQ quarters -> one TTM/instant row per (ticker, filing date).
 
     The output carries every column the map declares, on the repo's contract: duration fields
@@ -186,21 +197,16 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
     if "dimension" in frame.columns:
         others = sorted(set(frame["dimension"].dropna().unique()) - {ARQ})
         if others:
-            raise RuntimeError(f"build_ttm takes ARQ only; the frame also holds {others}. "
-                               f"Sharadar's ART is NOT the sum of four ARQ (D17).")
+            raise RuntimeError(f"build_ttm takes ARQ only; the frame also holds {others}. Sharadar's ART is NOT the sum of four ARQ (D17).")
 
-    quarter_columns = quarter_columns or {
-        name: spec.inputs[0] for name, spec in field_map.derived.items()
-        if spec.op == "quarter"}
+    quarter_columns = quarter_columns or {name: spec.inputs[0] for name, spec in field_map.derived.items() if spec.op == "quarter"}
 
     # De-duplicate FIRST, then sequence on `reportperiod` -- the filer's own period ends, which
     # are unique after the dedup and so give a deterministic order even where two rows share a
     # `calendardate` (the class-A collisions).
-    out = _one_row_per_quarter(frame).sort_values(["ticker", "reportperiod"]) \
-                                     .reset_index(drop=True)
+    out = _one_row_per_quarter(frame).sort_values(["ticker", "reportperiod"]).reset_index(drop=True)
     if len(out) < len(frame):
-        log.info("%d amended/re-published ARQ row(s) collapsed to one per "
-                 "(ticker, reportperiod), earliest filing kept", len(frame) - len(out))
+        log.info("%d amended/re-published ARQ row(s) collapsed to one per (ticker, reportperiod), earliest filing kept", len(frame) - len(out))
 
     whole, tripwire = _window_is_whole(out)
     if tripwire.any():
@@ -208,9 +214,12 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
         # normalisation has spliced something. NULL the window -- never raise, never publish --
         # but say so, because a silent filter is the failure mode this file already had once.
         offenders = out.loc[tripwire, ["ticker", "reportperiod", "calendardate"]]
-        log.warning("%d window(s) hold four consecutive quarter labels but do not span "
-                    "%d-%d days of the filer's own calendar; nulled:\n%s",
-                    int(tripwire.sum()), *TTM_SPAN_DAYS, offenders.to_string())
+        log.warning(
+            "%d window(s) hold four consecutive quarter labels but do not span %d-%d days of the filer's own calendar; nulled:\n%s",
+            int(tripwire.sum()),
+            *TTM_SPAN_DAYS,
+            offenders.to_string(),
+        )
 
     # Classify every output ONCE, then aggregate per class. Rolling is the slowest path in
     # pandas and there are only two aggregations, so the ~88 mapped columns cost two grouped
@@ -223,8 +232,7 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
             basis_of[name] = "null"
             continue
         if spec.basis not in (DURATION, INSTANT, MEAN):
-            raise RuntimeError(f"{name} has basis {spec.basis!r}; expected one of "
-                               f"{(DURATION, INSTANT, MEAN)}")
+            raise RuntimeError(f"{name} has basis {spec.basis!r}; expected one of {(DURATION, INSTANT, MEAN)}")
         basis_of[name] = spec.basis
 
     rolling_names = [n for n, basis in basis_of.items() if basis in (DURATION, MEAN)]
@@ -239,7 +247,7 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
         # the contract: a quarter the zero rule or a correction removed must NOT contribute
         # silently to a sum, it must null the trailing twelve it belongs to.
         window = grouped[names].rolling(TTM_QUARTERS)
-        frame_out = (window.sum() if how == "sum" else window.mean())
+        frame_out = window.sum() if how == "sum" else window.mean()
         rolled[basis] = frame_out.reset_index(level=0, drop=True).reindex(out.index)
 
     # Assembled in the map's own order, then concatenated ONCE -- inserting ~90 columns one at
@@ -252,7 +260,7 @@ def build_ttm(frame: pd.DataFrame, field_map: FieldMap, *,
             columns[name] = out[name].astype("float64")
         else:
             columns[name] = rolled[basis][name].where(whole, np.nan)
-            
+
     for name, source in quarter_columns.items():
         columns[name] = out[source].astype("float64")
 

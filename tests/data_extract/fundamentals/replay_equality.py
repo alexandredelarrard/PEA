@@ -16,6 +16,7 @@ Importable by `test_replay_equality.py`, and runnable as a script:
     python -m tests.data_extract.fundamentals.replay_equality snapshot <frozen_dir> <out_dir> TICKER...
     python -m tests.data_extract.fundamentals.replay_equality compare <before_dir> <after_dir>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,7 +28,10 @@ from pathlib import Path
 import pandas as pd
 
 from src.data_extract.utils.fundamentals.build_history import (
-    FACT_COLUMNS, TickerHistory, build_ticker, diff_against_stored,
+    FACT_COLUMNS,
+    TickerHistory,
+    build_ticker,
+    diff_against_stored,
 )
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import PeriodGuards, load_guards
@@ -39,8 +43,7 @@ def head_sha(root: Path | None = None) -> str:
     """Current git HEAD sha, or `"unknown"` off a machine with no git. `git` is affordable
     here: the harness runs a handful of times per phase, never inside a per-event loop."""
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root or ROOT,
-                             capture_output=True, text=True, timeout=15, check=False)
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root or ROOT, capture_output=True, text=True, timeout=15, check=False)
         sha = out.stdout.strip()
         return sha if sha else "unknown"
     except (OSError, subprocess.SubprocessError):
@@ -53,32 +56,28 @@ def truncate_by_accession(facts: pd.DataFrame, cap: int | None) -> pd.DataFrame:
     half and the replay would see a filing that reported 3 fields instead of 40."""
     if cap is None or facts.empty:
         return facts
-    order = (facts[["accession_number", "filing_date"]]
-             .drop_duplicates("accession_number")
-             .sort_values("filing_date"))
+    order = facts[["accession_number", "filing_date"]].drop_duplicates("accession_number").sort_values("filing_date")
     keep = set(order["accession_number"].head(cap))
     return facts[facts["accession_number"].isin(keep)].copy()
 
 
 # --------------------------------------------------------------------------- freeze ---
 
-def freeze_inputs(context, tickers: list[str], out_dir: Path, *,
-                  filing_cap: int | None = None) -> dict:
+
+def freeze_inputs(context, tickers: list[str], out_dir: Path, *, filing_cap: int | None = None) -> dict:
     """One projected read per ticker of `Tables.fundamentals_facts`, optionally truncated to
     `filing_cap` filings, written to `out_dir/<ticker>.parquet`. Writes and returns the
     manifest `verify_live_matches_manifest` checks later -- HEAD, the cap, and per-ticker
     row/filing counts and filing-date range -- so a re-freeze that silently reads different
     facts is visible rather than producing fabricated diffs downstream."""
-    from src.data_store.schema import Tables            # local: avoids a package cycle
+    from src.data_store.schema import Tables  # local: avoids a package cycle
 
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict = {"head": head_sha(), "filing_cap": filing_cap, "tickers": {}}
     for ticker in tickers:
-        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS),
-                                   where={"ticker": ticker}, optional=True)
+        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
         if facts is None:
-            raise ValueError(f"{ticker}: no rows in fundamentals_facts -- not a valid "
-                             "replay-sample member")
+            raise ValueError(f"{ticker}: no rows in fundamentals_facts -- not a valid replay-sample member")
         facts = truncate_by_accession(facts, filing_cap)
         facts.to_parquet(out_dir / f"{ticker}.parquet", index=False)
         manifest["tickers"][ticker] = {
@@ -87,13 +86,11 @@ def freeze_inputs(context, tickers: list[str], out_dir: Path, *,
             "min_filing_date": str(pd.to_datetime(facts["filing_date"]).min().date()),
             "max_filing_date": str(pd.to_datetime(facts["filing_date"]).max().date()),
         }
-    (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
 
 
-def verify_live_matches_manifest(context, frozen_dir: Path,
-                                 tickers: list[str]) -> list[str]:
+def verify_live_matches_manifest(context, frozen_dir: Path, tickers: list[str]) -> list[str]:
     """The moving-target guard for `--source db` mode: a fresh, UNCAPPED row-count read of
     each sample ticker, checked against the frozen manifest. Returns the tickers whose live
     count has moved since the freeze; empty means the freeze is still valid. Read-only --
@@ -102,12 +99,12 @@ def verify_live_matches_manifest(context, frozen_dir: Path,
 
     manifest = json.loads((frozen_dir / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("filing_cap") is not None:
-        raise ValueError("verify_live_matches_manifest needs an UNCAPPED (tier B) freeze -- "
-                         "a capped manifest's row count is not the ticker's live row count")
+        raise ValueError(
+            "verify_live_matches_manifest needs an UNCAPPED (tier B) freeze -- a capped manifest's row count is not the ticker's live row count"
+        )
     moved = []
     for ticker in tickers:
-        live = context.store.load(Tables.fundamentals_facts, columns=["ticker"],
-                                  where={"ticker": ticker}, optional=True)
+        live = context.store.load(Tables.fundamentals_facts, columns=["ticker"], where={"ticker": ticker}, optional=True)
         live_rows = 0 if live is None else len(live)
         if live_rows != manifest["tickers"][ticker]["rows"]:
             moved.append(ticker)
@@ -116,14 +113,14 @@ def verify_live_matches_manifest(context, frozen_dir: Path,
 
 # --------------------------------------------------------------------------- replay ---
 
-def replay(frozen_dir: Path, tickers: list[str], *, catalogue: Catalogue | None = None,
-          guards: PeriodGuards | None = None) -> dict[str, TickerHistory]:
+
+def replay(
+    frozen_dir: Path, tickers: list[str], *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None
+) -> dict[str, TickerHistory]:
     """`build_ticker` per ticker off its frozen parquet -- nothing else touches the DB."""
     catalogue = catalogue or load_catalogue()
     guards = guards or load_guards()
-    return {ticker: build_ticker(ticker, pd.read_parquet(frozen_dir / f"{ticker}.parquet"),
-                                 catalogue=catalogue, guards=guards)
-           for ticker in tickers}
+    return {ticker: build_ticker(ticker, pd.read_parquet(frozen_dir / f"{ticker}.parquet"), catalogue=catalogue, guards=guards) for ticker in tickers}
 
 
 def snapshot(results: dict[str, TickerHistory], out_dir: Path) -> None:
@@ -135,6 +132,7 @@ def snapshot(results: dict[str, TickerHistory], out_dir: Path) -> None:
 
 
 # -------------------------------------------------------------------------- compare ---
+
 
 @dataclass
 class ComparisonReport:
@@ -150,16 +148,16 @@ class ComparisonReport:
 
     @property
     def ok(self) -> bool:
-        return (sum(self.cells_differing.values()) == 0
-               and sum(self.codes_added.values()) == 0
-               and sum(self.codes_removed.values()) == 0)
+        return sum(self.cells_differing.values()) == 0 and sum(self.codes_added.values()) == 0 and sum(self.codes_removed.values()) == 0
 
     def summary(self) -> str:
         lines = [f"{'OK' if self.ok else 'FAIL'}: {len(self.tickers)} ticker(s)"]
         for t in self.tickers:
-            lines.append(f"  {t}: rows {self.rows_before[t]}->{self.rows_after[t]}, "
-                        f"{self.cells_differing[t]} cell(s) differing, "
-                        f"codes +{self.codes_added[t]}/-{self.codes_removed[t]}")
+            lines.append(
+                f"  {t}: rows {self.rows_before[t]}->{self.rows_after[t]}, "
+                f"{self.cells_differing[t]} cell(s) differing, "
+                f"codes +{self.codes_added[t]}/-{self.codes_removed[t]}"
+            )
         return "\n".join(lines)
 
 
@@ -174,14 +172,12 @@ def compare(before_dir: Path, after_dir: Path) -> ComparisonReport:
         report.rows_before[ticker] = len(before)
         report.rows_after[ticker] = len(after)
         # the 69-column contract
-        assert list(before.columns) == list(after.columns), (
-            f"{ticker}: the column contract moved: {list(before.columns)} "
-            f"vs {list(after.columns)}")
+        assert list(before.columns) == list(after.columns), f"{ticker}: the column contract moved: {list(before.columns)} vs {list(after.columns)}"
         # TEXT-vs-float64 drift (the VRT/APA bug this harness exists to catch)
         moved_dtype = before.dtypes[before.dtypes != after.dtypes]
         assert moved_dtype.empty, (
-            f"{ticker}: dtype drift on {list(moved_dtype.index)}: "
-            f"{dict(moved_dtype)} vs {dict(after.dtypes[moved_dtype.index])}")
+            f"{ticker}: dtype drift on {list(moved_dtype.index)}: {dict(moved_dtype)} vs {dict(after.dtypes[moved_dtype.index])}"
+        )
 
         diffs = _cell_diffs(before, after)
         report.cells_differing[ticker] = len(diffs)
@@ -218,18 +214,16 @@ def _cell_diffs(before: pd.DataFrame, after: pd.DataFrame) -> list[tuple]:
     out.extend((as_of, "<row>", "present", "missing") for as_of in only_before)
     out.extend((as_of, "<row>", "missing", "present") for as_of in only_after)
     shared = left.index.intersection(right.index)
-    l, r = left.loc[shared], right.loc[shared]
-    for column in l.columns:
-        a, b = l[column], r[column]
+    left_shared, right_shared = left.loc[shared], right.loc[shared]
+    for column in left_shared.columns:
+        a, b = left_shared[column], right_shared[column]
         both_na = a.isna() & b.isna()
         changed = ~both_na & ((a.isna() != b.isna()) | (a != b))
-        out.extend((as_of, column, a.loc[as_of], b.loc[as_of])
-                  for as_of in a.index[changed])
+        out.extend((as_of, column, a.loc[as_of], b.loc[as_of]) for as_of in a.index[changed])
     return out
 
 
-def compare_against_stored(context, frozen_dir: Path,
-                          tickers: list[str]) -> dict[str, pd.DataFrame]:
+def compare_against_stored(context, frozen_dir: Path, tickers: list[str]) -> dict[str, pd.DataFrame]:
     """`--source db` mode: replay off the frozen parquet, diff against what is actually
     STORED in `fundamentals_history_sec` via the production `diff_against_stored` (which
     already normalises the Postgres DATE-vs-`Timestamp` round trip a parquet-only harness
@@ -240,16 +234,14 @@ def compare_against_stored(context, frozen_dir: Path,
     guards = load_guards()
     out: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
-        rebuilt = build_ticker(
-            ticker, pd.read_parquet(frozen_dir / f"{ticker}.parquet"),
-            catalogue=catalogue, guards=guards).history
-        stored = context.store.load(Tables.fundamentals_history_sec,
-                                    where={"ticker": ticker}, optional=True)
+        rebuilt = build_ticker(ticker, pd.read_parquet(frozen_dir / f"{ticker}.parquet"), catalogue=catalogue, guards=guards).history
+        stored = context.store.load(Tables.fundamentals_history_sec, where={"ticker": ticker}, optional=True)
         out[ticker] = diff_against_stored(stored, rebuilt)
     return out
 
 
 # ------------------------------------------------------------------------------ CLI ---
+
 
 def _load_sample(cli_tickers: list[str]) -> list[str]:
     if cli_tickers:
@@ -286,14 +278,13 @@ def main() -> None:
             print("\nfirst diffs:", report.first_10_diffs[:10])
         raise SystemExit(0 if report.ok else 1)
 
-    from src.context import get_config_context   # local: only the CLI path needs a real DB
+    from src.context import get_config_context  # local: only the CLI path needs a real DB
 
     _, context = get_config_context("./configs", use_cache=False, save=False)
     tickers = _load_sample(args.tickers)
     if args.action == "freeze":
         manifest = freeze_inputs(context, tickers, args.out_dir, filing_cap=args.cap)
-        print(f"froze {len(tickers)} ticker(s) to {args.out_dir} (cap={args.cap}): "
-             f"{ {t: v['rows'] for t, v in manifest['tickers'].items()} }")
+        print(f"froze {len(tickers)} ticker(s) to {args.out_dir} (cap={args.cap}): { {t: v['rows'] for t, v in manifest['tickers'].items()} }")
     elif args.action == "snapshot":
         results = replay(args.frozen_dir, tickers)
         snapshot(results, args.out_dir)

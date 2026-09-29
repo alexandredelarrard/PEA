@@ -9,6 +9,8 @@ derivation exception).
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 
@@ -81,15 +83,15 @@ def test_harness_detects_a_planted_change(tmp_path):
 
     mutated = built.history.copy()
     last = mutated.index[-1]  # the only event with a full TTM window
-    original = float(mutated.loc[last, _FLOW])
-    mutated.loc[last, _FLOW] = original + 1.0
+    original = float(cast(Any, mutated.at[last, _FLOW]))
+    mutated.at[last, _FLOW] = original + 1.0
     harness.snapshot({_TICKER: TickerHistory(mutated, built.reason_codes)}, after_dir)
 
     report = harness.compare(before_dir, after_dir)
 
     print("\n=== SANITY CHECK: replay_equality.compare detects a planted cell change ===")
     print(f"  planted: {_FLOW} {original} -> {original + 1.0} on 1 row")
-    print(f"  detected: {report.cells_differing[_TICKER]} differing cell(s), " f"first={report.first_10_diffs[0] if report.first_10_diffs else None}")
+    print(f"  detected: {report.cells_differing[_TICKER]} differing cell(s), first={report.first_10_diffs[0] if report.first_10_diffs else None}")
     assert report.cells_differing[_TICKER] == 1
     assert report.first_10_diffs[0][2] == _FLOW
     assert not report.ok
@@ -112,7 +114,7 @@ def test_harness_detects_a_dtype_change(tmp_path):
     print(f"  planted: {target} float64 -> object (the VRT/APA TEXT-column bug)")
     with pytest.raises(AssertionError, match="dtype drift"):
         harness.compare(before_dir, after_dir)
-    print("  -> Gate validated: the comparison refuses a column that changed TYPE, not just " "value.")
+    print("  -> Gate validated: the comparison refuses a column that changed TYPE, not just value.")
 
 
 def test_harness_detects_a_missing_reason_code(tmp_path):
@@ -138,12 +140,10 @@ def test_harness_detects_a_missing_reason_code(tmp_path):
     print("\n=== SANITY CHECK: replay_equality.compare detects a dropped reason code ===")
     print("  planted: 1 code row dropped (totalAssets/not_disclosed), history unchanged")
     print(
-        f"  detected: removed={report.codes_removed[_TICKER]}, "
-        f"added={report.codes_added[_TICKER]}, cells_differing="
-        f"{report.cells_differing[_TICKER]}"
+        f"  detected: removed={report.codes_removed[_TICKER]}, added={report.codes_added[_TICKER]}, cells_differing={report.cells_differing[_TICKER]}"
     )
     assert report.cells_differing[_TICKER] == 0
     assert report.codes_removed[_TICKER] == 1
     assert report.codes_added[_TICKER] == 0
     assert not report.ok
-    print("  -> Gate validated: the missing code was caught even though the history frame " "matched.")
+    print("  -> Gate validated: the missing code was caught even though the history frame matched.")

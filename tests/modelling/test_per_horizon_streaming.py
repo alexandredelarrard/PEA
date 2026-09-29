@@ -7,10 +7,12 @@ flow + memory discipline + the blend math:
   * a model produced per horizon, train-end recorded,
   * the blend consumes the small per-horizon score frames and IR-weights them correctly.
 """
+
 from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,29 +20,30 @@ import pandas as pd
 from src.modelling.long_short.step_train import StepModelling
 
 
-def _panel(h):
+def _panel(h: int) -> pd.DataFrame:
     d = pd.to_datetime(["2023-01-02", "2023-01-03"])
-    return pd.DataFrame({"date": list(d) * 2, "ticker": ["A", "A", "B", "B"],
-                         "y": [0.1, 0.2, 0.3, 0.4], "f_x": [1.0, 2.0, 3.0, 4.0]})
+    return pd.DataFrame({"date": list(d) * 2, "ticker": ["A", "A", "B", "B"], "y": [0.1, 0.2, 0.3, 0.4], "f_x": [1.0, 2.0, 3.0, 4.0]})
 
 
-def _score(h):
+def _score(h: int) -> pd.DataFrame:
     d = pd.to_datetime(["2023-01-02", "2023-01-03"])
     z = {5: [0.0, 1.0, 1.0, 0.0], 20: [1.0, 0.0, 0.0, 1.0]}[h]
     return pd.DataFrame({"date": list(d) * 2, "ticker": ["A", "A", "B", "B"], f"z_{h}": z})
 
 
-def _make_step():
-    s = StepModelling.__new__(StepModelling)
-    s._context = SimpleNamespace(save=False)          # save=False -> no diagnostics/run_stamp
+def _make_step() -> Any:
+    s: Any = StepModelling.__new__(StepModelling)
+    s._context = SimpleNamespace(save=False)  # save=False -> no diagnostics/run_stamp
     s._log = logging.getLogger("test")
     s.horizons = [5, 20]
     s.model_types = ["lightgbm"]
     s._half_life = lambda: None
-    s._loads = []                                     # record load calls (streaming proof)
+    s._loads = []  # record load calls (streaming proof)
+
     def _load(h):
         s._loads.append(h)
         return _panel(h)
+
     s._load_horizon_panel = _load
     s._cv_one_horizon = lambda h, p: s.horizon_ic.__setitem__(h, {"mean_ic": 0.05, "ic_ir": 1.0})
     s._train_final_one = lambda h, p: {"lightgbm": f"model_{h}"}
@@ -70,9 +73,11 @@ def test_process_horizons_streams_one_at_a_time_then_blends():
     assert "signal" in s.predictions.columns and s.signal_date == pd.Timestamp("2023-01-03")
 
     print("\n=== SANITY CHECK: per-horizon streaming training ===")
-    print(f"  loaded one panel per horizon {s._loads} then freed each (no self.panels/self.cube); "
-          f"models {sorted(s.models)}; blend IR-weights {s.horizon_weights}, combined = weighted "
-          "nanmean of per-horizon z. Peak memory = one horizon, not the whole cube.")
+    print(
+        f"  loaded one panel per horizon {s._loads} then freed each (no self.panels/self.cube); "
+        f"models {sorted(s.models)}; blend IR-weights {s.horizon_weights}, combined = weighted "
+        "nanmean of per-horizon z. Peak memory = one horizon, not the whole cube."
+    )
 
 
 if __name__ == "__main__":

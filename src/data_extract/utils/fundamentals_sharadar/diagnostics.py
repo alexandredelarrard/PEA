@@ -53,6 +53,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -70,7 +71,7 @@ from src.utils.quarters import quarter_label, quarter_ordinal
 
 #: Default destination of the generated report. A dated plan path rather than a constant in
 #: `constants.py`: it belongs to one planning task, not to the pipeline's vocabulary.
-DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/" "phase-2-findings.md"
+DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/phase-2-findings.md"
 
 #: How many flagged rows the report lists in full. The count is always printed beside it, so
 #: the tail is visible without being enumerated.
@@ -282,7 +283,7 @@ def _sec_counterpart_value(sec: pd.DataFrame, sec_cols: Sequence[str]) -> pd.Dat
     )
 
 
-def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> dict[str, int]:
+def _sec_verdicts(field: str, zeros: pd.DataFrame, art: pd.DataFrame, sec: pd.DataFrame) -> dict[str, int | str]:
     """How the SEC layer judges each zero cell of `field`, on a BASIS-MATCHED comparison.
 
     * A DURATION field is judged at the TTM level, because that is the only grain on which the
@@ -519,7 +520,7 @@ def confirm_sign_conventions(frame: pd.DataFrame) -> dict:
             "capex_max": float(capex.max()) if not capex.empty else float("nan"),
             "fcf_rows": int(len(residual)),
             "fcf_max_abs_residual": float(residual.max()) if not residual.empty else 0.0,
-            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} " f"{pd.Timestamp(frame.at[worst, 'date']).date()}" if worst is not None else "-"),
+            "fcf_worst_row": (f"{frame.at[worst, 'ticker']} {pd.Timestamp(cast(Any, frame.at[worst, 'date'])).date()}" if worst is not None else "-"),
             "fcf_violations": int((residual > FCF_IDENTITY_TOLERANCE).sum()),
         }
         out["dimensions"][str(dimension)] = block
@@ -601,7 +602,7 @@ def render_report(results: dict) -> str:
         "## Cross-check — `sharesbas` vs the SEC cover-page count",
         md_table(results["shares"], WORST_ROWS),
         "## Sign conventions — `capex <= 0` and `fcf == ncfo + capex`",
-        f"capex sign holds: **{signs['capex_sign_holds']}**; " f"fcf identity holds: **{signs['fcf_identity_holds']}**.",
+        f"capex sign holds: **{signs['capex_sign_holds']}**; fcf identity holds: **{signs['fcf_identity_holds']}**.",
         md_table(sign_rows),
     ]
     return "\n".join(parts) + "\n"
@@ -621,13 +622,13 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *, r
     art = by_dimension.get("ART", frame.iloc[:0])
     if arq.empty:
         raise RuntimeError(
-            f"{Tables.sharadar_fundamentals} has no ARQ rows for the requested scope; every " f"gate is built on the as-reported quarters."
+            f"{Tables.sharadar_fundamentals} has no ARQ rows for the requested scope; every gate is built on the as-reported quarters."
         )
 
     scope_tickers = sorted(str(t) for t in arq["ticker"].unique())
     sec = load_sec(context, scope_tickers)
     overlap = sorted(set(scope_tickers) & set(sec["ticker"].astype(str))) if not sec.empty else []
-    scope = f"{len(scope_tickers)} ticker(s), " f"{pd.Timestamp(arq['date'].min()).date()}..{pd.Timestamp(arq['date'].max()).date()}"
+    scope = f"{len(scope_tickers)} ticker(s), {pd.Timestamp(arq['date'].min()).date()}..{pd.Timestamp(arq['date'].max()).date()}"
     context.log.info("Sharadar diagnostics: %s; %d overlap with %s", scope, len(overlap), Tables.fundamentals_history_sec)
 
     results: dict = {
@@ -666,7 +667,7 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *, r
         "Gate 3 zero-fill      : %d field(s) measured; %d with a contradicted zero", len(zero_fill), int((zero_fill["sec_contradicted"] > 0).sum())
     )
     context.log.info(
-        "Sign conventions      : fcf==ncfo+capex %s | capex<=0 %s (%d of %d rows " "positive: %s)",
+        "Sign conventions      : fcf==ncfo+capex %s | capex<=0 %s (%d of %d rows positive: %s)",
         "HOLDS" if signs["fcf_identity_holds"] else "FAILED",
         "HOLDS" if signs["capex_sign_holds"] else "DOES NOT HOLD",
         signs["capex_positive_total"],
@@ -676,7 +677,7 @@ def run_diagnostics(context: Context, tickers: Sequence[str] | None = None, *, r
     shares = results["shares"]
     split = shares[shares["verdict"].str.startswith("SPLIT")] if not shares.empty else shares
     context.log.warning(
-        "sharesbas vs SEC      : %d/%d ticker(s) agree at 1.0; %d are " "SPLIT-ADJUSTED and therefore NOT point-in-time: %s",
+        "sharesbas vs SEC      : %d/%d ticker(s) agree at 1.0; %d are SPLIT-ADJUSTED and therefore NOT point-in-time: %s",
         int(((shares["median_ratio"] - 1).abs() <= 0.05).sum()) if not shares.empty else 0,
         len(shares),
         len(split),

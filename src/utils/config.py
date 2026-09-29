@@ -1,6 +1,7 @@
-from omegaconf import DictConfig, OmegaConf
-import glob
 from pathlib import Path
+from typing import cast
+
+from omegaconf import DictConfig, OmegaConf
 
 
 def read_config(path: str) -> DictConfig:
@@ -19,4 +20,4 @@ def read_config(path: str) -> DictConfig:
             sub_config = OmegaConf.load(config_file)
             config = OmegaConf.merge(config, sub_config)
 
-    return config
+    return cast(DictConfig, config)

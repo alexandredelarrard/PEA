@@ -15,6 +15,7 @@ DESTRUCTIVE. Every row in the named tables is deleted; they are rebuilt by
     "$PY" scripts/recreate_fundamentals_tables.py --dry-run
     "$PY" scripts/recreate_fundamentals_tables.py --yes
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,8 +32,7 @@ from src.data_store.ddl import existing_blocks
 #: Facts first in the DROP, history last in the CREATE -- there are no FKs between them, but
 #: the order is the dependency order a reader expects, and a partial failure then leaves the
 #: upstream table missing rather than a downstream one silently empty.
-TABLES = ("fundamentals_facts", "fundamentals_history", "fundamentals_reason_codes",
-          "fundamentals_employees")
+TABLES = ("fundamentals_facts", "fundamentals_history", "fundamentals_reason_codes", "fundamentals_employees")
 
 
 def main() -> None:
@@ -51,7 +51,7 @@ def main() -> None:
         for table in TABLES:
             try:
                 n = conn.execute(text(f'SELECT count(*) FROM "{table}"')).scalar()
-            except Exception:                                    # table not there yet
+            except Exception:  # table not there yet
                 n = None
             print(f"  {table:32s} {'absent' if n is None else f'{n:,} rows'}")
 

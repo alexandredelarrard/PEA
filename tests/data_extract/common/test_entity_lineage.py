@@ -16,6 +16,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -197,7 +198,7 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
         ),
     )
     monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
-    context = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
     lineage_module.build_entity_lineage(context, CACHE, CONFIG_DIR)
@@ -268,6 +269,79 @@ def test_new_older_cik_rekey_is_detected_before_write():
     print("  OK: the impact is named before any table replacement")
 
 
+def test_an_exact_rekey_approval_allows_the_guarded_lineage_replace(monkeypatch, tmp_path):
+    columns = ["cik", "entity_id", "source", "confidence", "evidence"]
+    old = pd.DataFrame(
+        [("0000000200", "E0000000200", "roster", 1.0, "old")],
+        columns=columns,
+    )
+    new = pd.DataFrame(
+        [
+            ("0000000100", "E0000000100", "register", 1.0, "predecessor"),
+            ("0000000200", "E0000000100", "register", 1.0, "successor"),
+        ],
+        columns=columns,
+    )
+    roster = _roster([("AAA", "0000000200")])
+    tenure = _tenure([("AAA", "0000000200", "2020-01-01", None, 1)])
+    replaced: list[pd.DataFrame] = []
+
+    class Store:
+        def load(self, table, **kwargs):
+            del kwargs
+            if table is Tables.symbol_tenure:
+                return tenure
+            if table is Tables.sp500_tickers:
+                return roster
+            if table is Tables.entity_lineage:
+                return old
+            raise AssertionError(table)
+
+        def replace(self, table, frame):
+            assert table is Tables.entity_lineage
+            replaced.append(frame)
+            return len(frame)
+
+    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (new, pd.DataFrame()))
+    monkeypatch.setattr(
+        lineage_module,
+        "load_manual_symbol_tenure",
+        lambda *args, **kwargs: pd.DataFrame(
+            [
+                {
+                    "canonical_ticker": "AAA",
+                    "symbol": "AAA",
+                    "issuer_cik": "0000000200",
+                    "valid_from": pd.Timestamp("2020-01-01"),
+                    "valid_to": pd.NaT,
+                    "n_filings": 0,
+                    "source": "manual",
+                    "evidence": "test",
+                    "reason": "test",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.rekey"))
+
+    with pytest.raises(lineage_module.EntityRekeyError):
+        lineage_module.build_entity_lineage(context, CACHE, str(tmp_path / "configs"))
+    assert replaced == []
+
+    lineage_module.build_entity_lineage(
+        context,
+        CACHE,
+        str(tmp_path / "configs"),
+        approved_rekeys=frozenset({("E0000000200", "E0000000100")}),
+    )
+    assert len(replaced) == 1 and replaced[0].equals(new)
+
+    print("\n=== SANITY CHECK: explicit older-CIK rekey approval ===")
+    print("  unapproved rebuild stopped before replace; exact old->new approval wrote once")
+    print("  OK: lineage rekeys remain fail-closed and individually acknowledged")
+
+
 def test_candidate_set_is_universe_symbols_plus_roster_ciks():
     tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 5), ("ZZZ", "0000000999", "2006-01-05", None, 5)])
     roster = _roster([("AAA", "0000000222"), ("BBB", "0000000333")])
@@ -317,7 +391,7 @@ def test_manual_config_rejects_an_undocumented_verdict(tmp_path):
 # Real data: the live register + curated files against the live tables         #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def live_lineage():
+def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 40:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
     from src.context import get_config_context
@@ -331,6 +405,7 @@ def live_lineage():
         pytest.skip(f"database unavailable ({type(exc).__name__})")
     if tenure is None or roster is None or tenure.empty or roster.empty:
         pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
+    assert tenure is not None and roster is not None
     return derive_entity_lineage(CACHE, tenure, roster, CONFIG_DIR)
 
 
@@ -342,6 +417,7 @@ def test_no_entity_holds_two_universe_tickers(live_lineage):
 
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     roster = context.store.load(Tables.sp500_tickers)
+    assert roster is not None
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
 
     per_entity: dict[str, list[str]] = {}
@@ -422,6 +498,7 @@ def test_d19_allowlist_covers_every_live_disagreement(live_lineage):
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     roster = context.store.load(Tables.sp500_tickers)
     tenure = context.store.load(Tables.symbol_tenure, project=True)
+    assert roster is not None and tenure is not None
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
 
     def func_e(c):
@@ -448,9 +525,9 @@ def test_d19_allowlist_covers_every_live_disagreement(live_lineage):
     )
 
     print("\n=== SANITY CHECK: D19 roster-CIK cross-check ===")
-    print(f"  tickers {len(roster)}; agree {len(roster) - len(disagree)}; " f"disagree {len(disagree)}; all allow-listed with evidence")
+    print(f"  tickers {len(roster)}; agree {len(roster) - len(disagree)}; disagree {len(disagree)}; all allow-listed with evidence")
     for ticker, cik, tenure_cik in disagree:
-        print(f"    {ticker:6s} roster {cik} vs tenure {tenure_cik or 'NO TENURE':10s}" f" -- {allow[ticker][:78]}")
+        print(f"    {ticker:6s} roster {cik} vs tenure {tenure_cik or 'NO TENURE':10s} -- {allow[ticker][:78]}")
     print("  OK: no unexplained disagreement remains")
     print("  -> This is the free check that would have caught XOM's wrong CIK in 2026-08.")
 
@@ -473,7 +550,39 @@ def test_the_register_beats_owner_overlap(live_lineage):
     assert from_register == register_ciks & set(source)
 
     print("\n=== SANITY CHECK: oracle priority ===")
-    print(f"  XOM 0000034088 / 0002115436 -> {entity['0000034088']} via " f"{source['0000034088']} (owner overlap scored them UNRELATED)")
+    print(f"  XOM 0000034088 / 0002115436 -> {entity['0000034088']} via {source['0000034088']} (owner overlap scored them UNRELATED)")
     print(f"  every one of the {len(from_register)} register CIKs is sourced `register`")
     print("  OK: the curated layer is never overruled by the automatic oracle")
     print("  -> A hand-evidenced chain outranks a statistic, which is the whole point of it.")
+
+
+def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
+    """The accepted pairs must resolve through the register even with no owner evidence."""
+    current = {
+        "EVRG": "0001711269",
+        "JCI": "0000833444",
+        "PSKY": "0002041610",
+    }
+    pairs = {
+        "EVRG": ("0000054507", current["EVRG"]),
+        "JCI": ("0000053669", current["JCI"]),
+        "PSKY": ("0000813828", current["PSKY"]),
+    }
+    lineage, _ = derive_entity_lineage(
+        CACHE,
+        _tenure([(ticker, cik, "2000-01-01", None, 1) for ticker, cik in current.items()]),
+        _roster(list(current.items())),
+        CONFIG_DIR,
+        owners={},
+    )
+    entity = dict(zip(lineage["cik"], lineage["entity_id"], strict=False))
+    source = dict(zip(lineage["cik"], lineage["source"], strict=False))
+
+    for predecessor, successor in pairs.values():
+        assert entity[predecessor] == entity[successor]
+        assert source[predecessor] == source[successor] == "register"
+
+    print("\n=== SANITY CHECK: governance lineage comes from the register ===")
+    for ticker, (predecessor, successor) in pairs.items():
+        print(f"  {ticker}: {predecessor} == {successor} via register")
+    print("  OK: all six CIK assignments are register-sourced without owner overlap.")

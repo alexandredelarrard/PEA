@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false, reportUnusedExpression=false
 """
 dag_modelling.py  (src/dags/dag_modelling.py)
 ---------------------------------------------
@@ -35,18 +36,20 @@ PREDICTION IS NOT IN THIS DAG: the daily `strat_prediction` DAG owns it (and is 
 is scored every day without waiting for a retrain. Each command runs in the pipeline's isolated
 venv (/opt/pipeline) from the mounted repo.
 """
+
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.bash import BashOperator
 
-PROJECT = "/opt/airflow/project"                 # the repo, bind-mounted
+from airflow import DAG
+
+PROJECT = "/opt/airflow/project"  # the repo, bind-mounted
 CONFIGS = f"{PROJECT}/configs"
 
 default_args = {
     "owner": "pea",
     "depends_on_past": False,
-    "retries": 0,                                # long GPU/CPU train — don't silently re-run
+    "retries": 0,  # long GPU/CPU train — don't silently re-run
     "retry_delay": timedelta(minutes=10),
     "email_on_failure": False,
 }
@@ -55,12 +58,12 @@ dag = DAG(
     dag_id="modelling",
     default_args=default_args,
     description="WEEKLY (Sat): train the long/short ensemble on the holdout window, backtest the "
-                "portfolio OOS, then refit on ALL history for production.",
-    schedule="0 2 * * 6",                        # Saturday 02:00 — weekend retrain
+    "portfolio OOS, then refit on ALL history for production.",
+    schedule="0 2 * * 6",  # Saturday 02:00 — weekend retrain
     start_date=datetime(2024, 1, 1),
-    catchup=False,                               # a missed week is covered by the next run
-    max_active_runs=1,                           # never two trains writing the same artifacts
-    max_active_tasks=1,                          # train then backtest, strictly sequential
+    catchup=False,  # a missed week is covered by the next run
+    max_active_runs=1,  # never two trains writing the same artifacts
+    max_active_tasks=1,  # train then backtest, strictly sequential
     tags=["pea", "modelling", "backtest", "weekly"],
 )
 

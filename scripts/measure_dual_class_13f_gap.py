@@ -22,6 +22,7 @@ undercount is therefore measured there and read across, which is sound because `
 
     python scripts/measure_dual_class_13f_gap.py
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,14 +46,17 @@ def main() -> None:
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     OUT.mkdir(parents=True, exist_ok=True)
     universe = set(load_universe_tickers(context))
-    excluded = {str(t).strip().upper()
-                for t in context.config.data_extract.redundant_ticks}
+    excluded = {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
 
     cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
+    if cmap is None:
+        raise RuntimeError("cusip_ticker_map is unavailable")
     cmap["ticker"] = cmap["ticker"].astype("string").str.upper().str.strip()
     print("\n=== 1. does cusip_ticker_map carry the excluded classes separately? ===")
-    print(f"  {len(cmap):,} mapped CUSIP(s); {int(cmap['ticker'].isna().sum()):,} persisted "
-          "NULL (unmapped, NEVER RETRIED -- fetch_cusip_map.py:121-127)")
+    print(
+        f"  {len(cmap):,} mapped CUSIP(s); {int(cmap['ticker'].isna().sum()):,} persisted "
+        "NULL (unmapped, NEVER RETRIED -- fetch_cusip_map.py:121-127)"
+    )
     for tick in sorted(excluded | set(PAIRS.values())):
         hits = sorted(cmap.loc[cmap["ticker"] == tick, "cusip"])
         flag = "EXCLUDED" if tick in excluded else "in universe" if tick in universe else "-"
@@ -61,12 +65,15 @@ def main() -> None:
     by_ticker = cmap.dropna(subset=["ticker"]).groupby("ticker")["cusip"].apply(set).to_dict()
     unmapped = set(cmap.loc[cmap["ticker"].isna(), "cusip"])
 
-    holdings = context.store.load(
-        Tables.sec13f_manager_holdings, columns=["period", "cusip", "shares", "value_usd"])
+    holdings = context.store.load(Tables.sec13f_manager_holdings, columns=["period", "cusip", "shares", "value_usd"])
+    if holdings is None:
+        raise RuntimeError("sec13f_manager_holdings is unavailable")
     holdings["cusip"] = holdings["cusip"].astype(str).str.strip()
-    print(f"\n  sec13f_manager_holdings: {len(holdings):,} rows, "
-          f"{holdings['cusip'].nunique():,} CUSIP(s), "
-          f"{holdings['period'].min()} -> {holdings['period'].max()}")
+    print(
+        f"\n  sec13f_manager_holdings: {len(holdings):,} rows, "
+        f"{holdings['cusip'].nunique():,} CUSIP(s), "
+        f"{holdings['period'].min()} -> {holdings['period'].max()}"
+    )
 
     # ------------------------------------------------- 2. the dual-class buckets --- #
     print("\n=== 2. dropped_dual_class: value the universe filter removes ===")
@@ -77,56 +84,68 @@ def main() -> None:
         k = holdings[holdings["cusip"].isin(k_cusips)]
         total_v = d["value_usd"].sum() + k["value_usd"].sum()
         total_n = len(d) + len(k)
-        rows.append({
-            "dropped_class": dropped, "kept_class": kept,
-            "dropped_positions": len(d), "kept_positions": len(k),
-            "dropped_value_usd": d["value_usd"].sum(), "kept_value_usd": k["value_usd"].sum(),
-            "pct_value_understated": (d["value_usd"].sum() / total_v * 100) if total_v else 0.0,
-            "pct_positions_understated": (len(d) / total_n * 100) if total_n else 0.0})
+        rows.append(
+            {
+                "dropped_class": dropped,
+                "kept_class": kept,
+                "dropped_positions": len(d),
+                "kept_positions": len(k),
+                "dropped_value_usd": d["value_usd"].sum(),
+                "kept_value_usd": k["value_usd"].sum(),
+                "pct_value_understated": (d["value_usd"].sum() / total_v * 100) if total_v else 0.0,
+                "pct_positions_understated": (len(d) / total_n * 100) if total_n else 0.0,
+            }
+        )
         if not d.empty or not k.empty:
             q = pd.concat([d.assign(leg="dropped"), k.assign(leg="kept")])
-            per_quarter.append(
-                q.pivot_table(index="period", columns="leg", values="value_usd",
-                              aggfunc="sum").assign(issuer=dropped))
+            per_quarter.append(q.pivot_table(index="period", columns="leg", values="value_usd", aggfunc="sum").assign(issuer=dropped))
     gap = pd.DataFrame(rows)
     print("  " + gap.to_string(index=False).replace("\n", "\n  "))
     for r in rows:
         if r["pct_value_understated"]:
-            print(f"\n  ⚠ institutional ownership of the {r['kept_class']} issuer in "
-                  f"`sec13f_hr` is understated by {r['pct_value_understated']:.1f}% of value "
-                  f"and {r['pct_positions_understated']:.1f}% of positions, because every "
-                  f"{r['dropped_class']} position is dropped by isin(universe).")
+            print(
+                f"\n  ⚠ institutional ownership of the {r['kept_class']} issuer in "
+                f"`sec13f_hr` is understated by {r['pct_value_understated']:.1f}% of value "
+                f"and {r['pct_positions_understated']:.1f}% of positions, because every "
+                f"{r['dropped_class']} position is dropped by isin(universe)."
+            )
     gap.to_csv(OUT / "dual_class_13f_gap.csv", index=False)
     if per_quarter:
         pq = pd.concat(per_quarter).reset_index()
         pq.to_csv(OUT / "dual_class_13f_gap_by_quarter.csv", index=False)
-        print(f"\n  per-quarter detail -> {OUT}/dual_class_13f_gap_by_quarter.csv "
-              f"({len(pq)} rows)")
+        print(f"\n  per-quarter detail -> {OUT}/dual_class_13f_gap_by_quarter.csv ({len(pq)} rows)")
 
     # ---------------------------------------- 3. the OTHER cause, kept separate --- #
     print("\n=== 3. dropped_unmapped: a different defect, counted apart ===")
     um = holdings[holdings["cusip"].isin(unmapped)]
     never = holdings[~holdings["cusip"].isin(set(cmap["cusip"]))]
     print(f"  mapped-to-NULL  {len(um):>10,} position(s)  ${um['value_usd'].sum() / 1e9:>12,.1f}bn")
-    print(f"  absent from map {len(never):>10,} position(s)  "
-          f"${never['value_usd'].sum() / 1e9:>12,.1f}bn")
-    print("  ⚠ Neither is the dual-class defect. An unmapped CUSIP is persisted NULL and never "
-          "retried, so its rows are dropped for want of a ticker rather than by the universe "
-          "filter -- folding them into the headline would make it unattributable.")
+    print(f"  absent from map {len(never):>10,} position(s)  ${never['value_usd'].sum() / 1e9:>12,.1f}bn")
+    print(
+        "  ⚠ Neither is the dual-class defect. An unmapped CUSIP is persisted NULL and never "
+        "retried, so its rows are dropped for want of a ticker rather than by the universe "
+        "filter -- folding them into the headline would make it unattributable."
+    )
 
     # -------------------------------------------------------- 4. EA, counted apart --- #
     print("\n=== 4. EA: excluded as ACQUIRED, not as a share class ===")
     ea = holdings[holdings["cusip"].isin(by_ticker.get("EA", set()))]
-    print(f"  {len(ea):,} position(s), ${ea['value_usd'].sum() / 1e9:,.1f}bn, "
-          f"{ea['period'].min() if not ea.empty else '-'} -> "
-          f"{ea['period'].max() if not ea.empty else '-'}")
-    print("  Counted separately and NOT added to the dual-class figure: `EA` has no sibling "
-          "class in the universe, so there is nothing for its value to be summed onto.")
+    print(
+        f"  {len(ea):,} position(s), ${ea['value_usd'].sum() / 1e9:,.1f}bn, "
+        f"{ea['period'].min() if not ea.empty else '-'} -> "
+        f"{ea['period'].max() if not ea.empty else '-'}"
+    )
+    print(
+        "  Counted separately and NOT added to the dual-class figure: `EA` has no sibling "
+        "class in the universe, so there is nothing for its value to be summed onto."
+    )
 
-    print("\n  ⚠ NO FETCHER WAS CHANGED (D2a). The fix routes the excluded CUSIP through "
-          "`entity_ticker()`; note for whoever scopes it that a SUMMED numerator needs the "
-          "CONSOLIDATED `shares_outstanding` denominator the repo already chose -- an "
-          "economic-basis denominator under a summed numerator would be a new defect.")
+    print(
+        "\n  ⚠ NO FETCHER WAS CHANGED (D2a). The fix routes the excluded CUSIP through "
+        "`entity_ticker()`; note for whoever scopes it that a SUMMED numerator needs the "
+        "CONSOLIDATED `shares_outstanding` denominator the repo already chose -- an "
+        "economic-basis denominator under a summed numerator would be a new defect."
+    )
 
 
 if __name__ == "__main__":

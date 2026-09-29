@@ -36,6 +36,7 @@ Design notes
     curve per horizon, hard cap) is copied into `reports/<YYYY-MM-DD>/assets/<slug>/` -- inside
     the report's own day folder, so pruning a day takes its plots with it.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,17 +45,24 @@ import math
 import shutil
 import sys
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.dod.report_common import (                               # noqa: E402
-    Gate, announce, metrics_table, report_dir, repo_root, write_report,
+from scripts.dod.report_common import (  # noqa: E402
+    Gate,
+    announce,
+    metrics_table,
+    repo_root,
+    report_dir,
+    write_report,
 )
+
 # The writer's own filesystem-safe name function. Imported rather than re-implemented: if the
 # two ever disagree the reader silently looks in the wrong folder.
-from src.modelling.long_short.utils.diagnostics import _safe as safe_name   # noqa: E402
+from src.modelling.long_short.utils.diagnostics import _safe as safe_name  # noqa: E402
 
 GENERATOR = "scripts/dod/modelling_report.py@1"
 MAX_ASSETS = 12
@@ -72,7 +80,8 @@ def resolve_run_dir(explicit: str | None, config: str) -> Path:
         p = Path(explicit)
         if p.is_dir():
             return p
-    from src.context import get_config_context                        # local: needs configs
+    from src.context import get_config_context  # local: needs configs
+
     _, context = get_config_context(config, use_cache=False, save=False)
     diag = Path(context.paths["OUTPUT_DIR"]) / "diagnostics"
     if explicit:
@@ -81,8 +90,7 @@ def resolve_run_dir(explicit: str | None, config: str) -> Path:
             return cand
         raise SystemExit(f"no such run: {explicit} (looked in {diag})")
     if not diag.is_dir():
-        raise SystemExit(f"no diagnostics directory at {diag} -- train a model first, or pass "
-                         f"--run-dir")
+        raise SystemExit(f"no diagnostics directory at {diag} -- train a model first, or pass --run-dir")
     runs = sorted((d for d in diag.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime)
     if not runs:
         raise SystemExit(f"{diag} has no run directories")
@@ -120,8 +128,7 @@ def is_booster(member_kpis: dict) -> bool:
 
 def read_run(run_dir: Path) -> dict:
     """Everything the report needs, per horizon and per member. No model is loaded."""
-    out: dict = {"run_dir": str(run_dir), "run_stamp": run_dir.name,
-                 "kpis_json_ok": False, "kpis_csv_ok": False, "horizons": {}}
+    out: dict = {"run_dir": str(run_dir), "run_stamp": run_dir.name, "kpis_json_ok": False, "kpis_csv_ok": False, "horizons": {}}
 
     run_kpis = _read_json(run_dir / "kpis.json")
     out["kpis_json_ok"] = isinstance(run_kpis, dict) and bool(run_kpis.get("horizons"))
@@ -145,14 +152,15 @@ def read_run(run_dir: Path) -> dict:
             "horizon": h,
             "dir": str(hdir),
             "blend_weight": hk.get("blend_weight"),
-            "cv_mean_ic": hk.get("cv_mean_ic"), "cv_ic_ir": hk.get("cv_ic_ir"),
+            "cv_mean_ic": hk.get("cv_mean_ic"),
+            "cv_ic_ir": hk.get("cv_ic_ir"),
             "oos_ic_mean": hk.get("oos_ic_mean"),
             "oos_ic_hit_rate": hk.get("oos_ic_hit_rate"),
             "oos_ic_days": hk.get("oos_ic_days"),
-            "n_rows": hk.get("n_rows"), "n_tickers": hk.get("n_tickers"),
+            "n_rows": hk.get("n_rows"),
+            "n_tickers": hk.get("n_tickers"),
             "n_days": hk.get("n_days"),
-            "ic_curve_png": str(hdir / "ic_over_time.png")
-                            if (hdir / "ic_over_time.png").is_file() else None,
+            "ic_curve_png": str(hdir / "ic_over_time.png") if (hdir / "ic_over_time.png").is_file() else None,
             "layout": "flat" if n_boosters == 1 else "per-member",
             "n_boosters": n_boosters,
             "members": {},
@@ -173,27 +181,26 @@ def read_run(run_dir: Path) -> dict:
                     s = pd.read_csv(shap_csv)
                     val = s.columns[-1]
                     key = s.columns[0]
-                    top = [{"feature": r[key], "shap_mean_abs": float(r[val])}
-                           for _, r in s.head(SHAP_TOP_N).iterrows()]
+                    top = [{"feature": r[key], "shap_mean_abs": float(r[val])} for _, r in s.head(SHAP_TOP_N).iterrows()]
                 except (OSError, ValueError, IndexError, pd.errors.ParserError):
                     top = []
             info["members"][name] = {
                 "dir": str(mdir) if booster else None,
                 "booster": booster,
-                "cv_mean_ic": mk.get("cv_mean_ic"), "cv_ic_ir": mk.get("cv_ic_ir"),
+                "cv_mean_ic": mk.get("cv_mean_ic"),
+                "cv_ic_ir": mk.get("cv_ic_ir"),
                 "n_features": mk.get("n_features"),
                 "n_pdp": mk.get("n_pdp"),
                 "shap_available": mk.get("shap_available"),
                 "shap_csv": str(shap_csv) if (shap_csv and shap_csv.is_file()) else None,
                 "shap_png": str(shap_png) if (shap_png and shap_png.is_file()) else None,
-                "pdp_files": (sorted(p.name for p in pdp_dir.glob("pdp_*.png"))
-                              if (pdp_dir and pdp_dir.is_dir()) else []),
+                "pdp_files": (sorted(p.name for p in pdp_dir.glob("pdp_*.png")) if (pdp_dir and pdp_dir.is_dir()) else []),
                 "shap_top": top,
             }
         out["horizons"][h] = info
 
     # the CSV is the artifact to diff between runs, so keep it verbatim for §3
-    out["csv_rows"] = (csv.to_dict("records") if csv is not None else [])
+    out["csv_rows"] = csv.to_dict("records") if csv is not None else []
     return out
 
 
@@ -202,7 +209,7 @@ def read_run(run_dir: Path) -> dict:
 # --------------------------------------------------------------------------- #
 def _finite(x: object) -> bool:
     try:
-        return math.isfinite(float(x))                                # type: ignore[arg-type]
+        return math.isfinite(float(x))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return False
 
@@ -212,11 +219,16 @@ def build_gates(run: dict, compare: dict | None, tolerance: float) -> list[Gate]
     horizons = run["horizons"]
 
     # ---- M1 --------------------------------------------------------------- #
-    gates.append(Gate("M1", "run kpis.json / kpis.csv parse",
-                      run["kpis_json_ok"] and run["kpis_csv_ok"],
-                      f"kpis.json={'ok' if run['kpis_json_ok'] else 'MISSING/EMPTY'}, "
-                      f"kpis.csv={'ok' if run['kpis_csv_ok'] else 'MISSING/UNREADABLE'}, "
-                      f"{len(horizons)} horizon(s)"))
+    gates.append(
+        Gate(
+            "M1",
+            "run kpis.json / kpis.csv parse",
+            run["kpis_json_ok"] and run["kpis_csv_ok"],
+            f"kpis.json={'ok' if run['kpis_json_ok'] else 'MISSING/EMPTY'}, "
+            f"kpis.csv={'ok' if run['kpis_csv_ok'] else 'MISSING/UNREADABLE'}, "
+            f"{len(horizons)} horizon(s)",
+        )
+    )
 
     # ---- M2 --------------------------------------------------------------- #
     bad = []
@@ -224,40 +236,50 @@ def build_gates(run: dict, compare: dict | None, tolerance: float) -> list[Gate]
         missing = [k for k in ("cv_mean_ic", "oos_ic_mean") if not _finite(info.get(k))]
         if missing:
             bad.append(f"h{h}: {', '.join(missing)} not finite")
-    gates.append(Gate("M2", "CV and OOS IC finite for every horizon",
-                      None if not horizons else not bad,
-                      "; ".join(bad) if bad
-                      else f"finite across {len(horizons)} horizon(s)"))
+    gates.append(
+        Gate(
+            "M2",
+            "CV and OOS IC finite for every horizon",
+            None if not horizons else not bad,
+            "; ".join(bad) if bad else f"finite across {len(horizons)} horizon(s)",
+        )
+    )
 
     # ---- M3 / M4: boosters only ------------------------------------------- #
-    boosters = [(h, name, m) for h, info in horizons.items()
-                for name, m in info["members"].items() if m["booster"]]
-    linear = [(h, name) for h, info in horizons.items()
-              for name, m in info["members"].items() if not m["booster"]]
-    linear_note = ("; ".join(f"h{h}:{n}" for h, n in linear)
-                   + " -- no SHAP by construction (linear member, never passed to "
-                     "save_member_diagnostics)") if linear else ""
+    boosters = [(h, name, m) for h, info in horizons.items() for name, m in info["members"].items() if m["booster"]]
+    linear = [(h, name) for h, info in horizons.items() for name, m in info["members"].items() if not m["booster"]]
+    linear_note = (
+        ("; ".join(f"h{h}:{n}" for h, n in linear) + " -- no SHAP by construction (linear member, never passed to save_member_diagnostics)")
+        if linear
+        else ""
+    )
 
-    no_shap = [f"h{h}:{n}" for h, n, m in boosters
-               if not (m["shap_available"] or m["shap_csv"] or m["shap_png"])]
-    gates.append(Gate("M3", "SHAP present for every booster member",
-                      None if not boosters else not no_shap,
-                      (f"MISSING for {', '.join(no_shap)}. " if no_shap else
-                       f"present for {len(boosters)} booster member(s). ")
-                      + (f"Stated: {linear_note}" if linear_note else "")))
+    no_shap = [f"h{h}:{n}" for h, n, m in boosters if not (m["shap_available"] or m["shap_csv"] or m["shap_png"])]
+    gates.append(
+        Gate(
+            "M3",
+            "SHAP present for every booster member",
+            None if not boosters else not no_shap,
+            (f"MISSING for {', '.join(no_shap)}. " if no_shap else f"present for {len(boosters)} booster member(s). ")
+            + (f"Stated: {linear_note}" if linear_note else ""),
+        )
+    )
 
-    no_pdp = [f"h{h}:{n}" for h, n, m in boosters
-              if not (m["pdp_files"] or (m["n_pdp"] or 0) > 0)]
-    gates.append(Gate("M4", ">=1 PDP per booster member",
-                      None if not boosters else not no_pdp,
-                      f"MISSING for {', '.join(no_pdp)}" if no_pdp
-                      else f"{sum(len(m['pdp_files']) or (m['n_pdp'] or 0) for _, _, m in boosters)}"
-                           f" PDP(s) across {len(boosters)} booster member(s)"))
+    no_pdp = [f"h{h}:{n}" for h, n, m in boosters if not (m["pdp_files"] or (m["n_pdp"] or 0) > 0)]
+    gates.append(
+        Gate(
+            "M4",
+            ">=1 PDP per booster member",
+            None if not boosters else not no_pdp,
+            f"MISSING for {', '.join(no_pdp)}"
+            if no_pdp
+            else f"{sum(len(m['pdp_files']) or (m['n_pdp'] or 0) for _, _, m in boosters)} PDP(s) across {len(boosters)} booster member(s)",
+        )
+    )
 
     # ---- M5: versus a previous run ---------------------------------------- #
     if compare is None:
-        gates.append(Gate("M5", "OOS IC not worse than the compared run", None,
-                          "no --compare-run given, so no regression claim is made"))
+        gates.append(Gate("M5", "OOS IC not worse than the compared run", None, "no --compare-run given, so no regression claim is made"))
     else:
         worse = []
         for h, info in horizons.items():
@@ -265,11 +287,18 @@ def build_gates(run: dict, compare: dict | None, tolerance: float) -> list[Gate]
             now = info.get("oos_ic_mean")
             if not (_finite(prev) and _finite(now)):
                 continue
-            if float(now) < float(prev) - tolerance:
-                worse.append(f"h{h}: {float(prev):+.4f} -> {float(now):+.4f}")
-        gates.append(Gate("M5", "OOS IC not worse than the compared run", not worse,
-                          (f"regressed beyond {tolerance:g}: " + "; ".join(worse)) if worse
-                          else f"within {tolerance:g} of run {compare['run_stamp']}"))
+            previous_value = float(cast(float, prev))
+            current_value = float(cast(float, now))
+            if current_value < previous_value - tolerance:
+                worse.append(f"h{h}: {previous_value:+.4f} -> {current_value:+.4f}")
+        gates.append(
+            Gate(
+                "M5",
+                "OOS IC not worse than the compared run",
+                not worse,
+                (f"regressed beyond {tolerance:g}: " + "; ".join(worse)) if worse else f"within {tolerance:g} of run {compare['run_stamp']}",
+            )
+        )
     return gates
 
 
@@ -326,8 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--slug", required=True)
     ap.add_argument("--run-dir", default=None, help="run_stamp or path (default: newest run)")
     ap.add_argument("--compare-run", default=None, help="M5: run_stamp or path to compare against")
-    ap.add_argument("--ic-tolerance", type=float, default=0.002,
-                    help="M5: allowed OOS IC decline (default 0.002)")
+    ap.add_argument("--ic-tolerance", type=float, default=0.002, help="M5: allowed OOS IC decline (default 0.002)")
     ap.add_argument("--config", default="./configs")
     ap.add_argument("--session-id", default=None)
     args = ap.parse_args(argv)
@@ -343,42 +371,71 @@ def main(argv: list[str] | None = None) -> int:
     gates = build_gates(run, compare, args.ic_tolerance)
     asset_links, assets, skipped = copy_assets(run, args.slug, root)
 
-    horizon_rows = [{
-        "horizon": f"h{h}", "layout": i["layout"], "members": len(i["members"]),
-        "boosters": i["n_boosters"],
-        "blend_weight": i["blend_weight"], "cv_mean_ic": i["cv_mean_ic"],
-        "cv_ic_ir": i["cv_ic_ir"], "oos_ic_mean": i["oos_ic_mean"],
-        "oos_ic_hit_rate": i["oos_ic_hit_rate"], "oos_ic_days": i["oos_ic_days"],
-        "n_rows": i["n_rows"], "n_tickers": i["n_tickers"], "n_days": i["n_days"],
-    } for h, i in sorted(run["horizons"].items())]
+    horizon_rows = [
+        {
+            "horizon": f"h{h}",
+            "layout": i["layout"],
+            "members": len(i["members"]),
+            "boosters": i["n_boosters"],
+            "blend_weight": i["blend_weight"],
+            "cv_mean_ic": i["cv_mean_ic"],
+            "cv_ic_ir": i["cv_ic_ir"],
+            "oos_ic_mean": i["oos_ic_mean"],
+            "oos_ic_hit_rate": i["oos_ic_hit_rate"],
+            "oos_ic_days": i["oos_ic_days"],
+            "n_rows": i["n_rows"],
+            "n_tickers": i["n_tickers"],
+            "n_days": i["n_days"],
+        }
+        for h, i in sorted(run["horizons"].items())
+    ]
 
-    member_rows = [{
-        "horizon": f"h{h}", "member": name, "booster": m["booster"],
-        "cv_mean_ic": m["cv_mean_ic"], "cv_ic_ir": m["cv_ic_ir"],
-        "n_features": m["n_features"], "n_pdp": m["n_pdp"] or len(m["pdp_files"]),
-        "shap": bool(m["shap_available"] or m["shap_csv"]),
-    } for h, i in sorted(run["horizons"].items()) for name, m in sorted(i["members"].items())]
+    member_rows = [
+        {
+            "horizon": f"h{h}",
+            "member": name,
+            "booster": m["booster"],
+            "cv_mean_ic": m["cv_mean_ic"],
+            "cv_ic_ir": m["cv_ic_ir"],
+            "n_features": m["n_features"],
+            "n_pdp": m["n_pdp"] or len(m["pdp_files"]),
+            "shap": bool(m["shap_available"] or m["shap_csv"]),
+        }
+        for h, i in sorted(run["horizons"].items())
+        for name, m in sorted(i["members"].items())
+    ]
 
     shap_md = []
     for h, i in sorted(run["horizons"].items()):
         for name, m in sorted(i["members"].items()):
             if not m["shap_top"]:
                 continue
-            feats = ", ".join(f"`{t['feature']}` ({t['shap_mean_abs']:.4g})"
-                              for t in m["shap_top"])
+            feats = ", ".join(f"`{t['feature']}` ({t['shap_mean_abs']:.4g})" for t in m["shap_top"])
             shap_md.append(f"- **h{h} / {name}** top {len(m['shap_top'])} by mean|SHAP|: {feats}")
 
     metrics_parts = [
-        "_Observed values only — read straight out of the run's own diagnostics; nothing here "
-        "was recomputed and no model was reloaded._",
+        "_Observed values only — read straight out of the run's own diagnostics; nothing here was recomputed and no model was reloaded._",
         "**Per horizon**",
-        metrics_table(horizon_rows, ["horizon", "layout", "members", "boosters",
-                                    "blend_weight", "cv_mean_ic", "cv_ic_ir", "oos_ic_mean",
-                                    "oos_ic_hit_rate", "oos_ic_days", "n_rows",
-                                    "n_tickers", "n_days"]),
+        metrics_table(
+            horizon_rows,
+            [
+                "horizon",
+                "layout",
+                "members",
+                "boosters",
+                "blend_weight",
+                "cv_mean_ic",
+                "cv_ic_ir",
+                "oos_ic_mean",
+                "oos_ic_hit_rate",
+                "oos_ic_days",
+                "n_rows",
+                "n_tickers",
+                "n_days",
+            ],
+        ),
         "**Per member**",
-        metrics_table(member_rows, ["horizon", "member", "booster", "cv_mean_ic", "cv_ic_ir",
-                                   "n_features", "n_pdp", "shap"]),
+        metrics_table(member_rows, ["horizon", "member", "booster", "cv_mean_ic", "cv_ic_ir", "n_features", "n_pdp", "shap"]),
     ]
     if shap_md:
         metrics_parts += ["**SHAP importance**", "\n".join(shap_md)]
@@ -388,36 +445,50 @@ def main(argv: list[str] | None = None) -> int:
         evidence_lines.append(f"- compared against: `{compare['run_stamp']}`")
     evidence_lines += [f"- ![{Path(a).name}]({a})" for a in asset_links]
     if skipped:
-        evidence_lines.append(f"- _{skipped} further plot(s) not copied (cap {MAX_ASSETS}); "
-                              f"see `{run['run_dir']}`._")
+        evidence_lines.append(f"- _{skipped} further plot(s) not copied (cap {MAX_ASSETS}); see `{run['run_dir']}`._")
     if not assets:
         evidence_lines.append("- **no PNG artifacts found** — check that diagnostics ran")
 
-    scope_md = "\n".join([
-        f"**Run read:** `{run['run_stamp']}` — {len(run['horizons'])} horizon(s), "
-        f"member layout(s): "
-        f"{', '.join(sorted({i['layout'] for i in run['horizons'].values()})) or 'n/a'}.",
-        "",
-        "**SAMPLE SCOPE** — as recorded by the run itself:",
-        "",
-        metrics_table([{"horizon": f"h{h}", "n_rows": i["n_rows"], "n_tickers": i["n_tickers"],
-                        "n_days": i["n_days"], "oos_ic_days": i["oos_ic_days"]}
-                       for h, i in sorted(run["horizons"].items())],
-                      ["horizon", "n_rows", "n_tickers", "n_days", "oos_ic_days"]),
-    ])
+    scope_md = "\n".join(
+        [
+            f"**Run read:** `{run['run_stamp']}` — {len(run['horizons'])} horizon(s), "
+            f"member layout(s): "
+            f"{', '.join(sorted({i['layout'] for i in run['horizons'].values()})) or 'n/a'}.",
+            "",
+            "**SAMPLE SCOPE** — as recorded by the run itself:",
+            "",
+            metrics_table(
+                [
+                    {"horizon": f"h{h}", "n_rows": i["n_rows"], "n_tickers": i["n_tickers"], "n_days": i["n_days"], "oos_ic_days": i["oos_ic_days"]}
+                    for h, i in sorted(run["horizons"].items())
+                ],
+                ["horizon", "n_rows", "n_tickers", "n_days", "oos_ic_days"],
+            ),
+        ]
+    )
 
     payload = {
-        "scope": {"run_dir": run["run_dir"], "run_stamp": run["run_stamp"],
-                  "compare_run": (compare or {}).get("run_stamp"),
-                  "ic_tolerance": args.ic_tolerance},
-        "metrics": {"horizons": horizon_rows, "members": member_rows,
-                    "csv_rows": run["csv_rows"], "assets": assets},
+        "scope": {
+            "run_dir": run["run_dir"],
+            "run_stamp": run["run_stamp"],
+            "compare_run": (compare or {}).get("run_stamp"),
+            "ic_tolerance": args.ic_tolerance,
+        },
+        "metrics": {"horizons": horizon_rows, "members": member_rows, "csv_rows": run["csv_rows"], "assets": assets},
     }
 
-    path = write_report("MODELLING", args.slug, generator=GENERATOR, gates=gates,
-                        metrics_md="\n\n".join(metrics_parts),
-                        evidence_md="\n".join(evidence_lines), payload=payload,
-                        scope_md=scope_md, root=root, session_id=args.session_id)
+    path = write_report(
+        "MODELLING",
+        args.slug,
+        generator=GENERATOR,
+        gates=gates,
+        metrics_md="\n\n".join(metrics_parts),
+        evidence_md="\n".join(evidence_lines),
+        payload=payload,
+        scope_md=scope_md,
+        root=root,
+        session_id=args.session_id,
+    )
     announce(path, gates)
     return 0
 

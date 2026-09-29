@@ -9,21 +9,22 @@ Kept dependency-light and engine-agnostic: the store layer (src/data_store)
 adapts its upsert to whichever dialect the engine reports, so the same code
 runs against Postgres (production) and SQLite (fast offline sanity checks).
 """
+
 from __future__ import annotations
 
 import os
 from functools import lru_cache
 
-from sqlalchemy import Engine, URL, create_engine
+from sqlalchemy import URL, Engine, create_engine
 
 
 def database_url() -> str | URL:
     """Connection target, in priority order:
-      1. `DATABASE_URL` env (set explicitly, e.g. in CI),
-      2. a URL built from the POSTGRES_* env vars, with `POSTGRES_HOST` defaulting to `localhost`
-         (the host reaching the exposed container port) — set it to the compose SERVICE name
-         (`db`) inside a container. Built via `URL.create`, which URL-escapes the password, so
-         special characters (`!`, `@`, …) no longer break the connection string.
+    1. `DATABASE_URL` env (set explicitly, e.g. in CI),
+    2. a URL built from the POSTGRES_* env vars, with `POSTGRES_HOST` defaulting to `localhost`
+       (the host reaching the exposed container port) — set it to the compose SERVICE name
+       (`db`) inside a container. Built via `URL.create`, which URL-escapes the password, so
+       special characters (`!`, `@`, …) no longer break the connection string.
     """
     if os.getenv("DATABASE_URL"):
         return os.environ["DATABASE_URL"]

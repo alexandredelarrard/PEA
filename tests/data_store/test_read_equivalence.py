@@ -40,6 +40,8 @@ a read-equivalence failure -- reporting it as red just trains everyone to ignore
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 import pytest
 from sqlalchemy import bindparam, text
@@ -96,7 +98,7 @@ def _requires_columns(store: DataStore, table: str, *columns: str) -> None:
     have = set(store.columns(table))
     absent = [c for c in columns if c not in have]
     if absent:
-        pytest.skip(f"{table} has no column(s) {', '.join(absent)} " f"-- rebuild the cube (`build-target --full` + `assemble-cube`)")
+        pytest.skip(f"{table} has no column(s) {', '.join(absent)} -- rebuild the cube (`build-target --full` + `assemble-cube`)")
 
 
 def _norm(df: pd.DataFrame) -> pd.DataFrame:
@@ -112,7 +114,7 @@ def test_max_date_matches_part_io_max_date(store):
     _requires(store, "max_date")
     _requires_tables(store, "cube_part_prices")
     old = _sql(store, 'SELECT MAX(date) AS m FROM "cube_part_prices"')["m"].iloc[0]
-    assert store.max_date("cube_part_prices") == pd.Timestamp(old).normalize()
+    assert store.max_date("cube_part_prices") == cast(pd.Timestamp, pd.Timestamp(old)).normalize()
 
 
 def test_columns_matches_part_io_columns(store):
@@ -128,7 +130,7 @@ def test_columns_matches_information_schema_for_cube(store):
     stricter than an unqualified `table_name = 'cube'`, so this pins that they agree HERE."""
     _requires(store, "columns")
     _requires_tables(store, "cube")
-    old = set(_sql(store, "SELECT column_name FROM information_schema.columns " "WHERE table_name = 'cube'")["column_name"])
+    old = set(_sql(store, "SELECT column_name FROM information_schema.columns WHERE table_name = 'cube'")["column_name"])
     assert set(store.columns("cube")) == old
 
 
@@ -143,7 +145,7 @@ def test_bounds_matches_hf_transcripts_min_max(store):
     """`fetch_hf_transcripts` -- `SELECT MIN(quarter), MAX(quarter) FROM
     "earnings_call_sections"` (fetch_hf_transcripts.py:164). NOT dates: string quarters."""
     _requires(store, "bounds")
-    old = _sql(store, "SELECT MIN(quarter) AS lo, MAX(quarter) AS hi " 'FROM "earnings_call_sections"')
+    old = _sql(store, 'SELECT MIN(quarter) AS lo, MAX(quarter) AS hi FROM "earnings_call_sections"')
     assert store.bounds("earnings_call_sections", "quarter") == (old["lo"].iloc[0], old["hi"].iloc[0])
 
 
@@ -152,7 +154,7 @@ def test_max_date_matches_raw_max_on_a_filing_dated_table(store):
     meaningful date is the FILING date, not its period end."""
     _requires(store, "max_date")
     old = _sql(store, 'SELECT MAX("filed") AS m FROM "notes_num"')["m"].iloc[0]
-    assert store.max_date("notes_num", "filed") == pd.Timestamp(old).normalize()
+    assert store.max_date("notes_num", "filed") == cast(pd.Timestamp, pd.Timestamp(old)).normalize()
 
 
 # --------------------------------------------------------------------------- #
@@ -178,7 +180,7 @@ def test_distinct_with_notnull_matches_the_latest_labelled_cube_date(store):
     _requires(store, "distinct", "NOT_NULL")
     _requires_tables(store, "cube")
     _requires_columns(store, "cube", "target_rank_h30")
-    old = _sql(store, "SELECT DISTINCT date FROM cube " 'WHERE "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT :n', {"n": 5})["date"].tolist()
+    old = _sql(store, 'SELECT DISTINCT date FROM cube WHERE "target_rank_h30" IS NOT NULL ORDER BY date DESC LIMIT :n', {"n": 5})["date"].tolist()
     new = store.distinct("cube", "date", where={"target_rank_h30": store.NOT_NULL}, order="desc", limit=5)
     assert [pd.Timestamp(d) for d in new] == [pd.Timestamp(d) for d in old]
 
@@ -204,7 +206,7 @@ def test_since_matches_part_io_read_since(store):
     is 1.85M rows and is covered by the ticker-scoped case below."""
     _requires(store, "load")
     cols = ["date", "ticker", "close"]
-    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "prices_macro" ' "WHERE date >= :since", {"since": SINCE.strftime("%Y-%m-%d")})
+    old = _sql(store, 'SELECT "date", "ticker", "close" FROM "prices_macro" WHERE date >= :since', {"since": SINCE.strftime("%Y-%m-%d")})
     new = store.load("prices_macro", columns=cols, since=SINCE)
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
@@ -222,7 +224,7 @@ def test_since_composes_with_a_key_predicate_on_a_large_part(store):
     _requires_tables(store, "cube_part_prices")
     old = _sql(
         store,
-        'SELECT "date", "ticker", "close_total" FROM "cube_part_prices" ' "WHERE date >= :since AND ticker = :t",
+        'SELECT "date", "ticker", "close_total" FROM "cube_part_prices" WHERE date >= :since AND ticker = :t',
         {"since": SINCE.strftime("%Y-%m-%d"), "t": TICKER},
     )
     new = store.load("cube_part_prices", columns=cols, since=SINCE, where={"ticker": TICKER})
@@ -241,7 +243,7 @@ def test_since_matches_ls_model_prices_window(store):
     _requires(store, "load")
     old = _sql(
         store,
-        'SELECT "date", "ticker", "close_total" FROM prices ' "WHERE date >= :cut AND ticker = :t",
+        'SELECT "date", "ticker", "close_total" FROM prices WHERE date >= :cut AND ticker = :t',
         {"cut": SINCE.strftime("%Y-%m-%d"), "t": TICKER},
     )
     new = store.load("prices", columns=["date", "ticker", "close_total"], since=SINCE, where={"ticker": TICKER})
@@ -260,7 +262,7 @@ def test_notnull_and_equality_compose_like_step_train_panel(store):
     _requires_tables(store, "cube")
     _requires_columns(store, "cube", "target_rank_h30")
     cols = ["date", "ticker", "target_rank_h30"]
-    old = _sql(store, 'SELECT "date", "ticker", "target_rank_h30" FROM cube ' 'WHERE "target_rank_h30" IS NOT NULL AND ticker = :t', {"t": TICKER})
+    old = _sql(store, 'SELECT "date", "ticker", "target_rank_h30" FROM cube WHERE "target_rank_h30" IS NOT NULL AND ticker = :t', {"t": TICKER})
     new = store.load("cube", columns=cols, where={"target_rank_h30": store.NOT_NULL, "ticker": TICKER})
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
 
@@ -272,7 +274,7 @@ def test_in_predicate_matches_fundamental_features_tag_pushdown(store):
     tags = ["DefinedBenefitPlanBenefitObligation", "DefinedBenefitPlanFairValueOfPlanAssets"]
     cols = ["adsh", "tag", "ddate", "qtrs", "value"]
     # the two-tag filter IS the bound here: it selects a few thousand of the 40k rows
-    old = _sql(store, 'SELECT "adsh", "tag", "ddate", "qtrs", "value" FROM "notes_num" ' "WHERE tag IN :tags", {"tags": tags}, expanding="tags")
+    old = _sql(store, 'SELECT "adsh", "tag", "ddate", "qtrs", "value" FROM "notes_num" WHERE tag IN :tags', {"tags": tags}, expanding="tags")
     new = store.load("notes_num", columns=cols, where={"tag": tags})
     assert len(old) < 50_000, f"case is not bounded any more ({len(old)} rows)"
     pd.testing.assert_frame_equal(_norm(new), _norm(old), check_dtype=False)
@@ -323,12 +325,11 @@ def test_every_case_is_live(store):
     to-do list."""
     needed = ("exists", "columns", "row_count", "max_date", "bounds", "distinct", "load", "iter_load", "append_tail", "drop", "NOT_NULL")
     missing = [m for m in needed if not hasattr(store, m)]
-    print(f"\n[read-equivalence] {len(needed) - len(missing)}/{len(needed)} store " f"capabilities live")
+    print(f"\n[read-equivalence] {len(needed) - len(missing)}/{len(needed)} store capabilities live")
     if missing:
         print(f"    still to implement: {', '.join(missing)}")
     else:
         print(
-            "    SANITY CHECK: every raw-SQL shape the refactor absorbs has a store "
-            "equivalent, and each is pinned frame-equal to its original query."
+            "    SANITY CHECK: every raw-SQL shape the refactor absorbs has a store equivalent, and each is pinned frame-equal to its original query."
         )
     assert not missing, f"DataStore is missing: {missing}"

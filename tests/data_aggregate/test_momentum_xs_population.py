@@ -16,14 +16,20 @@ count is a count of LOSING days, not of available data. Requiring 20 of them nul
 the names that have been going up: 14,376 cells over 410 tickers whose median trailing 63-day
 return is +21.36% against +3.87% where present.
 """
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.xs import xs_rank_pct
 from src.data_aggregate.utils.momentum.features import (
-    MIN_XS_POPULATION_FRAC, XS_POPULATION_WINDOW, _null_thin_cross_sections,
-    _thin_cross_sections, build_feature_panel, compute_raw_features)
+    MIN_XS_POPULATION_FRAC,
+    XS_POPULATION_WINDOW,
+    _null_thin_cross_sections,
+    _thin_cross_sections,
+    build_feature_panel,
+    compute_raw_features,
+)
 
 DATES = pd.bdate_range("2024-01-01", periods=120)
 TICKERS = [f"T{i:03d}" for i in range(100)]
@@ -32,8 +38,7 @@ TICKERS = [f"T{i:03d}" for i in range(100)]
 def _full(n_names: int = 100) -> pd.DataFrame:
     """A fully-populated (date x ticker) feature frame."""
     rng = np.random.default_rng(7)
-    return pd.DataFrame(rng.normal(size=(len(DATES), n_names)),
-                        index=DATES, columns=TICKERS[:n_names])
+    return pd.DataFrame(rng.normal(size=(len(DATES), n_names)), index=DATES, columns=TICKERS[:n_names])
 
 
 # --------------------------------------------------------------------------- #
@@ -43,10 +48,9 @@ def test_collapse_is_flagged():
     """The live shape: one date at 45 of 491 = 9% of the trailing norm."""
     f = _full()
     bad = DATES[80]
-    f.loc[bad, TICKERS[9:100]] = np.nan          # 9 of 100 survive
+    f.loc[bad, TICKERS[9:100]] = np.nan  # 9 of 100 survive
     thin = _thin_cross_sections({"rev_5": f})
-    print(f"  population on {bad.date()} = {int(f.loc[bad].notna().sum())}/100 "
-          f"-> flagged={bool(thin.loc[bad, 'rev_5'])}")
+    print(f"  population on {bad.date()} = {int(f.loc[bad].notna().sum())}/100 -> flagged={bool(thin.loc[bad, 'rev_5'])}")
     assert thin.loc[bad, "rev_5"]
     assert thin["rev_5"].sum() == 1, "only the collapsed date"
 
@@ -55,13 +59,12 @@ def test_just_above_and_below_the_floor():
     """The threshold binds where the constant says it does, not approximately."""
     f = _full()
     lo, hi = DATES[80], DATES[90]
-    keep_below = int(MIN_XS_POPULATION_FRAC * 100) - 1     # 59
-    keep_above = int(MIN_XS_POPULATION_FRAC * 100) + 1     # 61
+    keep_below = int(MIN_XS_POPULATION_FRAC * 100) - 1  # 59
+    keep_above = int(MIN_XS_POPULATION_FRAC * 100) + 1  # 61
     f.loc[lo, TICKERS[keep_below:]] = np.nan
     f.loc[hi, TICKERS[keep_above:]] = np.nan
     thin = _thin_cross_sections({"x": f})
-    print(f"  {keep_below}/100 -> flagged={bool(thin.loc[lo, 'x'])}; "
-          f"{keep_above}/100 -> flagged={bool(thin.loc[hi, 'x'])}")
+    print(f"  {keep_below}/100 -> flagged={bool(thin.loc[lo, 'x'])}; {keep_above}/100 -> flagged={bool(thin.loc[hi, 'x'])}")
     assert thin.loc[lo, "x"] is np.True_ or thin.loc[lo, "x"]
     assert not thin.loc[hi, "x"]
 
@@ -72,7 +75,7 @@ def test_warmup_ramp_is_never_flagged():
     thinner than a 5-day reversal in early history."""
     f = _full()
     for i, d in enumerate(DATES):
-        live = min(100, 3 + i)                  # 3, 4, 5, ... 100
+        live = min(100, 3 + i)  # 3, 4, 5, ... 100
         f.loc[d, TICKERS[live:]] = np.nan
     thin = _thin_cross_sections({"seasonal_h21": f})
     print(f"  ramp 3 -> 100 names over {len(DATES)} dates -> flagged {int(thin.values.sum())}")
@@ -83,10 +86,9 @@ def test_structurally_thin_feature_is_not_flagged():
     """A feature that is ALWAYS thin is not defective -- it is compared against its own norm,
     never against the day's best-populated feature."""
     wide, narrow = _full(), _full()
-    narrow.loc[:, TICKERS[20:]] = np.nan        # 20 of 100, every single date
+    narrow.loc[:, TICKERS[20:]] = np.nan  # 20 of 100, every single date
     thin = _thin_cross_sections({"wide": wide, "narrow": narrow})
-    print(f"  narrow feature at a flat 20/100 alongside a 100/100 one "
-          f"-> flagged {int(thin['narrow'].sum())}")
+    print(f"  narrow feature at a flat 20/100 alongside a 100/100 one -> flagged {int(thin['narrow'].sum())}")
     assert not thin["narrow"].any()
 
 
@@ -131,7 +133,9 @@ def test_nulling_leaves_every_other_cell_bit_identical(caplog):
         out = _null_thin_cross_sections({"rev_5": f})["rev_5"]
 
     print(f"  warned: {caplog.text.strip()[:110]}")
-    assert out.loc[bad].isna().all(), "the thin date is nulled, not renormalised"
+    bad_row = out.loc[bad]
+    assert isinstance(bad_row, pd.Series)
+    assert bad_row.isna().all(), "the thin date is nulled, not renormalised"
     other = out.index != bad
     pd.testing.assert_frame_equal(out.loc[other], before.loc[other])
     assert "rev_5" in caplog.text and str(bad.date()) in caplog.text
@@ -156,7 +160,9 @@ def test_only_the_offending_feature_is_nulled():
     thin_f.loc[bad, TICKERS[9:]] = np.nan
     ok_before = ok_f.copy()
     out = _null_thin_cross_sections({"thin": thin_f, "ok": ok_f})
-    assert out["thin"].loc[bad].isna().all()
+    thin_row = out["thin"].loc[bad]
+    assert isinstance(thin_row, pd.Series)
+    assert thin_row.isna().all()
     pd.testing.assert_frame_equal(out["ok"], ok_before)
 
 
@@ -177,6 +183,30 @@ def test_guard_runs_before_the_rank_not_after():
     on_bad = panel.loc[panel["date"] == bad, "rev_5"]
     print(f"  guarded  : {len(on_bad)} rows on that date, all-NaN={on_bad.isna().all()}")
     assert on_bad.isna().all(), "a rank drawn from 9% of the universe must not be published"
+
+
+def test_price_availability_masks_momentum_before_ranking(monkeypatch):
+    dates = pd.bdate_range("2024-01-02", periods=2)
+    columns = ["AAA", "BBB", "CCC"]
+    raw = pd.DataFrame([[0.0, 10.0, 1_000.0], [0.0, 10.0, 0.0]], index=dates, columns=columns)
+    close = pd.DataFrame(100.0, index=dates, columns=columns)
+    close_split = close.copy()
+    close_split.loc[dates[0], "CCC"] = np.nan
+    monkeypatch.setattr(
+        "src.data_aggregate.utils.momentum.features.compute_raw_features",
+        lambda *args, **kwargs: {"signal": raw.copy()},
+    )
+
+    panel = build_feature_panel(close, close, close * 0.0, method="rank", close_split=close_split)
+    first = panel.loc[panel["date"] == dates[0]].set_index("ticker")["signal"]
+    second = panel.loc[panel["date"] == dates[1]].set_index("ticker")["signal"]
+
+    assert set(first.index) == {"AAA", "BBB"}
+    assert first.to_dict() == pytest.approx({"AAA": 0.5, "BBB": 1.0})
+    assert second["CCC"] == pytest.approx(0.5)
+    print("\n=== SANITY CHECK: momentum availability precedes ranking ===")
+    print("  inactive CCC=1000 is absent and cannot move peer ranks; active CCC=0 survives.")
+    print("  CONCLUSION: the observed-price mask, not numeric truthiness, owns participation.")
 
 
 # --------------------------------------------------------------------------- #
@@ -217,9 +247,8 @@ def test_downside_vol_defined_on_a_strong_uptrend():
 def test_downside_vol_still_undefined_below_five_down_days():
     """min_periods=5, not 1: a standard deviation off one or two observations is noise."""
     idx = pd.bdate_range("2023-01-02", periods=200)
-    prices = pd.DataFrame(
-        {t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
-    prices.iloc[80, 0] *= 0.99          # exactly ONE down day, far outside the last window
+    prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
+    prices.iloc[80, 0] *= 0.99  # exactly ONE down day, far outside the last window
     raw = compute_raw_features(prices, prices, _sector_returns(prices))
     got = raw["downside_vol_63"].iloc[-1, 0]
     print(f"  monotone riser, 0 down days in the last 63 -> downside_vol_63={got}")
@@ -230,9 +259,8 @@ def test_exactly_five_down_days_is_enough():
     """Pins min_periods at 5 BEHAVIOURALLY, because 'harmonise the odd min_periods back to the
     20 its neighbours use' is exactly how D-04 would silently reopen."""
     idx = pd.bdate_range("2023-01-02", periods=120)
-    prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001)
-                           for t in TICKERS[:5]}, index=idx)
-    prices.iloc[[60, 65, 70, 75, 80], 0] *= 0.98        # exactly 5 down days
+    prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
+    prices.iloc[[60, 65, 70, 75, 80], 0] *= 0.98  # exactly 5 down days
     raw = compute_raw_features(prices, prices, _sector_returns(prices))
     got = raw["downside_vol_63"].iloc[85, 0]
     print(f"  exactly 5 down days in the window -> downside_vol_63={got}")

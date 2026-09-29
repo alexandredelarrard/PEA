@@ -8,15 +8,16 @@ Two defects the 2026-07 source-table audit measured on `earning_calls_embedding`
   * questions were admitted at 20 chars while answers and prepared turns had to clear
     `_MIN_TURN` (25), letting 4,309 non-content turns anchor the coherence cosine.
 """
+
 from __future__ import annotations
 
 import numpy as np
 
-from src.gpt_extract import EMBEDDING_MAX_CHARS
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
-    _MIN_TURN, _is_informative_question,
+    _MIN_TURN,
+    _is_informative_question,
 )
-from src.gpt_extract import cosine, embed_texts
+from src.gpt_extract import EMBEDDING_MAX_CHARS, cosine, embed_texts
 
 
 class _StubClient:
@@ -26,7 +27,7 @@ class _StubClient:
         self.sent: list[str] = []
         self.embeddings = self
 
-    def create(self, model: str, input: list[str]):          # noqa: A002 (OpenAI kwarg)
+    def create(self, model: str, input: list[str]):  # noqa: A002 (OpenAI kwarg)
         self.sent.extend(input)
         data = [type("D", (), {"embedding": [float(len(t)), 1.0, 0.0]})() for t in input]
         return type("R", (), {"data": data})()
@@ -67,8 +68,7 @@ def test_batching_and_order_are_preserved_with_the_larger_cap():
 def test_question_gate_matches_the_answer_gate():
     """The four real 20-24 char turns from the live cache must now be rejected, while a
     genuine short question is kept."""
-    for junk in ("Can you hear me now?", "I will turn it over.",
-                 "So I had a question.", "You know, long tail."):
+    for junk in ("Can you hear me now?", "I will turn it over.", "So I had a question.", "You know, long tail."):
         assert len(junk) < _MIN_TURN
         assert not _is_informative_question(junk), junk
     assert _is_informative_question("What drove the gross margin expansion this quarter?")
@@ -84,9 +84,8 @@ def test_embedding_limits_print_conclusion():
     lengths = [500, 8_001, 20_000, 74_550]
     embed_texts(["z" * n for n in lengths], client=client)
     print("\n=== SANITY CHECK: earnings-call embedding input limits ===")
-    print(f"  cap: 8,000 chars -> {EMBEDDING_MAX_CHARS:,} chars "
-          f"(model accepts 8,191 TOKENS ~= 29k chars)")
-    for n, s in zip(lengths, client.sent):
+    print(f"  cap: 8,000 chars -> {EMBEDDING_MAX_CHARS:,} chars (model accepts 8,191 TOKENS ~= 29k chars)")
+    for n, s in zip(lengths, client.sent, strict=False):
         verdict = "whole" if len(s) == n else f"cut to {len(s):,}"
         print(f"    {n:>7,} chars -> {verdict}")
         assert len(s) == min(n, EMBEDDING_MAX_CHARS)

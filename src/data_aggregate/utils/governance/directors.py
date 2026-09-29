@@ -64,10 +64,13 @@ they differ because the two quantities fail in opposite directions.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.governance.accrual import (
     accrual_anchor,
     accrual_dispersion,
@@ -78,6 +81,8 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    source_date_column,
+    ultimate_source_dates,
 )
 from src.utils.names import person_key
 
@@ -280,16 +285,19 @@ def _carry_gated_fill(out: pd.DataFrame, col: str, stats: dict[str, int]) -> Non
     mutually exclusive: a cell with no prior disclosure has no age to test.
     """
     gk = out["_pk"]
+    source_col = source_date_column(col)
+    out[source_col] = ultimate_source_dates(out, col)
     fwd = out.groupby(gk, sort=False)[col].ffill()
-    src = out["as_of"].where(out[col].notna()).groupby(gk, sort=False).ffill()
+    src = out[source_col].groupby(gk, sort=False).ffill()
     age = (out["as_of"] - src).dt.days
 
-    gaps = out[col].isna()
+    gaps = frame_column(out, col).isna()
     candidate = gaps & fwd.notna()
     within = age <= CARRY_MAX_DAYS
     newly = candidate & within
 
     out.loc[newly, col] = fwd[newly]
+    out.loc[newly, source_col] = src[newly]
     out[f"{col}_imputed"] = newly.astype("float64")
     stats[f"child gaps: {col}"] = int(gaps.sum())
     stats[f"child carried: {col}"] = int(newly.sum())
@@ -312,20 +320,25 @@ def _accrue_child(out: pd.DataFrame, col: str, stats: dict[str, int]) -> None:
     beside it, because the two disagree exactly where a SINGLE age is mis-extracted.
     """
 
+    source_col = source_date_column(col)
+    out[source_col] = ultimate_source_dates(out, col)
     obs = pd.DataFrame({"pk": out["_pk"], "as_of": out["as_of"], col: out[col]})
     anchor = accrual_anchor(obs, col, key="pk", date="as_of")
     if anchor.empty:
         out[f"{col}_imputed"] = 0.0
         stats[f"child skipped (no anchor): {col}"] = 1
         return
-    implied = accrue(out["as_of"], out["_pk"], anchor)
-    newly = out[col].isna() & implied.notna()
+    implied = accrue(frame_column(out, "as_of"), frame_column(out, "_pk"), anchor)
+    newly = frame_column(out, col).isna() & implied.notna()
     out.loc[newly, col] = implied[newly]
+    prior = out[source_col].groupby(out["_pk"], sort=False).ffill()
+    future = out[source_col].groupby(out["_pk"], sort=False).bfill()
+    out.loc[newly, source_col] = prior.combine_first(future)[newly]
     out[f"{col}_imputed"] = newly.astype("float64")
     spread = accrual_dispersion(obs, col, key="pk", date="as_of")
     stats[f"child accrued: {col}"] = int(newly.sum())
     stats[f"child anchors: {col}"] = int(len(anchor))
-    stats[f"child anchors REFUSED (two people share a key): {col}"] = int(len(set(obs["pk"].dropna()) - set(anchor.index)))
+    stats[f"child anchors REFUSED (two people share a key): {col}"] = int(len(set(frame_column(obs, "pk").dropna()) - set(anchor.index)))
     stats[f"child anchor spread > 2y (raw alarm): {col}"] = int((spread > 2).sum())
 
 
@@ -350,7 +363,7 @@ def fill_director_attributes(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     out = _prepared(df)
     if out is None:
         return (df if df is not None else pd.DataFrame()), {}
-    stats: dict[str, int] = {"child rows": len(out), "child person-series": int(out["_pk"].nunique())}
+    stats: dict[str, int] = {"child rows": len(out), "child person-series": int(frame_column(out, "_pk").nunique())}
     for col in CARRY_GATED_CHILD:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -374,8 +387,9 @@ def _raw_leg(frame: pd.DataFrame, col: str) -> pd.Series:
     """
     flag = f"{col}_imputed"
     if flag not in frame.columns:
-        return frame[col]
-    return frame[col].where(pd.to_numeric(frame[flag], errors="coerce").fillna(0.0) <= 0)
+        return frame_column(frame, col)
+    imputed = cast(pd.Series, pd.to_numeric(frame_column(frame, flag), errors="coerce"))
+    return frame_column(frame, col).where(imputed.fillna(0.0) <= 0)
 
 
 def board_aggregates(df: pd.DataFrame) -> pd.DataFrame:
@@ -407,12 +421,16 @@ def board_aggregates(df: pd.DataFrame) -> pd.DataFrame:
 
     keys = ["ticker", "accession_number", "as_of"]
     g = d.groupby(keys, sort=False)
-    out = g.size().rename("n_directors_total").to_frame()
+    sizes = cast(pd.Series, g.size())
+    sizes.name = "n_directors_total"
+    out = sizes.to_frame()
     for field, child in DERIVED_AGGREGATES.items():
         if child not in d.columns:
             continue
         filled = pd.to_numeric(d[child], errors="coerce")
         out[field] = filled.groupby([d[k] for k in keys], sort=False).mean()
+        observed = ultimate_source_dates(d, child).where(filled.notna())
+        out[source_date_column(field)] = observed.groupby([d[k] for k in keys], sort=False).min()
         out[f"n_reporting_{field}"] = filled.notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
         out[f"n_reporting_{field}_filed"] = _raw_leg(d, child).notna().groupby([d[k] for k in keys], sort=False).sum().astype("int64")
     return out.reset_index()
@@ -450,36 +468,45 @@ def merge_board_aggregates(parent: pd.DataFrame, derived: pd.DataFrame) -> tuple
         return parent, {}
     out = parent.copy()
     stats: dict[str, int] = {}
+    out["as_of"] = pd.to_datetime(out["as_of"], errors="coerce")
     fields = [f for f in DERIVED_AGGREGATES if f in out.columns]
     for f in fields:
         out[f"{f}_source"] = np.where(out[f].notna(), SOURCE_FILED, None)
+        out[source_date_column(f)] = ultimate_source_dates(out, f)
     if derived is None or derived.empty or "accession_number" not in out.columns:
         stats["skipped: no derived board aggregates (directors table absent)"] = 1
         return out, stats
 
-    out["as_of"] = pd.to_datetime(out["as_of"], errors="coerce")
     cols = ["ticker", "accession_number"]
     for f in fields:
-        take = [c for c in (f, f"n_reporting_{f}", f"n_reporting_{f}_filed") if c in derived.columns]
+        source_col = source_date_column(f)
+        take = [c for c in (f, source_col, f"n_reporting_{f}", f"n_reporting_{f}_filed") if c in derived.columns]
         if f not in take:
             continue
-        d = derived[cols + take].rename(columns={f: f"_d_{f}"})
+        rename = {f: f"_d_{f}"}
+        if source_col in take:
+            rename[source_col] = f"_d_{source_col}"
+        d = derived[cols + take].rename(columns=rename)
         out = out.merge(d, on=cols, how="left")
-        cand = pd.to_numeric(out[f"_d_{f}"], errors="coerce")
-        n_all = pd.to_numeric(out[f"n_reporting_{f}"], errors="coerce")
-        n_filed = pd.to_numeric(out[f"n_reporting_{f}_filed"], errors="coerce")
+        cand = cast(pd.Series, pd.to_numeric(frame_column(out, f"_d_{f}"), errors="coerce"))
+        n_all = cast(pd.Series, pd.to_numeric(frame_column(out, f"n_reporting_{f}"), errors="coerce"))
+        n_filed = cast(pd.Series, pd.to_numeric(frame_column(out, f"n_reporting_{f}_filed"), errors="coerce"))
         better = cand.notna() & n_all.notna() & n_filed.notna() & (n_all > n_filed)
 
-        override = out[f].notna() & better  # step 1
-        supply = out[f].isna() & cand.notna()  # step 3
-        moved = (cand[override] - out.loc[override, f]).abs()
+        parent_values = frame_column(out, f)
+        override = parent_values.notna() & better  # step 1
+        supply = parent_values.isna() & cand.notna()  # step 3
+        moved = (cast(pd.Series, cand.loc[override]) - cast(pd.Series, out.loc[override, f])).abs()
         out.loc[override | supply, f] = cand[override | supply]
+        derived_source = f"_d_{source_col}"
+        if derived_source in out.columns:
+            out.loc[override | supply, source_col] = out.loc[override | supply, derived_source]
         out.loc[override | supply, f"{f}_source"] = SOURCE_DERIVED
-        stats[f"{f}: filed and kept"] = int((out[f"{f}_source"] == SOURCE_FILED).sum())
+        stats[f"{f}: filed and kept"] = int((frame_column(out, f"{f}_source") == SOURCE_FILED).sum())
         stats[f"{f}: derived OVERRODE a filed value"] = int(override.sum())
         stats[f"{f}: derived where the parent was NULL"] = int(supply.sum())
         stats[f"{f}: median |move| of an override (x1000)"] = int(round(float(moved.median()) * 1000)) if len(moved) else 0
-        stats[f"{f}: still NULL -> left to interpolation"] = int(out[f].isna().sum())
+        stats[f"{f}: still NULL -> left to interpolation"] = int(frame_column(out, f).isna().sum())
         out = out.drop(columns=[c for c in out.columns if c.startswith("_d_") or c.startswith("n_reporting_")])
     return out, stats
 
@@ -499,11 +526,11 @@ def finalize_board_source(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int
         col = f"{f}_source"
         if f not in out.columns or col not in out.columns:
             continue
-        late = out[f].notna() & out[col].isna()
+        late = frame_column(out, f).notna() & frame_column(out, col).isna()
         out.loc[late, col] = SOURCE_INTERPOLATED
         for label in (SOURCE_FILED, SOURCE_DERIVED, SOURCE_INTERPOLATED):
-            stats[f"{f} source={label}"] = int((out[col] == label).sum())
-        stats[f"{f} source=none (still NULL)"] = int(out[f].isna().sum())
+            stats[f"{f} source={label}"] = int((frame_column(out, col) == label).sum())
+        stats[f"{f} source=none (still NULL)"] = int(frame_column(out, f).isna().sum())
     return out, stats
 
 
@@ -528,16 +555,18 @@ def _share_of_reporting(d: pd.DataFrame, keys: list[str], col: str, threshold: f
     """
     if col not in d.columns:
         return None
-    v = pd.to_numeric(d[col], errors="coerce")
-    g = [d[k] for k in keys]
-    n = v.notna().groupby(g, sort=False).sum()
+    v = cast(pd.Series, pd.to_numeric(frame_column(d, col), errors="coerce"))
+    g = [frame_column(d, key) for key in keys]
+    n = cast(pd.Series, v.notna().groupby(g, sort=False).sum())
     # ⚠ `astype("float64")` on the indicator: `(v >= t).where(v.notna())` is OBJECT dtype (True /
     # False / NaN mixed), and an object-dtype daily frame silently breaks arithmetic downstream --
     # `peer_relative`'s `min_count=1` sum returns None and the division raises `TypeError:
     # unsupported operand type(s) for /: 'NoneType' and 'float'`. Found by measuring, not by a
     # crash in production, because this family emits no peer leg today.
-    hits = (v >= threshold).where(v.notna()).astype("float64").groupby(g, sort=False).sum()
-    out = (hits / n.where(n > 0)).astype("float64").rename("value").reset_index()
+    hits = cast(pd.Series, (v >= threshold).where(v.notna()).astype("float64").groupby(g, sort=False).sum())
+    values = (hits / n.where(n > 0)).astype("float64")
+    values.name = "value"
+    out = values.reset_index()
     out.columns = [*keys, "value"]
     return out
 
@@ -553,10 +582,12 @@ def _dispersion(d: pd.DataFrame, keys: list[str], col: str) -> pd.DataFrame | No
     if col not in d.columns:
         return None
     v = _raw_leg(d, col).astype("float64")
-    g = [d[k] for k in keys]
-    n = v.notna().groupby(g, sort=False).sum()
-    sd = v.groupby(g, sort=False).std()
-    out = sd.where(n >= _MIN_FOR_DISPERSION).rename("value").reset_index()
+    g = [frame_column(d, key) for key in keys]
+    n = cast(pd.Series, v.notna().groupby(g, sort=False).sum())
+    sd = cast(pd.Series, v.groupby(g, sort=False).std())
+    values = sd.where(n >= _MIN_FOR_DISPERSION)
+    values.name = "value"
+    out = values.reset_index()
     out.columns = [*keys, "value"]
     return out
 
@@ -571,27 +602,24 @@ def _turnover(d: pd.DataFrame, keys: list[str], tally: dict[str, int]) -> pd.Dat
     """
     if "name" not in d.columns:
         return None
-    work = d[[*keys, "name"]].copy()
-    work["pk"] = work["name"].astype(object).map(person_key)
-    rows: list[dict] = []
+    work = cast(pd.DataFrame, d[[*keys, "name"]].copy())
+    work["pk"] = frame_column(work, "name").astype(object).map(person_key)
+    rows: list[dict[str, object]] = []
     for key_col, label in (("pk", "person_key"), ("name", "filed name")):
-        rosters = (
-            work.dropna(subset=[key_col])
-            .groupby(keys, sort=False)[key_col]
-            .agg(frozenset)
-            .rename("roster")
-            .reset_index()
-            .sort_values(["ticker", "as_of"])
-        )
-        prev = rosters.groupby("ticker", sort=False)["roster"].shift(1)
-        paired = prev.notna() & rosters["roster"].map(bool)
-        arrivals = [len(c - p) if isinstance(p, frozenset) else np.nan for c, p in zip(rosters["roster"], prev, strict=False)]
-        size = rosters["roster"].map(len)
+        complete = cast(pd.DataFrame, work.dropna(subset=[key_col]))
+        roster_values = cast(pd.Series, complete.groupby(keys, sort=False)[key_col].agg(frozenset))
+        roster_values.name = "roster"
+        rosters = roster_values.reset_index().sort_values(["ticker", "as_of"])
+        roster = frame_column(rosters, "roster")
+        prev = cast(pd.Series, rosters.groupby("ticker", sort=False)["roster"].shift(1))
+        paired = prev.notna() & roster.map(bool)
+        arrivals = [len(c - p) if isinstance(p, frozenset) else np.nan for c, p in zip(roster, prev, strict=False)]
+        size = roster.map(len)
         rate = pd.Series(arrivals, index=rosters.index) / size.where(size > 0)
         tally[f"board_turnover pairs ({label})"] = int(paired.sum())
         tally[f"board_turnover mean x1000 ({label})"] = int(round(float(rate[paired].mean()) * 1000)) if bool(paired.any()) else 0
         if key_col == "pk":
-            rows = rosters.loc[paired, keys].assign(value=rate[paired]).to_dict("records")
+            rows = cast(list[dict[str, object]], rosters.loc[paired, keys].assign(value=rate[paired]).to_dict("records"))
     return pd.DataFrame(rows) if rows else None
 
 
@@ -626,17 +654,20 @@ def board_quality_fields(
         "board_age_dispersion": _dispersion(d, keys, "age"),
     }
     if "age" in d.columns:
-        oldest = pd.to_numeric(d["age"], errors="coerce").groupby([d[k] for k in keys], sort=False).max().rename("value").reset_index()
+        age = cast(pd.Series, pd.to_numeric(frame_column(d, "age"), errors="coerce"))
+        oldest_values = cast(pd.Series, age.groupby([frame_column(d, key) for key in keys], sort=False).max())
+        oldest_values.name = "value"
+        oldest = oldest_values.reset_index()
         oldest.columns = [*keys, "value"]
         per_filing["oldest_director_age"] = oldest
 
     frames: dict[str, pd.DataFrame] = {}
     hist: dict[str, pd.DataFrame] = {}
     for name, pf in per_filing.items():
-        if pf is None or pf.empty or not pf["value"].notna().any():
+        if pf is None or pf.empty or not frame_column(pf, "value").notna().any():
             tally[f"skipped: no data for {name}"] = 1
             continue
-        h = pf.rename(columns={"value": name})[["ticker", "as_of", name]]
+        h = cast(pd.DataFrame, pf.rename(columns={"value": name})[["ticker", "as_of", name]])
         daily = fundamentals_to_daily(h, name, idx)
         if daily.empty or not daily.notna().any().any():
             tally[f"skipped: {name} empty on the daily grid"] = 1
@@ -647,7 +678,7 @@ def board_quality_fields(
         # ages a cell against the `as_of` of the filing that produced it, which it can only
         # read from this frame.
         hist[name] = h
-        tally[f"{name}: filings"] = int(pf["value"].notna().sum())
+        tally[f"{name}: filings"] = int(frame_column(pf, "value").notna().sum())
 
     if frames and hist:
         # Only the EVENT members need a history at all -- `expire_event_fields` looks a feature's
@@ -655,6 +686,7 @@ def board_quality_fields(
         merged_hist = None
         for h in hist.values():
             merged_hist = h if merged_hist is None else merged_hist.merge(h, on=["ticker", "as_of"], how="outer")
+        assert merged_hist is not None
         capped, stats = expire_event_fields(frames, merged_hist, EVENT_FIELDS)
         for name, (expired, before) in stats.items():
             if expired:

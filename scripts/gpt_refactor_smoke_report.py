@@ -22,12 +22,14 @@ Three sections:
 
     "$PY" scripts/gpt_refactor_smoke_report.py [-c ./configs] [--snapshot DIR]
 """
+
 from __future__ import annotations
 
 import argparse
 import re
 import sys
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -35,10 +37,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.context import get_config_context
-from src.data_store.schema import Tables
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
 
 from scripts.gpt_refactor_smoke_prep import SMOKE_TICKERS
+from src.context import get_config_context
+from src.data_store.schema import Tables
 
 SNAPSHOT = ROOT / "reports/planning/active-tasks/2026-09-02-gpt-extract-refactor/baseline"
 
@@ -76,8 +80,7 @@ def section_shape(live: dict[str, pd.DataFrame]) -> None:
         if df.empty:
             print(f"  {name:<26}{'ABSENT or EMPTY':>36}")
             continue
-        print(f"  {name:<26}{len(df):>8}{df.shape[1]:>7}"
-              f"{df['ticker'].nunique():>9}{df['accession_number'].nunique():>12}")
+        print(f"  {name:<26}{len(df):>8}{df.shape[1]:>7}{df['ticker'].nunique():>9}{df['accession_number'].nunique():>12}")
 
     for name, df in live.items():
         if df.empty:
@@ -95,7 +98,7 @@ def section_shape(live: dict[str, pd.DataFrame]) -> None:
         empty = [c for c, p in fill.items() if p == 0.0 and c not in _TRI_STATE]
         if empty:
             print(f"    {len(empty)} column(s) at 0% with no tri-state excuse: {empty}")
-            print(f"      each reads downstream as a disclosure absence, not an extraction gap")
+            print("      each reads downstream as a disclosure absence, not an extraction gap")
 
 
 def section_old_vs_new(old: pd.DataFrame, new: pd.DataFrame) -> None:
@@ -107,13 +110,11 @@ def section_old_vs_new(old: pd.DataFrame, new: pd.DataFrame) -> None:
     # tickers the run has not reached yet reports the whole backlog as a recall regression.
     done_tickers = sorted(set(new["ticker"]))
     old = old[old["ticker"].isin(done_tickers)]
-    print(f"\n  {len(done_tickers)} of {len(SMOKE_TICKERS)} smoke ticker(s) re-extracted: "
-          f"{', '.join(done_tickers)}")
+    print(f"\n  {len(done_tickers)} of {len(SMOKE_TICKERS)} smoke ticker(s) re-extracted: {', '.join(done_tickers)}")
 
     old_acc, new_acc = set(old["accession_number"]), set(new["accession_number"])
     both = old_acc & new_acc
-    print(f"  snapshot accessions {len(old_acc)}, re-extracted {len(new_acc)}, "
-          f"in both {len(both)}")
+    print(f"  snapshot accessions {len(old_acc)}, re-extracted {len(new_acc)}, in both {len(both)}")
     lost = sorted(old_acc - new_acc)
     gained = sorted(new_acc - old_acc)
     if lost:
@@ -135,8 +136,7 @@ def section_old_vs_new(old: pd.DataFrame, new: pd.DataFrame) -> None:
     of, nf = _fill(o[shared]), _fill(n[shared])
     delta = (nf - of).sort_values()
 
-    print(f"\n  per-column non-null % on the {len(both)} shared accessions "
-          f"({len(shared)} shared columns)")
+    print(f"\n  per-column non-null % on the {len(both)} shared accessions ({len(shared)} shared columns)")
     print(f"    {'column':<34}{'old':>8}{'new':>8}{'delta':>9}")
     for col in delta.index:
         if col in _TRI_STATE:
@@ -151,8 +151,7 @@ def section_old_vs_new(old: pd.DataFrame, new: pd.DataFrame) -> None:
         print(f"    {col:<34}{of[col]:>7.1f}%{nf[col]:>7.1f}%{delta[col]:>+8.1f}{flag}")
 
     real_losses = [c for c in delta.index if delta[c] <= -5 and c not in _TRI_STATE]
-    print(f"\n  {len(real_losses)} column(s) lost >=5 points of fill with no contract change "
-          f"to explain it: {real_losses or 'none'}")
+    print(f"\n  {len(real_losses)} column(s) lost >=5 points of fill with no contract change to explain it: {real_losses or 'none'}")
     print("    These are findings to HAND OVER, not to fix by re-tuning the prompt — prompt")
     print("    quality is out of this refactor's scope and every re-run costs tokens.")
 
@@ -173,15 +172,19 @@ def _spot_co_peo(exe: pd.DataFrame) -> None:
     peo = sub[sub["title"].fillna("").str.contains(_PEO_TITLE)]
     grp = peo.groupby(["ticker", "accession_number", "fiscal_year"]).size()
     multi = grp[grp > 1]
-    print(f"    {len(peo)} PEO-titled row(s) over {sub['accession_number'].nunique()} filing(s); "
-          f"{len(multi)} (ticker, filing, year) group(s) carry more than one")
-    for (t, acc, fy), n in multi.head(8).items():
+    print(
+        f"    {len(peo)} PEO-titled row(s) over {sub['accession_number'].nunique()} filing(s); "
+        f"{len(multi)} (ticker, filing, year) group(s) carry more than one"
+    )
+    for key, n in multi.head(8).items():
+        t, acc, fy = cast(tuple[str, str, int], key)
         names = peo[(peo["accession_number"] == acc) & (peo["fiscal_year"] == fy)]
-        print(f"      {t} FY{int(fy)} {acc}: {n} — "
-              + "; ".join(f"{r['name']} ({r['title']})" for _, r in names.iterrows()))
+        print(f"      {t} FY{int(fy)} {acc}: {n} — " + "; ".join(f"{r['name']} ({r['title']})" for _, r in names.iterrows()))
     if multi.empty:
-        print("      NONE — either the co-PEO years are outside the window or the SCT titles "
-              "did not survive; check a known co-PEO filing by hand before accepting")
+        print(
+            "      NONE — either the co-PEO years are outside the window or the SCT titles "
+            "did not survive; check a known co-PEO filing by hand before accepting"
+        )
 
 
 def _spot_dual_class(own: pd.DataFrame) -> None:
@@ -193,32 +196,33 @@ def _spot_dual_class(own: pd.DataFrame) -> None:
             continue
         pct = pd.to_numeric(sub["percent_of_class"], errors="coerce")
         latest = sub[sub["as_of"] == sub["as_of"].max()]
-        print(f"    {t}: {len(sub)} row(s) over {sub['accession_number'].nunique()} filing(s), "
-              f"percent_of_class present on {pct.notna().mean():.0%}, "
-              f"max {pct.max() if pct.notna().any() else float('nan'):.4f}")
+        print(
+            f"    {t}: {len(sub)} row(s) over {sub['accession_number'].nunique()} filing(s), "
+            f"percent_of_class present on {pct.notna().mean():.0%}, "
+            f"max {pct.max() if pct.notna().any() else float('nan'):.4f}"
+        )
         # a value above 1.0 means a PERCENT was stored where a FRACTION was contracted; a
         # per-filing sum far above 1.0 means the voting-power column leaked in
         for _, r in latest.sort_values("percent_of_class", ascending=False).head(6).iterrows():
-            print(f"        {str(r['as_of'])[:10]}  {r['holder_name'][:38]:<38}"
-                  f"{r['holder_type']:<18}{r['percent_of_class']}")
+            print(f"        {str(r['as_of'])[:10]}  {r['holder_name'][:38]:<38}{r['holder_type']:<18}{r['percent_of_class']}")
 
 
 def _spot_pre_2001(parent: pd.DataFrame) -> None:
-    print("\n  [A] pre-2001 proxies — the `primaryDocument == \"\"` .txt fallback")
-    sub = parent[(parent["ticker"] == "A") &
-                 (pd.to_datetime(parent["as_of"]) < pd.Timestamp("2001-01-01"))]
+    print('\n  [A] pre-2001 proxies — the `primaryDocument == ""` .txt fallback')
+    sub = parent[(parent["ticker"] == "A") & (pd.to_datetime(parent["as_of"]) < pd.Timestamp("2001-01-01"))]
     if sub.empty:
-        print("    no pre-2001 rows for A — the filings are either outside the window or "
-              "produced no row at all (which is the failure this ticker is here to catch)")
+        print(
+            "    no pre-2001 rows for A — the filings are either outside the window or "
+            "produced no row at all (which is the failure this ticker is here to catch)"
+        )
         return
-    body = [c for c in sub.columns if c not in ("ticker", "as_of", "period",
-                                                "accession_number", "def14a_json")]
+    body = [c for c in sub.columns if c not in ("ticker", "as_of", "period", "accession_number", "def14a_json")]
     filled = sub[body].notna().sum(axis=1)
-    print(f"    {len(sub)} row(s); non-null fields per row: min {filled.min()}, "
-          f"median {int(filled.median())}, max {filled.max()} (of {len(body)})")
-    for (_, r), n in zip(sub.iterrows(), filled):
-        print(f"      {str(r['as_of'])[:10]}  {r['accession_number']}  {n:>2} fields  "
-              f"ceo={r.get('ceo_name_proxy')}  directors={r.get('n_directors')}")
+    print(f"    {len(sub)} row(s); non-null fields per row: min {filled.min()}, median {int(filled.median())}, max {filled.max()} (of {len(body)})")
+    for (_, r), n in zip(sub.iterrows(), filled, strict=False):
+        print(
+            f"      {str(r['as_of'])[:10]}  {r['accession_number']}  {n:>2} fields  ceo={r.get('ceo_name_proxy')}  directors={r.get('n_directors')}"
+        )
 
 
 def _spot_reconciles(exe: pd.DataFrame, dirc: pd.DataFrame) -> None:
@@ -228,8 +232,7 @@ def _spot_reconciles(exe: pd.DataFrame, dirc: pd.DataFrame) -> None:
             print(f"    {name}: no rows")
             continue
         v = pd.to_numeric(df["reconciles"], errors="coerce")
-        print(f"    {name:<24}{v.mean():.1%} of {v.notna().sum()} computable row(s)"
-              f"  ({v.isna().sum()} have no `total`)")
+        print(f"    {name:<24}{v.mean():.1%} of {v.notna().sum()} computable row(s)  ({v.isna().sum()} have no `total`)")
 
 
 def _spot_pvp(store) -> None:
@@ -237,8 +240,7 @@ def _spot_pvp(store) -> None:
     print("    NOT on this path. PVP is an XBRL ECD block read by `fetch_def14a_edgar`")
     print("    (`ecd.py` -> `sec_def14a`), which this refactor did not touch — it is not an")
     print("    LLM path. `def14a_llm` has no `peo_*` column, so there is nothing to check here.")
-    print(f"    sec_def14a on this deployment: "
-          f"{'EXISTS' if store.exists('sec_def14a') else 'ABSENT (dropped at an earlier cutover)'}")
+    print(f"    sec_def14a on this deployment: {'EXISTS' if store.exists('sec_def14a') else 'ABSENT (dropped at an earlier cutover)'}")
 
 
 def section_spot_checks(live: dict[str, pd.DataFrame], store) -> None:

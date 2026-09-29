@@ -9,22 +9,41 @@ Parsing financial statements out of an attached earnings release is deliberately
 out of scope -- it would store unstandardized figures competing with
 `fundamentals_facts`.
 """
+
 from __future__ import annotations
 
 import itertools
+import re
+from typing import Any
 
 import pandas as pd
 
 from src.constants.constants import SEC_8K_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
-    filed_by, new_filings, period_of_report, run_edgar_fetch,
+    filed_by,
+    new_filings,
+    period_of_report,
+    run_edgar_fetch,
 )
 from src.data_store.schema import Table, Tables
 
-_COLS = ["ticker", "cik", "accession_number", "form", "filing_date", "period_of_report",
-        "n_items", "is_amendment", "has_earnings", "has_press_release",
-        "primary_document", "item", "item_tag", "item_text"]
+_COLS = [
+    "ticker",
+    "cik",
+    "accession_number",
+    "form",
+    "filing_date",
+    "period_of_report",
+    "n_items",
+    "is_amendment",
+    "has_earnings",
+    "has_press_release",
+    "primary_document",
+    "item",
+    "item_tag",
+    "item_text",
+]
 
 # Curated leading distress/governance codes for the feature layer; any other code is
 # tagged `other_unclassified_item` rather than dropped.
@@ -72,6 +91,42 @@ _HIGH_SIGNAL_ITEMS = {
     "9.01": "financial_statements_and_exhibits",
 }
 
+_GROUPED_VOTE_NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
+_VOTE_TABLE_LABEL_RE = re.compile(r"(?i)\b(?:against|withheld|abstain(?:ed)?|broker\s+non[- ]votes?)\b")
+_RESULTS_FOLLOW_RE = re.compile(
+    r"(?is)\b(?:results?|votes?)\b.{0,160}\b(?:below|following|as follows|set forth)\b"
+    r"|\b(?:below|following)\b.{0,160}\b(?:results?|votes?)\b"
+)
+_ITEM_507_HEADING_RE = re.compile(r"(?im)^\s*Item\s+5\.07\b[^\n]*")
+_NEXT_8K_SECTION_RE = re.compile(r"(?im)^\s*(?:Item\s+(?!5\.07\b)\d\.\d{2}\b[^\n]*|SIGNATURES?)\s*$")
+
+
+def _has_vote_table(text: str) -> bool:
+    return len(_GROUPED_VOTE_NUMBER_RE.findall(text)) >= 2 and bool(_VOTE_TABLE_LABEL_RE.search(text))
+
+
+def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
+    """Replace an edgartools table-less Item 5.07 slice with its primary-doc section.
+
+    Some issuers render the prose and tables in separate HTML blocks. The typed
+    `CurrentReport` section ends after "results ... below", while `filing.text()` retains
+    the tables. Keep complete structured slices byte-for-byte and accept a fallback only
+    when the stub announces following results and the carved section contains both vote
+    labels and multiple grouped tallies.
+    """
+    if not _RESULTS_FOLLOW_RE.search(item_text) or _has_vote_table(item_text):
+        return item_text
+    try:
+        primary_text = str(filing.text() or "")
+    except Exception:  # noqa: BLE001 -- best-effort filing recovery
+        return item_text
+    for heading in _ITEM_507_HEADING_RE.finditer(primary_text):
+        following = _NEXT_8K_SECTION_RE.search(primary_text, heading.end())
+        candidate = primary_text[heading.start() : following.start() if following else len(primary_text)].strip()
+        if len(candidate) > len(item_text) and _has_vote_table(candidate):
+            return candidate
+    return item_text
+
 
 def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
     """One 8-K -> one row per item code. `has_earnings`/`has_press_release` are
@@ -93,7 +148,7 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
         obj = filing.obj()
         has_earnings = float(bool(obj.has_earnings))
         has_press_release = float(bool(obj.has_press_release))
-    except Exception:                                   # noqa: BLE001 -- best-effort only
+    except Exception:  # noqa: BLE001 -- best-effort only
         pass
 
     base = {
@@ -119,28 +174,38 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
         if obj is not None:
             try:
                 item_text = obj["Item " + item_code]
-            except Exception:                           # noqa: BLE001 -- best-effort only
+            except Exception:  # noqa: BLE001 -- best-effort only
                 item_text = None
-        rows.append({**base,
-                     "item": item_code,
-                     "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"),
-                     "item_text": item_text or ""})
+        if item_code == "5.07":
+            item_text = _recover_item_507_from_primary(filing, str(item_text or ""))
+        rows.append(
+            {**base, "item": item_code, "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"), "item_text": item_text or ""}
+        )
     return rows
 
 
-def build_ticker_8k_edgar(ticker: str, cik: str, *, since: pd.Timestamp | None = None,
-                          done_accessions: frozenset[str] = frozenset(),
-                          ) -> dict[Table, pd.DataFrame]:
-    rows = itertools.chain.from_iterable(
-        _filing_row(ticker, cik, f)
-        for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
+def build_ticker_8k_edgar(
+    ticker: str,
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
+) -> dict[Table, pd.DataFrame]:
+    rows = itertools.chain.from_iterable(_filing_row(ticker, cik, f) for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
     df = pd.DataFrame(list(rows), columns=_COLS)
     # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
     # would make the upsert touch one PK row twice, which Postgres rejects outright.
     return {Tables.sec_8k: df.drop_duplicates(subset=list(Tables.sec_8k.pk), keep="last")}
 
 
-def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(context, tickers, years_history,
-                    tables=(Tables.sec_8k,), build=build_ticker_8k_edgar,
-                    desc="8-K (edgartools)")
+def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
+    run_edgar_fetch(
+        context,
+        tickers,
+        years_history,
+        tables=(Tables.sec_8k,),
+        build=build_ticker_8k_edgar,
+        desc="8-K (edgartools)",
+        full=full,
+        require_complete=True,
+    )

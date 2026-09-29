@@ -20,36 +20,42 @@ behind. Skipped entirely when the core level series already reach the previous b
 Needs a free FRED key (https://fred.stlouisfed.org/docs/api/api_key.html -> FRED_API_KEY in
 .env) and network for yfinance.
 """
+
 from __future__ import annotations
 
 import os
+from typing import cast
 
 import numpy as np
 import pandas as pd
 from fredapi import Fred
 
+from src.constants.constants_price import (
+    MACRO_ALL_SERIES,
+    MACRO_BOND_MATURITY_YEARS,
+    MACRO_BOND_TR_SERIES,
+    MACRO_CORE_LEVEL_SERIES,
+    MACRO_FRED_SERIES,
+    MACRO_PRICE_SERIES,
+    MACRO_SPREAD_SERIES,
+)
 from src.context import Context
-from src.data_store.schema import Tables
-from src.constants.constants_price import (MACRO_PRICE_SERIES, MACRO_FRED_SERIES,
-                                     MACRO_SPREAD_SERIES, MACRO_BOND_TR_SERIES,
-                                     MACRO_BOND_MATURITY_YEARS, MACRO_CORE_LEVEL_SERIES,
-                                     MACRO_ALL_SERIES)
-from src.utils.ssl_setup import configure_corporate_ca
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sessions import last_completed_session
+from src.data_store.schema import Tables
+from src.utils.ssl_setup import configure_corporate_ca
 
 # ORDERING, not a side-effect to tidy away: importing `download_ohlcv` pulls in yfinance,
 # which imports curl_cffi at module load and FREEZES its CA bundle then -- so the combined
 # corporate bundle must exist BEFORE that import. Idempotent; a no-op when main.py ran it.
 configure_corporate_ca()
-from src.data_extract.utils.prices.fetch_prices import download_ohlcv   # noqa: E402
+from src.data_extract.utils.prices.fetch_prices import download_ohlcv  # noqa: E402
 
 _TRADING_DAYS = 252
-MAX_GAP_DAYS = 7                 # fill sporadic daily gaps strictly shorter than this
+MAX_GAP_DAYS = 7  # fill sporadic daily gaps strictly shorter than this
 
 
-def fill_short_gaps(df: pd.DataFrame, cols: list[str],
-                    max_gap_days: int = MAX_GAP_DAYS) -> pd.DataFrame:
+def fill_short_gaps(df: pd.DataFrame, cols: list[str], max_gap_days: int = MAX_GAP_DAYS) -> pd.DataFrame:
     """Carry the last observation FORWARD across a sporadic interior NaN run (holidays, one-off
     source misses, the yfinance and FRED calendars not lining up) in each of `cols`, but ONLY
     when the gap spans fewer than `max_gap_days` calendar days. Longer outages and leading /
@@ -96,19 +102,19 @@ def fill_short_gaps(df: pd.DataFrame, cols: list[str],
     for c in cols:
         s = df[c]
         gap = s.isna()
-        if not gap.any():
+        if not bool(gap.any()):
             continue
         prev_val, next_val = s.ffill(), s.bfill()
-        obs = idx.where(s.notna())                       # observation date, else NaT
+        obs = idx.where(s.notna())  # observation date, else NaT
         span_days = (obs.bfill() - obs.ffill()).dt.days  # bracketing-days distance
         fillable = gap & prev_val.notna() & next_val.notna() & (span_days < max_gap_days)
         df.loc[fillable, c] = prev_val[fillable]
     return df
 
 
-def build_bond_total_return(yield_pct: pd.Series,
-                            maturity_years: int = MACRO_BOND_MATURITY_YEARS,
-                            periods_per_year: int = _TRADING_DAYS) -> pd.Series:
+def build_bond_total_return(
+    yield_pct: pd.Series, maturity_years: int = MACRO_BOND_MATURITY_YEARS, periods_per_year: int = _TRADING_DAYS
+) -> pd.Series:
     """Reconstruct a constant-maturity bond TOTAL-RETURN index from a par-yield series.
 
     Daily total return of a rolled constant-maturity par bond ~=
@@ -120,13 +126,11 @@ def build_bond_total_return(yield_pct: pd.Series,
     y = yield_pct.astype(float) / 100.0
     y_prev = y.shift(1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        dur = np.where(y_prev > 0,
-                       (1.0 / y_prev) * (1.0 - (1.0 + y_prev) ** (-maturity_years)),
-                       float(maturity_years))
+        dur = np.where(y_prev > 0, (1.0 / y_prev) * (1.0 - (1.0 + y_prev) ** (-maturity_years)), float(maturity_years))
     carry = y_prev / periods_per_year
     price_ret = -pd.Series(dur, index=y.index) * (y - y_prev)
-    daily_ret = (carry + price_ret)
-    daily_ret = daily_ret[y.notna() & y_prev.notna()]        # drop warmup / NaN days
+    daily_ret = carry + price_ret
+    daily_ret = daily_ret[y.notna() & y_prev.notna()]  # drop warmup / NaN days
     if daily_ret.empty:
         return pd.Series(dtype=float, index=yield_pct.index)
     index = (1.0 + daily_ret).cumprod() * 100.0
@@ -136,8 +140,7 @@ def build_bond_total_return(yield_pct: pd.Series,
 # --------------------------------------------------------------------------- #
 # the three legs                                                              #
 # --------------------------------------------------------------------------- #
-def _fetch_price_leg(context: Context, since: pd.Timestamp,
-                     until: pd.Timestamp) -> pd.DataFrame:
+def _fetch_price_leg(context: Context, since: pd.Timestamp, until: pd.Timestamp) -> pd.DataFrame:
     """The yfinance legs -> date-indexed wide frame of CLOSES under their series names.
 
     Keeps only the close (the "trim the volume" step). `trim_prelisting_bars` is deliberately
@@ -153,23 +156,19 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp,
 
     This is why `download_ohlcv` takes `auto_adjust` as a required argument instead of
     hard-coding it: the equity leg needs `False`, and this leg must not follow it."""
-    raw = download_ohlcv(list(MACRO_PRICE_SERIES), since, until,
-                         desc="Downloading macro/market prices",
-                         auto_adjust=True, actions=False)
+    raw = download_ohlcv(list(MACRO_PRICE_SERIES), since, until, desc="Downloading macro/market prices", auto_adjust=True, actions=False)
     if raw is None or raw.empty:
-        context.log.warning("yfinance returned nothing for the macro price legs %s",
-                            list(MACRO_PRICE_SERIES))
+        context.log.warning("yfinance returned nothing for the macro price legs %s", list(MACRO_PRICE_SERIES))
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
 
     # `close_total`, not `close`: under auto_adjust=True the normaliser emits the single
     # returned series under the name that states its basis. The stored column stays `close`
     # -- `prices_macro` is one series per row, so the name carries no basis ambiguity.
-    df = raw[["date", "ticker", "close_total"]].rename(columns={"close_total": "close"})
+    df = cast(pd.DataFrame, raw[["date", "ticker", "close_total"]]).rename(columns={"close_total": "close"})
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-    df["ticker"] = df["ticker"].astype(str).map(MACRO_PRICE_SERIES)
-    wide = (df.dropna(subset=["ticker"])
-              .pivot_table(index="date", columns="ticker", values="close", aggfunc="last")
-              .sort_index())
+    ticker = cast(pd.Series, df["ticker"])
+    df["ticker"] = ticker.astype(str).map(MACRO_PRICE_SERIES)
+    wide = df.dropna(subset=["ticker"]).pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
     wide.columns.name = None
     wide.index.name = "date"
 
@@ -182,8 +181,7 @@ def _fetch_price_leg(context: Context, since: pd.Timestamp,
 def _fetch_fred_leg(since: pd.Timestamp) -> pd.DataFrame:
     """The FRED LEVEL legs -> date-indexed wide frame under their series names."""
     fred = Fred(api_key=os.getenv("FRED_API_KEY"))
-    frame = {name: fred.get_series(sid, observation_start=since)
-             for sid, name in MACRO_FRED_SERIES.items()}
+    frame = {name: fred.get_series(sid, observation_start=since) for sid, name in MACRO_FRED_SERIES.items()}
     df = pd.DataFrame(frame)
     df.index = pd.to_datetime(df.index)
     df.index.name = "date"
@@ -201,7 +199,7 @@ def derive_series(wide: pd.DataFrame, context: Context | None = None) -> pd.Data
         elif context is not None:
             context.log.warning("spread '%s' skipped: needs %s - %s", name, minuend, subtrahend)
     if "yield_10y" in out.columns:
-        out[MACRO_BOND_TR_SERIES] = build_bond_total_return(out["yield_10y"])
+        out[MACRO_BOND_TR_SERIES] = build_bond_total_return(cast(pd.Series, out["yield_10y"]))
     elif context is not None:
         context.log.warning("'%s' skipped: yield_10y absent", MACRO_BOND_TR_SERIES)
     return out
@@ -214,9 +212,7 @@ def to_long(wide: pd.DataFrame) -> pd.DataFrame:
     (fx 1999, gold 2000, breakeven 2003), which a wide table had to pad with NaN."""
     if wide is None or wide.empty:
         return pd.DataFrame(columns=["date", "ticker", "close"])
-    long = (wide.rename_axis("date").reset_index()
-                .melt(id_vars="date", var_name="ticker", value_name="close")
-                .dropna(subset=["close"]))
+    long = wide.rename_axis("date").reset_index().melt(id_vars="date", var_name="ticker", value_name="close").dropna(subset=["close"])
     long["close"] = long["close"].astype(float)
     return long.sort_values(["ticker", "date"]).reset_index(drop=True)
 
@@ -236,7 +232,7 @@ def _is_up_to_date(context: Context) -> bool:
         return False
     core = [last_by_series[s] for s in MACRO_CORE_LEVEL_SERIES if s in last_by_series]
     if len(core) < len(MACRO_CORE_LEVEL_SERIES):
-        return False                      # a core series has no rows at all
+        return False  # a core series has no rows at all
     last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
     return bool(min(core) >= last_expected)
 
@@ -270,13 +266,10 @@ def fetch_macro(context: Context, years_history: int) -> None:
     read off the config here -- the same contract as fetch_price_history / fetch_dividends,
     which keeps both windows visible at the one place that owns them."""
     if not os.getenv("FRED_API_KEY"):
-        raise RuntimeError(
-            "FRED_API_KEY not set. Get a free key at "
-            "https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")
+        raise RuntimeError("FRED_API_KEY not set. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")
 
     if _is_up_to_date(context):
-        context.log.info("Macro series already up to date - skipping (DB table '%s')",
-                         Tables.prices_macro)
+        context.log.info("Macro series already up to date - skipping (DB table '%s')", Tables.prices_macro)
         record_run(context, Tables.prices_macro, 0, 0)
         return
 
@@ -288,8 +281,7 @@ def fetch_macro(context: Context, years_history: int) -> None:
     # leaves stale rows behind when a series definition changes.
     context.store.replace(Tables.prices_macro, long)
     stored = sorted(long["ticker"].unique())
-    context.log.info("Saved %d rows / %d series to DB table '%s' (%d-year window)",
-                     len(long), len(stored), Tables.prices_macro, years_history)
+    context.log.info("Saved %d rows / %d series to DB table '%s' (%d-year window)", len(long), len(stored), Tables.prices_macro, years_history)
 
     missing = [s for s in MACRO_ALL_SERIES if s not in stored]
     if missing:

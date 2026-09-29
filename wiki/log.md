@@ -47,3 +47,20 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Architecture: the top-level staged pipeline and persistence boundaries are unchanged; the institutional sub-step now delegates I/O to [inputs.py](../src/data_aggregate/utils/institutionals/inputs.py) and completeness decisions to [frontiers.py](../src/data_aggregate/utils/institutionals/frontiers.py)
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Source availability](./concepts/source-availability.md), [Application and scripts](./modules/application-and-scripts.md)
 - Public contracts retained: `StepCubeInstitutionals.run()`, `build_panel()`, the ordered seven-panel merge, the shared conditioning sink, exact price/share projections, completeness semantics, and `cube_part_institutionals` persistence
+
+## 2026-09-26: refresh — Ruff and Pyright contract
+
+- Profile: internal/standard
+- source_commit: 783e6a5
+- Coverage: aligned the repository coding guide with the enforced Ruff 0.16.9 and Pyright 1.1.414 contracts after the institutionals refactor; no architecture, persistence, aggregation, feature, or protocol contract changed
+- Naming: lower snake case for functions, methods, arguments, and local variables; exception classes end in `Error`; module constants and classes retain capitals
+- Runtime syntax: Python 3.13 unions use `A | B`, including the explicit project convention for `isinstance`; every `zip()` states its strictness
+- Tooling: [pyrightconfig.json](../pyrightconfig.json) resolves the project-local `.venv`; matching `pandas-stubs` supports pandas boundaries; Airflow-only suppressions remain file-scoped because DAGs run in the separate Python 3.12 environment
+- Page: [Coding standards](./guides/coding-standards.md)
+
+## 2026-09-27: refresh — schema-driven extraction freshness
+
+- Profile: internal/standard
+- source_commit: bb65544 (was 783e6a5)
+- Coverage: replaced the parallel extraction freshness registry with the canonical table metadata in `src/data_store/schema.py`; documented the three-retry hard gate between extraction and aggregation; removed retired Wikipedia and Google Trends tables from freshness checks
+- Pages: [Overview](./OVERVIEW.md), [Data extraction](./modules/data-extract.md), [Nightly data refresh](./flows/nightly-data-refresh.md)

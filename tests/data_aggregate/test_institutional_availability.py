@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -60,7 +61,7 @@ def test_source_frontier_is_inclusive_and_cannot_extend_stale_data() -> None:
     idx = pd.date_range("2026-03-30", periods=4, freq="D")
     columns = pd.Index(["AAA", "BBB"], name="ticker")
     got = InstitutionalAvailability.through_mask(idx, columns, pd.Timestamp("2026-03-31"))
-    assert got.loc[pd.Timestamp("2026-03-31")].all()
+    assert got.loc[pd.Timestamp("2026-03-31")].to_numpy().all()
     assert not got.loc[pd.Timestamp("2026-04-01") :].to_numpy().any()
     print("\n=== SANITY CHECK: stale source frontier ===")
     print("  A source observed through 2026-03-31 is available on that date and unavailable after it. Validated.")
@@ -68,7 +69,7 @@ def test_source_frontier_is_inclusive_and_cannot_extend_stale_data() -> None:
 
 def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path) -> None:
     manifest_path = tmp_path / "extraction_manifest.json"
-    step = object.__new__(StepCubeInstitutionals)
+    step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._context = SimpleNamespace(
         paths={"DATA_STORE": tmp_path},
         config=SimpleNamespace(local=SimpleNamespace(filename=SimpleNamespace(extraction=manifest_path.name))),

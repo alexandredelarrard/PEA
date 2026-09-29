@@ -49,7 +49,7 @@ The pay-ratio identity did NOT disappear: it lives on the LLM side in
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -63,20 +63,34 @@ from src.utils.string import clean_text  # noqa: F401
 
 # Sanity bounds separating "implausible for an S&P 500 issuer, therefore mis-scaled or
 # fabricated by the parser" from "small but real" -- the repair layer only fires on the former.
-DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5     # a sub-$100k TOTAL auditor fee => block is in thousands
-DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4    # a sub-$10k net income => figure is in millions/billions
+DEF14A_AUDIT_FEE_MIN_PLAUSIBLE = 1e5  # a sub-$100k TOTAL auditor fee => block is in thousands
+DEF14A_NET_INCOME_MIN_PLAUSIBLE = 1e4  # a sub-$10k net income => figure is in millions/billions
 #: Dollars of slack when comparing a fee total against its categories. Fee tables are printed to
 #: the dollar or to $0.1M, so $10 is below any real rounding step while still absorbing float
 #: error -- the two real defects miss by $4.5M and $4.7M, not by cents.
 DEF14A_FEE_SUM_TOL = 10.0
 
 __all__ = [
-    "clean_text", "clean_person_name", "clean_holder_name", "is_subtotal_holder",
-    "rescale_block", "sum_fee_total", "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
-    "DEF14A_NET_INCOME_MIN_PLAUSIBLE", "DEF14A_FEE_SUM_TOL", "repair_main_row",
-    "repair_pay_ratio", "sct_reference", "sanity_check_exec_comp", "DEF14A_SCT_PART_COLS",
-    "DEF14A_SCT_PARTS_LO", "DEF14A_SCT_PARTS_HI", "DEF14A_SCT_KEEP_BAND",
-    "DEF14A_SCT_REPAIR_BAND", "DEF14A_CEO_TOTAL_MIN_PLAUSIBLE", "DEF14A_PAY_RATIO_TOL",
+    "clean_text",
+    "clean_person_name",
+    "clean_holder_name",
+    "is_subtotal_holder",
+    "rescale_block",
+    "sum_fee_total",
+    "DEF14A_AUDIT_FEE_MIN_PLAUSIBLE",
+    "DEF14A_NET_INCOME_MIN_PLAUSIBLE",
+    "DEF14A_FEE_SUM_TOL",
+    "repair_main_row",
+    "repair_pay_ratio",
+    "sct_reference",
+    "sanity_check_exec_comp",
+    "DEF14A_SCT_PART_COLS",
+    "DEF14A_SCT_PARTS_LO",
+    "DEF14A_SCT_PARTS_HI",
+    "DEF14A_SCT_KEEP_BAND",
+    "DEF14A_SCT_REPAIR_BAND",
+    "DEF14A_CEO_TOTAL_MIN_PLAUSIBLE",
+    "DEF14A_PAY_RATIO_TOL",
     "DEF14A_MEDIAN_PAY_JUMP_MAX",
 ]
 
@@ -145,8 +159,7 @@ def rescale_block(row: dict, cols: list[str], min_plausible: float) -> None:
             row[c] = float(row[c]) * factor
 
 
-def sum_fee_total(row: dict, total_col: str, part_cols: list[str],
-                  tol: float = DEF14A_FEE_SUM_TOL) -> bool:
+def sum_fee_total(row: dict, total_col: str, part_cols: list[str], tol: float = DEF14A_FEE_SUM_TOL) -> bool:
     """Rebuild a fee TOTAL from its categories IN PLACE when the total is really a category.
 
     Not every fee table has a Total row. BA's and T's do not, and on both the model put the
@@ -172,8 +185,8 @@ def sum_fee_total(row: dict, total_col: str, part_cols: list[str],
     parts = [row.get(c) for c in part_cols]
     if not all(_isnum(p) for p in parts):
         return False
-    total = float(row[total_col])
-    parts_f = [float(p) for p in parts]
+    total = float(cast(Any, row[total_col]))
+    parts_f = [float(cast(Any, p)) for p in parts]
     if not any(abs(total - p) <= tol for p in parts_f):
         return False
     if sum(parts_f) - total <= tol:
@@ -207,12 +220,10 @@ def repair_main_row(row: dict) -> dict:
     # $0. On the ECD path that value is SBUX's individual x year matrix marking a year the person
     # was not PEO, and dropping it at selection time recovers the CORRECT value instead of this
     # NULL -- so if a zero still reaches here, the selection missed something.
-    for col in ("peo_total_comp", "peo_actually_paid_comp", "neo_avg_total_comp",
-                "neo_avg_actually_paid_comp"):
+    for col in ("peo_total_comp", "peo_actually_paid_comp", "neo_avg_total_comp", "neo_avg_actually_paid_comp"):
         if _isnum(row.get(col)) and float(row[col]) == 0.0:
             row[col] = _NAN
     return row
-
 
 
 # --------------------------------------------------------------------------------------------
@@ -277,8 +288,12 @@ def repair_main_row(row: dict) -> dict:
 #: carries a deferred-compensation-earnings line this schema does not model, and an exact
 #: identity would fire on thousands of correct filings.
 DEF14A_SCT_PART_COLS = (
-    "ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
-    "ceo_non_equity_incentive", "ceo_all_other_comp",
+    "ceo_salary",
+    "ceo_bonus",
+    "ceo_stock_awards",
+    "ceo_option_awards",
+    "ceo_non_equity_incentive",
+    "ceo_all_other_comp",
 )
 #: A total below half, or above twice, the sum of its own components has lost or gained a whole
 #: component. Median `total / Sigma(parts)` is 1.0000 in every disclosure regime (pre-2006,
@@ -382,8 +397,7 @@ def repair_pay_ratio(row: dict) -> dict:
     recomputed = total / median
     # `recomputed == 0` makes a relative comparison undefined; agreement there means `ratio` is
     # 0 too, which is the TSLA case and is left exactly as filed.
-    agrees = (ratio == 0.0) if recomputed == 0.0 else (
-        abs(ratio - recomputed) <= DEF14A_PAY_RATIO_TOL * abs(recomputed))
+    agrees = (ratio == 0.0) if recomputed == 0.0 else (abs(ratio - recomputed) <= DEF14A_PAY_RATIO_TOL * abs(recomputed))
     # 2. a disagreement over a placeholder total leaves nothing to keep. A disagreement over a
     # REAL total is reported by `sanity_check_exec_comp` and left alone -- see above.
     if not agrees and total <= DEF14A_CEO_TOTAL_MIN_PLAUSIBLE:
@@ -406,7 +420,7 @@ def _leave_one_out_median(values: pd.Series) -> pd.Series:
         return pd.Series(out, index=values.index)
     for position in range(arr.size):
         if np.isnan(arr[position]):
-            rest = pool                      # contributes nothing, so nothing to take out
+            rest = pool  # contributes nothing, so nothing to take out
         else:
             rest = np.delete(pool, int(np.searchsorted(known, position)))
         if rest.size:
@@ -445,8 +459,7 @@ def sct_reference(rows: pd.DataFrame) -> pd.Series:
     positive = positive.where(positive > 0)
     if positive.empty:
         return pd.Series(_NAN, index=rows.index, dtype="float64")
-    return (positive.groupby([tickers, keys], dropna=False)
-            .transform(_leave_one_out_median).astype("float64"))
+    return positive.groupby([tickers, keys], dropna=False).transform(_leave_one_out_median).astype("float64")
 
 
 def sanity_check_exec_comp(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -497,21 +510,19 @@ def sanity_check_exec_comp(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
         return out, tally
     total = pd.to_numeric(out["ceo_total_comp"], errors="coerce")
     present = [c for c in DEF14A_SCT_PART_COLS if c in out.columns]
-    parts_df = out[present].apply(pd.to_numeric, errors="coerce") if present else None
+    parts_df = out[present].apply(pd.to_numeric, errors="coerce") if present else pd.DataFrame(index=out.index)
     parts = parts_df.fillna(0.0).sum(axis=1) if present else pd.Series(0.0, index=out.index)
     n_parts = parts_df.notna().sum(axis=1) if present else pd.Series(0, index=out.index)
 
     # 1. the negative total
     negative = total < 0
     _count("nulled_negative_total", negative.sum())
-    _count("negative_component_rows_KEPT", int(
-        (parts_df.min(axis=1) < 0).sum()) if present else 0)
+    _count("negative_component_rows_KEPT", int((parts_df.min(axis=1) < 0).sum()) if present else 0)
     total = total.mask(negative)
 
     # 2. the identities. Both band tests need a POSITIVE Sigma(parts) to be meaningful, which a
     # row carrying a negative component may not have.
-    salary = (pd.to_numeric(out["ceo_salary"], errors="coerce")
-              if "ceo_salary" in out.columns else pd.Series(_NAN, index=out.index))
+    salary = pd.to_numeric(out["ceo_salary"], errors="coerce") if "ceo_salary" in out.columns else pd.Series(_NAN, index=out.index)
     testable = total.notna() & (n_parts > 0) & (parts > 0)
     below_salary = total.notna() & salary.notna() & (total < salary)
     below_parts = testable & (total < DEF14A_SCT_PARTS_LO * parts)
@@ -541,19 +552,16 @@ def sanity_check_exec_comp(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     # 3. the pay ratio, against the total as it now stands
     if "ceo_pay_ratio" in out.columns:
         before = pd.to_numeric(out["ceo_pay_ratio"], errors="coerce")
-        repaired = pd.DataFrame(
-            [repair_pay_ratio(r) for r in out.to_dict("records")], index=out.index)
+        repaired = pd.DataFrame([repair_pay_ratio(r) for r in out.to_dict("records")], index=out.index)
         out["ceo_pay_ratio"] = pd.to_numeric(repaired["ceo_pay_ratio"], errors="coerce")
         after = out["ceo_pay_ratio"]
         _count("pay_ratio_nulled_unusable", int((before.notna() & after.isna()).sum()))
-        _count("pay_ratio_rewritten", int(
-            (before.notna() & after.notna() & (before != after)).sum()))
+        _count("pay_ratio_rewritten", int((before.notna() & after.notna() & (before != after)).sum()))
         # REPORTED, never repaired: three mechanisms share this symptom and arithmetic cannot
         # separate them (`repair_pay_ratio`). This is the phase-5 re-extraction worklist.
         med = pd.to_numeric(out["median_employee_pay"], errors="coerce")
         recomputed = (pd.to_numeric(out["ceo_total_comp"], errors="coerce") / med).where(med > 0)
-        unreconciled = (after.notna() & recomputed.notna() & (recomputed > 0)
-                        & ((after - recomputed).abs() > DEF14A_PAY_RATIO_TOL * recomputed))
+        unreconciled = after.notna() & recomputed.notna() & (recomputed > 0) & ((after - recomputed).abs() > DEF14A_PAY_RATIO_TOL * recomputed)
         _count("pay_ratio_UNRECONCILED_reported_only", unreconciled.sum())
 
     # a report, never a repair -- two of the six breaches are a real COVID composition effect

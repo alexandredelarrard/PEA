@@ -171,13 +171,13 @@ def test_assemble_streams_chunks_and_matches_oneshot(monkeypatch):
     assert set(f32) == set(checked), {c: str(cube[c].dtype) for c in checked}
 
     print("\n=== SANITY CHECK: cube assembly (chunked base LEFT JOIN wide targets) ===")
-    print(f"  wrote {len(store.writes)} bounded chunks as {ops} (replace creates the schema, " f"bulk_seed appends)")
+    print(f"  wrote {len(store.writes)} bounded chunks as {ops} (replace creates the schema, bulk_seed appends)")
     print(
         f"  cube {len(cube)} rows = {len(_DATES)} dates x {len(_TICKERS)} tickers, 0 duplicate "
         f"(date,ticker), no target_horizon column -- the 2-horizon row duplication is gone "
         f"(it was 8 rows)"
     )
-    print(f"  values equal the one-shot LEFT JOIN; {len(_TARGET_COLS)} label columns float32. " f"Validated.")
+    print(f"  values equal the one-shot LEFT JOIN; {len(_TARGET_COLS)} label columns float32. Validated.")
 
 
 def test_base_row_with_no_target_survives_with_nan_labels(monkeypatch):
@@ -219,7 +219,7 @@ def test_long_targets_part_is_refused(monkeypatch):
     assert not store.writes, "nothing must be written when the part is refused"
 
     print("\n=== SANITY CHECK: the old LONG targets part is refused ===")
-    print("  a part still carrying `target_horizon` raises before any write, naming " "cube_part_targets and `build-target --full`. Validated.")
+    print("  a part still carrying `target_horizon` raises before any write, naming cube_part_targets and `build-target --full`. Validated.")
 
 
 def test_duplicate_target_keys_are_refused(monkeypatch):
@@ -249,7 +249,7 @@ def test_assembly_emits_no_edge_warning_when_every_part_is_aligned(monkeypatch, 
     edge_warnings = [r.message for r in caplog.records if "Cube part edge mismatch" in r.message]
     assert not edge_warnings
     print("\n=== SANITY CHECK: aligned assembly edge ===")
-    print("  every registered part equals the price maximum; no edge warning was emitted. " "Validated.")
+    print("  every registered part equals the price maximum; no edge warning was emitted. Validated.")
 
 
 @pytest.mark.parametrize(
@@ -283,7 +283,7 @@ def test_assembly_warns_for_each_non_aligned_part(monkeypatch, caplog, status, p
     assert any(part_name in message and f"status={status}" in message for message in messages)
     assert any("price_max=2023-01-03" in message for message in messages)
     print(f"\n=== SANITY CHECK: assembly warns for a {status} part ===")
-    print(f"  warning names {part_name}, status={status}, and the 2023-01-03 price edge; " "assembly continues. Validated.")
+    print(f"  warning names {part_name}, status={status}, and the 2023-01-03 price edge; assembly continues. Validated.")
 
 
 def test_missing_required_target_warns_before_existing_prerequisite_raises(monkeypatch, caplog):
@@ -297,7 +297,7 @@ def test_missing_required_target_warns_before_existing_prerequisite_raises(monke
     messages = [r.message for r in caplog.records]
     assert any("Cube part edge mismatch" in message and "cube_part_targets" in message and "status=missing" in message for message in messages)
     print("\n=== SANITY CHECK: edge warnings do not weaken assembly prerequisites ===")
-    print("  missing targets emitted its edge warning first, then the existing required-target " "guard raised. Validated.")
+    print("  missing targets emitted its edge warning first, then the existing required-target guard raised. Validated.")
 
 
 if __name__ == "__main__":

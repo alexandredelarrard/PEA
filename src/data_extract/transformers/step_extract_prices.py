@@ -15,18 +15,18 @@ Ownership and flow -- 13F, superinvestors, insiders, 13D, 8-K, short interest,
 fails-to-deliver -- are NOT here: they are `StepExtractInstitutionals`, which mirrors the
 cube's `institutionals` part.
 """
+
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.utils.step import Step
-from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
-from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
+from src.data_extract.utils.prices.fetch_prices import fetch_price_history
+from src.data_extract.utils.prices.fetch_splits import fetch_splits
+from src.utils.step import Step
 
 
 class StepExtractPrices(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
         self.config = self._context.config

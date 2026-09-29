@@ -51,7 +51,7 @@ import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pandas as pd
 
@@ -478,14 +478,14 @@ def log_symbol_resolutions(
         for row in summary.itertuples(index=False):
             context.log.info(
                 f"{source_name}: {getattr(row, symbol_col)} -> {row.ticker}: "
-                f"{row.rows} row(s), {pd.Timestamp(row.first).date()}.."
-                f"{pd.Timestamp(row.last).date()}"
+                f"{row.rows} row(s), {pd.Timestamp(cast(Any, row.first)).date()}.."
+                f"{pd.Timestamp(cast(Any, row.last)).date()}"
             )
 
     current_reuse = accepted[accepted[symbol_col].isin(universe) & (accepted[symbol_col] != accepted["ticker"])]
     if not current_reuse.empty:
         names = sorted(current_reuse[symbol_col].dropna().astype(str).unique())
-        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe " f"entity: {', '.join(names)}")
+        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe entity: {', '.join(names)}")
 
     if not unresolved.empty:
         by_verdict = unresolved.groupby("resolution_verdict")[symbol_col].agg(lambda values: ", ".join(sorted(set(map(str, values)))))
@@ -522,7 +522,7 @@ def build_identity(
             "`identity-tables` first."
         )
     if roster is None or roster.empty:
-        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to " "resolve rows against.")
+        raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
 
     # --- axis A ------------------------------------------------------------- #
     ciks = lineage["cik"].map(normalise_cik)
@@ -657,7 +657,7 @@ def _check_d19(identity: Identity, allowlist: Mapping[str, str], today=None) -> 
         )
     if disagree:
         logger.info(
-            "identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed " "with evidence",
+            "identity: D19 cross-check -- %d/%d tickers agree, %d allow-listed with evidence",
             len(identity.roster_cik) - len(disagree),
             len(identity.roster_cik),
             len(disagree),
@@ -674,10 +674,14 @@ def load_identity(context: Context, config_dir: str | None = None, refresh: bool
     cached = None if refresh else _CACHE.get(context)
     if cached is not None:
         return cached
+    lineage = context.store.load(Tables.entity_lineage, project=True)
+    tenure = context.store.load(Tables.symbol_tenure, project=True)
+    roster = context.store.load(Tables.sp500_tickers)
+    assert lineage is not None and tenure is not None and roster is not None
     identity = build_identity(
-        lineage=context.store.load(Tables.entity_lineage, project=True),
-        tenure=context.store.load(Tables.symbol_tenure, project=True),
-        roster=context.store.load(Tables.sp500_tickers),
+        lineage=lineage,
+        tenure=tenure,
+        roster=roster,
         d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)),
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )

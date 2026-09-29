@@ -14,6 +14,7 @@ the spike still scores far from the centre. That is the whole reason this repo f
 outliers this way, and it is why every caller must use the SAME kernel -- two subtly different
 "outlier counts" for the same column would be worse than one.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -42,8 +43,7 @@ def _is_dispersion(scale: float, arr: np.ndarray, median: float) -> bool:
     return scale > _DISPERSION_REL_TOL * max(magnitude, 1.0)
 
 
-def mad_center_scale(values: np.ndarray | pd.Series,
-                     *, fallback_to_mean_abs_dev: bool = True) -> tuple[float, float]:
+def mad_center_scale(values: np.ndarray | pd.Series, *, fallback_to_mean_abs_dev: bool = True) -> tuple[float, float]:
     """`(median, scale)` for the modified Z-score, NaNs ignored.
 
     `scale == 0.0` means "no dispersion" -- the caller must score every point as 0 rather than
@@ -63,17 +63,16 @@ def mad_center_scale(values: np.ndarray | pd.Series,
     return (median, 0.0)
 
 
-def modified_zscore(values: np.ndarray | pd.Series,
-                    *, reference: np.ndarray | pd.Series | None = None,
-                    fallback_to_mean_abs_dev: bool = True) -> np.ndarray:
+def modified_zscore(
+    values: np.ndarray | pd.Series, *, reference: np.ndarray | pd.Series | None = None, fallback_to_mean_abs_dev: bool = True
+) -> np.ndarray:
     """`|MODIFIED_Z_SCALE * (x - median) / scale|` as a float array the length of `values`.
 
     `reference` supplies the median/MAD sample when it differs from `values` (the YoY path).
     NaN in -> NaN out; no dispersion -> all zeros. See the module docstring for why both of
     those are load-bearing rather than defensive."""
     arr = np.asarray(pd.Series(values).astype(float).values, dtype=float)
-    median, scale = mad_center_scale(reference if reference is not None else arr,
-                                     fallback_to_mean_abs_dev=fallback_to_mean_abs_dev)
+    median, scale = mad_center_scale(reference if reference is not None else arr, fallback_to_mean_abs_dev=fallback_to_mean_abs_dev)
     if scale <= 0 or not np.isfinite(median):
         return np.zeros_like(arr)
     return MODIFIED_Z_SCALE * np.abs(arr - median) / scale
@@ -122,8 +121,7 @@ def _score_changes(changes: np.ndarray, *, fallback_to_mean_abs_dev: bool) -> np
     defined = changes[np.isfinite(changes)]
     if defined.size < 3:
         return np.full(changes.shape, np.nan, dtype=float)
-    scores = modified_zscore(changes, reference=defined,
-                             fallback_to_mean_abs_dev=fallback_to_mean_abs_dev)
+    scores = modified_zscore(changes, reference=defined, fallback_to_mean_abs_dev=fallback_to_mean_abs_dev)
     return np.where(np.isfinite(changes), scores, np.nan)
 
 
@@ -138,9 +136,19 @@ _FISCAL_PERIOD_ORDER: dict[str, int] = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "FY"
 #: Columns `detect_level_outliers` returns, in order. Declared once so the empty-result
 #: path and the populated path cannot drift apart.
 LEVEL_OUTLIER_COLUMNS: tuple[str, ...] = (
-    "ticker", "field", "fiscal_year", "fiscal_period", "duration_type", "filing_date",
-    "value", "source_tag", "is_amendment", "derived", "is_level_outlier",
-    "level_z_score", "is_yoy_outlier",
+    "ticker",
+    "field",
+    "fiscal_year",
+    "fiscal_period",
+    "duration_type",
+    "filing_date",
+    "value",
+    "source_tag",
+    "is_amendment",
+    "derived",
+    "is_level_outlier",
+    "level_z_score",
+    "is_yoy_outlier",
 )
 
 
@@ -148,9 +156,7 @@ def _latest_per_period(sub: pd.DataFrame) -> pd.DataFrame:
     """Collapse to ONE row per (fiscal_year, fiscal_period, duration_type): the LATEST-filed
     value. An amendment coexisting as its own fact row must not look like a second,
     disagreeing observation of the same period."""
-    return (sub.sort_values("filing_date")
-            .drop_duplicates(subset=["fiscal_year", "fiscal_period", "duration_type"],
-                             keep="last"))
+    return sub.sort_values("filing_date").drop_duplicates(subset=["fiscal_year", "fiscal_period", "duration_type"], keep="last")
 
 
 def _chronological_sort(sub: pd.DataFrame) -> pd.DataFrame:
@@ -195,9 +201,7 @@ def detect_level_outliers(
     can filter or aggregate across many (ticker, field) pairs.
     """
     cols = list(LEVEL_OUTLIER_COLUMNS)
-    sub = df.loc[
-        (df["ticker"] == ticker) & (df["field"] == field) & (df["duration_type"] == duration_type)
-    ].copy()
+    sub = df.loc[(df["ticker"] == ticker) & (df["field"] == field) & (df["duration_type"] == duration_type)].copy()
     if sub.empty:
         return pd.DataFrame(columns=cols)
 
@@ -206,11 +210,11 @@ def detect_level_outliers(
     if len(sub) < 3:
         return pd.DataFrame(columns=cols)
 
-    vals = sub["value"].astype(float).values
+    vals = sub["value"].to_numpy(dtype=float)
     # Decision 60: the QoQ LOG CHANGE, not the raw level. See the module docstring for the
     # 10x-growth measurement that retired the raw-level kernel, and for where this abstains.
     modified_z = _score_changes(log_change(vals, lag=1), fallback_to_mean_abs_dev=True)
-    level_outlier = modified_z > threshold        # NaN compares False: abstentions never fire
+    level_outlier = modified_z > threshold  # NaN compares False: abstentions never fire
 
     yoy_outlier = np.zeros(len(sub), dtype=bool)
     if check_yoy and len(sub) >= 5:

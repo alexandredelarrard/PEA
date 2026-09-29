@@ -45,10 +45,12 @@ from __future__ import annotations
 import json
 import zlib
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
+from src.context import Context
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -95,10 +97,12 @@ def _select_fundamentals() -> pd.DataFrame:
 
     store = DataStore(get_engine())
     fh = store.load("fundamentals_history")
+    assert fh is not None
     if fh.empty:
-        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation " "fingerprint (run the extraction step first)")
+        raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
     # `attach_gics_columns` reads `context.store` and nothing else
-    fh = attach_gics_columns(add_cube_time_growth(fh), SimpleNamespace(store=store))
+    context = cast(Context, SimpleNamespace(store=store))
+    fh = attach_gics_columns(add_cube_time_growth(fh), context)
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):
         names = sorted(fh.loc[fh["sector"].astype(str) == sector, "ticker"].unique())
@@ -305,7 +309,7 @@ def synthetic_directors(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
     """
     rows = []
     for r in proxies.itertuples(index=False):
-        t, y = r.ticker, int(pd.Timestamp(r.as_of).year)
+        t, y = str(r.ticker), pd.Timestamp(str(r.as_of)).year
         # 5-7 seats, stable per ticker AND ACROSS PROCESSES. ⚠ `hash(t)` was wrong here
         # and the fingerprint test is what caught it: Python randomizes `hash()` of a str
         # per interpreter (PYTHONHASHSEED), so the seat count -- and with it every
@@ -379,8 +383,8 @@ def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
     """
     rows = []
     for i, r in enumerate(proxies.itertuples(index=False)):
-        fy = int(pd.Timestamp(r.as_of).year) - 1
-        ceo = float(r.ceo_total_comp)
+        fy = pd.Timestamp(str(r.as_of)).year - 1
+        ceo = float(cast(float, r.ceo_total_comp))
         # the CEO plus four deputies at a decaying share, so the slice lands in (0, 1)
         pool = [(r.ceo_name_proxy, ceo)] + [(f"Deputy {j} of {i % 7}", ceo * float(share)) for j, share in enumerate((0.55, 0.42, 0.33, 0.27))]
         for name, total in pool:
@@ -487,7 +491,7 @@ def synthetic_ownership(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rando
                         "reporting_person_cik": f"{int(filer) + rp:010d}",
                         "reporting_person_name": f"ACTIVIST {i} MEMBER {rp}",
                         "item4_purpose_of_transaction": (
-                            "The Reporting Persons intend to seek board representation and to " "explore strategic alternatives."
+                            "The Reporting Persons intend to seek board representation and to explore strategic alternatives."
                             if a == 0
                             else "The Reporting Persons acquired additional shares."
                         ),
@@ -741,9 +745,10 @@ def compute() -> dict:
     )
 
     fund = fundamentals()
-    tickers = sorted(fund["ticker"].unique())
+    tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
     px = synthetic_prices(tickers, rng_for("prices"))
-    close, idx = px["close"], px["close"].index
+    close = px["close"]
+    idx = pd.DatetimeIndex(close.index)
     returns = close.pct_change(fill_method=None)
     sector_ret = returns.rolling(5).mean().bfill()  # deterministic stand-in
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}

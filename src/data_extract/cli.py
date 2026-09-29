@@ -15,18 +15,32 @@ insiders, 13D, 8-K, short interest, FTD), fundamentals, structure, behavioral --
 `src/data_extract/utils/<group>/` and, for institutionals, the cube part of the same name.
 """
 
+import json
+from typing import Any, cast
+
 import click
+import pandas as pd
+from omegaconf import DictConfig
 
 from src.constants.command_line_interface import (
     CONFIG_ARGS,
-    CONFIG_KWARGS,
     FULL_ARGS,
-    FULL_KWARGS,
     TICKERS_ARGS,
-    TICKERS_KWARGS,
     YEARS_ARGS,
-    YEARS_KWARGS,
 )
+from src.constants.command_line_interface import (
+    CONFIG_KWARGS as _CONFIG_KWARGS,
+)
+from src.constants.command_line_interface import (
+    FULL_KWARGS as _FULL_KWARGS,
+)
+from src.constants.command_line_interface import (
+    TICKERS_KWARGS as _TICKERS_KWARGS,
+)
+from src.constants.command_line_interface import (
+    YEARS_KWARGS as _YEARS_KWARGS,
+)
+from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
@@ -37,10 +51,6 @@ from src.data_extract.utils.behavioral.fetch_earnings_calls import (
 from src.data_extract.utils.behavioral.fetch_earnings_calls import (
     ingest_all_earnings_calls as _ingest_earnings_calls,
 )
-from src.data_extract.utils.behavioral.fetch_google_trends import fetch_google_trends
-
-# --- behavioral ------------------------------------------------------------- #
-from src.data_extract.utils.behavioral.fetch_wiki_pageviews import fetch_wiki_pageviews
 
 # --- identity: which company is this ticker, and when ----------------------- #
 from src.data_extract.utils.common.bulk_cache import cache_dir
@@ -90,9 +100,14 @@ from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
 
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
-from src.data_store.schema import Tables
+from src.data_store.schema import Tables, freshness_tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.universe import load_universe_tickers, unverified_ciks
+
+CONFIG_KWARGS = cast(dict[str, Any], _CONFIG_KWARGS)
+TICKERS_KWARGS = cast(dict[str, Any], _TICKERS_KWARGS)
+FULL_KWARGS = cast(dict[str, Any], _FULL_KWARGS)
+YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -100,7 +115,7 @@ def cli() -> None:
     """DATA EXTRACTION — one command per source (scheduled by the Airflow extraction DAG)."""
 
 
-def _ctx(config_path: str) -> tuple[object, Context]:
+def _ctx(config_path: str) -> tuple[DictConfig, Context]:
     return get_config_context(config_path, use_cache=False, save=False)
 
 
@@ -109,6 +124,38 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
     if tickers:
         return [t.strip().upper() for t in tickers.split(",") if t.strip()]
     return load_universe_tickers(context)
+
+
+def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
+    """Measure exactly the tables and cadences declared by the schema registry."""
+    as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    statuses: dict[str, dict[str, object]] = {}
+    for table in freshness_tables():
+        cadence = cast(str, table.freshness)
+        maximum = context.store.max_date(table, table.freshness_col)
+        age_days = None if maximum is None else int((as_of - maximum).days)
+        max_age_days = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
+        statuses[table.name] = {
+            "date_column": table.freshness_col,
+            "cadence": cadence,
+            "max_date": None if maximum is None else maximum.date().isoformat(),
+            "age_days": age_days,
+            "max_age_days": max_age_days,
+            "ok": age_days is not None and age_days <= max_age_days,
+        }
+    behind = [name for name, status in statuses.items() if not status["ok"]]
+    context.log.info("Extraction freshness gate ok=%s behind=%s", not behind, behind)
+    return {"as_of": as_of.date().isoformat(), "ok": not behind, "behind": behind, "tables": statuses}
+
+
+@cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def extraction_status(config_path: str) -> None:
+    _, context = _ctx(config_path)
+    report = _extraction_status_report(context)
+    click.echo(json.dumps(report, sort_keys=True))
+    if not report["ok"]:
+        raise click.ClickException("stale or incomplete extraction tables: " + ", ".join(cast(list[str], report["behind"])))
 
 
 # --------------------------------------------------------------------------- #
@@ -132,7 +179,7 @@ def seed_universe(config_path: str, refresh: bool) -> None:
     suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
     for row in suspect:
         context.log.warning(
-            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — " "verify the company ID against EDGAR",
+            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — verify the company ID against EDGAR",
             row["ticker"],
             row["cik"],
             ", ".join(row["filing_tables_checked"]),
@@ -245,7 +292,7 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     "--seed",
     is_flag=True,
     default=False,
-    help="ONE-OFF: also replay the 13 committed web.archive.org captures " "(2013-2026) so the roster has a history to be point-in-time about.",
+    help="ONE-OFF: also replay the 13 committed web.archive.org captures (2013-2026) so the roster has a history to be point-in-time about.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
     _, context = _ctx(config_path)
@@ -325,7 +372,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
                 Tables.fundamentals_employees,
             ):
                 context.store.delete(table, {"ticker": ticker})
-        context.log.warning("fundamentals: --rebuild deleted all four tables for %d " "ticker(s); every filing will be refetched", len(names))
+        context.log.warning("fundamentals: --rebuild deleted all four tables for %d ticker(s); every filing will be refetched", len(names))
     fetch_fundamentals_sec(context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history))
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
@@ -342,7 +389,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 # is limited by patience, Sharadar by subscription tier (D3).
 @cli.command(
     name="fundamentals-sharadar",
-    help="The whole Sharadar producer in dependency order: tickers -> SF1 " "fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
+    help="The whole Sharadar producer in dependency order: tickers -> SF1 fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -360,7 +407,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> 
 
 @cli.command(
     name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category) -> " "sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
+    help="Sharadar entity dimension (permaticker, currency, category) -> sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
@@ -368,9 +415,7 @@ def sharadar_tickers(config_path: str) -> None:
     fetch_sharadar_tickers(context)
 
 
-@cli.command(
-    name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, " "relations) -> sharadar_actions."
-)
+@cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_actions(config_path: str, full: bool) -> None:
@@ -380,8 +425,7 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 
 @cli.command(
     name="sharadar-sp500",
-    help="S&P 500 membership events (added / removed / historical, from 1992) -> "
-    "sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
+    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -465,15 +509,14 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the " "daily EDGAR tail.")
+@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the daily EDGAR tail.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(
     "--reparse",
     is_flag=True,
     default=False,
-    help="Re-read every cached quarter even when already ingested. For a PARSE "
-    "change (a new column), not a data change -- nothing is re-downloaded.",
+    help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(
     "--live-full",
@@ -505,7 +548,14 @@ def insider_transactions(
     "DB, no network. Run after `insider-transactions` has populated the cache.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def identity_tables(config_path: str) -> None:
+@click.option(
+    "--approve-rekey",
+    "approved_rekeys",
+    multiple=True,
+    metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
+    help="Acknowledge one exact older-CIK entity-id change reported by the safety manifest.",
+)
+def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """ONE command for BOTH tables, because they are one logical dimension and a half-built
     pair is a trap: `entity_lineage`'s candidate set is read off `symbol_tenure`, so a stale
     tenure table silently narrows the lineage table without either looking wrong.
@@ -515,8 +565,22 @@ def identity_tables(config_path: str) -> None:
     """
     _, context = _ctx(config_path)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
+    parsed_rekeys: set[tuple[str, str]] = set()
+    for value in approved_rekeys:
+        old, separator, new = value.partition(":")
+        if not separator or not old or not new:
+            raise click.BadParameter(
+                "expected OLD_ENTITY_ID:NEW_ENTITY_ID",
+                param_hint="--approve-rekey",
+            )
+        parsed_rekeys.add((old, new))
     build_symbol_tenure(context, cache, config_path)
-    build_entity_lineage(context, cache, config_path)
+    build_entity_lineage(
+        context,
+        cache,
+        config_path,
+        approved_rekeys=frozenset(parsed_rekeys),
+    )
 
 
 @cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")
@@ -558,12 +622,13 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def sec_8k_items(config_path: str, tickers: str | None, years: int | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, full=full)
 
 
-@cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). " "No download — reads sec_8k.")
+@cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
@@ -615,24 +680,8 @@ def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> No
 # --------------------------------------------------------------------------- #
 # Behavioral (retail attention)                                                 #
 # --------------------------------------------------------------------------- #
-@cli.command(help="Wikipedia pageviews (retail attention). Scrape.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def wiki_pageviews(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_wiki_pageviews(context, tickers=_tickers(context, tickers))
-
-
-@cli.command(help="Google Trends search interest (rate-limited, SLOW). Scrape.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def google_trends(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
-    fetch_google_trends(context, tickers=_tickers(context, tickers))
-
-
 @cli.command(
-    help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + " "Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
+    help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

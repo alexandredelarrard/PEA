@@ -25,12 +25,14 @@ Design notes
 The pure windowing/aggregation helpers (`_window_ids`, `_length_weighted_average`) are
 unit-tested without any model download.
 """
+
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+
 from src.constants.constants import FINBERT_TONE_MODEL
 
 # FinBERT-tone: finance-domain tone classifier (positive / neutral / negative),
@@ -39,9 +41,11 @@ from src.constants.constants import FINBERT_TONE_MODEL
 # chunked and length-weighted (see src/utils/nlp_sentiment.py).
 FINBERT_MAX_TOKENS = 512
 
+
 def ml_stack_available() -> bool:
     """True if both torch and transformers can be imported (does NOT load a model)."""
     import importlib.util as u
+
     return bool(u.find_spec("torch")) and bool(u.find_spec("transformers"))
 
 
@@ -53,8 +57,7 @@ def ml_stack_available() -> bool:
 # model can't be fetched behind the proxy. curl_cffi impersonates a real Chrome TLS
 # handshake (BoringSSL) — the repo's proven proxy workaround (see Google Trends) — and
 # mirrors the model files locally so transformers can then load them OFFLINE.
-_MODEL_META_FILES = ("config.json", "vocab.txt", "tokenizer_config.json",
-                     "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
+_MODEL_META_FILES = ("config.json", "vocab.txt", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
 _MODEL_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
 
 
@@ -71,32 +74,29 @@ def ensure_local_model(model_name: str, logger: logging.Logger) -> str:
     unavailable or the download fails, so the normal HF client is still attempted."""
     dest = _local_model_dir(model_name)
     if (dest / "config.json").exists() and any((dest / w).exists() for w in _MODEL_WEIGHT_FILES):
-        return str(dest)                              # already mirrored
+        return str(dest)  # already mirrored
     try:
         from curl_cffi import requests as cffi
-    except Exception:                                 # curl_cffi absent -> let HF try
+    except Exception:  # curl_cffi absent -> let HF try
         return model_name
 
-    ca = next((os.environ[v] for v in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE",
-                                       "CURL_CA_BUNDLE") if os.environ.get(v)), None)
+    ca = next((os.environ[v] for v in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE") if os.environ.get(v)), None)
     base_url = f"https://huggingface.co/{model_name}/resolve/main/"
 
     def _fetch(fname: str, required: bool) -> bool:
         out = dest / fname
         if out.exists():
             return True
-        for verify in ([ca, False] if ca else [True, False]):
+        for verify in [ca, False] if ca else [True, False]:
             try:
-                r = cffi.Session(impersonate="chrome124", verify=verify,
-                                 timeout=180).get(base_url + fname)
+                r = cffi.Session(impersonate="chrome124", verify=verify, timeout=180).get(base_url + fname)
             except Exception:
                 continue
             if r.status_code == 404:
-                return False                          # legitimately absent (e.g. no safetensors)
+                return False  # legitimately absent (e.g. no safetensors)
             if r.status_code == 200 and r.content:
                 if verify is False:
-                    logger.warning("Fetched %s UNVERIFIED via curl_cffi (public model "
-                                   "behind corporate proxy).", fname)
+                    logger.warning("Fetched %s UNVERIFIED via curl_cffi (public model behind corporate proxy).", fname)
                 dest.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(r.content)
                 return True
@@ -110,10 +110,9 @@ def ensure_local_model(model_name: str, logger: logging.Logger) -> str:
             raise RuntimeError("no weight file (safetensors / pytorch_model.bin) found")
         for f in _MODEL_META_FILES:
             if f != "config.json":
-                _fetch(f, required=False)             # tokenizer files, best-effort
-    except Exception as e:                            # noqa: BLE001
-        logger.warning("curl_cffi model mirror failed for %s (%s) -> trying HF client.",
-                       model_name, e)
+                _fetch(f, required=False)  # tokenizer files, best-effort
+    except Exception as e:  # noqa: BLE001
+        logger.warning("curl_cffi model mirror failed for %s (%s) -> trying HF client.", model_name, e)
         return model_name
     logger.info("Mirrored %s locally to %s (curl_cffi).", model_name, dest)
     return str(dest)
@@ -127,11 +126,10 @@ def _window_ids(ids: list[int], stride: int) -> list[list[int]]:
     tokens. Empty input -> one empty window is NOT produced (returns [])."""
     if stride <= 0:
         raise ValueError("stride must be positive")
-    return [ids[i:i + stride] for i in range(0, len(ids), stride)] if ids else []
+    return [ids[i : i + stride] for i in range(0, len(ids), stride)] if ids else []
 
 
-def _length_weighted_average(prob_rows: Sequence[Sequence[float]],
-                             weights: Sequence[float]) -> list[float]:
+def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequence[float]) -> list[float]:
     """Length-weighted mean of per-window probability vectors -> one vector. Falls back
     to a plain mean if all weights are non-positive; empty input -> []."""
     rows = [list(map(float, r)) for r in prob_rows]
@@ -140,11 +138,11 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]],
     n = len(rows[0])
     w = [max(float(x), 0.0) for x in weights]
     tot = sum(w)
-    if tot <= 0:                                   # degenerate -> uniform mean
+    if tot <= 0:  # degenerate -> uniform mean
         w = [1.0] * len(rows)
         tot = float(len(rows))
     out = [0.0] * n
-    for row, wi in zip(rows, w):
+    for row, wi in zip(rows, w, strict=False):
         for j in range(n):
             out[j] += wi * row[j]
     return [v / tot for v in out]
@@ -157,12 +155,11 @@ class SentimentEngine:
     """Thin wrapper over a HuggingFace sequence-classification tone model. Built via
     `get_sentiment_engine` (which returns None when the ML stack is unavailable)."""
 
-    def __init__(self, model_name: str = FINBERT_TONE_MODEL,
-                 max_tokens: int = FINBERT_MAX_TOKENS,
-                 batch_size: int = 16,
-                 logger: logging.Logger | None = None) -> None:
-        import torch                                  # local import (heavy, optional)
-        from transformers import (AutoModelForSequenceClassification, AutoTokenizer)
+    def __init__(
+        self, model_name: str = FINBERT_TONE_MODEL, max_tokens: int = FINBERT_MAX_TOKENS, batch_size: int = 16, logger: logging.Logger | None = None
+    ) -> None:
+        import torch  # local import (heavy, optional)
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         self._torch = torch
         self._log = logger or logging.getLogger(__name__)
@@ -189,19 +186,17 @@ class SentimentEngine:
                 self._col_for[idx] = "pos"
             elif "neg" in lab:
                 self._col_for[idx] = "neg"
-            else:                                     # neutral / anything else
+            else:  # neutral / anything else
                 self._col_for[idx] = "neu"
-        self._log.info("SentimentEngine ready: %s on %s (labels=%s)",
-                       model_name, self.device, id2label)
+        self._log.info("SentimentEngine ready: %s on %s (labels=%s)", model_name, self.device, id2label)
 
     # -- internal: score a batch of ≤max_len token windows -> list of {pos,neg,neu} --
     def _score_windows(self, windows_text: list[str]) -> list[dict[str, float]]:
         torch = self._torch
         out: list[dict[str, float]] = []
         for i in range(0, len(windows_text), self.batch_size):
-            batch = windows_text[i:i + self.batch_size]
-            enc = self._tok(batch, padding=True, truncation=True,
-                            max_length=self.max_tokens, return_tensors="pt").to(self.device)
+            batch = windows_text[i : i + self.batch_size]
+            enc = self._tok(batch, padding=True, truncation=True, max_length=self.max_tokens, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 logits = self._model(**enc).logits
                 probs = torch.softmax(logits, dim=-1).cpu().tolist()
@@ -217,7 +212,7 @@ class SentimentEngine:
         Blank/None docs -> None. Long docs are windowed to ≤(max_tokens-2) tokens and
         every window scored, then length-weighted back to one distribution per doc.
         All windows across all docs are batched together for GPU efficiency."""
-        stride = max(1, self.max_tokens - 2)          # room for [CLS]/[SEP]
+        stride = max(1, self.max_tokens - 2)  # room for [CLS]/[SEP]
         # 1) tokenize + window each doc, remembering which windows belong to which doc
         all_windows_text: list[str] = []
         owner: list[int] = []
@@ -225,8 +220,7 @@ class SentimentEngine:
         for di, txt in enumerate(texts):
             if not txt or not str(txt).strip():
                 continue
-            ids = self._tok(str(txt), add_special_tokens=False,
-                            truncation=False)["input_ids"]
+            ids = self._tok(str(txt), add_special_tokens=False, truncation=False)["input_ids"]
             for w in _window_ids(ids, stride):
                 all_windows_text.append(self._tok.decode(w, skip_special_tokens=True))
                 owner.append(di)
@@ -236,7 +230,7 @@ class SentimentEngine:
         # 3) length-weighted aggregate per doc
         per_doc_rows: dict[int, list[list[float]]] = {}
         per_doc_w: dict[int, list[float]] = {}
-        for row, di, wt in zip(scored, owner, weights):
+        for row, di, wt in zip(scored, owner, weights, strict=False):
             per_doc_rows.setdefault(di, []).append([row["pos"], row["neg"], row["neu"]])
             per_doc_w.setdefault(di, []).append(float(wt))
         out: list[dict[str, float] | None] = []
@@ -253,8 +247,7 @@ _ENGINE: SentimentEngine | None = None
 _ENGINE_TRIED = False
 
 
-def get_sentiment_engine(logger: logging.Logger | None = None,
-                         model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
+def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
     """Return a cached SentimentEngine, or None if torch/transformers are unavailable
     or the model fails to load. Loads the model on first call (downloads ~440MB to the
     HuggingFace cache once); subsequent calls reuse the in-process instance."""
@@ -262,17 +255,15 @@ def get_sentiment_engine(logger: logging.Logger | None = None,
     log = logger or logging.getLogger(__name__)
     if _ENGINE is not None:
         return _ENGINE
-    if _ENGINE_TRIED:                                 # already failed once — don't retry
+    if _ENGINE_TRIED:  # already failed once — don't retry
         return None
     _ENGINE_TRIED = True
     if not ml_stack_available():
-        log.warning("torch/transformers not installed -> earnings-call sentiment skipped "
-                    "(pip install torch transformers).")
+        log.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
         return None
     try:
         _ENGINE = SentimentEngine(model_name=model_name, logger=log)
-    except Exception as e:                            # noqa: BLE001 - model download / GPU OOM
-        log.warning("Could not load sentiment model '%s' -> sentiment skipped: %s",
-                    model_name, e)
+    except Exception as e:  # noqa: BLE001 - model download / GPU OOM
+        log.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
         _ENGINE = None
     return _ENGINE

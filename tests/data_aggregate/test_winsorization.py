@@ -46,9 +46,7 @@ def test_peer_panel_no_fragmentation_warning(monkeypatch):
     assert not frag, f"fragmentation warning emitted: {[str(w.message)[:80] for w in frag]}"
     assert panel.shape[1] == 2 + 60 * 2 and {"date", "ticker"} <= set(panel.columns)
     print("\n=== SANITY CHECK: peer panel not fragmented ===")
-    print(
-        f"  built {panel.shape[1]-2} feature cols from 60 fields with ZERO " "'highly fragmented' warnings and no full-width eager copy. Validated."
-    )
+    print(f"  built {panel.shape[1] - 2} feature cols from 60 fields with ZERO 'highly fragmented' warnings and no full-width eager copy. Validated.")
 
 
 def test_winsorize_xs_clips_each_row_to_1_99():
@@ -97,6 +95,6 @@ def test_peer_z_outlier_is_trimmed_but_rank_untouched():
 
     print("\n=== SANITY CHECK: peer-z outlier trim + rank intact ===")
     print(
-        f"  T0 raw=1e6: peer-z {raw.loc[d,'T0']:.2f} (at +-8 clip) -> winsorized "
-        f"{wins.loc[d,'T0']:.3f} (day 99th pct); f_metric_xs rank still 1.00. Validated."
+        f"  T0 raw=1e6: peer-z {raw.loc[d, 'T0']:.2f} (at +-8 clip) -> winsorized "
+        f"{wins.loc[d, 'T0']:.3f} (day 99th pct); f_metric_xs rank still 1.00. Validated."
     )

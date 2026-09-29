@@ -9,10 +9,12 @@ Two flavours of fixture live here, matching the project testing conventions:
   tests see the real NaNs, delistings and late IPOs that the estimator has to
   survive (this is exactly what surfaced the sector-NaN truncation bug).
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -75,8 +77,7 @@ def sqlite_store():
     # StaticPool + one shared connection: the default pool hands out a NEW (and therefore
     # EMPTY) in-memory database per checkout, so a table written by `save` would vanish
     # before the next `load` -- the failure mode looks like a broken store, not a fixture bug.
-    engine = create_engine("sqlite://", poolclass=StaticPool,
-                           connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     store = DataStore(engine)
     yield store
     engine.dispose()
@@ -98,59 +99,69 @@ class FakeStore:
     `optional=True` -- the contract that makes a missing table a visible fault.
     """
 
-    def __init__(self, tables: dict | None = None):
-        self.t: dict[str, pd.DataFrame] = {name_of(k): v.copy()
-                                           for k, v in (tables or {}).items()}
-        self.writes: list[tuple[str, str, pd.DataFrame]] = []   # (op, table, df) in call order
+    def __init__(self, tables: dict[Any, pd.DataFrame] | None = None) -> None:
+        self.t: dict[str, pd.DataFrame] = {name_of(k): v.copy() for k, v in (tables or {}).items()}
+        self.writes: list[tuple[str, str, pd.DataFrame]] = []  # (op, table, df) in call order
 
     @staticmethod
-    def _filter(df, where):
+    def _filter(df: pd.DataFrame, where: dict[str, Any] | None) -> pd.DataFrame:
         for col, val in (where or {}).items():
-            df = (df[df[col].isin(list(val))]
-                  if isinstance(val, (list, tuple, set, frozenset)) else df[df[col] == val])
+            df = cast(
+                pd.DataFrame,
+                df[df[col].isin(list(val))] if isinstance(val, list | tuple | set | frozenset) else df[df[col] == val],
+            )
         return df
 
     # -- introspection -- #
-    def exists(self, table) -> bool:
+    def exists(self, table: Any) -> bool:
         return name_of(table) in self.t
 
-    def columns(self, table) -> list[str]:
+    def columns(self, table: Any) -> list[str]:
         df = self.t.get(name_of(table))
         return [] if df is None else list(df.columns)
 
-    def row_count(self, table) -> int:
+    def row_count(self, table: Any) -> int:
         df = self.t.get(name_of(table))
         return 0 if df is None else len(df)
 
-    def distinct(self, table, column, **kw) -> list:
+    def distinct(self, table: Any, column: str, **kw: Any) -> list[Any]:
         df = self.t.get(name_of(table))
         return [] if df is None or df.empty else df[column].dropna().unique().tolist()
 
-    def bounds(self, table, column=None):
+    def bounds(self, table: Any, column: str | None = None) -> tuple[Any | None, Any | None]:
         df = self.t.get(name_of(table))
         col = column or resolve(table).date_col
         if df is None or df.empty or col not in df.columns:
             return (None, None)
         return (df[col].min(), df[col].max())
 
-    def max_date(self, table, column=None):
+    def max_date(self, table: Any, column: str | None = None) -> pd.Timestamp | None:
         lo, hi = self.bounds(table, column)
-        return None if hi is None else pd.Timestamp(hi).normalize()
+        return None if hi is None else cast(pd.Timestamp, pd.Timestamp(hi)).normalize()
 
-    def max_date_by(self, table, key_col, date_col=None) -> dict:
+    def max_date_by(self, table: Any, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
         """Per-key latest stored date. The grouped counterpart of `max_date` -- what
         `resume_since` and the macro freshness gate resolve their frontier with, so the double
         needs it or those paths are untestable without a DB. Empty dict when the table or
         either column is absent, matching the real store's "nothing stored yet" contract."""
         df = self.t.get(name_of(table))
         col = date_col or resolve(table).date_col
-        if df is None or df.empty or col not in df.columns or key_col not in df.columns:
+        if df is None or df.empty or col is None or col not in df.columns or key_col not in df.columns:
             return {}
-        g = df.dropna(subset=[col]).groupby(key_col)[col].max()
-        return {str(k): pd.Timestamp(v).normalize() for k, v in g.items() if pd.notna(v)}
+        g = cast(pd.Series, df.dropna(subset=[col]).groupby(key_col)[col].max())
+        return {str(k): cast(pd.Timestamp, pd.Timestamp(v)).normalize() for k, v in g.items() if pd.notna(v)}
 
     # -- reads -- #
-    def load(self, table, columns=None, limit=None, where=None, *, optional=False, **kw):
+    def load(
+        self,
+        table: Any,
+        columns: list[str] | tuple[str, ...] | None = None,
+        limit: int | None = None,
+        where: dict[str, Any] | None = None,
+        *,
+        optional: bool = False,
+        **kw: Any,
+    ) -> pd.DataFrame | None:
         name = name_of(table)
         df = self._filter(self.t.get(name, pd.DataFrame()), where)
         if df.empty:
@@ -159,32 +170,33 @@ class FakeStore:
             raise TableEmptyError(name, where)
         if columns:
             df = df[list(columns)]
-        return (df.head(limit) if limit else df).copy().reset_index(drop=True)
+        return cast(pd.DataFrame, (df.head(limit) if limit else df).copy().reset_index(drop=True))
 
     # -- writes -- #
-    def save(self, table, df, pk=None):
+    def save(self, table: Any, df: pd.DataFrame, pk: list[str] | tuple[str, ...] | None = None) -> int:
         name = name_of(table)
         self.writes.append(("save", name, df.copy()))
-        both = pd.concat([self.t.get(name), df], ignore_index=True)
+        frames = ([self.t[name]] if name in self.t else []) + [df]
+        both = pd.concat(frames, ignore_index=True)
         pk = list(pk or resolve(table).pk)
         keys = [c for c in pk if c in both.columns] or None
-        self.t[name] = (both.drop_duplicates(subset=keys, keep="last") if keys else both
-                        ).reset_index(drop=True)
+        self.t[name] = (both.drop_duplicates(subset=keys, keep="last") if keys else both).reset_index(drop=True)
         return len(df)
 
-    def replace(self, table, df, chunksize=200_000):
+    def replace(self, table: Any, df: pd.DataFrame, chunksize: int = 200_000) -> int:
         name = name_of(table)
         self.writes.append(("replace", name, df.copy()))
         self.t[name] = df.copy().reset_index(drop=True)
         return len(df)
 
-    def bulk_seed(self, table, df):
+    def bulk_seed(self, table: Any, df: pd.DataFrame) -> int:
         name = name_of(table)
         self.writes.append(("bulk_seed", name, df.copy()))
-        self.t[name] = pd.concat([self.t.get(name), df], ignore_index=True)
+        frames = ([self.t[name]] if name in self.t else []) + [df]
+        self.t[name] = pd.concat(frames, ignore_index=True)
         return len(df)
 
-    def delete(self, table, where):
+    def delete(self, table: Any, where: dict[str, Any] | None) -> int:
         name = name_of(table)
         df = self.t.get(name)
         if df is None or df.empty:
@@ -193,21 +205,20 @@ class FakeStore:
         self.t[name] = df.drop(index=drop).reset_index(drop=True)
         return len(drop)
 
-    def drop(self, table):
+    def drop(self, table: Any) -> None:
         self.t.pop(name_of(table), None)
 
-    def ensure_columns(self, table, df):
+    def ensure_columns(self, table: Any, df: pd.DataFrame) -> list[str]:
         return []
 
     # -- write assertions -- #
-    def saved_frames(self, table=None) -> list[pd.DataFrame]:
+    def saved_frames(self, table: Any | None = None) -> list[pd.DataFrame]:
         """The frames passed to `save`, in call order (optionally for one table only)."""
         want = None if table is None else name_of(table)
-        return [df for op, name, df in self.writes
-                if op == "save" and (want is None or name == want)]
+        return [df for op, name, df in self.writes if op == "save" and (want is None or name == want)]
 
 
-def _store():
+def _store() -> DataStore:
     """DB-backed data store for the real-data fixtures (DB is the source of
     truth now that the pipeline is DB-only). Skips a fixture when its table is
     empty — mirrors the old 'skip if parquet absent' behaviour.
@@ -219,9 +230,10 @@ def _store():
     try:
         with engine.connect():
             pass
-    except Exception as exc:                                        # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable: {type(exc).__name__}")
     return DataStore(engine)
+
 
 SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-section
 # The market / commodity / FX series are NOT in `prices` any more -- they are series in
@@ -233,7 +245,7 @@ SUBSET_SIZE = 100  # keep the real-data pipeline fast but keep a real cross-sect
 # Real data (small sample)                                                     #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="session")
-def real_frames():
+def real_frames() -> dict[str, Any]:
     """Wide close / returns matrices from real prices, subset for speed but guaranteed to
     contain AMD (the ticker under investigation).
 
@@ -247,23 +259,22 @@ def real_frames():
     FX series. It used to be one read plus three `drop(columns=...)` calls, because those
     series were mixed into `prices`.
     """
-    from src.data_aggregate.utils.common import data_utils as du
     from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
+    from src.data_aggregate.utils.common import data_utils as du
     from src.utils.macro import load_macro_wide
 
     store = _store()
     all_tickers = sorted(store.distinct("prices", "ticker"))
     if not all_tickers:
         pytest.skip("prices table is empty")
-    subset = (["AMD"] if "AMD" in all_tickers else []) + \
-             [c for c in all_tickers if c != "AMD"][:SUBSET_SIZE]
+    subset = (["AMD"] if "AMD" in all_tickers else []) + [c for c in all_tickers if c != "AMD"][:SUBSET_SIZE]
 
     macro = load_macro_wide(store)
     if macro is None or MACRO_MARKET_SERIES not in macro.columns:
         pytest.skip("prices_macro is empty -> no market series for the trading calendar")
     macro = macro.set_index("date").sort_index()
 
-    prices = store.load("prices", where={"ticker": sorted(subset)})
+    prices = cast(pd.DataFrame, store.load("prices", where={"ticker": sorted(subset)}))
     raw = du.prices_long_to_multiindex(prices)
     # BOTH bases, because the builders under test need both: `close_split` for market cap and
     # the intraday features that pair with open/high/low, `close_total` for every return.
@@ -281,8 +292,8 @@ def real_frames():
     mkt_level = mkt_level.reindex(mkt_level.index.union(close.index)).ffill()
     return {
         "mkt_ret": mkt_level.pct_change(fill_method=None).reindex(close.index),
-        "stock_close": close[keep],                 # close_split -- the LEVEL basis
-        "stock_close_total": close_total[keep],     # the RETURN basis
+        "stock_close": close[keep],  # close_split -- the LEVEL basis
+        "stock_close_total": close_total[keep],  # the RETURN basis
         "stock_ret": returns[keep],
         # the macro/market series the commodity + currency factors read, wide by series name
         "macro_wide": macro,
@@ -291,21 +302,21 @@ def real_frames():
 
 
 @pytest.fixture(scope="session")
-def real_pipeline(real_frames):
+def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.data_aggregate.utils.target.betas import estimate_all_betas
-    from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_aggregate.utils.common.gics import load_gics_maps
+    from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
+        assemble_factor_panel,
         build_characteristics,
         characteristic_to_factor_return,
         macro_change_factors,
-        assemble_factor_panel,
     )
+    from src.data_aggregate.utils.target.targets import build_targets_multi
     from src.data_peers.utils.sector_peers import build_peer_dict
 
-    stock_close = real_frames["stock_close"]              # close_split -- LEVELS
+    stock_close = real_frames["stock_close"]  # close_split -- LEVELS
     stock_close_total = real_frames["stock_close_total"]  # close_total -- RETURNS
     stock_ret = real_frames["stock_ret"]
     mkt_ret = real_frames["mkt_ret"]
@@ -320,11 +331,10 @@ def real_pipeline(real_frames):
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
     context = type("Ctx", (), {"store": store})()
-    sector_groups = load_gics_maps(context)
+    sector_groups = load_gics_maps(cast(Any, context))
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
-    chars = build_characteristics(stock_close_total, stock_ret, fundamentals,
-                                  resvol_window=63, stock_close_split=stock_close)
+    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, stock_close_split=stock_close)
     style_cols = {}
     for name, char in chars.items():
         char.name = name
@@ -337,17 +347,19 @@ def real_pipeline(real_frames):
         s = s.reindex(s.index.union(stock_close.index)).ffill()
         return s.pct_change(fill_method=None).reindex(stock_close.index)
 
-    asset = pd.DataFrame({col: _factor_ret(series) for col, series in factor_series.items()
-                          if series in macro.columns}, index=stock_close.index)
+    asset = pd.DataFrame({col: _factor_ret(series) for col, series in factor_series.items() if series in macro.columns}, index=stock_close.index)
     fx_cols = [c for c in asset.columns if factor_series[c].startswith("fx_")]
     commodity_returns = asset.drop(columns=fx_cols)
-    currency_returns = asset[fx_cols]
-    factor_panel, macro_cols = assemble_factor_panel(
-        mkt_ret, style, commodity_returns, currency_returns, macro_chg)
+    currency_returns = cast(pd.DataFrame, asset[fx_cols])
+    factor_panel, macro_cols = assemble_factor_panel(mkt_ret, style, commodity_returns, currency_returns, macro_chg)
 
     betas = estimate_all_betas(
-        stock_ret, factor_panel,
-        window=63, min_obs=40, ridge_alpha=0.08, step=1,
+        stock_ret,
+        factor_panel,
+        window=63,
+        min_obs=40,
+        ridge_alpha=0.08,
+        step=1,
     )
 
     horizons = (5, 20, 60)
@@ -355,9 +367,15 @@ def real_pipeline(real_frames):
     # deleted); unwrap {h: {"rank": df}} -> {h: df} so the fixture's shape is unchanged
     # and its five consumer tests need no edits.
     _multi = build_targets_multi(
-        stock_close_total, betas, factor_panel, macro_cols,
-        horizons=horizons, labels=("rank",), min_names=20,
-        sector_groups=sector_groups, stock_ret=stock_ret,
+        stock_close_total,
+        betas,
+        factor_panel,
+        macro_cols,
+        horizons=horizons,
+        labels=("rank",),
+        min_names=20,
+        sector_groups=sector_groups,
+        stock_ret=stock_ret,
     )
     labels_rank = {h: by_label["rank"] for h, by_label in _multi.items()}
 
@@ -386,16 +404,17 @@ def fundamental_panel(real_frames):
     # 495-ticker history against a 101-ticker close frame built a ~1.9M-row x 200-feature
     # panel (with rolling(1260) windows) for tickers the test never looks at.
     tickers = sorted(stock_close.columns)
-    fundamentals = _store().load("fundamentals_history",
-                                 where={"ticker": tickers}, optional=True)
+    fundamentals = _store().load("fundamentals_history", where={"ticker": tickers}, optional=True)
     if fundamentals is None:
         pytest.skip("fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
-        fundamentals, peers, stock_close.index, stock_close=stock_close,
+        fundamentals,
+        peers,
+        stock_close.index,
+        stock_close=stock_close,
     )
-    return {"panel": panel, "fundamentals": fundamentals,
-            "peers": peers, "stock_close": stock_close}
+    return {"panel": panel, "fundamentals": fundamentals, "peers": peers, "stock_close": stock_close}
 
 
 # --------------------------------------------------------------------------- #
@@ -432,8 +451,7 @@ def synthetic_factor_model():
 # --------------------------------------------------------------------------- #
 # PriceFrames for the seven cube builders                                      #
 # --------------------------------------------------------------------------- #
-def make_frames(trading_index, peers: dict | None = None,
-                universe=None, **fields):
+def make_frames(trading_index, peers: dict | None = None, universe=None, **fields):
     """A `PriceFrames` for a builder test, carrying only the wide frames the scenario needs.
 
     Since the builders take one `PriceFrames` rather than four-to-six unpacked fields, every
@@ -461,8 +479,6 @@ def make_frames(trading_index, peers: dict | None = None,
         idx = idx.rename("date")
     peers = peers if peers is not None else {}
     if universe is None:
-        wide = next((f for f in fields.values()
-                     if isinstance(f, pd.DataFrame) and not f.empty), None)
+        wide = next((f for f in fields.values() if isinstance(f, pd.DataFrame) and not f.empty), None)
         universe = list(wide.columns) if wide is not None else list(peers)
-    return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe),
-                       peers=peers, **fields)
+    return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe), peers=peers, **fields)

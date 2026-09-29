@@ -44,12 +44,15 @@ drifts *within* a proxy year, which is the correct reading of the alignment ques
 last spring, against the stock's trailing year as of today" -- but it does mean family 7 is not
 piecewise-constant like the rest of the governance panel.
 """
+
 from __future__ import annotations
+
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import peer_relative
+from src.data_aggregate.utils.common.panel import mask_to_availability, peer_relative
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     fundamentals_to_daily,
@@ -62,7 +65,9 @@ from src.data_aggregate.utils.governance.names import (
     is_multi_name,
 )
 from src.data_aggregate.utils.governance.staleness import (
-    LEVEL_MAX_AGE_DAYS, expire_event_fields, expire_level_fields,
+    LEVEL_MAX_AGE_DAYS,
+    expire_event_fields,
+    expire_level_fields,
 )
 from src.utils.names import person_key
 
@@ -70,9 +75,13 @@ from src.utils.names import person_key
 #: draw over ~7 peers divides by the standard deviation of that draw, so it answers "how many
 #: of my peers ALSO did this" rather than "did this happen here" (the measured 32%-coverage
 #: failure of the retired `f_founder_ceo_vs_peers`).
-RAW_FLAG_FIELDS: frozenset[str] = frozenset({
-    "ceo_turnover_flag", "pay_up_revenue_down", "pay_up_return_down",
-})
+RAW_FLAG_FIELDS: frozenset[str] = frozenset(
+    {
+        "ceo_turnover_flag",
+        "pay_up_revenue_down",
+        "pay_up_return_down",
+    }
+)
 
 #: ⚠ EMPTY, AND THAT IS A MEASURED RESULT THAT REFUTED THE PLAN. Phase 4 was written
 #: expecting the two LEVELS to be peer-panelled -- "a $30M package is unremarkable for a
@@ -104,13 +113,21 @@ PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 #: Fields that describe an EVENT and expire 548 days after the filing that produced them
 #: (D21). The two pay LEVELS are excluded: a CEO's package and their share of the top five are
 #: standing facts between proxies, where "pay grew 40% last year" stops being true about today.
-EVENT_FIELDS: frozenset[str] = frozenset({
-    "ceo_comp_growth_1y", "ceo_turnover_flag", "ceo_pay_slice_delta_1y",
-    "pay_revenue_gap", "pay_return_gap",
-    "pay_revenue_peer_misalignment", "pay_return_peer_misalignment",
-    "pay_up_revenue_down", "pay_up_return_down",
-    "pay_up_revenue_down_severity", "pay_up_return_down_severity",
-})
+EVENT_FIELDS: frozenset[str] = frozenset(
+    {
+        "ceo_comp_growth_1y",
+        "ceo_turnover_flag",
+        "ceo_pay_slice_delta_1y",
+        "pay_revenue_gap",
+        "pay_return_gap",
+        "pay_revenue_peer_misalignment",
+        "pay_return_peer_misalignment",
+        "pay_up_revenue_down",
+        "pay_up_return_down",
+        "pay_up_revenue_down_severity",
+        "pay_up_return_down_severity",
+    }
+)
 
 #: Fields whose value depends on the WHOLE CROSS-SECTION on their date, not only on the
 #: filer's own archive. Both are built as `winsorize_xs(peer_relative(pay)) -
@@ -124,9 +141,7 @@ EVENT_FIELDS: frozenset[str] = frozenset({
 #: from that gate BY CONSTRUCTION. Reading the exemption off the name would have been wrong:
 #: they carry no `_vs_peers` suffix, and on the 2026-09-10 rebuild they moved for 424 and 417
 #: untouched tickers respectively -- correctly.
-CROSS_SECTIONAL_FIELDS: frozenset[str] = frozenset(
-    {f"pay_{lab}_peer_misalignment" for lab in ("revenue", "return")}
-)
+CROSS_SECTIONAL_FIELDS: frozenset[str] = frozenset({f"pay_{lab}_peer_misalignment" for lab in ("revenue", "return")})
 
 #: Every field this module can emit. `_alignment_family` names its members from a LABEL
 #: (`revenue` / `return`), so the two sets above can only be checked against the builder by
@@ -134,8 +149,7 @@ CROSS_SECTIONAL_FIELDS: frozenset[str] = frozenset(
 #: used, that no code path ever produces, sitting in both sets while the two fields actually
 #: built sat in neither.
 ALL_FIELDS: frozenset[str] = frozenset(
-    {"log_ceo_total_comp", "ceo_comp_growth_1y", "ceo_turnover_flag",
-     "ceo_pay_slice", "ceo_pay_slice_delta_1y"}
+    {"log_ceo_total_comp", "ceo_comp_growth_1y", "ceo_turnover_flag", "ceo_pay_slice", "ceo_pay_slice_delta_1y"}
     | {f"pay_{lab}_gap" for lab in ("revenue", "return")}
     | {f"pay_{lab}_peer_misalignment" for lab in ("revenue", "return")}
     | {f"pay_up_{lab}_down" for lab in ("revenue", "return")}
@@ -184,8 +198,7 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce")
 
 
-def prior_annual_leg(hist: pd.DataFrame, field: str, key: str = "ticker",
-                     date: str = "as_of") -> pd.Series:
+def prior_annual_leg(hist: pd.DataFrame, field: str, key: str = "ticker", date: str = "as_of") -> pd.Series:
     """The value of `field` at each row's PREVIOUS filing -- but ONLY when that filing is about
     one year earlier. NaN otherwise.
 
@@ -207,11 +220,11 @@ def prior_annual_leg(hist: pd.DataFrame, field: str, key: str = "ticker",
     d = pd.to_datetime(hist[date], errors="coerce")
     g = hist.groupby(key, sort=False)
     prev = g[field].shift(1)
-    gap = d.groupby(hist[key]).diff().dt.days
+    gap = cast(Any, d.groupby(hist[key]).diff()).dt.days
     return prev.where(gap.between(*_ANNUAL_GAP_DAYS))
 
 
-def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _comp_history(def14a: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, log_ceo_total_comp, ceo_comp_growth_1y, ceo_turnover_flag]` per filing.
 
     Per ticker, chronologically by `as_of`:
@@ -230,13 +243,14 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     if "ceo_total_comp" not in def14a.columns:
         return None
 
-    h = pd.DataFrame({
-        "ticker": def14a["ticker"],
-        "as_of": pd.to_datetime(def14a["as_of"], errors="coerce"),
-        "comp": _num(def14a, "ceo_total_comp"),
-    })
-    raw_names = (def14a["ceo_name_proxy"] if "ceo_name_proxy" in def14a.columns
-                 else pd.Series(None, index=def14a.index, dtype="object"))
+    h = pd.DataFrame(
+        {
+            "ticker": def14a["ticker"],
+            "as_of": pd.to_datetime(def14a["as_of"], errors="coerce"),
+            "comp": _num(def14a, "ceo_total_comp"),
+        }
+    )
+    raw_names = def14a["ceo_name_proxy"] if "ceo_name_proxy" in def14a.columns else pd.Series(None, index=def14a.index, dtype="object")
     h["name"] = raw_names.astype(object)
     h = h.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if h.empty:
@@ -260,8 +274,7 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
 
     out = h[["ticker", "as_of"]].copy()
     out["log_ceo_total_comp"] = np.log1p(h["comp"].where(h["comp"] > 0))
-    out["ceo_comp_growth_1y"] = np.log(
-        (h["comp"] / prev_comp).where(positive & unchanged))
+    out["ceo_comp_growth_1y"] = np.log((h["comp"] / prev_comp).where(positive & unchanged))
     # The flag does NOT take the adjacency guard: a CEO change between two filings three years
     # apart is still a CEO change, only imprecisely dated. Requiring both names to be known is
     # what keeps it from reading a gap as continuity.
@@ -273,15 +286,13 @@ def _comp_history(def14a: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame |
     tally["growth pairs kept"] = int(out["ceo_comp_growth_1y"].notna().sum())
     tally["growth nulled: CEO turnover"] = int((positive & known & ~unchanged & adjacent).sum())
     tally["growth nulled: CEO identity unknown"] = int((positive & ~known).sum())
-    tally["growth nulled: filings not ~1y apart"] = int(
-        ((h["comp"] > 0) & (prev_any_comp > 0) & ~adjacent).sum())
+    tally["growth nulled: filings not ~1y apart"] = int(((h["comp"] > 0) & (prev_any_comp > 0) & ~adjacent).sum())
     tally["CEO turnovers detected"] = int((out["ceo_turnover_flag"] > 0).sum())
-    tally["co-CEO cells (first person taken, D28)"] = int(
-        raw_names.astype(object).map(is_multi_name).sum())
+    tally["co-CEO cells (first person taken, D28)"] = int(raw_names.astype(object).map(is_multi_name).sum())
     return out.reset_index(drop=True)
 
 
-def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
+def _top5_history(exec_comp: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, top5_neo_total_comp, n_neos_top5]` -- one row per FILING.
 
     Per `(ticker, accession_number)`: keep the rows of the filing's own LATEST `fiscal_year`,
@@ -299,17 +310,19 @@ def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     if not need.issubset(exec_comp.columns) or "total" not in exec_comp.columns:
         return None
 
-    e = pd.DataFrame({
-        "ticker": exec_comp["ticker"],
-        "accession_number": exec_comp["accession_number"],
-        "as_of": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
-        "fiscal_year": _num(exec_comp, "fiscal_year"),
-        "total": _num(exec_comp, "total"),
-        "imputed": _num(exec_comp, "total_imputed").fillna(0.0),
-        "reconciles": _num(exec_comp, "reconciles"),
-        "name": exec_comp["name"].astype(object),
-        "person": exec_comp["name"].astype(object).map(person_key),
-    })
+    e = pd.DataFrame(
+        {
+            "ticker": exec_comp["ticker"],
+            "accession_number": exec_comp["accession_number"],
+            "as_of": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
+            "fiscal_year": _num(exec_comp, "fiscal_year"),
+            "total": _num(exec_comp, "total"),
+            "imputed": _num(exec_comp, "total_imputed").fillna(0.0),
+            "reconciles": _num(exec_comp, "reconciles"),
+            "name": exec_comp["name"].astype(object),
+            "person": exec_comp["name"].astype(object).map(person_key),
+        }
+    )
     e = e.dropna(subset=["ticker", "accession_number", "as_of", "total", "fiscal_year"])
     e = e[e["total"] > 0]
     if e.empty:
@@ -334,13 +347,17 @@ def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
 
     rank = e.groupby(filing)["total"].rank(method="first", ascending=False)
     top = e[rank <= _TOP_N_NEOS]
-    agg = top.groupby(filing).agg(
-        as_of=("as_of", "min"),
-        top5_neo_total_comp=("total", "sum"),
-        n_neos_top5=("total", "size"),
-        imputed_share=("imputed", "mean"),
-        reconciles_share=("reconciles", "mean"),
-    ).reset_index()
+    agg = (
+        top.groupby(filing)
+        .agg(
+            as_of=("as_of", "min"),
+            top5_neo_total_comp=("total", "sum"),
+            n_neos_top5=("total", "size"),
+            imputed_share=("imputed", "mean"),
+            reconciles_share=("reconciles", "mean"),
+        )
+        .reset_index()
+    )
 
     thin = agg["n_neos_top5"] < _MIN_TOP5_NEOS
     tally["CPS filings with >=1 NEO total"] = int(len(agg))
@@ -354,8 +371,7 @@ def _top5_history(exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFram
     return agg.reset_index(drop=True) if not agg.empty else None
 
 
-def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame,
-                                tally: dict[str, int]) -> None:
+def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> None:
     """Count the filings whose CEO is NOT among the NEOs their own slice divides by.
 
     A `ceo_pay_slice` whose numerator sits outside its own denominator is an extraction defect,
@@ -367,24 +383,33 @@ def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame,
     # legitimately lack it -- the slice itself joins on `(ticker, as_of)`, so `accession_number`
     # is required by this cross-check alone. Missing it means "not measurable here", not
     # "crash the build".
-    if (def14a is None or def14a.empty or exec_comp is None or exec_comp.empty
-            or not {"accession_number", "ceo_name_proxy"}.issubset(def14a.columns)
-            or not {"accession_number", "name"}.issubset(exec_comp.columns)):
+    if (
+        def14a is None
+        or def14a.empty
+        or exec_comp is None
+        or exec_comp.empty
+        or not {"accession_number", "ceo_name_proxy"}.issubset(def14a.columns)
+        or not {"accession_number", "name"}.issubset(exec_comp.columns)
+    ):
         return
-    ceo = pd.DataFrame({
-        "accession_number": def14a["accession_number"],
-        "ceo": ceo_identity_series(def14a["ceo_name_proxy"]),
-    }).dropna(subset=["accession_number", "ceo"])
+    ceo = pd.DataFrame(
+        {
+            "accession_number": def14a["accession_number"],
+            "ceo": ceo_identity_series(def14a["ceo_name_proxy"]),
+        }
+    ).dropna(subset=["accession_number", "ceo"])
     if ceo.empty:
         return
-    neos = pd.DataFrame({
-        "accession_number": exec_comp["accession_number"],
-        "person": exec_comp["name"].astype(object).map(person_key),
-    }).dropna()
-    present = set(zip(neos["accession_number"], neos["person"]))
+    neos = pd.DataFrame(
+        {
+            "accession_number": exec_comp["accession_number"],
+            "person": exec_comp["name"].astype(object).map(person_key),
+        }
+    ).dropna()
+    present = set(zip(neos["accession_number"], neos["person"], strict=False))
     have_rows = set(neos["accession_number"])
-    hit = [(a, c) in present for a, c in zip(ceo["accession_number"], ceo["ceo"])]
-    missed = [a for a, h in zip(ceo["accession_number"], hit) if not h]
+    hit = [(a, c) in present for a, c in zip(ceo["accession_number"], ceo["ceo"], strict=False)]
+    missed = [a for a, h in zip(ceo["accession_number"], hit, strict=False) if not h]
     # ⚠ THE TWO MISS KINDS ARE DIFFERENT FAULTS AND ARE COUNTED SEPARATELY. Measured
     # 2026-09-08: of 1,166 misses, **1,004 (86%) are filings with NO NEO rows at all** -- an
     # extraction-COVERAGE gap, nothing to match against -- and only 162 are filings whose SCT
@@ -398,8 +423,7 @@ def _ceo_inside_own_denominator(def14a: pd.DataFrame, exec_comp: pd.DataFrame,
     tally["CPS misses: NEOs parsed but the CEO is not among them"] = int(len(missed) - no_rows)
 
 
-def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame,
-                   tally: dict[str, int]) -> pd.DataFrame | None:
+def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame | None:
     """`[ticker, as_of, ceo_pay_slice]`, the CEO's share of the top five, in `(0, 1]`.
 
     A slice above 1 means the CEO is not inside their own denominator, which is an extraction
@@ -412,11 +436,13 @@ def _slice_history(comp_src: pd.DataFrame, top5: pd.DataFrame,
     """
     if top5 is None or top5.empty or comp_src is None or comp_src.empty:
         return None
-    num = pd.DataFrame({
-        "ticker": comp_src["ticker"],
-        "as_of": pd.to_datetime(comp_src["as_of"], errors="coerce"),
-        "ceo_total_comp": _num(comp_src, "ceo_total_comp"),
-    }).dropna(subset=["ticker", "as_of", "ceo_total_comp"])
+    num = pd.DataFrame(
+        {
+            "ticker": comp_src["ticker"],
+            "as_of": pd.to_datetime(comp_src["as_of"], errors="coerce"),
+            "ceo_total_comp": _num(comp_src, "ceo_total_comp"),
+        }
+    ).dropna(subset=["ticker", "as_of", "ceo_total_comp"])
     if num.empty:
         return None
 
@@ -442,7 +468,8 @@ def _log_growth(pct: pd.DataFrame) -> pd.DataFrame:
     """
     if pct is None or pct.empty:
         return pd.DataFrame()
-    return np.log1p(pct.where(pct > -1.0)).replace([np.inf, -np.inf], np.nan)
+    logged = cast(pd.DataFrame, np.log1p(pct.where(pct > -1.0)))
+    return logged.replace([np.inf, -np.inf], np.nan)
 
 
 def _flag_pair(pay: pd.DataFrame, perf: pd.DataFrame) -> pd.DataFrame:
@@ -477,12 +504,15 @@ def _aligned(a: pd.DataFrame, b: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     return a[cols], b[cols]
 
 
-def _alignment_family(growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict,
-                      label: str) -> dict[str, pd.DataFrame]:
+def _alignment_family(
+    growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict, label: str, availability: pd.DataFrame | None = None
+) -> dict[str, pd.DataFrame]:
     """One pay-vs-performance leg: gap, peer misalignment, flag and severity."""
     pay, prf = _aligned(growth, perf)
     if pay.empty:
         return {}
+    pay = mask_to_availability(pay, availability)
+    prf = mask_to_availability(prf, availability)
     out = {
         f"pay_{label}_gap": pay - prf,
         f"pay_up_{label}_down": _flag_pair(pay, prf),
@@ -500,8 +530,7 @@ def _alignment_family(growth: pd.DataFrame, perf: pd.DataFrame, peer_dict: dict,
         pz, rz = _aligned(pz, rz)
         if not pz.empty:
             out[f"pay_{label}_peer_misalignment"] = pz - rz
-    return {k: v for k, v in out.items() if v is not None and not v.empty
-            and v.notna().any().any()}
+    return {k: v for k, v in out.items() if v is not None and not v.empty and v.notna().any().any()}
 
 
 def pay_fields(
@@ -511,6 +540,7 @@ def pay_fields(
     close_total: pd.DataFrame | None,
     peer_dict: dict,
     idx: pd.DatetimeIndex,
+    availability: pd.DataFrame | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """(daily wide frames keyed by feature name, data-quality tallies).
 
@@ -555,16 +585,13 @@ def pay_fields(
             level = fundamentals_to_daily(slices, "ceo_pay_slice", idx)
             if not level.empty and level.notna().any().any():
                 family6["ceo_pay_slice"] = level
-            delta = fiscal_change_to_daily(slices, "ceo_pay_slice", idx,
-                                           kind="diff", periods=1)
+            delta = fiscal_change_to_daily(slices, "ceo_pay_slice", idx, kind="diff", periods=1)
             if not delta.empty and delta.notna().any().any():
                 family6["ceo_pay_slice_delta_1y"] = delta
             # The delta's provenance is the LEVEL's filing -- the later leg is what made the
             # change knowable -- so it ages against `ceo_pay_slice`, a column that exists in
             # the history frame, not against a name that does not.
-            family6, expiry6 = expire_event_fields(
-                family6, slices, EVENT_FIELDS,
-                sources={"ceo_pay_slice_delta_1y": "ceo_pay_slice"})
+            family6, expiry6 = expire_event_fields(family6, slices, EVENT_FIELDS, sources={"ceo_pay_slice_delta_1y": "ceo_pay_slice"})
             expiry5.update(expiry6)
             # `ceo_pay_slice` is the other LEVEL -- the CEO's share of the top five is a
             # standing fact of the same filing, and it ages against its own history frame.
@@ -579,13 +606,11 @@ def pay_fields(
     else:
         rev_growth = pd.DataFrame()
         if fundamentals is not None and not fundamentals.empty:
-            rev_growth = _log_growth(fiscal_change_to_daily(
-                fundamentals, "totalRevenue", idx, kind="pct",
-                periods=infer_yoy_periods(fundamentals)))
+            rev_growth = _log_growth(fiscal_change_to_daily(fundamentals, "totalRevenue", idx, kind="pct", periods=infer_yoy_periods(fundamentals)))
         if rev_growth.empty:
             tally["skipped: no totalRevenue -> no revenue-based misalignment"] = 1
         else:
-            family7.update(_alignment_family(growth, rev_growth, peer_dict, "revenue"))
+            family7.update(_alignment_family(growth, rev_growth, peer_dict, "revenue", availability))
 
         ret = pd.DataFrame()
         if close_total is not None and not close_total.empty:
@@ -593,14 +618,12 @@ def pay_fields(
         if ret.empty:
             tally["skipped: no close_total -> no return-based misalignment"] = 1
         else:
-            family7.update(_alignment_family(growth, ret, peer_dict, "return"))
+            family7.update(_alignment_family(growth, ret, peer_dict, "return", availability))
 
         # Family 7 is a DIFFERENCE of a pay leg against a performance leg, so its provenance is
         # the pay leg's filing: the return moves daily but the package it is measured against
         # was set at the proxy, and that is the date the 548-day horizon has to age.
-        family7, expiry7 = expire_event_fields(
-            family7, comp_hist, EVENT_FIELDS,
-            sources={k: "ceo_comp_growth_1y" for k in family7})
+        family7, expiry7 = expire_event_fields(family7, comp_hist, EVENT_FIELDS, sources={k: "ceo_comp_growth_1y" for k in family7})
         expiry5.update(expiry7)
 
     for name, (expired, before) in expiry5.items():

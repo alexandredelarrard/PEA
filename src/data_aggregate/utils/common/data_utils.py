@@ -10,8 +10,11 @@ This module flattens that into per-field wide frames.
 """
 
 from __future__ import annotations
+
+import logging
+from typing import cast
+
 import pandas as pd
-import logging 
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +46,10 @@ def extract_field(df: pd.DataFrame, field: str) -> pd.DataFrame:
     out.index = pd.to_datetime(out.index)
 
     # Drop tickers that are entirely empty.
-    out = out.dropna(axis=1, how="all")
-    
-    return out.astype("float64")
+    keep = cast(pd.Series, out.notna().any(axis=0))
+    out = out.loc[:, keep.to_numpy(dtype=bool)]
+
+    return cast(pd.DataFrame, out.astype("float64"))
 
 
 def daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:
@@ -79,9 +83,8 @@ def prices_long_to_multiindex(prices: pd.DataFrame) -> pd.DataFrame:
         if low in prices.columns:
             fields[cap] = low
 
-    wide = {cap: prices.pivot(index="date", columns="ticker", values=low)
-            for cap, low in fields.items() if low in prices.columns}
-    
+    wide = {cap: prices.pivot(index="date", columns="ticker", values=low) for cap, low in fields.items() if low in prices.columns}
+
     return pd.concat(wide, axis=1)
 
 
@@ -101,10 +104,16 @@ def get_trading_days(close, market: pd.Series, market_name: str = "market") -> p
         logger.warning(
             "%s (market series) missing on %d date(s) where >=50%% of stocks "
             "trade (%s .. %s) -> these dates are dropped for the ENTIRE universe. "
-            "Re-run `data_extract macro` to backfill %s.", market_name, len(holes),
-            holes.min().date(), holes.max().date(), market_name)
+            "Re-run `data_extract macro` to backfill %s.",
+            market_name,
+            len(holes),
+            holes.min().date(),
+            holes.max().date(),
+            market_name,
+        )
 
     return trading_days
+
 
 def _sub(f, universe):
     return f[[c for c in universe if c in f.columns]] if f is not None else None

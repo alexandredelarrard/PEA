@@ -8,15 +8,18 @@ StepBacktest.load_models reads them back the SAME way (restoring the Booster's
 be SAVED and RELOADED as a booster and participate in the ensemble — previously the
 lightgbm-only `.txt` check skipped it, so it silently vanished from the backtest/app.
 """
+
 from __future__ import annotations
 
 import pickle
+from typing import Any, cast
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from src.modelling.long_short.utils import baselines, model as ml
+from src.modelling.long_short.utils import baselines
+from src.modelling.long_short.utils import model as ml
 
 
 def _panel(n: int = 1500, seed: int = 0) -> pd.DataFrame:
@@ -24,16 +27,29 @@ def _panel(n: int = 1500, seed: int = 0) -> pd.DataFrame:
     f1, f2 = rng.standard_normal(n), rng.standard_normal(n)
     y = 0.5 * f1 - 0.3 * f2 + 0.05 * rng.standard_normal(n)
     dates = pd.to_datetime("2020-01-01") + pd.to_timedelta(rng.integers(0, 120, n), unit="D")
-    return pd.DataFrame({"date": dates, "ticker": np.arange(n) % 200, "y": y,
-                         "f1": f1, "f2": f2,
-                         "sector": rng.integers(0, 5, n), "industry_group": rng.integers(0, 8, n)})
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "ticker": np.arange(n) % 200,
+            "y": y,
+            "f1": f1,
+            "f2": f2,
+            "sector": rng.integers(0, 5, n),
+            "industry_group": rng.integers(0, 8, n),
+        }
+    )
 
 
 def _rf(panel, feats, cats):
     return ml.train_ranker(
-        panel, feats, "y", valid_panel=None, categorical_features=cats, num_boost_round=40,
-        params={"objective": "regression", "metric": "rmse", "boosting": "rf",
-                "bagging_fraction": 0.7, "bagging_freq": 1, "feature_fraction": 0.7})
+        panel,
+        feats,
+        "y",
+        valid_panel=None,
+        categorical_features=cats,
+        num_boost_round=40,
+        params={"objective": "regression", "metric": "rmse", "boosting": "rf", "bagging_fraction": 0.7, "bagging_freq": 1, "feature_fraction": 0.7},
+    )
 
 
 def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
@@ -42,8 +58,9 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
     feats = num + cats
     members = {
         "elasticnet": baselines.train_elasticnet(panel, num, "y", alpha=1e-3, l1_ratio=0.3),
-        "lightgbm": ml.train_ranker(panel, feats, "y", valid_panel=None, categorical_features=cats,
-                                    num_boost_round=40, params={"objective": "regression", "metric": "rmse"}),
+        "lightgbm": ml.train_ranker(
+            panel, feats, "y", valid_panel=None, categorical_features=cats, num_boost_round=40, params={"objective": "regression", "metric": "rmse"}
+        ),
         "random_forest": _rf(panel, feats, cats),
     }
 
@@ -62,13 +79,13 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
                 pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     # RELOAD exactly like StepBacktest.load_models
-    reloaded = {}
+    reloaded: dict[str, Any] = {}
     for kind in members:
         p = ml.member_model_path(tmp_path, 60, kind)
         assert p.exists(), f"{kind} was not saved to {p.name}"
         if kind in ml.BOOSTER_MEMBER_KINDS:
             b = lgb.Booster(model_file=str(p))
-            b.feature_names = b.feature_name()
+            cast(Any, b).feature_names = b.feature_name()
             reloaded[kind] = b
         else:
             with p.open("rb") as f:
@@ -76,7 +93,7 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
 
     # random_forest came back as a booster whose feature_names include the categoricals
     assert isinstance(reloaded["random_forest"], lgb.Booster)
-    assert list(reloaded["random_forest"].feature_names) == feats
+    assert list(cast(Any, reloaded["random_forest"]).feature_names) == feats
 
     # booster predictions are identical pre/post reload
     for kind in ("lightgbm", "random_forest"):
@@ -87,19 +104,25 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path):
     scores, mem = ml.ensemble_predict(reloaded, panel, num)
     assert set(mem) == {"elasticnet", "lightgbm", "random_forest"}
     assert np.isfinite(scores.to_numpy()).mean() > 0.9
-    disp = {k: float(pd.Series(v.to_numpy(), index=panel.index).groupby(panel["date"]).std().mean())
-            for k, v in mem.items()}
+    disp = {k: float(pd.Series(v.to_numpy(), index=panel.index).groupby(panel["date"]).std().mean()) for k, v in mem.items()}
     assert all(d > 1e-6 for d in disp.values()), f"a member is degenerate: {disp}"
 
     print("\n=== SANITY CHECK: ensemble member persistence (incl. random_forest) ===")
-    print(f"  files: {[ml.member_model_path(tmp_path,60,k).name for k in members]}")
-    print(f"  random_forest reloaded as Booster, feature_names={list(reloaded['random_forest'].feature_names)}")
-    print(f"  per-day dispersion by member: {{k: round(v,3) for k,v in disp.items()}}"
-          .replace("{k: round(v,3) for k,v in disp.items()}", str({k: round(v, 3) for k, v in disp.items()})))
-    print("  CONCLUSION: a random_forest member is saved (.txt) AND reloaded as a booster with its "
-          "feature_names, and the 3-way ensemble scores cleanly -> reused by backtest + app. Validated.")
+    print(f"  files: {[ml.member_model_path(tmp_path, 60, k).name for k in members]}")
+    print(f"  random_forest reloaded as Booster, feature_names={list(cast(Any, reloaded['random_forest']).feature_names)}")
+    print(
+        "  per-day dispersion by member: {k: round(v,3) for k,v in disp.items()}".replace(
+            "{k: round(v,3) for k,v in disp.items()}", str({k: round(v, 3) for k, v in disp.items()})
+        )
+    )
+    print(
+        "  CONCLUSION: a random_forest member is saved (.txt) AND reloaded as a booster with its "
+        "feature_names, and the 3-way ensemble scores cleanly -> reused by backtest + app. Validated."
+    )
 
 
 if __name__ == "__main__":
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
+
     test_random_forest_member_saves_and_reloads_into_the_ensemble(pathlib.Path(tempfile.mkdtemp()))

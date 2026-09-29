@@ -36,10 +36,14 @@ value / quality           -> need fundamentals HISTORY. With snapshot-only
 """
 
 from __future__ import annotations
+
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+
+from src.constants.constants_price import DAILY_MACRO_LEVELS
 
 # the point-in-time pivot + daily market cap moved to utils/common/pit.py, and the
 # price-derived primitives to utils/common/prices.py: they are generic, and keeping them
@@ -48,9 +52,9 @@ import pandas as pd
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.prices import momentum_characteristic, trailing_vol
 from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
-from src.constants.constants_price import DAILY_MACRO_LEVELS
 
 logger = logging.getLogger(__name__)
+
 
 # --------------------------------------------------------------------------- #
 # Characteristics                                                              #
@@ -59,7 +63,7 @@ def build_characteristics(
     stock_close_total: pd.DataFrame,
     stock_ret: pd.DataFrame,
     fundamentals_history: pd.DataFrame | None,
-    resvol_window: int = 63, # 3 month stock
+    resvol_window: int = 63,  # 3 month stock
     *,
     stock_close_split: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
@@ -85,9 +89,8 @@ def build_characteristics(
     leg for 231 trading days, so the contamination would leave the six seam tickers and reach
     `beta_momentum` for the whole universe.
     """
-    idx = stock_close_total.index
-    close_level = (stock_close_total if stock_close_split is None
-                   else stock_close_split.reindex_like(stock_close_total))
+    idx = pd.DatetimeIndex(stock_close_total.index)
+    close_level = stock_close_total if stock_close_split is None else stock_close_split.reindex_like(stock_close_total)
     chars: dict[str, pd.DataFrame] = {}
 
     # Momentum 12-1 (skip most recent month). max 75% of values missing
@@ -97,10 +100,8 @@ def build_characteristics(
     chars["resvol"] = -trailing_vol(stock_ret, resvol_window)
 
     if fundamentals_history is not None and not fundamentals_history.empty:
-        
         # Historical daily market cap from SEC shares * price (moves daily).
-        mcap = daily_market_cap(fundamentals_history, close_level,
-                                level_factor=level_factor)
+        mcap = daily_market_cap(fundamentals_history, close_level, level_factor=level_factor)
         if mcap.empty:
             # fallback to old proxy if only a current marketCap snapshot exists
             snap = fundamentals_to_daily(fundamentals_history, "marketCap", idx)
@@ -111,7 +112,7 @@ def build_characteristics(
 
         if not mcap.empty:
             # Size: -log market cap (small = long side).
-            chars["size"] = -np.log(mcap.where(mcap > 0))
+            chars["size"] = cast(pd.DataFrame, -np.log(mcap.where(mcap > 0)))
 
             # Value: earnings yield + FCF yield + book/price, all vs market cap.
             ni = fundamentals_to_daily(fundamentals_history, "netIncome", idx)
@@ -125,7 +126,7 @@ def build_characteristics(
                         yld = (num[common] / mcap[common]).replace([np.inf, -np.inf], np.nan)
                         val_parts.append(xs_z(yld, clip=XS_CLIP_CHARACTERISTIC))
             if val_parts:
-                chars["value"] = sum(val_parts) / len(val_parts)
+                chars["value"] = cast(pd.DataFrame, sum(val_parts)) / len(val_parts)
     return chars
 
 
@@ -141,12 +142,15 @@ def characteristic_to_factor_return(char: pd.DataFrame, stock_ret: pd.DataFrame)
     Lagged weights => no look-ahead.
     """
     z = xs_z(char, clip=XS_CLIP_CHARACTERISTIC)
-    z = z.sub(z.mean(axis=1), axis=0)                      # ensure long-short (mean 0)
+    z = z.sub(z.mean(axis=1), axis=0)  # ensure long-short (mean 0)
     gross = z.abs().sum(axis=1).replace(0, np.nan)
-    w = z.div(gross, axis=0)                               # unit gross exposure
+    w = z.div(gross, axis=0)  # unit gross exposure
     aligned = stock_ret.reindex_like(w)
     f = (w.shift(1) * aligned).sum(axis=1, min_count=1)
-    return f.rename(char.name if char.name else "factor")
+    name = cast(Any, getattr(char, "name", None))
+    f.name = name if name else "factor"
+    return f
+
 
 def gics_sector_excess_returns(
     stock_ret: pd.DataFrame,
@@ -207,7 +211,7 @@ def macro_change_factors(
     m = m.sort_index()
 
     out = {}
-    for level, change in level_to_change.items():
+    for level, change in cast(dict, level_to_change).items():
         if level in m.columns:
             s = m[level].reindex(m.index.union(trading_index)).ffill().reindex(trading_index)
             out[change] = s.diff()
@@ -247,10 +251,10 @@ def filter_daily_factors(
 
 def assemble_factor_panel(
     market_ret: pd.Series,
-    style_factors: pd.DataFrame,      # size, value, momentum, quality, resvol (returns)
+    style_factors: pd.DataFrame,  # size, value, momentum, quality, resvol (returns)
     commodity_returns: pd.DataFrame,  # oil, gold (returns)
     currency_returns: pd.DataFrame,  # USD/EUR (returns)
-    macro_changes: pd.DataFrame,      # d_yield_10y, d_vix, d_breakeven_10y (changes)
+    macro_changes: pd.DataFrame,  # d_yield_10y, d_vix, d_breakeven_10y (changes)
 ) -> tuple[pd.DataFrame, list[str]]:
     """
     Assemble the shared factor panel and return (panel, macro_cols).

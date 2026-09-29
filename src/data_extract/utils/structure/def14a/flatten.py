@@ -11,18 +11,26 @@ filings without a single LLM call.
 `_prepare_frame` here takes `(rows, numeric, pk)`. `votes/flatten.py` has a different
 function of the same name taking `(rows)`; they are NOT interchangeable.
 """
+
 from __future__ import annotations
 
-import json
 import logging
+from collections.abc import Sequence
+from typing import cast
 
 import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import strip_nul
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, ExecutiveCompensation
 from src.data_extract.utils.structure.def14a.validate import (
-    DEF14A_AUDIT_FEE_MIN_PLAUSIBLE, clean_holder_name, clean_person_name, clean_text,
-    is_subtotal_holder, repair_pay_ratio, rescale_block, sum_fee_total,
+    DEF14A_AUDIT_FEE_MIN_PLAUSIBLE,
+    clean_holder_name,
+    clean_person_name,
+    clean_text,
+    is_subtotal_holder,
+    repair_pay_ratio,
+    rescale_block,
+    sum_fee_total,
 )
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
@@ -34,35 +42,69 @@ logger = logging.getLogger(__name__)
 _NUMERIC_COLS = [
     "fiscal_year_extract",
     # board / directors
-    "n_directors", "board_size", "avg_director_age", "avg_board_tenure",
-    "pct_independent_directors", "pct_female_directors", "avg_other_public_boards",
-    "pct_gender_stated", "n_women_directors_vs_inferred",
+    "n_directors",
+    "board_size",
+    "avg_director_age",
+    "avg_board_tenure",
+    "pct_independent_directors",
+    "pct_female_directors",
+    "avg_other_public_boards",
+    "pct_gender_stated",
+    "n_women_directors_vs_inferred",
     # CEO
-    "ceo_age", "ceo_since_year", "ceo_is_founder", "ceo_is_board_chair",
-    "ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards",
-    "ceo_non_equity_incentive", "ceo_all_other_comp", "ceo_total_comp", "ceo_equity_pay_pct",
+    "ceo_age",
+    "ceo_since_year",
+    "ceo_is_founder",
+    "ceo_is_board_chair",
+    "ceo_salary",
+    "ceo_bonus",
+    "ceo_stock_awards",
+    "ceo_option_awards",
+    "ceo_non_equity_incentive",
+    "ceo_all_other_comp",
+    "ceo_total_comp",
+    "ceo_equity_pay_pct",
     # NEO aggregate
-    "n_neos", "total_neo_comp", "sct_years",
+    "n_neos",
+    "total_neo_comp",
+    "sct_years",
     # child-table row counts (so a silent recall regression is visible on the parent row)
-    "n_director_comp_rows", "n_ownership_rows",
+    "n_director_comp_rows",
+    "n_ownership_rows",
     # ownership -- the ECONOMIC leg and the VOTING leg are separate columns on purpose. The
     # schema used to ask the model to read the first and suppress the second, and it returned
     # voting power as ownership on 59 filings; both are now extracted and code picks the leg.
-    "insider_ownership_pct", "insider_voting_pct", "insider_shares",
-    "ceo_ownership_pct", "ceo_voting_pct", "n_five_percent_holders",
+    "insider_ownership_pct",
+    "insider_voting_pct",
+    "insider_shares",
+    "ceo_ownership_pct",
+    "ceo_voting_pct",
+    "n_five_percent_holders",
     # governance provisions
-    "independent_chair", "lead_independent_director", "classified_board",
-    "dual_class_shares", "poison_pill", "majority_voting", "say_on_pay_support_pct",
-    "ceo_pay_ratio", "median_employee_pay", "auditor_fees",
+    "independent_chair",
+    "lead_independent_director",
+    "classified_board",
+    "dual_class_shares",
+    "poison_pill",
+    "majority_voting",
+    "say_on_pay_support_pct",
+    "ceo_pay_ratio",
+    "median_employee_pay",
+    "auditor_fees",
     # auditor name is TEXT; the rest of the fee block is numeric
-    "auditor_since_year", "audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax",
-    "audit_fees_other", "auditor_fees_prior",
+    "auditor_since_year",
+    "audit_fees_audit",
+    "audit_fees_audit_related",
+    "audit_fees_tax",
+    "audit_fees_other",
+    "auditor_fees_prior",
 ]
 
 # The task-tailored prompt lives in `src/gpt_extract/prompt_templates/def14a_*.md`. It is
 # precise about WHERE each field lives and how to normalise it, which materially lifts the
 # fill rate versus a generic "extract structured data" instruction, and it is cached per
 # (model, schema) so that precision stays cheap.
+
 
 def _latest_sct_year(extract: Def14AExtract) -> int | None:
     """The most recent fiscal year present in the SCT rows, or None when no row carries one."""
@@ -85,7 +127,7 @@ def _latest_sct_rows(extract: Def14AExtract) -> list:
     return [c for c in extract.compensation if c.fiscal_year == latest]
 
 
-def _ceo_from_compensation(extract: Def14AExtract) -> "ExecutiveCompensation | None":  # noqa: F821
+def _ceo_from_compensation(extract: Def14AExtract) -> ExecutiveCompensation | None:
     """The CEO's Summary-Compensation-Table row for the MOST RECENT fiscal year: match on the
     extracted CEO name first, else on a CEO-like title, else the first (usually highest-paid)
     NEO of that year."""
@@ -120,7 +162,7 @@ def _bnum(x: bool | None) -> float | None:
     return None if x is None else float(bool(x))
 
 
-def _mean(xs: list[float]) -> float | None:
+def _mean(xs: Sequence[float]) -> float | None:
     return round(sum(xs) / len(xs), 3) if xs else None
 
 
@@ -129,13 +171,12 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     ages = [d.age for d in dirs if d.age is not None]
     tenures = [d.tenure_years for d in dirs if d.tenure_years is not None]
     genders = [(d.gender or "").strip().lower() for d in dirs if d.gender]
-    other_boards = [d.other_public_company_boards for d in dirs
-                    if d.other_public_company_boards is not None]
+    other_boards = [d.other_public_company_boards for d in dirs if d.other_public_company_boards is not None]
     ceo = _ceo_from_compensation(extract)
     latest_rows = _latest_sct_rows(extract)
     gov = extract.governance
     g = lambda a: getattr(gov, a, None) if gov is not None else None  # noqa: E731
-    ceo_name = (extract.ceo_name or (ceo.name if ceo else None) or "")
+    ceo_name = extract.ceo_name or (ceo.name if ceo else None) or ""
 
     ceo_equity = None
     if ceo and ceo.total_compensation_usd:
@@ -156,8 +197,7 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     # prior. Only 17.4% of proxies state gender at all, so this ratio is what makes
     # `pct_female_directors` auditable instead of silently inferred.
     bases = [(d.gender_basis or "").strip().lower() for d in dirs if d.gender]
-    pct_gender_stated = (round(sum(b in ("stated", "honorific") for b in bases) / len(bases), 3)
-                         if bases else None)
+    pct_gender_stated = round(sum(b in ("stated", "honorific") for b in bases) / len(bases), 3) if bases else None
     n_female_inferred = sum(x.startswith("f") for x in genders)
 
     n_women = g("n_women_directors")
@@ -171,7 +211,7 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
     row = {
         "ticker": ticker,
         "as_of": filing["filing_date"],
-        "period": pd.to_datetime(filing.get("period_of_report"), errors="coerce"),
+        "period": pd.to_datetime(period, errors="coerce") if (period := filing.get("period_of_report")) is not None else None,
         "accession_number": filing["accession_number"],
         "company_name": extract.company_name,
         "fiscal_year_extract": extract.fiscal_year,
@@ -188,8 +228,7 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
         "ceo_age": _ceo_age(extract),
         "ceo_since_year": extract.ceo_since_year,
         "ceo_is_founder": _bnum(extract.ceo_is_founder),
-        "ceo_is_board_chair": _bnum(extract.ceo_is_board_chair
-                                    if extract.ceo_is_board_chair is not None else g("ceo_is_board_chair")),
+        "ceo_is_board_chair": _bnum(extract.ceo_is_board_chair if extract.ceo_is_board_chair is not None else g("ceo_is_board_chair")),
         "ceo_salary": ceo.salary_usd if ceo else None,
         "ceo_bonus": ceo.bonus_usd if ceo else None,
         "ceo_stock_awards": ceo.stock_awards_usd if ceo else None,
@@ -200,13 +239,11 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
         "ceo_equity_pay_pct": ceo_equity,
         # ---- NEO aggregate (most recent fiscal year only -- see `_latest_sct_rows`) ----
         "n_neos": len({(c.name or "").strip().lower() for c in latest_rows if c.name}) or None,
-        "total_neo_comp": sum(c.total_compensation_usd for c in latest_rows
-                              if c.total_compensation_usd is not None) or None,
+        "total_neo_comp": sum(c.total_compensation_usd for c in latest_rows if c.total_compensation_usd is not None) or None,
         # how many fiscal years the SCT actually yielded. Item 402(c) requires three, so a 1
         # here is the "the carve missed most of the table" pathology -- still measurable after
         # the schema change that stops `n_neos` from tripling.
-        "sct_years": len({c.fiscal_year for c in extract.compensation
-                          if c.fiscal_year is not None}) or None,
+        "sct_years": len({c.fiscal_year for c in extract.compensation if c.fiscal_year is not None}) or None,
         # ---- Ownership / alignment (direct from the beneficial-ownership summary) ----
         # ⚠ FOUR COLUMNS, TWO PAIRS, NO DERIVATION HERE. `*_ownership_pct` is the percent of
         # CLASS (economic) and `*_voting_pct` the percent of total voting power, each stored
@@ -253,8 +290,7 @@ def _flatten(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dict:
         # the filing's own women-director count minus the count derived from per-director
         # gender. 0 when they agree; a persistent non-zero is the honest error bar on the
         # inference. Never used to overwrite anything.
-        "n_women_directors_vs_inferred": (None if n_women is None or not genders
-                                          else n_women - n_female_inferred),
+        "n_women_directors_vs_inferred": (None if n_women is None or not genders else n_women - n_female_inferred),
         # Full JSON for downstream access. Keeping it is what makes RE-flattening free: the
         # four row builders and every derived column above are pure functions of this blob, so
         # a schema change can be replayed over 8,667 stored filings without an LLM call.
@@ -294,18 +330,14 @@ _RECONCILE_TOLERANCE_USD = 10.0
 #: The seven SCT components (Item 402(c)) and the six director-comp components (Item 402(k)),
 #: in the flat column vocabulary. Deliberately the SAME names the retired edgar child tables
 #: used, so the Phase-6 before/after comparison is column-for-column.
-_EXEC_COMPONENT_COLS = ("salary", "bonus", "stock_awards", "option_awards",
-                        "non_equity_incentive", "pension_change", "other_compensation")
-_DIRECTOR_COMPONENT_COLS = ("fees_earned", "stock_awards", "option_awards",
-                            "non_equity_incentive", "pension_change", "other_compensation")
+_EXEC_COMPONENT_COLS = ("salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation")
+_DIRECTOR_COMPONENT_COLS = ("fees_earned", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation")
 #: The fee block is rescaled TOGETHER or not at all -- a filer reports every cell of one table
 #: in one unit, so a cell-by-cell rescale would invent a table whose parts no longer sum.
-_FEE_COLS = ("auditor_fees", "audit_fees_audit", "audit_fees_audit_related",
-             "audit_fees_tax", "audit_fees_other", "auditor_fees_prior")
+_FEE_COLS = ("auditor_fees", "audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other", "auditor_fees_prior")
 #: The four Item 9(e) categories that make up the current-year total — `_FEE_COLS` minus the
 #: total itself and minus the prior year, whose categories this schema does not carry.
-_FEE_CATEGORY_COLS = ("audit_fees_audit", "audit_fees_audit_related",
-                      "audit_fees_tax", "audit_fees_other")
+_FEE_CATEGORY_COLS = ("audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other")
 
 
 def _keys(ticker: str, filing: pd.Series) -> dict:
@@ -328,12 +360,12 @@ def _reconciles(row: dict, components: tuple[str, ...]) -> float | None:
     not an unattributable gap, and filling it would overwrite a real column.
     """
     total = row.get("total")
-    if total is None or not isinstance(total, (int, float)):
+    if total is None or not isinstance(total, int | float):
         return None
     parts = [row.get(c) for c in components]
-    if not any(isinstance(v, (int, float)) for v in parts):
+    if not any(isinstance(v, int | float) for v in parts):
         return None
-    summed = sum(float(v) for v in parts if isinstance(v, (int, float)))
+    summed = sum(float(v) for v in parts if isinstance(v, int | float))
     return 1.0 if abs(float(total) - summed) <= _RECONCILE_TOLERANCE_USD else 0.0
 
 
@@ -419,14 +451,16 @@ def _ownership_rows(ticker: str, filing: pd.Series, extract: Def14AExtract) -> l
         holder_type = (h.holder_type or "").strip().lower() or None
         if holder_type not in ("5pct_holder", "director_officer", None):
             holder_type = "5pct_holder" if (h.percent_of_class or 0) >= 0.05 else "director_officer"
-        rows.append({
-            **_keys(ticker, filing),
-            "holder_name": name,
-            "holder_type": holder_type or "director_officer",
-            "shares": h.shares,
-            "percent_of_class": h.percent_of_class,
-            "percent_of_voting_power": h.percent_of_voting_power,
-        })
+        rows.append(
+            {
+                **_keys(ticker, filing),
+                "holder_name": name,
+                "holder_type": holder_type or "director_officer",
+                "shares": h.shares,
+                "percent_of_class": h.percent_of_class,
+                "percent_of_voting_power": h.percent_of_voting_power,
+            }
+        )
     return rows
 
 
@@ -446,18 +480,20 @@ def _director_rows(ticker: str, filing: pd.Series, extract: Def14AExtract) -> li
             continue
         gender = (d.gender or "").strip().lower() or None
         basis = (d.gender_basis or "").strip().lower() or None
-        rows.append({
-            **_keys(ticker, filing),
-            "name": name,
-            "age": d.age,
-            "tenure_years": d.tenure_years,
-            "is_independent": _bnum(d.is_independent),
-            "gender": gender,
-            # never leave the provenance blank when a gender is set: an unlabelled value is
-            # indistinguishable from the first-name prior this upgrade exists to expose
-            "gender_basis": basis or ("name" if gender else None),
-            "other_public_company_boards": d.other_public_company_boards,
-        })
+        rows.append(
+            {
+                **_keys(ticker, filing),
+                "name": name,
+                "age": d.age,
+                "tenure_years": d.tenure_years,
+                "is_independent": _bnum(d.is_independent),
+                "gender": gender,
+                # never leave the provenance blank when a gender is set: an unlabelled value is
+                # indistinguishable from the first-name prior this upgrade exists to expose
+                "gender_basis": basis or ("name" if gender else None),
+                "other_public_company_boards": d.other_public_company_boards,
+            }
+        )
     return rows
 
 
@@ -470,13 +506,13 @@ def _child_frames(ticker: str, filing: pd.Series, extract: Def14AExtract) -> dic
         "def14a_directors": _director_rows(ticker, filing, extract),
     }
 
+
 #: The `=== LABEL ===` block the carve emits for the Item 402(k) table. A populated section with
 #: zero extracted rows is a RECALL failure and nothing else -- see `_log_director_comp_recall`.
 _DIRECTOR_COMP_SECTION = "=== DIRECTOR COMPENSATION TABLE ==="
 
 
-def _log_director_comp_recall(ticker: str, filing: pd.Series, payload: str,
-                              n_rows: int) -> None:
+def _log_director_comp_recall(ticker: str, filing: pd.Series, payload: str, n_rows: int) -> None:
     """Warn when the model was SHOWN a director-compensation table and returned no rows.
 
     ⚠ THIS IS THE CHECK WHOSE ABSENCE LET 1,097 FILINGS FAIL SILENTLY across 272 companies --
@@ -496,13 +532,16 @@ def _log_director_comp_recall(ticker: str, filing: pd.Series, payload: str,
         return
     body = (payload or "").split(_DIRECTOR_COMP_SECTION, 1)[1]
     body = body.split("\n=== ", 1)[0]
-    if len(body.strip()) < 200:                 # an emitted but empty/truncated section
+    if len(body.strip()) < 200:  # an emitted but empty/truncated section
         return
     logger.warning(
         "%s %s (%s): the carve supplied a %d-char DIRECTOR COMPENSATION TABLE and the extract "
         "returned ZERO director-comp rows — extraction RECALL failure, not a carve miss",
-        ticker, filing.get("filing_date", ""), filing.get("accession_number", ""),
-        len(body.strip()))
+        ticker,
+        filing.get("filing_date", ""),
+        filing.get("accession_number", ""),
+        len(body.strip()),
+    )
 
 
 def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
@@ -513,20 +552,18 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     `def14a_llm`) rather than a parent that claims children it lacks.
     """
     ticker = str(result.task.meta["ticker"])
-    filing = result.task.meta["filing"]
+    filing = cast(pd.Series, result.task.meta["filing"])
     extract = result.parsed
+    assert isinstance(extract, Def14AExtract)
 
-    _log_director_comp_recall(ticker, filing, result.task.payload,
-                              len(_director_comp_rows(ticker, filing, extract)))
+    _log_director_comp_recall(ticker, filing, result.task.payload, len(_director_comp_rows(ticker, filing, extract)))
 
     frames: dict[Table, pd.DataFrame] = {}
     for name, child_rows in _child_frames(ticker, filing, extract).items():
         if child_rows:
             numeric, pk = _CHILD_SPEC[name]
             frames[_CHILD_TABLES[name]] = _prepare_frame(child_rows, numeric, pk)
-    frames[Tables.def14a_llm] = _prepare_frame(
-        [_flatten(ticker, filing, extract)], tuple(_NUMERIC_COLS),
-        ["ticker", "accession_number"])
+    frames[Tables.def14a_llm] = _prepare_frame([_flatten(ticker, filing, extract)], tuple(_NUMERIC_COLS), ["ticker", "accession_number"])
     return frames
 
 
@@ -534,19 +571,36 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
 #: that lists the same person twice.
 _CHILD_SPEC = {
     "def14a_executive_comp": (
-        ("fiscal_year", "salary", "bonus", "stock_awards", "option_awards",
-         "non_equity_incentive", "pension_change", "other_compensation", "total", "reconciles"),
-        ["ticker", "accession_number", "name", "fiscal_year"]),
+        (
+            "fiscal_year",
+            "salary",
+            "bonus",
+            "stock_awards",
+            "option_awards",
+            "non_equity_incentive",
+            "pension_change",
+            "other_compensation",
+            "total",
+            "reconciles",
+        ),
+        ["ticker", "accession_number", "name", "fiscal_year"],
+    ),
     "def14a_director_comp": (
-        ("fiscal_year", "fees_earned", "stock_awards", "option_awards", "non_equity_incentive",
-         "pension_change", "other_compensation", "total", "reconciles"),
-        ["ticker", "accession_number", "name"]),
-    "def14a_ownership": (
-        ("shares", "percent_of_class", "percent_of_voting_power"),
-        ["ticker", "accession_number", "holder_name", "holder_type"]),
-    "def14a_directors": (
-        ("age", "tenure_years", "is_independent", "other_public_company_boards"),
-        ["ticker", "accession_number", "name"]),
+        (
+            "fiscal_year",
+            "fees_earned",
+            "stock_awards",
+            "option_awards",
+            "non_equity_incentive",
+            "pension_change",
+            "other_compensation",
+            "total",
+            "reconciles",
+        ),
+        ["ticker", "accession_number", "name"],
+    ),
+    "def14a_ownership": (("shares", "percent_of_class", "percent_of_voting_power"), ["ticker", "accession_number", "holder_name", "holder_type"]),
+    "def14a_directors": (("age", "tenure_years", "is_independent", "other_public_company_boards"), ["ticker", "accession_number", "name"]),
 }
 _CHILD_TABLES = {
     "def14a_executive_comp": Tables.def14a_executive_comp,
@@ -563,8 +617,6 @@ def _prepare_frame(rows: list[dict], numeric: tuple[str, ...], pk: list[str]) ->
     for c in numeric:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = strip_nul(df)                          # Postgres TEXT rejects NUL (\x00)
+    df = strip_nul(df)  # Postgres TEXT rejects NUL (\x00)
     df["as_of"] = pd.to_datetime(df["as_of"]).dt.normalize()
     return df.drop_duplicates(subset=[c for c in pk if c in df.columns], keep="last")
-
-

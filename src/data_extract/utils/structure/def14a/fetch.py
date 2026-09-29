@@ -53,11 +53,13 @@ FOUR CHILD TABLES are written alongside, flattened out of the same paid extract:
     def14a_directors        one row per director -- and the substrate the cross-filing gender
                             consensus pass groups over (see def14a_gender.py)
 """
+
 from __future__ import annotations
 
 import logging
 
 import pandas as pd
+from edgar import Filing
 from omegaconf import DictConfig
 from tqdm import tqdm
 
@@ -65,16 +67,25 @@ from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.registrant import Registrant, load_registrants
+from src.data_extract.utils.common.registrant import (
+    Registrant,
+    header_subject_ciks,
+    issuer_ciks,
+    load_registrants,
+)
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-from src.data_extract.utils.structure.def14a.flatten import _NUMERIC_COLS, _result_frames
+from src.data_extract.utils.structure.def14a.flatten import _result_frames
 from src.data_extract.utils.structure.def14a.gender import (
-    basis_distribution, consensus, log_consensus, recompute_parent_gender,
+    basis_distribution,
+    consensus,
+    log_consensus,
+    recompute_parent_gender,
 )
 from src.data_store.schema import Tables
+
 # `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
 # owns the model, the keys, the prompts (`prompt_templates/def14a_*.md`) and the thread
 # pool; the anchor carve and the flatten are this package's business.
@@ -91,6 +102,7 @@ logger = logging.getLogger(__name__)
 #: and 12 was measured to draw no 429s. `config.gpt.threads` is the live knob; this is the
 #: fallback for a caller that passes no config.
 _LLM_WORKERS = 12
+
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
     """The filing's raw markup, retrying the `<accession>.txt` full submission when the primary
@@ -109,8 +121,7 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
         txt_url = filing.get("txt_url")
         if not txt_url or txt_url == filing["doc_url"]:
             raise
-        logger.info("%s: primary document unavailable, falling back to the full submission",
-                    filing.get("accession_number", ""))
+        logger.info("%s: primary document unavailable, falling back to the full submission", filing.get("accession_number", ""))
         return sec_get(context, txt_url).text
 
 
@@ -124,15 +135,65 @@ def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None
     try:
         raw_html = _fetch_filing_html(context, filing)
         return prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    except Exception as e:                          # noqa: BLE001 -- one filing, not the run
-        logger.warning("%s %s: DEF 14A filing could not be read (%s)",
-                       ticker, filing.get("filing_date", ""), e)
+    except Exception as e:  # noqa: BLE001 -- one filing, not the run
+        logger.warning("%s %s: DEF 14A filing could not be read (%s)", ticker, filing.get("filing_date", ""), e)
         return None
 
 
+def _filing_subject_ciks(filing: pd.Series) -> frozenset[str]:
+    """Read a listed filing's SGML subject CIKs through the shared header reader."""
+    candidate = Filing(
+        cik=int(str(filing["cik"])),
+        company=str(filing.get("company_name", "")),
+        form=str(filing["form"]),
+        filing_date=pd.Timestamp(filing["filing_date"]).date().isoformat(),
+        accession_no=str(filing["accession_number"]),
+    )
+    return header_subject_ciks(candidate)
+
+
+def _subject_is_accepted(
+    context: Context,
+    ticker: str,
+    filing: pd.Series,
+    accepted_subject_ciks: frozenset[str],
+) -> bool:
+    """Reject only a known subject that is outside the accepted registrant entity."""
+    accession = str(filing["accession_number"])
+    filer_cik = str(filing["cik"]).zfill(10)
+    try:
+        context.ensure_edgar_identity()
+        subjects = _filing_subject_ciks(filing)
+    except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
+        context.log.info(
+            "%s: DEF 14A accession %s subject header unavailable (%s); continuing",
+            ticker,
+            accession,
+            exc,
+        )
+        return True
+    if not subjects or not subjects.isdisjoint(accepted_subject_ciks):
+        return True
+    context.log.warning(
+        "%s: rejecting DEF 14A accession %s before extraction; filer CIK %s; "
+        "subject CIK(s) %s; accepted entity CIK(s) %s; reason=subject_cik_disjoint",
+        ticker,
+        accession,
+        filer_cik,
+        ",".join(sorted(subjects)),
+        ",".join(sorted(accepted_subject_ciks)),
+    )
+    return False
+
+
 def _list_across_registrants(
-    context: Context, ticker: str, cik: str, company: str, years: int,
-    since: pd.Timestamp | None, cutovers: dict[str, Registrant],
+    context: Context,
+    ticker: str,
+    cik: str,
+    company: str,
+    years: int,
+    since: pd.Timestamp | None,
+    cutovers: dict[str, Registrant],
 ) -> pd.DataFrame:
     """That ticker's DEF 14A filings, across a registrant boundary when it has one.
 
@@ -177,10 +238,13 @@ def _list_across_registrants(
         if not part.empty:
             frames.append(part)
             context.log.info(
-                "%s: %d DEF 14A filing(s) from CIK %s (%s .. %s)", ticker, len(part),
+                "%s: %d DEF 14A filing(s) from CIK %s (%s .. %s)",
+                ticker,
+                len(part),
                 segment.cik,
                 segment.valid_from.date() if segment.valid_from else "start",
-                segment.valid_to.date() if segment.valid_to else "now")
+                segment.valid_to.date() if segment.valid_to else "now",
+            )
     if not frames:
         return pd.DataFrame(columns=["ticker", "cik", "accession_number", "filing_date"])
     out = pd.concat(frames, ignore_index=True)
@@ -188,8 +252,7 @@ def _list_across_registrants(
     if dupes:
         # The dated split makes this impossible; if it fires, the register is wrong rather
         # than the data, and silently deduping would hide that.
-        context.log.warning("%s: %d duplicate accession(s) across the %s chain",
-                            ticker, dupes, " -> ".join(entry.all_ciks()))
+        context.log.warning("%s: %d duplicate accession(s) across the %s chain", ticker, dupes, " -> ".join(entry.all_ciks()))
     return out
 
 
@@ -206,9 +269,10 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     entry = get_entry(context, Tables.def14a_llm)
     if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
         return False
-    have = set(context.store.load(Tables.def14a_llm, columns=["ticker"])["ticker"].dropna())
+    stored = context.store.load(Tables.def14a_llm, columns=["ticker"])
+    assert stored is not None
+    have = set(stored["ticker"].dropna())
     return set(requested_tickers).issubset(have)
-
 
 
 def _finalise_gender(context: Context) -> None:
@@ -223,9 +287,8 @@ def _finalise_gender(context: Context) -> None:
     the columns they change (AGENTS.md: never read a large table unprojected).
     """
     directors = context.store.load(
-        Tables.def14a_directors,
-        columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"],
-        optional=True)
+        Tables.def14a_directors, columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"], optional=True
+    )
     if directors is None or directors.empty:
         return
 
@@ -235,12 +298,13 @@ def _finalise_gender(context: Context) -> None:
     log_consensus(context.log, stats, before, after)
 
     if not (stats["filled"] or stats["overturned"]):
-        return   
+        return
 
-    context.store.save(Tables.def14a_directors,
-                       resolved[["ticker", "accession_number", "name", "as_of",
-                                 "gender", "gender_basis"]],
-                       pk=["ticker", "accession_number", "name"])
+    context.store.save(
+        Tables.def14a_directors,
+        resolved[["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"]],
+        pk=["ticker", "accession_number", "name"],
+    )
 
     # `pct_female_directors` keeps its existing precedence -- the filing's own
     # `n_women_directors` first, this ratio as the FALLBACK -- so a consensus correction makes
@@ -248,8 +312,7 @@ def _finalise_gender(context: Context) -> None:
     parent = recompute_parent_gender(resolved)
     if not parent.empty:
         context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
-        context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated "
-                         "on %d filings", len(parent))
+        context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
 
 
 def fetch_def14a_llm(
@@ -261,7 +324,7 @@ def fetch_def14a_llm(
     cache: bool | None = None,
     workers: int = _LLM_WORKERS,
     full: bool = False,
-) -> None:
+) -> pd.DataFrame | None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
     For each ticker only filings AFTER its latest stored `as_of` are sent to the
@@ -283,8 +346,7 @@ def fetch_def14a_llm(
     `full` bypasses the up-to-date check AND pins the listing window to the whole
     `years_history` span, because a narrow window would find nothing to backfill anyway.
     """
-    config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars,
-                                cache=cache)
+    config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
     years = context.config.data_extract.years_history
     de = context.config.data_extract
 
@@ -292,8 +354,8 @@ def fetch_def14a_llm(
 
     if not full and _is_up_to_date(context, cik_map["ticker"].tolist()):
         existing = context.store.load(Tables.def14a_llm)
-        context.log.info("DEF 14A LLM already up to date — every requested ticker present "
-                         "(%d rows) — skipping", len(existing))
+        assert existing is not None
+        context.log.info("DEF 14A LLM already up to date — every requested ticker present (%d rows) — skipping", len(existing))
         return existing
 
     # accessions already extracted -> never re-LLM (accession-only dedup, same convention as
@@ -310,14 +372,13 @@ def fetch_def14a_llm(
     # step back one day to keep the last run's date itself inclusive.
     rescan_days = int(getattr(de, "manifest_full_rescan_days", 30))
     manifest_since, is_full_rescan = manifest_window(
-        context, Tables.def14a_llm, len(cik_map),
-        fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
-        full_rescan_days=rescan_days)
+        context, Tables.def14a_llm, len(cik_map), fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years), full_rescan_days=rescan_days
+    )
     list_since = None if (full or is_full_rescan) else (manifest_since - pd.Timedelta(days=1))
 
     try:
         extractor = LLMExtractor(context, config, action="def14a", threads=workers)
-    except EnvironmentError as e:
+    except OSError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         existing = context.store.load(Tables.def14a_llm, optional=True)
         return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
@@ -327,19 +388,18 @@ def fetch_def14a_llm(
     # silently overwrite it -- see `cik_cutover`. `{}` when the file is absent.
     cutovers = load_registrants()
     if cutovers:
-        context.log.info("DEF 14A: %d registrant cutover(s) in force: %s",
-                         len(cutovers), ", ".join(sorted(cutovers)))
+        context.log.info("DEF 14A: %d registrant cutover(s) in force: %s", len(cutovers), ", ".join(sorted(cutovers)))
 
     total_new, tickers_touched, total_skipped = 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
         # `list_since=None` (full-rescan runs) lists the FULL years_history window so a MISSING
         # filing anywhere in the history is discovered; otherwise only filings from the manifest's
         # last run date onward are listed. The accession skip below then sends ONLY the
         # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
         try:
-            filings = _list_across_registrants(context, ticker, cik, company, years,
-                                               list_since, cutovers)
+            filings = _list_across_registrants(context, ticker, cik, company, years, list_since, cutovers)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
@@ -354,6 +414,8 @@ def fetch_def14a_llm(
             accession = f["accession_number"]
             if accession in seen or accession in done:
                 continue
+            if accepted_subjects and not _subject_is_accepted(context, ticker, f, accepted_subjects):
+                continue
             done.add(accession)
             todo.append(f)
         skipped = len(filings) - len(todo)
@@ -365,24 +427,24 @@ def fetch_def14a_llm(
         for f in todo:
             payload = _payload_for(context, ticker, f)
             if payload:
-                tasks.append(LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract,
-                                     table=Tables.def14a_llm,
-                                     meta={"ticker": ticker, "filing": f}))
+                tasks.append(
+                    LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": ticker, "filing": f})
+                )
 
         # One call per ticker: the pool fills every schema, then THIS thread saves the five
         # frames once. LLM calls are paid for, so a ticker is persisted before the next
         # starts and an interrupted run loses at most one ticker's tokens.
-        results = extractor.run_extraction(tasks, flatten=_result_frames,
-                                           group_key=lambda t: str(t.meta["ticker"]))
+        results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
         extracted = [r for r in results if r.ok]
-        for r in extracted:
-            seen.add(r.task.meta["filing"]["accession_number"])
+        for result in extracted:
+            filing = result.task.meta["filing"]
+            assert isinstance(filing, pd.Series)
+            seen.add(str(filing["accession_number"]))
 
         if extracted:
             total_new += len(extracted)
             tickers_touched += 1
-            context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)",
-                             ticker, len(extracted), skipped)
+            context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)", ticker, len(extracted), skipped)
 
     # A cross-ticker consensus needs every ticker's rows, so this is the only thing that
     # cannot run inside the loop. Skipped entirely when nothing new was extracted.
@@ -390,4 +452,3 @@ def fetch_def14a_llm(
         _finalise_gender(context)
 
     record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan)
-   

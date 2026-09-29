@@ -99,8 +99,7 @@ def test_a_filing_1000x_low_is_multiplied_by_1000():
 
     print("\n=== SANITY CHECK: 1000x-low filing multiplied by 1000 ===")
     print(
-        f"  ratio {float(register['median_ratio'].iloc[0]):.2e} -> factor 1000, "
-        f"value_usd restored to {repaired['value_usd'].iloc[0]:.3e}. Validated."
+        f"  ratio {float(register['median_ratio'].iloc[0]):.2e} -> factor 1000, value_usd restored to {repaired['value_usd'].iloc[0]:.3e}. Validated."
     )
 
 
@@ -213,6 +212,5 @@ def test_no_close_split_degrades_instead_of_nulling_every_value():
 
     print("\n=== SANITY CHECK: no close_split degrades ===")
     print(
-        "  close_split=None -> every row KEPT and value left as filed, register empty. "
-        "The builder degrades rather than nulling the table. Validated."
+        "  close_split=None -> every row KEPT and value left as filed, register empty. The builder degrades rather than nulling the table. Validated."
     )

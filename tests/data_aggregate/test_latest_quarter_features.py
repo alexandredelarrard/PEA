@@ -58,8 +58,8 @@ def test_fiscal_apply_yoy_and_acceleration():
     assert np.isnan(yoy.loc[ends[0] + pd.Timedelta(days=5), "AAA"])
 
     print("\n=== SANITY CHECK: latest-quarter YoY + acceleration ===")
-    print(f"  Q5 YoY={yoy.loc[after_q5,'AAA']:.2%} (121/100), " f"Q6 YoY={yoy.loc[after_q6,'AAA']:.2%} (143/110)")
-    print(f"  acceleration Q6 = {accel.loc[after_q6,'AAA']:+.2%} = Q6 YoY - Q5 YoY.")
+    print(f"  Q5 YoY={yoy.loc[after_q5, 'AAA']:.2%} (121/100), Q6 YoY={yoy.loc[after_q6, 'AAA']:.2%} (143/110)")
+    print(f"  acceleration Q6 = {accel.loc[after_q6, 'AAA']:+.2%} = Q6 YoY - Q5 YoY.")
     print("  NaN before the first YoY is computable -> point-in-time, no look-ahead.")
 
 
@@ -77,5 +77,5 @@ def test_latest_quarter_margin_inflection_exact():
     assert abs(fields["q_margin_vs_ttm"].loc[d, "AAA"] - (q_margin - ttm_margin)) < 1e-9
 
     print("\n=== SANITY CHECK: latest-quarter margin inflection ===")
-    print(f"  Q6 margin={q_margin:.3f}  vs TTM margin={ttm_margin:.3f}  -> " f"inflection={fields['q_margin_vs_ttm'].loc[d, 'AAA']:+.3f}")
+    print(f"  Q6 margin={q_margin:.3f}  vs TTM margin={ttm_margin:.3f}  -> inflection={fields['q_margin_vs_ttm'].loc[d, 'AAA']:+.3f}")
     print("  latest-quarter margin minus TTM margin = the inflection feature; redundant q_rev_growth is absent. Exact.")

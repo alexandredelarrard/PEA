@@ -14,19 +14,20 @@ days, `compute_epsilon` propagated the NaN beta, and the live cube therefore had
 target at all from 2011-07-18 to 2012-09-12 -- ~14 months and ~123k rows of training
 data lost to a join, not to economics.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.prices import forward_return
 from src.data_aggregate.utils.target.betas import estimate_all_betas, estimate_betas_for_stock
 from src.data_aggregate.utils.target.factors import momentum_characteristic
-from src.data_aggregate.utils.common.prices import forward_return
 from src.data_aggregate.utils.target.targets import build_targets_multi
 
-START = "2011-07-18"          # the live cube's first price date
+START = "2011-07-18"  # the live cube's first price date
 N_DAYS = 900
-MIN_OBS = 40                  # estimate_betas_for_stock default
+MIN_OBS = 40  # estimate_betas_for_stock default
 SEED = 11
 
 
@@ -34,16 +35,13 @@ def _market() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     idx = pd.bdate_range(START, periods=N_DAYS)
     tickers = [f"T{i}" for i in range(40)]
     rng = np.random.default_rng(SEED)
-    close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rng.normal(0.0003, 0.015, (len(idx), len(tickers))), axis=0)),
-        index=idx, columns=tickers)
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0.0003, 0.015, (len(idx), len(tickers))), axis=0)), index=idx, columns=tickers)
     return close, close.pct_change(), tickers
 
 
 def _factor_panel(close: pd.DataFrame, rets: pd.DataFrame) -> pd.DataFrame:
     """Market (available from day 1) + the momentum style factor (252-day warm-up)."""
-    return pd.DataFrame({"market": rets.mean(axis=1),
-                         "momentum": momentum_characteristic(close).mean(axis=1)})
+    return pd.DataFrame({"market": rets.mean(axis=1), "momentum": momentum_characteristic(close).mean(axis=1)})
 
 
 # --------------------------------------------------------------------------- #
@@ -65,23 +63,25 @@ def test_slow_warming_factor_does_not_delay_the_other_betas():
     first_mixed = estimate_betas_for_stock(y, with_slow)["beta_market"].dropna().index[0]
     idx = close.index
     pos_alone, pos_mixed = idx.get_loc(first_alone), idx.get_loc(first_mixed)
+    assert isinstance(pos_alone, int) and isinstance(pos_mixed, int)
 
-    assert pos_mixed == pos_alone, (
-        f"the momentum factor delayed the market beta: alone +{pos_alone} rows, "
-        f"with momentum +{pos_mixed} rows")
+    assert pos_mixed == pos_alone, f"the momentum factor delayed the market beta: alone +{pos_alone} rows, with momentum +{pos_mixed} rows"
     assert pos_mixed <= MIN_OBS + 5, f"market beta starts at +{pos_mixed}, expected ~{MIN_OBS}"
 
     # and momentum's own beta is simply 0 (not neutralized) while it is unusable,
     # rather than poisoning the row
     b = estimate_betas_for_stock(y, with_slow)
-    early = b.iloc[pos_mixed:pos_mixed + 5]
-    assert early["beta_momentum"].abs().max() == 0.0, \
-        "an unusable factor must get beta 0 (not neutralized), not NaN"
+    early = b.iloc[pos_mixed : pos_mixed + 5]
+    assert early["beta_momentum"].abs().max() == 0.0, "an unusable factor must get beta 0 (not neutralized), not NaN"
 
-    print(f"\n[1] market beta first non-NaN: +{pos_alone} rows alone, +{pos_mixed} rows with a "
-          f"252-day-warm-up factor alongside (was +291 before the fix)")
-    print("    SANITY CHECK: the beta join no longer lets one slow factor blank the head "
-          "of the sample; an unusable factor gets beta 0 = simply not neutralized there.")
+    print(
+        f"\n[1] market beta first non-NaN: +{pos_alone} rows alone, +{pos_mixed} rows with a "
+        f"252-day-warm-up factor alongside (was +291 before the fix)"
+    )
+    print(
+        "    SANITY CHECK: the beta join no longer lets one slow factor blank the head "
+        "of the sample; an unusable factor gets beta 0 = simply not neutralized there."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -100,16 +100,24 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     # `stock_ret` is REQUIRED: every label is a forward COMPOUNDED total return now. Here
     # `rets` is `close.pct_change()`, so the coverage geometry this test measures is
     # unchanged -- only the basis contract is.
-    built = build_targets_multi(close, betas, factor_panel, macro_cols=[],
-                               horizons=horizons, labels=("rank",),
-                               sector_groups={"sector": {t: "S" for t in tickers}},
-                               stock_ret=rets)
+    built = build_targets_multi(
+        close,
+        betas,
+        factor_panel,
+        macro_cols=[],
+        horizons=horizons,
+        labels=("rank",),
+        sector_groups={"sector": {t: "S" for t in tickers}},
+        stock_ret=rets,
+    )
 
     rows = []
     for h in horizons:
         nn = built[h]["rank"].dropna(how="all")
         lead = idx.get_loc(nn.index[0])
-        trail = len(idx) - 1 - idx.get_loc(nn.index[-1])
+        last = idx.get_loc(nn.index[-1])
+        assert isinstance(lead, int) and isinstance(last, int)
+        trail = len(idx) - 1 - last
         # the tail must be EXACTLY the horizon: t+h has not happened yet, nothing else
         assert trail == h, f"h={h}: trailing gap {trail} rows, expected exactly {h}"
         # the head must be the beta warm-up, not the 252-day style-factor warm-up
@@ -119,9 +127,44 @@ def test_target_is_defined_from_the_beta_warmup_and_missing_only_the_last_horizo
     print(f"\n[2] {'h':>4} {'leading gap':>12} {'trailing gap':>13}")
     for h, lead, trail in rows:
         print(f"    {h:>4} {lead:>12} {trail:>13}")
-    print(f"    SANITY CHECK: every horizon is defined from +{rows[0][1]} rows (the beta "
-          "warm-up) and missing exactly its own horizon at the end -- so only the "
-          "un-realised future is blank, which is what the label must do.")
+    print(
+        f"    SANITY CHECK: every horizon is defined from +{rows[0][1]} rows (the beta "
+        "warm-up) and missing exactly its own horizon at the end -- so only the "
+        "un-realised future is blank, which is what the label must do."
+    )
+
+
+def test_target_availability_is_applied_before_cross_sectional_labels(monkeypatch):
+    idx = pd.bdate_range("2024-01-02", periods=2)
+    columns = ["AAA", "BBB", "CCC"]
+    close = pd.DataFrame(100.0, index=idx, columns=columns)
+    eps = pd.DataFrame([[0.0, 10.0, 1_000.0], [0.0, 10.0, 0.0]], index=idx, columns=columns)
+    availability = pd.DataFrame(True, index=idx, columns=columns)
+    availability.loc[idx[0], "CCC"] = False
+    monkeypatch.setattr(
+        "src.data_aggregate.utils.target.targets.compute_epsilon",
+        lambda *args, **kwargs: eps.copy(),
+    )
+
+    built = build_targets_multi(
+        close,
+        {},
+        pd.DataFrame(index=idx),
+        macro_cols=[],
+        horizons=(1,),
+        labels=("rank",),
+        min_names=1,
+        neutralize_momentum=False,
+        stock_ret=close * 0.0,
+        availability=availability,
+    )[1]["rank"]
+
+    assert pd.isna(built.loc[idx[0], "CCC"])
+    assert built.loc[idx[0], ["AAA", "BBB"]].tolist() == [0.5, 1.0]
+    assert built.loc[idx[1], "CCC"] == 0.5
+    print("\n=== SANITY CHECK: target availability precedes ranking ===")
+    print("  inactive CCC=1000 is excluded; when active at zero it participates normally.")
+    print("  CONCLUSION: target populations follow observed prices, not numeric values.")
 
 
 def test_forward_return_is_the_move_from_t_to_t_plus_horizon():
@@ -142,12 +185,13 @@ def test_forward_return_is_the_move_from_t_to_t_plus_horizon():
     expected = close.loc[t_plus_h, tkr] / close.loc[t, tkr] - 1.0
     assert np.isclose(fwd.loc[t, tkr], expected), "forward_return is not close[t+h]/close[t]-1"
     # defined at t, and undefined only once t+h runs off the end
-    assert fwd[tkr].iloc[: -h].notna().all(), "raw forward return has an interior gap"
+    assert fwd[tkr].iloc[:-h].notna().all(), "raw forward return has an interior gap"
     assert fwd[tkr].iloc[-h:].isna().all(), "raw forward return leaks past the last price"
 
-    print(f"\n[3] h={h}: forward_return at {t.date()} = "
-          f"{fwd.loc[t, tkr]:+.4%} = close[{t_plus_h.date()}]/close[{t.date()}]-1")
+    print(f"\n[3] h={h}: forward_return at {t.date()} = {fwd.loc[t, tkr]:+.4%} = close[{t_plus_h.date()}]/close[{t.date()}]-1")
     print(f"    non-null for all but the final {h} rows")
-    print("    SANITY CHECK: the raw forward return has NO leading gap at all -- any "
-          "leading gap in the final target comes purely from the residualization's "
-          "beta warm-up, which is why that warm-up must stay as short as it can be.")
+    print(
+        "    SANITY CHECK: the raw forward return has NO leading gap at all -- any "
+        "leading gap in the final target comes purely from the residualization's "
+        "beta warm-up, which is why that warm-up must stay as short as it can be."
+    )

@@ -136,10 +136,11 @@ beta_window`), and `compute_epsilon` never subtracted it -- there is no
 0.945 with `beta_market` and carried the same leak (free IC 0.0088 vs 0.0084): a
 duplicate of a column already in the design.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import numpy as np
 import pandas as pd
@@ -155,15 +156,16 @@ class GlobalDesign(NamedTuple):
     `ridge_operator @ y_centered` IS the ridge fit in STANDARDIZED units, so the whole
     cross-section is fitted by one matmul against the `(n_obs, n_stocks)` return block.
     """
-    ridge_operator: np.ndarray        # (n_estimable_factors, n_obs)
-    factor_idx: np.ndarray            # which `global_factors` columns are estimable here
-    factor_std: np.ndarray            # their in-window standard deviations
+
+    ridge_operator: np.ndarray  # (n_estimable_factors, n_obs)
+    factor_idx: np.ndarray  # which `global_factors` columns are estimable here
+    factor_std: np.ndarray  # their in-window standard deviations
     standardized_factors: np.ndarray  # the window, centered/scaled to those columns
 
 
-def _factorize_global_design(window_factors: np.ndarray, ridge_alpha: float,
-                             min_factor_obs: int, market_col_idx: int = -1,
-                             ridge_alpha_market: float | None = None) -> GlobalDesign | None:
+def _factorize_global_design(
+    window_factors: np.ndarray, ridge_alpha: float, min_factor_obs: int, market_col_idx: int = -1, ridge_alpha_market: float | None = None
+) -> GlobalDesign | None:
     """Factorize ONE window's GLOBAL design -- reused for every stock in the panel.
 
     `None` when no factor is estimable in this window. Note the `col_std > 1e-12` filter:
@@ -178,8 +180,7 @@ def _factorize_global_design(window_factors: np.ndarray, ridge_alpha: float,
 
     # only consider columns with enough observations: an all-NaN column would
     # otherwise warn ("Degrees of freedom <= 0") on every empty window.
-    observed_enough = np.flatnonzero(
-        np.count_nonzero(~np.isnan(window_factors), axis=0) >= min_factor_obs)
+    observed_enough = np.flatnonzero(np.count_nonzero(~np.isnan(window_factors), axis=0) >= min_factor_obs)
     if observed_enough.size == 0:
         return None
 
@@ -191,16 +192,14 @@ def _factorize_global_design(window_factors: np.ndarray, ridge_alpha: float,
     # normalize each factor (Factor - mean / std)
     factor_idx = observed_enough[non_constant]
     factor_std = col_std[non_constant]
-    standardized_factors = (window_factors[:, factor_idx]
-                            - np.nanmean(window_factors[:, factor_idx], axis=0)) / factor_std
-    standardized_factors = np.nan_to_num(standardized_factors)   # a missing day -> the window mean
+    standardized_factors = (window_factors[:, factor_idx] - np.nanmean(window_factors[:, factor_idx], axis=0)) / factor_std
+    standardized_factors = np.nan_to_num(standardized_factors)  # a missing day -> the window mean
 
     alphas = np.full(factor_idx.size, ridge_alpha)
     if ridge_alpha_market is not None:
         alphas[factor_idx == market_col_idx] = ridge_alpha_market
 
-    gram = (standardized_factors.T @ standardized_factors
-            + n_obs * np.diag(alphas))
+    gram = standardized_factors.T @ standardized_factors + n_obs * np.diag(alphas)
     ridge_operator = np.linalg.solve(gram, standardized_factors.T)
     return GlobalDesign(ridge_operator, factor_idx, factor_std, standardized_factors)
 
@@ -226,8 +225,7 @@ def _standardize_sector_over_window(window_sector: np.ndarray):
     return sector_z, safe_std, usable
 
 
-def _solve_with_sector_column(ridge_operator, standardized_factors, global_beta, y, sector_z,
-                              ridge_alpha: float, n_win: int):
+def _solve_with_sector_column(ridge_operator, standardized_factors, global_beta, y, sector_z, ridge_alpha: float, n_win: int):
     """Extend an already-factorized GLOBAL design with the one per-stock column.
 
     Each stock's GICS-sector basket is a DIFFERENT column, so the shared design no
@@ -246,18 +244,26 @@ def _solve_with_sector_column(ridge_operator, standardized_factors, global_beta,
     on. Returns `(global_beta_adjusted, sector_beta)`, both in standardized units.
     """
     lam = ridge_alpha * n_win
-    cross = standardized_factors.T @ sector_z    # global-factor / sector cross-product
-    hat_sector = ridge_operator @ sector_z       # global operator applied to the sector column
-    denom = (sector_z ** 2).sum(0) - (cross * hat_sector).sum(0) + lam
+    cross = standardized_factors.T @ sector_z  # global-factor / sector cross-product
+    hat_sector = ridge_operator @ sector_z  # global operator applied to the sector column
+    denom = (sector_z**2).sum(0) - (cross * hat_sector).sum(0) + lam
     numer = (sector_z * y).sum(0) - (cross * global_beta).sum(0)
     sector_beta = numer / denom
     global_beta = global_beta - hat_sector * sector_beta
     return global_beta, sector_beta
 
 
-def _fit_complete_stocks(global_design: GlobalDesign, window_factors, window_returns,
-                         window_sector, market_col_idx: int, market_prior: float,
-                         ridge_alpha: float, n_win: int, n_factors: int) -> np.ndarray:
+def _fit_complete_stocks(
+    global_design: GlobalDesign,
+    window_factors,
+    window_returns,
+    window_sector,
+    market_col_idx: int,
+    market_prior: float,
+    ridge_alpha: float,
+    n_win: int,
+    n_factors: int,
+) -> np.ndarray:
     """ONE ridge solve covering EVERY stock whose window is fully observed (the fast path).
 
     `window_sector is None` -> no sector beta is fitted at all (a caller that passed no
@@ -270,30 +276,37 @@ def _fit_complete_stocks(global_design: GlobalDesign, window_factors, window_ret
     y = window_returns
     if has_market:
         market_return = np.nan_to_num(window_factors[:, market_col_idx])
-        y = y - market_prior * market_return[:, None]      # shrink market toward its prior
-    y = y - y.mean(0)                                      # center, like the standardized factors
+        y = y - market_prior * market_return[:, None]  # shrink market toward its prior
+    y = y - y.mean(0)  # center, like the standardized factors
 
-    global_beta = ridge_operator @ y                        # standardized GLOBAL betas
+    global_beta = ridge_operator @ y  # standardized GLOBAL betas
     n_out = n_factors + (1 if window_sector is not None else 0)
     block = np.zeros((n_out, window_returns.shape[1]))
 
     if window_sector is not None:
         sector_z, sector_std, sector_ok = _standardize_sector_over_window(window_sector)
-        global_beta, sector_beta = _solve_with_sector_column(
-            ridge_operator, standardized_factors, global_beta, y, sector_z, ridge_alpha, n_win)
+        global_beta, sector_beta = _solve_with_sector_column(ridge_operator, standardized_factors, global_beta, y, sector_z, ridge_alpha, n_win)
         block[n_factors] = np.where(sector_ok, sector_beta / sector_std, 0.0)
 
-    block[factor_idx] = global_beta / factor_std[:, None]   # standardized -> raw units
+    block[factor_idx] = global_beta / factor_std[:, None]  # standardized -> raw units
     if has_market:
-        block[market_col_idx] += market_prior               # add the prior back
+        block[market_col_idx] += market_prior  # add the prior back
 
     return block.T
 
 
-def _fit_partial_stock(window_factors, stock_return, observed, sector_column,
-                       market_col_idx: int, market_prior: float, ridge_alpha: float,
-                       min_factor_frac: float, n_factors: int,
-                       ridge_alpha_market: float | None = None) -> np.ndarray:
+def _fit_partial_stock(
+    window_factors,
+    stock_return,
+    observed,
+    sector_column,
+    market_col_idx: int,
+    market_prior: float,
+    ridge_alpha: float,
+    min_factor_frac: float,
+    n_factors: int,
+    ridge_alpha_market: float | None = None,
+) -> np.ndarray:
     """Exact one-off ridge for ONE stock whose window is only partly observed (a
     recent listing) -- rare enough that a per-stock solve is cheap, so here the sector
     column is simply appended to this stock's own design instead of being bordered in."""
@@ -304,9 +317,7 @@ def _fit_partial_stock(window_factors, stock_return, observed, sector_column,
 
     n_out = n_factors + (1 if sector_column is not None else 0)
     # the sector column is appended LAST, so `market_col_idx` still indexes the market factor
-    design = _factorize_global_design(design_cols, ridge_alpha,
-                                      max(2, int(round(min_factor_frac * rows.size))),
-                                      market_col_idx, ridge_alpha_market)
+    design = _factorize_global_design(design_cols, ridge_alpha, max(2, int(round(min_factor_frac * rows.size))), market_col_idx, ridge_alpha_market)
     if design is None:
         return np.full(n_out, np.nan)
 
@@ -323,8 +334,7 @@ def _fit_partial_stock(window_factors, stock_return, observed, sector_column,
     return row
 
 
-def _assemble_output(fitted: np.ndarray, dates, tickers, beta_cols: list[str],
-                     ffill_limit: int | None) -> dict[str, pd.DataFrame]:
+def _assemble_output(fitted: np.ndarray, dates, tickers, beta_cols: list[str], ffill_limit: int | None) -> dict[str, pd.DataFrame]:
     """Turn the raw (date, ticker, beta) array into one DataFrame per ticker."""
     out: dict[str, pd.DataFrame] = {}
     for j, ticker in enumerate(tickers):
@@ -340,9 +350,9 @@ def _assemble_output(fitted: np.ndarray, dates, tickers, beta_cols: list[str],
 
 
 def estimate_all_betas(
-    stock_returns: pd.DataFrame,          # date x ticker (stocks only)
-    global_factors: pd.DataFrame,         # date x factor, SAME for every stock
-    stock_sector_factor: pd.DataFrame | None = None,   # date x ticker, DIFFERENT per stock
+    stock_returns: pd.DataFrame,  # date x ticker (stocks only)
+    global_factors: pd.DataFrame,  # date x factor, SAME for every stock
+    stock_sector_factor: pd.DataFrame | None = None,  # date x ticker, DIFFERENT per stock
     window: int = 126,
     min_obs: int = 80,
     # The TUNED values live in configs/build_cube.yml, which is what the pipeline reads. These
@@ -425,8 +435,7 @@ def estimate_all_betas(
     factor_values = global_factors.reindex(dates).to_numpy(float)
     stock_return_values = stock_returns.to_numpy(float)
     is_observed = np.isfinite(stock_return_values)
-    sector_values = (stock_sector_factor.reindex(index=dates, columns=tickers).to_numpy(float)
-                     if has_sector else None)
+    sector_values = stock_sector_factor.reindex(index=dates, columns=tickers).to_numpy(float) if has_sector else None
 
     n_beta_cols = n_factors + (1 if has_sector else 0)
     # (date, ticker, beta). LOCAL and freed before returning; the long-form frame
@@ -436,53 +445,75 @@ def estimate_all_betas(
     for t in range(min_obs - 1, n_dates, step):
         lo = max(0, t - window + 1)
         n_win = t - lo + 1
-        window_factors = factor_values[lo:t + 1]
+        window_factors = factor_values[lo : t + 1]
 
-        global_design = _factorize_global_design(window_factors, ridge_alpha,
-                                                 max(2, int(round(min_factor_frac * n_win))),
-                                                 market_col_idx, ridge_alpha_market)
+        global_design = _factorize_global_design(
+            window_factors, ridge_alpha, max(2, int(round(min_factor_frac * n_win))), market_col_idx, ridge_alpha_market
+        )
         if global_design is None:
             continue
 
-        window_observed = is_observed[lo:t + 1]
+        window_observed = is_observed[lo : t + 1]
         n_valid = window_observed.sum(0)
         estimable = n_valid >= min_obs
         if not estimable.any():
             continue
 
-        window_returns = stock_return_values[lo:t + 1]
-        window_sector = sector_values[lo:t + 1] if has_sector else None
+        window_returns = stock_return_values[lo : t + 1]
+        window_sector = sector_values[lo : t + 1] if sector_values is not None else None
 
         # STEADY STATE: every stock whose window is fully observed, in one ridge solve
         complete = np.flatnonzero(estimable & (n_valid == n_win))
         if complete.size:
             fitted[t, complete] = _fit_complete_stocks(
-                global_design, window_factors, window_returns[:, complete],
-                window_sector[:, complete] if has_sector else None,
-                market_col_idx, market_prior, ridge_alpha, n_win, n_factors)
+                global_design,
+                window_factors,
+                window_returns[:, complete],
+                window_sector[:, complete] if window_sector is not None else None,
+                market_col_idx,
+                market_prior,
+                ridge_alpha,
+                n_win,
+                n_factors,
+            )
 
         # PARTIAL: a stock whose window is only partly observed (a recent listing)
         for stock_idx in np.flatnonzero(estimable & (n_valid != n_win)):
             fitted[t, stock_idx] = _fit_partial_stock(
-                window_factors, window_returns[:, stock_idx], window_observed[:, stock_idx],
-                window_sector[:, stock_idx] if has_sector else None,
-                market_col_idx, market_prior, ridge_alpha, min_factor_frac, n_factors,
-                ridge_alpha_market)
+                window_factors,
+                window_returns[:, stock_idx],
+                window_observed[:, stock_idx],
+                window_sector[:, stock_idx] if window_sector is not None else None,
+                market_col_idx,
+                market_prior,
+                ridge_alpha,
+                min_factor_frac,
+                n_factors,
+                ridge_alpha_market,
+            )
 
     beta_cols = [f"beta_{c}" for c in factor_names] + (["beta_sector"] if has_sector else [])
     out = _assemble_output(fitted, dates, tickers, beta_cols, ffill_limit)
     del fitted
 
-    logger.info("betas: %s/%s tickers x %s factors (window=%s step=%s ridge_alpha=%s "
-                "ridge_alpha_market=%s market_prior=%s)", len(out), n_stocks, n_factors,
-                window, step, ridge_alpha, ridge_alpha_market, market_prior)
+    logger.info(
+        "betas: %s/%s tickers x %s factors (window=%s step=%s ridge_alpha=%s ridge_alpha_market=%s market_prior=%s)",
+        len(out),
+        n_stocks,
+        n_factors,
+        window,
+        step,
+        ridge_alpha,
+        ridge_alpha_market,
+        market_prior,
+    )
     return out
 
 
 def estimate_betas_for_stock(
-    y: pd.Series,                      # stock daily returns
-    global_factors: pd.DataFrame,      # market + style + commodity + macro (already filtered)
-    sector: pd.Series | None = None,   # this stock's GICS sector excess return
+    y: pd.Series,  # stock daily returns
+    global_factors: pd.DataFrame,  # market + style + commodity + macro (already filtered)
+    sector: pd.Series | None = None,  # this stock's GICS sector excess return
     window: int = 63,
     min_obs: int = 40,
     ridge_alpha: float = 0.08,
@@ -495,11 +526,18 @@ def estimate_betas_for_stock(
     A one-column panel takes the SAME code path as the full universe, so this can
     never drift from what the pipeline computes.
     """
-    name = y.name if y.name is not None else "STOCK"
+    name = cast(str, y.name if y.name is not None else "STOCK")
     kwargs.setdefault("filter_factors", False)
     sector_frame = sector.rename(name).to_frame() if sector is not None else None
 
-    return estimate_all_betas(y.rename(name).to_frame(), global_factors, sector_frame,
-                              window=window, min_obs=min_obs,
-                              ridge_alpha=ridge_alpha, step=step,
-                              market_prior=market_prior, **kwargs)[name]
+    return estimate_all_betas(
+        y.rename(name).to_frame(),
+        global_factors,
+        sector_frame,
+        window=window,
+        min_obs=min_obs,
+        ridge_alpha=ridge_alpha,
+        step=step,
+        market_prior=market_prior,
+        **kwargs,
+    )[name]

@@ -9,6 +9,7 @@ raised UnboundLocalError on every call and silently killed the whole last-resort
 the recent-quarter gap. These tests call it for real (with the Crawler class stubbed) so the
 accessor itself is covered.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -36,11 +37,10 @@ def _reset(monkeypatch):
 
 
 def test_crawler_accessor_returns_a_crawler_and_does_not_raise():
-    c = ub._crawler()                       # UnboundLocalError before the `global` fix
+    c = ub._crawler()  # UnboundLocalError before the `global` fix
     assert isinstance(c, _StubCrawler)
     print("\n=== SANITY CHECK: _crawler() accessor ===")
-    print(f"  returned a live crawler ({type(c).__name__}) instead of raising "
-          "UnboundLocalError. Validated.")
+    print(f"  returned a live crawler ({type(c).__name__}) instead of raising UnboundLocalError. Validated.")
 
 
 def test_crawler_is_built_once_and_reused():
@@ -50,7 +50,7 @@ def test_crawler_is_built_once_and_reused():
     assert first is second is third, "the crawler must be cached in the module global"
     assert _StubCrawler.made == 1, f"built {_StubCrawler.made} times, expected exactly 1"
     assert ub._CRAWLER is first, "the module global must actually be populated"
-    print(f"  3 calls -> 1 construction, same object reused, module global set. Validated.")
+    print("  3 calls -> 1 construction, same object reused, module global set. Validated.")
 
 
 def test_get_reaches_the_network_through_the_shared_crawler():
@@ -58,8 +58,7 @@ def test_get_reaches_the_network_through_the_shared_crawler():
     html = ub._get("https://www.fool.com/quote/nyse/ed/", log_missing=False)
     assert html == "<html>https://www.fool.com/quote/nyse/ed/</html>"
     assert _StubCrawler.made == 1
-    print("  _get() returned HTML via the shared crawler (the fool fallback is reachable). "
-          "Validated.")
+    print("  _get() returned HTML via the shared crawler (the fool fallback is reachable). Validated.")
 
 
 if __name__ == "__main__":

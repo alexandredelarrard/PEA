@@ -13,9 +13,9 @@ write side and the read side can never pad differently.
 copy of one regex substitution is how two normalisers drift apart. `validate.py` re-exports
 it, so every extraction call site is unchanged.
 """
-from typing import Any
 
 import re
+from typing import Any
 
 #: edgartools preserves the source HTML's whitespace runs verbatim, and a non-breaking space
 #: is not `\s` to `str.strip` -- both have to go before any key is built on the value.

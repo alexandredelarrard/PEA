@@ -26,6 +26,7 @@ gives a median lag of 401 days where the first concept for the same period was f
 These tests are the acceptance criteria for that fix. They are integration tests: they SKIP
 without a populated DB.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -33,18 +34,19 @@ import pytest
 
 from src.data_extract.utils.fundamentals.build_history import build_ticker_history
 
-MAX_FILING_LAG_DAYS = 200      # generous: 10-K ~90d + late filers + amendments
-TOLERATED_ROW_SHARE = 0.005    # a handful of genuine restatement oddities is acceptable
+MAX_FILING_LAG_DAYS = 200  # generous: 10-K ~90d + late filers + amendments
+TOLERATED_ROW_SHARE = 0.005  # a handful of genuine restatement oddities is acceptable
 
 
 def _history() -> pd.DataFrame:
     try:
         from src.context import get_config_context
+
         _, context = get_config_context("./configs", use_cache=False, save=False)
         from src.data_store.schema import Tables
-        df = context.store.load(Tables.fundamentals_history_sec,
-                                columns=["ticker", "as_of", "fiscal_end", "is_amendment"])
-    except Exception as exc:                                        # noqa: BLE001
+
+        df = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", "fiscal_end", "is_amendment"])
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"fundamentals_history_sec unavailable: {exc}")
     if df is None or df.empty:
         pytest.skip("fundamentals_history_sec is empty")
@@ -67,11 +69,14 @@ def test_as_of_is_monotone_in_fiscal_end_per_ticker():
     print(f"  out-of-order rows: {len(bad):,} ({share:.1%}) across {tickers} ticker(s)")
     if not bad.empty:
         w = bad.iloc[0]
-        print(f"  example: {w['ticker']} fiscal_end {w['fiscal_end'].date()} has as_of "
-              f"{w['as_of'].date()}, EARLIER than the previous period's {w['prev'].date()}")
+        print(
+            f"  example: {w['ticker']} fiscal_end {w['fiscal_end'].date()} has as_of "
+            f"{w['as_of'].date()}, EARLIER than the previous period's {w['prev'].date()}"
+        )
     assert share <= TOLERATED_ROW_SHARE, (
         f"{share:.1%} of rows have a non-monotone as_of across {tickers} tickers — the fiscal "
-        "series is out of order (see this module's docstring for the root cause)")
+        "series is out of order (see this module's docstring for the root cause)"
+    )
 
 
 def test_filing_lag_is_inside_a_real_sec_window():
@@ -86,8 +91,8 @@ def test_filing_lag_is_inside_a_real_sec_window():
     print(f"  rows beyond {MAX_FILING_LAG_DAYS}d: {int(late.sum()):,} ({share:.1%})")
     assert lag.min() >= 0, "as_of BEFORE fiscal_end would be a look-ahead leak"
     assert share <= 0.05, (
-        f"{share:.1%} of rows are stamped >{MAX_FILING_LAG_DAYS}d after their fiscal period end "
-        "— those features read a stale quarter as current")
+        f"{share:.1%} of rows are stamped >{MAX_FILING_LAG_DAYS}d after their fiscal period end — those features read a stale quarter as current"
+    )
 
 
 def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explained():
@@ -122,44 +127,45 @@ def test_the_grain_is_one_row_per_publication_event_and_every_repeat_is_explaine
 
     try:
         from src.data_extract.utils.common.registrant import load_registrants
+
         cutovers = load_registrants("./configs")
-    except Exception:                                               # noqa: BLE001
+    except Exception:  # noqa: BLE001
         cutovers = {}
 
     unexplained = []
     for (ticker, fiscal_end), group in groups:
         if bool(group["is_amendment"].fillna(False).any()):
-            continue                                    # a restatement: the whole point
+            continue  # a restatement: the whole point
         # ANY boundary in the chain excuses it, not just the latest. A ticker can have
         # several -- PSKY is CBS -> Viacom -> ViacomCBS -> Paramount Global -> Paramount
         # Skydance -- and each seam can produce the same two-publication-events shape.
-        entry = cutovers.get(ticker)
-        if entry is not None and any(
-                abs((pd.Timestamp(fiscal_end) - boundary).days) <= 400
-                for boundary in entry.boundaries):
-            continue        # two registrants either side of a DECLARED, evidenced boundary
-        unexplained.append((ticker, str(fiscal_end.date()), len(group)))
+        ticker_name = str(ticker)
+        fiscal_end_ts = pd.Timestamp(str(fiscal_end))
+        entry = cutovers.get(ticker_name)
+        if entry is not None and any(abs((fiscal_end_ts - boundary).days) <= 400 for boundary in entry.boundaries):
+            continue  # two registrants either side of a DECLARED, evidenced boundary
+        unexplained.append((ticker_name, str(fiscal_end_ts.date()), len(group)))
 
     print("\n=== SANITY CHECK: one row per publication event ===")
     print(f"  {len(df):,} rows / {df['ticker'].nunique()} tickers")
     print(f"  duplicate (ticker, as_of) — the actual grain: {duplicate_events}")
     print(f"  repeated fiscal_end: {int(repeated.sum())} rows in {groups.ngroups} group(s)")
-    print(f"    explained by an amendment or a declared cutover: "
-          f"{groups.ngroups - len(unexplained)}")
+    print(f"    explained by an amendment or a declared cutover: {groups.ngroups - len(unexplained)}")
     print(f"    UNEXPLAINED: {len(unexplained)}")
     for ticker, fiscal_end, n in unexplained[:6]:
         print(f"      {ticker} {fiscal_end} x{n}")
 
     assert duplicate_events == 0, (
-        f"{duplicate_events} rows share a (ticker, as_of) — that is the PRIMARY KEY, so the "
-        "publication-event grain is broken")
+        f"{duplicate_events} rows share a (ticker, as_of) — that is the PRIMARY KEY, so the publication-event grain is broken"
+    )
     assert not unexplained, (
-        f"{len(unexplained)} repeated fiscal_end group(s) with no amendment and no declared "
-        f"registrant cutover to explain them: {unexplained[:6]}")
+        f"{len(unexplained)} repeated fiscal_end group(s) with no amendment and no declared registrant cutover to explain them: {unexplained[:6]}"
+    )
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v", "-s"]))
 
 
@@ -181,18 +187,25 @@ def test_as_of_never_precedes_fiscal_end_unit():
         a filing date BEFORE 2020-12-31 (the ROP shape)."""
         ends = ["2020-03-31", "2020-06-30", "2020-09-30", "2020-12-31"]
         starts = ["2020-01-01", "2020-04-01", "2020-07-01", "2020-10-01"]
-        filings = ["2020-04-30", "2020-07-30", "2020-10-29",
-                   "2020-11-02" if filed_early else "2021-02-24"]
+        filings = ["2020-04-30", "2020-07-30", "2020-10-29", "2020-11-02" if filed_early else "2021-02-24"]
         dur, inst = [], []
-        for s, e, f in zip(starts, ends, filings):
+        for s, e, f in zip(starts, ends, filings, strict=False):
             dur.append({"start": s, "end": e, "val": 1_000_000_000, "filed": f, "form": "10-Q"})
             inst.append({"end": e, "val": 5_000_000_000, "filed": f, "form": "10-Q"})
         usd = {"units": {"USD": dur}}
         usd_i = {"units": {"USD": inst}}
-        return {"facts": {"us-gaap": {
-            "Revenues": usd, "NetIncomeLoss": usd,
-            "NetCashProvidedByUsedInOperatingActivities": usd,
-            "Assets": usd_i, "Liabilities": usd_i, "StockholdersEquity": usd_i}}}
+        return {
+            "facts": {
+                "us-gaap": {
+                    "Revenues": usd,
+                    "NetIncomeLoss": usd,
+                    "NetCashProvidedByUsedInOperatingActivities": usd,
+                    "Assets": usd_i,
+                    "Liabilities": usd_i,
+                    "StockholdersEquity": usd_i,
+                }
+            }
+        }
 
     for early in (False, True):
         h = build_ticker_history("TEST", facts_for(early))
@@ -201,9 +214,7 @@ def test_as_of_never_precedes_fiscal_end_unit():
         as_of = pd.to_datetime(h["as_of"])
         fiscal_end = pd.to_datetime(h["fiscal_end"])
         lag = (as_of - fiscal_end).dt.days
-        assert (lag >= 0).all(), (
-            f"filed_early={early}: as_of precedes fiscal_end by {int(lag.min())}d "
-            "— look-ahead leak")
+        assert (lag >= 0).all(), f"filed_early={early}: as_of precedes fiscal_end by {int(lag.min())}d — look-ahead leak"
 
     print("\n=== SANITY CHECK: as_of never precedes fiscal_end (unit) ===")
     print("  normal filing dates and the ROP early-release shape both yield lag >= 0.")

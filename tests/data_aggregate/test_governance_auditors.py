@@ -6,15 +6,22 @@ job done for an ENTITY.
 auditor change in the archive is a filer rewriting its own auditor's name, so without this the
 `auditor_changed` feature phase 5 ships would be ~51% spelling drift.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.governance.auditors import (
-    AUDITOR_ALIASES, AUDITOR_FIRMS, BIG4, canonical_auditor, canonical_auditor_series,
+    AUDITOR_ALIASES,
+    AUDITOR_FIRMS,
+    BIG4,
+    canonical_auditor,
+    canonical_auditor_series,
     unrecognised_auditor_names,
 )
+from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.provisions_features import _auditor_history
 from src.data_store.schema import Tables
 
 
@@ -32,18 +39,18 @@ def test_the_aliases_a_first_pass_regex_would_miss():
     enough to catch `D&T` would mislabel.
     """
     pins = {
-        "D&T": "deloitte",                       # initialism, 7 rows
-        "GT": "grant_thornton",                  # initialism, 2 rows
-        "Ernst and Young, LLP": "ey",            # the "and" spelling, 1 row
-        "BDO Seidman": "bdo",                    # pre-2010 name
+        "D&T": "deloitte",  # initialism, 7 rows
+        "GT": "grant_thornton",  # initialism, 2 rows
+        "Ernst and Young, LLP": "ey",  # the "and" spelling, 1 row
+        "BDO Seidman": "bdo",  # pre-2010 name
         "BDO USA": "bdo",
         "BDO": "bdo",
-        "KPMG Peat Marwick LLP": "kpmg",         # pre-1999 name
-        "Coopers & Lybrand L.L.P.": "pwc",       # merged INTO PwC in 1998
-        "Price Waterhouse LLP": "pwc",           # merged INTO PwC in 1998
-        "Deloitte &Touche LLP": "deloitte",      # missing space
-        "Young Ireland": "ey",                   # truncated, resolved by hand (see above)
-        "Brown, Schwab, Bergquist & Co.": "other",   # a real, small, non-big-4 firm
+        "KPMG Peat Marwick LLP": "kpmg",  # pre-1999 name
+        "Coopers & Lybrand L.L.P.": "pwc",  # merged INTO PwC in 1998
+        "Price Waterhouse LLP": "pwc",  # merged INTO PwC in 1998
+        "Deloitte &Touche LLP": "deloitte",  # missing space
+        "Young Ireland": "ey",  # truncated, resolved by hand (see above)
+        "Brown, Schwab, Bergquist & Co.": "other",  # a real, small, non-big-4 firm
     }
     for raw, expected in pins.items():
         assert canonical_auditor(raw) == expected, f"{raw!r} -> {canonical_auditor(raw)!r}"
@@ -64,18 +71,56 @@ def test_the_aliases_a_first_pass_regex_would_miss():
     assert set(BIG4) == {"pwc", "kpmg", "ey", "deloitte"}
 
     print("\n=== SANITY CHECK: the auditor alias table ===")
-    for raw, expected in pins.items():
+    for raw in pins:
         print(f"  {raw:<32} -> {canonical_auditor(raw)}")
-    print(f"  Arthur Andersen LLP              -> {canonical_auditor('Arthur Andersen LLP')} "
-          "(its own value: the 2002 collapse is real history, not junk)")
-    print(f"  None -> {canonical_auditor(None)} (ABSENT)   unknown string -> "
-          f"{canonical_auditor('Some Firm Nobody Has Heard Of LLP')} (PRESENT, not a known firm)")
-    print(f"  table: {len(AUDITOR_ALIASES)} explicit aliases -> {len(AUDITOR_FIRMS)} canonical "
-          "values. CONCLUSION: initialisms and predecessor firm names resolve, a truncated cell "
-          "is resolved by a HAND entry corroborated by a neighbouring row (`Young Ireland` -> ey, "
-          "beside `Ernst & Young Ireland`), an unrecognised firm falls through to `other` rather "
-          "than being pattern-matched into a big-4, and Arthur Andersen keeps its own value. "
-          "Validated.")
+    print(
+        f"  Arthur Andersen LLP              -> {canonical_auditor('Arthur Andersen LLP')} "
+        "(its own value: the 2002 collapse is real history, not junk)"
+    )
+    print(
+        f"  None -> {canonical_auditor(None)} (ABSENT)   unknown string -> "
+        f"{canonical_auditor('Some Firm Nobody Has Heard Of LLP')} (PRESENT, not a known firm)"
+    )
+    print(
+        f"  table: {len(AUDITOR_ALIASES)} explicit aliases -> {len(AUDITOR_FIRMS)} canonical "
+        "values. CONCLUSION: initialisms and predecessor firm names resolve, a truncated cell "
+        "is resolved by a HAND entry corroborated by a neighbouring row (`Young Ireland` -> ey, "
+        "beside `Ernst & Young Ireland`), an unrecognised firm falls through to `other` rather "
+        "than being pattern-matched into a big-4, and Arthur Andersen keeps its own value. "
+        "Validated."
+    )
+
+
+def test_auditor_since_year_is_carried_only_inside_the_canonical_firm_run():
+    raw = pd.DataFrame(
+        [
+            {"ticker": "AAA", "as_of": "2018-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 2000},
+            {"ticker": "AAA", "as_of": "2021-04-01", "auditor_name": None, "auditor_since_year": None},
+            {"ticker": "AAA", "as_of": "2022-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": None},
+            {"ticker": "AAA", "as_of": "2023-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 2000},
+            {"ticker": "BBB", "as_of": "2021-04-01", "auditor_name": "KPMG LLP", "auditor_since_year": 1999},
+            {"ticker": "BBB", "as_of": "2022-04-01", "auditor_name": "Deloitte LLP", "auditor_since_year": None},
+            {"ticker": "CCC", "as_of": "2020-04-01", "auditor_name": "Ernst & Young LLP", "auditor_since_year": None},
+            {"ticker": "CCC", "as_of": "2022-04-01", "auditor_name": "Ernst & Young LLP", "auditor_since_year": 2005},
+        ]
+    )
+
+    imputed, _ = impute_def14a(raw)
+    history = _auditor_history(imputed, {})
+    assert history is not None
+    aaa = history.loc[history["ticker"] == "AAA"].sort_values("as_of")
+    bbb = history.loc[history["ticker"] == "BBB"].sort_values("as_of")
+    ccc = history.loc[history["ticker"] == "CCC"].sort_values("as_of")
+
+    assert aaa["auditor_tenure_censored"].tolist() == [0.0, 0.0, 0.0]
+    assert bbb["auditor_tenure_censored"].tolist() == [0.0, 1.0]
+    assert ccc["auditor_tenure_censored"].tolist() == [1.0, 0.0]
+    assert aaa["auditor_changed"].fillna(0.0).sum() == 0.0
+    assert bbb["auditor_changed"].fillna(0.0).sum() == 1.0
+    print("\n=== SANITY CHECK: auditor start-year run boundary ===")
+    print("  same-firm and silent-name gaps remain disclosed; a new firm never inherits the prior year.")
+    print("  a later first disclosure stays forward-only and does not rewrite earlier censored output.")
+    print("  CONCLUSION: tenure basis is stable within, and isolated between, auditor runs.")
 
 
 def test_the_collapse_measured_on_the_live_archive():
@@ -83,9 +128,10 @@ def test_the_collapse_measured_on_the_live_archive():
     the filer respelling one firm's name."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         raw = ctx.store.load(Tables.def14a_llm)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"def14a_llm not reachable ({e})")
     if raw is None or raw.empty or "auditor_name" not in raw.columns:
         pytest.skip("def14a_llm empty or has no auditor_name")
@@ -106,8 +152,7 @@ def test_the_collapse_measured_on_the_live_archive():
 
     assert n_firm < n_raw, "normalisation must COLLAPSE strings, never add them"
     assert ch_firm <= ch_raw, "normalisation can only remove apparent changes, never create them"
-    assert canonical_auditor_series(named["auditor_name"]).notna().all(), (
-        "every named cell must resolve to a canonical value, `other` included")
+    assert canonical_auditor_series(named["auditor_name"]).notna().all(), "every named cell must resolve to a canonical value, `other` included"
 
     dist = named["firm"].value_counts()
     unknown = unrecognised_auditor_names(named["auditor_name"])
@@ -121,17 +166,20 @@ def test_the_collapse_measured_on_the_live_archive():
         print(f"    {firm:<16} {n:>6}  ({n / len(named):>5.1%}){flag}")
     print(f"  tickers whose RAW string changes at least once:  {ch_raw}")
     print(f"  tickers whose CANONICAL firm changes at least once: {ch_firm}")
-    print(f"  => spurious 'auditor changed' events removed: {ch_raw - ch_firm} of {ch_raw} "
-          f"({(ch_raw - ch_firm) / ch_raw:.0%})")
+    print(f"  => spurious 'auditor changed' events removed: {ch_raw - ch_firm} of {ch_raw} ({(ch_raw - ch_firm) / ch_raw:.0%})")
     big4 = float(named["firm"].isin(BIG4).mean())
-    print(f"  is_big4 would be {big4:.1%} constant -- so as a standalone feature it is near "
-          f"degenerate; the informative side is the {1 - big4:.1%} that is NOT big-4 (D32).")
+    print(
+        f"  is_big4 would be {big4:.1%} constant -- so as a standalone feature it is near "
+        f"degenerate; the informative side is the {1 - big4:.1%} that is NOT big-4 (D32)."
+    )
     print(f"  rows falling through to `other`: {int(dist.get('other', 0))}")
     print(f"  UNRECOGNISED strings (need an AUDITOR_ALIASES entry): {unknown or 'none'}")
-    print("  CONCLUSION: without this, roughly half of every auditor-change signal would be a "
-          "filer rewriting its own auditor's name. An unrecognised string is logged rather than "
-          "silently becoming a new firm, so a new spelling is visible as the archive grows. "
-          "Validated.")
+    print(
+        "  CONCLUSION: without this, roughly half of every auditor-change signal would be a "
+        "filer rewriting its own auditor's name. An unrecognised string is logged rather than "
+        "silently becoming a new firm, so a new spelling is visible as the archive grows. "
+        "Validated."
+    )
 
 
 if __name__ == "__main__":

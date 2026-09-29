@@ -56,7 +56,7 @@ from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
 
-DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/" "phase-4-gap-check.md"
+DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/phase-4-gap-check.md"
 
 #: The three floor classes, and how a field is assigned one. Read off the FIELD MAP's own
 #: declarations -- `op: ratio`/`ratio_minus_one` is a ratio, and a share count is one that
@@ -161,7 +161,7 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     shar = sharadar_history(vendor, field_map, actions)
     overlap = sorted(set(shar["ticker"]) & set(sec["ticker"]))
     log.info(
-        "gap check: %d overlapping ticker(s) of %d Sharadar / %d SEC; %d comparable " "field(s)",
+        "gap check: %d overlapping ticker(s) of %d Sharadar / %d SEC; %d comparable field(s)",
         len(overlap),
         shar["ticker"].nunique(),
         sec["ticker"].nunique(),
@@ -169,7 +169,7 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     )
     joined = shar.merge(sec, on=["ticker", "as_of"], suffixes=("_shar", "_sec"))
     if joined.empty:
-        raise RuntimeError("gap check: the two sources share no (ticker, as_of) at all -- " "that is a grain bug, not a gap")
+        raise RuntimeError("gap check: the two sources share no (ticker, as_of) at all -- that is a grain bug, not a gap")
 
     rows = []
     for name in fields:
@@ -256,7 +256,7 @@ def propose(gaps: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR) -> tupl
         added += 1
     path = write_overrides(entries, _README, config_dir=config_dir)
     log.warning(
-        "gap check: %d new proposal(s) written to %s with `approved: null` -- they " "change NOTHING until a human adjudicates them", added, path
+        "gap check: %d new proposal(s) written to %s with `approved: null` -- they change NOTHING until a human adjudicates them", added, path
     )
     return path, added
 
@@ -332,13 +332,13 @@ def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
             "",
             "## 2. Systematic and EXPECTED — the phase-3 basis forks, not defects",
             "",
-            "Named so they do not drown section 1. `sharadar_field_map.json` states the reason " "for each.",
+            "Named so they do not drown section 1. `sharadar_field_map.json` states the reason for each.",
             "",
             table(expected),
             "",
             "## 3. Not systematic — restatements, roundings, one-offs",
             "",
-            f"_{len(clean)} (ticker, field) pair(s)._ A gap on 1 of 11 dates is not an override " "candidate.",
+            f"_{len(clean)} (ticker, field) pair(s)._ A gap on 1 of 11 dates is not an override candidate.",
             "",
         ]
     )
@@ -364,7 +364,7 @@ def run_gap_check(
     path.write_text(format_report(gaps, overlap=overlap, fields=gaps["field"].nunique()), encoding="utf-8")
     found = candidates(gaps)
     context.log.info(
-        "gap check: %d (ticker, field) pair(s) over %d ticker(s); %d systematic, " "%d of them NOT expected -> %s",
+        "gap check: %d (ticker, field) pair(s) over %d ticker(s); %d systematic, %d of them NOT expected -> %s",
         len(gaps),
         overlap,
         int(gaps["is_systematic"].sum()),

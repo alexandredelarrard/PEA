@@ -15,6 +15,7 @@ control flow (wiki/guides/testing.md's parsing exception).
 from __future__ import annotations
 
 import types
+from typing import Any, cast
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_a_programming_error_from_the_resolver_propagates(monkeypatch):
     failures: list[tuple[str, str]] = []
 
     with pytest.raises(NameError, match="cols"):
-        fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=None, gics=None, failures=failures)
+        fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert failures == [], "a repo defect is not a filing failure and must not be counted"
 
@@ -65,7 +66,7 @@ def test_a_data_error_from_the_resolver_is_counted_and_swallowed(monkeypatch):
     monkeypatch.setattr(fetcher, "rows_from_xbrl", boom)
     failures: list[tuple[str, str]] = []
 
-    rows = fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=None, gics=None, failures=failures)
+    rows = fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert rows == []
     assert [acc for acc, _ in failures] == [_ACCESSION]
@@ -83,15 +84,15 @@ def test_an_unreadable_filing_is_always_swallowed_whatever_the_class(monkeypatch
     the other one would turn a bad filing into an aborted 490-ticker run."""
     failures: list[tuple[str, str]] = []
 
-    rows = fetcher.filing_rows("NEM", "1164727", _filing(xbrl_error=error), catalogue=None, gics=None, failures=failures)
+    rows = fetcher.filing_rows("NEM", "1164727", _filing(xbrl_error=error), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert rows == []
     assert len(failures) == 1
-    print(f"\n  {type(error).__name__} from filing.xbrl() -> swallowed and counted " f"({failures[0][1][:40]})")
+    print(f"\n  {type(error).__name__} from filing.xbrl() -> swallowed and counted ({failures[0][1][:40]})")
 
 
 def test_the_programming_error_classes_are_the_ones_the_driver_uses():
     """One list, so the per-filing and per-ticker handlers cannot drift apart."""
     assert NameError in PROGRAMMING_ERRORS and KeyError in PROGRAMMING_ERRORS
     print("\n=== SANITY CHECK: shared class list ===")
-    print(f"  PROGRAMMING_ERRORS = " f"{tuple(e.__name__ for e in PROGRAMMING_ERRORS)}")
+    print(f"  PROGRAMMING_ERRORS = {tuple(e.__name__ for e in PROGRAMMING_ERRORS)}")

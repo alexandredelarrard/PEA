@@ -16,12 +16,14 @@ stored history), VRT carried the GS Acquisition SPAC trust at ~$9.9 flat. Those 
 zero realised volatility and fake zero returns inside every vol / beta / correlation /
 momentum window that overlaps them.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 
 from src.data_extract.utils.prices.fetch_prices import (
-    _prelisting_cutoff, trim_prelisting_bars,
+    _prelisting_cutoff,
+    trim_prelisting_bars,
 )
 
 _START = pd.Timestamp("2015-01-05")
@@ -29,16 +31,14 @@ _START = pd.Timestamp("2015-01-05")
 
 def _bars(ticker: str, closes: list[float], volumes: list[float]) -> pd.DataFrame:
     dates = pd.bdate_range(_START, periods=len(closes))
-    return pd.DataFrame({"date": dates, "open": closes, "high": closes, "low": closes,
-                         "close": closes, "volume": volumes, "ticker": ticker})
+    return pd.DataFrame({"date": dates, "open": closes, "high": closes, "low": closes, "close": closes, "volume": volumes, "ticker": ticker})
 
 
 def test_zero_volume_prefix_is_trimmed_and_only_the_prefix():
     """AMCR's shape: a long flat zero-volume block, then real trading. The cutoff is the
     LAST zero-volume bar, so what remains is contiguous — trimming a prefix can never
     punch an interior hole in the middle of a ticker's otherwise-contiguous history."""
-    frame = _bars("AMCR", [22.87] * 40 + [23.0 + i * 0.1 for i in range(60)],
-                  [0.0] * 40 + [3_000_000.0] * 60)
+    frame = _bars("AMCR", [22.87] * 40 + [23.0 + i * 0.1 for i in range(60)], [0.0] * 40 + [3_000_000.0] * 60)
     out = trim_prelisting_bars(frame)
     assert len(out) == 60
     assert (out["volume"] > 0).all()
@@ -52,8 +52,7 @@ def test_spac_trust_prefix_is_caught_by_the_volume_ratio_not_zero_volume():
     share is only 3.6% and the first tell misses it. The scale-free tell — first-year
     median volume below 1% of the ticker's own long-run median — catches it (VRT 0.17%)."""
     # 300 trust bars at ~1e4 volume, then 500 real bars at ~6.5e6
-    frame = _bars("VRT", [9.9] * 300 + [12.0 + i * 0.01 for i in range(500)],
-                  [10_000.0] * 299 + [0.0] + [6_500_000.0] * 500)
+    frame = _bars("VRT", [9.9] * 300 + [12.0 + i * 0.01 for i in range(500)], [10_000.0] * 299 + [0.0] + [6_500_000.0] * 500)
     cutoff = _prelisting_cutoff(frame)
     assert cutoff is not None
     out = trim_prelisting_bars(frame)
@@ -67,7 +66,7 @@ def test_isolated_zero_volume_glitches_are_not_trimmed():
     Trimming on those would delete years of good data — AMD's single zero-volume day is
     2015-01-02, which would have cost 2011-2015."""
     volumes = [4_000_000.0] * 500
-    volumes[400] = 0.0                                    # one glitch, late in the series
+    volumes[400] = 0.0  # one glitch, late in the series
     frame = _bars("AMD", [2.5 + i * 0.01 for i in range(500)], volumes)
     assert _prelisting_cutoff(frame) is None
     assert len(trim_prelisting_bars(frame)) == 500
@@ -75,8 +74,7 @@ def test_isolated_zero_volume_glitches_are_not_trimmed():
 
 def test_mixed_universe_trims_per_ticker_independently():
     good = _bars("MSFT", [100.0 + i for i in range(50)], [30_000_000.0] * 50)
-    bad = _bars("SW", [7.068] * 30 + [40.0 + i for i in range(20)],
-                [0.0] * 30 + [1_000_000.0] * 20)
+    bad = _bars("SW", [7.068] * 30 + [40.0 + i for i in range(20)], [0.0] * 30 + [1_000_000.0] * 20)
     out = trim_prelisting_bars(pd.concat([good, bad], ignore_index=True))
     assert (out["ticker"] == "MSFT").sum() == 50, "healthy ticker was trimmed"
     assert (out["ticker"] == "SW").sum() == 20
@@ -98,8 +96,7 @@ def test_prelisting_trim_prints_conclusion():
         ("HWM   Arconic when-issued 2016-11", 12, 40),
     ]
     for label, n_bad, n_good in cases:
-        frame = _bars(label.split()[0], [10.0] * n_bad + [20.0 + i for i in range(n_good)],
-                      [0.0] * n_bad + [2_000_000.0] * n_good)
+        frame = _bars(label.split()[0], [10.0] * n_bad + [20.0 + i for i in range(n_good)], [0.0] * n_bad + [2_000_000.0] * n_good)
         out = trim_prelisting_bars(frame)
         assert len(out) == n_good, f"{label}: kept {len(out)}, expected {n_good}"
         print(f"  {label:36s} {n_bad + n_good:>4} bars -> {len(out):>4} kept")

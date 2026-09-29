@@ -26,9 +26,7 @@ DEFAULT_CONFIG_DIR = "./configs"
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) " "Chrome/124.0 Safari/537.36; contact@example.com"
-    )
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 
 # Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
@@ -174,7 +172,7 @@ SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # must be URL-quoted. Response: one <company-info> block per match with <cik> +
 # <conformed-name> (tags are lower-case).
 SEC_EDGAR_COMPANY_SEARCH_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}" "&type=13F-HR&dateb=&owner=include&count=10&output=atom"
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}&type=13F-HR&dateb=&owner=include&count=10&output=atom"
 )
 
 # 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
@@ -190,8 +188,8 @@ SEC_INSIDER_OWNER_ATOM_URL = (
     "&start={start}&count={count}&output=atom"
 )
 SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
-SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/" "{quarter}_form345.zip"
-SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/" "insider-transactions-data-sets/{quarter}_form345.zip"
+SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
+SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_FIRST_YEAR = 2006
 SEC_INSIDER_SWAP_YEAR = 2026
 
@@ -836,9 +834,35 @@ EARNINGS_CALL_TAG_PREPARED = "prepared"  # a prepared-remarks (scripted) managem
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
+# A usable call needs both scored sections and at least this many words after removing
+# greetings/courtesy boilerplate. Model-facing signals live for one quarter only.
+EARNINGS_CALL_MIN_CLEAN_WORDS = 100
+EARNINGS_CALL_SIGNAL_SESSIONS = 66
+EARNINGS_CALL_FEATURES = (
+    "ec_tone",
+    "ec_tone_vs_hist",
+    "ec_qa_gap",
+    "ec_qa_gap_vs_hist",
+    "ec_uncertainty",
+    "ec_uncertainty_vs_hist",
+    "ec_qa_coherence_mean",
+    "ec_qa_coherence_mean_vs_hist",
+    "ec_tone_delta",
+    "ec_length_delta",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+)
 
 # SENTIMENT ANALYSIS
 FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
+# Bump when transcript preprocessing changes.  The sentiment cache PK does not
+# include the model, so a new label deliberately makes existing rows eligible
+# for one-time rescoring and replacement.
+EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "clean-v1"
+EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
+EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
+EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
+EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

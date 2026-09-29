@@ -3,6 +3,7 @@ Typed store failures, so "no data yet" stops being indistinguishable from "the r
 broken". `load` used to raise a bare `Exception` for both, so callers wrapped it in
 `except Exception` and swallowed mistyped columns and dead connections too.
 """
+
 from __future__ import annotations
 
 
@@ -22,6 +23,7 @@ class TableEmptyError(StoreError, LookupError):
         super().__init__(f"table {table!r} returned no rows{detail}")
         self.table = table
         self.where = where
+
 
 class UnknownTableError(KeyError):
     """A table name that is not in the registry.

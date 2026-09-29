@@ -25,6 +25,7 @@ differ in exactly one input.
 
     python scripts/prove_insider_outliers.py
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -49,8 +50,7 @@ NAMED = ["EXE", "AXON", "ECHO", "APP"]
 #: dangerous possible way for a proof script to be wrong.
 #: No `_xs` leg: the raw level is what 2.3 measured, and an outlier's cross-sectional rank is
 #: capped by construction, so the z-leg cannot show the magnitude.
-STATS = {"f_ic_insider_buy_value_mcap_180d": {"EXE": 292.0},
-         "f_ic_insider_buy_shares_so_180d": {"AXON": 2.26}}
+STATS = {"f_ic_insider_buy_value_mcap_180d": {"EXE": 292.0}, "f_ic_insider_buy_shares_so_180d": {"AXON": 2.26}}
 
 
 def _panel(
@@ -88,6 +88,8 @@ def main() -> None:
 
     after = store.load(Tables.insider_transactions)
     quarantine = store.load(Tables.insider_transactions_quarantine, optional=True)
+    if after is None:
+        raise RuntimeError("insider_transactions is unavailable")
     if quarantine is None or quarantine.empty:
         raise SystemExit("the quarantine table is empty -- run the re-parse first")
 
@@ -95,28 +97,29 @@ def main() -> None:
     clash = sorted(set(NAMED) & set(admitted["ticker"]))
     assert not clash, (
         f"{clash} appear in identity-admitted.csv, so before(T) = after(T) + quarantine(T) "
-        "would OVERSTATE the pre-screen table for them. Reconstruct from the zips instead.")
+        "would OVERSTATE the pre-screen table for them. Reconstruct from the zips instead."
+    )
 
     # the quarantine row already carries the claimed ticker in `ticker` (see its schema note)
     restored = quarantine[[c for c in after.columns if c in quarantine.columns]]
     before = pd.concat([after, restored], ignore_index=True)
-    print(f"\n  after {len(after):,} rows + quarantine {len(restored):,} "
-          f"-> reconstructed before {len(before):,}")
-    print("  ⚠ that GLOBAL total overshoots the real pre-screen 2,031,286 by 4,291, and the "
-          "reason matters: the parse-time screen quarantines the excluded roster tickers' FULL "
-          "zip history while the stored table only ever held what an earlier universe admitted. "
-          "The reconstruction is EXACT for the four names here -- verified against the "
-          "per-ticker snapshot: ECHO 2,426 = 1,349 + 1,077, APP 2,628 = 2,336 + 292, "
-          "EXE 3,998 = 3,762 + 236, AXON 2,213 = 2,133 + 80 -- which is all the panel needs, "
-          "since a per-ticker feature reads only that ticker's own tape.")
+    print(f"\n  after {len(after):,} rows + quarantine {len(restored):,} -> reconstructed before {len(before):,}")
+    print(
+        "  ⚠ that GLOBAL total overshoots the real pre-screen 2,031,286 by 4,291, and the "
+        "reason matters: the parse-time screen quarantines the excluded roster tickers' FULL "
+        "zip history while the stored table only ever held what an earlier universe admitted. "
+        "The reconstruction is EXACT for the four names here -- verified against the "
+        "per-ticker snapshot: ECHO 2,426 = 1,349 + 1,077, APP 2,628 = 2,336 + 292, "
+        "EXE 3,998 = 3,762 + 236, AXON 2,213 = 2,133 + 80 -- which is all the panel needs, "
+        "since a per-ticker feature reads only that ticker's own tape."
+    )
 
     step = StepCubeInstitutionals(context=context, config=config)
     frames = step._load_frames()
     shares = step._load_shares_out()
 
     print("\n=== building the insider panel TWICE (same code, one input differs) ===")
-    panels = {"before": _panel(step, before, frames, shares),
-              "after": _panel(step, after, frames, shares)}
+    panels = {"before": _panel(step, before, frames, shares), "after": _panel(step, after, frames, shares)}
 
     # Persisted so any follow-up read costs nothing: each panel is ~20 minutes to build.
     for side, panel in panels.items():
@@ -126,13 +129,13 @@ def main() -> None:
         raise SystemExit(
             f"{missing} are not columns of the built panel. Available insider columns: "
             f"{sorted(c for c in panels['after'].columns if c.startswith('f_ic_insider'))[:6]}"
-            " ... -- fix STATS rather than reporting None as 'the outlier is gone'.")
+            " ... -- fix STATS rather than reporting None as 'the outlier is gone'."
+        )
 
     rows = []
     for stat, quoted in STATS.items():
         for ticker in NAMED:
-            rec = {"feature": stat, "ticker": ticker,
-                   "quoted_in_2_3": quoted.get(ticker)}
+            rec = {"feature": stat, "ticker": ticker, "quoted_in_2_3": quoted.get(ticker)}
             for side, panel in panels.items():
                 if stat not in panel.columns:
                     rec[f"max_{side}"] = None
@@ -152,18 +155,20 @@ def main() -> None:
     if q.empty:
         print("  NONE of the four names has a quarantined row.")
     else:
-        detail = (q.groupby(["ticker", "issuer_cik", "issuer_name"])
-                  .agg(rows=("accession_number", "size"),
-                       value_usd=("value_usd", "sum"),
-                       first=("filing_date", "min"), last=("filing_date", "max"))
-                  .sort_values("rows", ascending=False))
+        detail = (
+            q.groupby(["ticker", "issuer_cik", "issuer_name"])
+            .agg(rows=("accession_number", "size"), value_usd=("value_usd", "sum"), first=("filing_date", "min"), last=("filing_date", "max"))
+            .sort_values("rows", ascending=False)
+        )
         print("  " + detail.to_string().replace("\n", "\n  "))
         detail.to_csv(OUT / "insider_outlier_quarantined_detail.csv")
     missing = [t for t in NAMED if t not in set(q["ticker"])]
     if missing:
-        print(f"\n  ⚠ {missing} have NO quarantined row. If their 2.3 outlier persists above, "
-              "2.3's 'every residual outlier traces to this defect' is FALSIFIED for them and "
-              "must be reported as unexplained, not attributed to this fix.")
+        print(
+            f"\n  ⚠ {missing} have NO quarantined row. If their 2.3 outlier persists above, "
+            "2.3's 'every residual outlier traces to this defect' is FALSIFIED for them and "
+            "must be reported as unexplained, not attributed to this fix."
+        )
 
     # --- the row/value deltas per named ticker, for the report table --- #
     print("\n=== per-ticker tape deltas ===")
@@ -171,8 +176,9 @@ def main() -> None:
     for ticker in NAMED:
         b = before[before["ticker"] == ticker]
         a = after[after["ticker"] == ticker]
-        tape.append({"ticker": ticker, "rows_before": len(b), "rows_after": len(a),
-                     "value_before": b["value_usd"].sum(), "value_after": a["value_usd"].sum()})
+        tape.append(
+            {"ticker": ticker, "rows_before": len(b), "rows_after": len(a), "value_before": b["value_usd"].sum(), "value_after": a["value_usd"].sum()}
+        )
     tape_df = pd.DataFrame(tape)
     print("  " + tape_df.to_string(index=False).replace("\n", "\n  "))
     tape_df.to_csv(OUT / "insider_outlier_tape_delta.csv", index=False)
@@ -187,15 +193,19 @@ def main() -> None:
         disagree = scored[scored["declared"] != scored["implied"]]
         if disagree.empty:
             worst = scored[scored["declared"] == "raw+xs"]["ties_per_date_pct"].max()
-            print(f"\n  all {len(scored)} declared classes survive the cleaned cross-section; "
-                  f"the most-tied raw+xs feature sits at {worst}%, well inside the 90% floor")
+            print(
+                f"\n  all {len(scored)} declared classes survive the cleaned cross-section; "
+                f"the most-tied raw+xs feature sits at {worst}%, well inside the 90% floor"
+            )
         else:
             print(f"\n  {len(disagree)} of {len(scored)} feature(s) LOSE their _xs leg:")
             print("  " + disagree.to_string(index=False).replace("\n", "\n  "))
-            print("  ⚠ A class change is a REPORT, not an automatic edit. `EMISSION` is a "
-                  "declaration with written reasoning per feature -- a low tie fraction is "
-                  "NOT a reason to rank something already comparable across dates -- so a "
-                  "disagreement is read before it is applied.")
+            print(
+                "  ⚠ A class change is a REPORT, not an automatic edit. `EMISSION` is a "
+                "declaration with written reasoning per feature -- a low tie fraction is "
+                "NOT a reason to rank something already comparable across dates -- so a "
+                "disagreement is read before it is applied."
+            )
 
 
 def _emission_sheet(panel: pd.DataFrame) -> pd.DataFrame:
@@ -222,8 +232,7 @@ def _emission_sheet(panel: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     for feature, declared in EMISSION.items():
-        col = next((c for c in (f"f_{feature}", f"f_{feature.removeprefix('ic_')}")
-                    if c in panel.columns), None)
+        col = next((c for c in (f"f_{feature}", f"f_{feature.removeprefix('ic_')}") if c in panel.columns), None)
         if col is None:
             rows.append({"feature": feature, "declared": declared, "note": "absent from panel"})
             continue
@@ -234,14 +243,18 @@ def _emission_sheet(panel: pd.DataFrame) -> pd.DataFrame:
         per_date = sl.groupby("date")[col]
         # ties/date = the share of rows that are NOT the sole holder of their value
         ties = float((1.0 - per_date.nunique() / per_date.size()).mean())
-        rows.append({
-            "feature": feature, "declared": declared,
-            "nonnull_pct": round(len(sl) / len(panel) * 100, 1),
-            "uniq_per_date": int(per_date.nunique().mean()),
-            "ties_per_date_pct": round(ties * 100, 1),
-            # one-directional: a declared raw+xs whose cross-section has become a plateau
-            # loses its leg; a declared raw is never promoted (see the docstring).
-            "implied": "raw" if (declared == "raw+xs" and ties >= 0.90) else declared})
+        rows.append(
+            {
+                "feature": feature,
+                "declared": declared,
+                "nonnull_pct": round(len(sl) / len(panel) * 100, 1),
+                "uniq_per_date": int(per_date.nunique().mean()),
+                "ties_per_date_pct": round(ties * 100, 1),
+                # one-directional: a declared raw+xs whose cross-section has become a plateau
+                # loses its leg; a declared raw is never promoted (see the docstring).
+                "implied": "raw" if (declared == "raw+xs" and ties >= 0.90) else declared,
+            }
+        )
     return pd.DataFrame(rows)
 
 

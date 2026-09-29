@@ -88,7 +88,7 @@ EMISSION: dict[str, str] = {
 #: its own units), but the within-date percentile is what makes 2003 comparable to 2026.
 
 
-def _canonicalize(df: pd.DataFrame, text_col: str | None = None, has_amendment: bool = True) -> pd.DataFrame:
+def _canonicalize(df: pd.DataFrame | None, text_col: str | None = None, has_amendment: bool = True) -> pd.DataFrame:
     """One row per `(ticker, accession_number, cusip)` -- see module docstring. `filer_id` is
     the group's identity for time-series tracking; `n_reporting_persons` is the co-filer count
     kept SEPARATE from any ownership number, exactly so nothing downstream is tempted to fold
@@ -115,7 +115,7 @@ def _canonicalize(df: pd.DataFrame, text_col: str | None = None, has_amendment: 
     key = ["ticker", "accession_number", "cusip"]
     agg_map = {
         "filing_date": ("filing_date", "first"),
-        "filer_id": ("_filer_key", lambda s: (s.dropna().sort_values().iloc[0] if s.notna().any() else None)),
+        "filer_id": ("_filer_key", lambda s: s.dropna().sort_values().iloc[0] if s.notna().any() else None),
         "n_reporting_persons": ("_filer_key", "nunique"),
     }
     if has_amendment:
@@ -363,7 +363,7 @@ def build_ownership_feature_panel(
     if availability is not None:
         g_start = availability.source_date(Tables.sec_13g)
     else:
-        g_start = pd.to_datetime(canon_13g.get("filing_date"), errors="coerce").min()
+        g_start = pd.to_datetime(canon_13g["filing_date"], errors="coerce").min()
     bo_coverage = (
         _complete_active_window_mask(
             frames,
@@ -439,4 +439,4 @@ def build_ownership_feature_panel(
         sink.keep_signals(signal_fields, signal_masks)
 
     emission = {k: v for k, v in EMISSION.items() if k in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

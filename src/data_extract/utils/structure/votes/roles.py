@@ -8,7 +8,10 @@ The key is `person_key` from `def14a/gender.py` -- the SAME definition the DEF 1
 consensus groups on, so a nominee that matches there matches here. The per-filing
 `unmatched` count is stored rather than swallowed: that number IS this join's error rate.
 """
+
 from __future__ import annotations
+
+from typing import Any, cast
 
 import pandas as pd
 
@@ -16,6 +19,7 @@ from src.context import Context
 from src.data_extract.utils.structure.def14a.gender import person_key
 from src.data_extract.utils.structure.def14a.validate import clean_text
 from src.data_store.schema import Tables
+
 
 # --------------------------------------------------------------------------- #
 # Role categorisation                                                          #
@@ -28,15 +32,14 @@ def _role_source(context: Context, ticker: str) -> dict[str, pd.DataFrame]:
     unprojected read of these tables is forbidden (AGENTS.md) and would pull the whole
     `def14a_json` blob along with it.
     """
+
     def _read(table, columns: list[str]) -> pd.DataFrame:
-        df = context.store.load(table, columns=columns, where={"ticker": ticker},
-                                optional=True)
+        df = context.store.load(table, columns=columns, where={"ticker": ticker}, optional=True)
         return df if df is not None else pd.DataFrame(columns=columns)
 
     return {
         "ceo": _read(Tables.def14a_llm, ["ticker", "as_of", "ceo_name_proxy"]),
-        "exec": _read(Tables.def14a_executive_comp,
-                      ["ticker", "as_of", "name", "title", "fiscal_year"]),
+        "exec": _read(Tables.def14a_executive_comp, ["ticker", "as_of", "name", "title", "fiscal_year"]),
         "director": _read(Tables.def14a_director_comp, ["ticker", "as_of", "name"]),
     }
 
@@ -48,14 +51,13 @@ def _latest_before(df: pd.DataFrame, meeting_date: object) -> pd.DataFrame:
     if df.empty or "as_of" not in df.columns or meeting_date is None:
         return df.iloc[0:0]
     as_of = pd.to_datetime(df["as_of"], errors="coerce")
-    prior = df[as_of <= pd.Timestamp(meeting_date)]
+    prior = df[as_of <= pd.Timestamp(cast(Any, meeting_date))]
     if prior.empty:
         return prior
     return prior[pd.to_datetime(prior["as_of"], errors="coerce") == as_of[prior.index].max()]
 
 
-def _role_map(source: dict[str, pd.DataFrame],
-              meeting_date: object) -> tuple[dict[str, str], dict[str, str]]:
+def _role_map(source: dict[str, pd.DataFrame], meeting_date: object) -> tuple[dict[str, str], dict[str, str]]:
     """`(person_key -> role, person_key -> title)` from the nearest prior proxy.
 
     Precedence is CEO > executive officer > non-employee director, because a

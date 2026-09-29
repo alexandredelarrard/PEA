@@ -167,8 +167,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         handler=fetch_filing_text,
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
-        notes="10-K Item 1A + Item 7 and 10-Q Item 2 narrative text, one row per "
-        "(ticker, accession, section), for the embedding/drift feature layer",
+        notes="10-K Item 1A + Item 7 and 10-Q Item 2 narrative text, one row per (ticker, accession, section), for the embedding/drift feature layer",
     ),
     "sec13f_hr": FormHandlerSpec(
         name="sec13f_hr",

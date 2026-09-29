@@ -37,16 +37,19 @@ the identical property against the live DB. The two are deliberately separate ra
 code: one is evidence about the real archive and needs Postgres, this one is a fixture that runs
 anywhere and gates every commit. Neither substitutes for the other.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.data_aggregate.utils.governance import def14a_impute
 from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
 from src.data_aggregate.utils.governance.directors import (
-    board_aggregates, fill_director_attributes, finalize_board_source, merge_board_aggregates,
+    board_aggregates,
+    fill_director_attributes,
+    finalize_board_source,
+    merge_board_aggregates,
 )
 
 _YEARS = ["2019-05-01", "2020-05-01", "2021-05-01", "2022-05-01", "2023-05-01"]
@@ -73,19 +76,51 @@ def _child() -> pd.DataFrame:
     rows: list[dict] = []
     for i, y in enumerate(_YEARS):
         rows += [
-            {"ticker": "AAA", "accession_number": f"AAA-{i}", "as_of": y, "name": "Ann Agree",
-             "age": 60 + i, "tenure_years": 5 + i,
-             "other_public_company_boards": None if i == 2 else 2.0},
-            {"ticker": "AAA", "accession_number": f"AAA-{i}", "as_of": y, "name": "Dan Disagree",
-             "age": 50 + i, "tenure_years": 20 + i,
-             "other_public_company_boards": {0: 1.0, 1: 1.0, 2: None, 3: 4.0, 4: 4.0}[i]},
-            {"ticker": "BBB", "accession_number": f"BBB-{i}", "as_of": y, "name": "Bea Trailing",
-             "age": 70 + i, "tenure_years": 16 + i,
-             "other_public_company_boards": 3.0 if i < 3 else None},
-            {"ticker": "CCC", "accession_number": f"CCC-{i}", "as_of": y, "name": "Cara Complete",
-             "age": 45 + i, "tenure_years": 3 + i, "other_public_company_boards": 3.0},
-            {"ticker": "CCC", "accession_number": f"CCC-{i}", "as_of": y, "name": "Carl Complete",
-             "age": 65 + i, "tenure_years": 17 + i, "other_public_company_boards": 1.0},
+            {
+                "ticker": "AAA",
+                "accession_number": f"AAA-{i}",
+                "as_of": y,
+                "name": "Ann Agree",
+                "age": 60 + i,
+                "tenure_years": 5 + i,
+                "other_public_company_boards": None if i == 2 else 2.0,
+            },
+            {
+                "ticker": "AAA",
+                "accession_number": f"AAA-{i}",
+                "as_of": y,
+                "name": "Dan Disagree",
+                "age": 50 + i,
+                "tenure_years": 20 + i,
+                "other_public_company_boards": {0: 1.0, 1: 1.0, 2: None, 3: 4.0, 4: 4.0}[i],
+            },
+            {
+                "ticker": "BBB",
+                "accession_number": f"BBB-{i}",
+                "as_of": y,
+                "name": "Bea Trailing",
+                "age": 70 + i,
+                "tenure_years": 16 + i,
+                "other_public_company_boards": 3.0 if i < 3 else None,
+            },
+            {
+                "ticker": "CCC",
+                "accession_number": f"CCC-{i}",
+                "as_of": y,
+                "name": "Cara Complete",
+                "age": 45 + i,
+                "tenure_years": 3 + i,
+                "other_public_company_boards": 3.0,
+            },
+            {
+                "ticker": "CCC",
+                "accession_number": f"CCC-{i}",
+                "as_of": y,
+                "name": "Carl Complete",
+                "age": 65 + i,
+                "tenure_years": 17 + i,
+                "other_public_company_boards": 1.0,
+            },
         ]
     return pd.DataFrame(rows)
 
@@ -101,11 +136,18 @@ def _parent() -> pd.DataFrame:
     rows: list[dict] = []
     for t in ("AAA", "BBB", "CCC"):
         for i, y in enumerate(_YEARS):
-            rows.append({"ticker": t, "accession_number": f"{t}-{i}", "as_of": y,
-                         "avg_other_public_boards": np.nan, "avg_director_age": np.nan,
-                         "board_size": 2.0 if t == "CCC" else np.nan,
-                         "ceo_name_proxy": f"{t} Chief",
-                         "insider_ownership_pct": ownership[i]})
+            rows.append(
+                {
+                    "ticker": t,
+                    "accession_number": f"{t}-{i}",
+                    "as_of": y,
+                    "avg_other_public_boards": np.nan,
+                    "avg_director_age": np.nan,
+                    "board_size": 2.0 if t == "CCC" else np.nan,
+                    "ceo_name_proxy": f"{t} Chief",
+                    "insider_ownership_pct": ownership[i],
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -118,8 +160,7 @@ def _chain(parent: pd.DataFrame, child: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     return imputed, filled_child
 
 
-def _leaks(full: pd.DataFrame, past_only: pd.DataFrame, key: list[str],
-           cut: pd.Timestamp) -> dict[str, int]:
+def _leaks(full: pd.DataFrame, past_only: pd.DataFrame, key: list[str], cut: pd.Timestamp) -> dict[str, int]:
     """Per column, the cells at or before `cut` the past-only run does not reproduce.
 
     NaN-safe on both sides. A cell the past-only run leaves NaN where the full run wrote a value
@@ -156,8 +197,7 @@ def prefix_leaks() -> tuple[dict[str, int], dict[str, int]]:
     c_total: dict[str, int] = {}
     for cut_s in _CUTS:
         cut = pd.Timestamp(cut_s)
-        p_past, c_past = _chain(parent[pd.to_datetime(parent["as_of"]) <= cut].copy(),
-                                child[pd.to_datetime(child["as_of"]) <= cut].copy())
+        p_past, c_past = _chain(parent[pd.to_datetime(parent["as_of"]) <= cut].copy(), child[pd.to_datetime(child["as_of"]) <= cut].copy())
         for col, n in _leaks(full_parent, p_past, PARENT_KEY, cut).items():
             p_total[col] = p_total.get(col, 0) + n
         for col, n in _leaks(full_child, c_past, CHILD_KEY, cut).items():
@@ -178,14 +218,12 @@ def test_the_governance_fill_reads_only_the_past():
     print("\n=== SANITY CHECK: prefix stability of the governance fill chain ===")
     print(f"  {len(_CUTS)} cut dates | parent leaks: {p_leaks or 'none'}")
     print(f"                       | child  leaks: {c_leaks or 'none'}")
-    assert not c_leaks, (
-        "the CHILD fill reads a later filing -- these cells cannot be reproduced from rows at or "
-        f"before their own as_of: {c_leaks}")
-    assert not p_leaks, (
-        "the PARENT fill reads a later filing -- these cells cannot be reproduced from rows at "
-        f"or before their own as_of: {p_leaks}")
-    print("  SANITY CHECK: every filled cell in both grains is reproducible from the past "
-          "alone, so no fill in the governance package can launder a future value.")
+    assert not c_leaks, f"the CHILD fill reads a later filing -- these cells cannot be reproduced from rows at or before their own as_of: {c_leaks}"
+    assert not p_leaks, f"the PARENT fill reads a later filing -- these cells cannot be reproduced from rows at or before their own as_of: {p_leaks}"
+    print(
+        "  SANITY CHECK: every filled cell in both grains is reproducible from the past "
+        "alone, so no fill in the governance package can launder a future value."
+    )
 
 
 def test_the_property_catches_the_interpolation_it_exists_to_catch(monkeypatch):
@@ -202,8 +240,7 @@ def test_the_property_catches_the_interpolation_it_exists_to_catch(monkeypatch):
         # column cannot be. Only the LEVELS take the old rule, which is what shipped.
         if not pd.api.types.is_numeric_dtype(df[col]):
             return real_carry(df, col, gk)
-        vals = df[col].groupby(gk, sort=False).transform(
-            lambda s: s.interpolate(limit_area="inside"))
+        vals = df[col].groupby(gk, sort=False).transform(lambda s: s.interpolate(limit_area="inside"))
         return vals, pd.Series(0, index=df.index)
 
     monkeypatch.setattr(def14a_impute, "_carry", _interpolating_carry)
@@ -211,14 +248,16 @@ def test_the_property_catches_the_interpolation_it_exists_to_catch(monkeypatch):
 
     print("\n=== SANITY CHECK: the property fails when the interpolation is restored ===")
     print(f"  parent leaks with `_carry` -> interpolate(limit_area='inside'): {p_leaks}")
-    assert p_leaks, ("the interpolation was restored and the property still passed -- it is "
-                     "measuring nothing")
+    assert p_leaks, "the interpolation was restored and the property still passed -- it is measuring nothing"
     assert "insider_ownership_pct" in p_leaks, (
         "the LVS-shaped gap (0.108, silence, 0.012) was not flagged; the property is not "
-        f"reaching the carried levels. Flagged instead: {sorted(p_leaks)}")
-    print(f"  SANITY CHECK: restoring the interpolation makes {sum(p_leaks.values())} cells "
-          "irreproducible from the past, including the LVS-shaped `insider_ownership_pct` gap -- "
-          "so the check has a real failure mode and is not vacuous.")
+        f"reaching the carried levels. Flagged instead: {sorted(p_leaks)}"
+    )
+    print(
+        f"  SANITY CHECK: restoring the interpolation makes {sum(p_leaks.values())} cells "
+        "irreproducible from the past, including the LVS-shaped `insider_ownership_pct` gap -- "
+        "so the check has a real failure mode and is not vacuous."
+    )
 
 
 def test_a_trailing_gap_is_the_asymmetry_the_property_also_measures():
@@ -233,9 +272,10 @@ def test_a_trailing_gap_is_the_asymmetry_the_property_also_measures():
     trailing = bea["other_public_company_boards"].tolist()[3:]
 
     print("\n=== SANITY CHECK: the trailing gap ===")
-    print(f"  Bea Trailing's last two filings: {trailing} "
-          f"(filed 3.0 for the first three years, then silence)")
+    print(f"  Bea Trailing's last two filings: {trailing} (filed 3.0 for the first three years, then silence)")
     filled_n = sum(0 if pd.isna(v) else 1 for v in trailing)
-    print(f"  SANITY CHECK: {filled_n} of 2 trailing cells filled. An interior-gated rule "
-          "reaches 0 of them by construction; a bounded forward carry reaches both.")
+    print(
+        f"  SANITY CHECK: {filled_n} of 2 trailing cells filled. An interior-gated rule "
+        "reaches 0 of them by construction; a bounded forward carry reaches both."
+    )
     assert len(trailing) == 2

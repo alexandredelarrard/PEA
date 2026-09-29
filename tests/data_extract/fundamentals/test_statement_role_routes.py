@@ -21,6 +21,7 @@ reading "the linkbase says nothing" as licence to act is the expensive direction
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -150,7 +151,7 @@ def test_an_undeclared_concept_is_unaffected_because_silence_is_not_evidence():
     assert resolution.method == TAG_PRIMARY
     assert resolution.concept == "us-gaap:LongTermDebtNoncurrent"
     print("\n=== SANITY CHECK: undeclared concept unaffected ===")
-    print(f"  LongTermDebtNoncurrent declared on: " f"{sorted(graph.roles_of('LongTermDebtNoncurrent')) or 'nothing'}")
+    print(f"  LongTermDebtNoncurrent declared on: {sorted(graph.roles_of('LongTermDebtNoncurrent')) or 'nothing'}")
     print(f"  resolved to: {resolution.concept} via {resolution.method}")
     print("  OK: silence is not evidence -- the guard fires on positive note-hood only.")
 
@@ -225,14 +226,16 @@ def latest_annual(edgar_ready) -> dict:
     1.4-5.8 s and six of them is this file's whole budget."""
     from edgar import Company, set_identity
 
-    set_identity(os.getenv("SEC_USER_AGENT"))
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
 
     out: dict[str, dict] = {}
     for ticker, _field, _why in _GROUND_TRUTH:
         if ticker in out:
             continue
         try:
-            filing = Company(ticker).latest("10-K")
+            filing: Any = Company(ticker).latest("10-K")
             xbrl = filing.xbrl()
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"EDGAR unreachable for {ticker}: {exc}")

@@ -15,14 +15,16 @@ days" bug. We instead require a fraction of the window (`min_frac`) so a few gap
 no longer blank a name, while a genuinely data-poor name (too few observations)
 stays NaN and is correctly skipped.
 """
+
 from __future__ import annotations
+
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 
-def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int,
-                   min_frac: float = 0.6):
+def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int, min_frac: float = 0.6) -> pd.DataFrame | pd.Series:
     """NaN-tolerant compounded forward return over t+1..t+horizon.
 
     Sums the AVAILABLE daily log-returns in the forward window (a missing day
@@ -32,16 +34,13 @@ def forward_return(daily_ret: pd.DataFrame | pd.Series, horizon: int,
     and the genuine tail (fewer than the required observations ahead) -- stay NaN.
     """
     safe = daily_ret.clip(lower=-0.999999)
-    logr = np.log1p(safe)
+    logr = cast(pd.DataFrame | pd.Series, np.log1p(safe))
     min_periods = max(1, int(round(horizon * min_frac)))
-    fwd_log = (logr[::-1]
-               .rolling(horizon, min_periods=min_periods).sum()[::-1]
-               .shift(-1))
-    return np.expm1(fwd_log)
+    fwd_log = logr[::-1].rolling(horizon, min_periods=min_periods).sum()[::-1].shift(-1)
+    return cast(pd.DataFrame | pd.Series, np.expm1(fwd_log))
 
 
-def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1,
-                             min_frac: float = 0.6) -> pd.DataFrame:
+def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1, min_frac: float = 0.6) -> pd.DataFrame:
     """Per signal date, directional accuracy of the signal over the forecast
     horizon, measured CROSS-SECTIONALLY (relative to the universe).
 
@@ -49,7 +48,7 @@ def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1,
     correct/total active picks, long_short_fwd_% (realized horizon return of
     predicted-longs minus predicted-shorts), spy_fwd_% (market's horizon return).
     """
-    signal: pd.DataFrame = bt.signal                      # date x ticker, combined z
+    signal: pd.DataFrame = bt.signal  # date x ticker, combined z
     fwd = forward_return(bt.stock_ret, horizon, min_frac)  # date x ticker
     spy_fwd = forward_return(bt.spy_ret, horizon, min_frac)
 
@@ -64,9 +63,9 @@ def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1,
             continue
         s = s[common]
         f = f[common]
-        rel = f - f.mean()                    # cross-sectional (market-neutral) fwd
+        rel = f - f.mean()  # cross-sectional (market-neutral) fwd
 
-        mask = s.abs() > active_thresh        # evaluate only conviction names
+        mask = s.abs() > active_thresh  # evaluate only conviction names
         n = int(mask.sum())
         if n == 0:
             continue
@@ -79,14 +78,16 @@ def compute_horizon_accuracy(bt, horizon: int, active_thresh: float = 0.1,
         if hasattr(spy_v, "iloc"):
             spy_v = float(spy_v.iloc[0])
 
-        rows.append({
-            "date": date,
-            "hit_rate_%": round(correct / n * 100, 1),
-            "correct_picks": correct,
-            "total_active_picks": n,
-            "long_short_fwd_%": round(ls_spread * 100, 3) if np.isfinite(ls_spread) else np.nan,
-            "spy_fwd_%": round(spy_v * 100, 3) if np.isfinite(spy_v) else np.nan,
-        })
+        rows.append(
+            {
+                "date": date,
+                "hit_rate_%": round(correct / n * 100, 1),
+                "correct_picks": correct,
+                "total_active_picks": n,
+                "long_short_fwd_%": round(ls_spread * 100, 3) if np.isfinite(ls_spread) else np.nan,
+                "spy_fwd_%": round(spy_v * 100, 3) if np.isfinite(spy_v) else np.nan,
+            }
+        )
 
     return pd.DataFrame(rows).set_index("date") if rows else pd.DataFrame()
 
@@ -98,16 +99,16 @@ def horizon_accuracy_summary(bt, horizons: list[int]) -> pd.DataFrame:
     for h in horizons:
         acc = compute_horizon_accuracy(bt, h)
         if acc.empty:
-            out.append({"horizon": h, "avg_hit_rate_%": np.nan,
-                        "pct_dates_positive_%": np.nan, "avg_long_short_%": np.nan,
-                        "n_dates": 0})
+            out.append({"horizon": h, "avg_hit_rate_%": np.nan, "pct_dates_positive_%": np.nan, "avg_long_short_%": np.nan, "n_dates": 0})
             continue
         spread = acc["long_short_fwd_%"].dropna()
-        out.append({
-            "horizon": h,
-            "avg_hit_rate_%": round(acc["hit_rate_%"].mean(), 2),
-            "pct_dates_positive_%": round((spread > 0).mean() * 100, 1) if len(spread) else np.nan,
-            "avg_long_short_%": round(spread.mean(), 3) if len(spread) else np.nan,
-            "n_dates": len(acc),
-        })
+        out.append(
+            {
+                "horizon": h,
+                "avg_hit_rate_%": round(acc["hit_rate_%"].mean(), 2),
+                "pct_dates_positive_%": round((spread > 0).mean() * 100, 1) if len(spread) else np.nan,
+                "avg_long_short_%": round(spread.mean(), 3) if len(spread) else np.nan,
+                "n_dates": len(acc),
+            }
+        )
     return pd.DataFrame(out).set_index("horizon")

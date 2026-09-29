@@ -13,43 +13,45 @@ parsed into the SAME `earnings_call_sections` rows the MF path produces (ticker,
 as_of, tag, text, url) so downstream FinBERT / text-metric features are source-agnostic.
 Incremental: skips (ticker, quarter) already present in the table (from any source).
 """
+
 from __future__ import annotations
 
 import logging
 import re
 from pathlib import Path
-from curl_cffi import requests as cr
-import pyarrow.parquet as pq
-import requests
-import pandas as pd
+from typing import cast
 
-from src.data_store.schema import Tables
+import pandas as pd
+import pyarrow.parquet as pq
+from curl_cffi import requests as cr
+
 from src.context import Context
-from src.utils.ssl_setup import corporate_session
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_store.schema import Tables
+from src.utils.ssl_setup import corporate_session
 
 logger = logging.getLogger(__name__)
 
 _TABLE = Tables.earnings_call_sections
-_ROLE_PREFIX = re.compile(r"^[A-Za-z]\s*-\s*")            # "A - Jane Doe" / "E - John Roe" role tags
+_ROLE_PREFIX = re.compile(r"^[A-Za-z]\s*-\s*")  # "A - Jane Doe" / "E - John Roe" role tags
 
 # HuggingFace backbone: clean S&P 500 earnings-call transcripts 2005-2025 (MIT license,
 # 33k+ transcripts / 685 companies, full verbatim `content` + speaker-segmented
 # `structured_content`). Downloaded ONCE as a single ~1.8 GB parquet, cached under the
 # call_transcripts dir; the Motley Fool crawl then only fills the recent gap past its cut.
 HF_TRANSCRIPTS_DATASET = "kurry/sp500_earnings_transcripts"
-HF_TRANSCRIPTS_PARQUET_URL = (
-    "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/"
-    "resolve/main/parquet_files/part-0.parquet")
+HF_TRANSCRIPTS_PARQUET_URL = "https://huggingface.co/datasets/kurry/sp500_earnings_transcripts/resolve/main/parquet_files/part-0.parquet"
 HF_TRANSCRIPTS_CACHE = "hf_sp500_transcripts.parquet"
 # The HF backbone is a ONE-TIME historical load (2005 .. ~2025Q1). Once earnings_call_sections
 # already spans that range, re-scanning the 1.8 GB parquet only to find every (ticker, quarter)
 # already ingested is pure waste (minutes of "nothing happens"). So ingest_hf_transcripts skips the
 # scan when the table's quarter coverage reaches back to EARLY and forward to LATE. Quarters are
 # fixed-width "YYYYQN", so a plain string MIN/MAX compares chronologically.
-HF_BACKBONE_EARLY_QUARTER = "2005Q4"   # table min quarter must be <= this (deep history is present)
-HF_BACKBONE_LATE_QUARTER = "2025Q1"    # table max quarter must be >= this (HF's ~2025 cut is reached)
+HF_BACKBONE_EARLY_QUARTER = "2005Q4"  # table min quarter must be <= this (deep history is present)
+HF_BACKBONE_LATE_QUARTER = "2025Q1"  # table max quarter must be >= this (HF's ~2025 cut is reached)
+
 
 # --------------------------------------------------------------------------- #
 # One-time parquet download (streamed; curl_cffi browser-profile fallback)
@@ -75,9 +77,8 @@ def _stream_download(url: str, dest: Path) -> None:
                 for chunk in r.iter_content(1 << 20):
                     f.write(chunk)
         return
-    except Exception as e:                              # noqa: BLE001
-        logger.warning("HF parquet via requests failed (%s: %s); retrying with a curl_cffi "
-                       "browser profile.", type(e).__name__, e)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("HF parquet via requests failed (%s: %s); retrying with a curl_cffi browser profile.", type(e).__name__, e)
 
     r = cr.get(url, stream=True, timeout=120, impersonate="chrome")
     try:
@@ -88,8 +89,8 @@ def _stream_download(url: str, dest: Path) -> None:
     finally:
         r.close()
 
-def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = None,
-                                batch_size: int = 4000) -> dict[str, tuple[int, int]]:
+
+def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = None, batch_size: int = 4000) -> dict[str, tuple[int, int]]:
     """{ticker: (year, quarter)} for the LATEST call the HF backbone holds per ticker. Reads only
     the (symbol, year, quarter) columns of the cached parquet (cheap), so the Motley Fool gap
     fill knows, PER TICKER, the first quarter HF does NOT cover (everything after it must come
@@ -115,8 +116,9 @@ def hf_latest_quarter_by_ticker(context: Context, tickers: list[str] | None = No
             cur = latest.get(tkr)
             if cur is None or yq > cur:
                 latest[tkr] = yq
-    logger.info("HF backbone latest-quarter horizon for %d tickers (e.g. %s)", len(latest),
-                {k: f"{v[0]}Q{v[1]}" for k, v in list(latest.items())[:3]})
+    logger.info(
+        "HF backbone latest-quarter horizon for %d tickers (e.g. %s)", len(latest), {k: f"{v[0]}Q{v[1]}" for k, v in list(latest.items())[:3]}
+    )
     return latest
 
 
@@ -124,12 +126,10 @@ def download_hf_parquet(context: Context, force: bool = False) -> Path:
     """Cache the dataset parquet under data/call_transcripts/. Skips if already present."""
     dest = cache_dir(context, context.config.local.paths.call_transcripts) / HF_TRANSCRIPTS_CACHE
     if dest.exists() and not force and dest.stat().st_size > 1_000_000:
-        logger.info("HF transcripts parquet already cached (%.0f MB) -> %s",
-                    dest.stat().st_size / 1e6, dest)
+        logger.info("HF transcripts parquet already cached (%.0f MB) -> %s", dest.stat().st_size / 1e6, dest)
         return dest
     tmp = dest.with_suffix(".part")
-    logger.warning("Downloading HF transcripts parquet (~1.8 GB, one time) from %s ...",
-                   HF_TRANSCRIPTS_PARQUET_URL)
+    logger.warning("Downloading HF transcripts parquet (~1.8 GB, one time) from %s ...", HF_TRANSCRIPTS_PARQUET_URL)
     _stream_download(HF_TRANSCRIPTS_PARQUET_URL, tmp)
     tmp.replace(dest)
     logger.warning("Cached HF transcripts parquet (%.0f MB) -> %s", dest.stat().st_size / 1e6, dest)
@@ -147,7 +147,7 @@ def _participants_text(structured) -> str:
     """Distinct non-operator speakers (management + analysts), role-prefix stripped,
     order-preserved — the reliable participants list `structured_content` gives us."""
     seen: list[str] = []
-    for turn in (structured if isinstance(structured, (list, tuple)) else []):
+    for turn in structured if isinstance(structured, list | tuple) else []:
         s = _clean_speaker(turn.get("speaker", "") if isinstance(turn, dict) else "")
         if s and s.lower() != "operator" and s not in seen:
             seen.append(s)
@@ -155,8 +155,7 @@ def _participants_text(structured) -> str:
 
 
 def _text_from_structured(structured) -> str:
-    return "\n".join(f"{_clean_speaker(t.get('speaker',''))}: {t.get('text','')}".strip()
-                     for t in structured if isinstance(t, dict))
+    return "\n".join(f"{_clean_speaker(t.get('speaker', ''))}: {t.get('text', '')}".strip() for t in structured if isinstance(t, dict))
 
 
 def row_sections(content: str | None, structured) -> dict[str, str]:
@@ -188,7 +187,7 @@ def _hf_backbone_already_ingested(context: Context) -> tuple[bool, str | None, s
     if lo is None:
         return False, None, None
     min_q, max_q = str(lo), str(hi)
-    present = (min_q <= HF_BACKBONE_EARLY_QUARTER and max_q >= HF_BACKBONE_LATE_QUARTER)
+    present = min_q <= HF_BACKBONE_EARLY_QUARTER and max_q >= HF_BACKBONE_LATE_QUARTER
     return present, min_q, max_q
 
 
@@ -200,9 +199,9 @@ def _existing_keys(context: Context) -> set[tuple[str, str]]:
     return set(map(tuple, df[["ticker", "quarter"]].drop_duplicates().to_numpy()))
 
 
-def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,
-                          batch_size: int = 400, flush_rows: int = 8000,
-                          force: bool = False) -> int:
+def ingest_hf_transcripts(
+    context: Context, tickers: list[str] | None = None, batch_size: int = 400, flush_rows: int = 8000, force: bool = False
+) -> int:
     """Download (once) + parse the HF backbone into `earnings_call_sections`. Reads the
     parquet in batches (bounded memory), keeps only universe tickers, skips (ticker,quarter)
     already ingested, and upserts full/prepared_remarks/qa/participants per call. Returns
@@ -216,15 +215,22 @@ def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,
     if not force:
         present, min_q, max_q = _hf_backbone_already_ingested(context)
         if present:
-            logger.warning("HF backbone already ingested — '%s' spans %s..%s (>= %s..%s); skipping "
-                           "the 1.8GB parquet scan (pass force=True to re-ingest).", _TABLE,
-                           min_q, max_q, HF_BACKBONE_EARLY_QUARTER, HF_BACKBONE_LATE_QUARTER)
+            logger.warning(
+                "HF backbone already ingested — '%s' spans %s..%s (>= %s..%s); skipping the 1.8GB parquet scan (pass force=True to re-ingest).",
+                _TABLE,
+                min_q,
+                max_q,
+                HF_BACKBONE_EARLY_QUARTER,
+                HF_BACKBONE_LATE_QUARTER,
+            )
             return 0
 
     path = download_hf_parquet(context)
-    universe = set(context.store.load("sp500_tickers", columns=["ticker"])["ticker"])
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
+    assert roster is not None
+    universe = set(cast(pd.Series, roster["ticker"]))
     keep = (universe & set(tickers)) if tickers is not None else universe
-    existing = _existing_keys(context)
+    existing = set() if force else _existing_keys(context)
     url = f"hf://{HF_TRANSCRIPTS_DATASET}"
 
     pf = pq.ParquetFile(path)
@@ -245,18 +251,18 @@ def ingest_hf_transcripts(context: Context, tickers: list[str] | None = None,
             if not secs:
                 continue
             seen_calls += 1
-            existing.add((tkr, quarter))                 # de-dup within this run too
+            existing.add((tkr, quarter))  # de-dup within this run too
             as_of = str(r.get("date"))[:10] if r.get("date") else None
             for tag, text in secs.items():
                 if len(text) < 40:
                     continue
-                buf.append({"ticker": tkr, "quarter": quarter, "tag": tag,
-                            "as_of": as_of, "url": url, "text": text})
+                buf.append({"ticker": tkr, "quarter": quarter, "tag": tag, "as_of": as_of, "url": url, "text": text})
         if len(buf) >= flush_rows:
-            total += context.store.save(_TABLE, pd.DataFrame(buf))
+            total += save_earnings_call_sections(context, pd.DataFrame(buf))
             buf = []
     if buf:
-        total += context.store.save(_TABLE, pd.DataFrame(buf))
-    logger.warning("HF transcripts: ingested %d sections from %d new calls (%d tickers) -> '%s'",
-                   total, seen_calls, len({k[0] for k in existing}), _TABLE)
+        total += save_earnings_call_sections(context, pd.DataFrame(buf))
+    logger.warning(
+        "HF transcripts: ingested %d sections from %d new calls (%d tickers) -> '%s'", total, seen_calls, len({k[0] for k in existing}), _TABLE
+    )
     return total

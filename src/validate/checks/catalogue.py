@@ -16,11 +16,13 @@ check that invents its own expectation and then meets it is a green light with n
 it. Accepts a JSON object mapping `field -> description`, or a `.py` exposing a dict named
 `CATALOGUE`, or one exposing `CATALOGUES` keyed by table name.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import runpy
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -43,13 +45,18 @@ _AFFIX_MAX = 6
 #: a naming convention rather than as a table full of renames.
 _AFFIX_SHARE = 0.8
 
-_WHY = ("no --catalogue was given, and there is no default one to fall back on -- a check "
-        "that supplies its own expectation and then meets it reports nothing. Pass a JSON "
-        "object mapping field -> description, or a .py exposing a dict named CATALOGUE "
-        "(or CATALOGUES keyed by table name)")
+_WHY = (
+    "no --catalogue was given, and there is no default one to fall back on -- a check "
+    "that supplies its own expectation and then meets it reports nothing. Pass a JSON "
+    "object mapping field -> description, or a .py exposing a dict named CATALOGUE "
+    "(or CATALOGUES keyed by table name)"
+)
 
 
-def _load(path: Path, table: str) -> dict[str, Any]:
+def _load(
+    path: Path,
+    table: str,
+) -> tuple[dict[str, Any], Callable[[str], tuple[str, str]] | None]:
     """The catalogue as `{field: description}`, from JSON or from a `.py`.
 
     A `.py` may expose either `CATALOGUE` (one table's sheet, as the per-report catalogues do)
@@ -62,18 +69,18 @@ def _load(path: Path, table: str) -> dict[str, Any]:
         namespace = runpy.run_path(str(path))
         registry = namespace.get("CATALOGUES")
         if isinstance(registry, dict) and table in registry:
-            return dict(registry[table])
+            return dict(registry[table]), namespace.get("split")
         entries = namespace.get("CATALOGUE")
         if not isinstance(entries, dict):
             known = sorted(registry) if isinstance(registry, dict) else []
             raise ValueError(
-                f"{path} exposes no dict named CATALOGUE"
-                + (f", and its CATALOGUES registers {known} but not `{table}`" if known else ""))
-        return dict(entries)
+                f"{path} exposes no dict named CATALOGUE" + (f", and its CATALOGUES registers {known} but not `{table}`" if known else "")
+            )
+        return dict(entries), namespace.get("split")
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise ValueError(f"{path} is not a JSON object mapping field -> description")
-    return loaded
+    return loaded, None
 
 
 def _reconciling_prefix(catalogued: set[str], live: set[str]) -> tuple[str, str, int]:
@@ -94,16 +101,22 @@ def _reconciling_prefix(catalogued: set[str], live: set[str]) -> tuple[str, str,
         added = sum(1 for name in catalogued if prefix + name in live)
         if added > best[2]:
             best = (prefix, "add", added)
-        stripped = sum(1 for name in catalogued
-                       if name.startswith(prefix) and name[len(prefix):] in live)
+        stripped = sum(1 for name in catalogued if name.startswith(prefix) and name[len(prefix) :] in live)
         if stripped > best[2]:
             best = (prefix, "strip", stripped)
     return best
 
 
-def check_catalogue(context: Context, table: Table | str, *, config: Any = None,
-                    cache: Any = None, tickers: list[str] | None = None,
-                    catalogue: str | Path | None = None, **kwargs: Any) -> CheckResult:
+def check_catalogue(
+    context: Context,
+    table: Table | str,
+    *,
+    config: Any = None,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    catalogue: str | Path | None = None,
+    **kwargs: Any,
+) -> CheckResult:
     """Live columns vs a written catalogue, in both directions."""
     spec = resolve(table)
     if (declined := full_table_only(CHECK, spec.name, tickers)) is not None:
@@ -115,7 +128,7 @@ def check_catalogue(context: Context, table: Table | str, *, config: Any = None,
     if not path.exists():
         return CheckResult.abstained(CHECK, spec.name, f"--catalogue {path} does not exist")
     try:
-        entries = _load(path, spec.name)
+        entries, split = _load(path, spec.name)
     except (ValueError, json.JSONDecodeError, SyntaxError) as exc:
         return CheckResult.abstained(CHECK, spec.name, f"--catalogue {path}: {exc}")
     if not entries:
@@ -124,11 +137,15 @@ def check_catalogue(context: Context, table: Table | str, *, config: Any = None,
     keys = set(key_columns(spec))
     live = [c for c in context.store.columns(spec) if c not in keys]
     if not live:
-        return CheckResult.abstained(CHECK, spec.name,
-                                     "the table has no non-key column -- is it built?")
+        return CheckResult.abstained(CHECK, spec.name, "the table has no non-key column -- is it built?")
+
+    live_names: dict[str, list[str]] = {}
+    for column in live:
+        characteristic = split(column)[0] if callable(split) else column
+        live_names.setdefault(characteristic, []).append(column)
 
     catalogued = set(entries)
-    live_set = set(live)
+    live_set = set(live_names)
 
     # ⚠ Not one defect per feature twice over -- see `_reconciling_prefix`.
     if not (catalogued & live_set):
@@ -136,46 +153,70 @@ def check_catalogue(context: Context, table: Table | str, *, config: Any = None,
         if hits >= _AFFIX_SHARE * len(catalogued):
             verb = f"prefixing them with `{prefix}`" if how == "add" else f"dropping `{prefix}`"
             return CheckResult.abstained(
-                CHECK, spec.name,
+                CHECK,
+                spec.name,
                 f"the catalogue and the live schema share NO column name, but {hits} of "
                 f"{len(entries)} entries resolve to a live column once {verb} -- the two are "
                 f"written in different naming conventions, not describing different tables. "
                 f"Asserting either direction here would file {len(catalogued) + len(live_set)} "
-                f"findings and none of them would be true. Reconcile the names, then re-run")
+                f"findings and none of them would be true. Reconcile the names, then re-run",
+            )
 
-    missing = sorted(catalogued - live_set)      # described, not there
+    missing = sorted(catalogued - live_set)  # described, not there
     undocumented = sorted(live_set - catalogued)  # there, not described
-    blank = sorted(c for c in (catalogued & live_set)
-                   if not str(entries[c] or "").strip())
+    blank = sorted(c for c in (catalogued & live_set) if not str(entries[c] or "").strip())
 
     findings: list[Finding] = []
     for column in missing[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            9, field=column,
-            observed=f"`{column}` is catalogued but is not a column of {spec.name}",
-            expected="every catalogued field resolves to a live column. A described name "
-                     "with nothing behind it is an unfinished rename -- the 2026-09-04 cube "
-                     "audit traced 46 dead field names and 39 dead features to exactly this, "
-                     "with every test green",
-            description=str(entries[column])[:200]))
+        findings.append(
+            Finding.at(
+                9,
+                field=column,
+                observed=f"`{column}` is catalogued but is not a column of {spec.name}",
+                expected="every catalogued field resolves to a live column. A described name "
+                "with nothing behind it is an unfinished rename -- the 2026-09-04 cube "
+                "audit traced 46 dead field names and 39 dead features to exactly this, "
+                "with every test green",
+                description=str(entries[column])[:200],
+            )
+        )
 
     for column in undocumented[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            4, field=column,
-            observed=f"`{column}` is a live column with no catalogue entry",
-            expected="every live column is described; an undocumented feature is one nobody "
-                     "can audit the definition of"))
+        findings.append(
+            Finding.at(
+                4,
+                field=column,
+                observed=f"`{column}` maps from live column(s) {', '.join(live_names[column])} with no catalogue entry",
+                expected="every live column is described; an undocumented feature is one nobody can audit the definition of",
+            )
+        )
 
     for column in blank[:_MAX_FINDINGS]:
-        findings.append(Finding.at(
-            4, field=column,
-            observed=f"`{column}` has a catalogue entry with an empty description",
-            expected="a description that says what the field means"))
+        findings.append(
+            Finding.at(
+                4,
+                field=column,
+                observed=f"`{column}` has a catalogue entry with an empty description",
+                expected="a description that says what the field means",
+            )
+        )
 
-    scope = {"catalogue": str(path), "entries": len(entries), "live_columns": len(live),
-             "pk": sorted(keys)}
-    metrics = {"entries": len(entries), "live_columns": len(live),
-               "both": len(catalogued & live_set),
-               "catalogued_not_live": missing, "live_not_catalogued": undocumented,
-               "blank_descriptions": blank}
+    scope = {
+        "catalogue": str(path),
+        "entries": len(entries),
+        "live_columns": len(live),
+        "live_characteristics": len(live_set),
+        "split": callable(split),
+        "pk": sorted(keys),
+    }
+    metrics = {
+        "entries": len(entries),
+        "live_columns": len(live),
+        "live_characteristics": len(live_set),
+        "both": len(catalogued & live_set),
+        "catalogued_not_live": missing,
+        "live_not_catalogued": undocumented,
+        "blank_descriptions": blank,
+        "resolved_live_columns": {column: characteristic for characteristic, columns in live_names.items() for column in columns},
+    }
     return CheckResult.measured(CHECK, spec.name, findings, scope=scope, metrics=metrics)

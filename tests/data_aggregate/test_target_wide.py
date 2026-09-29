@@ -189,7 +189,7 @@ def test_price_supported_all_nan_rows_survive_and_off_grid_cells_do_not():
     assert len(tail) == 2 and tail["target_rank_h30"].isna().all()
 
     print("\n=== SANITY CHECK: target rows follow the explicit price skeleton ===")
-    print("  the all-null latest AAA/NEW rows survive, while NEW's pre-listing cell and every " "GHOST cell are absent. Validated.")
+    print("  the all-null latest AAA/NEW rows survive, while NEW's pre-listing cell and every GHOST cell are absent. Validated.")
 
 
 # --------------------------------------------------------------------------- #

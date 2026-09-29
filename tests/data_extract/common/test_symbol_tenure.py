@@ -17,6 +17,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -149,11 +150,14 @@ def test_overlapping_tenures_survive_as_two_rows(tmp_path):
 
     first, second = out.sort_values("valid_from").itertuples()
     # genuinely overlapping: the second starts before the first would have "ended"
-    assert second.valid_from < pd.Timestamp("2011-06-01")
+    assert pd.Timestamp(cast(Any, second.valid_from)) < pd.Timestamp("2011-06-01")
 
     print("\n=== SANITY CHECK: overlapping tenures ===")
     for row in out.itertuples():
-        print(f"  ZZZ {row.issuer_cik} {row.valid_from.date()} .. " f"{'open' if pd.isna(row.valid_to) else row.valid_to.date()}  n={row.n_filings}")
+        print(
+            f"  ZZZ {row.issuer_cik} {pd.Timestamp(cast(Any, row.valid_from)).date()} .. "
+            f"{'open' if pd.isna(row.valid_to) else pd.Timestamp(cast(Any, row.valid_to)).date()}  n={row.n_filings}"
+        )
     print("  OK: Both CIKs kept; neither window was truncated by the other")
     print("  -> Resolution stays a membership test, never a single-answer lookup.")
 
@@ -173,6 +177,7 @@ def test_every_drop_reason_is_counted(tmp_path):
     )
     drops: Counter = Counter()
     agg = _aggregate_zip(path, drops)
+    assert agg is not None
 
     assert drops["rows_read"] == 5 and drops["rows_kept"] == 1
     assert drops["empty_symbol"] == 2  # "" and "NONE"
@@ -216,7 +221,7 @@ def test_store_round_trip_keeps_date_semantics(sqlite_store):
             "symbol": ["AAA", "AAA"],
             "issuer_cik": ["0000000111", "0000000222"],
             "valid_from": pd.to_datetime(["2020-01-05", "2020-05-14"]),
-            "valid_to": pd.to_datetime(["2020-02-28", None]),
+            "valid_to": pd.to_datetime(pd.Series(["2020-02-28", None], dtype="object")),
             "n_filings": [2, 1],
             "source": ["form345"] * 2,
             "evidence": ["OLDCO", "NEWCO"],
@@ -224,6 +229,7 @@ def test_store_round_trip_keeps_date_semantics(sqlite_store):
     )
     sqlite_store.replace(Tables.symbol_tenure, frame)
     back = sqlite_store.load(Tables.symbol_tenure)
+    assert back is not None
 
     closed = back[back.issuer_cik == "0000000111"].iloc[0]
     valid_from = pd.Timestamp(closed["valid_from"])
@@ -400,7 +406,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
             "symbol": ["AAA"],
             "issuer_cik": ["0000000001"],
             "valid_from": pd.to_datetime(["2020-01-01"]),
-            "valid_to": pd.to_datetime([None]),
+            "valid_to": pd.to_datetime(pd.Series([None], dtype="object")),
             "n_filings": [1],
             "source": ["form345"],
             "evidence": ["AAA INC"],
@@ -426,7 +432,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
         ),
     )
     monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
-    context = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
+    context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
     tenure_module.build_symbol_tenure(context, tmp_path, tmp_path)
@@ -473,7 +479,7 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
         old = rows[rows["symbol"].eq(old_symbol) & rows["issuer_cik"].eq(old_cik) & rows["valid_to"].eq(stamp)]
         new = rows[rows["symbol"].eq(new_symbol) & rows["issuer_cik"].eq(new_cik) & rows["valid_from"].eq(stamp)]
         assert len(old) == 1 and len(new) == 1, (
-            f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> " f"{new_symbol}/{new_cik} transition at {boundary}"
+            f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> {new_symbol}/{new_cik} transition at {boundary}"
         )
 
     print("\n=== SANITY CHECK: repository IA-3 manual boundaries ===")
@@ -511,7 +517,7 @@ def test_real_cache_reproduces_the_measured_reuse_cases(real_tenure):
         print(f"  {symbol}: {len(rows)} issuer CIK(s)")
         for row in rows.itertuples():
             end = "open" if pd.isna(row.valid_to) else str(row.valid_to.date())
-            print(f"     {row.issuer_cik}  {row.valid_from.date()} .. {end:>10}  " f"n={row.n_filings:>5d}  {row.evidence}")
+            print(f"     {row.issuer_cik}  {row.valid_from.date()} .. {end:>10}  n={row.n_filings:>5d}  {row.evidence}")
     print("  OK: Every reuse the plan names is present, with its own dated window")
     print("  -> Symbol-first ticker resolution would import all of these as one company.")
 
@@ -528,7 +534,7 @@ def test_real_cache_scale_and_determinism(real_tenure):
     assert real_tenure.equals(derive_symbol_tenure(CACHE))
 
     print("\n=== SANITY CHECK: real cache scale ===")
-    print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  " f"multi-CIK symbols={multi} ({share:.1%})")
+    print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  multi-CIK symbols={multi} ({share:.1%})")
     print(f"  open tenures={int(real_tenure['valid_to'].isna().sum())}")
     print("  OK: Re-deriving the same cache reproduces the table exactly")
     print("  -> ~1 symbol in 11 has had more than one issuer; reuse is not a long tail.")

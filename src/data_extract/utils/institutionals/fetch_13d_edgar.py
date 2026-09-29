@@ -34,6 +34,7 @@ Four properties the parsing depends on:
 from __future__ import annotations
 
 import re
+from typing import Any, cast
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -345,14 +346,14 @@ def _clean_transaction_row(values: dict[str, str], filing_date: pd.Timestamp | N
     filing date) and `filing_date` is available, re-anchor the year to the
     filing's year, stepping back one year if that would still land AFTER the
     filing (the trade must precede the 60-day-lookback disclosure)."""
-    out = dict(values)
+    out: dict[str, object] = dict(values)
     for field in ("quantity", "price_per_share"):
         raw = out.get(field)
         m = _NUMERIC_RE.search(str(raw).replace(",", "")) if raw else None
         out[field] = float(m.group().replace(",", "")) if m else float("nan")
     raw_date = out.get("trade_date")
     try:
-        trade_date = pd.Timestamp(raw_date) if raw_date else None
+        trade_date = pd.Timestamp(cast(Any, raw_date)) if raw_date else None
     except (TypeError, ValueError):
         trade_date = None
     if trade_date is not None and trade_date.year < 1900 and filing_date is not None:
@@ -415,7 +416,7 @@ def _extract_transaction_rows(filing, fallback_person: str | None, filing_date: 
                 values = _row_values(cells, roles)
                 if "trade_date" not in values or "transaction_type" not in values:
                     continue  # not a data row (e.g. a footnote line)
-                values.setdefault("reporting_person_name", fallback_person)
+                values.setdefault("reporting_person_name", cast(Any, fallback_person))
                 rows.append(_clean_transaction_row(values, filing_date))
     return rows
 
@@ -469,7 +470,7 @@ def _filing_rows(filing) -> list[dict]:
         primary = getattr(filing, "primary_document", None)
         cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
         if accession and primary and cik_raw:
-            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/" f"{accession.replace('-', '')}/{primary}"
+            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{accession.replace('-', '')}/{primary}"
     doc_url = str(doc_url) if doc_url else None
 
     # Item 3/4/5/6 narrative: trust the structured XML parse when present, else fall
@@ -608,9 +609,10 @@ def build_ticker_13d_edgar(
             r["ticker"] = ticker
             rows.append(r)
 
+        filing_date: pd.Timestamp | None = None
         try:
             fallback_person = person_names[0] if len(person_names) == 1 else None
-            filing_date = filing_rows[0].get("filing_date") if filing_rows else pd.Timestamp(filing.filing_date)
+            filing_date = cast(pd.Timestamp | None, filing_rows[0].get("filing_date")) if filing_rows else pd.Timestamp(cast(Any, filing.filing_date))
             exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
         except Exception:  # noqa: BLE001 -- best-effort only
             exhibit_rows = []

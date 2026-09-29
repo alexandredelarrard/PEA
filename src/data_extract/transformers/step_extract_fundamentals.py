@@ -13,18 +13,16 @@ Fundamentals / financials extraction:
 """
 
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.utils.step import Step
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
-from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
+from src.utils.step import Step
 
 
 def _elapsed(seconds: float) -> str:
@@ -38,7 +36,6 @@ def _elapsed(seconds: float) -> str:
 
 
 class StepExtractFundamentals(Step):
-
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
@@ -58,7 +55,7 @@ class StepExtractFundamentals(Step):
         finally:
             self._log.info("%s: done in %s", what, _elapsed(time.perf_counter() - start))
 
-    def run(self, tickers: list[str], full : bool=False) -> None:
+    def run(self, tickers: list[str], full: bool = False) -> None:
 
         # `self._config`, the attribute `Step.__init__` actually sets. There is no `config`
         # property on `Step` (only `strategies/base.Strategy` has one, and

@@ -195,6 +195,21 @@
       }
     ]
   },
+  "EVRG": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000054507",
+        "valid_to": "2018-06-04",
+        "evidence": "HAND-ADJUDICATED 2026-09-28. WESTAR ENERGY INC, CIK 0000054507, is the pre-combination public registrant whose proxy archive supplies EVRG's missing governance history. The Westar/Great Plains combination closed on 2018-06-04. Great Plains Energy (0001143068) is the other transaction party, not additional consolidating history for the selected Westar continuity, and is deliberately excluded."
+      },
+      {
+        "cik": "0001711269",
+        "valid_from": "2018-06-04",
+        "evidence": "HAND-ADJUDICATED 2026-09-28. EVERGY INC, CIK 0001711269, is the post-close registrant from 2018-06-04. The dated split retains Westar before the close and Evergy on/after it; event forms continue to use the register's union policy."
+      }
+    ]
+  },
   "GOOGL": {
     "kind": "reorganisation",
     "segments": [
@@ -225,6 +240,21 @@
       }
     ]
   },
+  "JCI": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000053669",
+        "valid_to": "2016-09-02",
+        "evidence": "HAND-ADJUDICATED 2026-09-28 FROM SEC FILINGS. JOHNSON CONTROLS INC, CIK 0000053669, is the accounting acquirer and its pre-merger financial statements are the combined company's historical statements. The merger with Tyco completed on 2016-09-02; its 2016-09-06 completion 8-K is still retained by the event-form union policy."
+      },
+      {
+        "cik": "0000833444",
+        "valid_from": "2016-09-02",
+        "evidence": "HAND-ADJUDICATED 2026-09-28 FROM SEC FILINGS. TYCO INTERNATIONAL PLC, CIK 0000833444, changed its name to Johnson Controls International plc when the combination completed on 2016-09-02. The successor's 2016 Form 10-K states that JCI Inc was the accounting acquirer and that periods before 2016-09-03 are JCI Inc history, making 2016-09-02 the legal cutover while preserving the old-CIK archive before it."
+      }
+    ]
+  },
   "LIN": {
     "kind": "reorganisation",
     "segments": [
@@ -252,6 +282,21 @@
         "cik": "0001613103",
         "valid_from": "2015-02-28",
         "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001613103. Its own archive starts 2014-07-14 (185 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 47 10-K/10-Q from 2015-02-27."
+      }
+    ]
+  },
+  "PSKY": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000813828",
+        "valid_to": "2025-08-07",
+        "evidence": "HAND-ADJUDICATED 2026-09-28. PARAMOUNT GLOBAL, CIK 0000813828, owns the 34 recoverable predecessor proxy filings identified by the governance audit. It is the public predecessor through the Paramount Skydance transaction effective 2025-08-07."
+      },
+      {
+        "cik": "0002041610",
+        "valid_from": "2025-08-07",
+        "evidence": "HAND-ADJUDICATED 2026-09-28. PARAMOUNT SKYDANCE CORP, CIK 0002041610, is the current PSKY registrant from the 2025-08-07 transaction close. Warner Bros. Discovery is only a later tender-offer subject and is not part of this chain."
       }
     ]
   },

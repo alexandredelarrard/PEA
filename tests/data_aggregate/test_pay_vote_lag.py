@@ -17,6 +17,7 @@ lag is doing the work.
 The primitive under test is `pay_features.prior_annual_leg`, which is what `_comp_history` uses
 for the prior-year package, so this is the shipped rule and not a re-implementation of it.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -25,8 +26,8 @@ import pytest
 
 from src.data_aggregate.utils.governance.pay_features import prior_annual_leg
 
-_AGREE_WITHIN = 0.02        # 2pp, D44's own tolerance
-_AGREE_SHARE = 0.90         # the gate: 90% of overlapping company-years
+_AGREE_WITHIN = 0.02  # 2pp, D44's own tolerance
+_AGREE_SHARE = 0.90  # the gate: 90% of overlapping company-years
 
 
 def _annual(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
@@ -37,20 +38,22 @@ def _annual(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
 
 def test_the_prior_year_leg_is_nan_when_the_prior_year_is_missing():
     """The four cases, asserted BY VALUE rather than by count."""
-    hist = _annual([
-        # AAA: three consecutive proxies -> two clean pairs
-        ("AAA", "2021-05-01", 0.90),
-        ("AAA", "2022-05-01", 0.31),
-        ("AAA", "2023-05-01", 0.89),
-        # BBB: a HOLE. 2022 is missing, so the 2023 row's prior year does not exist.
-        ("BBB", "2020-05-01", 0.70),
-        ("BBB", "2021-05-01", 0.65),
-        ("BBB", "2023-05-01", 0.60),
-        # CCC: present in this source only -> its single row has no prior year at all
-        ("CCC", "2022-05-01", 0.55),
-    ])
+    hist = _annual(
+        [
+            # AAA: three consecutive proxies -> two clean pairs
+            ("AAA", "2021-05-01", 0.90),
+            ("AAA", "2022-05-01", 0.31),
+            ("AAA", "2023-05-01", 0.89),
+            # BBB: a HOLE. 2022 is missing, so the 2023 row's prior year does not exist.
+            ("BBB", "2020-05-01", 0.70),
+            ("BBB", "2021-05-01", 0.65),
+            ("BBB", "2023-05-01", 0.60),
+            # CCC: present in this source only -> its single row has no prior year at all
+            ("CCC", "2022-05-01", 0.55),
+        ]
+    )
     lag = prior_annual_leg(hist, "v")
-    at = dict(zip(zip(hist["ticker"], hist["as_of"].dt.year), lag))
+    at = dict(zip(zip(hist["ticker"], hist["as_of"].dt.year, strict=False), lag, strict=False))
 
     # 1. consecutive years pair up, and carry the PRIOR year's value -- not this year's
     assert at[("AAA", 2022)] == pytest.approx(0.90)
@@ -84,10 +87,11 @@ def test_the_two_sources_reconcile_only_under_the_lag():
     """
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         proxy = ctx.store.load("def14a_llm")
         votes = ctx.store.load("sec_8k_votes")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"live governance tables not reachable ({e})")
     if proxy is None or proxy.empty or votes is None or votes.empty:
         pytest.skip("def14a_llm or sec_8k_votes empty")
@@ -98,17 +102,29 @@ def test_the_two_sources_reconcile_only_under_the_lag():
     if hist is None or hist.empty:
         pytest.skip("no say-on-pay vote rows")
     # The 8-K is filed days after the meeting, so its filing year IS the meeting year.
-    vote = pd.DataFrame({
-        "ticker": hist["ticker"],
-        "meeting_year": pd.to_datetime(hist["as_of"]).dt.year,
-        "vote_support": 1.0 - pd.to_numeric(hist["sop_dissent"], errors="coerce"),
-    }).dropna().drop_duplicates(["ticker", "meeting_year"], keep="last")
+    vote = (
+        pd.DataFrame(
+            {
+                "ticker": hist["ticker"],
+                "meeting_year": pd.to_datetime(hist["as_of"]).dt.year,
+                "vote_support": 1.0 - pd.to_numeric(hist["sop_dissent"], errors="coerce"),
+            }
+        )
+        .dropna()
+        .drop_duplicates(["ticker", "meeting_year"], keep="last")
+    )
 
-    p = pd.DataFrame({
-        "ticker": proxy["ticker"],
-        "proxy_year": pd.to_datetime(proxy["as_of"], errors="coerce").dt.year,
-        "proxy_support": pd.to_numeric(proxy["say_on_pay_support_pct"], errors="coerce"),
-    }).dropna().drop_duplicates(["ticker", "proxy_year"], keep="last")
+    p = (
+        pd.DataFrame(
+            {
+                "ticker": proxy["ticker"],
+                "proxy_year": pd.to_datetime(proxy["as_of"], errors="coerce").dt.year,
+                "proxy_support": pd.to_numeric(proxy["say_on_pay_support_pct"], errors="coerce"),
+            }
+        )
+        .dropna()
+        .drop_duplicates(["ticker", "proxy_year"], keep="last")
+    )
 
     def share_agreeing(shift: int) -> tuple[float, int]:
         """Share of overlapping company-years agreeing within 2pp when the proxy is read as
@@ -125,17 +141,15 @@ def test_the_two_sources_reconcile_only_under_the_lag():
     naive, n_naive = share_agreeing(0)
 
     assert n_lag >= 1000, f"too few overlapping company-years to conclude ({n_lag})"
-    assert lagged >= _AGREE_SHARE, (
-        f"the lagged join agrees on only {lagged:.1%} of {n_lag} company-years")
+    assert lagged >= _AGREE_SHARE, f"the lagged join agrees on only {lagged:.1%} of {n_lag} company-years"
     # ⚠ THE ASSERTION THAT MAKES THIS A TEST. If the un-lagged join agreed too, the lag would
     # be decoration and this file would be proving nothing.
     assert naive < _AGREE_SHARE, (
-        f"the UN-lagged join also agrees ({naive:.1%}) -- the lag is not doing the work, so "
-        f"either D44 is wrong or one of these legs changed basis")
+        f"the UN-lagged join also agrees ({naive:.1%}) -- the lag is not doing the work, so either D44 is wrong or one of these legs changed basis"
+    )
 
     print("\n=== SANITY CHECK: D44 reconciliation as a gate ===")
-    print(f"  proxy(Y) vs meeting(Y-1): {lagged:.1%} of {n_lag:,} company-years agree "
-          f"within {_AGREE_WITHIN:.0%}")
+    print(f"  proxy(Y) vs meeting(Y-1): {lagged:.1%} of {n_lag:,} company-years agree within {_AGREE_WITHIN:.0%}")
     print(f"  proxy(Y) vs meeting(Y)  : {naive:.1%} of {n_naive:,}  <- the naive same-as_of join")
     print("  CONCLUSION: the two sources are ONE quantity at two latencies. Validated.")
 
@@ -144,10 +158,11 @@ def test_the_named_worked_examples():
     """JPM and INTC meeting-2022, the two cases that exposed the lag. Asserted, not printed."""
     try:
         from src.context import get_config_context
+
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         proxy = ctx.store.load("def14a_llm")
         votes = ctx.store.load("sec_8k_votes")
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"live governance tables not reachable ({e})")
     if proxy is None or proxy.empty or votes is None or votes.empty:
         pytest.skip("def14a_llm or sec_8k_votes empty")
@@ -167,17 +182,13 @@ def test_the_named_worked_examples():
         if v.empty or q.empty:
             pytest.skip(f"{tkr} 2022 meeting / 2023 proxy absent")
         vote_support = 1.0 - float(pd.to_numeric(v["sop_dissent"], errors="coerce").iloc[-1])
-        proxy_support = float(pd.to_numeric(q["say_on_pay_support_pct"],
-                                           errors="coerce").iloc[-1])
+        proxy_support = float(pd.to_numeric(q["say_on_pay_support_pct"], errors="coerce").iloc[-1])
         gap = abs(vote_support - proxy_support)
-        assert gap <= _AGREE_WITHIN, (
-            f"{tkr}: 8-K meeting-2022 support {vote_support:.3f} vs proxy-2023 "
-            f"{proxy_support:.3f} -- gap {gap:.3f}")
+        assert gap <= _AGREE_WITHIN, f"{tkr}: 8-K meeting-2022 support {vote_support:.3f} vs proxy-2023 {proxy_support:.3f} -- gap {gap:.3f}"
         shown.append((tkr, vote_support, proxy_support, gap))
 
     print("\n=== SANITY CHECK: the two named worked examples ===")
     for tkr, vs, ps, gap in shown:
-        print(f"  {tkr:<5} 8-K meeting-2022 support {vs:.3f} vs proxy-2023 {ps:.3f} "
-              f"-> gap {gap:.4f}")
+        print(f"  {tkr:<5} 8-K meeting-2022 support {vs:.3f} vs proxy-2023 {ps:.3f} -> gap {gap:.4f}")
     print("  Both are near-revolts the proxy reports a year later, not a basis conflict.")
     print("  CONCLUSION: named, reproducible, and asserted. Validated.")

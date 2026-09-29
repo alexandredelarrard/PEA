@@ -14,16 +14,17 @@ distinguishable from a code problem. The per-series bands are unit checks: they 
 mislabelled source (a reciprocal FX quote, a rate served as a fraction rather than a percent)
 that every downstream test would happily consume.
 """
+
 from __future__ import annotations
 
 import os
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.constants.constants_price import (MACRO_ALL_SERIES, MACRO_BOND_TR_SERIES,
-                                     MACRO_CORE_LEVEL_SERIES, MACRO_MARKET_SERIES)
+from src.constants.constants_price import MACRO_ALL_SERIES, MACRO_BOND_TR_SERIES, MACRO_CORE_LEVEL_SERIES, MACRO_MARKET_SERIES
 from src.data_extract.utils.prices import fetch_macro as fm
 
 
@@ -43,7 +44,7 @@ def test_build_bond_total_return_carry_and_duration():
 
     # (b) a one-day yield SPIKE (+1.0%: 4->5) must book a capital LOSS ~ -duration*dy
     spike = pd.Series(4.0, index=idx)
-    spike.iloc[3] = 5.0                              # +100bp on day 3
+    spike.iloc[3] = 5.0  # +100bp on day 3
     tr_spike = fm.build_bond_total_return(spike)
     r = tr_spike.dropna().pct_change()
     loss_day = r.loc[idx[3]]
@@ -52,9 +53,8 @@ def test_build_bond_total_return_carry_and_duration():
     assert -0.10 < loss_day < -0.05, f"loss {loss_day:.4f} not near -duration*dyield"
 
     print("\n=== SANITY CHECK: bond total-return reconstruction ===")
-    print(f"  flat 4% yield -> daily carry {ret.iloc[0]*1e4:.3f}bp, index strictly rising.")
-    print(f"  +100bp yield spike -> one-day return {loss_day*100:.2f}% "
-          f"(capital loss ~ -duration*dyield). Validated.")
+    print(f"  flat 4% yield -> daily carry {ret.iloc[0] * 1e4:.3f}bp, index strictly rising.")
+    print(f"  +100bp yield spike -> one-day return {loss_day * 100:.2f}% (capital loss ~ -duration*dyield). Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -73,36 +73,30 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
 
     def _fake_fred_leg(since):
         idx = pd.bdate_range(since, since + pd.Timedelta(days=10), freq="B")[:5]
-        return pd.DataFrame({c: 4.0 for c in MACRO_CORE_LEVEL_SERIES
-                             if c != MACRO_MARKET_SERIES}, index=idx)
+        return pd.DataFrame({c: 4.0 for c in MACRO_CORE_LEVEL_SERIES if c != MACRO_MARKET_SERIES}, index=idx)
 
     monkeypatch.setattr(fm, "_fetch_price_leg", _fake_price_leg)
     monkeypatch.setattr(fm, "_fetch_fred_leg", _fake_fred_leg)
 
-    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None,
-                                              warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(ctx, years_history=31)
+    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
+    long = fm.build_macro_frame(cast(Any, ctx), years_history=31)
 
     assert seen["span_years"] == 31, "the argument must drive the download window"
     assert list(long.columns) == ["date", "ticker", "close"]
     assert not hasattr(ctx, "config"), "test is only meaningful without a config object"
 
     print("\n=== SANITY CHECK: macro window is an argument ===")
-    print(f"  build_macro_frame(years_history=31) spanned {seen['span_years']}y and ran on a "
-          f"context with NO config attribute.")
-    print("  Both windows therefore live in StepExtractPrices.run, not inside the fetcher. "
-          "Validated.")
+    print(f"  build_macro_frame(years_history=31) spanned {seen['span_years']}y and ran on a context with NO config attribute.")
+    print("  Both windows therefore live in StepExtractPrices.run, not inside the fetcher. Validated.")
 
 
 # --------------------------------------------------------------------------- #
 # 3. opt-in live pull (FRED + yfinance)                                        #
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not os.getenv("FRED_API_KEY"),
-                    reason="needs FRED_API_KEY (and network) for the live pull")
+@pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY (and network) for the live pull")
 def test_real_pull_ranges_and_fx_convention():
-    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None,
-                                              warning=lambda *a, **k: None))
-    long = fm.build_macro_frame(ctx, years_history=3)
+    ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
+    long = fm.build_macro_frame(cast(Any, ctx), years_history=3)
 
     assert not long.empty and list(long.columns) == ["date", "ticker", "close"]
     assert not long["close"].isna().any(), "the melt must drop NaN, not store it"
@@ -113,14 +107,13 @@ def test_real_pull_ranges_and_fx_convention():
     def band(name, lo, hi):
         s = w[name].dropna() if name in w.columns else pd.Series(dtype=float)
         assert not s.empty, f"{name} came back empty"
-        assert s.between(lo, hi).all(), (f"{name} outside [{lo}, {hi}]: "
-                                         f"{s.min():.3f} .. {s.max():.3f}")
+        assert s.between(lo, hi).all(), f"{name} outside [{lo}, {hi}]: {s.min():.3f} .. {s.max():.3f}"
 
-    band(MACRO_MARKET_SERIES, 1.0, 1e5)          # an index level, just strictly positive
-    band("gold", 200, 6000)                      # USD/oz
-    band("cash_rate", -1, 25)                    # annual %
-    band("vix", 5, 90)                           # index points
-    band(MACRO_BOND_TR_SERIES, 1.0, 1e4)         # reconstructed index, base 100
+    band(MACRO_MARKET_SERIES, 1.0, 1e5)  # an index level, just strictly positive
+    band("gold", 200, 6000)  # USD/oz
+    band("cash_rate", -1, 25)  # annual %
+    band("vix", 5, 90)  # index points
+    band(MACRO_BOND_TR_SERIES, 1.0, 1e4)  # reconstructed index, base 100
     # DEXUSEU is USD per EUR; its reciprocal (Yahoo's USDEUR=X) would land ~0.6-1.0
     band("fx_usdeur", 1.0, 1.6)
 
@@ -130,11 +123,9 @@ def test_real_pull_ranges_and_fx_convention():
     print(f"  {len(long):,} rows / {w.shape[1]} of {len(MACRO_ALL_SERIES)} registry series")
     for c in sorted(w.columns):
         s = w[c].dropna()
-        print(f"  {c:<20} {s.iloc[0]:>10.3f} .. {s.iloc[-1]:>10.3f}   n={len(s):<5} "
-              f"from {s.index.min().date()}")
+        print(f"  {c:<20} {s.iloc[0]:>10.3f} .. {s.iloc[-1]:>10.3f}   n={len(s):<5} from {s.index.min().date()}")
     print(f"  missing: {missing or 'none'}")
-    print("  fx_usdeur inside (1.0, 1.6) -> USD per EUR, FRED DEXUSEU's native convention "
-          "and the sleeve's. Validated.")
+    print("  fx_usdeur inside (1.0, 1.6) -> USD per EUR, FRED DEXUSEU's native convention and the sleeve's. Validated.")
 
 
 if __name__ == "__main__":

@@ -25,12 +25,14 @@ split-triggered price re-pull in `fetch_prices`, and the prices validator.
 from __future__ import annotations
 
 import logging
+from typing import cast
+
 import pandas as pd
 
 from src.context import Context
-from src.data_store.schema import Tables
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.prices.fetch_prices import download_ohlcv
+from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +64,14 @@ def _extract_splits(long_prices: pd.DataFrame | None) -> pd.DataFrame:
     if long_prices is None or long_prices.empty or _RAW_COLUMN not in long_prices.columns:
         return pd.DataFrame(columns=_COLUMNS)
 
-    s = long_prices[["date", "ticker", _RAW_COLUMN]].rename(columns={_RAW_COLUMN: "ratio"})
-    s["ratio"] = pd.to_numeric(s["ratio"], errors="coerce")
-    s = s[s["ratio"].notna() & (s["ratio"] != 0.0)]
+    s = cast(pd.DataFrame, long_prices[["date", "ticker", _RAW_COLUMN]]).rename(columns={_RAW_COLUMN: "ratio"})
+    ratio = cast(pd.Series, pd.to_numeric(s["ratio"], errors="coerce"))
+    s["ratio"] = ratio
+    s = cast(pd.DataFrame, s[ratio.notna() & (ratio != 0.0)])
     if s.empty:
         return pd.DataFrame(columns=_COLUMNS)
     s["date"] = pd.to_datetime(s["date"], format="%Y-%m-%d")
-    return s[_COLUMNS].drop_duplicates(subset=["ticker", "date"]).reset_index(drop=True)
+    return cast(pd.DataFrame, s[_COLUMNS]).drop_duplicates(subset=["ticker", "date"]).reset_index(drop=True)
 
 
 def fetch_splits(
@@ -92,23 +95,22 @@ def fetch_splits(
         since = today - pd.DateOffset(years=years_history)
     else:
         last = context.store.max_date(Tables.prices_splits)
-        since = (today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS) if last is None
-                 else min(pd.Timestamp(last),
-                          today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS)))
+        since = cast(
+            pd.Timestamp,
+            today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS)
+            if last is None
+            else min(pd.Timestamp(last), today - pd.DateOffset(years=INCREMENTAL_LOOKBACK_YEARS)),
+        )
 
     logger.info("Downloading splits for %d tickers since %s", len(tickers), since.date())
-    df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause,
-                                   desc="Downloading splits",
-                                   auto_adjust=False, actions=True)
+    df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause, desc="Downloading splits", auto_adjust=False, actions=True)
     df_splits = _extract_splits(df_downloaded)
 
     if df_splits.empty:
-        logger.warning("no split events returned -- leaving DB table '%s' untouched",
-                       Tables.prices_splits)
+        logger.warning("no split events returned -- leaving DB table '%s' untouched", Tables.prices_splits)
         record_run(context, Tables.prices_splits, len(tickers), 0)
         return
 
     n = context.store.save(Tables.prices_splits, df_splits)
-    logger.info("Saved %d split rows to DB table '%s' (%d distinct tickers)",
-                n, Tables.prices_splits, df_splits["ticker"].nunique())
+    logger.info("Saved %d split rows to DB table '%s' (%d distinct tickers)", n, Tables.prices_splits, df_splits["ticker"].nunique())
     record_run(context, Tables.prices_splits, len(tickers), n)

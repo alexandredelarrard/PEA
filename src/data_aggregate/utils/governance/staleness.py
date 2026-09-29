@@ -24,6 +24,7 @@ the age of the filing that produced a cell, never the calendar. A field that is 
 absent before 2011 has no filing to age, so it is already NaN and this function is a no-op on
 it. See phase 2 §2 kind A -- no date literals anywhere in this package.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -105,16 +106,42 @@ LEVEL_MAX_AGE_DAYS = 1095
 #: membership meant "never expires". Phase 3 overrides D3 on the user's explicit authorisation
 #: and membership now means "expires at 1,095 days instead of 548". The old name is kept as an
 #: alias below because three test modules import it.
-LEVEL_HORIZON_FIELDS: frozenset[str] = frozenset({
-    "ceo_pay_growth", "ceo_pay_vs_revenue_growth", "ceo_pay_ratio", "ceo_equity_pay_pct",
-    "ceo_tenure", "founder_ceo", "pct_independent_directors", "pct_female_directors",
-    "board_size", "avg_board_tenure", "say_on_pay_support", "insider_ownership_pct",
-})
+LEVEL_HORIZON_FIELDS: frozenset[str] = frozenset(
+    {
+        "ceo_pay_growth",
+        "ceo_pay_vs_revenue_growth",
+        "ceo_pay_ratio",
+        "ceo_equity_pay_pct",
+        "ceo_tenure",
+        "founder_ceo",
+        "pct_independent_directors",
+        "pct_female_directors",
+        "board_size",
+        "avg_board_tenure",
+        "say_on_pay_support",
+        "insider_ownership_pct",
+    }
+)
 
 #: ⚠ DEPRECATED NAME, kept because the set itself is still the right set -- only its MEANING
 #: changed (see above). Read `LEVEL_HORIZON_FIELDS`; this alias exists so a stale import does
 #: not break, and it should go once the tests naming it are next touched.
 LEGACY_EXEMPT_FROM_EXPIRY: frozenset[str] = LEVEL_HORIZON_FIELDS
+
+
+def source_date_column(field: str) -> str:
+    """Internal provenance column paired with a governance value."""
+    return f"{field}_source_as_of"
+
+
+def ultimate_source_dates(history: pd.DataFrame, field: str) -> pd.Series:
+    """Observation date for each non-null filing-grain value, including carried lineage."""
+    fallback = pd.to_datetime(history["as_of"], errors="coerce").where(history[field].notna())
+    column = source_date_column(field)
+    if column not in history.columns:
+        return fallback
+    explicit = pd.to_datetime(history[column], errors="coerce").where(history[field].notna())
+    return explicit.combine_first(fallback)
 
 
 def horizon_for(feature: str, default: int = GOVERNANCE_EVENT_MAX_AGE_DAYS) -> int:
@@ -127,9 +154,7 @@ def horizon_for(feature: str, default: int = GOVERNANCE_EVENT_MAX_AGE_DAYS) -> i
     return LEVEL_MAX_AGE_DAYS if feature in LEVEL_HORIZON_FIELDS else default
 
 
-def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str,
-                 max_age_days: int | None = None,
-                 feature: str | None = None) -> pd.DataFrame:
+def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age_days: int | None = None, feature: str | None = None) -> pd.DataFrame:
     """NaN out cells of a ffilled daily frame that are older than `max_age_days`.
 
     Takes the ORIGINAL filing `history` so the age is measured against the real `as_of` that
@@ -161,27 +186,28 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str,
     # with `last` (which skips NaN) -- so a cell's value comes from the last NON-NULL filing,
     # and its age must be measured against that same filing, not against a later empty one.
     h = history[["ticker", "as_of", field]].copy()
+    h["_source_as_of"] = ultimate_source_dates(history, field)
     h["as_of"] = pd.to_datetime(h["as_of"], errors="coerce")
     h = h.dropna(subset=["ticker", "as_of", field])
     if h.empty:
         return daily
-    h["_produced_at"] = h["as_of"].map(pd.Timestamp.toordinal).astype("float64")
+    h["_produced_at"] = h["_source_as_of"].map(pd.Timestamp.toordinal).astype("float64")
 
-    produced = fundamentals_to_daily(h, "_produced_at", daily.index)
+    produced = fundamentals_to_daily(h, "_produced_at", pd.DatetimeIndex(daily.index))
     if produced.empty:
         return daily
     produced = produced.reindex(columns=daily.columns)
 
-    today = pd.Series(daily.index.map(pd.Timestamp.toordinal), index=daily.index,
-                      dtype="float64")
+    today = pd.Series(daily.index.map(pd.Timestamp.toordinal), index=daily.index, dtype="float64")
     age = produced.rsub(today, axis=0)
     # `> max_age` is False wherever the age is NaN (no filing yet), which is the right
     # answer: those cells are already NaN in `daily` and masking them changes nothing.
-    return daily.mask(age > float(max_age_days))
+    return daily.mask((age < 0) | (age > float(max_age_days)))
 
 
 def _expire_family(
-    frames: dict[str, pd.DataFrame], history: pd.DataFrame,
+    frames: dict[str, pd.DataFrame],
+    history: pd.DataFrame,
     selected: frozenset[str] | set[str],
     sources: dict[str, str] | None,
     max_age_days: int,
@@ -204,7 +230,8 @@ def _expire_family(
 
 
 def expire_event_fields(
-    frames: dict[str, pd.DataFrame], history: pd.DataFrame,
+    frames: dict[str, pd.DataFrame],
+    history: pd.DataFrame,
     event_fields: frozenset[str] | set[str],
     sources: dict[str, str] | None = None,
     max_age_days: int = GOVERNANCE_EVENT_MAX_AGE_DAYS,
@@ -225,12 +252,12 @@ def expire_event_fields(
     through `expire_level_fields` instead. Before phase 3 the skip meant "never expires"; now
     it means "not on THIS clock".
     """
-    return _expire_family(frames, history, event_fields, sources, max_age_days,
-                          skip=LEVEL_HORIZON_FIELDS)
+    return _expire_family(frames, history, event_fields, sources, max_age_days, skip=LEVEL_HORIZON_FIELDS)
 
 
 def expire_level_fields(
-    frames: dict[str, pd.DataFrame], history: pd.DataFrame,
+    frames: dict[str, pd.DataFrame],
+    history: pd.DataFrame,
     level_fields: frozenset[str] | set[str],
     sources: dict[str, str] | None = None,
     max_age_days: int = LEVEL_MAX_AGE_DAYS,

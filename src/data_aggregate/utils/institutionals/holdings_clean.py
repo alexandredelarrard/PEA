@@ -61,9 +61,7 @@ def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:
     """
     early, late = band
     if "filing_date" not in h.columns or "period" not in h.columns:
-        logger.info(
-            "13F clean: no `filing_date`/`period` -> the [-%s, +%s] filing band CANNOT " "be applied on this read; every row kept", early, late
-        )
+        logger.info("13F clean: no `filing_date`/`period` -> the [-%s, +%s] filing band CANNOT be applied on this read; every row kept", early, late)
         return h
 
     lag = (h["filing_date"] - (h["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS))).dt.days
@@ -160,8 +158,7 @@ def clean_holdings(
         h = h.sort_values("filing_date")
     else:
         logger.info(
-            "13F clean: no `filing_date` column -> amendments cannot be ordered, so "
-            "`keep='last'` falls back to source order for %s duplicate key(s)",
+            "13F clean: no `filing_date` column -> amendments cannot be ordered, so `keep='last'` falls back to source order for %s duplicate key(s)",
             f"{int(h.duplicated(list(key)).sum()):,}",
         )
     return h.drop_duplicates(list(key), keep="last")

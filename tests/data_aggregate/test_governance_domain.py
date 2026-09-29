@@ -44,6 +44,7 @@ Three properties are asserted, and the SECOND is the one that makes the gate saf
   2. an IN-DOMAIN value is returned BIT-IDENTICAL, so the gate is purely additive,
   3. the cost is COUNTED in the tally -- never a silent drop.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -92,36 +93,37 @@ def _proxy(**overrides) -> pd.DataFrame:
         "ceo_is_founder": 0.0,
         "say_on_pay_support_pct": 0.94,
     }
-    rows = [{"ticker": "GOOD", "as_of": AS_OF, **base},
-            {"ticker": "BAD", "as_of": AS_OF, **{**base, **overrides}}]
+    rows = [{"ticker": "GOOD", "as_of": AS_OF, **base}, {"ticker": "BAD", "as_of": AS_OF, **{**base, **overrides}}]
     return pd.DataFrame(rows)
 
 
 # --------------------------------------------------------------------------- #
 # 1. every measured breach is blanked                                          #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("src, name, bad_value, label", [
-    ("pct_independent_directors", "pct_independent_directors", 1.273, "ABT 2012-03-15"),
-    ("pct_independent_directors", "pct_independent_directors", -0.01, "negative share"),
-    ("ceo_equity_pay_pct", "ceo_equity_pay_pct", 4.716, "RCL 2021-04-22"),
-    ("ceo_equity_pay_pct", "ceo_equity_pay_pct", -0.011, "measured minimum"),
-    ("board_size", "board_size", 1.0, "GPN 2001-08-31 / MKC 1998-02-17"),
-    ("board_size", "board_size", 2.0, "measured maximum below the bar"),
-    ("board_size", "board_size", 200.0, "a future 10x parse error"),
-    ("ceo_pay_ratio", "ceo_pay_ratio", -1.0, "negative pay is impossible (EQT 2009: -$8.9M)"),
-    ("ceo_pay_ratio", "ceo_pay_ratio", 197_274.0, "GOOGL 2018-04-27 (== median pay)"),
-    ("insider_ownership_pct", "insider_ownership_pct", 0.998, "META: voting power, not equity"),
-    ("insider_ownership_pct", "insider_ownership_pct", 1.0000, "UHS / WDAY / HOOD"),
-    ("pct_female_directors", "pct_female_directors", 1.5, "inert bound, still enforced"),
-])
+@pytest.mark.parametrize(
+    "src, name, bad_value, label",
+    [
+        ("pct_independent_directors", "pct_independent_directors", 1.273, "ABT 2012-03-15"),
+        ("pct_independent_directors", "pct_independent_directors", -0.01, "negative share"),
+        ("ceo_equity_pay_pct", "ceo_equity_pay_pct", 4.716, "RCL 2021-04-22"),
+        ("ceo_equity_pay_pct", "ceo_equity_pay_pct", -0.011, "measured minimum"),
+        ("board_size", "board_size", 1.0, "GPN 2001-08-31 / MKC 1998-02-17"),
+        ("board_size", "board_size", 2.0, "measured maximum below the bar"),
+        ("board_size", "board_size", 200.0, "a future 10x parse error"),
+        ("ceo_pay_ratio", "ceo_pay_ratio", -1.0, "negative pay is impossible (EQT 2009: -$8.9M)"),
+        ("ceo_pay_ratio", "ceo_pay_ratio", 197_274.0, "GOOGL 2018-04-27 (== median pay)"),
+        ("insider_ownership_pct", "insider_ownership_pct", 0.998, "META: voting power, not equity"),
+        ("insider_ownership_pct", "insider_ownership_pct", 1.0000, "UHS / WDAY / HOOD"),
+        ("pct_female_directors", "pct_female_directors", 1.5, "inert bound, still enforced"),
+    ],
+)
 def test_measured_breach_is_blanked(src, name, bad_value, label):
     """The breach goes NaN for the offending ticker and ONLY for that ticker."""
-    F = _governance_fields(_proxy(**{src: bad_value}), IDX, None, {})
-    assert name in F, f"{name} vanished entirely -- the gate must blank cells, not fields"
-    frame = F[name]
+    f = _governance_fields(_proxy(**{src: bad_value}), IDX, None, {})
+    assert name in f, f"{name} vanished entirely -- the gate must blank cells, not fields"
+    frame = f[name]
     assert frame["BAD"].isna().all(), f"{label}: {bad_value} survived the gate"
-    assert frame.loc[COVERED, "GOOD"].notna().all(), \
-        f"{label}: the gate leaked onto the control ticker"
+    assert frame.loc[COVERED, "GOOD"].notna().all(), f"{label}: the gate leaked onto the control ticker"
 
 
 def test_say_on_pay_support_is_gated_on_the_raw_path():
@@ -130,9 +132,9 @@ def test_say_on_pay_support_is_gated_on_the_raw_path():
     The bound fires on 0 cells in production today; it is here to catch a percent-vs-fraction
     regression on the one RAW fraction in the panel.
     """
-    R = _def14a_raw_fields(_proxy(say_on_pay_support_pct=94.0), IDX, {})
-    assert R["say_on_pay_support"]["BAD"].isna().all()
-    assert R["say_on_pay_support"].loc[COVERED, "GOOD"].notna().all()
+    r = _def14a_raw_fields(_proxy(say_on_pay_support_pct=94.0), IDX, {})
+    assert r["say_on_pay_support"]["BAD"].isna().all()
+    assert r["say_on_pay_support"].loc[COVERED, "GOOD"].notna().all()
 
 
 # --------------------------------------------------------------------------- #
@@ -181,16 +183,15 @@ def test_a_well_paid_ceo_is_not_cut_by_the_1e5_bar():
     """
     # The realistic top of the distribution, plus TSLA's outlier, all survive.
     for ratio in (183.0, 1_965.0, 6_474.0, 18_043.0, 99_999.0):
-        F = _governance_fields(_proxy(ceo_pay_ratio=ratio), IDX, None, {})
-        kept = F["ceo_pay_ratio"].loc[COVERED, "BAD"]
+        f = _governance_fields(_proxy(ceo_pay_ratio=ratio), IDX, None, {})
+        kept = f["ceo_pay_ratio"].loc[COVERED, "BAD"]
         assert kept.notna().all(), f"the 1e5 bar cut a legitimate ratio of {ratio:,.0f}"
         assert (kept == ratio).all()
     # No pay LEVEL is bounded, so a $50M CEO total passes through untouched.
-    assert not {"ceo_total_comp", "median_employee_pay", "log_ceo_total_comp",
-                "log_median_director_pay"} & set(_DOMAIN)
+    assert not {"ceo_total_comp", "median_employee_pay", "log_ceo_total_comp", "log_median_director_pay"} & set(_DOMAIN)
 
 
-def test_zero_ceo_pay_ratio_is_KEPT():
+def test_zero_ceo_pay_ratio_is_kept():
     """⚠ A $0 CEO PAY RATIO IS REAL, and a first cut of this gate blanked it.
 
     Every one of the 1,064 cells at exactly 0 is **TSLA**. Its proxies report Musk's
@@ -206,8 +207,8 @@ def test_zero_ceo_pay_ratio_is_KEPT():
     salary against a 0 total — need the total compared against its components or its
     neighbours, which is the phase-2 sanity step, not a range check.
     """
-    F = _governance_fields(_proxy(ceo_pay_ratio=0.0), IDX, None, {})
-    kept = F["ceo_pay_ratio"].loc[COVERED, "BAD"]
+    f = _governance_fields(_proxy(ceo_pay_ratio=0.0), IDX, None, {})
+    kept = f["ceo_pay_ratio"].loc[COVERED, "BAD"]
     assert kept.notna().all(), "TSLA's genuine 0 pay ratio was blanked"
     assert (kept == 0.0).all()
 
@@ -221,8 +222,8 @@ def test_sub_one_pay_ratio_survives_on_purpose():
     The ratio is not the broken leg. Raising the lower bound to 1.0 would blank 6,558 cells and
     HIDE the leg that is broken, which phase 2 repairs at source.
     """
-    F = _governance_fields(_proxy(ceo_pay_ratio=8.64e-06), IDX, None, {})
-    assert F["ceo_pay_ratio"].loc[COVERED, "BAD"].notna().all()
+    f = _governance_fields(_proxy(ceo_pay_ratio=8.64e-06), IDX, None, {})
+    assert f["ceo_pay_ratio"].loc[COVERED, "BAD"].notna().all()
 
 
 # --------------------------------------------------------------------------- #
@@ -236,26 +237,25 @@ def test_insider_ownership_bound_applies_only_to_dual_class():
     observation to catch the other 58.
     """
     hist = _proxy(insider_ownership_pct=0.91)
-    hist["dual_class_shares"] = [1.0, 0.0]          # GOOD is dual-class, BAD (the "LVS") is not
+    hist["dual_class_shares"] = [1.0, 0.0]  # GOOD is dual-class, BAD (the "LVS") is not
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"].loc[COVERED, "BAD"].notna().all(), \
-        "the single-class 0.91 was blanked -- LVS 2005 is a real value"
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"].loc[COVERED, "BAD"].notna().all(), "the single-class 0.91 was blanked -- LVS 2005 is a real value"
     assert not [k for k in tally if k.startswith("domain-gated: insider_ownership_pct")]
 
 
 def test_insider_ownership_bound_fires_on_a_dual_class_filer():
     """META 0.998 with the dual-class flag set: blanked, and counted."""
     hist = _proxy(insider_ownership_pct=0.998)
-    hist["dual_class_shares"] = [0.0, 1.0]          # only BAD is dual-class
+    hist["dual_class_shares"] = [0.0, 1.0]  # only BAD is dual-class
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"]["BAD"].isna().all()
-    assert F["insider_ownership_pct"].loc[COVERED, "GOOD"].notna().all()
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"]["BAD"].isna().all()
+    assert f["insider_ownership_pct"].loc[COVERED, "GOOD"].notna().all()
     assert tally["domain-gated: insider_ownership_pct tickers"] == 1
 
 
-def test_economic_ownership_is_COMPUTED_from_the_filed_share_count():
+def test_economic_ownership_is_computed_from_the_filed_share_count():
     """⚠ THE FIX FOR D12, and it is arithmetic on two filed numbers rather than an extraction.
 
     For a dual-class filer the economic percentage is **not a disclosed fact**. Alphabet's 2026
@@ -278,44 +278,37 @@ def test_economic_ownership_is_COMPUTED_from_the_filed_share_count():
     """
     from src.data_aggregate.utils.governance.panel import economic_ownership
 
-    hist = pd.DataFrame([
-        # the refined schema returns NULL for a per-class table, so the computation fills a
-        # genuine hole rather than overwriting a disclosed number
-        {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-04-24"),
-         "insider_shares": 772_937_064.0, "insider_ownership_pct": None},
-        {"ticker": "META", "as_of": pd.Timestamp("2026-04-16"),
-         "insider_shares": 343_379_929.0, "insider_ownership_pct": None},
-        # no share count -> the extracted value is the best available and must survive
-        {"ticker": "NOSH", "as_of": pd.Timestamp("2026-04-16"),
-         "insider_shares": None, "insider_ownership_pct": 0.05},
-        # a count on an incompatible basis (5x the shares outstanding) -> rejected, not clipped
-        {"ticker": "BADBASIS", "as_of": pd.Timestamp("2026-04-16"),
-         "insider_shares": 5.0e9, "insider_ownership_pct": 0.07},
-        # ⚠ THE PRECEDENCE CASE. A DISCLOSED percentage is filed evidence and beats our
-        # arithmetic, which matters because `sharesOutstandingPit` is out by up to 4x on some
-        # tickers (APH 2021: 9.94% computed against 2.50% disclosed, ~598M shares and two 2:1
-        # splits since). Measured over the 49 single-class filings carrying both, the two agree
-        # to a median 0.0004 and within 1pp on 40 — so the derivation is right in the large and
-        # the disclosed value is right always.
-        {"ticker": "DISCLOSED", "as_of": pd.Timestamp("2026-04-16"),
-         "insider_shares": 99_400_000.0, "insider_ownership_pct": 0.025},
-    ])
-    fun = pd.DataFrame([
-        {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-02-05"),
-         "sharesOutstandingPit": 12_097_000_000.0},
-        # ⚠ AFTER the proxy: an as-of join must NOT reach it
-        {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-04-30"),
-         "sharesOutstandingPit": 12_116_000_000.0},
-        {"ticker": "META", "as_of": pd.Timestamp("2026-01-29"),
-         "sharesOutstandingPit": 2_504_000_000.0},
-        {"ticker": "NOSH", "as_of": pd.Timestamp("2026-01-29"),
-         "sharesOutstandingPit": 1_000_000.0},
-        {"ticker": "BADBASIS", "as_of": pd.Timestamp("2026-01-29"),
-         "sharesOutstandingPit": 1.0e9},
-        # 99.4M / 1.0e9 = 9.94% computed, against 2.50% disclosed -- the APH shape
-        {"ticker": "DISCLOSED", "as_of": pd.Timestamp("2026-01-29"),
-         "sharesOutstandingPit": 1.0e9},
-    ])
+    hist = pd.DataFrame(
+        [
+            # the refined schema returns NULL for a per-class table, so the computation fills a
+            # genuine hole rather than overwriting a disclosed number
+            {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-04-24"), "insider_shares": 772_937_064.0, "insider_ownership_pct": None},
+            {"ticker": "META", "as_of": pd.Timestamp("2026-04-16"), "insider_shares": 343_379_929.0, "insider_ownership_pct": None},
+            # no share count -> the extracted value is the best available and must survive
+            {"ticker": "NOSH", "as_of": pd.Timestamp("2026-04-16"), "insider_shares": None, "insider_ownership_pct": 0.05},
+            # a count on an incompatible basis (5x the shares outstanding) -> rejected, not clipped
+            {"ticker": "BADBASIS", "as_of": pd.Timestamp("2026-04-16"), "insider_shares": 5.0e9, "insider_ownership_pct": 0.07},
+            # ⚠ THE PRECEDENCE CASE. A DISCLOSED percentage is filed evidence and beats our
+            # arithmetic, which matters because `sharesOutstandingPit` is out by up to 4x on some
+            # tickers (APH 2021: 9.94% computed against 2.50% disclosed, ~598M shares and two 2:1
+            # splits since). Measured over the 49 single-class filings carrying both, the two agree
+            # to a median 0.0004 and within 1pp on 40 — so the derivation is right in the large and
+            # the disclosed value is right always.
+            {"ticker": "DISCLOSED", "as_of": pd.Timestamp("2026-04-16"), "insider_shares": 99_400_000.0, "insider_ownership_pct": 0.025},
+        ]
+    )
+    fun = pd.DataFrame(
+        [
+            {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-02-05"), "sharesOutstandingPit": 12_097_000_000.0},
+            # ⚠ AFTER the proxy: an as-of join must NOT reach it
+            {"ticker": "GOOGL", "as_of": pd.Timestamp("2026-04-30"), "sharesOutstandingPit": 12_116_000_000.0},
+            {"ticker": "META", "as_of": pd.Timestamp("2026-01-29"), "sharesOutstandingPit": 2_504_000_000.0},
+            {"ticker": "NOSH", "as_of": pd.Timestamp("2026-01-29"), "sharesOutstandingPit": 1_000_000.0},
+            {"ticker": "BADBASIS", "as_of": pd.Timestamp("2026-01-29"), "sharesOutstandingPit": 1.0e9},
+            # 99.4M / 1.0e9 = 9.94% computed, against 2.50% disclosed -- the APH shape
+            {"ticker": "DISCLOSED", "as_of": pd.Timestamp("2026-01-29"), "sharesOutstandingPit": 1.0e9},
+        ]
+    )
     tally: dict[str, int] = {}
     out = economic_ownership(hist, fun, tally).set_index("ticker")["insider_ownership_pct"]
 
@@ -323,13 +316,11 @@ def test_economic_ownership_is_COMPUTED_from_the_filed_share_count():
     # original labels against a 0..n-1 result — silently giving GOOGL META's percentage and
     # META GOOGL's. Both values were individually plausible and the tally counted 2 either
     # way, so only a named-ticker assertion catches it.
-    assert out["GOOGL"] == pytest.approx(772_937_064 / 12_097_000_000, rel=1e-9), \
-        "GOOGL took the WRONG row's value or the post-dated share count"
+    assert out["GOOGL"] == pytest.approx(772_937_064 / 12_097_000_000, rel=1e-9), "GOOGL took the WRONG row's value or the post-dated share count"
     assert out["META"] == pytest.approx(343_379_929 / 2_504_000_000, rel=1e-9)
     assert out["NOSH"] == pytest.approx(0.05), "an extracted value was lost with no share count"
     assert out["BADBASIS"] == pytest.approx(0.07), "a >1 ratio was published instead of rejected"
-    assert out["DISCLOSED"] == pytest.approx(0.025), \
-        "our arithmetic (9.94%) overrode the FILER's own disclosed 2.50% — precedence inverted"
+    assert out["DISCLOSED"] == pytest.approx(0.025), "our arithmetic (9.94%) overrode the FILER's own disclosed 2.50% — precedence inverted"
     assert tally["insider_ownership_pct: COMPUTED (no disclosed combined percentage)"] == 2
     assert tally["insider_ownership_pct: disclosed value PREFERRED over the computed one"] == 1
 
@@ -337,10 +328,11 @@ def test_economic_ownership_is_COMPUTED_from_the_filed_share_count():
     print(f"  GOOGL  772,937,064 / 12,097,000,000 = {out['GOOGL']:.4f}  (expected ~0.06)")
     print(f"  META   343,379,929 /  2,504,000,000 = {out['META']:.4f}  (audit found 0.998)")
     print("  GOOGL used the 2026-02-05 share count, NOT the 2026-04-30 one: as-of, not latest.")
-    print(f"  DISCLOSED  computed 0.0994 vs the filer's own 0.0250 -> kept "
-          f"{out['DISCLOSED']:.4f}: filed evidence beats our arithmetic.")
-    print("  CONCLUSION: the percentage a dual-class proxy never prints, from two numbers it "
-          "always does -- and ONLY where the filer prints nothing. Validated.")
+    print(f"  DISCLOSED  computed 0.0994 vs the filer's own 0.0250 -> kept {out['DISCLOSED']:.4f}: filed evidence beats our arithmetic.")
+    print(
+        "  CONCLUSION: the percentage a dual-class proxy never prints, from two numbers it "
+        "always does -- and ONLY where the filer prints nothing. Validated."
+    )
 
 
 def test_a_per_class_ownership_percentage_is_blanked_by_the_voting_leg():
@@ -375,20 +367,19 @@ def test_a_per_class_ownership_percentage_is_blanked_by_the_voting_leg():
     bad = out[out["ticker"] == "BAD"]
     good = out[out["ticker"] == "GOOD"]
     assert bad["insider_ownership_pct"].isna().all(), "the per-class 0.922 survived"
-    assert bad["ceo_ownership_pct"].isna().all(), \
-        "the CEO leg came off the same columns and must inherit the basis error"
-    assert bad["insider_voting_pct"].notna().all(), \
-        "the voting leg is on ONE unambiguous basis and must be kept"
-    assert good["insider_ownership_pct"].iloc[0] == pytest.approx(0.06), \
-        "a consistent economic/voting pair was blanked"
+    assert bad["ceo_ownership_pct"].isna().all(), "the CEO leg came off the same columns and must inherit the basis error"
+    assert bad["insider_voting_pct"].notna().all(), "the voting leg is on ONE unambiguous basis and must be kept"
+    assert good["insider_ownership_pct"].iloc[0] == pytest.approx(0.06), "a consistent economic/voting pair was blanked"
     assert tally["insider_ownership_pct: blanked (per-class basis, own > vote)"] == 1
 
     print("\n=== SANITY CHECK: the per-class ownership basis ===")
     print("  GOOGL-shaped   own 0.922 > vote 0.543 -> impossible ordering -> BLANKED")
     print("  consistent     own 0.060 < vote 0.510 -> kept bit-identical")
     print("  the voting leg survives in both: it has one unambiguous denominator.")
-    print("  CONCLUSION: blanked, never rescaled -- rescaling needs each class's shares "
-          "outstanding at the filing date, which is a different source. Validated.")
+    print(
+        "  CONCLUSION: blanked, never rescaled -- rescaling needs each class's shares "
+        "outstanding at the filing date, which is a different source. Validated."
+    )
 
 
 def test_the_basis_repair_ignores_single_class_filers():
@@ -399,12 +390,11 @@ def test_the_basis_repair_ignores_single_class_filers():
 
     hist = _proxy()
     hist["insider_ownership_pct"] = [0.012, 0.91]
-    hist["insider_voting_pct"] = [0.012, 0.50]      # BAD looks "impossible" but is single-class
+    hist["insider_voting_pct"] = [0.012, 0.50]  # BAD looks "impossible" but is single-class
     hist["dual_class_shares"] = [0.0, 0.0]
     tally: dict[str, int] = {}
     out = repair_ownership_basis(hist, tally)
-    assert out["insider_ownership_pct"].notna().all(), \
-        "a single-class filer was basis-repaired -- LVS 2005 is a real 0.91"
+    assert out["insider_ownership_pct"].notna().all(), "a single-class filer was basis-repaired -- LVS 2005 is a real 0.91"
     assert not tally
     print("\n  single-class: the inequality is not applied, 0.91 survives. Validated.")
 
@@ -418,8 +408,8 @@ def test_insider_ownership_bound_fails_closed_without_the_discriminator():
     hist = _proxy(insider_ownership_pct=0.998)
     assert "dual_class_shares" not in hist.columns
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    assert F["insider_ownership_pct"]["BAD"].isna().all()
+    f = _governance_fields(hist, IDX, None, tally)
+    assert f["insider_ownership_pct"]["BAD"].isna().all()
     # ...and it SAYS SO. A missing discriminator is a regression, not a normal state: the
     # column is in production today because `def14a_llm` declares no `read_columns` in the
     # registry and loads in full. If that ever changes, the build log has to
@@ -441,21 +431,19 @@ def test_condition_follows_the_value_across_a_stale_forward_fill():
     of UHS's 0.996 sailed straight through the gate** before `_domain_condition` was made to
     subset to the rows that carry the value.
     """
-    hist = pd.DataFrame([
-        {"ticker": "UHS", "as_of": pd.Timestamp("2012-01-03"),
-         "insider_ownership_pct": 0.996, "dual_class_shares": 1.0},
-        {"ticker": "UHS", "as_of": pd.Timestamp("2012-06-01"),
-         "insider_ownership_pct": np.nan, "dual_class_shares": 0.0},
-        # A control, so the column survives the gate and the assertion is about the LEAK
-        # rather than about the field vanishing.
-        {"ticker": "GOOD", "as_of": pd.Timestamp("2012-01-03"),
-         "insider_ownership_pct": 0.012, "dual_class_shares": 0.0},
-    ])
-    F = _governance_fields(hist, IDX, None, {})
-    got = F["insider_ownership_pct"]
+    hist = pd.DataFrame(
+        [
+            {"ticker": "UHS", "as_of": pd.Timestamp("2012-01-03"), "insider_ownership_pct": 0.996, "dual_class_shares": 1.0},
+            {"ticker": "UHS", "as_of": pd.Timestamp("2012-06-01"), "insider_ownership_pct": np.nan, "dual_class_shares": 0.0},
+            # A control, so the column survives the gate and the assertion is about the LEAK
+            # rather than about the field vanishing.
+            {"ticker": "GOOD", "as_of": pd.Timestamp("2012-01-03"), "insider_ownership_pct": 0.012, "dual_class_shares": 0.0},
+        ]
+    )
+    f = _governance_fields(hist, IDX, None, {})
+    got = f["insider_ownership_pct"]
     stale = IDX[IDX >= pd.Timestamp("2012-06-01")]
-    assert got.loc[stale, "UHS"].isna().all(), \
-        "the stale 0.996 leaked: the condition came from a filing that did not supply the value"
+    assert got.loc[stale, "UHS"].isna().all(), "the stale 0.996 leaked: the condition came from a filing that did not supply the value"
     assert got["UHS"].isna().all()
     assert got.loc[COVERED, "GOOD"].notna().all()
 
@@ -497,8 +485,7 @@ def test_bounds_are_declared_for_every_measured_breach():
     `ceo_to_director_pay_ratio`, `director_equity_pay_pct` and `director_cash_fee_pct` are the
     other three and are guarded in `director_comp.py`, beside the code that computes them.
     """
-    assert set(_DOMAIN) >= {"ceo_equity_pay_pct", "pct_independent_directors", "board_size",
-                            "ceo_pay_ratio", "insider_ownership_pct"}
+    assert set(_DOMAIN) >= {"ceo_equity_pay_pct", "pct_independent_directors", "board_size", "ceo_pay_ratio", "insider_ownership_pct"}
     for field, (lo, hi, lo_inclusive) in _DOMAIN.items():
         assert lo < hi, field
         assert isinstance(lo_inclusive, bool), field
@@ -509,11 +496,9 @@ def test_bounds_are_declared_for_every_measured_breach():
 # --------------------------------------------------------------------------- #
 def _director_comp(total: float, fees: float, stock: float) -> pd.DataFrame:
     """A three-director board on one filing, so the board-level SUM shares are what move."""
-    return pd.DataFrame([
-        {"ticker": "BAD", "as_of": AS_OF, "name": f"D{i}",
-         "total": total, "fees_earned": fees, "stock_awards": stock}
-        for i in range(3)
-    ])
+    return pd.DataFrame(
+        [{"ticker": "BAD", "as_of": AS_OF, "name": f"D{i}", "total": total, "fees_earned": fees, "stock_awards": stock} for i in range(3)]
+    )
 
 
 def test_director_cash_fee_share_is_clipped_and_counted():
@@ -539,12 +524,11 @@ def test_director_equity_share_is_blanked_not_clipped():
     """
     dc = _director_comp(total=100_000.0, fees=0.0, stock=295_000.0)
     frames, tally = director_pay_fields(dc, None, IDX)
-    assert "director_equity_pay_pct" not in frames or \
-        frames["director_equity_pay_pct"]["BAD"].isna().all()
+    assert "director_equity_pay_pct" not in frames or frames["director_equity_pay_pct"]["BAD"].isna().all()
     assert tally["director_equity_pay_pct: blanked outside [0, 1]"] == 1
 
 
-def test_ceo_to_director_ratio_rejects_only_a_NEGATIVE_numerator():
+def test_ceo_to_director_ratio_rejects_only_a_negative_numerator():
     """EQT 2009 extracts `ceo_total_comp = -8,920,166` against a $649,036 salary.
 
     Negative pay is impossible, so it is rejected. ⚠ ZERO IS NOT: TSLA reports a genuine $0
@@ -582,6 +566,7 @@ def test_ceo_to_director_ratio_keeps_a_healthy_pair():
 # the correlated failure: the flag and the value are wrong on the SAME filing
 # --------------------------------------------------------------------------- #
 
+
 def _two_filings(bad_dual_flag: float) -> pd.DataFrame:
     """A dual-class filer with two filings, the LATER one carrying the per-class defect.
 
@@ -590,14 +575,26 @@ def _two_filings(bad_dual_flag: float) -> pd.DataFrame:
     ownership percentage AND `dual_class_shares = 0`.
     """
     base = {"ceo_pay_ratio": 120.0, "board_size": 11.0}
-    return pd.DataFrame([
-        {"ticker": "BAD", "as_of": pd.Timestamp("2012-01-04"),
-         "insider_ownership_pct": 0.031, "insider_voting_pct": 0.880,
-         "dual_class_shares": 1.0, **base},
-        {"ticker": "BAD", "as_of": AS_OF,
-         "insider_ownership_pct": 0.9996, "insider_voting_pct": 0.908,
-         "dual_class_shares": bad_dual_flag, **base},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "ticker": "BAD",
+                "as_of": pd.Timestamp("2012-01-04"),
+                "insider_ownership_pct": 0.031,
+                "insider_voting_pct": 0.880,
+                "dual_class_shares": 1.0,
+                **base,
+            },
+            {
+                "ticker": "BAD",
+                "as_of": AS_OF,
+                "insider_ownership_pct": 0.9996,
+                "insider_voting_pct": 0.908,
+                "dual_class_shares": bad_dual_flag,
+                **base,
+            },
+        ]
+    )
 
 
 def test_the_basis_repair_corroborates_dual_class_across_the_filers_history():
@@ -621,7 +618,8 @@ def test_the_basis_repair_corroborates_dual_class_across_the_filers_history():
     out = repair_ownership_basis(_two_filings(0.0), tally)
     assert pd.isna(out["insider_ownership_pct"].iloc[1]), (
         "the per-class defect survived because the SAME defect cleared its own gate -- the "
-        "repair must corroborate dual class across the filer's history, not per filing")
+        "repair must corroborate dual class across the filer's history, not per filing"
+    )
     assert out["insider_ownership_pct"].iloc[0] == 0.031, "the honest earlier filing was blanked"
     assert tally, "a silent repair is not a repair"
     print("\n  correlated failure: 0.9996 blanked on the filer's own history. Validated.")
@@ -633,16 +631,29 @@ def test_corroboration_still_spares_a_genuinely_single_class_filer():
     that pays for the change: if it also blanked LVS, unconditional would be simpler."""
     from src.data_aggregate.utils.governance.panel import repair_ownership_basis
 
-    lvs = pd.DataFrame([
-        {"ticker": "LVS", "as_of": pd.Timestamp("2012-01-04"), "insider_ownership_pct": 0.885,
-         "insider_voting_pct": 0.500, "dual_class_shares": 0.0, "board_size": 9.0},
-        {"ticker": "LVS", "as_of": AS_OF, "insider_ownership_pct": 0.910,
-         "insider_voting_pct": 0.500, "dual_class_shares": 0.0, "board_size": 9.0},
-    ])
+    lvs = pd.DataFrame(
+        [
+            {
+                "ticker": "LVS",
+                "as_of": pd.Timestamp("2012-01-04"),
+                "insider_ownership_pct": 0.885,
+                "insider_voting_pct": 0.500,
+                "dual_class_shares": 0.0,
+                "board_size": 9.0,
+            },
+            {
+                "ticker": "LVS",
+                "as_of": AS_OF,
+                "insider_ownership_pct": 0.910,
+                "insider_voting_pct": 0.500,
+                "dual_class_shares": 0.0,
+                "board_size": 9.0,
+            },
+        ]
+    )
     tally: dict[str, int] = {}
     out = repair_ownership_basis(lvs, tally)
-    assert out["insider_ownership_pct"].notna().all(), \
-        "a filer that never disclosed dual class was basis-repaired -- LVS 0.91 is real"
+    assert out["insider_ownership_pct"].notna().all(), "a filer that never disclosed dual class was basis-repaired -- LVS 0.91 is real"
     assert not tally
     print("\n  never-dual filer: 0.91 survives ticker-level corroboration. Validated.")
 
@@ -652,19 +663,17 @@ def test_the_domain_gate_also_corroborates_across_the_history():
     correlated failure, so it is promoted the same way. REGN 2024-04-25 is the case with no
     voting leg at all: own 0.9740, flag 0, and 26 of its 31 filings disclosing dual class --
     the repair cannot see it (no `vote` to compare against), so the band gate has to."""
-    hist = pd.DataFrame([
-        {"ticker": "BAD", "as_of": pd.Timestamp("2012-01-04"), "insider_ownership_pct": 0.028,
-         "dual_class_shares": 1.0, "board_size": 11.0},
-        {"ticker": "BAD", "as_of": AS_OF, "insider_ownership_pct": 0.974,
-         "dual_class_shares": 0.0, "board_size": 11.0},
-    ])
+    hist = pd.DataFrame(
+        [
+            {"ticker": "BAD", "as_of": pd.Timestamp("2012-01-04"), "insider_ownership_pct": 0.028, "dual_class_shares": 1.0, "board_size": 11.0},
+            {"ticker": "BAD", "as_of": AS_OF, "insider_ownership_pct": 0.974, "dual_class_shares": 0.0, "board_size": 11.0},
+        ]
+    )
     tally: dict[str, int] = {}
-    F = _governance_fields(hist, IDX, None, tally)
-    own = F["insider_ownership_pct"]["BAD"]
+    f = _governance_fields(hist, IDX, None, tally)
+    own = f["insider_ownership_pct"]["BAD"]
     after = own.loc[own.index >= AS_OF]
-    assert after.isna().all(), (
-        "0.974 reached the panel: the band gate trusted the same flag that the extraction "
-        "defect had already corrupted")
+    assert after.isna().all(), "0.974 reached the panel: the band gate trusted the same flag that the extraction defect had already corrupted"
     before = own.loc[own.index < AS_OF].dropna()
     assert not before.empty and (before == 0.028).all(), "the in-domain earlier value was lost"
     print("\n  band gate: REGN-shaped 0.974 blanked, 0.028 kept. Validated.")

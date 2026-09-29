@@ -18,6 +18,7 @@ Reads `sharadar_fundamentals` once, module-scoped, and shares one `build_ttm` re
 all three tests: the ARQ table is ~51.8k rows x ~112 columns and rebuilding per ticker would
 cost minutes for no extra coverage.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,10 +26,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals_sharadar.build_ttm import (
-    ARQ, _one_row_per_quarter, build_ttm)
-from src.data_extract.utils.fundamentals_sharadar.field_map import (
-    TranslationReport, load_field_map, translate)
+from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, _one_row_per_quarter, build_ttm
+from src.data_extract.utils.fundamentals_sharadar.field_map import TranslationReport, load_field_map, translate
 from src.data_store.schema import Tables
 from src.utils.quarters import quarter_ordinal
 
@@ -78,11 +77,12 @@ def field_map():
 @pytest.fixture(scope="module")
 def context():
     from src.context import get_config_context
+
     try:
         _, ctx = get_config_context(str(CONFIG_DIR), use_cache=False, save=False)
         with ctx.store.engine.connect():
             pass
-    except Exception as exc:                                            # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"context/database unavailable ({type(exc).__name__}: {exc})")
     if ctx.store.row_count(Tables.sharadar_fundamentals) == 0:
         pytest.skip(f"{Tables.sharadar_fundamentals} is empty -- run fundamentals-sharadar")
@@ -133,8 +133,7 @@ def _expected_whole(group: pd.DataFrame) -> set[int]:
     """
     deduped = _one_row_per_quarter(group)
     ordinals = quarter_ordinal(deduped["calendardate"])
-    usable = {int(q) for q, ok in zip(ordinals, deduped[FIELD].notna())
-              if pd.notna(q) and ok}
+    usable = {int(q) for q, ok in zip(ordinals, deduped[FIELD].notna(), strict=False) if pd.notna(q) and ok}
     return {q for q in usable if {q - 3, q - 2, q - 1, q} <= usable}
 
 
@@ -159,8 +158,8 @@ def test_no_window_is_nulled_except_by_a_genuine_missing_quarter(roster):
     """
     _, discrete, built = roster
     actual_by_ticker = {
-        ticker: {int(q) for q in group.loc[group[FIELD].notna(), "_ordinal"].dropna()}
-        for ticker, group in built.groupby("ticker", sort=False)}
+        ticker: {int(q) for q in group.loc[group[FIELD].notna(), "_ordinal"].dropna()} for ticker, group in built.groupby("ticker", sort=False)
+    }
     disagree: dict[str, tuple[int, int]] = {}
     for ticker, group in discrete.groupby("ticker", sort=True):
         if ticker in CLASS_A_TICKERS:
@@ -176,15 +175,13 @@ def test_no_window_is_nulled_except_by_a_genuine_missing_quarter(roster):
     print(f"  disagreeing tickers   : {len(disagree)}")
     if disagree:
         for ticker, (missing, extra) in sorted(disagree.items())[:25]:
-            print(f"    {ticker:<6} {missing:>4} window(s) wrongly NULLED, "
-                  f"{extra:>4} wrongly published")
+            print(f"    {ticker:<6} {missing:>4} window(s) wrongly NULLED, {extra:>4} wrongly published")
         if len(disagree) > 25:
             print(f"    ... and {len(disagree) - 25} more")
     else:
         print("  OK: every ticker's built wholeness equals independent set membership")
     print("  -> the window fires on exactly the rows that have four usable quarters.")
-    assert not disagree, (f"{len(disagree)} ticker(s) disagree with set membership: "
-                          f"{sorted(disagree)}")
+    assert not disagree, f"{len(disagree)} ticker(s) disagree with set membership: {sorted(disagree)}"
 
 
 def test_class_a_carve_out_is_exactly_the_four_known_tickers(roster):
@@ -219,20 +216,19 @@ def test_ttm_coverage_does_not_regress(roster):
     # Reindexed over the INPUT's tickers, so a ticker the build dropped entirely counts as 0
     # rather than vanishing from the index -- that erasure is exactly what AVGO suffered, and
     # a `groupby` on the output alone cannot see it.
-    per_ticker = (built.groupby("ticker")[FIELD].apply(lambda s: int(s.notna().sum()))
-                  .reindex(sorted(discrete["ticker"].unique()), fill_value=0))
+    per_ticker = built.groupby("ticker")[FIELD].apply(lambda s: int(s.notna().sum())).reindex(sorted(discrete["ticker"].unique()), fill_value=0)
     empty = sorted(per_ticker[per_ticker == 0].index)
     reportperiod_dupes = int(built.duplicated(["ticker", "reportperiod"]).sum())
     calendar_dupes = int(built.duplicated(["ticker", "calendardate"]).sum())
     named = ["AVGO", "KR", "AZO", "COST", "GPN", "GOOGL", "IBM", "KO", "AAPL", "BBY", "OKE"]
 
     print("\n=== SANITY CHECK: TTM coverage floors ===")
-    print(f"  total whole TTM rows          : {int(per_ticker.sum()):,} "
-          f"(floor {MIN_WHOLE_TTM_ROWS:,})")
+    print(f"  total whole TTM rows          : {int(per_ticker.sum()):,} (floor {MIN_WHOLE_TTM_ROWS:,})")
     print(f"  tickers with 0 whole windows  : {len(empty)} {empty or ''}")
     print(f"  duplicate (ticker, reportperiod) reaching the window : {reportperiod_dupes}")
-    print(f"  surviving (ticker, calendardate) duplicates          : {calendar_dupes} "
-          f"(expected {EXPECTED_SURVIVING_CALENDAR_DUPES}, the class-A rows)")
+    print(
+        f"  surviving (ticker, calendardate) duplicates          : {calendar_dupes} (expected {EXPECTED_SURVIVING_CALENDAR_DUPES}, the class-A rows)"
+    )
     print("  per-ticker whole windows, the named 11:")
     for ticker in named:
         print(f"    {ticker:<6} {per_ticker.get(ticker, 0):>4}")

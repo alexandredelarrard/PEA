@@ -235,7 +235,7 @@ def _shortvol_fields(
         if len(live):
             p05, p50, p95 = np.percentile(live, [5, 50, 95])
             logger.info(
-                "RegSHO market coverage (off-exchange share of tape volume): " "p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
+                "RegSHO market coverage (off-exchange share of tape volume): p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
                 100 * p50,
                 100 * p05,
                 100 * p95,
@@ -252,7 +252,7 @@ def _fails_fields(
     covered = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
     logger.info(
-        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent " "ticker on a covered date is 0 fails, an absent date is NaN",
+        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent ticker on a covered date is 0 fails, an absent date is NaN",
         int(on_file.sum()),
         len(idx),
         100 * float(on_file.mean()),
@@ -265,6 +265,7 @@ def _fails_fields(
 
     f_dict: dict[str, pd.DataFrame] = {}
     pct_so = None
+    to_adv = None
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
         pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
@@ -280,7 +281,7 @@ def _fails_fields(
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
-    basis = pct_so if pct_so is not None else (to_adv if volume is not None and not volume.empty else None)
+    basis = pct_so if pct_so is not None else to_adv
     if basis is not None:
         z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
         # A zero standard deviation normally makes a z-score undefined. FTD has one economic
@@ -397,4 +398,4 @@ def build_short_flow_feature_panel(
             signal_fields[name] = raw.where(mask)
         sink.keep_signals(signal_fields, signal_masks)
     emission = {k: v for k, v in EMISSION.items() if k in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission)
+    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

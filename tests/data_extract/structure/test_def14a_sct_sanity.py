@@ -31,6 +31,7 @@ Removed, each because the data said so:
     reconcile, and among the rest JPM 2022 has a correct ratio with an under-extracted total
     while AMZN 2023 has a correct total with a stale ratio. Reported, not repaired.
 """
+
 from __future__ import annotations
 
 import math
@@ -39,22 +40,35 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.structure.def14a.validate import (
-    DEF14A_SCT_KEEP_BAND, DEF14A_SCT_PART_COLS, DEF14A_SCT_REPAIR_BAND, repair_pay_ratio,
-    sanity_check_exec_comp, sct_reference,
+    DEF14A_SCT_KEEP_BAND,
+    DEF14A_SCT_PART_COLS,
+    DEF14A_SCT_REPAIR_BAND,
+    repair_pay_ratio,
+    sanity_check_exec_comp,
+    sct_reference,
 )
 
 _PARTS = list(DEF14A_SCT_PART_COLS)
 
 
-def _row(ticker: str, as_of: str, ceo: str, total=None, salary=None, bonus=None, stock=None,
-         option=None, nei=None, other=None, ratio=None, median=None) -> dict:
+def _row(
+    ticker: str, as_of: str, ceo: str, total=None, salary=None, bonus=None, stock=None, option=None, nei=None, other=None, ratio=None, median=None
+) -> dict:
     """One `def14a_llm` row in the column vocabulary the step reads."""
     return {
-        "ticker": ticker, "as_of": pd.Timestamp(as_of), "ceo_name_proxy": ceo,
-        "accession_number": f"{ticker}-{as_of}", "ceo_total_comp": total,
-        "ceo_salary": salary, "ceo_bonus": bonus, "ceo_stock_awards": stock,
-        "ceo_option_awards": option, "ceo_non_equity_incentive": nei,
-        "ceo_all_other_comp": other, "ceo_pay_ratio": ratio, "median_employee_pay": median,
+        "ticker": ticker,
+        "as_of": pd.Timestamp(as_of),
+        "ceo_name_proxy": ceo,
+        "accession_number": f"{ticker}-{as_of}",
+        "ceo_total_comp": total,
+        "ceo_salary": salary,
+        "ceo_bonus": bonus,
+        "ceo_stock_awards": stock,
+        "ceo_option_awards": option,
+        "ceo_non_equity_incentive": nei,
+        "ceo_all_other_comp": other,
+        "ceo_pay_ratio": ratio,
+        "median_employee_pay": median,
     }
 
 
@@ -78,12 +92,15 @@ def _ratio(out: pd.DataFrame, ticker: str, year: int) -> float:
 # The neighbour reference
 # --------------------------------------------------------------------------------------------
 
+
 def test_the_reference_excludes_the_row_being_tested():
     """Otherwise a CEO with one filing scores a perfect 1.00 against themselves and every rule
     passes vacuously -- the row would certify itself."""
-    rows = [_row("X", "2020-01-01", "Jane A. Doe", total=10_000_000),
-            _row("X", "2021-01-01", "Jane A. Doe", total=12_000_000),
-            _row("X", "2022-01-01", "Jane A. Doe", total=100.0)]
+    rows = [
+        _row("X", "2020-01-01", "Jane A. Doe", total=10_000_000),
+        _row("X", "2021-01-01", "Jane A. Doe", total=12_000_000),
+        _row("X", "2022-01-01", "Jane A. Doe", total=100.0),
+    ]
     ref = sct_reference(pd.DataFrame(rows))
     # the $100 row's reference is built from the other two only, so it is NOT pulled down to it
     assert ref.iloc[2] == pytest.approx(11_000_000)
@@ -95,9 +112,11 @@ def test_the_reference_key_folds_case_so_one_ceo_is_not_split_in_two():
     """COHR files "FRANCIS J. KRAMER" in caps against "Francis J. Kramer" elsewhere. The plan
     specified `clean_person_name`, which preserves casing -- and a SPLIT reference is a MISSING
     reference, which silently turns a testable row into an untouchable one."""
-    rows = [_row("COHR", "2011-09-20", "Francis J. Kramer", total=2_000_000),
-            _row("COHR", "2012-09-20", "FRANCIS J. KRAMER", total=1_800_000),
-            _row("COHR", "2013-09-20", "Francis J. Kramer, Jr.", total=1_900_000)]
+    rows = [
+        _row("COHR", "2011-09-20", "Francis J. Kramer", total=2_000_000),
+        _row("COHR", "2012-09-20", "FRANCIS J. KRAMER", total=1_800_000),
+        _row("COHR", "2013-09-20", "Francis J. Kramer, Jr.", total=1_900_000),
+    ]
     ref = sct_reference(pd.DataFrame(rows))
     assert ref.notna().all(), "case or a suffix split one CEO into separate reference groups"
 
@@ -111,6 +130,7 @@ def test_a_ceo_with_no_other_filing_has_no_reference():
 # Rule 1 -- the negative total, and the negative COMPONENTS that must survive it
 # --------------------------------------------------------------------------------------------
 
+
 def test_a_negative_total_is_dropped_but_its_negative_components_are_kept():
     """EQT's 2009 proxy: Murry Gerber's FY2008 total is -$8,920,166, and it is the filer's own
     arithmetic -- salary 649,036 + bonus 925,012 + stock -12,693,707 + option 228,102 + nei
@@ -118,11 +138,22 @@ def test_a_negative_total_is_dropped_but_its_negative_components_are_kept():
     as the FAS 123R expense recognised and EQT reversed a performance award. The total goes
     (a negative pay level has no logarithm and inverts every growth rate through it); the
     components stay, because blanking them would break a row that reconciles to the dollar."""
-    rows = [_row("EQT", "2009-03-05", "Murry S. Gerber", total=-8_920_166.0, salary=649_036.0,
-                 bonus=925_012.0, stock=-12_693_707.0, option=228_102.0, nei=1_874_988.0,
-                 other=96_403.0),
-            _row("EQT", "2010-03-05", "Murry S. Gerber", total=8_288_624.0, salary=700_000.0),
-            _row("EQT", "2011-03-05", "Murry S. Gerber", total=9_000_000.0, salary=720_000.0)]
+    rows = [
+        _row(
+            "EQT",
+            "2009-03-05",
+            "Murry S. Gerber",
+            total=-8_920_166.0,
+            salary=649_036.0,
+            bonus=925_012.0,
+            stock=-12_693_707.0,
+            option=228_102.0,
+            nei=1_874_988.0,
+            other=96_403.0,
+        ),
+        _row("EQT", "2010-03-05", "Murry S. Gerber", total=8_288_624.0, salary=700_000.0),
+        _row("EQT", "2011-03-05", "Murry S. Gerber", total=9_000_000.0, salary=720_000.0),
+    ]
     out, tally = _run(rows)
     assert math.isnan(_total(out, "EQT", 2009))
     assert tally["nulled_negative_total"] == 1
@@ -136,7 +167,8 @@ def test_a_negative_total_is_dropped_but_its_negative_components_are_kept():
 # Rule 2 -- the neighbour band decides WHICH LEG to trust
 # --------------------------------------------------------------------------------------------
 
-def test_a_pre_2006_total_that_excludes_equity_is_KEPT_not_replaced():
+
+def test_a_pre_2006_total_that_excludes_equity_is_kept_not_replaced():
     """⚠ THE CASE THAT OVERTURNED THE PLAN'S DIRECTIONAL RULE. GE's 2001 proxy reports John F.
     Welch's FY2000 total as $16,754,019 = salary $4,000,000 + bonus $12,700,000 + other $54,019.
     That is exactly what the PRE-2006 Summary Compensation Table's Total column was: equity
@@ -146,26 +178,38 @@ def test_a_pre_2006_total_that_excludes_equity_is_KEPT_not_replaced():
     The plan's rule ("total below its components -> replace the total with the components' sum,
     else NULL") deletes $16,754,019 -- a correct filed value that Welch's own other years
     corroborate at 1.66x. The band-per-leg rule keeps it and blames the components."""
-    rows = [_row("GE", "2001-03-09", "John F. Welch, Jr.", total=16_754_019.0, salary=4_000_000.0,
-                 bonus=12_700_000.0, stock=25_000_000.0, option=26_219_725.0, other=54_019.0),
-            _row("GE", "2000-03-09", "John F. Welch, Jr.", total=13_325_000.0, salary=3_400_000.0),
-            _row("GE", "1999-03-09", "John F. Welch, Jr.", total=10_104_944.0, salary=3_000_000.0),
-            _row("GE", "1998-03-09", "John F. Welch, Jr.", total=8_000_000.0, salary=2_800_000.0)]
+    rows = [
+        _row(
+            "GE",
+            "2001-03-09",
+            "John F. Welch, Jr.",
+            total=16_754_019.0,
+            salary=4_000_000.0,
+            bonus=12_700_000.0,
+            stock=25_000_000.0,
+            option=26_219_725.0,
+            other=54_019.0,
+        ),
+        _row("GE", "2000-03-09", "John F. Welch, Jr.", total=13_325_000.0, salary=3_400_000.0),
+        _row("GE", "1999-03-09", "John F. Welch, Jr.", total=10_104_944.0, salary=3_000_000.0),
+        _row("GE", "1998-03-09", "John F. Welch, Jr.", total=8_000_000.0, salary=2_800_000.0),
+    ]
     out, tally = _run(rows)
     assert _total(out, "GE", 2001) == 16_754_019.0
     assert tally["kept_total_components_suspect"] >= 1
     assert tally["repaired_total_from_components"] == 0
 
 
-def test_a_zero_total_is_repaired_only_when_the_components_nearly_MATCH_the_neighbours():
+def test_a_zero_total_is_repaired_only_when_the_components_nearly_match_the_neighbours():
     """FAST 2000 is the single repair in the whole table. Robert Kierlin famously took ~$120k at
     Fastenal, so Sigma(parts) = $117,000 lands at 0.96x his $122,500 reference and the $0 is
     recoverable."""
-    rows = [_row("FAST", "2000-03-13", "Robert A. Kierlin", total=0.0, salary=117_000.0,
-                 bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
-            _row("FAST", "1999-03-13", "Robert A. Kierlin", total=120_000.0, salary=120_000.0),
-            _row("FAST", "2001-03-13", "Robert A. Kierlin", total=125_000.0, salary=125_000.0),
-            _row("FAST", "2002-03-13", "Robert A. Kierlin", total=122_500.0, salary=122_500.0)]
+    rows = [
+        _row("FAST", "2000-03-13", "Robert A. Kierlin", total=0.0, salary=117_000.0, bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
+        _row("FAST", "1999-03-13", "Robert A. Kierlin", total=120_000.0, salary=120_000.0),
+        _row("FAST", "2001-03-13", "Robert A. Kierlin", total=125_000.0, salary=125_000.0),
+        _row("FAST", "2002-03-13", "Robert A. Kierlin", total=122_500.0, salary=122_500.0),
+    ]
     out, tally = _run(rows)
     assert _total(out, "FAST", 2000) == pytest.approx(117_000.0)
     assert tally["repaired_total_from_components"] == 1
@@ -176,11 +220,12 @@ def test_a_plausible_looking_tiny_repair_is_refused():
     Sigma(parts) is $160,091 -- 1.7% of William Sullivan's $9,166,077 reference. Repairing would
     turn an obviously-missing value into a plausible-looking small one, which is FAR more
     dangerous as a pay-ratio denominator than the zero was. It is blanked instead."""
-    rows = [_row("A", "2011-01-19", "William P. Sullivan", total=0.0, salary=160_091.0,
-                 bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
-            _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
-            _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0),
-            _row("A", "2013-01-19", "William P. Sullivan", total=8_500_000.0, salary=940_000.0)]
+    rows = [
+        _row("A", "2011-01-19", "William P. Sullivan", total=0.0, salary=160_091.0, bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
+        _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
+        _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0),
+        _row("A", "2013-01-19", "William P. Sullivan", total=8_500_000.0, salary=940_000.0),
+    ]
     out, tally = _run(rows)
     assert math.isnan(_total(out, "A", 2011))
     assert tally["nulled_total_no_plausible_leg"] == 1
@@ -191,11 +236,11 @@ def test_an_under_extracted_component_set_keeps_the_total():
     """JPM 2025: the total is $39,000,000 against a $1,500,000 salary-only component set. The
     total agrees with Dimon's other years (1.31x of $29,750,000), so the COMPONENTS are the
     suspect leg and the total survives. 38 of the 56 failing filings resolve this way."""
-    rows = [_row("JPM", "2025-04-07", "James Dimon", total=39_000_000.0, salary=1_500_000.0),
-            _row("JPM", "2024-04-07", "James Dimon", total=29_750_000.0, salary=1_500_000.0,
-                 bonus=5_000_000.0, stock=23_250_000.0),
-            _row("JPM", "2023-04-07", "James Dimon", total=34_500_000.0, salary=1_500_000.0,
-                 bonus=5_000_000.0, stock=28_000_000.0)]
+    rows = [
+        _row("JPM", "2025-04-07", "James Dimon", total=39_000_000.0, salary=1_500_000.0),
+        _row("JPM", "2024-04-07", "James Dimon", total=29_750_000.0, salary=1_500_000.0, bonus=5_000_000.0, stock=23_250_000.0),
+        _row("JPM", "2023-04-07", "James Dimon", total=34_500_000.0, salary=1_500_000.0, bonus=5_000_000.0, stock=28_000_000.0),
+    ]
     out, tally = _run(rows)
     assert _total(out, "JPM", 2025) == 39_000_000.0
     assert tally["kept_total_components_suspect"] >= 1
@@ -205,8 +250,20 @@ def test_a_row_with_no_reference_is_left_exactly_as_filed():
     """CSX 1999 fails an identity (total $654,681 below a $1,100,008 salary) but John Snow has
     no other filing in the table, so there is nothing to score it against. Blanking on "no
     reference" would discard a value on the strength of no evidence at all. 8 rows."""
-    rows = [_row("CSX", "1999-03-16", "John W. Snow", total=654_681.0, salary=1_100_008.0,
-                 bonus=0.0, stock=1_000_000.0, option=500_000.0, nei=228_542.0, other=100_000.0)]
+    rows = [
+        _row(
+            "CSX",
+            "1999-03-16",
+            "John W. Snow",
+            total=654_681.0,
+            salary=1_100_008.0,
+            bonus=0.0,
+            stock=1_000_000.0,
+            option=500_000.0,
+            nei=228_542.0,
+            other=100_000.0,
+        )
+    ]
     out, tally = _run(rows)
     assert _total(out, "CSX", 1999) == 654_681.0
     assert tally["left_alone_no_reference"] == 1
@@ -214,11 +271,23 @@ def test_a_row_with_no_reference_is_left_exactly_as_filed():
 
 
 def test_a_clean_filing_passes_through_bit_identical():
-    rows = [_row("AAPL", "2023-01-12", "Timothy D. Cook", total=99_420_097.0, salary=3_000_000.0,
-                 bonus=0.0, stock=82_959_453.0, option=0.0, nei=12_000_000.0, other=1_460_644.0,
-                 ratio=672.0, median=147_970.0),
-            _row("AAPL", "2022-01-12", "Timothy D. Cook", total=98_734_394.0, salary=3_000_000.0,
-                 ratio=1447.0, median=68_254.0)]
+    rows = [
+        _row(
+            "AAPL",
+            "2023-01-12",
+            "Timothy D. Cook",
+            total=99_420_097.0,
+            salary=3_000_000.0,
+            bonus=0.0,
+            stock=82_959_453.0,
+            option=0.0,
+            nei=12_000_000.0,
+            other=1_460_644.0,
+            ratio=672.0,
+            median=147_970.0,
+        ),
+        _row("AAPL", "2022-01-12", "Timothy D. Cook", total=98_734_394.0, salary=3_000_000.0, ratio=1447.0, median=68_254.0),
+    ]
     before = pd.DataFrame(rows)
     out, tally = _run(rows)
     for col in ["ceo_total_comp", "ceo_pay_ratio", *_PARTS]:
@@ -232,10 +301,11 @@ def test_a_clean_row_is_never_tested_against_its_neighbours():
     The band gates only rows that have ALREADY failed an arithmetic identity, which is what
     keeps a wide band safe. TSLA 2019 is the live case -- Musk's $2,284,044,884 is 45,753x the
     prior year and entirely real."""
-    rows = [_row("TSLA", "2019-04-30", "Elon Musk", total=2_284_044_884.0, salary=56_380.0,
-                 option=2_283_988_504.0),
-            _row("TSLA", "2018-04-26", "Elon Musk", total=49_920.0, salary=49_920.0),
-            _row("TSLA", "2020-05-28", "Elon Musk", total=23_760.0, salary=23_760.0)]
+    rows = [
+        _row("TSLA", "2019-04-30", "Elon Musk", total=2_284_044_884.0, salary=56_380.0, option=2_283_988_504.0),
+        _row("TSLA", "2018-04-26", "Elon Musk", total=49_920.0, salary=49_920.0),
+        _row("TSLA", "2020-05-28", "Elon Musk", total=23_760.0, salary=23_760.0),
+    ]
     out, _ = _run(rows)
     assert _total(out, "TSLA", 2019) == 2_284_044_884.0
 
@@ -244,13 +314,13 @@ def test_a_clean_row_is_never_tested_against_its_neighbours():
 # The pay ratio
 # --------------------------------------------------------------------------------------------
 
+
 def test_the_swapped_columns_are_dropped():
     """GOOGL 2018 and 2019 hold the IDENTICAL number in `ceo_pay_ratio` and
     `median_employee_pay` against a $1 total. One of the two is definitely wrong and neither is
     recoverable from the other."""
     for year, value in [("2018-04-27", 197_274.0), ("2019-04-30", 246_804.0)]:
-        out = repair_pay_ratio(_row("GOOGL", year, "Larry Page", total=1.0, ratio=value,
-                                    median=value))
+        out = repair_pay_ratio(_row("GOOGL", year, "Larry Page", total=1.0, ratio=value, median=value))
         assert math.isnan(out["ceo_pay_ratio"])
 
 
@@ -259,60 +329,76 @@ def test_a_disagreement_over_a_placeholder_total_is_dropped():
     so there is no leg to keep. TSLA's 2022 filing is the same shape -- a stated 18,043 against
     a $0 total, where `def14a_executive_comp` independently carries Musk's FY2021 total as 0
     with `reconciles = 1` and TSLA's four other $0 filings all disclose a ratio of 0."""
-    out = repair_pay_ratio(_row("SMCI", "2023-04-14", "Charles Liang", total=1.0, ratio=0.1,
-                                median=80_413.0))
+    out = repair_pay_ratio(_row("SMCI", "2023-04-14", "Charles Liang", total=1.0, ratio=0.1, median=80_413.0))
     assert math.isnan(out["ceo_pay_ratio"])
-    out = repair_pay_ratio(_row("TSLA", "2022-06-23", "Elon Musk", total=0.0, ratio=18_043.0,
-                                median=40_723.0))
+    out = repair_pay_ratio(_row("TSLA", "2022-06-23", "Elon Musk", total=0.0, ratio=18_043.0, median=40_723.0))
     assert math.isnan(out["ceo_pay_ratio"])
 
 
 def test_a_zero_pay_ratio_survives():
     """⚠ NOT AN EXEMPTION -- AN AGREEMENT. Musk takes no pay, so `0 / 46,150` is the correct
     ratio and the recomputation independently returns 0. Nothing fires. Four stored rows."""
-    for as_of, median in [("2021-08-26", 46_150.0), ("2023-04-06", 34_084.0),
-                          ("2024-04-29", 45_811.0), ("2025-09-17", 57_243.0)]:
-        out = repair_pay_ratio(_row("TSLA", as_of, "Elon Musk", total=0.0, salary=0.0,
-                                    ratio=0.0, median=median))
+    for as_of, median in [("2021-08-26", 46_150.0), ("2023-04-06", 34_084.0), ("2024-04-29", 45_811.0), ("2025-09-17", 57_243.0)]:
+        out = repair_pay_ratio(_row("TSLA", as_of, "Elon Musk", total=0.0, salary=0.0, ratio=0.0, median=median))
         assert out["ceo_pay_ratio"] == 0.0
 
 
 def test_a_sub_one_pay_ratio_survives_when_its_own_legs_agree():
     """Musk's 2018 and 2020 filings disclose 0.91 and 0.41 -- a CEO paid LESS than the median
     employee. Absurd-looking and correct, and the arithmetic confirms both."""
-    out = repair_pay_ratio(_row("TSLA", "2018-04-26", "Elon Musk", total=49_920.0, ratio=0.91,
-                                median=54_816.0))
+    out = repair_pay_ratio(_row("TSLA", "2018-04-26", "Elon Musk", total=49_920.0, ratio=0.91, median=54_816.0))
     assert out["ceo_pay_ratio"] == 0.91
 
 
-@pytest.mark.parametrize("ticker,as_of,total,median,ratio", [
-    # the disclosed ratio is RIGHT and our total is under-extracted: 917 x 92,112 = 84,466,704,
-    # James Dimon's real FY2021 total, which our row is missing a $52.6M option award from
-    ("JPM", "2022-04-04", 34_500_000.0, 92_112.0, 917.0),
-    # the disclosed ratio is STALE: 6,474 is Andrew Jassy's FY2021 figure, and $1,298,723 is the
-    # correct FY2022 total
-    ("AMZN", "2023-04-13", 1_298_723.0, 32_855.0, 6474.0),
-    # neither column is wrong: Dirk Van de Put became CEO in November, and Item 402(u) permits
-    # an annualised or year-end-CEO ratio that does not reconcile with a partial-year total
-    ("MDLZ", "2018-04-02", 42_442_924.0, 42_893.0, 403.0),
-])
-def test_an_unreconciled_ratio_over_a_REAL_total_is_reported_not_rewritten(
-        ticker, as_of, total, median, ratio):
+@pytest.mark.parametrize(
+    "ticker,as_of,total,median,ratio",
+    [
+        # the disclosed ratio is RIGHT and our total is under-extracted: 917 x 92,112 = 84,466,704,
+        # James Dimon's real FY2021 total, which our row is missing a $52.6M option award from
+        ("JPM", "2022-04-04", 34_500_000.0, 92_112.0, 917.0),
+        # the disclosed ratio is STALE: 6,474 is Andrew Jassy's FY2021 figure, and $1,298,723 is the
+        # correct FY2022 total
+        ("AMZN", "2023-04-13", 1_298_723.0, 32_855.0, 6474.0),
+        # neither column is wrong: Dirk Van de Put became CEO in November, and Item 402(u) permits
+        # an annualised or year-end-CEO ratio that does not reconcile with a partial-year total
+        ("MDLZ", "2018-04-02", 42_442_924.0, 42_893.0, 403.0),
+    ],
+)
+def test_an_unreconciled_ratio_over_a_real_total_is_reported_not_rewritten(ticker, as_of, total, median, ratio):
     """⚠ THE PLAN'S RULE WOULD HAVE CORRUPTED THIS COLUMN. It asked that any disagreement beyond
     25% be resolved by preferring `ceo_total_comp / median_employee_pay`. These three rows carry
     the same arithmetic symptom and three incompatible causes, and 87 of the 123 disagreements
     are the third one -- the disagreement rate is 21.0% across a CEO transition against 1.0%
     for the same CEO. So the ratio is left exactly as filed and the row is counted."""
-    out = repair_pay_ratio(_row(ticker, as_of, "Someone", total=total, ratio=ratio,
-                                median=median))
+    out = repair_pay_ratio(_row(ticker, as_of, "Someone", total=total, ratio=ratio, median=median))
     assert out["ceo_pay_ratio"] == ratio
 
 
 def test_the_unreconciled_rows_are_counted():
-    rows = [_row("JPM", "2022-04-04", "James Dimon", total=34_500_000.0, salary=1_500_000.0,
-                 bonus=5_000_000.0, stock=28_000_000.0, ratio=917.0, median=92_112.0),
-            _row("JPM", "2023-04-04", "James Dimon", total=34_500_000.0, salary=1_500_000.0,
-                 bonus=5_000_000.0, stock=28_000_000.0, ratio=374.5, median=92_112.0)]
+    rows = [
+        _row(
+            "JPM",
+            "2022-04-04",
+            "James Dimon",
+            total=34_500_000.0,
+            salary=1_500_000.0,
+            bonus=5_000_000.0,
+            stock=28_000_000.0,
+            ratio=917.0,
+            median=92_112.0,
+        ),
+        _row(
+            "JPM",
+            "2023-04-04",
+            "James Dimon",
+            total=34_500_000.0,
+            salary=1_500_000.0,
+            bonus=5_000_000.0,
+            stock=28_000_000.0,
+            ratio=374.5,
+            median=92_112.0,
+        ),
+    ]
     _, tally = _run(rows)
     assert tally["pay_ratio_UNRECONCILED_reported_only"] == 1
     assert tally["pay_ratio_rewritten"] == 0
@@ -321,11 +407,24 @@ def test_the_unreconciled_rows_are_counted():
 def test_the_ratio_is_judged_against_the_repaired_total_not_the_raw_one():
     """Order matters: `repair_pay_ratio` runs after the total has been settled, so a ratio is
     never measured against a value the step is about to delete."""
-    rows = [_row("A", "2011-01-19", "William P. Sullivan", total=0.0, salary=160_091.0,
-                 bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0, ratio=120.0,
-                 median=60_000.0),
-            _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
-            _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0)]
+    rows = [
+        _row(
+            "A",
+            "2011-01-19",
+            "William P. Sullivan",
+            total=0.0,
+            salary=160_091.0,
+            bonus=0.0,
+            stock=0.0,
+            option=0.0,
+            nei=0.0,
+            other=0.0,
+            ratio=120.0,
+            median=60_000.0,
+        ),
+        _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
+        _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0),
+    ]
     out, _ = _run(rows)
     assert math.isnan(_total(out, "A", 2011))
     # the total is gone, so the ratio can no longer be reconciled against anything and is left
@@ -338,31 +437,33 @@ def test_a_median_pay_jump_is_reported_and_never_repaired():
     1.036 / 1.292 over 3,480 pairs), so a 3x move is worth reporting -- but 2 of the 6 breaches
     are the real composition effect of furloughing low-paid staff through COVID (LYV 2021 at
     3.12x then 2022 at 0.28x), not a parse error. Nothing is written."""
-    rows = [_row("LYV", "2020-04-27", "Michael Rapino", total=10_000_000.0, median=18_333.0),
-            _row("LYV", "2021-04-27", "Michael Rapino", total=10_000_000.0, median=57_195.0),
-            _row("LYV", "2022-04-27", "Michael Rapino", total=10_000_000.0, median=15_740.0)]
+    rows = [
+        _row("LYV", "2020-04-27", "Michael Rapino", total=10_000_000.0, median=18_333.0),
+        _row("LYV", "2021-04-27", "Michael Rapino", total=10_000_000.0, median=57_195.0),
+        _row("LYV", "2022-04-27", "Michael Rapino", total=10_000_000.0, median=15_740.0),
+    ]
     before = pd.DataFrame(rows)
     out, tally = _run(rows)
     assert tally["median_employee_pay_jump_REPORTED_only"] == 2
-    pd.testing.assert_series_equal(out["median_employee_pay"], before["median_employee_pay"],
-                                   check_names=False)
+    pd.testing.assert_series_equal(out["median_employee_pay"], before["median_employee_pay"], check_names=False)
 
 
 # --------------------------------------------------------------------------------------------
 # Structural properties
 # --------------------------------------------------------------------------------------------
 
+
 def test_the_step_is_idempotent():
     """A row the step has settled satisfies the identities, so a second pass must not test it
     again -- which is what makes the batch script safe to re-run after every extraction."""
-    rows = [_row("A", "2011-01-19", "William P. Sullivan", total=0.0, salary=160_091.0,
-                 bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
-            _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
-            _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0),
-            _row("FAST", "2000-03-13", "Robert A. Kierlin", total=0.0, salary=117_000.0,
-                 bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
-            _row("FAST", "1999-03-13", "Robert A. Kierlin", total=120_000.0, salary=120_000.0),
-            _row("FAST", "2001-03-13", "Robert A. Kierlin", total=125_000.0, salary=125_000.0)]
+    rows = [
+        _row("A", "2011-01-19", "William P. Sullivan", total=0.0, salary=160_091.0, bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
+        _row("A", "2010-01-19", "William P. Sullivan", total=9_166_077.0, salary=900_000.0),
+        _row("A", "2012-01-19", "William P. Sullivan", total=10_581_647.0, salary=950_000.0),
+        _row("FAST", "2000-03-13", "Robert A. Kierlin", total=0.0, salary=117_000.0, bonus=0.0, stock=0.0, option=0.0, nei=0.0, other=0.0),
+        _row("FAST", "1999-03-13", "Robert A. Kierlin", total=120_000.0, salary=120_000.0),
+        _row("FAST", "2001-03-13", "Robert A. Kierlin", total=125_000.0, salary=125_000.0),
+    ]
     once, _ = _run(rows)
     twice, tally2 = sanity_check_exec_comp(once)
     pd.testing.assert_frame_equal(once, twice)

@@ -10,14 +10,16 @@ Two failure modes that cost the whole recent gap, both reproduced here without a
      propagate and abort the whole step, so ROIC and Motley Fool -- the only sources for the
      RECENT quarters the live features need -- never ran at all.
 """
+
 from __future__ import annotations
 
 import types
+from typing import Any, cast
 
 import pytest
 
-from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fec
+from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
 
 
 class _NoCtxStreamResponse:
@@ -46,20 +48,20 @@ def test_stream_download_survives_curl_response_without_context_manager(tmp_path
     def _boom(*a, **k):
         raise OSError("requests path unavailable in this test")
 
-    monkeypatch.setattr(hf, "corporate_session",
-                        lambda: types.SimpleNamespace(get=_boom))
+    monkeypatch.setattr(hf, "corporate_session", lambda: types.SimpleNamespace(get=_boom))
     monkeypatch.setattr(hf.cr, "get", lambda *a, **k: resp)
 
     dest = tmp_path / "hf.parquet"
-    hf._stream_download("https://huggingface.co/whatever.parquet", dest)   # must NOT raise
+    hf._stream_download("https://huggingface.co/whatever.parquet", dest)  # must NOT raise
 
     assert dest.read_bytes() == b"".join(payload), "fallback must stream every chunk to disk"
     assert resp.closed, "the streamed response must be closed explicitly (no context manager)"
     assert not hasattr(resp, "__enter__"), "guard: the stub reproduces the real curl_cffi shape"
 
     print("\n=== SANITY CHECK: _stream_download curl_cffi fallback ===")
-    print(f"  requests raised -> curl_cffi fallback wrote {dest.stat().st_size} bytes and closed "
-          "the response; no context-manager TypeError. Validated.")
+    print(
+        f"  requests raised -> curl_cffi fallback wrote {dest.stat().st_size} bytes and closed the response; no context-manager TypeError. Validated."
+    )
 
 
 def test_stream_download_prefers_requests_and_skips_the_fallback(tmp_path, monkeypatch):
@@ -73,11 +75,8 @@ def test_stream_download_prefers_requests_and_skips_the_fallback(tmp_path, monke
             return False
 
     called = {"curl": 0}
-    monkeypatch.setattr(hf, "corporate_session",
-                        lambda: types.SimpleNamespace(
-                            get=lambda *a, **k: _CtxResp([b"abc", b"def"])))
-    monkeypatch.setattr(hf.cr, "get",
-                        lambda *a, **k: called.__setitem__("curl", called["curl"] + 1))
+    monkeypatch.setattr(hf, "corporate_session", lambda: types.SimpleNamespace(get=lambda *a, **k: _CtxResp([b"abc", b"def"])))
+    monkeypatch.setattr(hf.cr, "get", lambda *a, **k: called.__setitem__("curl", called["curl"] + 1))
 
     dest = tmp_path / "hf.parquet"
     hf._stream_download("https://huggingface.co/whatever.parquet", dest)
@@ -97,8 +96,7 @@ def test_hf_failure_does_not_stop_roic_and_fool(monkeypatch):
         raise RuntimeError("HF parquet unreachable")
 
     monkeypatch.setattr(fec, "download_hf_parquet", _hf_boom)
-    monkeypatch.setattr(fec, "missing_quarters_by_ticker",
-                        lambda *a, **k: {"AIG": ["2026Q1", "2026Q2"]})
+    monkeypatch.setattr(fec, "missing_quarters_by_ticker", lambda *a, **k: {"AIG": ["2026Q1", "2026Q2"]})
 
     def _roic(context, tickers=None, missing=None, since=None):
         ran.append("roic")
@@ -113,13 +111,24 @@ def test_hf_failure_does_not_stop_roic_and_fool(monkeypatch):
     monkeypatch.setattr(fec, "build_transcript_index_by_ticker", _fool_index)
     monkeypatch.setattr(fec, "download_transcripts", lambda *a, **k: ran.append("download"))
 
-    fec.download_earnings_calls(context=None, tickers=["AIG"])       # must NOT raise
+    deleted: list[tuple[object, dict[str, object]]] = []
+
+    def _delete(table, where):
+        deleted.append((table, where))
+        return 1
+
+    context = types.SimpleNamespace(store=types.SimpleNamespace(delete=_delete))
+    fec.download_earnings_calls(context=cast(Any, context), tickers=["AIG"])  # must NOT raise
 
     assert ran == ["hf", "roic", "fool", "download"], f"every stage must still run, got {ran}"
+    assert len(deleted) == 2
+    assert all(where == {"ticker": "AIG", "quarter": ["2026Q1", "2026Q2"]} for _, where in deleted)
 
     print("\n=== SANITY CHECK: HF failure is non-fatal ===")
-    print(f"  HF raised RuntimeError -> stages still executed in order: {ran}. The recent-gap "
-          "sources (ROIC, fool) survive a dead HF backbone. Validated.")
+    print(
+        f"  HF raised RuntimeError -> stages still executed in order: {ran}. The recent-gap "
+        "sources (ROIC, fool) survive a dead HF backbone. Validated."
+    )
 
 
 def test_hf_ingest_failure_still_ingests_the_fool_html(monkeypatch):
@@ -133,17 +142,15 @@ def test_hf_ingest_failure_still_ingests_the_fool_html(monkeypatch):
         raise RuntimeError("HF parquet unreachable")
 
     monkeypatch.setattr(fec, "ingest_hf_transcripts", _hf_ingest_boom)
-    monkeypatch.setattr(fec, "ingest_earnings_calls",
-                        lambda context, tickers=None, force=False: (ran.append("fool"), 42)[1])
+    monkeypatch.setattr(fec, "ingest_earnings_calls", lambda context, tickers=None, force=False: (ran.append("fool"), 42)[1])
     monkeypatch.setattr(fec, "record_run", lambda *a, **k: ran.append("record"))
 
-    saved = fec.ingest_all_earnings_calls(context=None, tickers=["AIG"])
+    saved = fec.ingest_all_earnings_calls(context=cast(Any, None), tickers=["AIG"])
 
     assert ran == ["hf", "fool", "record"], f"the fool ingest must still run, got {ran}"
     assert saved == 42, "the fool leg's row count must still be returned/recorded"
 
-    print("  ingest stage: HF ingest raised -> fool HTML still ingested (+42 rows) and the run "
-          "still recorded. Validated.")
+    print("  ingest stage: HF ingest raised -> fool HTML still ingested (+42 rows) and the run still recorded. Validated.")
 
 
 if __name__ == "__main__":

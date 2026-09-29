@@ -10,21 +10,22 @@ tags:
 
 ## Summary
 
-`src/data_extract` owns external source ingestion. A super-step resolves the equity universe once, then executes price, institutional, Sharadar-fundamental, SEC-fundamental, governance-structure, and behavioral sub-steps in dependency order. Source-specific quirks and availability limits are documented in [data sources](../reference/data-sources.md).
+`src/data_extract` owns external source ingestion. The source CLI and nightly DAG cover price, institutional, Sharadar-fundamental, SEC-fundamental, governance-structure, and earnings-call data in dependency order. Before aggregation, the extraction status command checks exactly the tables that declare freshness in the central [table registry](../../src/data_store/schema.py). Source-specific quirks and availability limits are documented in [data sources](../reference/data-sources.md).
 
 ## Responsibilities
 
 - Resume each source from database frontiers rather than rereading complete tables.
 - Normalize provider identifiers, dates, filing metadata, and source-specific schemas.
 - Cache expensive bulk downloads while persisting tabular results through `context.store`.
-- Continue per ticker when a provider fails and keep completed work durable.
+- Keep completed per-ticker work durable, but fail completeness-sensitive SEC walks when any requested ticker fails so Airflow retries the source.
+- Gate aggregation on each schema-declared table's maximum publication date and cadence tolerance.
 - Maintain shared EDGAR, identity, registrant, lineage, pacing, and manifest plumbing.
 
 ## Public API / entry points
 
 - `StepExtractAllData.run()` in [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py).
 - The flat source-command group in [data_extract/cli.py](../../src/data_extract/cli.py).
-- Sub-steps under [data_extract/transformers](../../src/data_extract/transformers/).
+- Sub-steps under `src/data_extract/transformers/`.
 
 ## Key files
 
@@ -33,8 +34,9 @@ tags:
 - [step_extract_fundamentals_sharadar.py](../../src/data_extract/transformers/step_extract_fundamentals_sharadar.py) builds the vendor layer and merged consumer history.
 - [step_extract_fundamentals.py](../../src/data_extract/transformers/step_extract_fundamentals.py) builds SEC facts and the replay history.
 - [step_extract_structure.py](../../src/data_extract/transformers/step_extract_structure.py) handles filing text, DEF 14A, and Item 5.07 votes.
-- [step_extract_behavioral.py](../../src/data_extract/transformers/step_extract_behavioral.py) handles pageviews, trends, and earnings-call transcripts.
-- [data_extract/utils/common](../../src/data_extract/utils/common/) centralizes EDGAR and identity mechanics.
+- [step_extract_behavioral.py](../../src/data_extract/transformers/step_extract_behavioral.py) handles earnings-call transcripts; retired Wikipedia and Google Trends sources are not part of the nightly contract.
+- [schema.py](../../src/data_store/schema.py) is the sole freshness inventory: `freshness_tables()` exposes each checked table, cadence, and publication date column to the CLI gate.
+- `src/data_extract/utils/common/` centralizes EDGAR and identity mechanics.
 
 ## Dependencies
 

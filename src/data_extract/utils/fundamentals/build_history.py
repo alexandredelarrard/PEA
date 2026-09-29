@@ -28,22 +28,29 @@ the table stores TTM LEVELS, so restating Q1 moves the TTM at Q1, Q2, Q3 and Q4.
 frozen is the EARLIER ROWS, which keep their as-filed values forever -- that is where the
 no-leakage property lives.
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, cast
 
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
-from src.data_extract.utils.fundamentals.kpi_catalogue import (
-    HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue)
+from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
-    INSTANT, InstantLookup, PeriodGuards, build_periods, fiscal_quarter_of_end,
-    fiscal_year_ends, load_guards)
+    INSTANT,
+    InstantLookup,
+    PeriodGuards,
+    build_periods,
+    fiscal_quarter_of_end,
+    fiscal_year_ends,
+    load_guards,
+)
 
 #: Form precedence for a same-day collapse (decision 37). Scalar-with-a-precedence-rule
 #: rather than a pipe-joined string, so a `publication_form == '10-K'` filter can never
@@ -73,7 +80,7 @@ MAX_AMENDMENT_LAG_DAYS = 365
 #: test for the three counts. `totalAssets` uses `< 0` and not `<= 0`: a shell in its first
 #: period legitimately foots to exactly zero (VRT's pre-merger SPAC), and nulling that would
 #: destroy a correct value to catch nothing.
-HARD_GUARDS: dict[str, "Callable[[float], bool]"] = {
+HARD_GUARDS: dict[str, Callable[[float], bool]] = {
     "totalAssets": lambda v: v < 0,
     "sharesOutstanding": lambda v: v <= 0,
     "basicShares": lambda v: v <= 0,
@@ -99,7 +106,7 @@ _VALUE_KEY: tuple[str, ...] = ("field", "duration_type", "period_end")
 #:
 #: Flows are TTM here, because that IS the column (decision 31): `profitMargins` is TTM net
 #: income over TTM revenue, never a quarter over a quarter.
-_FORMULAS: dict[str, tuple[tuple[str, ...], object]] = {
+_FORMULAS: dict[str, tuple[tuple[str, ...], Callable[[float, float], float]]] = {
     "ebitda": (("operatingIncome", "depAmort"), lambda a, b: a + b),
     "freeCashflow": (("operatingCashFlow", "capex"), lambda a, b: a - b),
     "epsDiluted": (("netIncome", "dilutedShares"), lambda a, b: a / b),
@@ -117,14 +124,13 @@ _FORMULAS: dict[str, tuple[tuple[str, ...], object]] = {
 #: FRAME's 12-column contract -- same name, different type, and this module imports that
 #: one. The only two that survive the contract: the legacy table had four `_q` columns and
 #: `ebitda_q` / `freeCashflow_q` are declared casualties (Phase 6 §6.1 reconciles them).
-_QUARTER_LABEL_COLUMNS: dict[str, str] = {"revenue_q": "totalRevenue",
-                                          "netIncome_q": "netIncome"}
+_QUARTER_LABEL_COLUMNS: dict[str, str] = {"revenue_q": "totalRevenue", "netIncome_q": "netIncome"}
 
 #: Formulas whose second operand is a denominator. A zero denominator is not a ratio, and
 #: `x / 0` is an infinity that survives every plausibility check downstream.
 _RATIOS: frozenset[str] = frozenset(
-    {"epsDiluted", "effectiveTaxRate", "grossMargins", "operatingMargins",
-     "profitMargins", "returnOnEquity", "debtToEquity", "optionOverhang"})
+    {"epsDiluted", "effectiveTaxRate", "grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "optionOverhang"}
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class TickerHistory:
 
 # --------------------------------------------------------------- the event ladder ---
 
+
 def _same_value(before, after) -> bool:
     """Are two as-filed values the same measurement? NaN == NaN here, deliberately: a
     reason-coded value-less row re-tagged as another value-less row changed nothing."""
@@ -149,8 +156,7 @@ def _same_value(before, after) -> bool:
     return float(before) == float(after)
 
 
-def _amended_fields(facts: pd.DataFrame, accession: str,
-                    filed: pd.Timestamp) -> list[str]:
+def _amended_fields(facts: pd.DataFrame, accession: str, filed: pd.Timestamp) -> list[str]:
     """Which fields this amendment actually MOVED, against everything filed before it.
 
     Compared by VALUE on `_VALUE_KEY`, not by fact count: 88 of the 246 amendments in the
@@ -161,14 +167,12 @@ def _amended_fields(facts: pd.DataFrame, accession: str,
     prior = facts[facts["filing_date"] < filed]
     if prior.empty:
         return sorted(set(amendment["field"]))
-    latest = (prior.sort_values("filing_date")
-                   .drop_duplicates(subset=list(_VALUE_KEY), keep="last")
-                   .set_index(list(_VALUE_KEY))["value"])
+    latest = prior.sort_values("filing_date").drop_duplicates(subset=list(_VALUE_KEY), keep="last").set_index(list(_VALUE_KEY))["value"]
     moved: set[str] = set()
     for row in amendment.itertuples():
         key = tuple(getattr(row, c) for c in _VALUE_KEY)
         if key not in latest.index or not _same_value(latest.loc[key], row.value):
-            moved.add(row.field)
+            moved.add(str(row.field))
     return sorted(moved)
 
 
@@ -187,19 +191,23 @@ def publication_events(facts: pd.DataFrame) -> pd.DataFrame:
         form = str(group["form"].iloc[0])
         period = group["period_of_report"].iloc[0]
         if not bool(group["is_amendment"].iloc[0]):
-            rows.append({"as_of": filed, "publication_form": form, "is_amendment": False,
-                         "amended_fiscal_end": pd.NaT, "amended_fields": None})
+            rows.append({"as_of": filed, "publication_form": form, "is_amendment": False, "amended_fiscal_end": pd.NaT, "amended_fields": None})
             continue
-        moved = _amended_fields(facts, accession, filed)
+        moved = _amended_fields(facts, str(accession), filed)
         if not moved:
-            continue                                  # a no-op amendment publishes nothing
+            continue  # a no-op amendment publishes nothing
         original = first_by_period.get(period)
-        if original is not None and pd.notna(original) and pd.notna(period) and (
-                filed - pd.Timestamp(original)).days > MAX_AMENDMENT_LAG_DAYS:
-            continue                                  # too late to move a published TTM
-        rows.append({"as_of": filed, "publication_form": form, "is_amendment": True,
-                     "amended_fiscal_end": pd.to_datetime(period, errors="coerce"),
-                     "amended_fields": ",".join(moved)})
+        if original is not None and pd.notna(original) and pd.notna(period) and (filed - pd.Timestamp(original)).days > MAX_AMENDMENT_LAG_DAYS:
+            continue  # too late to move a published TTM
+        rows.append(
+            {
+                "as_of": filed,
+                "publication_form": form,
+                "is_amendment": True,
+                "amended_fiscal_end": pd.to_datetime(period, errors="coerce"),
+                "amended_fields": ",".join(moved),
+            }
+        )
     if not rows:
         return pd.DataFrame(columns=["as_of", *HISTORY_PROVENANCE])
     return _collapse_same_day(pd.DataFrame(rows))
@@ -212,21 +220,23 @@ def _collapse_same_day(events: pd.DataFrame) -> pd.DataFrame:
     events = events.assign(_rank=[rank.get(f, len(rank)) for f in events["publication_form"]])
     out = []
     for as_of, group in events.sort_values("_rank").groupby("as_of", sort=True):
-        fields = sorted({f for csv in group["amended_fields"].dropna()
-                         for f in str(csv).split(",") if f})
-        out.append({
-            "as_of": as_of,
-            "publication_form": group["publication_form"].iloc[0],
-            "is_amendment": bool(group["is_amendment"].any()),
-            "amended_fiscal_end": group["amended_fiscal_end"].max(),
-            "amended_fields": ",".join(fields) or None})
+        fields = sorted({f for csv in group["amended_fields"].dropna() for f in str(csv).split(",") if f})
+        out.append(
+            {
+                "as_of": as_of,
+                "publication_form": group["publication_form"].iloc[0],
+                "is_amendment": bool(group["is_amendment"].any()),
+                "amended_fiscal_end": group["amended_fiscal_end"].max(),
+                "amended_fields": ",".join(fields) or None,
+            }
+        )
     return pd.DataFrame(out).sort_values("as_of").reset_index(drop=True)
 
 
 # ------------------------------------------------------------------- the snapshot ---
 
-def carry_latest_known(facts: pd.DataFrame, ends, field: str,
-                       on: str = "period_end") -> pd.DataFrame:
+
+def carry_latest_known(facts: pd.DataFrame, ends, field: str, on: str = "period_end") -> pd.DataFrame:
     """`field`'s latest known value at each date in `ends`, as a one-column frame.
 
     The as-of alignment an ANNUAL-ONLY disclosure needs to reach the interim quarters: a
@@ -254,11 +264,13 @@ def carry_latest_known(facts: pd.DataFrame, ends, field: str,
     if rows.empty:
         out[field] = pd.NA
         return out
-    ordered = (rows.assign(**{on: pd.to_datetime(rows[on]).astype("datetime64[ns]")})
-                   .sort_values([on, "filing_date"])
-                   .drop_duplicates(subset=[on], keep="last")[[on, "value"]]
-                   .rename(columns={"value": field})
-                   .dropna(subset=[on]))
+    ordered = (
+        rows.assign(**{on: pd.to_datetime(rows[on]).astype("datetime64[ns]")})
+        .sort_values([on, "filing_date"])
+        .drop_duplicates(subset=[on], keep="last")[[on, "value"]]
+        .rename(columns={"value": field})
+        .dropna(subset=[on])
+    )
     if ordered.empty:
         out[field] = pd.NA
         return out
@@ -286,7 +298,8 @@ def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.S
     rows = frame[frame["field"] == field]
     if rows.empty:
         return None
-    return rows.loc[pd.to_datetime(rows[column]).idxmax()]
+    dates = pd.to_datetime(rows[column])
+    return rows.iloc[int(dates.to_numpy().argmax())]
 
 
 def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
@@ -298,7 +311,7 @@ def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
     """
     if pd.isna(period):
         return False
-    end = pd.to_datetime(newest.get("period_end"), errors="coerce")
+    end = pd.to_datetime(cast(Any, newest.get("period_end")), errors="coerce")
     return pd.notna(end) and abs((period - end).days) > TTM_STALENESS_DAYS
 
 
@@ -312,7 +325,7 @@ def _split_by_field(visible: pd.DataFrame) -> dict[str, pd.DataFrame]:
     order, which is `filing_date` (`_normalise_facts` sorts) -- and the `.iloc[-1]` reads
     below depend on it.
     """
-    return dict(tuple(visible.groupby("field", sort=False)))
+    return {str(field): group for field, group in visible.groupby("field", sort=False)}
 
 
 def _facts_code(by_field: dict[str, pd.DataFrame], field: str) -> str | None:
@@ -435,16 +448,14 @@ def _contradicts_gross_profit(visible: pd.DataFrame) -> bool:
     rows = visible[visible["field"].isin(wanted) & visible["value"].notna()]
     if rows.empty:
         return False
-    wide = rows.pivot_table(index=["period_end", "duration_type"], columns="field",
-                            values="value", aggfunc="max")
+    wide = rows.pivot_table(index=["period_end", "duration_type"], columns="field", values="value", aggfunc="max")
     if not all(field in wide.columns for field in wanted):
         return False
     wide = wide.dropna(subset=list(wanted))
     wide = wide[wide["grossProfit"] != 0]
     if wide.empty:
         return False
-    error = ((wide["totalRevenue"] - wide["costOfRevenue"] - wide["grossProfit"]).abs()
-             / wide["grossProfit"].abs())
+    error = (wide["totalRevenue"] - wide["costOfRevenue"] - wide["grossProfit"]).abs() / wide["grossProfit"].abs()
     return bool((error > GROSS_PROFIT_IDENTITY_TOLERANCE).any())
 
 
@@ -474,8 +485,7 @@ def _gross_profit_identity(row: dict, visible: pd.DataFrame) -> float | None:
     return float(revenue) - float(cost)
 
 
-def _total_liabilities_identity(
-        row: dict, by_field: dict[str, pd.DataFrame]) -> tuple[float | None, str | None]:
+def _total_liabilities_identity(row: dict, by_field: dict[str, pd.DataFrame]) -> tuple[float | None, str | None]:
     """`totalLiabilities` from the balance sheet's own identity, where no filer tag gave it.
 
     **§5.1, and the measurement that redirected it.** Register item 8 prescribed exactly this
@@ -521,8 +531,7 @@ def _total_liabilities_identity(
     if assets is None or equity is None:
         return None, None
     rows = by_field.get("stockholdersEquity")
-    concepts = (rows[rows["value"].notna()]["source_concept"].dropna()
-                if rows is not None else pd.Series(dtype=object))
+    concepts = rows[rows["value"].notna()]["source_concept"].dropna() if rows is not None else pd.Series(dtype=object)
     incl_nci = bool(len(concepts)) and _EQUITY_INCL_NCI in str(concepts.iloc[-1])
     basis = rc.DERIVED_IDENTITY
     if not incl_nci:
@@ -565,8 +574,7 @@ def _as_datetime(column: pd.Series) -> pd.Series:
     """`column` as timestamps, converting only where it is not already. A no-op on the
     production path -- `_normalise_facts` has done it -- and a real conversion for a
     synthetic fixture that hands in strings."""
-    return column if is_datetime64_any_dtype(column) else pd.to_datetime(
-        column, errors="coerce")
+    return column if is_datetime64_any_dtype(column) else pd.to_datetime(column, errors="coerce")
 
 
 def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Timestamp:
@@ -591,7 +599,7 @@ def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Times
     if periods.isna().all():
         periods = _as_datetime(visible["period_end"])
     known = periods[periods <= as_of]
-    return known.max() if not known.empty else pd.NaT
+    return cast(pd.Timestamp, known.max() if not known.empty else pd.NaT)
 
 
 def _instant(lookup: InstantLookup, field: str, period) -> float | None:
@@ -620,9 +628,9 @@ def _ratio(column: str, numerator, denominator):
     return float(_FORMULAS[column][1](float(numerator), float(denominator)))
 
 
-def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
-              catalogue: Catalogue, guards: PeriodGuards,
-              narrow: pd.DataFrame | None = None) -> tuple[dict, list[dict]]:
+def _snapshot(
+    ticker: str, visible: pd.DataFrame, event: pd.Series, catalogue: Catalogue, guards: PeriodGuards, narrow: pd.DataFrame | None = None
+) -> tuple[dict, list[dict]]:
     """One complete row plus its reason codes, from every fact filed on or before `as_of`.
 
     `narrow` is the same rows projected to the columns `build_periods` actually reads. It is
@@ -640,8 +648,7 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
     # annual-shaped facts identically (instants and unbanded shapes carry no ANNUAL row), so
     # deriving it twice per event was two answers that could never differ.
     year_ends = fiscal_year_ends(facts)
-    quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals,
-                                            year_ends=year_ends)
+    quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals, year_ends=year_ends)
     # Built once per event and asked once per instant field, rather than a `merge_asof` per
     # (field, event). See `InstantLookup`: 15.4x on the primitive, measured.
     lookup = InstantLookup(instants)
@@ -653,22 +660,32 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
 
     quarter = fiscal_quarter_of_end(period, year_ends)
 
-    row: dict = {"ticker": ticker, "as_of": event["as_of"], "fiscal_end": period,
-                 "fiscal_quarter": quarter,
-                 HISTORY_REGIME: regime,
-                 **{c: event[c] for c in HISTORY_PROVENANCE}}
+    row: dict = {
+        "ticker": ticker,
+        "as_of": event["as_of"],
+        "fiscal_end": period,
+        "fiscal_quarter": quarter,
+        HISTORY_REGIME: regime,
+        **{c: event[c] for c in HISTORY_PROVENANCE},
+    }
     codes: list[dict] = []
 
     def code(field: str, dc_code: str) -> None:
-        codes.append({"ticker": ticker, "as_of": event["as_of"], "field": field,
-                      "dc_code": dc_code,
-                      "combined_into": catalogue.combined_into(regime, ticker, field),
-                      # Payload of `failed_hard_guard` alone; `_hard_guard` fills it in.
-                      "rejected_value": None})
+        codes.append(
+            {
+                "ticker": ticker,
+                "as_of": event["as_of"],
+                "field": field,
+                "dc_code": dc_code,
+                "combined_into": catalogue.combined_into(regime, ticker, field),
+                # Payload of `failed_hard_guard` alone; `_hard_guard` fills it in.
+                "rejected_value": None,
+            }
+        )
 
     for field in catalogue.history_fields:
         if field in _FORMULAS:
-            continue                                    # computed once the inputs are in
+            continue  # computed once the inputs are in
         if catalogue.field(field).kind == INSTANT:
             # Aligned on `as_of`, NOT on `fiscal_end`. The cover-page share count is dated
             # at the filing, days AFTER the period it accompanies -- and it is the only
@@ -694,10 +711,8 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
                 newest = None
                 reason = rc.STALE_TTM
             else:
-                reason = (str(newest["dc_code"]) if newest is not None
-                          and pd.notna(newest.get("dc_code")) else None)
-            value = (None if newest is None or pd.isna(newest["value"])
-                     else float(newest["value"]))
+                reason = str(newest["dc_code"]) if newest is not None and pd.notna(newest.get("dc_code")) else None
+            value = None if newest is None or pd.isna(newest["value"]) else float(newest["value"])
         if value is None and reason is None:
             reason = _facts_code(by_field, field)
         if value is None and reason is None and _has_valued_fact(by_field, field):
@@ -722,10 +737,10 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
     if row.get("totalLiabilities") is None:
         row["totalLiabilities"], basis = _total_liabilities_identity(row, by_field)
         if row["totalLiabilities"] is not None:
+            assert basis is not None
             # The absence code the loop just wrote is now false: the cell is not absent, it
             # is derived. Replace rather than accumulate, or the row says both.
-            codes[:] = [c for c in codes if c["field"] != "totalLiabilities"
-                        or c["dc_code"] in rc.IS_QUALIFIER]
+            codes[:] = [c for c in codes if c["field"] != "totalLiabilities" or c["dc_code"] in rc.IS_QUALIFIER]
             code("totalLiabilities", basis)
 
     # Before `_FORMULAS`, so `grossMargins` divides a derived numerator rather than a null.
@@ -737,21 +752,18 @@ def _snapshot(ticker: str, visible: pd.DataFrame, event: pd.Series,
         if row["grossProfit"] is not None:
             # The absence code the loop just wrote is now false: the cell is not absent, it
             # is derived. Replace rather than accumulate, or the row says both.
-            codes[:] = [c for c in codes if c["field"] != "grossProfit"
-                        or c["dc_code"] in rc.IS_QUALIFIER]
+            codes[:] = [c for c in codes if c["field"] != "grossProfit" or c["dc_code"] in rc.IS_QUALIFIER]
             code("grossProfit", rc.DERIVED_FALLBACK)
 
     for column, (inputs, _) in _FORMULAS.items():
         row[column] = _ratio(column, *(row.get(name) for name in inputs))
         if row[column] is None:
             missing = next((n for n in inputs if row.get(n) is None), None)
-            code(column, next((c["dc_code"] for c in codes if c["field"] == missing),
-                              rc.NOT_DISCLOSED))
+            code(column, next((c["dc_code"] for c in codes if c["field"] == missing), rc.NOT_DISCLOSED))
 
     for column, source in _QUARTER_LABEL_COLUMNS.items():
         newest = _latest(quarters, source)
-        row[column] = (None if newest is None or pd.isna(newest["value"])
-                       else float(newest["value"]))
+        row[column] = None if newest is None or pd.isna(newest["value"]) else float(newest["value"])
         if row[column] is None:
             code(column, _facts_code(by_field, source) or rc.NOT_DISCLOSED)
 
@@ -781,13 +793,12 @@ def _hard_guard(ticker: str, as_of, row: dict, codes: list[dict]) -> None:
             continue
         row[field] = None
         codes[:] = [c for c in codes if c["field"] != field]
-        codes.append({"ticker": ticker, "as_of": as_of, "field": field,
-                      "dc_code": rc.FAILED_HARD_GUARD, "combined_into": None,
-                      "rejected_value": float(value)})
+        codes.append(
+            {"ticker": ticker, "as_of": as_of, "field": field, "dc_code": rc.FAILED_HARD_GUARD, "combined_into": None, "rejected_value": float(value)}
+        )
 
 
-def _gate(catalogue: Catalogue, regime: str | None, field: str,
-          value: float | None) -> tuple[float | None, str | None]:
+def _gate(catalogue: Catalogue, regime: str | None, field: str, value: float | None) -> tuple[float | None, str | None]:
     """Regime gating, applied HERE and not in the facts layer.
 
     A `regime_gated` field is UNDEFINED for a regime whose register cell says so -- a bank
@@ -820,8 +831,8 @@ def _break_code(catalogue: Catalogue, field: str, period, code) -> None:
 
 # ---------------------------------------------------------------------- entry point ---
 
-def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = None,
-                         guards: PeriodGuards | None = None) -> pd.DataFrame:
+
+def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
     """One ticker's `fundamentals_history_sec` frame -- 69 columns, one row per publication event.
 
     The signature the acceptance test has pinned since Phase 1
@@ -832,8 +843,7 @@ def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = No
     return build_ticker(ticker, facts, catalogue=catalogue, guards=guards).history
 
 
-def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
-                 guards: PeriodGuards | None = None) -> TickerHistory:
+def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> TickerHistory:
     """`build_ticker_history` plus the dense reason-code side table.
 
     The replay is O(filings): the per-ticker facts frame is loaded ONCE and sliced in
@@ -850,8 +860,7 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
     assert len(columns) == 69, f"the column contract is {len(columns)}, not 69"
     events = publication_events(frame)
     if events.empty:
-        return TickerHistory(pd.DataFrame(columns=columns),
-                             pd.DataFrame(columns=list(_CODE_COLUMNS)))
+        return TickerHistory(pd.DataFrame(columns=columns), pd.DataFrame(columns=list(_CODE_COLUMNS)))
 
     narrow = _period_projection(frame)
     filed = frame["filing_date"].to_numpy()
@@ -862,8 +871,7 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
         # sorted frame is a view. Correct because `_normalise_facts` sorts by
         # `filing_date`, so "filed on or before as_of" is a prefix by construction.
         upto = int(filed.searchsorted(event["as_of"].to_datetime64(), side="right"))
-        row, row_codes = _snapshot(ticker, frame.iloc[:upto], event, catalogue, guards,
-                                   narrow.iloc[:upto])
+        row, row_codes = _snapshot(ticker, frame.iloc[:upto], event, catalogue, guards, narrow.iloc[:upto])
         rows.append(row)
         codes.extend(row_codes)
 
@@ -873,8 +881,7 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
     # ticker compare unequal on dtype alone -- which `diff_against_stored` would then have to
     # forgive, and forgiving a dtype is one step from forgiving a value.
     for column in ("as_of", "fiscal_end", "amended_fiscal_end"):
-        history[column] = pd.to_datetime(history[column],
-                                         errors="coerce").astype("datetime64[ns]")
+        history[column] = pd.to_datetime(history[column], errors="coerce").astype("datetime64[ns]")
     # Nullable Int64, not float: the label is Q1-Q4 and `WHERE fiscal_quarter = 3` should not
     # be a float comparison, but a ticker whose earliest events predate its first annual
     # filing has no fiscal calendar yet and must stay NULL rather than become 0. `sql_type`
@@ -897,14 +904,12 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
         if column not in (*HISTORY_KEYS, HISTORY_REGIME, *HISTORY_PROVENANCE):
             history[column] = pd.to_numeric(history[column], errors="coerce").astype(float)
     history["is_amendment"] = history["is_amendment"].astype(bool)
-    reason = pd.DataFrame(codes, columns=list(_CODE_COLUMNS)).drop_duplicates(
-        subset=["ticker", "as_of", "field", "dc_code"])
+    reason = pd.DataFrame(codes, columns=list(_CODE_COLUMNS)).drop_duplicates(subset=["ticker", "as_of", "field", "dc_code"])
     # float64 even when it is entirely null -- which it is for every ticker no guard ever
     # fires on, i.e. almost all of them. `store.ensure_table` infers the column type from the
     # FIRST frame it is handed, and an all-None object column becomes TEXT; that is exactly
     # how a real number once landed in Postgres as the string '1997000000.0'.
-    reason["rejected_value"] = pd.to_numeric(reason["rejected_value"],
-                                             errors="coerce").astype(float)
+    reason["rejected_value"] = pd.to_numeric(reason["rejected_value"], errors="coerce").astype(float)
     unknown = sorted(set(reason["dc_code"]) - rc.ALL_CODES)
     assert not unknown, f"{ticker}: reason code(s) outside the declared set: {unknown}"
     _assert_grain(ticker, history)
@@ -915,8 +920,7 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None,
 #: `combined_into` names at most one destination per field and `rejected_value` at most one
 #: refused number per (field, code), so putting either in the key would let two rows disagree
 #: about the same fact rather than making the second one impossible to write.
-_CODE_COLUMNS: tuple[str, ...] = ("ticker", "as_of", "field", "dc_code", "combined_into",
-                                  "rejected_value")
+_CODE_COLUMNS: tuple[str, ...] = ("ticker", "as_of", "field", "dc_code", "combined_into", "rejected_value")
 
 
 def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
@@ -926,11 +930,9 @@ def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
     only grows -- which is exactly what makes them a good test rather than a redundant one:
     if either ever trips, the grain has been broken somewhere upstream.
     """
-    assert not history.duplicated(["ticker", "as_of"]).any(), \
-        f"{ticker}: two rows share an (ticker, as_of) -- the same-day collapse failed"
+    assert not history.duplicated(["ticker", "as_of"]).any(), f"{ticker}: two rows share an (ticker, as_of) -- the same-day collapse failed"
     ends = pd.to_datetime(history["fiscal_end"])
-    assert (ends.diff().dropna() >= pd.Timedelta(0)).all(), \
-        f"{ticker}: fiscal_end is not monotone non-decreasing in as_of"
+    assert (ends.diff().dropna() >= pd.Timedelta(0)).all(), f"{ticker}: fiscal_end is not monotone non-decreasing in as_of"
     lag = (pd.to_datetime(history["as_of"]) - ends).dt.days.dropna()
     assert (lag >= 0).all(), f"{ticker}: as_of precedes fiscal_end -- look-ahead leak"
 
@@ -943,8 +945,18 @@ def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
 #: `build_periods`. The engine never looks at `adjustment`, `role_uri` or `roll_up_children`;
 #: carrying them through 69 replays cost about ten minutes a ticker.
 PERIOD_COLUMNS: tuple[str, ...] = (
-    "ticker", "field", "duration_type", "period_start", "period_end", "period_days",
-    "value", "filing_date", "source_concept", "fiscal_year", "fiscal_period")
+    "ticker",
+    "field",
+    "duration_type",
+    "period_start",
+    "period_end",
+    "period_days",
+    "value",
+    "filing_date",
+    "source_concept",
+    "fiscal_year",
+    "fiscal_period",
+)
 
 
 def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
@@ -968,10 +980,16 @@ def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
         facts = facts_frame_from_companyfacts(facts, catalogue)
     out = facts.copy()
     for column in ("filing_date", "period_of_report", "period_start", "period_end"):
-        out[column] = pd.to_datetime(out.get(column), errors="coerce")
-    for column, default in (("is_amendment", False), ("dc_code", None),
-                            ("adjustment", None), ("regime", None), ("form", "10-Q"),
-                            ("accession_number", ""), ("source_concept", None)):
+        out[column] = pd.to_datetime(cast(Any, out.get(column)), errors="coerce")
+    for column, default in (
+        ("is_amendment", False),
+        ("dc_code", None),
+        ("adjustment", None),
+        ("regime", None),
+        ("form", "10-Q"),
+        ("accession_number", ""),
+        ("source_concept", None),
+    ):
         if column not in out.columns:
             out[column] = default
     out["is_amendment"] = out["is_amendment"].fillna(False).astype(bool)
@@ -1007,27 +1025,34 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
                 continue
             for unit, entries in (payload.get("units") or {}).items():
                 for i, entry in enumerate(entries):
-                    rows.append({
-                        "ticker": "FIXTURE", "accession_number": f"{concept}-{unit}-{i}",
-                        "field": field, "fiscal_year": pd.Timestamp(entry["end"]).year,
-                        "fiscal_period": entry.get("fp", "NA"),
-                        "form": entry.get("form", "10-Q"),
-                        "filing_date": entry.get("filed"), "is_amendment": False,
-                        "period_of_report": entry["end"], "regime": None,
-                        "period_start": entry.get("start"), "period_end": entry["end"],
-                        "value": entry.get("val"), "unit": unit,
-                        "source_concept": concept, "dc_code": None, "adjustment": None})
+                    rows.append(
+                        {
+                            "ticker": "FIXTURE",
+                            "accession_number": f"{concept}-{unit}-{i}",
+                            "field": field,
+                            "fiscal_year": pd.Timestamp(entry["end"]).year,
+                            "fiscal_period": entry.get("fp", "NA"),
+                            "form": entry.get("form", "10-Q"),
+                            "filing_date": entry.get("filed"),
+                            "is_amendment": False,
+                            "period_of_report": entry["end"],
+                            "regime": None,
+                            "period_start": entry.get("start"),
+                            "period_end": entry["end"],
+                            "value": entry.get("val"),
+                            "unit": unit,
+                            "source_concept": concept,
+                            "dc_code": None,
+                            "adjustment": None,
+                        }
+                    )
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
     # One accession per (filing date, form), so the event ladder sees filings and not facts.
-    frame["accession_number"] = (frame["filing_date"].astype(str) + "-"
-                                 + frame["form"].astype(str))
-    frame["period_days"] = (pd.to_datetime(frame["period_end"])
-                            - pd.to_datetime(frame["period_start"])).dt.days
-    frame["duration_type"] = [
-        INSTANT if pd.isna(d) else ("annual" if d > 300 else "quarterly")
-        for d in frame["period_days"]]
+    frame["accession_number"] = frame["filing_date"].astype(str) + "-" + frame["form"].astype(str)
+    frame["period_days"] = (pd.to_datetime(frame["period_end"]) - pd.to_datetime(frame["period_start"])).dt.days
+    frame["duration_type"] = [INSTANT if pd.isna(d) else ("annual" if d > 300 else "quarterly") for d in frame["period_days"]]
     return frame
 
 
@@ -1036,9 +1061,26 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
 #: The `fundamentals_facts` columns the replay reads. Projected, never `SELECT *`: the table
 #: is ~28 columns x ~14k rows per ticker and the replay touches one ticker at a time.
 FACT_COLUMNS: tuple[str, ...] = (
-    "ticker", "accession_number", "field", "fiscal_year", "fiscal_period", "duration_type",
-    "form", "filing_date", "is_amendment", "period_of_report", "regime", "period_start",
-    "period_end", "period_days", "value", "unit", "source_concept", "dc_code", "adjustment")
+    "ticker",
+    "accession_number",
+    "field",
+    "fiscal_year",
+    "fiscal_period",
+    "duration_type",
+    "form",
+    "filing_date",
+    "is_amendment",
+    "period_of_report",
+    "regime",
+    "period_start",
+    "period_end",
+    "period_days",
+    "value",
+    "unit",
+    "source_concept",
+    "dc_code",
+    "adjustment",
+)
 
 
 def diff_against_stored(stored: pd.DataFrame, rebuilt: pd.DataFrame) -> pd.DataFrame:
@@ -1071,8 +1113,7 @@ def diff_against_stored(stored: pd.DataFrame, rebuilt: pd.DataFrame) -> pd.DataF
             if pd.isna(was) and pd.isna(now):
                 continue
             if pd.isna(was) or pd.isna(now) or was != now:
-                rows.append({"as_of": as_of, "column": column,
-                             "stored": was, "rebuilt": now})
+                rows.append({"as_of": as_of, "column": column, "stored": was, "rebuilt": now})
     return pd.DataFrame(rows, columns=["as_of", "column", "stored", "rebuilt"])
 
 
@@ -1084,8 +1125,7 @@ def _keyed_by_as_of(frame: pd.DataFrame) -> pd.DataFrame:
     return out.set_index("as_of").sort_index()
 
 
-def build_fundamentals_history(context, tickers: list[str], *,
-                              rebuild_history: bool = False) -> None:
+def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`.
 
     Append-only in normal operation: a second run over unchanged facts appends **0** rows and
@@ -1095,14 +1135,13 @@ def build_fundamentals_history(context, tickers: list[str], *,
     tables and rebuild from the facts already stored; no network is involved, which is the
     whole point of having it separate from `--rebuild`.
     """
-    from src.data_store.schema import Tables            # local: avoids a package cycle
+    from src.data_store.schema import Tables  # local: avoids a package cycle
 
     catalogue = load_catalogue(context.config_dir)
     guards = load_guards(context.config_dir)
     history_rows = codes_rows = 0
     for ticker in tickers:
-        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS),
-                                   where={"ticker": ticker}, optional=True)
+        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
         if facts is None:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
             continue
@@ -1114,43 +1153,46 @@ def build_fundamentals_history(context, tickers: list[str], *,
         # is forbidden by `AGENTS.md`, and naming the 69 columns makes the read fail loudly
         # the day the table and the column contract diverge instead of quietly handing the
         # diff a column it has no rebuilt counterpart for.
-        stored = context.store.load(Tables.fundamentals_history_sec,
-                                    columns=list(catalogue.history_columns),
-                                    where={"ticker": ticker}, optional=True)
+        stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
         history, codes = built.history, built.reason_codes
         if rebuild_history:
             deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
             context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
-            context.log.warning("history: %s REBUILT -- %d row(s) deleted and recomputed. "
-                                "Log this in the phase report: a rebuild re-derives numbers "
-                                "under whatever model is already trained on them.",
-                                ticker, deleted)
+            context.log.warning(
+                "history: %s REBUILT -- %d row(s) deleted and recomputed. "
+                "Log this in the phase report: a rebuild re-derives numbers "
+                "under whatever model is already trained on them.",
+                ticker,
+                deleted,
+            )
         elif stored is not None:
             drift = diff_against_stored(stored, history)
             if not drift.empty:
-                context.log.error("history: %s would CHANGE %d already-published cell(s) "
-                                  "across %d row(s) -- refusing to overwrite. Re-run with "
-                                  "--rebuild-history to accept:\n%s", ticker, len(drift),
-                                  drift["as_of"].nunique(), drift.head(20).to_string())
+                context.log.error(
+                    "history: %s would CHANGE %d already-published cell(s) "
+                    "across %d row(s) -- refusing to overwrite. Re-run with "
+                    "--rebuild-history to accept:\n%s",
+                    ticker,
+                    len(drift),
+                    drift["as_of"].nunique(),
+                    drift.head(20).to_string(),
+                )
                 raise ValueError(
                     f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would "
-                    "change; history is append-only (pass --rebuild-history to rebuild)")
+                    "change; history is append-only (pass --rebuild-history to rebuild)"
+                )
             known = set(pd.to_datetime(stored["as_of"]))
             new = ~pd.to_datetime(history["as_of"]).isin(known)
-            history, codes = history[new.values], codes[
-                pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
+            history, codes = history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
         if history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
             continue
         context.store.save(Tables.fundamentals_history_sec, history)
         if not codes.empty:
             context.store.save(Tables.fundamentals_reason_codes, codes)
-        context.log.info("history: %s +%d event row(s), %d reason code(s)",
-                         ticker, len(history), len(codes))
+        context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(history), len(codes))
         history_rows += len(history)
         codes_rows += len(codes)
 
-    record_run(context, Tables.fundamentals_history_sec, len(tickers), history_rows,
-              is_full_rescan=rebuild_history)
-    record_run(context, Tables.fundamentals_reason_codes, len(tickers), codes_rows,
-              is_full_rescan=rebuild_history)
+    record_run(context, Tables.fundamentals_history_sec, len(tickers), history_rows, is_full_rescan=rebuild_history)
+    record_run(context, Tables.fundamentals_reason_codes, len(tickers), codes_rows, is_full_rescan=rebuild_history)

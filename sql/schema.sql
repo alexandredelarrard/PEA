@@ -1464,24 +1464,6 @@ CREATE TABLE IF NOT EXISTS "sec_filing_text" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec_filing_text_filed ON "sec_filing_text" ("filed");
 
--- [extract] google_trends  (pk: ticker, date)
-
-CREATE TABLE IF NOT EXISTS "google_trends" (
-    "date" TIMESTAMP NOT NULL,
-    "ticker" TEXT NOT NULL,
-    "search_interest" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "date")
-);
-
--- [extract] wiki_pageviews  (pk: ticker, date)
-
-CREATE TABLE IF NOT EXISTS "wiki_pageviews" (
-    "date" TIMESTAMP NOT NULL,
-    "ticker" TEXT NOT NULL,
-    "pageviews" DOUBLE PRECISION,
-    PRIMARY KEY ("ticker", "date")
-);
-
 -- [extract] earnings_call_sections  (pk: ticker, quarter, tag)
 
 CREATE TABLE IF NOT EXISTS "earnings_call_sections" (

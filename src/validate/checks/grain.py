@@ -13,6 +13,7 @@ test on the key, and while today's keys are a date and a string, the contract is
 the moment a numeric column enters a pk, a float32 round-trip manufactures collisions that are
 not in the table. `cache=` is accepted (every check takes it) and deliberately ignored.
 """
+
 from __future__ import annotations
 
 import logging
@@ -43,9 +44,16 @@ def _ticker_column(keys: list[str], columns: list[str]) -> str | None:
     return None
 
 
-def check_grain(context: Context, table: Table | str, *, config: Any = None,
-                cache: Any = None, tickers: list[str] | None = None,
-                chunksize: int = CHUNK_ROWS, **kwargs: Any) -> CheckResult:
+def check_grain(
+    context: Context,
+    table: Table | str,
+    *,
+    config: Any = None,
+    cache: Any = None,
+    tickers: list[str] | None = None,
+    chunksize: int = CHUNK_ROWS,
+    **kwargs: Any,
+) -> CheckResult:
     """Rows vs distinct declared-pk keys, nulls in a key column, and the panel's edges."""
     spec = resolve(table)
     if (declined := full_table_only(CHECK, spec.name, tickers)) is not None:
@@ -53,9 +61,11 @@ def check_grain(context: Context, table: Table | str, *, config: Any = None,
     keys = list(key_columns(spec))
     if not keys:
         return CheckResult.abstained(
-            CHECK, spec.name,
+            CHECK,
+            spec.name,
             "the registry declares no `pk` for this table, so there is no grain to test -- "
-            "add one to src/data_store/schema.py rather than letting this check guess")
+            "add one to src/data_store/schema.py rather than letting this check guess",
+        )
 
     live = context.store.columns(spec)
     missing = [k for k in keys if k not in live]
@@ -63,9 +73,10 @@ def check_grain(context: Context, table: Table | str, *, config: Any = None,
         # The declared key is not the key the table has. That is a finding in the registry,
         # not a measurement of the data, and nothing downstream of it would mean anything.
         return CheckResult.abstained(
-            CHECK, spec.name,
-            f"declared pk {keys} names column(s) {missing} the live table does not have "
-            f"-- the registry and the database disagree about the grain")
+            CHECK,
+            spec.name,
+            f"declared pk {keys} names column(s) {missing} the live table does not have -- the registry and the database disagree about the grain",
+        )
 
     parts = list(context.store.iter_load(spec, columns=keys, chunksize=chunksize))
     frame = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=keys)
@@ -80,34 +91,52 @@ def check_grain(context: Context, table: Table | str, *, config: Any = None,
 
     findings: list[Finding] = []
     if duplicated:
-        counts = (frame[frame.duplicated(subset=keys, keep=False)]
-                  .groupby(keys, dropna=False).size().sort_values(ascending=False))
-        examples = [{**dict(zip(keys, key if isinstance(key, tuple) else (key,))),
-                     "rows": int(n)} for key, n in counts.head(_MAX_EXAMPLES).items()]
-        findings.append(Finding.at(
-            10,
-            observed=f"{duplicated:,} of {rows:,} rows share a key with another row "
-                     f"({distinct:,} distinct keys, worst key repeats {int(counts.iloc[0])}x)",
-            expected=f"exactly one row per declared key {tuple(keys)}",
-            duplicate_rows=duplicated, distinct_keys=distinct, rows=rows,
-            keys_repeated=int(len(counts)), examples=examples))
+        counts = frame[frame.duplicated(subset=keys, keep=False)].groupby(keys, dropna=False).size().sort_values(ascending=False)
+        examples = [
+            {**dict(zip(keys, key if isinstance(key, tuple) else (key,), strict=False)), "rows": int(n)}
+            for key, n in counts.head(_MAX_EXAMPLES).items()
+        ]
+        findings.append(
+            Finding.at(
+                10,
+                observed=f"{duplicated:,} of {rows:,} rows share a key with another row "
+                f"({distinct:,} distinct keys, worst key repeats {int(counts.iloc[0])}x)",
+                expected=f"exactly one row per declared key {tuple(keys)}",
+                duplicate_rows=duplicated,
+                distinct_keys=distinct,
+                rows=rows,
+                keys_repeated=int(len(counts)),
+                examples=examples,
+            )
+        )
 
     for column, count in nulls.items():
         if count:
-            findings.append(Finding.at(
-                10, field=column,
-                observed=f"{count:,} of {rows:,} rows carry NULL in key column `{column}`",
-                expected="a key column is never NULL -- a NULL key cannot be joined to, "
-                         "and every one of these rows is unaddressable",
-                null_rows=count, rows=rows, share=round(count / rows, 6)))
+            findings.append(
+                Finding.at(
+                    10,
+                    field=column,
+                    observed=f"{count:,} of {rows:,} rows carry NULL in key column `{column}`",
+                    expected="a key column is never NULL -- a NULL key cannot be joined to, and every one of these rows is unaddressable",
+                    null_rows=count,
+                    rows=rows,
+                    share=round(count / rows, 6),
+                )
+            )
 
     ticker_col = _ticker_column(keys, live)
     n_tickers = int(frame[ticker_col].nunique()) if ticker_col in frame.columns else None
-    first_date, last_date = (context.store.bounds(spec) if spec.date_col else (None, None))
+    first_date, last_date = context.store.bounds(spec) if spec.date_col else (None, None)
 
-    scope = {"rows": rows, "tickers": n_tickers, "first_date": first_date,
-             "last_date": last_date, "pk": keys, "source": "db(float64)"}
-    metrics = {"rows": rows, "distinct_keys": distinct, "duplicate_rows": duplicated,
-               "nulls_in_key": nulls, "tickers": n_tickers,
-               "date_col": spec.date_col, "first_date": first_date, "last_date": last_date}
+    scope = {"rows": rows, "tickers": n_tickers, "first_date": first_date, "last_date": last_date, "pk": keys, "source": "db(float64)"}
+    metrics = {
+        "rows": rows,
+        "distinct_keys": distinct,
+        "duplicate_rows": duplicated,
+        "nulls_in_key": nulls,
+        "tickers": n_tickers,
+        "date_col": spec.date_col,
+        "first_date": first_date,
+        "last_date": last_date,
+    }
     return CheckResult.measured(CHECK, spec.name, findings, scope=scope, metrics=metrics)

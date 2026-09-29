@@ -7,6 +7,7 @@ become top model drivers (a tell that the target is NOT sector-neutral). These t
 prove the group-demean zeroes every group's per-day mean and that, post-neutralization,
 sector membership can no longer predict the rank target.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -15,7 +16,9 @@ import pandas as pd
 from src.data_aggregate.utils.common.prices import forward_compound
 from src.data_aggregate.utils.common.xs import xs_group_dummies, xs_project_out
 from src.data_aggregate.utils.target.targets import (
-    build_targets_multi, compute_epsilon, cross_sectional_rank,
+    build_targets_multi,
+    compute_epsilon,
+    cross_sectional_rank,
 )
 
 
@@ -35,7 +38,7 @@ def _panel_with_sector_tilt(seed: int = 0):
     eps = pd.DataFrame(rng.standard_normal((len(dates), len(tickers))), index=dates, columns=tickers)
     for t, s in sector.items():
         if s == "HOT":
-            eps[t] += 5.0                                    # strong per-day sector tilt
+            eps[t] += 5.0  # strong per-day sector tilt
     hot = [t for t in tickers if sector[t] == "HOT"]
     cold = [t for t in tickers if sector[t] == "COLD"]
     return eps, sector, hot, cold
@@ -44,20 +47,19 @@ def _panel_with_sector_tilt(seed: int = 0):
 def test_group_neutralize_zeros_group_means_preserves_spread():
     eps, sector, hot, cold = _panel_with_sector_tilt()
     out = _group_neutralize(eps, sector)
-    assert np.allclose(out[hot].mean(axis=1), 0.0, atol=1e-9)     # each group's per-day mean = 0
+    assert np.allclose(out[hot].mean(axis=1), 0.0, atol=1e-9)  # each group's per-day mean = 0
     assert np.allclose(out[cold].mean(axis=1), 0.0, atol=1e-9)
     # within-group RELATIVE spacing preserved (demean only removes a per-day constant)
     assert np.allclose(out[hot[0]] - out[hot[1]], eps[hot[0]] - eps[hot[1]])
     # An unmapped ticker now joins a shared `__UNK__` group and is demeaned WITHIN it, rather
     # than being left untouched as the old dedicated demeaner did. That is the point of the
     # indicator block: every name sits in exactly one group, so the block spans the constant.
-    partial = {t: "HOT" for t in hot}                            # cold unmapped
+    partial = {t: "HOT" for t in hot}  # cold unmapped
     out2 = _group_neutralize(eps, partial)
     assert np.allclose(out2[cold].mean(axis=1), 0.0, atol=1e-9)
     assert np.allclose(out2[cold[0]] - out2[cold[1]], eps[cold[0]] - eps[cold[1]])
     print("\n=== SANITY CHECK: group demean via the indicator block ===")
-    print("  each group's per-day mean -> 0; within-group spread preserved; unmapped names "
-          "demeaned within a shared __UNK__ group. Validated.")
+    print("  each group's per-day mean -> 0; within-group spread preserved; unmapped names demeaned within a shared __UNK__ group. Validated.")
 
 
 def test_sector_neutralization_kills_sector_prediction():
@@ -65,14 +67,16 @@ def test_sector_neutralization_kills_sector_prediction():
     # BEFORE: the sector tilt makes sector membership PREDICT the rank target
     raw = cross_sectional_rank(eps, min_names=2)
     hot_raw, cold_raw = raw[hot].mean().mean(), raw[cold].mean().mean()
-    assert hot_raw > 0.7 and cold_raw < 0.3                       # sector predicts -> NOT neutral
+    assert hot_raw > 0.7 and cold_raw < 0.3  # sector predicts -> NOT neutral
     # AFTER GICS neutralization: each sector's mean rank ~0.5 -> sector no longer predicts
     neu = cross_sectional_rank(_group_neutralize(eps, sector), min_names=2)
     hot_neu, cold_neu = neu[hot].mean().mean(), neu[cold].mean().mean()
     assert abs(hot_neu - 0.5) < 0.08 and abs(cold_neu - 0.5) < 0.08
     print("\n=== SANITY CHECK: target sector-neutrality ===")
-    print(f"  raw mean rank HOT={hot_raw:.2f} COLD={cold_raw:.2f} (sector PREDICTS) -> "
-          f"neutralized HOT={hot_neu:.2f} COLD={cold_neu:.2f} (~0.5, sector can't predict). Validated.")
+    print(
+        f"  raw mean rank HOT={hot_raw:.2f} COLD={cold_raw:.2f} (sector PREDICTS) -> "
+        f"neutralized HOT={hot_neu:.2f} COLD={cold_neu:.2f} (~0.5, sector can't predict). Validated."
+    )
 
 
 def test_neutralize_both_sector_and_industry():
@@ -84,12 +88,11 @@ def test_neutralize_both_sector_and_industry():
     # ONLY the industry indicators are used: industry is NESTED in sector, so a sector mean is
     # a weighted average of its industries' (zero) means and comes out zero for free.
     out = _group_neutralize(eps, industry)
-    assert np.allclose(out[cols].mean(axis=1), 0.0, atol=1e-9)        # sector mean 0
+    assert np.allclose(out[cols].mean(axis=1), 0.0, atol=1e-9)  # sector mean 0
     assert np.allclose(out[["A", "B"]].mean(axis=1), 0.0, atol=1e-9)  # AND each industry mean 0
     assert np.allclose(out[["C", "D"]].mean(axis=1), 0.0, atol=1e-9)
     print("\n=== SANITY CHECK: sector + industry both neutral ===")
-    print("  industry indicators alone (industry nested in sector) -> both levels' per-day "
-          "means 0. Validated.")
+    print("  industry indicators alone (industry nested in sector) -> both levels' per-day means 0. Validated.")
 
 
 # --------------------------------------------------------------------------- #
@@ -107,15 +110,12 @@ def _panel_with_sector_excess(seed: int = 3):
     dates = pd.bdate_range("2022-01-01", periods=260)
     tickers = [f"T{i}" for i in range(25)]
 
-    sector_excess = pd.DataFrame(rng.normal(0, 0.008, (len(dates), len(tickers))),
-                                 index=dates, columns=tickers)
+    sector_excess = pd.DataFrame(rng.normal(0, 0.008, (len(dates), len(tickers))), index=dates, columns=tickers)
     # every stock loads +0.9 on its OWN sector basket, so the term is never a no-op
     ret = 0.9 * sector_excess + rng.normal(0, 0.004, (len(dates), len(tickers)))
-    close = pd.DataFrame(100 * np.cumprod(1 + ret.to_numpy(), axis=0),
-                         index=dates, columns=tickers)
+    close = pd.DataFrame(100 * np.cumprod(1 + ret.to_numpy(), axis=0), index=dates, columns=tickers)
     factor_panel = pd.DataFrame({"market": rng.normal(0, 0.01, len(dates))}, index=dates)
-    betas = {t: pd.DataFrame({"beta_market": 1.0, "beta_sector": 0.9}, index=dates)
-             for t in tickers}
+    betas = {t: pd.DataFrame({"beta_market": 1.0, "beta_sector": 0.9}, index=dates) for t in tickers}
     return close, ret, betas, factor_panel, sector_excess, tickers
 
 
@@ -124,16 +124,26 @@ def test_sector_excess_frame_flows_through_build_targets_multi():
     ('truth value of a DataFrame is ambiguous') before the contract was unified."""
     close, ret, betas, factor_panel, sector_excess, tickers = _panel_with_sector_excess()
 
-    out = build_targets_multi(close, betas, factor_panel, macro_cols=[],
-                              horizons=(20,), labels=("rank",), min_names=5,
-                              sector_groups={"sector": {t: "S" for t in tickers}},
-                              sector_excess=sector_excess, stock_ret=ret)
+    out = build_targets_multi(
+        close,
+        betas,
+        factor_panel,
+        macro_cols=[],
+        horizons=(20,),
+        labels=("rank",),
+        min_names=5,
+        sector_groups={"sector": {t: "S" for t in tickers}},
+        sector_excess=sector_excess,
+        stock_ret=ret,
+    )
 
     non_null = int(out[20]["rank"].notna().sum().sum())
     assert non_null > 0, "targets are empty -> the sector frame did not flow through"
     print("\n=== SANITY CHECK: sector_excess frame flows through build_targets_multi ===")
-    print(f"  passed a {sector_excess.shape[0]}x{sector_excess.shape[1]} date x ticker frame "
-          f"-> {non_null} non-null labels (previously ValueError). Validated.")
+    print(
+        f"  passed a {sector_excess.shape[0]}x{sector_excess.shape[1]} date x ticker frame "
+        f"-> {non_null} non-null labels (previously ValueError). Validated."
+    )
 
 
 def test_sector_beta_actually_changes_epsilon():
@@ -141,8 +151,7 @@ def test_sector_beta_actually_changes_epsilon():
     the sector loading genuinely moves epsilon rather than merely not crashing."""
     close, ret, betas, factor_panel, sector_excess, _ = _panel_with_sector_excess()
 
-    with_sector = compute_epsilon(ret, betas, factor_panel, [], 20,
-                                  sector_excess=sector_excess)
+    with_sector = compute_epsilon(ret, betas, factor_panel, [], 20, sector_excess=sector_excess)
     without = compute_epsilon(ret, betas, factor_panel, [], 20, sector_excess=None)
 
     both = with_sector.notna() & without.notna()
@@ -153,7 +162,10 @@ def test_sector_beta_actually_changes_epsilon():
     # and it REMOVES exposure rather than merely perturbing it. Compare against the
     # FORWARD-compounded basket -- the object actually subtracted -- not the daily one.
     fwd_sector = forward_compound(sector_excess, 20)
-    flat = lambda d: d.where(both).to_numpy().ravel()
+
+    def flat(d):
+        return d.where(both).to_numpy().ravel()
+
     keep = ~(np.isnan(flat(with_sector)) | np.isnan(flat(fwd_sector)))
     corr_with = abs(np.corrcoef(flat(with_sector)[keep], flat(fwd_sector)[keep])[0, 1])
     corr_without = abs(np.corrcoef(flat(without)[keep], flat(fwd_sector)[keep])[0, 1])

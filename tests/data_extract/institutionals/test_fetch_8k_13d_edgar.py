@@ -15,7 +15,7 @@ import pandas as pd
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, fetch_8k_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     _carve_with,
@@ -46,7 +46,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         params = inspect.signature(fn).parameters
         assert "years_history" in params, f"{fn.__name__} must take years_history"
         assert params["years_history"].default is inspect.Parameter.empty, (
-            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a " f"second place for the window to diverge"
+            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
         )
 
     # each step is the single place that reads the window off the config, for its own fetchers
@@ -62,7 +62,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         run = inspect.getsource(step.run)
         assert run.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
         assert run.count("years_history=years_history") == n_windowed, (
-            f"{step.__name__} passes the window to " f"{run.count('years_history=years_history')} fetchers, expected {n_windowed}"
+            f"{step.__name__} passes the window to {run.count('years_history=years_history')} fetchers, expected {n_windowed}"
         )
     print("\n=== SANITY: extraction window plumbing ===")
     print(
@@ -70,6 +70,29 @@ def test_filing_fetchers_take_years_history_as_an_argument():
         "fetchers; each step reads data_extract.years_history exactly once and passes it "
         "down. No fetcher reads the config itself. Validated."
     )
+
+
+def test_fetch_8k_edgar_forwards_full_history_to_shared_driver(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "src.data_extract.utils.institutionals.fetch_8k_edgar.run_edgar_fetch",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    fetch_8k_edgar(SimpleNamespace(), ["PSKY", "JCI", "EVRG"], 15, full=True)
+
+    assert calls == [
+        {
+            "tables": (Tables.sec_8k,),
+            "build": build_ticker_8k_edgar,
+            "desc": "8-K (edgartools)",
+            "full": True,
+            "require_complete": True,
+        }
+    ]
+    print("\n=== SANITY: 8-K full-history plumbing ===")
+    print("  fetch_8k_edgar(..., full=True) forwards the existing full-rescan flag to the shared EDGAR driver.")
 
 
 def _fake_8k_filing(
@@ -81,6 +104,7 @@ def _fake_8k_filing(
     items="2.02,9.01",
     primary_document="form8k.htm",
     obj=None,
+    text=None,
 ):
     filing = SimpleNamespace(
         accession_number=accession,
@@ -91,6 +115,7 @@ def _fake_8k_filing(
         primary_document=primary_document,
     )
     filing.obj = (lambda: obj) if obj is not None else (lambda: (_ for _ in ()).throw(RuntimeError("no parse")))
+    filing.text = (lambda: text) if text is not None else (lambda: (_ for _ in ()).throw(AssertionError("filing.text() must not be called")))
     return filing
 
 
@@ -130,6 +155,66 @@ def test_8k_amendment_flag_from_form_suffix():
     filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False))
     rows = _filing_row("MAA", "0000320193", filing)
     assert all(r["is_amendment"] == 1.0 for r in rows)
+
+
+class _CurrentReport(SimpleNamespace):
+    def __init__(self, item_text: str):
+        super().__init__(has_earnings=False, has_press_release=False)
+        self.item_text = item_text
+
+    def __getitem__(self, key: str) -> str:
+        assert key == "Item 5.07"
+        return self.item_text
+
+
+def test_8k_item_507_recovers_table_from_primary_document_when_structured_slice_is_stub():
+    stub = "The final voting results for each matter are set forth below."
+    primary = """Item 5.07.      Submission
+of Matters to a Vote of Security Holders.
+
+The final voting results for each matter are set forth below.
+
+Votes For      Votes Against      Votes Abstained
+1,234,567      23,456             1,234
+
+Item 9.01. Financial Statements and Exhibits.
+This text must not leak into Item 5.07.
+"""
+    filing = _fake_8k_filing(items="5.07,9.01", obj=_CurrentReport(stub), text=primary)
+
+    rows = _filing_row("TRV", "0000086312", filing)
+    item = next(row for row in rows if row["item"] == "5.07")
+
+    assert "1,234,567" in item["item_text"]
+    assert "This text must not leak" not in item["item_text"]
+
+
+def test_8k_item_507_preserves_complete_structured_text_without_reading_primary_document():
+    complete = "Final voting results below. Votes For 1,234,567; Votes Against 23,456; Votes Abstained 1,234."
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete))
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == complete
+
+
+def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
+    stub = "The final voting results are set forth below."
+    primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nNo results were included.\nSIGNATURES"
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == stub
+
+
+def test_8k_item_507_does_not_read_primary_document_without_results_follow_signal():
+    stub = "The annual meeting occurred on May 1, 2026."
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub))
+
+    rows = _filing_row("AAPL", "0000320193", filing)
+
+    assert rows[0]["item_text"] == stub
 
 
 def _fake_13d_filing(
@@ -562,7 +647,7 @@ def test_normalize_item_text_fixes_mojibake_rules_and_whitespace():
     used as a visual rule under the heading (STX's Item 4 body opens with 40 of them).
     Both wreck tokenization for no semantic gain, so they are normalized away --
     characters only, never a sentence."""
-    body = "─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see" "\xa0below.\n\n\n   Ragged    spacing   here.   \n"
+    body = "─" * 40 + "\nThe \x93group\x94 acquired ‘shares’ — see\xa0below.\n\n\n   Ragged    spacing   here.   \n"
     out = _normalize_item_text(body)
     assert '"group"' in out and "'shares'" in out  # cp1252 + unicode quotes straightened
     assert "─" not in out  # box-drawing rule gone
@@ -588,7 +673,7 @@ def test_normalize_item_text_decodes_a_semantic_cp1252_byte_rather_than_dropping
 def test_normalize_item_text_leaves_hyphenated_words_and_negatives_alone():
     """The rule-run stripper is bounded to runs of 3+ AND must not fire inside a word or a
     number -- a hyphenated term and a negative figure are real content, not furniture."""
-    body = "The non-transferable shares were valued at -1,234 per unit, a --5 point " "swing, under a well-known cost-plus arrangement."
+    body = "The non-transferable shares were valued at -1,234 per unit, a --5 point swing, under a well-known cost-plus arrangement."
     out = _normalize_item_text(body)
     assert "non-transferable" in out
     assert "-1,234" in out

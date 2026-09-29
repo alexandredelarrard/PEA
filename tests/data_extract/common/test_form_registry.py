@@ -3,10 +3,14 @@ Form-dispatch registry tests: every FORM_REGISTRY entry must point at a real
 schema.py table, and its declared sec_forms must not drift from the
 centralized constants.py form-type lists.
 """
+
 from __future__ import annotations
 
 from src.constants.constants import (
-    DEF14A_FORMS, FUNDAMENTALS_FORMS, SEC_8K_FORMS, SEC_13D_FORMS,
+    DEF14A_FORMS,
+    FUNDAMENTALS_FORMS,
+    SEC_8K_FORMS,
+    SEC_13D_FORMS,
 )
 from src.data_extract.utils.common.form_registry import FORM_REGISTRY
 from src.data_store.schema import BY_NAME
@@ -38,8 +42,7 @@ def test_registry_forms_match_constants():
         assert FORM_REGISTRY[name].sec_forms == EXPECTED_FORMS[name], f"{name}: form drift"
 
     absent = sorted(EXPECTED_FORMS.keys() - FORM_REGISTRY.keys())
-    print(f"\n[form drift] {len(EXPECTED_FORMS) - len(absent)} of {len(EXPECTED_FORMS)} "
-          f"form lists checked; NOT REGISTERED: {absent or 'none'}")
+    print(f"\n[form drift] {len(EXPECTED_FORMS) - len(absent)} of {len(EXPECTED_FORMS)} form lists checked; NOT REGISTERED: {absent or 'none'}")
 
 
 def test_registry_handlers_are_callable():
@@ -69,7 +72,7 @@ def test_thirteen_f_keeps_its_all_filers_grain():
     but the all-filers grain, and the (cik, period, ticker, cusip) PK, did not."""
     spec = FORM_REGISTRY["sec13f_hr"]
     assert spec.discovery == "all_filers_by_date"
-    assert "13F-NT" not in spec.sec_forms      # a notice filing carries no info table
+    assert "13F-NT" not in spec.sec_forms  # a notice filing carries no info table
 
     print("\n=== SANITY CHECK: form-dispatch registry ===")
     print(f"  {len(FORM_REGISTRY)} forms registered, every table exists in schema.py,")

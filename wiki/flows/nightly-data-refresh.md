@@ -10,7 +10,7 @@ tags:
 
 ## Summary
 
-The nightly path refreshes source tables in parallel, then triggers a memory-bounded aggregation chain. Extraction tasks are grouped by operational resource pools rather than application package, while cube tasks run sequentially and derive their commands from the part registry.
+The nightly path refreshes source tables and passes a final schema-driven freshness gate before triggering the memory-bounded aggregation chain. Extraction tasks are grouped by operational resource pools rather than application package, while cube tasks run sequentially and derive their commands from the part registry.
 
 ## Trigger
 
@@ -29,6 +29,9 @@ sequenceDiagram
   Airflow->>Extract: seed universe
   Airflow->>Extract: run source tasks by pool
   Extract->>Store: incremental upserts
+  Airflow->>Extract: run schema-driven freshness gate
+  Extract->>Store: read each declared table frontier
+  Extract-->>Airflow: green only when every declared table is current
   Airflow->>Peers: deduce peers
   Peers-->>Airflow: persist peer dictionary
   Airflow->>Cube: run registered parts sequentially
@@ -40,18 +43,18 @@ sequenceDiagram
 ## Steps
 
 1. Seed or load the S&P 500 universe through [data extraction](../modules/data-extract.md).
-2. Fan out source commands across SEC bulk, SEC API, scrape, and default pools.
-3. Persist every completed entity or source chunk through [DataStore](../modules/data-store.md).
-4. Trigger [peer deduction](../modules/data-peers.md), then the [cube-build flow](./cube-build.md).
-5. Run the part-status gate and trigger [model prediction](./model-training-and-prediction.md).
+2. Run source commands across SEC bulk, SEC API, scrape, and default pools.
+3. Retry an extractor that raises up to three times. Per-ticker SEC API walks consume the whole SEC pool so their process-local rate limiters cannot exceed the shared request budget.
+4. Run the final extraction gate. Its complete table inventory, cadence, and publication date column come from `freshness_tables()` in [schema.py](../../src/data_store/schema.py); cadence tolerances come from [constants.py](../../src/constants/constants.py). The gate also inherits three retries. Wikipedia pageviews and Google Trends are retired, not scheduled, and declare no freshness.
+5. On green only, trigger [peer deduction](../modules/data-peers.md), then the [cube-build flow](./cube-build.md).
+6. Run the cube part-status gate and trigger [model prediction](./model-training-and-prediction.md) only when that gate succeeds.
 
 ## Failure modes
 
-The extraction completion gate is configured to remain visible even when a source task fails, allowing downstream data to build from the latest available state. Each fetcher therefore needs correct resume semantics and source freshness metadata. Aggregation is sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
+A source task that raises is retried, so extraction itself runs again. The final gate compares each schema-declared table's maximum publication date with its cadence tolerance; an absent or stale table makes the gate retry and blocks aggregation if it remains red. The gate does not maintain a second source-to-table map, so its retry rechecks database state rather than guessing which upstream extractor owns a table. The cube status gate likewise blocks prediction. Aggregation remains sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
 
 ## Related
 
 - [DAGs and infrastructure](../modules/dags-and-infrastructure.md)
 - [Source availability](../concepts/source-availability.md)
-- [Run the pipeline](../guides/run-the-pipeline.md)
 - [Run the pipeline](../guides/run-the-pipeline.md)

@@ -227,8 +227,8 @@ def test_bank_roa_is_the_surviving_bank_kpi():
     assert np.isnan(k.loc["INDU", "bank_roa"]), "an industrial must not get bank_roa"
     print("\n=== SANITY CHECK: bank KPIs (post-audit) ===")
     print(
-        f"  bank_roa={k.loc['BANK','bank_roa']} without prior assets, aoci_to_equity="
-        f"{k.loc['BANK','aoci_to_equity']:+.3f} (negative AOCI = unrealized securities "
+        f"  bank_roa={k.loc['BANK', 'bank_roa']} without prior assets, aoci_to_equity="
+        f"{k.loc['BANK', 'aoci_to_equity']:+.3f} (negative AOCI = unrealized securities "
         f"losses eroding capital). NIM/efficiency/provision need tags SF1 lacks. Validated."
     )
 
@@ -319,7 +319,7 @@ def test_reinvestment_rate_multiperiod():
     assert last["asset_turnover"] == pytest.approx(1200.0 / 1000.0)
     assert last["gmroi"] == pytest.approx(450.0 / 150.0)
     print("\n=== SANITY CHECK: reinvestment rate (multi-period) ===")
-    print(f"  (capex-D&A+dNWC)/NOPAT = (100-60+60)/160 = {last['reinvestment_rate']:.3f}; " f"first year NaN (no prior). Validated.")
+    print(f"  (capex-D&A+dNWC)/NOPAT = (100-60+60)/160 = {last['reinvestment_rate']:.3f}; first year NaN (no prior). Validated.")
 
 
 def test_utility_kpi():
@@ -386,7 +386,7 @@ def test_capitalized_rd_multiperiod():
     adj_cap = 1000 + 0 + 300 - 0
     assert last["rd_capitalized_roic"] == pytest.approx(adj_oi * 0.79 / adj_cap)
     print("\n=== SANITY CHECK: capitalized R&D (multi-period) ===")
-    print(f"  rd_capitalized_roic (5y flat R&D) = {last['rd_capitalized_roic']:.4f} " f"(asset 300, amort 100). Validated.")
+    print(f"  rd_capitalized_roic (5y flat R&D) = {last['rd_capitalized_roic']:.4f} (asset 300, amort 100). Validated.")
 
 
 def test_kpis_are_gics_scoped():

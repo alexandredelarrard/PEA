@@ -71,7 +71,7 @@ def test_small_aggregate_difference_cannot_hide_a_missing_accession():
     assert not result["passed"]
     assert result["accession_coverage"] == 0.98
     assert result["missing_accessions"] == ["A98", "A99"]
-    print("SANITY: losing two of 100 filings failed the 99% accession gate even though the " "remaining transaction economics matched exactly.")
+    print("SANITY: losing two of 100 filings failed the 99% accession gate even though the remaining transaction economics matched exactly.")
 
 
 def test_a_missing_cube_input_column_cannot_pass_on_the_remaining_fields():
@@ -80,9 +80,7 @@ def test_a_missing_cube_input_column_cannot_pass_on_the_remaining_fields():
     result = reconcile_transactions(bulk, live, THRESHOLDS)
     assert not result["passed"]
     assert result["missing_live_columns"] == ["owner_cik"]
-    print(
-        "SANITY: omitting owner_cik fails the source contract explicitly; high agreement on " "the remaining fields cannot hide a missing cube input."
-    )
+    print("SANITY: omitting owner_cik fails the source contract explicitly; high agreement on the remaining fields cannot hide a missing cube input.")
 
 
 def test_feature_gate_requires_identical_null_masks():

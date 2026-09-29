@@ -64,6 +64,7 @@ unless the next reorganisation announces itself.
     "$PY" scripts/detect_registrant_cutovers.py --classify --out o3.json --report classified.md
     "$PY" scripts/detect_registrant_cutovers.py --offline --out o3.json --report classified.md
 """
+
 from __future__ import annotations
 
 import argparse
@@ -71,6 +72,7 @@ import collections
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 from sqlalchemy import text
@@ -79,9 +81,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.context import get_config_context                                       # noqa: E402
-from src.data_extract.utils.common.registrant import load_registrants            # noqa: E402
-from src.data_extract.utils.common.sec_utils import sec_get                      # noqa: E402
+from src.context import get_config_context  # noqa: E402
+from src.data_extract.utils.common.registrant import load_registrants  # noqa: E402
+from src.data_extract.utils.common.sec_utils import sec_get  # noqa: E402
 
 #: A filing archive starting more than this many years after the first price is the symptom
 #: every candidate shares. Four years is loose enough to catch a 2019 boundary on a 1995 price
@@ -139,9 +141,26 @@ ORACLE3_MAX_HEADERS = 40
 #: 13F, 144, PX14A6G -- is filed about the company by somebody else, and its filer list names
 #: that somebody. An allowlist rather than a blocklist: a new third-party form type must not
 #: silently poison the scan.
-REGISTRANT_FORM_PREFIXES = ("10-", "8-K", "S-", "DEF", "PRE", "PRR", "424", "425", "POS",
-                            "20-F", "40-F", "6-K", "11-K", "ARS", "N-", "18-K",
-                            "SC TO", "SC 14D")
+REGISTRANT_FORM_PREFIXES = (
+    "10-",
+    "8-K",
+    "S-",
+    "DEF",
+    "PRE",
+    "PRR",
+    "424",
+    "425",
+    "POS",
+    "20-F",
+    "40-F",
+    "6-K",
+    "11-K",
+    "ARS",
+    "N-",
+    "18-K",
+    "SC TO",
+    "SC 14D",
+)
 
 #: A candidate co-filer is only a PREDECESSOR if it was itself a public registrant, and the
 #: cheap proof is that it filed its own proxy. A subsidiary debt co-registrant --
@@ -183,9 +202,14 @@ PREDECESSOR_MAX_RATE_RATIO = 1.0
 #: Oracle 4's comparison tags: the two line items every filer states and every first 10-K
 #: carries a comparative column for. Revenue alone is not enough -- a bank or an insurer may
 #: tag revenue half a dozen ways -- so net income, which is unambiguous, is in the set too.
-COMPARATIVE_TAGS = ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
-                    "SalesRevenueNet", "NetIncomeLoss", "ProfitLoss",
-                    "NetIncomeLossAvailableToCommonStockholdersBasic")
+COMPARATIVE_TAGS = (
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "SalesRevenueNet",
+    "NetIncomeLoss",
+    "ProfitLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+)
 
 #: Relative tolerance on a comparative match. Not zero: the successor may restate a
 #: predecessor's figure for a reclassification or a discontinued operation while it is still
@@ -209,7 +233,9 @@ WITH px AS (SELECT ticker, min(date)::date AS first_px FROM prices GROUP BY 1),
      dl AS (SELECT ticker, min(as_of)::date AS d FROM def14a_llm GROUP BY 1)
 """
 
-SCREEN_TIGHT = _SCREEN_CTES + f"""
+SCREEN_TIGHT = (
+    _SCREEN_CTES
+    + f"""
 SELECT p.ticker, p.first_px::text, k8.d::text AS first_8k, nt.d::text AS first_notes,
        ff.d::text AS first_facts,
        (GREATEST(k8.d, nt.d, ff.d) - LEAST(k8.d, nt.d, ff.d)) AS spread_days,
@@ -220,8 +246,11 @@ WHERE (GREATEST(k8.d, nt.d, ff.d) - LEAST(k8.d, nt.d, ff.d)) <= {SPREAD_DAYS}
   AND nt.d > DATE '{BULK_FLOOR}'
 ORDER BY lag_y DESC
 """
+)
 
-SCREEN_PROXY = _SCREEN_CTES + f"""
+SCREEN_PROXY = (
+    _SCREEN_CTES
+    + f"""
 SELECT p.ticker, p.first_px::text, k8.d::text AS first_8k, dl.d::text AS first_proxy,
        NULL::int AS spread_days,
        round(((k8.d - p.first_px) / 365.25)::numeric, 2) AS lag_y
@@ -230,16 +259,20 @@ WHERE (k8.d - p.first_px) / 365.25 > {LAG_YEARS}
   AND dl.d > k8.d - {PROXY_BEFORE_DAYS} AND dl.d < k8.d + {PROXY_AFTER_DAYS}
 ORDER BY lag_y DESC
 """
+)
 
 #: Every ticker whose 8-K starts >4 y after its first price -- the 62-candidate population the
 #: two screens are drawn from, and the denominator every count in the report is quoted against.
-SCREEN_ALL_LATE = _SCREEN_CTES + f"""
+SCREEN_ALL_LATE = (
+    _SCREEN_CTES
+    + f"""
 SELECT p.ticker, p.first_px::text, k8.d::text AS first_8k,
        round(((k8.d - p.first_px) / 365.25)::numeric, 2) AS lag_y
 FROM px p JOIN k8 USING(ticker)
 WHERE (k8.d - p.first_px) / 365.25 > {LAG_YEARS}
 ORDER BY lag_y DESC
 """
+)
 
 
 def oracle1(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -250,9 +283,11 @@ def oracle1(conn) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     2009 floor precisely because their entries repaired that leg. A screen that still flagged
     them would be measuring the roster, not the data.
     """
-    return (pd.DataFrame(conn.execute(text(SCREEN_TIGHT)).mappings().all()),
-            pd.DataFrame(conn.execute(text(SCREEN_PROXY)).mappings().all()),
-            pd.DataFrame(conn.execute(text(SCREEN_ALL_LATE)).mappings().all()))
+    return (
+        pd.DataFrame(conn.execute(text(SCREEN_TIGHT)).mappings().all()),
+        pd.DataFrame(conn.execute(text(SCREEN_PROXY)).mappings().all()),
+        pd.DataFrame(conn.execute(text(SCREEN_ALL_LATE)).mappings().all()),
+    )
 
 
 # --------------------------------------------------------------------------------------- #
@@ -283,8 +318,7 @@ def oracle2(conn, tickers: list[str], anchor: dict[str, str]) -> dict[str, list[
         if abs((pd.Timestamp(r["date"]) - pd.Timestamp(cut)).days) > SPREAD_DAYS:
             continue
         name = str(r["contraname"] or "").upper()
-        out[r["ticker"]].append({**dict(r),
-                                 "is_shell": any(tok in name for tok in SHELL_TOKENS)})
+        out[r["ticker"]].append({**dict(r), "is_shell": any(tok in name for tok in SHELL_TOKENS)})
     return dict(out)
 
 
@@ -325,16 +359,17 @@ def continuity(context, doc: dict, truncation: str) -> dict:
     cut = pd.Timestamp(truncation)
     own_first = min((d for _, d in pairs), default=None)
     grace = cut - pd.Timedelta(days=PRE_REGISTRATION_DAYS)
-    return {"own_first": None if own_first is None else str(own_first.date()),
-            "fpi_before": sum(1 for f, d in pairs if f in FPI_FORMS and d < cut),
-            "own_active_before": sum(1 for _, d in pairs if d < grace),
-            "n_total": len(pairs),
-            "n_archive_pages": len(doc.get("filings", {}).get("files", [])),
-            "own_lead_days": None if own_first is None else int((cut - own_first).days)}
+    return {
+        "own_first": None if own_first is None else str(own_first.date()),
+        "fpi_before": sum(1 for f, d in pairs if f in FPI_FORMS and d < cut),
+        "own_active_before": sum(1 for _, d in pairs if d < grace),
+        "n_total": len(pairs),
+        "n_archive_pages": len(doc.get("filings", {}).get("files", [])),
+        "own_lead_days": None if own_first is None else int((cut - own_first).days),
+    }
 
 
-def co_indexed(cik: str, truncation: str,
-               limit: int = ORACLE3_MAX_HEADERS) -> list[tuple[str, str, int]]:
+def co_indexed(cik: str, truncation: str, limit: int = ORACLE3_MAX_HEADERS) -> list[tuple[str, str, int]]:
     """Distinct (name, cik) appearing as a FILER on the successor's registrant-filed documents
     NEAREST THE BOUNDARY, most common first, with the successor itself removed.
 
@@ -349,8 +384,7 @@ def co_indexed(cik: str, truncation: str,
     from edgar import Company
 
     cut = pd.Timestamp(truncation)
-    filings = [f for f in Company(int(cik)).get_filings()
-               if str(f.form).startswith(REGISTRANT_FORM_PREFIXES)]
+    filings = [f for f in Company(int(cik)).get_filings() if str(f.form).startswith(REGISTRANT_FORM_PREFIXES)]
     filings.sort(key=lambda f: abs((pd.Timestamp(f.filing_date) - cut).days))
 
     seen: collections.Counter = collections.Counter()
@@ -358,7 +392,7 @@ def co_indexed(cik: str, truncation: str,
         try:
             header = f.header
             parties = list(header.filers) + list(header.subject_companies)
-        except Exception:                                   # noqa: BLE001 -- one bad header
+        except Exception:  # noqa: BLE001 -- one bad header
             continue
         # `subject_companies`, not `filers` alone. On a tender offer or a proxy-solicitation
         # form the counterparty is the SUBJECT, not a co-filer, and PSKY is the case that
@@ -382,8 +416,7 @@ def co_indexed(cik: str, truncation: str,
         entry["n"] += n
         if name != entry["name"]:
             entry["aliases"].append(name)
-    return [(e["name"], c, e["n"]) for c, e in
-            sorted(by_cik.items(), key=lambda kv: -kv[1]["n"])]
+    return [(e["name"], c, e["n"]) for c, e in sorted(by_cik.items(), key=lambda kv: -kv[1]["n"])]
 
 
 def all_filings(context, doc: dict) -> list[tuple[str, pd.Timestamp]]:
@@ -403,10 +436,10 @@ def all_filings(context, doc: dict) -> list[tuple[str, pd.Timestamp]]:
             continue
         try:
             blocks.append(sec_get(context, SUBMISSIONS_ARCHIVE_URL.format(name=name)).json())
-        except Exception:                                   # noqa: BLE001 -- one page
+        except Exception:  # noqa: BLE001 -- one page
             continue
     for block in blocks:
-        for form, date in zip(block.get("form", []), block.get("filingDate", [])):
+        for form, date in zip(block.get("form", []), block.get("filingDate", []), strict=False):
             if date:
                 out.append((str(form), pd.Timestamp(date)))
     return out
@@ -428,7 +461,7 @@ def predecessor_profile(context, cik: str, truncation: str) -> dict:
     """
     try:
         doc = submissions(context, cik)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "why": f"submissions failed: {e}"}
     pairs = all_filings(context, doc)
     cut = pd.Timestamp(truncation)
@@ -441,22 +474,29 @@ def predecessor_profile(context, cik: str, truncation: str) -> dict:
     if not proxies:
         why = "no proxy of its own before the boundary -- never the public registrant"
     elif len(before_w) < PREDECESSOR_MIN_BEFORE:
-        why = (f"only {len(before_w)} filings in the {PREDECESSOR_WINDOW_DAYS} d before the "
-               "boundary -- not an active registrant at the time")
+        why = f"only {len(before_w)} filings in the {PREDECESSOR_WINDOW_DAYS} d before the boundary -- not an active registrant at the time"
     elif ratio > PREDECESSOR_MAX_RATE_RATIO:
-        why = (f"filing rate ROSE across the boundary: {len(before_w)} before / {len(after_w)} "
-               f"after ({ratio:.2f}x) -- an entity that gained filings where this ticker's "
-               "predecessor lost them, so a counterparty or an acquirer, not a predecessor")
+        why = (
+            f"filing rate ROSE across the boundary: {len(before_w)} before / {len(after_w)} "
+            f"after ({ratio:.2f}x) -- an entity that gained filings where this ticker's "
+            "predecessor lost them, so a counterparty or an acquirer, not a predecessor"
+        )
     else:
-        why = (f"{len(proxies)} proxies of its own before the boundary (last "
-               f"{max(proxies).date()}); filing rate collapsed {len(before_w)} -> "
-               f"{len(after_w)} ({ratio:.2f}x) across it")
-    return {"ok": bool(proxies) and len(before_w) >= PREDECESSOR_MIN_BEFORE
-            and ratio <= PREDECESSOR_MAX_RATE_RATIO,
-            "n_total": len(pairs), "n_before_window": len(before_w),
-            "n_after_window": len(after_w), "rate_ratio": round(ratio, 3),
-            "n_proxies_before": len(proxies),
-            "last_proxy_before": str(max(proxies).date()) if proxies else None, "why": why}
+        why = (
+            f"{len(proxies)} proxies of its own before the boundary (last "
+            f"{max(proxies).date()}); filing rate collapsed {len(before_w)} -> "
+            f"{len(after_w)} ({ratio:.2f}x) across it"
+        )
+    return {
+        "ok": bool(proxies) and len(before_w) >= PREDECESSOR_MIN_BEFORE and ratio <= PREDECESSOR_MAX_RATE_RATIO,
+        "n_total": len(pairs),
+        "n_before_window": len(before_w),
+        "n_after_window": len(after_w),
+        "rate_ratio": round(ratio, 3),
+        "n_proxies_before": len(proxies),
+        "last_proxy_before": str(max(proxies).date()) if proxies else None,
+        "why": why,
+    }
 
 
 def companyfacts(context, cik: str) -> dict:
@@ -474,8 +514,7 @@ def _annual_facts(doc: dict, tags: tuple[str, ...]) -> dict[tuple[str, str], flo
     """
     out: dict[tuple[str, str], float] = {}
     for tag in tags:
-        for unit_facts in doc.get("facts", {}).get("us-gaap", {}).get(tag, {}) \
-                             .get("units", {}).values():
+        for unit_facts in doc.get("facts", {}).get("us-gaap", {}).get(tag, {}).get("units", {}).values():
             for f in unit_facts:
                 if f.get("fp") != "FY" or not f.get("start") or not f.get("end"):
                     continue
@@ -483,8 +522,7 @@ def _annual_facts(doc: dict, tags: tuple[str, ...]) -> dict[tuple[str, str], flo
     return out
 
 
-def oracle4_comparative(context, successor_cik: str, candidates: list[dict],
-                        truncation: str) -> tuple[dict, dict] | None:
+def oracle4_comparative(context, successor_cik: str, candidates: list[dict], truncation: str) -> tuple[dict, dict] | None:
     """WHOSE P&L IS THE SUCCESSOR'S PRIOR-YEAR COMPARATIVE COLUMN?
 
     The test that settles a merger of equals, and the only one that can. When two public
@@ -509,7 +547,7 @@ def oracle4_comparative(context, successor_cik: str, candidates: list[dict],
     cut = pd.Timestamp(truncation)
     try:
         succ = _annual_facts(companyfacts(context, successor_cik), COMPARATIVE_TAGS)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         return None if not _log_o4(context, f"successor companyfacts failed: {e}") else None
 
     # Only the periods that ENDED before the boundary: those are comparatives the successor
@@ -522,23 +560,31 @@ def oracle4_comparative(context, successor_cik: str, candidates: list[dict],
     for cand in candidates:
         try:
             own = _annual_facts(companyfacts(context, cand["cik"]), COMPARATIVE_TAGS)
-        except Exception:                                   # noqa: BLE001 -- one candidate
+        except Exception:  # noqa: BLE001 -- one candidate
             continue
         shared = set(inherited) & set(own)
-        hits = [k for k in shared
-                if abs(inherited[k] - own[k]) <= COMPARATIVE_TOLERANCE * max(
-                    abs(inherited[k]), abs(own[k]), 1.0)]
+        hits = [k for k in shared if abs(inherited[k] - own[k]) <= COMPARATIVE_TOLERANCE * max(abs(inherited[k]), abs(own[k]), 1.0)]
         if hits:
             example = sorted(hits)[-1]
-            scored.append((len(hits), len(shared), cand,
-                           {"matched": len(hits), "compared": len(shared),
-                            "example_tag": example[0], "example_period": example[1],
-                            "example_value": inherited[example],
-                            "why": f"the successor's FY{example[1][:4]} {example[0]} of "
-                                   f"{inherited[example]:,.0f} is {cand['name']}'s own "
-                                   f"reported figure ({len(hits)} of {len(shared)} shared "
-                                   "annual facts agree), so that entity is the accounting "
-                                   "acquirer and the successor in substance."}))
+            scored.append(
+                (
+                    len(hits),
+                    len(shared),
+                    cand,
+                    {
+                        "matched": len(hits),
+                        "compared": len(shared),
+                        "example_tag": example[0],
+                        "example_period": example[1],
+                        "example_value": inherited[example],
+                        "why": f"the successor's FY{example[1][:4]} {example[0]} of "
+                        f"{inherited[example]:,.0f} is {cand['name']}'s own "
+                        f"reported figure ({len(hits)} of {len(shared)} shared "
+                        "annual facts agree), so that entity is the accounting "
+                        "acquirer and the successor in substance.",
+                    },
+                )
+            )
     if not scored:
         return None
     scored.sort(key=lambda x: (-x[0], -x[1]))
@@ -559,15 +605,19 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
     """Classify ONE candidate. Serial by construction -- see the module docstring."""
     try:
         doc = submissions(context, cik)
-    except Exception as e:                                  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         return {"ticker": ticker, "cls": "unresolved", "why": f"submissions failed: {e}"}
 
     cont = continuity(context, doc, truncation)
     if cont["fpi_before"] >= FPI_MIN_FILINGS:
-        return {"ticker": ticker, "cls": "foreign_private_issuer", **cont,
-                "why": f"CIK {cik} filed {cont['fpi_before']} 20-F/40-F/6-K documents before "
-                       f"{truncation} under one continuous registrant. The repair is form "
-                       "coverage, not registrant resolution. NO REGISTER ENTRY."}
+        return {
+            "ticker": ticker,
+            "cls": "foreign_private_issuer",
+            **cont,
+            "why": f"CIK {cik} filed {cont['fpi_before']} 20-F/40-F/6-K documents before "
+            f"{truncation} under one continuous registrant. The repair is form "
+            "coverage, not registrant resolution. NO REGISTER ENTRY.",
+        }
 
     # The current CIK was ALREADY FILING long before the truncation, so no registrant changed
     # and the late archive has some other cause -- a sparse pre-2004 8-K record being the
@@ -579,18 +629,21 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
     # DowDuPont 560 d, PSKY 316 d), so an early first filing is normal for a real cutover.
     # What no cutover has is a decade of the successor's own filings before the boundary.
     if cont["own_active_before"] >= CONTINUOUS_MIN_FILINGS:
-        return {"ticker": ticker, "cls": "continuous_registrant", **cont,
-                "why": f"CIK {cik} filed {cont['own_active_before']} documents of its own more "
-                       f"than {PRE_REGISTRATION_DAYS} d before {truncation} (archive starts "
-                       f"{cont['own_first']}, {cont['own_lead_days']} d before it). No "
-                       "registrant changed; the late archive has another cause -- most often "
-                       "a sparse pre-2004 8-K record. NO REGISTER ENTRY."}
+        return {
+            "ticker": ticker,
+            "cls": "continuous_registrant",
+            **cont,
+            "why": f"CIK {cik} filed {cont['own_active_before']} documents of its own more "
+            f"than {PRE_REGISTRATION_DAYS} d before {truncation} (archive starts "
+            f"{cont['own_first']}, {cont['own_lead_days']} d before it). No "
+            "registrant changed; the late archive has another cause -- most often "
+            "a sparse pre-2004 8-K record. NO REGISTER ENTRY.",
+        }
 
     try:
         peers = co_indexed(cik, truncation)
-    except Exception as e:                                  # noqa: BLE001 -- one candidate
-        return {"ticker": ticker, "cls": "unresolved", **cont,
-                "why": f"co-indexed scan failed: {e}"}
+    except Exception as e:  # noqa: BLE001 -- one candidate
+        return {"ticker": ticker, "cls": "unresolved", **cont, "why": f"co-indexed scan failed: {e}"}
 
     # Every co-filer is a CANDIDATE predecessor; `predecessor_profile` is what decides. Ranked
     # by pre-boundary filing count so the real registrant outranks an incidental co-filer, and
@@ -598,21 +651,18 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
     # is evidence, while one silently dropped is indistinguishable next quarter from one never
     # examined.
     rejected: list[dict] = []
-    scored: list[tuple[int, str, str, int, dict]] = []
+    scored: list[tuple[float, int, str, str, int, dict[str, Any]]] = []
     for name, pred, n in peers:
         prof = predecessor_profile(context, pred, truncation)
         if prof.get("ok"):
             # Ranked by how hard the rate collapsed, THEN by pre-boundary activity.
             # Archive size is the wrong key: it hands the answer to the largest company
             # in the room, which is how PSKY resolved to Warner Bros. Discovery.
-            scored.append((prof["rate_ratio"], -prof["n_before_window"],
-                           name, pred, n, prof))
+            scored.append((prof["rate_ratio"], -prof["n_before_window"], name, pred, n, prof))
         else:
-            rejected.append({"name": name, "cik": pred, "co_indexed_on": n,
-                             "why": prof.get("why")})
+            rejected.append({"name": name, "cik": pred, "co_indexed_on": n, "why": prof.get("why")})
     scored.sort()
-    candidates = [{"name": name, "cik": pred, "co_indexed_on": n, "profile": prof}
-                  for _, _, name, pred, n, prof in scored]
+    candidates = [{"name": name, "cik": pred, "co_indexed_on": n, "profile": prof} for _, _, name, pred, n, prof in scored]
 
     # ⚠ ORACLE 4 CONFIRMS EVERY ENTRY -- IT IS NOT ONLY A TIE-BREAK, and ORCL is why.
     #
@@ -639,38 +689,54 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
         # never will. After 2009 it means the candidate's numbers are NOT the successor's
         # comparatives, which is positive evidence AGAINST it.
         cls = "ambiguous" if len(candidates) > 1 else "unconfirmed_cutover"
-        return {"ticker": ticker, "cls": cls, **cont, "candidates": candidates,
-                "rejected_co_filers": rejected,
-                "why": f"{len(candidates)} candidate predecessor(s) collapsed at {truncation} "
-                       f"({', '.join(c['name'] for c in candidates)}), and the "
-                       "comparative-column test could not confirm any of them -- structural "
-                       "before 2009, when XBRL did not exist. NOMINATED, NOT CONFIRMED: needs "
-                       "adjudication before a register entry, because an ACQUIRED company "
-                       "also stops filing and also filed its own proxies."}
+        return {
+            "ticker": ticker,
+            "cls": cls,
+            **cont,
+            "candidates": candidates,
+            "rejected_co_filers": rejected,
+            "why": f"{len(candidates)} candidate predecessor(s) collapsed at {truncation} "
+            f"({', '.join(c['name'] for c in candidates)}), and the "
+            "comparative-column test could not confirm any of them -- structural "
+            "before 2009, when XBRL did not exist. NOMINATED, NOT CONFIRMED: needs "
+            "adjudication before a register entry, because an ACQUIRED company "
+            "also stops filing and also filed its own proxies.",
+        }
 
     if winner is not None:
-        name, pred, n, prof = (winner["name"], winner["cik"],
-                               winner["co_indexed_on"], winner["profile"])
-        return {"ticker": ticker, "cls": "cutover", **cont, "predecessor_cik": pred,
-                "predecessor_name": name, "co_indexed_on": n, "predecessor": prof,
-                "candidates": candidates, "oracle4": oracle4,
-                "rejected_co_filers": rejected,
-                "why": f"co-indexed with {name} (CIK {pred}) on {n} of the successor's "
-                       f"registrant-filed documents nearest the boundary; it filed "
-                       f"{prof['n_proxies_before']} proxies of its own before {truncation} "
-                       f"(last {prof['last_proxy_before']}) so it was the public registrant, "
-                       f"and its filing rate collapsed {prof['n_before_window']} -> "
-                       f"{prof['n_after_window']} ({prof['rate_ratio']:.2f}x) across it. "
-                       f"Successor CIK {cik} first filed {cont['own_first']}, "
-                       f"{cont['own_lead_days']} d before the truncation."
-                       + (f" ORACLE 4: {oracle4['why']}" if oracle4 else "")}
+        name, pred, n, prof = (winner["name"], winner["cik"], winner["co_indexed_on"], winner["profile"])
+        return {
+            "ticker": ticker,
+            "cls": "cutover",
+            **cont,
+            "predecessor_cik": pred,
+            "predecessor_name": name,
+            "co_indexed_on": n,
+            "predecessor": prof,
+            "candidates": candidates,
+            "oracle4": oracle4,
+            "rejected_co_filers": rejected,
+            "why": f"co-indexed with {name} (CIK {pred}) on {n} of the successor's "
+            f"registrant-filed documents nearest the boundary; it filed "
+            f"{prof['n_proxies_before']} proxies of its own before {truncation} "
+            f"(last {prof['last_proxy_before']}) so it was the public registrant, "
+            f"and its filing rate collapsed {prof['n_before_window']} -> "
+            f"{prof['n_after_window']} ({prof['rate_ratio']:.2f}x) across it. "
+            f"Successor CIK {cik} first filed {cont['own_first']}, "
+            f"{cont['own_lead_days']} d before the truncation." + (f" ORACLE 4: {oracle4['why']}" if oracle4 else ""),
+        }
 
-    return {"ticker": ticker, "cls": "unresolved", **cont, "rejected_co_filers": rejected,
-            "why": f"{len(peers)} co-filer(s) among the {ORACLE3_MAX_HEADERS} of {cik}'s "
-                   f"registrant-filed documents nearest the boundary, none a predecessor "
-                   f"({'; '.join(f'{r['name']}: {r['why']}' for r in rejected[:3]) or 'none'}). "
-                   f"Own archive starts {cont['own_first']} ({cont['own_lead_days']} d before "
-                   "the truncation). Needs the name fallback."}
+    return {
+        "ticker": ticker,
+        "cls": "unresolved",
+        **cont,
+        "rejected_co_filers": rejected,
+        "why": f"{len(peers)} co-filer(s) among the {ORACLE3_MAX_HEADERS} of {cik}'s "
+        f"registrant-filed documents nearest the boundary, none a predecessor "
+        f"({'; '.join(f'{r["name"]}: {r["why"]}' for r in rejected[:3]) or 'none'}). "
+        f"Own archive starts {cont['own_first']} ({cont['own_lead_days']} d before "
+        "the truncation). Needs the name fallback.",
+    }
 
 
 # --------------------------------------------------------------------------------------- #
@@ -705,9 +771,7 @@ def roster_crosscheck(conn, registrants: dict) -> pd.DataFrame:
     df = pd.DataFrame(conn.execute(text(ROSTER_CROSSCHECK_SQL)).mappings().all())
     if df.empty:
         return df
-    df["explained_by_register"] = df.apply(
-        lambda r: r["ticker"] in registrants
-        and r["sh_cik"] in registrants[r["ticker"]].all_ciks(), axis=1)
+    df["explained_by_register"] = df.apply(lambda r: r["ticker"] in registrants and r["sh_cik"] in registrants[r["ticker"]].all_ciks(), axis=1)
     return df
 
 
@@ -754,9 +818,8 @@ def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
         oldest = reg.segments[0]
         try:
             doc = submissions(context, oldest.cik)
-        except Exception as e:                              # noqa: BLE001
-            out.append({"ticker": ticker, "cls": "unresolved",
-                        "why": f"submissions failed for {oldest.cik}: {e}"})
+        except Exception as e:  # noqa: BLE001
+            out.append({"ticker": ticker, "cls": "unresolved", "why": f"submissions failed for {oldest.cik}: {e}"})
             continue
         own_first = continuity(context, doc, str(reg.boundaries[0].date()))["own_first"]
         if own_first is None:
@@ -767,9 +830,7 @@ def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
         r["oldest_first_filing"] = own_first
         p0 = price_start.get(ticker)
         r["price_start"] = str(p0) if p0 is not None else None
-        r["archive_gap_y"] = (None if p0 is None else
-                              round((pd.Timestamp(own_first) - pd.Timestamp(p0)).days / 365.25,
-                                    1))
+        r["archive_gap_y"] = None if p0 is None else round((pd.Timestamp(own_first) - pd.Timestamp(p0)).days / 365.25, 1)
         out.append(r)
     return out
 
@@ -777,35 +838,36 @@ def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
 def collect(conn, registered: set[str]) -> tuple[pd.DataFrame, dict[str, str]]:
     """The candidate table and each candidate's truncation anchor (its first 8-K)."""
     tight, proxy, late = oracle1(conn)
-    anchor = dict(zip(late["ticker"], late["first_8k"])) if not late.empty else {}
-    cand = pd.DataFrame({"ticker": sorted(set(tight.get("ticker", [])) |
-                                          set(proxy.get("ticker", [])))})
+    anchor = dict(zip(late["ticker"], late["first_8k"], strict=False)) if not late.empty else {}
+    cand = pd.DataFrame({"ticker": sorted(set(tight.get("ticker", [])) | set(proxy.get("ticker", [])))})
     cand["screen"] = cand["ticker"].map(
-        lambda t: "+".join(s for s, df in (("tight", tight), ("proxy", proxy))
-                           if not df.empty and t in set(df["ticker"])))
+        lambda t: "+".join(s for s, df in (("tight", tight), ("proxy", proxy)) if not df.empty and t in set(df["ticker"]))
+    )
     cand["first_8k"] = cand["ticker"].map(anchor)
-    cand["lag_y"] = cand["ticker"].map(
-        dict(zip(late["ticker"], late["lag_y"])) if not late.empty else {})
+    cand["lag_y"] = cand["ticker"].map(dict(zip(late["ticker"], late["lag_y"], strict=False)) if not late.empty else {})
     cand["already_registered"] = cand["ticker"].isin(registered)
     return cand, anchor
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-c", "--config", default="./configs")
     p.add_argument("--offline", action="store_true", help="oracles 1 + 2 only, no network")
     p.add_argument("--classify", action="store_true", help="add oracle 3, serially")
-    p.add_argument("--audit-chains", action="store_true",
-                   help="ask oracle 3 one hop FURTHER BACK on every register entry, to catch a "
-                        "two-segment entry standing in for a longer chain (the VTRS shape)")
+    p.add_argument(
+        "--audit-chains",
+        action="store_true",
+        help="ask oracle 3 one hop FURTHER BACK on every register entry, to catch a "
+        "two-segment entry standing in for a longer chain (the VTRS shape)",
+    )
     p.add_argument("-t", "--tickers", default="", help="restrict oracle 3 to these")
-    p.add_argument("--emit-register", metavar="PATH",
-                   help="write a PROPOSED register; never touches the live config")
+    p.add_argument("--emit-register", metavar="PATH", help="write a PROPOSED register; never touches the live config")
     p.add_argument("--out", metavar="PATH", help="write the classification JSON here")
-    p.add_argument("--report", metavar="PATH",
-                   help="write classified.md; reads --out's JSON when not classifying, so the "
-                        "report can be regenerated offline from a previous walk")
+    p.add_argument(
+        "--report",
+        metavar="PATH",
+        help="write classified.md; reads --out's JSON when not classifying, so the report can be regenerated offline from a previous walk",
+    )
     args = p.parse_args(argv)
 
     _, context = get_config_context(config_path=args.config, use_cache=False, save=False)
@@ -817,92 +879,114 @@ def main(argv: list[str] | None = None) -> int:
         tight, proxy, late = oracle1(conn)
         actions = oracle2(conn, list(cand["ticker"]), anchor)
         crosscheck = roster_crosscheck(conn, registrants)
-        roster = pd.DataFrame(conn.execute(text(
-            "select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all())
+        roster = pd.DataFrame(
+            cast(
+                Any,
+                conn.execute(text("select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all(),
+            )
+        )
         # The archive-start test's denominator. Read here because the connection closes
         # before `--audit-chains` runs, and the test must not open a second one.
-        price_start = dict(conn.execute(text(
-            "select ticker, min(date)::date from prices group by 1")).all())
+        price_start = dict(
+            cast(
+                Any,
+                conn.execute(text("select ticker, min(date)::date from prices group by 1")).all(),
+            )
+        )
 
-    ciks = dict(zip(roster["ticker"], roster["cik"]))
+    ciks = dict(zip(roster["ticker"], roster["cik"], strict=False))
     # Two columns, not one. `namechange` is every `namechangefrom` in window and is the
     # SUGGESTIVE signal; `shell_name` is the subset whose contraname is a shell by name and is
     # the CONCLUSIVE one -- "CORVETTEPORSCHE CORP" is not a company, it is the Conoco/Phillips
     # merger's internal codename. Reporting only the second would hide how many candidates
     # Sharadar speaks to at all; reporting only the first would overstate the evidence.
     cand["namechange"] = cand["ticker"].map(
-        lambda t: next((a["contraname"] for a in actions.get(t, [])
-                        if a["action"] == "namechangefrom"), None))
+        lambda t: next(
+            (a["contraname"] for a in actions.get(cast(str, t), []) if a["action"] == "namechangefrom"),
+            None,
+        )
+    )
     cand["shell_name"] = cand["ticker"].map(
-        lambda t: next((a["contraname"] for a in actions.get(t, []) if a["is_shell"]), None))
+        lambda t: next(
+            (a["contraname"] for a in actions.get(cast(str, t), []) if a["is_shell"]),
+            None,
+        )
+    )
 
     print(f"oracle 1 -- tight cluster : {len(tight):>3} tickers")
     print(f"oracle 1 -- proxy screen  : {len(proxy):>3} tickers")
-    print(f"oracle 1 -- union         : {len(cand):>3} candidates "
-          f"({int(cand['already_registered'].sum())} already registered)")
+    print(f"oracle 1 -- union         : {len(cand):>3} candidates ({int(cand['already_registered'].sum())} already registered)")
     print(f"oracle 1 -- all late 8-K  : {len(late):>3} tickers  <- the population")
-    print(f"oracle 2 -- name changed  : {int(cand['namechange'].notna().sum()):>3} candidates"
-          "  (suggestive)")
-    print(f"oracle 2 -- shell named   : {int(cand['shell_name'].notna().sum()):>3} candidates"
-          "  (conclusive)")
+    print(f"oracle 2 -- name changed  : {int(cand['namechange'].notna().sum()):>3} candidates  (suggestive)")
+    print(f"oracle 2 -- shell named   : {int(cand['shell_name'].notna().sum()):>3} candidates  (conclusive)")
     print()
     print(cand.to_string(index=False))
 
     unexplained_cik = pd.DataFrame()
     if not crosscheck.empty:
         unexplained_cik = crosscheck[~crosscheck["explained_by_register"]]
-        print(f"\nroster CIK cross-check -- {len(crosscheck)} disagreement(s) with "
-              f"Sharadar, {len(unexplained_cik)} NOT explained by a register entry")
+        print(
+            f"\nroster CIK cross-check -- {len(crosscheck)} disagreement(s) with Sharadar, {len(unexplained_cik)} NOT explained by a register entry"
+        )
         print(crosscheck.to_string(index=False))
         if not unexplained_cik.empty:
-            print("  ⚠ `sp500_tickers.cik` comes from Wikipedia, and Wikipedia had "
-                  "already moved XOM to the holdco. Sharadar is an independent oracle and was "
-                  "right there, so investigate each row rather than overriding the roster.")
+            print(
+                "  ⚠ `sp500_tickers.cik` comes from Wikipedia, and Wikipedia had "
+                "already moved XOM to the holdco. Sharadar is an independent oracle and was "
+                "right there, so investigate each row rather than overriding the roster."
+            )
 
     if args.audit_chains:
         context.ensure_edgar_identity()
-        print(f"\nchain audit -- {len(registrants)} register entr(y|ies), "
-              "one hop further back\n")
+        print(f"\nchain audit -- {len(registrants)} register entr(y|ies), one hop further back\n")
         # `unresolved` from oracle 3 means "no predecessor found", which in a CHAIN audit is
         # the GOOD answer -- the chain is complete. Relabelled, because printing the raw class
         # here reads as 16 failures when 15 of them are passes.
-        labels = {"unresolved": "chain complete", "continuous_registrant": "chain complete",
-                  "foreign_private_issuer": "chain complete (FPI)",
-                  "cutover": "EARLIER HOP, confirmed",
-                  "unconfirmed_cutover": "EARLIER HOP, unconfirmed",
-                  "ambiguous": "EARLIER HOP, ambiguous"}
+        labels = {
+            "unresolved": "chain complete",
+            "continuous_registrant": "chain complete",
+            "foreign_private_issuer": "chain complete (FPI)",
+            "cutover": "EARLIER HOP, confirmed",
+            "unconfirmed_cutover": "EARLIER HOP, unconfirmed",
+            "ambiguous": "EARLIER HOP, ambiguous",
+        }
         earlier, short_archive = [], []
         for r in audit_chains(context, registrants, price_start):
             gap = r.get("archive_gap_y")
-            mark = ("" if gap is None or gap <= ARCHIVE_START_SLACK_Y
-                    else f"  ⚠ archive starts {gap}y AFTER prices ({r.get('price_start')})")
-            print(f"  {r['ticker']:6} oldest={r.get('oldest_cik')} "
-                  f"first={r.get('oldest_first_filing')} "
-                  f"{labels.get(r['cls'], r['cls']):26} "
-                  f"{str(r.get('predecessor_name') or '')[:34]}{mark}")
+            mark = "" if gap is None or gap <= ARCHIVE_START_SLACK_Y else f"  ⚠ archive starts {gap}y AFTER prices ({r.get('price_start')})"
+            print(
+                f"  {r['ticker']:6} oldest={r.get('oldest_cik')} "
+                f"first={r.get('oldest_first_filing')} "
+                f"{labels.get(r['cls'], r['cls']):26} "
+                f"{str(r.get('predecessor_name') or '')[:34]}{mark}"
+            )
             if r["cls"] in ("cutover", "unconfirmed_cutover", "ambiguous"):
                 earlier.append(r)
             if mark:
                 short_archive.append(r)
         if earlier:
-            print(f"\n  ⚠ {len(earlier)} entr(y|ies) may be missing an earlier segment: "
-                  f"{', '.join(r['ticker'] for r in earlier)}")
-            print("    A two-segment entry for a two-hop chain looks like a fix and is half "
-                  "one -- the screens stop flagging the ticker while a decade stays missing.")
+            print(f"\n  ⚠ {len(earlier)} entr(y|ies) may be missing an earlier segment: {', '.join(r['ticker'] for r in earlier)}")
+            print(
+                "    A two-segment entry for a two-hop chain looks like a fix and is half "
+                "one -- the screens stop flagging the ticker while a decade stays missing."
+            )
         else:
             print("\n  OK: no register entry has an undeclared earlier hop by oracle 3.")
         # Reported separately because the two tests disagree by construction: oracle 3 says
         # "chain complete" on a holdco that looks like an origin, and this is the only test
         # that saw BLK, AVGO and STE. A ticker can fail here while passing above.
         if short_archive:
-            print(f"\n  ⚠ ARCHIVE-START: {len(short_archive)} entr(y|ies) whose OLDEST segment "
-                  f"begins after the price history: "
-                  f"{', '.join(r['ticker'] for r in short_archive)}")
-            print("    A registrant files before its shares trade, so this gap is filings we "
-                  "cannot see. Research the origin by hand -- oracle 3 will not find it.")
+            print(
+                f"\n  ⚠ ARCHIVE-START: {len(short_archive)} entr(y|ies) whose OLDEST segment "
+                f"begins after the price history: "
+                f"{', '.join(r['ticker'] for r in short_archive)}"
+            )
+            print(
+                "    A registrant files before its shares trade, so this gap is filings we "
+                "cannot see. Research the origin by hand -- oracle 3 will not find it."
+            )
         else:
-            print(f"  OK: every oldest segment's archive begins within "
-                  f"{ARCHIVE_START_SLACK_Y}y of the price history.")
+            print(f"  OK: every oldest segment's archive begins within {ARCHIVE_START_SLACK_Y}y of the price history.")
 
     results: list[dict] = []
     if args.classify:
@@ -912,16 +996,13 @@ def main(argv: list[str] | None = None) -> int:
         context.ensure_edgar_identity()
         only = {t for t in args.tickers.split(",") if t}
         todo = [t for t in cand["ticker"] if not only or t in only]
-        print(f"\noracle 3 -- {len(todo)} candidate(s), SERIAL "
-              f"(~{ORACLE3_MAX_HEADERS + 1} requests each)\n")
+        print(f"\noracle 3 -- {len(todo)} candidate(s), SERIAL (~{ORACLE3_MAX_HEADERS + 1} requests each)\n")
         for i, ticker in enumerate(todo, 1):
             cik = ciks.get(ticker)
             if cik is None:
-                results.append({"ticker": ticker, "cls": "unresolved",
-                                "why": "not in sp500_tickers"})
+                results.append({"ticker": ticker, "cls": "unresolved", "why": "not in sp500_tickers"})
                 continue
-            r = oracle3(context, ticker, cik, anchor.get(ticker) or str(
-                cand.loc[cand["ticker"] == ticker, "first_8k"].iloc[0]))
+            r = oracle3(context, ticker, cik, anchor.get(ticker) or str(cand.loc[cand["ticker"] == ticker, "first_8k"].iloc[0]))
             r["roster_cik"] = cik
             r["shell_name"] = cand.loc[cand["ticker"] == ticker, "shell_name"].iloc[0]
             results.append(r)
@@ -933,8 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.emit_register and results:
         proposed = {r["ticker"]: _propose(r, anchor) for r in results if r["cls"] == "cutover"}
-        Path(args.emit_register).write_text(json.dumps(proposed, indent=2, default=str),
-                                            encoding="utf-8")
+        Path(args.emit_register).write_text(json.dumps(proposed, indent=2, default=str), encoding="utf-8")
         print(f"proposed {len(proposed)} register entr(y|ies) -> {args.emit_register}")
 
     if args.report:
@@ -942,8 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
         # classification, and re-walking EDGAR to reformat a table would be absurd.
         if not results and args.out and Path(args.out).exists():
             results = json.loads(Path(args.out).read_text(encoding="utf-8"))
-        Path(args.report).write_text(
-            classified_report(cand, late, results, registered), encoding="utf-8")
+        Path(args.report).write_text(classified_report(cand, late, results, registered), encoding="utf-8")
         print(f"wrote {args.report}")
 
     # Non-zero on anything a human still has to look at, so this can stand as a nightly check.
@@ -955,8 +1034,7 @@ def main(argv: list[str] | None = None) -> int:
         if names:
             print(f"\n⚠ {cls.upper()} ({len(names)}): {', '.join(names)}")
     if not unexplained_cik.empty:
-        print(f"\n⚠ ROSTER CIK DISAGREEMENT ({len(unexplained_cik)}): "
-              f"{', '.join(unexplained_cik['ticker'])}")
+        print(f"\n⚠ ROSTER CIK DISAGREEMENT ({len(unexplained_cik)}): {', '.join(unexplained_cik['ticker'])}")
     return 1 if (any(by_class.values()) or not unexplained_cik.empty) else 0
 
 
@@ -964,21 +1042,16 @@ def main(argv: list[str] | None = None) -> int:
 #: report and the code cannot drift into describing different things.
 CLASS_NOTES = {
     "cutover": ("registrant cutover, CONFIRMED", "register entry"),
-    "unconfirmed_cutover": ("registrant cutover, nominated but UNCONFIRMED",
-                            "needs adjudication -- no entry"),
-    "ambiguous": ("two or more predecessors collapsed; cannot choose",
-                  "needs adjudication -- no entry"),
-    "foreign_private_issuer": ("foreign private issuer, one continuous CIK",
-                               "OUT OF SCOPE -- the repair is form coverage"),
+    "unconfirmed_cutover": ("registrant cutover, nominated but UNCONFIRMED", "needs adjudication -- no entry"),
+    "ambiguous": ("two or more predecessors collapsed; cannot choose", "needs adjudication -- no entry"),
+    "foreign_private_issuer": ("foreign private issuer, one continuous CIK", "OUT OF SCOPE -- the repair is form coverage"),
     "continuous_registrant": ("the same CIK filed throughout", "NOT A DEFECT"),
     "unresolved": ("no predecessor found", "needs the name fallback -- no entry"),
-    "not_screened": ("late 8-K but neither screen fired",
-                     "sparse pre-2000 8-K, most likely a non-defect"),
+    "not_screened": ("late 8-K but neither screen fired", "sparse pre-2000 8-K, most likely a non-defect"),
 }
 
 
-def classified_report(cand: pd.DataFrame, late: pd.DataFrame, results: list[dict],
-                      registered: set[str]) -> str:
+def classified_report(cand: pd.DataFrame, late: pd.DataFrame, results: list[dict], registered: set[str]) -> str:
     """`classified.md`: one row per candidate, EVERY candidate, including the non-defects.
 
     ⚠ The 62 is the population, not the 42. A candidate silently dropped is indistinguishable
@@ -996,32 +1069,39 @@ def classified_report(cand: pd.DataFrame, late: pd.DataFrame, results: list[dict
             cls, why = by_ticker[t]["cls"], by_ticker[t].get("why", "")
         else:
             cls = "not_screened"
-            why = (f"first 8-K {c['first_8k']} is {c['lag_y']} y after the first price, but "
-                   "neither the tight-cluster nor the proxy screen fired -- the other "
-                   "registrant-keyed tables do not agree on a truncation date, which is the "
-                   "shape of a sparse pre-2004 8-K record rather than a boundary")
+            why = (
+                f"first 8-K {c['first_8k']} is {c['lag_y']} y after the first price, but "
+                "neither the tight-cluster nor the proxy screen fired -- the other "
+                "registrant-keyed tables do not agree on a truncation date, which is the "
+                "shape of a sparse pre-2004 8-K record rather than a boundary"
+            )
         rows.append((t, cls, str(c["lag_y"]), why))
 
     counts: dict[str, int] = {}
     for _, cls, _, _ in rows:
         counts[cls] = counts.get(cls, 0) + 1
 
-    out = [f"# Registrant-cutover classification — all {len(rows)} candidates", "",
-           "Population: every ticker whose `sec_8k` archive starts more than "
-           f"{LAG_YEARS:g} years after its first price. Produced by "
-           "`scripts/detect_registrant_cutovers.py --classify`.", "",
-           "| class | n | what phase 9 does |", "|---|---:|---|"]
+    out = [
+        f"# Registrant-cutover classification — all {len(rows)} candidates",
+        "",
+        "Population: every ticker whose `sec_8k` archive starts more than "
+        f"{LAG_YEARS:g} years after its first price. Produced by "
+        "`scripts/detect_registrant_cutovers.py --classify`.",
+        "",
+        "| class | n | what phase 9 does |",
+        "|---|---:|---|",
+    ]
     for cls, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         label, action = CLASS_NOTES.get(cls, (cls, ""))
         out.append(f"| {label} | {n} | {action} |")
-    out += ["", "## Every candidate", "",
-            "| ticker | class | lag (y) | predecessor | evidence |", "|---|---|---:|---|---|"]
+    out += ["", "## Every candidate", "", "| ticker | class | lag (y) | predecessor | evidence |", "|---|---|---:|---|---|"]
     for t, cls, lag, why in rows:
         r = by_ticker.get(t, {})
-        pred = (f"`{r['predecessor_cik']}` {r.get('predecessor_name', '')}"
-                if r.get("predecessor_cik") else
-                " · ".join(f"`{c['cik']}` {c['name']}" for c in r.get("candidates", []))
-                or "—")
+        pred = (
+            f"`{r['predecessor_cik']}` {r.get('predecessor_name', '')}"
+            if r.get("predecessor_cik")
+            else " · ".join(f"`{c['cik']}` {c['name']}" for c in r.get("candidates", [])) or "—"
+        )
         out.append(f"| {t} | {cls} | {lag} | {pred} | {why.replace('|', '/')} |")
     return "\n".join(out) + "\n"
 
@@ -1030,14 +1110,20 @@ def _propose(r: dict, anchor: dict[str, str]) -> dict:
     """A PROPOSED two-segment entry. Deliberately not written to the live config: every entry
     is a diff a human reads first, because a wrong `valid_to` deletes history silently."""
     boundary = anchor.get(r["ticker"]) or r.get("own_first")
-    return {"kind": "reorganisation", "segments": [
-        {"cik": r["predecessor_cik"], "valid_to": boundary,
-         "evidence": f"PROPOSED -- {r.get('predecessor_name')} (CIK {r['predecessor_cik']}), "
-                     f"found by the co-indexed filer scan on {r.get('co_indexed_on')} of the "
-                     "successor's own filings. VERIFY the boundary against the predecessor's "
-                     "last filing before accepting."},
-        {"cik": r["roster_cik"], "valid_from": boundary,
-         "evidence": f"PROPOSED -- successor, first filing {r.get('own_first')}. {r['why']}"}]}
+    return {
+        "kind": "reorganisation",
+        "segments": [
+            {
+                "cik": r["predecessor_cik"],
+                "valid_to": boundary,
+                "evidence": f"PROPOSED -- {r.get('predecessor_name')} (CIK {r['predecessor_cik']}), "
+                f"found by the co-indexed filer scan on {r.get('co_indexed_on')} of the "
+                "successor's own filings. VERIFY the boundary against the predecessor's "
+                "last filing before accepting.",
+            },
+            {"cik": r["roster_cik"], "valid_from": boundary, "evidence": f"PROPOSED -- successor, first filing {r.get('own_first')}. {r['why']}"},
+        ],
+    }
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ run, not a default-suite cost: set ``FUNDAMENTALS_HISTORY_SWEEP=full`` for all 2
 otherwise a 3-ticker subset runs (~200 filings) covering the extension total, the parentless
 root and the fiscal-calendar edge. Results are cached per-roster for the session.
 """
+
 from __future__ import annotations
 
 import os
@@ -31,8 +32,14 @@ import pytest
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.fundamentals.xbrl_linkbase import (
-    FIELD_SUM, LINKBASE_METHODS, TAG_FALLBACK, UNRESOLVED, ArcGraph, resolve_field,
-    statement_arcs)
+    FIELD_SUM,
+    LINKBASE_METHODS,
+    TAG_FALLBACK,
+    UNRESOLVED,
+    ArcGraph,
+    resolve_field,
+    statement_arcs,
+)
 
 CATALOGUE = load_catalogue("./configs")
 
@@ -43,17 +50,17 @@ WORKERS = 6
 #: ticker -> (sector, industry_group, sub_industry, what this ticker is here to prove).
 #: Every entry buys a distinct edge case; none is here for coverage padding.
 ROSTER: dict[str, tuple[str, str, str, str]] = {
-    "AAPL": ("Information Technology", "Technology Hardware & Equipment",
-             "Technology Hardware, Storage & Peripherals", "Sep FY; ASC-606 concept switch"),
-    "CSCO": ("Information Technology", "Communications Equipment",
-             "Communications Equipment", "52/53-week FY; the 2017 53-week Q4"),
-    "KR": ("Consumer Staples", "Consumer Staples Distribution & Retail",
-           "Consumer Staples Merchandise Retail", "Jan fiscal year-end"),
+    "AAPL": (
+        "Information Technology",
+        "Technology Hardware & Equipment",
+        "Technology Hardware, Storage & Peripherals",
+        "Sep FY; ASC-606 concept switch",
+    ),
+    "CSCO": ("Information Technology", "Communications Equipment", "Communications Equipment", "52/53-week FY; the 2017 53-week Q4"),
+    "KR": ("Consumer Staples", "Consumer Staples Distribution & Retail", "Consumer Staples Merchandise Retail", "Jan fiscal year-end"),
     "XOM": ("Energy", "Energy", "Integrated Oil & Gas", "frozen-TTM baseline (36%)"),
-    "APA": ("Energy", "Energy", "Oil & Gas Exploration & Production",
-            "EXTENSION revenue total; the 0-revenue chain"),
-    "EOG": ("Energy", "Energy", "Oil & Gas Exploration & Production",
-            "per-company capex elements"),
+    "APA": ("Energy", "Energy", "Oil & Gas Exploration & Production", "EXTENSION revenue total; the 0-revenue chain"),
+    "EOG": ("Energy", "Energy", "Oil & Gas Exploration & Production", "per-company capex elements"),
     "VLO": ("Energy", "Energy", "Oil & Gas Refining & Marketing", "the D&A tie-break (~200x)"),
     "JPM": ("Financials", "Banks", "Diversified Banks", "RevenuesNetOfInterestExpense"),
     "BAC": ("Financials", "Banks", "Diversified Banks", "FY2023 restatement trap"),
@@ -62,27 +69,23 @@ ROSTER: dict[str, tuple[str, str, str, str]] = {
     "MET": ("Financials", "Insurance", "Life & Health Insurance", "LDTI 2021 break"),
     "PGR": ("Financials", "Insurance", "Property & Casualty Insurance", "P&C tagged ratios"),
     "AFL": ("Financials", "Insurance", "Life & Health Insurance", "third insurer"),
-    "MAA": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)",
-            "Multi-Family Residential REITs", "Up-C LegalEntityAxis extension member"),
-    "SPG": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)", "Retail REITs",
-            "unclassified balance sheet"),
-    "AMT": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)",
-            "Telecom Tower REITs", "tower REIT -> industrial regime trap"),
+    "MAA": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)", "Multi-Family Residential REITs", "Up-C LegalEntityAxis extension member"),
+    "SPG": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)", "Retail REITs", "unclassified balance sheet"),
+    "AMT": ("Real Estate", "Equity Real Estate Investment Trusts (REITs)", "Telecom Tower REITs", "tower REIT -> industrial regime trap"),
     "DTE": ("Utilities", "Utilities", "Multi-Utilities", "parentless revenue root"),
     "SO": ("Utilities", "Utilities", "Electric Utilities", "six registrant CIKs"),
     "NEE": ("Utilities", "Utilities", "Electric Utilities", "RegulatoryAssets absent"),
-    "ETN": ("Industrials", "Capital Goods", "Electrical Components & Equipment",
-            "totalRevenue == 0 (16 legacy rows)"),
-    "VRT": ("Industrials", "Capital Goods", "Electrical Components & Equipment",
-            "totalRevenue == 0 (5 legacy rows)"),
-    "SWKS": ("Information Technology", "Semiconductors & Semiconductor Equipment",
-             "Semiconductors", "FY2020 tags a 370-day AND a 97-day fact as fp=FY"),
-    "BRK-B": ("Financials", "Financial Services", "Multi-Sector Holdings",
-              "hybrid regime; multi-class; no AssetsCurrent"),
-    "GS": ("Financials", "Financial Services", "Investment Banking & Brokerage",
-           "the ONLY broker_dealer in the roster"),
-    "META": ("Communication Services", "Media & Entertainment",
-             "Interactive Media & Services", "edgartools #691: 0 undimensioned share facts"),
+    "ETN": ("Industrials", "Capital Goods", "Electrical Components & Equipment", "totalRevenue == 0 (16 legacy rows)"),
+    "VRT": ("Industrials", "Capital Goods", "Electrical Components & Equipment", "totalRevenue == 0 (5 legacy rows)"),
+    "SWKS": (
+        "Information Technology",
+        "Semiconductors & Semiconductor Equipment",
+        "Semiconductors",
+        "FY2020 tags a 370-day AND a 97-day fact as fp=FY",
+    ),
+    "BRK-B": ("Financials", "Financial Services", "Multi-Sector Holdings", "hybrid regime; multi-class; no AssetsCurrent"),
+    "GS": ("Financials", "Financial Services", "Investment Banking & Brokerage", "the ONLY broker_dealer in the roster"),
+    "META": ("Communication Services", "Media & Entertainment", "Interactive Media & Services", "edgartools #691: 0 undimensioned share facts"),
 }
 
 #: Default subset when the full sweep is not requested: the extension total, the parentless
@@ -104,8 +107,8 @@ def _rostered() -> dict[str, tuple[str, str, str, str]]:
 def _resolve_one(ticker: str, gics: dict, filing) -> list[dict]:
     """One filing -> ledger rows. Never raises: a filing that will not parse is a fact
     about that filing, and must not abort a 1,700-filing sweep."""
-    from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import (
-        _compose, _materialise, _period_frame)
+    from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import _compose, _materialise, _period_frame
+
     try:
         xbrl = filing.xbrl()
         if xbrl is None:
@@ -118,8 +121,7 @@ def _resolve_one(ticker: str, gics: dict, filing) -> list[dict]:
         durations = scope.duration_concepts(facts)
         zero_only = scope.zero_only_concepts(facts)
         graph = ArcGraph(statement_arcs(xbrl))
-        regime = CATALOGUE.regime_for(
-            gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
+        regime = CATALOGUE.regime_for(gics, [str(r) for r in graph.arcs.get("role_uri", pd.Series(dtype=str))])
 
         resolutions, values = {}, {}
         for name in CATALOGUE.extracted_fields:
@@ -127,9 +129,9 @@ def _resolve_one(ticker: str, gics: dict, filing) -> list[dict]:
             # per-filer extension register, so DTE, NEE, MAA, PLD, MSFT, GOOGL, SWKS and
             # ORCL would resolve capex/depAmort differently here than in production and
             # this sweep would measure a pipeline nobody runs.
-            r = resolve_field(CATALOGUE.field(name), graph, available, CATALOGUE, regime,
-                              duration_concepts=durations, zero_only=zero_only,
-                              ticker=ticker)
+            r = resolve_field(
+                CATALOGUE.field(name), graph, available, CATALOGUE, regime, duration_concepts=durations, zero_only=zero_only, ticker=ticker
+            )
             resolutions[name] = r
             if r.method != FIELD_SUM:
                 # ({accepted}, {refused}) -- `_compose` and the row builder below both
@@ -142,31 +144,45 @@ def _resolve_one(ticker: str, gics: dict, filing) -> list[dict]:
                 values[name] = composed
                 if reason:
                     from dataclasses import replace as _replace
+
                     from src.data_extract.utils.fundamentals.xbrl_linkbase import UNRESOLVED
+
                     resolutions[name] = _replace(r, method=UNRESOLVED, dc_code=reason)
 
         rows = []
         for name, r in resolutions.items():
-            common = {"ticker": ticker, "accession": filing.accession_number,
-                      "form": filing.form,
-                      "filing_date": pd.Timestamp(filing.filing_date), "regime": regime,
-                      "field": name, "method": r.method, "concept": r.concept,
-                      "is_extension": r.is_extension, "dc_code": r.dc_code,
-                      "has_linkbase": not graph.is_empty,
-                      "subtract": ",".join(r.subtract) or None,
-                      "zero_only_retained": bool(r.zero_only_retained)}
+            common = {
+                "ticker": ticker,
+                "accession": filing.accession_number,
+                "form": filing.form,
+                "filing_date": pd.Timestamp(filing.filing_date),
+                "regime": regime,
+                "field": name,
+                "method": r.method,
+                "concept": r.concept,
+                "is_extension": r.is_extension,
+                "dc_code": r.dc_code,
+                "has_linkbase": not graph.is_empty,
+                "subtract": ",".join(r.subtract) or None,
+                "zero_only_retained": bool(r.zero_only_retained),
+            }
             periods = values.get(name) or {}
             if not periods:
-                rows.append({**common, "value": None, "fiscal_year": None,
-                             "fiscal_period": None, "duration_type": None,
-                             "period_end": pd.NaT})
+                rows.append({**common, "value": None, "fiscal_year": None, "fiscal_period": None, "duration_type": None, "period_end": pd.NaT})
                 continue
-            rows.extend({**common, "value": p["value"], "fiscal_year": p["fiscal_year"],
-                         "fiscal_period": p["fiscal_period"],
-                         "duration_type": p["duration_type"],
-                         "period_end": p["period_end"]} for p in periods.values())
+            rows.extend(
+                {
+                    **common,
+                    "value": p["value"],
+                    "fiscal_year": p["fiscal_year"],
+                    "fiscal_period": p["fiscal_period"],
+                    "duration_type": p["duration_type"],
+                    "period_end": p["period_end"],
+                }
+                for p in periods.values()
+            )
         return rows
-    except Exception:                                       # noqa: BLE001
+    except Exception:  # noqa: BLE001
         return []
 
 
@@ -182,7 +198,10 @@ def ledger() -> pd.DataFrame:
     if not os.getenv("SEC_USER_AGENT", "").strip():
         pytest.skip("SEC_USER_AGENT unset -- the history sweep needs EDGAR")
     from edgar import Company, set_identity
-    set_identity(os.getenv("SEC_USER_AGENT"))
+
+    identity = os.getenv("SEC_USER_AGENT")
+    assert identity is not None
+    set_identity(identity)
 
     roster = _rostered()
     rows: list[dict] = []
@@ -190,9 +209,9 @@ def ledger() -> pd.DataFrame:
     def _walk(ticker: str) -> list[dict]:
         sector, group, sub, _why = roster[ticker]
         gics = {"sector": sector, "industry_group": group, "sub_industry": sub}
-        filings = [f for f in Company(ticker).get_filings(form=FORMS)
-                   if pd.Timestamp(f.filing_date) >= SINCE
-                   and not str(f.form).upper().endswith("/A")]
+        filings = [
+            f for f in Company(ticker).get_filings(form=FORMS) if pd.Timestamp(f.filing_date) >= SINCE and not str(f.form).upper().endswith("/A")
+        ]
         out: list[dict] = []
         for filing in filings:
             out.extend(_resolve_one(ticker, gics, filing))
@@ -203,7 +222,7 @@ def ledger() -> pd.DataFrame:
             futures = {pool.submit(_walk, t): t for t in roster}
             for future in as_completed(futures):
                 rows.extend(future.result())
-    except Exception as exc:                                # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"EDGAR unreachable: {exc}")
 
     if not rows:
@@ -235,9 +254,18 @@ def resolved(ledger: pd.DataFrame) -> pd.DataFrame:
 #: `ComprehensiveIncomeNetOfTax`, and the 3c.8 defect, which put 36 more on a bank's
 #: cash-flow statement because its FASB role name contains the word "Operations".
 NOT_REVENUE_PREFIXES = (
-    "Assets", "Liabilities", "Cash", "NetCashProvided", "NetCashUsed",
-    "ComprehensiveIncome", "NoninterestExpense", "InvestmentIncome", "ForeignCurrency",
-    "OperatingIncomeLoss", "CostsAndExpenses", "IncomeLoss",
+    "Assets",
+    "Liabilities",
+    "Cash",
+    "NetCashProvided",
+    "NetCashUsed",
+    "ComprehensiveIncome",
+    "NoninterestExpense",
+    "InvestmentIncome",
+    "ForeignCurrency",
+    "OperatingIncomeLoss",
+    "CostsAndExpenses",
+    "IncomeLoss",
 )
 
 #: The architecture gate. Only `tag_fallback` counts -- see the module docstring of
@@ -260,8 +288,7 @@ def test_the_linkbase_drives_resolution_in_every_year(resolved):
     calculation linkbase. That was false for four of fifteen years and nobody could see it,
     because the pooled rate hid it behind the modern era."""
     valued = resolved[resolved["value"].notna()]
-    share = (valued.assign(lb=valued["method"].isin(LINKBASE_METHODS))
-             .groupby("year")["lb"].mean())
+    share = valued.assign(lb=valued["method"].isin(LINKBASE_METHODS)).groupby("year")["lb"].mean()
     fallback = (valued["method"] == TAG_FALLBACK).mean()
 
     print("\n=== SANITY CHECK: linkbase share by year ===")
@@ -271,8 +298,7 @@ def test_the_linkbase_drives_resolution_in_every_year(resolved):
     print(f"  tag_fallback overall {fallback:.2%} (gate {TAG_FALLBACK_GATE:.0%})")
 
     weak = share[share < MIN_LINKBASE_SHARE]
-    assert weak.empty, (
-        f"the tag list, not the linkbase, is resolving these years: {weak.round(3).to_dict()}")
+    assert weak.empty, f"the tag list, not the linkbase, is resolving these years: {weak.round(3).to_dict()}"
     assert fallback < TAG_FALLBACK_GATE, f"tag_fallback {fallback:.2%}"
     print("  OK: every year reads the filer's own roll-up.")
 
@@ -289,8 +315,8 @@ def test_revenue_never_resolves_to_something_off_the_income_statement(resolved):
     if len(suspect):
         print(suspect.groupby(["ticker", _bare(suspect)]).size().to_string())
     assert suspect.empty, (
-        "revenue resolved to a concept that cannot be a top line:\n"
-        + suspect.groupby(["ticker", _bare(suspect), "method"]).size().to_string())
+        "revenue resolved to a concept that cannot be a top line:\n" + suspect.groupby(["ticker", _bare(suspect), "method"]).size().to_string()
+    )
     print("  OK: every revenue value comes from an income-statement concept.")
 
 
@@ -309,13 +335,12 @@ def test_a_zero_revenue_row_means_the_filer_reported_nothing_else(resolved):
         print(zeros.groupby(["ticker", "year", "zero_only_retained"]).size().to_string())
     assert unexplained.empty, (
         "a zero that is NOT the filer's whole answer -- the concept has a non-zero value "
-        "somewhere, so the resolver took an artefact:\n"
-        + unexplained.groupby(["ticker", "year", "concept"]).size().to_string())
+        "somewhere, so the resolver took an artefact:\n" + unexplained.groupby(["ticker", "year", "concept"]).size().to_string()
+    )
 
     # The flag must never fire on a value that is not zero: it means "this concept reports
     # 0 in every period", so a non-zero row carrying it would mean the guard misfired.
-    flagged = resolved[resolved["zero_only_retained"].astype(bool)
-                       & resolved["value"].notna()]
+    flagged = resolved[resolved["zero_only_retained"].astype(bool) & resolved["value"].notna()]
     assert (flagged["value"] == 0).all(), flagged[flagged["value"] != 0].head().to_string()
     print(f"  {len(flagged)} rows carry the flag across all fields, all of them zero.")
     print("  OK: every zero is the filer's own answer, and says so.")
@@ -326,21 +351,18 @@ def test_no_adjustment_ever_drives_a_non_negative_field_negative(resolved, ledge
     them -- 158 negative `shortTermDebt` values, worst -$893M. A negative that survives must
     be the FILER's sign convention, never ours, so the discriminator is whether a
     subtraction was applied."""
-    non_negative = [name for name in CATALOGUE.extracted_fields
-                    if CATALOGUE.field(name).raw.get("sign") == "non_negative"]
+    non_negative = [name for name in CATALOGUE.extracted_fields if CATALOGUE.field(name).raw.get("sign") == "non_negative"]
     negative = resolved[resolved["field"].isin(non_negative) & (resolved["value"] < 0)]
     ours = negative[negative["subtract"].notna()]
 
     print("\n=== SANITY CHECK: sign violations ===")
-    print(f"  {len(negative)} negatives on non_negative fields; "
-          f"{len(ours)} of them had an adjustment applied")
+    print(f"  {len(negative)} negatives on non_negative fields; {len(ours)} of them had an adjustment applied")
     if len(negative):
-        print(negative.groupby(["field", "ticker"]).agg(
-            n=("value", "size"), worst=("value", "min")).to_string())
+        print(negative.groupby(["field", "ticker"]).agg(n=("value", "size"), worst=("value", "min")).to_string())
     assert ours.empty, (
         "we subtracted an amount and drove the field below zero:\n"
-        + ours.groupby(["field", "ticker", "subtract"]).agg(
-            n=("value", "size"), worst=("value", "min")).to_string())
+        + ours.groupby(["field", "ticker", "subtract"]).agg(n=("value", "size"), worst=("value", "min")).to_string()
+    )
     print("  OK: every surviving negative is as-filed, for the Phase 7 validator.")
 
 
@@ -349,8 +371,7 @@ def test_each_ticker_keeps_one_regime_for_fifteen_years(ledger):
     bank. A ticker that flips regime mid-history means the router is reading something that
     varies filing-to-filing, and every regime-gated `never_use` and `roll_up` would flip
     with it."""
-    per_ticker = ledger.groupby("ticker")["regime"].agg(
-        n=("nunique"), seen=(lambda s: sorted(set(s.dropna()))))
+    per_ticker = ledger.groupby("ticker")["regime"].agg(n=("nunique"), seen=(lambda s: sorted(set(s.dropna()))))
     flipped = per_ticker[per_ticker["n"] > 1]
 
     print("\n=== SANITY CHECK: regime stability ===")
@@ -400,13 +421,13 @@ def test_the_debt_basis_never_switches_to_the_current_inclusive_element(ledger):
             offenders.append((ticker, accession, sorted(seen)))
 
     print("\n=== SANITY CHECK: longTermDebt basis by regime class ===")
-    print(pd.crosstab(debt["bare"],
-                      debt["regime"].isin(UNCLASSIFIED_REGIMES).map(
-                          {True: "unclassified", False: "classified"})).to_string())
+    print(pd.crosstab(debt["bare"], debt["regime"].isin(UNCLASSIFIED_REGIMES).map({True: "unclassified", False: "classified"})).to_string())
     assert not offenders, "\n".join(map(str, offenders[:10]))
-    print(f"  OK: no filing mixes the current-inclusive element with a noncurrent line; "
-          f"{int((classified['bare'] == CURRENT_INCLUSIVE_DEBT).sum())} classified rows "
-          f"fall back to it because the filer tags nothing else.")
+    print(
+        f"  OK: no filing mixes the current-inclusive element with a noncurrent line; "
+        f"{int((classified['bare'] == CURRENT_INCLUSIVE_DEBT).sum())} classified rows "
+        f"fall back to it because the filer tags nothing else."
+    )
 
 
 def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
@@ -414,7 +435,7 @@ def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
     be visible in the SERIES: a feature built on this field differences it, so a basis
     switch is indistinguishable from a refinancing and strictly worse than a null."""
     debt = ledger[(ledger["field"] == "longTermDebt") & ledger["value"].notna()]
-    debt = debt[debt["value"].abs() > 1e6]           # sub-$1M lines are note-level, not the sheet
+    debt = debt[debt["value"].abs() > 1e6]  # sub-$1M lines are note-level, not the sheet
     if debt.empty:
         pytest.skip("no longTermDebt rows in this sweep")
 
@@ -422,9 +443,11 @@ def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
     # comparatives, so a raw shift() would difference two vintages of the same date and
     # measure restatement instead of the series -- and `quarterize` keeps the latest
     # vintage, so the latest is also what production stores.
-    series = (debt[debt["duration_type"] == "instant"]
-              .sort_values(["ticker", "period_end", "filing_date"])
-              .drop_duplicates(["ticker", "period_end"], keep="last"))
+    series = (
+        debt[debt["duration_type"] == "instant"]
+        .sort_values(["ticker", "period_end", "filing_date"])
+        .drop_duplicates(["ticker", "period_end"], keep="last")
+    )
     series = series.assign(prev=series.groupby("ticker")["value"].shift())
     steps = series[series["prev"].notna()].copy()
     if steps.empty:
@@ -434,8 +457,6 @@ def test_noncurrent_debt_never_steps_by_an_order_of_magnitude(ledger):
     blown = steps[steps["multiple"] > MAX_DEBT_STEP]
 
     print("\n=== SANITY CHECK: worst year-on-year noncurrent-debt steps ===")
-    print(steps.nlargest(5, "multiple")[
-        ["ticker", "period_end", "prev", "value", "multiple"]].to_string(index=False))
+    print(steps.nlargest(5, "multiple")[["ticker", "period_end", "prev", "value", "multiple"]].to_string(index=False))
     assert blown.empty, blown[["ticker", "period_end", "prev", "value", "multiple"]].to_string()
-    print(f"  OK: {len(steps)} balance-date transitions, worst "
-          f"{steps['multiple'].max():.2f}x against a {MAX_DEBT_STEP:.0f}x ceiling.")
+    print(f"  OK: {len(steps)} balance-date transitions, worst {steps['multiple'].max():.2f}x against a {MAX_DEBT_STEP:.0f}x ceiling.")

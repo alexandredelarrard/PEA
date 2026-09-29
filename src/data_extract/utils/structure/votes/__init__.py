@@ -19,6 +19,7 @@ the governance cube joins on the same key and may not import this package.
 stored `*_ceo` / `*_exec_officer` / `*_non_employee` columns on `sec_8k_votes`. Redefining the key
 re-partitions those STORED columns without recomputing them, so a change there is a re-extraction.
 """
+
 from src.data_extract.utils.structure.votes.fetch import fetch_8k_votes_llm
 
 __all__ = ["fetch_8k_votes_llm"]

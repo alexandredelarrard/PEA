@@ -22,6 +22,7 @@ Read-only. Reads the Phase-0 parquet, writes nothing unless `--out` is given.
 
     "$PY" scripts/def14a_replay_flatten.py [--baseline DIR] [--out DIR]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,6 +35,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
 
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_SPEC, _child_frames, _flatten
@@ -74,28 +78,28 @@ def replay(baseline: Path) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], dict]
             continue
         n_ok += 1
         arrays_present.update(k for k, v in json.loads(blob).items() if isinstance(v, list) and v)
-        filing = pd.Series({"filing_date": r["as_of"], "accession_number": r["accession_number"],
-                            "period_of_report": r.get("period"), "cik": r.get("cik")})
+        filing = pd.Series(
+            {"filing_date": r["as_of"], "accession_number": r["accession_number"], "period_of_report": r.get("period"), "cik": r.get("cik")}
+        )
         parents.append(_flatten(r["ticker"], filing, extract))
         for name, rows in _child_frames(r["ticker"], filing, extract).items():
             children[name].extend(rows)
 
-    return (pd.DataFrame(parents),
-            {k: pd.DataFrame(v) for k, v in children.items()},
-            {"blobs_replayed": n_ok, "blobs_failed": n_bad, "source_rows": len(src),
-             "arrays_present": sorted(arrays_present)})
+    return (
+        pd.DataFrame(parents),
+        {k: pd.DataFrame(v) for k, v in children.items()},
+        {"blobs_replayed": n_ok, "blobs_failed": n_bad, "source_rows": len(src), "arrays_present": sorted(arrays_present)},
+    )
 
 
 def report(parent: pd.DataFrame, children: dict[str, pd.DataFrame], stats: dict) -> bool:
     """Print the replay conclusion. Returns True when every check passes."""
     ok = True
-    print(f"\n=== SANITY CHECK: flatten replay over stored def14a_json (0 LLM calls) ===")
-    print(f"  {stats['blobs_replayed']} of {stats['source_rows']} blobs replayed"
-          f" ({stats['blobs_failed']} failed to validate)")
+    print("\n=== SANITY CHECK: flatten replay over stored def14a_json (0 LLM calls) ===")
+    print(f"  {stats['blobs_replayed']} of {stats['source_rows']} blobs replayed ({stats['blobs_failed']} failed to validate)")
 
     print(f"\n  {'table':<26}{'rows':>8}{'filings':>9}{'tickers':>9}")
-    print(f"  {'def14a_llm':<26}{len(parent):>8}{parent['accession_number'].nunique():>9}"
-          f"{parent['ticker'].nunique():>9}")
+    print(f"  {'def14a_llm':<26}{len(parent):>8}{parent['accession_number'].nunique():>9}{parent['ticker'].nunique():>9}")
     for name, df in children.items():
         if df.empty:
             # An empty table is only a FAILURE when the source blobs actually carry the array
@@ -104,13 +108,11 @@ def report(parent: pd.DataFrame, children: dict[str, pd.DataFrame], stats: dict)
             # produce them -- they populate on the first NEW extraction, and their builders are
             # covered by the unit tests instead.
             expected = _SOURCE_ARRAY.get(name) in stats["arrays_present"]
-            note = "<-- EMPTY (builder produced nothing)" if expected else \
-                   "<-- expected: the stored blobs predate this array"
+            note = "<-- EMPTY (builder produced nothing)" if expected else "<-- expected: the stored blobs predate this array"
             print(f"  {name:<26}{0:>8}{0:>9}{0:>9}   {note}")
             ok = ok and not expected
             continue
-        print(f"  {name:<26}{len(df):>8}{df['accession_number'].nunique():>9}"
-              f"{df['ticker'].nunique():>9}")
+        print(f"  {name:<26}{len(df):>8}{df['accession_number'].nunique():>9}{df['ticker'].nunique():>9}")
 
     # ---- the $1e9 check: the research's expectation is 2 in 34,741 ----
     print(f"\n  implausible values (> ${IMPLAUSIBLE_USD:,.0f}):")
@@ -121,24 +123,21 @@ def report(parent: pd.DataFrame, children: dict[str, pd.DataFrame], stats: dict)
         vals = df[numeric].apply(pd.to_numeric, errors="coerce")
         bad = vals.abs().gt(IMPLAUSIBLE_USD).any(axis=1)
         n = int(bad.sum())
-        print(f"    {name:<26}{n:>6} of {len(df):>6} rows"
-              f"   (edgar path: 109 in executive_comp)")
+        print(f"    {name:<26}{n:>6} of {len(df):>6} rows   (edgar path: 109 in executive_comp)")
         if n:
             for _, r in df[bad].head(3).iterrows():
                 worst = max((abs(pd.to_numeric(r[c], errors="coerce") or 0), c) for c in numeric)
-                print(f"        {r['ticker']} {r['accession_number']} "
-                      f"{r.get('name', r.get('holder_name', ''))}: {worst[1]}={worst[0]:,.0f}")
+                print(f"        {r['ticker']} {r['accession_number']} {r.get('name', r.get('holder_name', ''))}: {worst[1]}={worst[0]:,.0f}")
 
     # ---- the reconciles flag: a measured failure rate, not a repair ----
-    print(f"\n  `reconciles` rate (components sum to total within $10):")
+    print("\n  `reconciles` rate (components sum to total within $10):")
     for name in ("def14a_executive_comp", "def14a_director_comp"):
         df = children.get(name, pd.DataFrame())
         if df.empty or "reconciles" not in df.columns:
             continue
         v = pd.to_numeric(df["reconciles"], errors="coerce")
         computable = v.notna().sum()
-        print(f"    {name:<26}{v.mean():.1%} of {computable} computable rows"
-              f"  ({len(df) - computable} have no `total`)")
+        print(f"    {name:<26}{v.mean():.1%} of {computable} computable rows  ({len(df) - computable} have no `total`)")
 
     # ---- gender provenance ----
     dirs = children.get("def14a_directors", pd.DataFrame())
@@ -179,8 +178,7 @@ def main() -> None:
         (out / "replay_stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
         print(f"\n  written -> {out}")
 
-    print(f"\n  {'PASS' if ok else 'FAIL'}: the flatten is a pure replay of paid tokens; "
-          f"no LLM call was made.")
+    print(f"\n  {'PASS' if ok else 'FAIL'}: the flatten is a pure replay of paid tokens; no LLM call was made.")
 
 
 if __name__ == "__main__":

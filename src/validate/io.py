@@ -16,12 +16,13 @@ two names") and a grain test both ask whether two float64 values are bit-identic
 float32 round-trip manufactures equalities that are not there. `redundancy` and `grain` read
 float64 from the DB, cache or not.
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Iterator, Sequence
 
 import pandas as pd
 import pyarrow as pa
@@ -94,9 +95,7 @@ def _coerce(frame: pd.DataFrame, policy: dict[str, str]) -> pd.DataFrame:
         if series.dtype == object:
             if column not in policy:
                 present = series.dropna()
-                policy[column] = ("object" if not present.empty
-                                  and pd.to_numeric(present, errors="coerce").isna().any()
-                                  else "float32")
+                policy[column] = "object" if not present.empty and pd.to_numeric(present, errors="coerce").isna().any() else "float32"
             casts[column] = policy[column]
         elif str(series.dtype) == "float64":
             policy.setdefault(column, "float32")
@@ -104,8 +103,7 @@ def _coerce(frame: pd.DataFrame, policy: dict[str, str]) -> pd.DataFrame:
     return frame.astype(casts) if casts else frame
 
 
-def pull(context: Context, table: Table | str, out: str | Path, *,
-         chunksize: int = CHUNK_ROWS) -> Path:
+def pull(context: Context, table: Table | str, out: str | Path, *, chunksize: int = CHUNK_ROWS) -> Path:
     """Stream `table` to `<out>/_cache/<table>.parquet` and record the pull in `meta.json`.
 
     Written chunk-by-chunk through a `ParquetWriter`: concatenating the chunks first would
@@ -138,18 +136,26 @@ def pull(context: Context, table: Table | str, out: str | Path, *,
             writer.close()
 
     lo, hi = context.store.bounds(spec) if spec.date_col else (None, None)
-    meta_path(root).write_text(json.dumps(jsonable({
-        "table": spec.name,
-        "pulled_at": pd.Timestamp.utcnow(),
-        "rows": rows,
-        "columns": columns,
-        "pk": list(spec.pk),
-        "date_col": spec.date_col,
-        "first_date": lo,
-        "last_date": hi,
-        "max_date": context.store.max_date(spec) if spec.date_col else None,
-        "float_dtype": "float32",
-    }), indent=2), encoding="utf-8")
+    meta_path(root).write_text(
+        json.dumps(
+            jsonable(
+                {
+                    "table": spec.name,
+                    "pulled_at": pd.Timestamp.utcnow(),
+                    "rows": rows,
+                    "columns": columns,
+                    "pk": list(spec.pk),
+                    "date_col": spec.date_col,
+                    "first_date": lo,
+                    "last_date": hi,
+                    "max_date": context.store.max_date(spec) if spec.date_col else None,
+                    "float_dtype": "float32",
+                }
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return target
 
 
@@ -169,8 +175,7 @@ def read_meta(out: str | Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def read_cache(out: str | Path, table: Table | str, *,
-               columns: Sequence[str] | None = None) -> pd.DataFrame | None:
+def read_cache(out: str | Path, table: Table | str, *, columns: Sequence[str] | None = None) -> pd.DataFrame | None:
     """The cached snapshot, or `None` when no `pull` has run into `<out>`.
 
     `columns=` is pushed into pyarrow, so a group-of-8 profile pass reads 8 columns off disk
@@ -181,9 +186,9 @@ def read_cache(out: str | Path, table: Table | str, *,
     return pq.read_table(path, columns=list(columns) if columns else None).to_pandas()
 
 
-def iter_source(context: Context, table: Table | str, columns: Sequence[str], *,
-                cache: str | Path | None = None,
-                chunksize: int = CHUNK_ROWS) -> Iterator[pd.DataFrame]:
+def iter_source(
+    context: Context, table: Table | str, columns: Sequence[str], *, cache: str | Path | None = None, chunksize: int = CHUNK_ROWS
+) -> Iterator[pd.DataFrame]:
     """Chunks of `columns`, from the cache when one exists and from the DB otherwise.
 
     The single read path every streaming check uses, so "did this run read the cache?" has
@@ -196,17 +201,16 @@ def iter_source(context: Context, table: Table | str, columns: Sequence[str], *,
     yield from context.store.iter_load(table, columns=list(columns), chunksize=chunksize)
 
 
-def read_columns(context: Context, table: Table | str, columns: Sequence[str], *,
-                 cache: str | Path | None = None,
-                 chunksize: int = CHUNK_ROWS) -> pd.DataFrame:
+def read_columns(
+    context: Context, table: Table | str, columns: Sequence[str], *, cache: str | Path | None = None, chunksize: int = CHUNK_ROWS
+) -> pd.DataFrame:
     """Every row of `columns`, streamed and concatenated.
 
     A NARROW full-table read, and the caller owns the width: `profile` passes a group of 8
     (210 MB on `cube_part_fundamentals`) where the whole frame would be 6.6 GB. Nothing here
     guards the width, because the checks that need the DB's float64 rather than the cache's
     float32 also need to pass `cache=None`, and one function cannot decide both."""
-    parts = [chunk for chunk in iter_source(context, table, columns, cache=cache,
-                                            chunksize=chunksize)]
+    parts = [chunk for chunk in iter_source(context, table, columns, cache=cache, chunksize=chunksize)]
     if not parts:
         return pd.DataFrame(columns=list(columns))
     return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]

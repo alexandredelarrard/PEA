@@ -32,6 +32,7 @@ Loaded ONCE per process (`functools.cache`): the files are small, but the facts 
 for a field spec per field per filing, and re-reading + re-validating three JSONs ~30k times
 during a full rebuild is pure waste.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,8 +45,11 @@ from typing import Any, Literal
 import pandas as pd
 
 from src.constants.constants import (
-    DEFAULT_CONFIG_DIR, FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_EXCEPTIONS_FILENAME,
-    FUNDAMENTALS_KPIS_FILENAME, FUNDAMENTALS_REGIMES_FILENAME,
+    DEFAULT_CONFIG_DIR,
+    FUNDAMENTALS_CATALOGUE_SUBDIR,
+    FUNDAMENTALS_EXCEPTIONS_FILENAME,
+    FUNDAMENTALS_KPIS_FILENAME,
+    FUNDAMENTALS_REGIMES_FILENAME,
 )
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 
@@ -219,34 +223,75 @@ HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarte
 HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
     # -- revenue: the general top line, then the regime-specific ones that replace it
     "totalRevenue",
-    "premiumsEarned", "netInterestIncome", "noninterestIncome", "netInvestmentIncome",
-    "realizedInvestmentGains", "rentalIncome",
+    "premiumsEarned",
+    "netInterestIncome",
+    "noninterestIncome",
+    "netInvestmentIncome",
+    "realizedInvestmentGains",
+    "rentalIncome",
     # -- cost of sales and gross result
-    "costOfRevenue", "grossProfit", "grossMargins",
+    "costOfRevenue",
+    "grossProfit",
+    "grossMargins",
     # -- operating expense
-    "sellingGeneralAdmin", "researchAndDevelopment", "depAmort", "stockBasedComp",
+    "sellingGeneralAdmin",
+    "researchAndDevelopment",
+    "depAmort",
+    "stockBasedComp",
     # -- operating result
-    "operatingIncome", "operatingMargins", "ebitda",
+    "operatingIncome",
+    "operatingMargins",
+    "ebitda",
     # -- below the operating line, down to the bottom line
-    "interestExpense", "pretaxIncome", "incomeTaxExpense", "effectiveTaxRate",
-    "netIncome", "profitMargins", "epsDiluted",
+    "interestExpense",
+    "pretaxIncome",
+    "incomeTaxExpense",
+    "effectiveTaxRate",
+    "netIncome",
+    "profitMargins",
+    "epsDiluted",
     # -- the two single-quarter slices, next to the TTM lines they are cut from
-    "revenue_q", "netIncome_q",
+    "revenue_q",
+    "netIncome_q",
     # -- cash flow
-    "operatingCashFlow", "capex", "freeCashflow",
+    "operatingCashFlow",
+    "capex",
+    "freeCashflow",
     # -- assets, in Reg S-X current-then-long-lived order
-    "cash", "restrictedCash", "shortTermInvestments", "accountsReceivable", "inventory",
-    "currentAssets", "ppeGross", "accumulatedDepreciation", "ppeNet", "goodwill",
-    "intangiblesExGoodwill", "totalAssets",
+    "cash",
+    "restrictedCash",
+    "shortTermInvestments",
+    "accountsReceivable",
+    "inventory",
+    "currentAssets",
+    "ppeGross",
+    "accumulatedDepreciation",
+    "ppeNet",
+    "goodwill",
+    "intangiblesExGoodwill",
+    "totalAssets",
     # -- liabilities and debt, current then long-term, components before the roll-ups
-    "accountsPayable", "currentLiabilities", "shortTermDebt", "shortTermBorrowingsOnly",
-    "longTermDebt", "longTermDebtCurrentOnly", "operatingLeaseLiability",
-    "financeLeaseLiability", "totalDebt", "totalLiabilities",
+    "accountsPayable",
+    "currentLiabilities",
+    "shortTermDebt",
+    "shortTermBorrowingsOnly",
+    "longTermDebt",
+    "longTermDebtCurrentOnly",
+    "operatingLeaseLiability",
+    "financeLeaseLiability",
+    "totalDebt",
+    "totalLiabilities",
     # -- equity, and the two ratios that read off it
-    "retainedEarnings", "minorityInterest", "stockholdersEquity", "returnOnEquity",
+    "retainedEarnings",
+    "minorityInterest",
+    "stockholdersEquity",
+    "returnOnEquity",
     "debtToEquity",
     # -- share counts last: the denominators, not the statements
-    "basicShares", "dilutedShares", "sharesOutstanding", "optionOverhang",
+    "basicShares",
+    "dilutedShares",
+    "sharesOutstanding",
+    "optionOverhang",
 )
 
 #: The publication-event provenance, scalar by precedence (decision 37) so every column
@@ -254,8 +299,7 @@ HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
 #: (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` is an OR, `amended_fiscal_end` the
 #: latest restated period and `amended_fields` the union. Accession-level detail always
 #: remains recoverable from `fundamentals_facts`.
-HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment",
-                                       "amended_fiscal_end", "amended_fields")
+HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment", "amended_fiscal_end", "amended_fields")
 
 #: The filing's resolution regime, taken off `fundamentals_facts` where the facts layer
 #: already stamped it per filing rather than re-derived here.
@@ -319,8 +363,7 @@ class Catalogue:
         names the CONCEPT, never a column.
         """
         side = set(self.side_table_fields)
-        return sorted((n for n in self.fields if n not in side),
-                      key=lambda n: (self.fields[n].tier, n))
+        return sorted((n for n in self.fields if n not in side), key=lambda n: (self.fields[n].tier, n))
 
     @cached_property
     def history_derived_columns(self) -> list[str]:
@@ -346,10 +389,9 @@ class Catalogue:
         missing = sorted(set(fields) - set(HISTORY_STATEMENT_ORDER))
         stale = sorted(set(HISTORY_STATEMENT_ORDER) - set(fields))
         assert not missing and not stale, (
-            f"HISTORY_STATEMENT_ORDER is out of step with the catalogue: "
-            f"unordered {missing}, ordered-but-absent {stale}")
-        return [*HISTORY_KEYS, *HISTORY_STATEMENT_ORDER,
-                HISTORY_REGIME, *HISTORY_PROVENANCE]
+            f"HISTORY_STATEMENT_ORDER is out of step with the catalogue: unordered {missing}, ordered-but-absent {stale}"
+        )
+        return [*HISTORY_KEYS, *HISTORY_STATEMENT_ORDER, HISTORY_REGIME, *HISTORY_PROVENANCE]
 
     # ---------------------------------------------------------------- fields --- #
     def field(self, name: str) -> FieldSpec:
@@ -358,8 +400,7 @@ class Catalogue:
         try:
             return self.fields[name]
         except KeyError:
-            raise KeyError(f"{name!r} is not in the KPI catalogue "
-                           f"({len(self.fields)} fields declared)") from None
+            raise KeyError(f"{name!r} is not in the KPI catalogue ({len(self.fields)} fields declared)") from None
 
     @cached_property
     def _by_tier(self) -> dict[int, list[str]]:
@@ -397,8 +438,7 @@ class Catalogue:
     def regime_names(self) -> list[str]:
         return sorted(self.regimes)
 
-    def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None,
-                        sub_industry: str | None = None) -> str | None:
+    def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None, sub_industry: str | None = None) -> str | None:
         """The GICS tiebreak, most-specific level first, INCLUDING the forced overrides.
 
         The regimes config declares its GICS membership at whichever level is the natural
@@ -425,9 +465,7 @@ class Catalogue:
         forced = self.force_regime_by_sub_industry.get(sub_industry or "")
         if forced:
             return forced
-        for level, value in (("sub_industry", sub_industry),
-                             ("industry_group", industry_group),
-                             ("sector", sector)):
+        for level, value in (("sub_industry", sub_industry), ("industry_group", industry_group), ("sector", sector)):
             if not value:
                 continue
             for name, spec in self.regimes.items():
@@ -458,8 +496,7 @@ class Catalogue:
                     return name
         return None
 
-    def regime_for(self, gics: dict[str, str | None] | None,
-                   role_uris: list[str]) -> str | None:
+    def regime_for(self, gics: dict[str, str | None] | None, role_uris: list[str]) -> str | None:
         """The filing's regime: role URI first, GICS as tiebreak, `industrial` as the
         Article 5 default -- but ONLY for a ticker that has a GICS row at all.
 
@@ -501,8 +538,7 @@ class Catalogue:
         `FieldSpec._never_use_by_regime`: the dataclass is frozen but not hashable."""
         return {}
 
-    def filer_leaves(self, ticker: str | None,
-                     field: str) -> tuple[tuple[tuple[str, ...], ...], frozenset[str]]:
+    def filer_leaves(self, ticker: str | None, field: str) -> tuple[tuple[tuple[str, ...], ...], frozenset[str]]:
         """One filer's DECLARED company-extension leaves for a field, as
         `(leaf_groups, not_leaves)`.
 
@@ -536,8 +572,7 @@ class Catalogue:
         if cached is None:
             block = self.ticker_exceptions.get(ticker or "", {}).get(field)
             if isinstance(block, dict):
-                cached = (tuple(tuple(g) for g in block.get("leaves", [])),
-                          frozenset(block.get("not_leaves", [])))
+                cached = (tuple(tuple(g) for g in block.get("leaves", [])), frozenset(block.get("not_leaves", [])))
             else:
                 cached = ((), frozenset())
             self._filer_leaves_memo[key] = cached
@@ -557,8 +592,7 @@ class Catalogue:
         block = self.ticker_periodicity.get(ticker or "", {}).get(field)
         return list(block.get("shapes", [])) if isinstance(block, dict) else None
 
-    def combined_into(self, regime: str | None, ticker: str | None,
-                      field: str) -> str | None:
+    def combined_into(self, regime: str | None, ticker: str | None, field: str) -> str | None:
         """The field this one is FOLDED INTO for this filer or regime, where a register cell
         declares one -- the destination that makes `combined_into` a usable reason code
         rather than a shrug. A ticker cell wins over a regime cell, matching every other
@@ -569,8 +603,7 @@ class Catalogue:
         with no producer, and §B.6.4 writes the cells the validator's findings demand rather
         than a speculative sweep of them.
         """
-        for register, key in ((self.ticker_exceptions, ticker),
-                              (self.regime_exceptions, regime)):
+        for register, key in ((self.ticker_exceptions, ticker), (self.regime_exceptions, regime)):
             block = register.get(key or "", {}).get(field)
             if isinstance(block, dict) and block.get("combined_into"):
                 return str(block["combined_into"])
@@ -620,17 +653,19 @@ def _data_items(blob: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_field(name: str, entry: dict[str, Any]) -> FieldSpec:
-    missing = [k for k in ("tier", "kind", "sign", "unit", "definition", "authority")
-               if k not in entry]
+    missing = [k for k in ("tier", "kind", "sign", "unit", "definition", "authority") if k not in entry]
     if missing:
         raise ValueError(f"{name}: missing mandatory key(s) {missing}")
     if entry["authority"] == UNVERIFIED and "authority_note" not in entry:
-        raise ValueError(
-            f"{name}: authority is {UNVERIFIED} with no `authority_note` saying what IS "
-            "known and which document would close it")
+        raise ValueError(f"{name}: authority is {UNVERIFIED} with no `authority_note` saying what IS known and which document would close it")
     return FieldSpec(
-        name=name, tier=int(entry["tier"]), kind=entry["kind"], sign=entry["sign"],
-        unit=entry["unit"], definition=entry["definition"], authority=entry["authority"],
+        name=name,
+        tier=int(entry["tier"]),
+        kind=entry["kind"],
+        sign=entry["sign"],
+        unit=entry["unit"],
+        definition=entry["definition"],
+        authority=entry["authority"],
         raw=entry,
     )
 
@@ -677,32 +712,20 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     for name, spec in fields.items():
         for parent in spec.authority_inherits_from:
             if parent not in fields:
-                raise ValueError(
-                    f"{name}: authority_inherits_from names unknown field {parent!r}")
+                raise ValueError(f"{name}: authority_inherits_from names unknown field {parent!r}")
 
     regimes = _data_items(regimes_blob.get("regimes", {}))
     if not regimes:
         raise ValueError("regimes config declares no regimes")
 
     force: dict[str, str] = {}
-    for sub_industry, block in _data_items(
-            regimes_blob.get("exceptions", {}).get("force_regime", {})).items():
+    for sub_industry, block in _data_items(regimes_blob.get("exceptions", {}).get("force_regime", {})).items():
         force[sub_industry] = block["regime"]
 
-    regime_exceptions = {
-        regime: _data_items(block)
-        for regime, block in _data_items(exceptions_blob.get("by_regime", {})).items()
-    }
+    regime_exceptions = {regime: _data_items(block) for regime, block in _data_items(exceptions_blob.get("by_regime", {})).items()}
 
-    ticker_exceptions = {
-        ticker: _data_items(block)
-        for ticker, block in _data_items(exceptions_blob.get("by_ticker", {})).items()
-    }
-    periodicity = {
-        ticker: _data_items(block)
-        for ticker, block in
-        _data_items(exceptions_blob.get("by_ticker_periodicity", {})).items()
-    }
+    ticker_exceptions = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker", {})).items()}
+    periodicity = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker_periodicity", {})).items()}
 
     # A field named in the exception register but absent from the catalogue is a typo that
     # would otherwise silently excuse nothing at all.
@@ -710,13 +733,15 @@ def _catalogue_at(config_dir: str) -> Catalogue:
         unknown = sorted(set(block) - set(fields))
         if unknown:
             raise ValueError(f"exceptions[{regime}] names unknown field(s) {unknown}")
-    for label, register in (("by_ticker", ticker_exceptions),
-                            ("by_ticker_periodicity", periodicity)):
+    for label, register in (("by_ticker", ticker_exceptions), ("by_ticker_periodicity", periodicity)):
+        ticker: str | None = None
+        block: dict = {}
         for ticker, block in register.items():
             unknown = sorted(set(block) - set(fields))
             if unknown:
-                raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) "
-                                 f"{unknown}")
+                raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) {unknown}")
+        if ticker is None:
+            continue
         # A declared leaf that is ALSO declared not-a-leaf is a contradiction the resolver
         # would silently resolve in favour of the leaf. Fail loudly instead.
         for field, entry in block.items():
@@ -725,13 +750,13 @@ def _catalogue_at(config_dir: str) -> Catalogue:
             leaves = {c for g in entry.get("leaves", []) for c in g}
             both = sorted(leaves & set(entry.get("not_leaves", [])))
             if both:
-                raise ValueError(f"exceptions.by_ticker[{ticker}][{field}]: {both} is "
-                                 "declared both a leaf and not a leaf")
+                raise ValueError(f"exceptions.by_ticker[{ticker}][{field}]: {both} is declared both a leaf and not a leaf")
             if leaves and "evidence" not in entry:
                 raise ValueError(
                     f"exceptions.by_ticker[{ticker}][{field}]: declares extension leaves "
                     "with no `evidence` key. A per-filer override with no written evidence "
-                    "is exactly the guess this register exists to replace.")
+                    "is exactly the guess this register exists to replace."
+                )
 
     # Likewise a regime-keyed override in the KPI catalogue must name a real regime.
     known_regimes = set(regimes)
@@ -740,8 +765,12 @@ def _catalogue_at(config_dir: str) -> Catalogue:
         if unknown:
             raise ValueError(f"{name}: regimes override names unknown regime(s) {unknown}")
 
-    return Catalogue(fields=fields, derived_columns=derived_columns, regimes=regimes,
-                     regime_exceptions=regime_exceptions,
-                     force_regime_by_sub_industry=force,
-                     ticker_exceptions=ticker_exceptions,
-                     ticker_periodicity=periodicity)
+    return Catalogue(
+        fields=fields,
+        derived_columns=derived_columns,
+        regimes=regimes,
+        regime_exceptions=regime_exceptions,
+        force_regime_by_sub_industry=force,
+        ticker_exceptions=ticker_exceptions,
+        ticker_periodicity=periodicity,
+    )

@@ -1,4 +1,5 @@
 {
-  "venvPath": "C:\\Users\\de larrard alexandre\\AppData\\Local\\miniconda3\\envs\\trading",
-  "venv": "trading"
+  "exclude": ["reports"],
+  "venvPath": ".",
+  "venv": ".venv"
 }

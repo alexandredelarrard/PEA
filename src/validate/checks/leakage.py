@@ -123,7 +123,7 @@ def _source_first(context: Context, source: Any) -> tuple[pd.Series, str]:
     spec = resolve(source)
     clock = spec.freshness_col
     if clock is None or spec.ticker_col is None:
-        raise LookupError(f"`{spec.name}` declares no publication clock " f"(freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
+        raise LookupError(f"`{spec.name}` declares no publication clock (freshness_col={clock!r}, ticker_col={spec.ticker_col!r})")
     live = context.store.columns(spec)
     if clock not in live or spec.ticker_col not in live:
         raise LookupError(f"`{spec.name}` does not carry {spec.ticker_col!r}/{clock!r}")
@@ -168,7 +168,7 @@ def check_leakage(
     ticker_col = spec_t.ticker_col if spec_t.ticker_col in live else None
     if date_col is None:
         return CheckResult.abstained(
-            CHECK, spec_t.name, "the table declares no date column, so there is no " "publication clock to test anything against"
+            CHECK, spec_t.name, "the table declares no date column, so there is no publication clock to test anything against"
         )
 
     columns = feature_columns(context, spec_t)
@@ -183,7 +183,7 @@ def check_leakage(
     horizon_reason = ""
     horizons = _horizons(columns, pattern) if pattern else {}
     if pattern and not horizons:
-        horizon_reason = f"no column matches the declared label pattern {pattern!r}, so the " f"horizon half found nothing to test"
+        horizon_reason = f"no column matches the declared label pattern {pattern!r}, so the horizon half found nothing to test"
     elif not pattern:
         horizon_reason = (
             f"{spec_t.name} declares no `label_pattern`, so the horizon half "
@@ -273,7 +273,7 @@ def check_leakage(
             f"names without judging some legs against the wrong clock"
         )
     elif ticker_col is None:
-        pit_reason = "the point-in-time half ABSTAINED -- it is a per-ticker comparison and " "this table carries no ticker column"
+        pit_reason = "the point-in-time half ABSTAINED -- it is a per-ticker comparison and this table carries no ticker column"
     else:
         halves.append("pit")
         clocks: dict[str, tuple[pd.Series, str]] = {}

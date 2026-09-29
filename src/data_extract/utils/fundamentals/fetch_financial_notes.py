@@ -46,83 +46,83 @@ import logging
 import re
 import zipfile
 from pathlib import Path
+
 import pandas as pd
 from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
-    cache_dir, ensure_zip, ingested_periods,
+    cache_dir,
+    ensure_zip,
+    ingested_periods,
 )
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.registrant import drop_rows_outside_segment
-from src.data_extract.utils.common.sec_utils import (
-    load_cik_mapping, load_processed_universe, save_processed_universe,
-    cik_to_ticker)
+from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping, load_processed_universe, save_processed_universe
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 500_000
-_LANDING_URL = ("https://www.sec.gov/data-research/sec-markets-data/"
-                "financial-statement-notes-data-sets")
+_LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
 
 # Curated footnote NUMERIC pension tags (undimensioned totals). Superset of the
 # balance-sheet net-liability tags in pension_facts — adds the footnote detail
 # only the NOTES sets carry. Discount-rate tags are percentages (uom != USD).
-_NOTES_NUM_TAGS = frozenset({
-    "DefinedBenefitPlanBenefitObligation",                          # PBO
-    "DefinedBenefitPlanFairValueOfPlanAssets",                      # plan assets (FV)
-    "DefinedBenefitPlanAccumulatedBenefitObligation",              # ABO
-    "DefinedBenefitPlanFundedStatusOfPlanAmount",                  # funded status (rare; else computed)
-    "DefinedBenefitPlanNetPeriodicBenefitCost",                    # net periodic cost
-    "DefinedBenefitPlanServiceCost",                               # service cost (operating piece)
-    "DefinedBenefitPlanInterestCost",                              # interest cost
-    "DefinedBenefitPlanExpectedReturnOnPlanAssets",                # expected return on assets
-    "DefinedBenefitPlanContributionsByEmployer",                   # employer cash contributions
-    "DefinedBenefitPlanExpectedFutureBenefitPaymentsNextTwelveMonths",  # near-term cash outflow
-    "DefinedBenefitPlanAssumptionsUsedCalculatingNetPeriodicBenefitCostDiscountRate",
-    "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
-})
+_NOTES_NUM_TAGS = frozenset(
+    {
+        "DefinedBenefitPlanBenefitObligation",  # PBO
+        "DefinedBenefitPlanFairValueOfPlanAssets",  # plan assets (FV)
+        "DefinedBenefitPlanAccumulatedBenefitObligation",  # ABO
+        "DefinedBenefitPlanFundedStatusOfPlanAmount",  # funded status (rare; else computed)
+        "DefinedBenefitPlanNetPeriodicBenefitCost",  # net periodic cost
+        "DefinedBenefitPlanServiceCost",  # service cost (operating piece)
+        "DefinedBenefitPlanInterestCost",  # interest cost
+        "DefinedBenefitPlanExpectedReturnOnPlanAssets",  # expected return on assets
+        "DefinedBenefitPlanContributionsByEmployer",  # employer cash contributions
+        "DefinedBenefitPlanExpectedFutureBenefitPaymentsNextTwelveMonths",  # near-term cash outflow
+        "DefinedBenefitPlanAssumptionsUsedCalculatingNetPeriodicBenefitCostDiscountRate",
+        "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
+    }
+)
 
 # High-signal NOTES narrative text blocks (TextBlock XBRL elements). Stored raw for
 # later embedding / sentiment; a few variants per theme for coverage.
-_NOTES_TEXT_TAGS = frozenset({
-    # pension / retirement
-    "PensionAndOtherPostretirementBenefitPlansFullDisclosureTextBlock",
-    "DefinedBenefitPlanDisclosureTextBlock",
-    "CompensationAndEmployeeBenefitPlansTextBlock",
-    # revenue recognition
-    "RevenueFromContractWithCustomerTextBlock",
-    "RevenueRecognitionPolicyTextBlock",
-    "RevenueRecognitionTextBlock",
-    # commitments / litigation
-    "CommitmentsAndContingenciesDisclosureTextBlock",
-    "LegalMattersAndContingenciesTextBlock",
-    # segment
-    "SegmentReportingDisclosureTextBlock",
-    # risk / going concern
-    "SubstantialDoubtAboutGoingConcernTextBlock",
-    "ConcentrationRiskDisclosureTextBlock",
-    # critical accounting estimates / significant policies
-    "SignificantAccountingPoliciesTextBlock",
-    "OrganizationConsolidationAndPresentationOfFinancialStatementsDisclosureAndSignificantAccountingPoliciesTextBlock",
-    "UseOfEstimates",
-})
+_NOTES_TEXT_TAGS = frozenset(
+    {
+        # pension / retirement
+        "PensionAndOtherPostretirementBenefitPlansFullDisclosureTextBlock",
+        "DefinedBenefitPlanDisclosureTextBlock",
+        "CompensationAndEmployeeBenefitPlansTextBlock",
+        # revenue recognition
+        "RevenueFromContractWithCustomerTextBlock",
+        "RevenueRecognitionPolicyTextBlock",
+        "RevenueRecognitionTextBlock",
+        # commitments / litigation
+        "CommitmentsAndContingenciesDisclosureTextBlock",
+        "LegalMattersAndContingenciesTextBlock",
+        # segment
+        "SegmentReportingDisclosureTextBlock",
+        # risk / going concern
+        "SubstantialDoubtAboutGoingConcernTextBlock",
+        "ConcentrationRiskDisclosureTextBlock",
+        # critical accounting estimates / significant policies
+        "SignificantAccountingPoliciesTextBlock",
+        "OrganizationConsolidationAndPresentationOfFinancialStatementsDisclosureAndSignificantAccountingPoliciesTextBlock",
+        "UseOfEstimates",
+    }
+)
 
 _NUM_USECOLS = {"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnote", "value"}
-_TXT_USECOLS = {"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen",
-                "footnote", "value"}
+_TXT_USECOLS = {"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"}
 _NUM_PK = ["adsh", "tag", "ddate", "qtrs"]
 _TXT_PK = ["adsh", "tag", "ddate", "qtrs"]
-_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value",
-            "footnote", "form", "fy", "fp", "filed", "period"]
-_TXT_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "txtlen", "escaped",
-            "value", "footnote", "form", "fy", "fp", "filed", "period"]
+_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period"]
+_TXT_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "txtlen", "escaped", "value", "footnote", "form", "fy", "fp", "filed", "period"]
 
-SEC_FINNOTES_URL_TEMPLATE = (
-    "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
-    "{period}_notes.zip")
-SEC_FINNOTES_FIRST_YEAR = 2009     # earliest notes data set (2009q1)
+SEC_FINNOTES_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{period}_notes.zip"
+SEC_FINNOTES_FIRST_YEAR = 2009  # earliest notes data set (2009q1)
+
 
 # --------------------------------------------------------------------------- #
 # Period list (rolling quarterly <-> monthly)                                   #
@@ -142,7 +142,7 @@ def _scrape_available_periods(context: Context) -> list[str] | None:
             return None
         tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
         return sorted(set(tags)) or None
-    except Exception:                                   # noqa: BLE001 (best-effort)
+    except Exception:  # noqa: BLE001 (best-effort)
         return None
 
 
@@ -162,8 +162,7 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
     return sorted(set(out))
 
 
-def _notes_periods(context: Context, years_history: int,
-                   today: pd.Timestamp | None = None) -> list[str]:
+def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Period tags to fetch, newest last, filtered to the year window."""
     today = (today or pd.Timestamp.today()).normalize()
     start_year = max(SEC_FINNOTES_FIRST_YEAR, today.year - years_history)
@@ -179,14 +178,16 @@ def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str]) ->
     """sub.tsv -> [adsh, cik, ticker, form, fy, fp, filed] for UNIVERSE filers only. Pure."""
     if sub is None or sub.empty:
         return pd.DataFrame()
-    s = pd.DataFrame({
-        "adsh": sub["adsh"],
-        "cik": sub["cik"].astype("string").str.replace(r"\.0$", "", regex=True).str.zfill(10),
-        "form": sub.get("form"),
-        "fy": sub.get("fy"),
-        "fp": sub.get("fp"),
-        "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
-    })
+    s = pd.DataFrame(
+        {
+            "adsh": sub["adsh"],
+            "cik": sub["cik"].astype("string").str.replace(r"\.0$", "", regex=True).str.zfill(10),
+            "form": sub.get("form"),
+            "fy": sub.get("fy"),
+            "fp": sub.get("fp"),
+            "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
+        }
+    )
     s["ticker"] = s["cik"].map(cik2tkr)
     s = s[s["ticker"].isin(universe)]
     # `notes` is a CONSOLIDATING table, so a predecessor CIK resolving to the ticker is only
@@ -199,15 +200,17 @@ def _join_notes_num(num: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
     """Filtered num rows (pension tags, dimn==0) + sub_meta -> tidy facts. Pure."""
     if num is None or num.empty or sub_meta is None or sub_meta.empty:
         return pd.DataFrame()
-    n = pd.DataFrame({
-        "adsh": num["adsh"],
-        "tag": num["tag"],
-        "ddate": pd.to_datetime(num["ddate"], format="%Y%m%d", errors="coerce"),
-        "qtrs": pd.to_numeric(num["qtrs"], errors="coerce"),
-        "uom": num.get("uom"),
-        "value": pd.to_numeric(num["value"], errors="coerce"),
-        "footnote": num.get("footnote"),
-    }).dropna(subset=["value", "ddate"])
+    n = pd.DataFrame(
+        {
+            "adsh": num["adsh"],
+            "tag": num["tag"],
+            "ddate": pd.to_datetime(num["ddate"], format="%Y%m%d", errors="coerce"),
+            "qtrs": pd.to_numeric(num["qtrs"], errors="coerce"),
+            "uom": num.get("uom"),
+            "value": pd.to_numeric(num["value"], errors="coerce"),
+            "footnote": num.get("footnote"),
+        }
+    ).dropna(subset=["value", "ddate"])
     return n.merge(sub_meta, on="adsh", how="inner") if not n.empty else pd.DataFrame()
 
 
@@ -215,16 +218,18 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
     """Filtered txt rows (high-signal tags, dimn==0) + sub_meta -> tidy text. Pure."""
     if txt is None or txt.empty or sub_meta is None or sub_meta.empty:
         return pd.DataFrame()
-    t = pd.DataFrame({
-        "adsh": txt["adsh"],
-        "tag": txt["tag"],
-        "ddate": pd.to_datetime(txt["ddate"], format="%Y%m%d", errors="coerce"),
-        "qtrs": pd.to_numeric(txt["qtrs"], errors="coerce"),
-        "txtlen": pd.to_numeric(txt.get("txtlen"), errors="coerce"),
-        "escaped": txt.get("escaped"),
-        "value": txt["value"].astype("string"),
-        "footnote": txt.get("footnote"),
-    }).dropna(subset=["value", "ddate"])
+    t = pd.DataFrame(
+        {
+            "adsh": txt["adsh"],
+            "tag": txt["tag"],
+            "ddate": pd.to_datetime(txt["ddate"], format="%Y%m%d", errors="coerce"),
+            "qtrs": pd.to_numeric(txt["qtrs"], errors="coerce"),
+            "txtlen": pd.to_numeric(txt.get("txtlen", pd.Series(pd.NA, index=txt.index)), errors="coerce"),
+            "escaped": txt.get("escaped"),
+            "value": txt["value"].astype("string"),
+            "footnote": txt.get("footnote"),
+        }
+    ).dropna(subset=["value", "ddate"])
     t = t[t["value"].str.strip() != ""]
     return t.merge(sub_meta, on="adsh", how="inner") if not t.empty else pd.DataFrame()
 
@@ -232,26 +237,21 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str],
-                  tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
+def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
     """Stream a huge .tsv member in chunks, keeping only universe filings, curated
     tags and undimensioned/consolidated rows (dimn==0, no coreg)."""
     keep: list[pd.DataFrame] = []
     with z.open(name) as fh:
-        for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False,
-                                 chunksize=_CHUNK, on_bad_lines="skip",
-                                 usecols=lambda c: c in usecols):
-            dimn = pd.to_numeric(chunk.get("dimn"), errors="coerce")
-            coreg = (chunk.get("coreg", pd.Series("", index=chunk.index))
-                     .astype("string").fillna("").str.strip())
+        for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False, chunksize=_CHUNK, on_bad_lines="skip", usecols=lambda c: c in usecols):
+            dimn = pd.to_numeric(chunk.get("dimn", pd.Series(pd.NA, index=chunk.index)), errors="coerce")
+            coreg = chunk.get("coreg", pd.Series("", index=chunk.index)).astype("string").fillna("").str.strip()
             m = chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
             if m.any():
                 keep.append(chunk.loc[m])
     return pd.concat(keep, ignore_index=True) if keep else pd.DataFrame()
 
 
-def _read_notes(path: Path, cik2tkr: dict[str, str],
-                universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One notes zip -> (tidy num facts, tidy text) for the universe. Reads sub.tsv
     fully (small) to resolve universe filings, then streams num/txt in chunks."""
     try:
@@ -259,8 +259,9 @@ def _read_notes(path: Path, cik2tkr: dict[str, str],
             names = {n.lower(): n for n in z.namelist()}
             if not {"sub.tsv", "num.tsv", "txt.tsv"} <= set(names):
                 return pd.DataFrame(), pd.DataFrame()
-            sub = pd.read_csv(z.open(names["sub.tsv"]), sep="\t", dtype=str, low_memory=False,
-                              usecols=lambda c: c in ("adsh", "cik", "form", "fy", "fp", "filed"))
+            sub = pd.read_csv(
+                z.open(names["sub.tsv"]), sep="\t", dtype=str, low_memory=False, usecols=lambda c: c in ("adsh", "cik", "form", "fy", "fp", "filed")
+            )
             sub_meta = _sub_meta(sub, cik2tkr, universe)
             if sub_meta.empty:
                 return pd.DataFrame(), pd.DataFrame()
@@ -274,8 +275,7 @@ def _read_notes(path: Path, cik2tkr: dict[str, str],
     return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
 
 
-def fetch_financial_notes(context: Context, tickers: list[str], years_history: int = 15,
-                          reparse: bool = False) -> int:
+def fetch_financial_notes(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the SEC Financial Statement & Notes data sets over
     `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
     high-signal note TEXT -> `notes_text` for the universe. Returns total rows
@@ -296,30 +296,29 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     """
 
     cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap) 
+    cik2tkr = cik_to_ticker(cikmap)
     cache = cache_dir(context, context.config.local.paths.financial_notes)
-    
+
     done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)   # empty once converged
+    new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)  # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
     if reparse:
         logger.info("notes: --reparse -> re-reading every cached period (no re-download)")
 
     n_num = n_txt = 0
-    periods = _notes_periods(context, years_history+1)
+    periods = _notes_periods(context, years_history + 1)
     for period in tqdm(periods, desc="SEC financial-statement notes"):
-
         if period in done and not new_tickers and not reparse:
             continue
 
-        path = ensure_zip(context, cache / f"{period}_notes.zip",
-                          SEC_FINNOTES_URL_TEMPLATE.format(period=period),
-                          label=f"notes {period}", timeout=600, log=logger)
+        path = ensure_zip(
+            context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger
+        )
         if path is None:
             continue
 
-        num, txt = _read_notes(path, cik2tkr, tickers)
+        num, txt = _read_notes(path, cik2tkr, set(tickers))
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period
@@ -329,9 +328,8 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
             txt["period"] = period
             n_txt += context.store.save(Tables.notes_text, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
-    save_processed_universe(cache, Tables.notes_num, tickers)   # so a converged re-run skips
-    logger.info("notes: upserted %d num + %d text rows (%d periods scanned)",
-                   n_num, n_txt, len(periods))
+    save_processed_universe(cache, Tables.notes_num, tickers)  # so a converged re-run skips
+    logger.info("notes: upserted %d num + %d text rows (%d periods scanned)", n_num, n_txt, len(periods))
     record_run(context, Tables.notes_num, len(tickers), n_num)
     record_run(context, Tables.notes_text, len(tickers), n_txt)
     return n_num + n_txt

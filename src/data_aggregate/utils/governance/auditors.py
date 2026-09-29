@@ -39,6 +39,7 @@ a joint audit, whereas `other` would manufacture a change in both directions.
 
 The canonical firm is a CLEANED COLUMN on the read frame. `def14a_llm` is never mutated.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -53,90 +54,90 @@ AUDITOR_FIRMS = BIG4 + ("arthur_andersen", "grant_thornton", "bdo", "other")
 #: Grouped by firm; the trailing count is that string's row count on 2026-09-07.
 AUDITOR_ALIASES: dict[str, str] = {
     # -- Ernst & Young (3,215 rows) -----------------------------------------------------------
-    "ernst & young llp": "ey",                          # 2857
-    "ernst & young": "ey",                              # 284
-    "ey": "ey",                                         # 42
-    "e&y": "ey",                                        # 14
-    "ernst & young us": "ey",                           # 6
-    "ernst & young, llp": "ey",                         # 5
-    "ernst and young, llp": "ey",                       # 1  the "and" spelling
-    "ernst & young ireland": "ey",                      # 2  member firm
-    "ernst & young chartered accountants": "ey",        # 1  member firm
-    "ernst & young accountants llp": "ey",              # 1  member firm (NL)
-    "ey accountants b.v.": "ey",                        # 1  member firm (NL)
-    "ernst & young (e&y)": "ey",                        # 1
+    "ernst & young llp": "ey",  # 2857
+    "ernst & young": "ey",  # 284
+    "ey": "ey",  # 42
+    "e&y": "ey",  # 14
+    "ernst & young us": "ey",  # 6
+    "ernst & young, llp": "ey",  # 5
+    "ernst and young, llp": "ey",  # 1  the "and" spelling
+    "ernst & young ireland": "ey",  # 2  member firm
+    "ernst & young chartered accountants": "ey",  # 1  member firm
+    "ernst & young accountants llp": "ey",  # 1  member firm (NL)
+    "ey accountants b.v.": "ey",  # 1  member firm (NL)
+    "ernst & young (e&y)": "ey",  # 1
     # ⚠ A TRUNCATED CELL, mapped by HAND and on purpose. `Young Ireland` is not a firm; the same
     # table holds `ernst & young ireland` (2 rows) as a real EY member firm, so the truncation is
     # corroborated by the archive itself rather than guessed at. Mapping it keeps one filing from
     # reading as a change TO and FROM a mystery auditor -- which is what `other` would have made
     # it, and that is the more expensive error: `auditor_changed` would fire twice on a company
     # whose auditor never changed.
-    "young ireland": "ey",                              # 1
+    "young ireland": "ey",  # 1
     # -- PricewaterhouseCoopers (2,872 rows, incl. the two 1998 predecessor firms) -------------
-    "pricewaterhousecoopers llp": "pwc",                # 2581
-    "pricewaterhousecoopers": "pwc",                    # 139
-    "pwc": "pwc",                                       # 62  (`PwC` 61 + `PWC` 1)
-    "pricewaterhousecoopers sa": "pwc",                 # 18  member firm
-    "pricewaterhousecoopers, llp": "pwc",               # 8
-    "pricewaterhousecoopers ag": "pwc",                 # 8   member firm
-    "pwc llp": "pwc",                                   # 8
-    "pricewaterhousecoopers llc": "pwc",                # 2
-    "pricewaterhousecoopers accountants n.v.": "pwc",   # 2   member firm (NL)
-    "pricewaterhousecoopers llp and pricewaterhousecoopers ag": "pwc",   # 2  two member firms
-    "coopers & lybrand l.l.p.": "pwc",                  # 23  predecessor, merged 1998
-    "coopers & lybrand llp": "pwc",                     # 1
-    "coopers & lybrand": "pwc",                         # 1
-    "price waterhouse llp": "pwc",                      # 14  predecessor, merged 1998
-    "price waterhouse l.l.p.": "pwc",                   # 1
-    "price waterhouse": "pwc",                          # 1
+    "pricewaterhousecoopers llp": "pwc",  # 2581
+    "pricewaterhousecoopers": "pwc",  # 139
+    "pwc": "pwc",  # 62  (`PwC` 61 + `PWC` 1)
+    "pricewaterhousecoopers sa": "pwc",  # 18  member firm
+    "pricewaterhousecoopers, llp": "pwc",  # 8
+    "pricewaterhousecoopers ag": "pwc",  # 8   member firm
+    "pwc llp": "pwc",  # 8
+    "pricewaterhousecoopers llc": "pwc",  # 2
+    "pricewaterhousecoopers accountants n.v.": "pwc",  # 2   member firm (NL)
+    "pricewaterhousecoopers llp and pricewaterhousecoopers ag": "pwc",  # 2  two member firms
+    "coopers & lybrand l.l.p.": "pwc",  # 23  predecessor, merged 1998
+    "coopers & lybrand llp": "pwc",  # 1
+    "coopers & lybrand": "pwc",  # 1
+    "price waterhouse llp": "pwc",  # 14  predecessor, merged 1998
+    "price waterhouse l.l.p.": "pwc",  # 1
+    "price waterhouse": "pwc",  # 1
     # -- Deloitte (2,321 rows) ----------------------------------------------------------------
-    "deloitte & touche llp": "deloitte",                # 1952 (`...LLP` 1950 + `...llp` 2)
-    "deloitte": "deloitte",                             # 235
-    "deloitte & touche": "deloitte",                    # 109
-    "deloitte llp": "deloitte",                         # 10
-    "d&t": "deloitte",                                  # 7   initialism a regex would miss
-    "deloitte & touche, llp": "deloitte",               # 6
-    "deloitte and touche llp": "deloitte",              # 3
-    "deloitte & touche (ireland)": "deloitte",          # 3   member firm
-    "deloitte &touche llp": "deloitte",                 # 1   missing space
-    "deloitte touche tohmatsu": "deloitte",             # 1   the global network's own name
-    "deloitte touche tohmatsu japan": "deloitte",       # 1   member firm
-    "deloitte sa": "deloitte",                          # 1   member firm
-    "deloitte u.s.": "deloitte",                        # 1
-    "deloitte & touche llp and deloitte llp": "deloitte",   # 1  two entities of ONE firm
+    "deloitte & touche llp": "deloitte",  # 1952 (`...LLP` 1950 + `...llp` 2)
+    "deloitte": "deloitte",  # 235
+    "deloitte & touche": "deloitte",  # 109
+    "deloitte llp": "deloitte",  # 10
+    "d&t": "deloitte",  # 7   initialism a regex would miss
+    "deloitte & touche, llp": "deloitte",  # 6
+    "deloitte and touche llp": "deloitte",  # 3
+    "deloitte & touche (ireland)": "deloitte",  # 3   member firm
+    "deloitte &touche llp": "deloitte",  # 1   missing space
+    "deloitte touche tohmatsu": "deloitte",  # 1   the global network's own name
+    "deloitte touche tohmatsu japan": "deloitte",  # 1   member firm
+    "deloitte sa": "deloitte",  # 1   member firm
+    "deloitte u.s.": "deloitte",  # 1
+    "deloitte & touche llp and deloitte llp": "deloitte",  # 1  two entities of ONE firm
     # -- KPMG (1,761 rows, incl. the pre-1999 Peat Marwick name) ------------------------------
-    "kpmg llp": "kpmg",                                 # 1375
-    "kpmg": "kpmg",                                     # 334
-    "kpmg peat marwick llp": "kpmg",                    # 49  former name, renamed 1999
-    "kpmg peat marwick, llp": "kpmg",                   # 1
-    "kpmg peat marwick": "kpmg",                        # 1
-    "kpmg, llc": "kpmg",                                # 1
+    "kpmg llp": "kpmg",  # 1375
+    "kpmg": "kpmg",  # 334
+    "kpmg peat marwick llp": "kpmg",  # 49  former name, renamed 1999
+    "kpmg peat marwick, llp": "kpmg",  # 1
+    "kpmg peat marwick": "kpmg",  # 1
+    "kpmg, llc": "kpmg",  # 1
     # -- Arthur Andersen (197 rows) -- REAL HISTORY, its own value, never `other` -------------
-    "arthur andersen llp": "arthur_andersen",           # 187
-    "arthur andersen": "arthur_andersen",               # 9
-    "arthur andersen, llp": "arthur_andersen",          # 1
+    "arthur andersen llp": "arthur_andersen",  # 187
+    "arthur andersen": "arthur_andersen",  # 9
+    "arthur andersen, llp": "arthur_andersen",  # 1
     # -- Grant Thornton (98 rows) -------------------------------------------------------------
-    "grant thornton llp": "grant_thornton",             # 84
-    "grant thornton": "grant_thornton",                 # 11
-    "gt": "grant_thornton",                             # 2   initialism a regex would miss
-    "grant thornton, llp": "grant_thornton",            # 1
+    "grant thornton llp": "grant_thornton",  # 84
+    "grant thornton": "grant_thornton",  # 11
+    "gt": "grant_thornton",  # 2   initialism a regex would miss
+    "grant thornton, llp": "grant_thornton",  # 1
     # -- BDO (17 rows, incl. the pre-2010 Seidman name) ---------------------------------------
-    "bdo seidman": "bdo",                               # 9   former name, renamed 2010
-    "bdo usa": "bdo",                                   # 3
-    "bdo": "bdo",                                       # 2
-    "bdo usa, llp": "bdo",                              # 1
-    "bdo seidman, llp": "bdo",                          # 1
-    "bdo seidman llp": "bdo",                           # 1
+    "bdo seidman": "bdo",  # 9   former name, renamed 2010
+    "bdo usa": "bdo",  # 3
+    "bdo": "bdo",  # 2
+    "bdo usa, llp": "bdo",  # 1
+    "bdo seidman, llp": "bdo",  # 1
+    "bdo seidman llp": "bdo",  # 1
     # -- joint audits naming two DIFFERENT firms -> the first listed (3 rows) ------------------
-    "pricewaterhousecoopers llp and ernst & young llp": "pwc",      # 1
-    "deloitte & touche llp and ernst & young llp": "deloitte",      # 1
-    "ernst & young; pricewaterhousecoopers": "ey",                  # 1
+    "pricewaterhousecoopers llp and ernst & young llp": "pwc",  # 1
+    "deloitte & touche llp and ernst & young llp": "deloitte",  # 1
+    "ernst & young; pricewaterhousecoopers": "ey",  # 1
     # -- genuinely not a big-4/GT/BDO firm, and not a garbled cell either (4 rows) -------------
     # Real, small audit practices. `other` is the honest answer: the closed set has no slot for
     # them, and inventing one per firm would be a per-ticker column, not a feature.
-    "brown, schwab, bergquist & co.": "other",          # 2
-    "alpern, rosenthal & company": "other",             # 1
-    "lane gorman trubitt, llc": "other",                # 1
+    "brown, schwab, bergquist & co.": "other",  # 2
+    "alpern, rosenthal & company": "other",  # 1
+    "lane gorman trubitt, llc": "other",  # 1
     # ⚠ `Young Ireland` is NOT here: it is a truncated cell resolved BY HAND to `ey` up in the
     # EY block, because the same archive holds `ernst & young ireland` and that corroborates the
     # truncation. `other` would have made one filing read as a change to AND from a mystery

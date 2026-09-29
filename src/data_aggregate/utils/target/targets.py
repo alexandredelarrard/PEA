@@ -37,6 +37,9 @@ Forward factor returns over the SAME t->t+h window:
 """
 
 from __future__ import annotations
+
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -47,16 +50,21 @@ from src.data_aggregate.utils.common.prices import (
     trailing_vol,
 )
 from src.data_aggregate.utils.common.xs import (
-    MIN_GROUP_SIZE_FOR_NEUTRALIZATION, XS_CLIP_CHARACTERISTIC, XS_CLIP_LABEL, xs_group_dummies,
-    xs_project_out, xs_rank_pct, xs_z,
+    MIN_GROUP_SIZE_FOR_NEUTRALIZATION,
+    XS_CLIP_CHARACTERISTIC,
+    XS_CLIP_LABEL,
+    xs_group_dummies,
+    xs_project_out,
+    xs_rank_pct,
+    xs_z,
 )
 
 
 def compute_epsilon(
-    stock_ret: pd.DataFrame,         # stocks only, DAILY TOTAL RETURNS
-    betas: dict,                     # {ticker: DataFrame beta_<factor>...}
-    factor_panel: pd.DataFrame,      # market + style + macro daily
-    macro_cols: list,                # which factor_panel columns are macro CHANGES
+    stock_ret: pd.DataFrame,  # stocks only, DAILY TOTAL RETURNS
+    betas: dict,  # {ticker: DataFrame beta_<factor>...}
+    factor_panel: pd.DataFrame,  # market + style + macro daily
+    macro_cols: list,  # which factor_panel columns are macro CHANGES
     horizon: int,
     sector_excess: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
@@ -96,33 +104,32 @@ def compute_epsilon(
     what the projection removes and the ordering is deliberate despite it; see `_neutral_label`
     for why projecting the TRANSFORMED label rather than epsilon is worth that cost.
     """
-    
-    fwd_stock = forward_compound(stock_ret, horizon)
+
+    fwd_stock = cast(pd.DataFrame, forward_compound(stock_ret, horizon))
 
     # Precompute forward returns of every SHARED factor (same for all stocks).
     style_market_cols = [c for c in factor_panel.columns if c not in macro_cols]
     fwd_shared = {}
-    for c in style_market_cols:                       # returns -> compound
+    for c in style_market_cols:  # returns -> compound
         fwd_shared[c] = forward_compound(factor_panel[c], horizon)
-    for c in macro_cols:                              # changes -> cumulative sum
+    for c in macro_cols:  # changes -> cumulative sum
         fwd_shared[c] = forward_cumchange(factor_panel[c], horizon)
     fwd_shared = pd.DataFrame(fwd_shared)
 
     # the sector basket is a daily RETURN frame -> compounded, like the style factors.
     # OPTIONAL for the same reason as `betas.estimate_all_betas`'s sector regressor: the
     # fingerprint harnesses build a label with no sector term at all.
-    fwd_sector = forward_compound(sector_excess, horizon) if sector_excess is not None else None
+    fwd_sector = cast(pd.DataFrame, forward_compound(sector_excess, horizon)) if sector_excess is not None else None
 
     eps = pd.DataFrame(index=stock_ret.index, columns=stock_ret.columns, dtype="float64")
     for ticker in stock_ret.columns:
         if ticker not in betas:
             continue
-        
+
         b = betas[ticker].reindex(stock_ret.index)
         resid = fwd_stock[ticker].copy()
         # the stock's OWN sector basket -> strip its individual sector loading
-        if (fwd_sector is not None and "beta_sector" in b.columns
-                and ticker in fwd_sector.columns):
+        if fwd_sector is not None and "beta_sector" in b.columns and ticker in fwd_sector.columns:
             resid = resid - b["beta_sector"] * fwd_sector[ticker].reindex(stock_ret.index).fillna(0.0)
 
         # Subtract every shared factor's forward return * its loading. A SHARED factor is the
@@ -148,8 +155,7 @@ def cross_sectional_rank(eps: pd.DataFrame, min_names: int = 20) -> pd.DataFrame
     return ranked
 
 
-def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20,
-                           clip: float | None = XS_CLIP_LABEL) -> pd.DataFrame:
+def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20, clip: float | None = XS_CLIP_LABEL) -> pd.DataFrame:
     """Cross-sectional z-score per day. Residual returns are fat-tailed, so the
     z-score is winsorized to +-`clip` (default 3): without it a handful of
     extreme names dominate an RMSE loss and make the target hard/unstable to fit.
@@ -162,9 +168,9 @@ def cross_sectional_zscore(eps: pd.DataFrame, min_names: int = 20,
 
 def _apply_label(eps: pd.DataFrame, label: str, min_names: int) -> pd.DataFrame:
     """Turn the raw factor-neutral residual into a modelling target.
-      rank    -> cross-sectional percentile in [0,1] (robust, scale-free)
-      zscore  -> cross-sectional z-score (mean 0, std 1 per day; keeps magnitude)
-      epsilon -> the raw residual itself
+    rank    -> cross-sectional percentile in [0,1] (robust, scale-free)
+    zscore  -> cross-sectional z-score (mean 0, std 1 per day; keeps magnitude)
+    epsilon -> the raw residual itself
     """
     if label == "rank":
         return cross_sectional_rank(eps, min_names)
@@ -233,7 +239,7 @@ def _neutralizing_design(
         frames.append(momentum_characteristic(close_total, seams=seams))
 
     if market_cap is not None:
-        frames.append(np.log(market_cap))     # sign is irrelevant to a projection
+        frames.append(cast(pd.DataFrame, np.log(market_cap)))  # sign is irrelevant to a projection
 
     # zero_sd_to_nan: on a day with no dispersion the loading is undefined, so this yields NaN
     # (-> 0 below) rather than the fabricated +/-clip an unguarded z would produce.
@@ -241,21 +247,19 @@ def _neutralizing_design(
     # ticker with no filing history is absent, not NaN), while `xs_project_out` runs its own
     # `reindex_like` AFTER this fill -- so an unaligned exposure would reach `np.linalg.lstsq`
     # carrying NaN and raise. This reindex is what makes the later one harmless.
-    exposures = [xs_z(f, clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True)
-                 .reindex_like(close_total).fillna(0.0)
-                 for f in frames if f is not None]
+    active = close_total.notna()
+    exposures = [
+        xs_z(f.where(active), clip=XS_CLIP_CHARACTERISTIC, zero_sd_to_nan=True).reindex_like(close_total).fillna(0.0) for f in frames if f is not None
+    ]
 
     # industry_group is NESTED in sector, so industry indicators span both levels; fall back to
     # sector when only that level is supplied.
-    groups = ((sector_groups or {}).get("industry_group")
-              or (sector_groups or {}).get("sector"))
+    groups = (sector_groups or {}).get("industry_group") or (sector_groups or {}).get("sector")
     dummies = xs_group_dummies(groups, close_total.columns) if groups else None
     return exposures, dummies
 
 
-def _neutral_label(eps: pd.DataFrame, label: str, min_names: int,
-                   exposures: list[pd.DataFrame],
-                   dummies: pd.DataFrame | None) -> pd.DataFrame:
+def _neutral_label(eps: pd.DataFrame, label: str, min_names: int, exposures: list[pd.DataFrame], dummies: pd.DataFrame | None) -> pd.DataFrame:
     """Transform -> project the exposures out -> transform again.
 
     The projection sits on the TRANSFORMED label, not on epsilon, and that ordering is the
@@ -283,13 +287,11 @@ def _neutral_label(eps: pd.DataFrame, label: str, min_names: int,
     absorbed by its own indicator column and ships as an exact 0.0.
     """
     y = _apply_label(eps, label, min_names)
-    y = xs_project_out(y, exposures, dummies,
-                       min_group_size=MIN_GROUP_SIZE_FOR_NEUTRALIZATION)
+    y = xs_project_out(y, exposures, dummies, min_group_size=MIN_GROUP_SIZE_FOR_NEUTRALIZATION)
     return _apply_label(y, label, min_names)
 
 
-def vol_standardize_epsilon(eps: pd.DataFrame, stock_ret: pd.DataFrame, horizon: int,
-                            window: int = 63) -> pd.DataFrame:
+def vol_standardize_epsilon(eps: pd.DataFrame, stock_ret: pd.DataFrame, horizon: int, window: int = 63) -> pd.DataFrame:
     """Epsilon per unit of the name's OWN trailing risk, i.e. an information ratio.
 
     Without it the label's magnitude is a volatility artefact -- sd(epsilon) correlates +0.90
@@ -311,10 +313,11 @@ def build_targets_multi(
     neutralize_momentum: bool = True,
     sector_groups: dict[str, dict[str, str]] | None = None,
     sector_excess: pd.DataFrame | None = None,
-    stock_ret: pd.DataFrame | None = None,   # REQUIRED -- every label is built from it
+    stock_ret: pd.DataFrame | None = None,  # REQUIRED -- every label is built from it
     vol_standardize: bool = False,
     market_cap: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> dict:
     """Compute the (expensive) factor-neutral residual ONCE per horizon and emit
     SEVERAL target versions from it, so the cube can store e.g. both the rank and the
@@ -365,18 +368,27 @@ def build_targets_multi(
         raise ValueError(
             "build_targets_multi needs `stock_ret` (daily TOTAL returns): every label is a "
             "forward COMPOUNDED return now, not a close-to-close price ratio. Passing prices "
-            "alone would rebuild the exact defect this signature exists to prevent.")
+            "alone would rebuild the exact defect this signature exists to prevent."
+        )
+
+    if availability is not None:
+        availability = availability.reindex_like(close_total).fillna(False).astype(bool)
+        close_total = close_total.where(availability)
+        stock_ret = stock_ret.reindex_like(close_total).where(availability)
+        if market_cap is not None:
+            market_cap = market_cap.reindex_like(close_total).where(availability)
+        if sector_excess is not None:
+            sector_excess = sector_excess.reindex_like(close_total).where(availability)
 
     # horizon-independent, so it is built ONCE for all (horizon, label) pairs
-    exposures, dummies = _neutralizing_design(close_total, betas, sector_groups,
-                                              neutralize_momentum, market_cap, seams)
+    exposures, dummies = _neutralizing_design(close_total, betas, sector_groups, neutralize_momentum, market_cap, seams)
     out: dict[int, dict[str, pd.DataFrame]] = {}
     for h in horizons:
-        eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h,
-                              sector_excess=sector_excess)
+        eps = compute_epsilon(stock_ret, betas, factor_panel, macro_cols, h, sector_excess=sector_excess)
+        if availability is not None:
+            eps = eps.where(availability)
         if vol_standardize:
             # TODO: check if not needed to standardize by the idio vol, not the stock_ret
             eps = vol_standardize_epsilon(eps, stock_ret, h)
-        out[h] = {lab: _neutral_label(eps, lab, min_names, exposures, dummies)
-                  for lab in labels}
+        out[h] = {lab: _neutral_label(eps, lab, min_names, exposures, dummies) for lab in labels}
     return out

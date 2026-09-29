@@ -31,6 +31,17 @@ from src.data_aggregate.utils.common.xs import (
 )
 
 
+def mask_to_availability(
+    frame: pd.DataFrame,
+    availability: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Mask a daily ticker frame to current own-price availability."""
+    if availability is None or frame.empty:
+        return frame
+    active = availability.reindex(index=frame.index, columns=frame.columns, fill_value=False)
+    return frame.where(active)
+
+
 def peer_relative(
     field_df: pd.DataFrame,
     peer_dict: dict,
@@ -172,6 +183,7 @@ def build_peer_relative_panel(
     history_min_periods: int = HIST_MIN_PERIODS,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
+    availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
@@ -229,6 +241,7 @@ def build_peer_relative_panel(
         # the moment a single None reaches them. Coercion is the correct semantics here
         # (absent = NaN), not a workaround, and a no-op on already-float frames.
         fdf = fdf.apply(pd.to_numeric, errors="coerce")
+        fdf = mask_to_availability(fdf, availability)
         if fdf.empty or not fdf.notna().any().any():
             return []
         output = fdf if output_since is None else fdf.loc[fdf.index >= pd.Timestamp(output_since)]

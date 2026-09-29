@@ -72,7 +72,7 @@ def test_pit_accessors_are_bit_identical_to_the_free_functions(inputs):
     pd.testing.assert_frame_equal(pit.applied("totalRevenue", "yoy4", yoy), fiscal_apply_to_daily(fund, "totalRevenue", idx, yoy), check_exact=True)
 
     print("\n=== SANITY CHECK: PitFrames == the free point-in-time functions ===")
-    print(f"  {len(FIELDS)} fields + market_cap + change(pct/diff) + applied() over " f"{len(fund)} filings x {len(idx)} trading days")
+    print(f"  {len(FIELDS)} fields + market_cap + change(pct/diff) + applied() over {len(fund)} filings x {len(idx)} trading days")
     print(
         "  CONCLUSION: every accessor is bit-identical (check_exact=True) to the function "
         "it memoizes, so sharing one cache across builders cannot move a number. Validated."
@@ -114,9 +114,9 @@ def test_repeated_access_computes_once(inputs):
     assert calls["pivots"] == len(FIELDS) + 1, f"expected {len(FIELDS)} field pivots + 1 for market_cap, got {calls['pivots']}"
 
     print("\n=== SANITY CHECK: PitFrames computes each frame once ===")
-    print(f"  {stats['accesses']} accesses over {stats['fields']} fields -> " f"{stats['fields']} pivots ({stats['hits']} cache hits)")
+    print(f"  {stats['accesses']} accesses over {stats['fields']} fields -> {stats['fields']} pivots ({stats['hits']} cache hits)")
     print(f"  6 market_cap reads -> {stats['market_cap']} computation")
-    print("  CONCLUSION: the ~7 sharesOutstanding pivots and 6 market-cap computations per " "run collapse to one each. Validated.")
+    print("  CONCLUSION: the ~7 sharesOutstanding pivots and 6 market-cap computations per run collapse to one each. Validated.")
 
 
 def test_cache_refuses_a_different_window(inputs):
@@ -132,7 +132,7 @@ def test_cache_refuses_a_different_window(inputs):
         pit.assert_matches(idx, close.iloc[:, :3])
 
     print("\n=== SANITY CHECK: PitFrames rejects a foreign window ===")
-    print(f"  built on {len(idx)} days; assert_matches({len(idx[500:])} days) raises, " "as does a re-shaped close frame")
+    print(f"  built on {len(idx)} days; assert_matches({len(idx[500:])} days) raises, as does a re-shaped close frame")
     print("  CONCLUSION: a cache cannot silently leak across warm-up windows. Validated.")
 
 

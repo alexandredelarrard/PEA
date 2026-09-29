@@ -14,20 +14,28 @@ test_llm_extractor_real_apple       — live EDGAR + OpenAI (skips without OPENA
 test_fetch_def14a_llm_to_postgres   — fetcher drives the schema-constrained LLM and upserts to DB
 test_fetch_def14a_llm_incremental   — per-ticker year-incremental cutoff (skips without DB)
 """
+
 from __future__ import annotations
 
 import json
 import os
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.schemas.def14a_schema import (
-    Def14AExtract,
-    DirectorInfo,
-    ExecutiveCompensation,
-    GovernanceProfile,
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.schemas.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
@@ -42,6 +50,11 @@ from src.data_extract.utils.structure.def14a.carve import (
 )
 from src.data_extract.utils.structure.def14a.flatten import _flatten
 
+Def14AExtract: Any = _Def14AExtract
+DirectorInfo: Any = _DirectorInfo
+ExecutiveCompensation: Any = _ExecutiveCompensation
+GovernanceProfile: Any = _GovernanceProfile
+
 # --------------------------------------------------------------------------- #
 # Synthetic DEF 14A fixture — exercises the tricky section-anchoring cases      #
 # (CD&A prose before the real SCT; a "realized / Total Cash" pay table before   #
@@ -49,7 +62,7 @@ from src.data_extract.utils.structure.def14a.flatten import _flatten
 #  say-on-pay result; a pay-ratio sentence). Padded > 5k chars so the prose,    #
 #  anchor-only CORPORATE GOVERNANCE section clears the TOC-skip floor.          #
 # --------------------------------------------------------------------------- #
-_FILLER = ("The Board is committed to strong governance and long-term value creation. " * 12)
+_FILLER = "The Board is committed to strong governance and long-term value creation. " * 12
 
 _SYNTHETIC = f"""
 ACME CORPORATION — 2024 PROXY STATEMENT
@@ -102,42 +115,62 @@ Audit Fees billed by Ernst & Young LLP were $5,000,000 for the year. {_FILLER}
 """
 
 
-def _make_expected() -> Def14AExtract:
+def _make_expected() -> Any:
     """A fully-populated extract matching the current (trimmed) schema."""
     return Def14AExtract(
         company_name="ACME Corporation",
         fiscal_year=2023,
-        ceo_name="Alice Johnson", ceo_age=58,
-        ceo_since_year=2019, ceo_is_founder=True, ceo_is_board_chair=True,
+        ceo_name="Alice Johnson",
+        ceo_age=58,
+        ceo_since_year=2019,
+        ceo_is_founder=True,
+        ceo_is_board_chair=True,
         directors=[
-            DirectorInfo(name="Alice Johnson", age=58, tenure_years=5.0, is_independent=False,
-                         gender="female", other_public_company_boards=1),
-            DirectorInfo(name="Robert Williams", age=64, tenure_years=14.0, is_independent=True,
-                         gender="male", other_public_company_boards=2),
-            DirectorInfo(name="Mary Chen", age=52, tenure_years=9.0, is_independent=True,
-                         gender="female", other_public_company_boards=0),
+            DirectorInfo(name="Alice Johnson", age=58, tenure_years=5.0, is_independent=False, gender="female", other_public_company_boards=1),
+            DirectorInfo(name="Robert Williams", age=64, tenure_years=14.0, is_independent=True, gender="male", other_public_company_boards=2),
+            DirectorInfo(name="Mary Chen", age=52, tenure_years=9.0, is_independent=True, gender="female", other_public_company_boards=0),
         ],
         compensation=[
             ExecutiveCompensation(
-                name="Alice Johnson", title="Chief Executive Officer", fiscal_year=2023,
-                salary_usd=850_000, bonus_usd=500_000, stock_awards_usd=3_200_000,
-                option_awards_usd=250_000, non_equity_incentive_usd=100_000,
-                all_other_comp_usd=50_000, total_compensation_usd=4_900_000,
+                name="Alice Johnson",
+                title="Chief Executive Officer",
+                fiscal_year=2023,
+                salary_usd=850_000,
+                bonus_usd=500_000,
+                stock_awards_usd=3_200_000,
+                option_awards_usd=250_000,
+                non_equity_incentive_usd=100_000,
+                all_other_comp_usd=50_000,
+                total_compensation_usd=4_900_000,
             ),
             ExecutiveCompensation(
-                name="James Thompson", title="Chief Financial Officer", fiscal_year=2023,
-                salary_usd=620_000, bonus_usd=280_000,
-                stock_awards_usd=1_800_000, total_compensation_usd=2_900_000,
+                name="James Thompson",
+                title="Chief Financial Officer",
+                fiscal_year=2023,
+                salary_usd=620_000,
+                bonus_usd=280_000,
+                stock_awards_usd=1_800_000,
+                total_compensation_usd=2_900_000,
             ),
         ],
         governance=GovernanceProfile(
-            board_size=3, n_independent_directors=2, n_women_directors=2,
-            independent_chair=False, ceo_is_board_chair=True, lead_independent_director=True,
-            classified_board=False, dual_class_shares=False, poison_pill=False,
+            board_size=3,
+            n_independent_directors=2,
+            n_women_directors=2,
+            independent_chair=False,
+            ceo_is_board_chair=True,
+            lead_independent_director=True,
+            classified_board=False,
+            dual_class_shares=False,
+            poison_pill=False,
             majority_voting_for_directors=True,
-            say_on_pay_support_pct=0.91, ceo_pay_ratio=250.0,
-            median_employee_pay_usd=60_000.0, auditor_fees_usd=5_000_000.0,
-            insider_ownership_pct=0.084, ceo_ownership_pct=0.082, n_five_percent_holders=1,
+            say_on_pay_support_pct=0.91,
+            ceo_pay_ratio=250.0,
+            median_employee_pay_usd=60_000.0,
+            auditor_fees_usd=5_000_000.0,
+            insider_ownership_pct=0.084,
+            ceo_ownership_pct=0.082,
+            n_five_percent_holders=1,
         ),
     )
 
@@ -161,9 +194,11 @@ def test_def14a_schema_roundtrip():
 
     print("\n=== SANITY CHECK: Def14AExtract schema roundtrip ===")
     print(f"  company={roundtrip.company_name}  directors={[d.name for d in roundtrip.directors]}")
-    print(f"  CEO {roundtrip.compensation[0].name}: salary=${roundtrip.compensation[0].salary_usd:,.0f} "
-          f"total=${roundtrip.compensation[0].total_compensation_usd:,.0f}; "
-          f"insider_own={roundtrip.governance.insider_ownership_pct:.3f}. Validated.")
+    print(
+        f"  CEO {roundtrip.compensation[0].name}: salary=${roundtrip.compensation[0].salary_usd:,.0f} "
+        f"total=${roundtrip.compensation[0].total_compensation_usd:,.0f}; "
+        f"insider_own={roundtrip.governance.insider_ownership_pct:.3f}. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -183,12 +218,11 @@ def test_compensation_anchor_skips_noise():
     # the match lands at the real SCT header, after both decoys
     assert m.start() > realized_pos > cda_pos
     assert abs(m.start() - sct_pos) < 60, (m.start(), sct_pos)
-    window = _SYNTHETIC[m.start(): m.start() + 200]
+    window = _SYNTHETIC[m.start() : m.start() + 200]
     assert "Option Awards" in window and "Total Cash" not in window
 
     print("\n=== SANITY CHECK: SCT anchor skips CD&A + realized-pay ===")
-    print(f"  CD&A @{cda_pos}, realized/Total-Cash @{realized_pos}, real SCT @{sct_pos}; "
-          f"anchor landed @{m.start()} (on the SCT header). Validated.")
+    print(f"  CD&A @{cda_pos}, realized/Total-Cash @{realized_pos}, real SCT @{sct_pos}; anchor landed @{m.start()} (on the SCT header). Validated.")
 
 
 def test_sayonpay_anchor_matches_approval():
@@ -208,11 +242,10 @@ def test_payratio_and_ownership_anchors():
     pr = _PAYRATIO_CONTENT_RE.search(_SYNTHETIC)
     ow = _OWNERSHIP_CONTENT_RE.search(_SYNTHETIC)
     assert pr is not None and ow is not None
-    assert "median employee" in _SYNTHETIC[pr.start(): pr.start() + 40].lower() \
-        or "ratio of the" in _SYNTHETIC[pr.start(): pr.start() + 40].lower()
+    assert "median employee" in _SYNTHETIC[pr.start() : pr.start() + 40].lower() or "ratio of the" in _SYNTHETIC[pr.start() : pr.start() + 40].lower()
     # the ownership anchor lands in the beneficial-ownership block; the "as a group"
     # insider row sits a few lines below it (well inside the slice window)
-    ow_window = _SYNTHETIC[ow.start(): ow.start() + 400].lower()
+    ow_window = _SYNTHETIC[ow.start() : ow.start() + 400].lower()
     assert "beneficial" in ow_window and "as a group" in ow_window
 
     print("\n=== SANITY CHECK: pay-ratio & ownership anchors ===")
@@ -228,23 +261,25 @@ def test_def14a_sections_extraction():
     the table classifier came up empty. That path is not hypothetical: 12 of 64 real filings
     disclose their audit fees in prose and land here."""
     focused = prepare_def14a_sections("", _SYNTHETIC)
-    for label in ("DIRECTOR NOMINEES", "EXECUTIVE COMPENSATION", "SECURITY OWNERSHIP",
-                  "PAY RATIO & MEDIAN PAY", "SAY ON PAY", "AUDITOR FEES"):
+    for label in ("DIRECTOR NOMINEES", "EXECUTIVE COMPENSATION", "SECURITY OWNERSHIP", "PAY RATIO & MEDIAN PAY", "SAY ON PAY", "AUDITOR FEES"):
         assert f"=== {label} ===" in focused, f"missing section {label}"
     # target data present
-    assert "4,900,000" in focused                          # CEO SCT total (real table)
-    assert "as a group" in focused and "8.4%" in focused   # insider ownership
-    assert "250 to 1" in focused                           # pay ratio
-    assert "91% approval" in focused                       # say-on-pay
-    assert "$5,000,000" in focused                         # auditor fees
+    assert "4,900,000" in focused  # CEO SCT total (real table)
+    assert "as a group" in focused and "8.4%" in focused  # insider ownership
+    assert "250 to 1" in focused  # pay ratio
+    assert "91% approval" in focused  # say-on-pay
+    assert "$5,000,000" in focused  # auditor fees
 
     print("\n=== SANITY CHECK: prepare_def14a_sections ===")
-    print(f"  focused={len(focused):,} chars (orig {len(_SYNTHETIC):,}); all sections + "
-          f"CEO total / ownership / pay-ratio / say-on-pay / auditor present. Validated.")
+    print(
+        f"  focused={len(focused):,} chars (orig {len(_SYNTHETIC):,}); all sections + "
+        f"CEO total / ownership / pay-ratio / say-on-pay / auditor present. Validated."
+    )
 
 
 def _section_body(focused: str, label: str) -> str:
     import re
+
     parts = re.split(r"\n\n=== (.+?) ===\n", focused)
     for i in range(1, len(parts), 2):
         if parts[i] == label:
@@ -255,22 +290,23 @@ def _section_body(focused: str, label: str) -> str:
 def test_densest_window_lands_on_table_not_prose():
     """_densest_window ignores isolated prose row-tokens and anchors on the dense
     cluster (the table) — the fix for director bios in matrix/table layouts."""
-    prose = "The company was founded in 1998. " * 30       # noise, no row tokens
+    prose = "The company was founded in 1998. " * 30  # noise, no row tokens
     lone = "An independent director since 2005 chairs the audit committee. "  # 1 lone token
-    table = ("Name Age Director Since\n"
-             "Alice Johnson, 58 2019\nRobert Williams, 64 2010\n"
-             "Mary Chen, 52 2015\nDavid Park, 47 2020\n")     # dense cluster of tokens
+    table = (
+        "Name Age Director Since\n"
+        "Alice Johnson, 58 2019\nRobert Williams, 64 2010\n"
+        "Mary Chen, 52 2015\nDavid Park, 47 2020\n"
+    )  # dense cluster of tokens
     text = prose + lone + prose + table + prose
     pos = _densest_window(text, _DIRECTOR_ROW_RE, 4000)
     assert pos != -1
-    window = text[pos: pos + 4000]
+    window = text[pos : pos + 4000]
     # the window must contain the table (>=4 director rows), not the lone prose token
     assert len(_DIRECTOR_ROW_RE.findall(window)) >= 4
     assert "Alice Johnson" in window and "David Park" in window
 
     print("\n=== SANITY CHECK: densest-window anchoring ===")
-    print(f"  ignored lone 'director since 2005' prose; landed on the 5-row table "
-          f"({len(_DIRECTOR_ROW_RE.findall(window))} row tokens). Validated.")
+    print(f"  ignored lone 'director since 2005' prose; landed on the 5-row table ({len(_DIRECTOR_ROW_RE.findall(window))} row tokens). Validated.")
 
 
 def test_a_denser_back_half_decoy_loses_to_the_positional_ceiling():
@@ -283,25 +319,27 @@ def test_a_denser_back_half_decoy_loses_to_the_positional_ceiling():
     only POSITION does. The negative control is the first assertion: without the ceiling the
     decoy genuinely wins, so this test would pass vacuously if the ceiling were removed.
     """
-    roster = ("Alice Johnson, 58 Director Since 2019\nRobert Williams, 64 Director Since 2010\n"
-              "Mary Chen, 52 Director Since 2015\n")
-    decoy = ("the assumed retirement age is Age 65 Director Since Age 62 Age 58 "
-             "Director Since Age 60 Age 55 Director Since Age 61 ")
-    filler = "The company was founded in 1998 and operates globally. " * 400   # no row tokens
+    roster = "Alice Johnson, 58 Director Since 2019\nRobert Williams, 64 Director Since 2010\nMary Chen, 52 Director Since 2015\n"
+    decoy = "the assumed retirement age is Age 65 Director Since Age 62 Age 58 Director Since Age 60 Age 55 Director Since Age 61 "
+    filler = "The company was founded in 1998 and operates globally. " * 400  # no row tokens
     text = filler + roster + filler * 3 + decoy * 3 + filler
 
     uncapped = _densest_window(text, _DIRECTOR_ROW_RE, 4_000)
     capped = _densest_window(text, _DIRECTOR_ROW_RE, 4_000, max_frac=_DIRECTOR_MAX_FRAC)
-    assert uncapped / len(text) > _DIRECTOR_MAX_FRAC          # the decoy wins without the cap
-    assert "Alice Johnson" not in text[uncapped: uncapped + 4_000]
-    assert "Alice Johnson" in text[capped: capped + 4_000]
-    assert "Mary Chen" in text[capped: capped + 4_000]
+    assert uncapped / len(text) > _DIRECTOR_MAX_FRAC  # the decoy wins without the cap
+    assert "Alice Johnson" not in text[uncapped : uncapped + 4_000]
+    assert "Alice Johnson" in text[capped : capped + 4_000]
+    assert "Mary Chen" in text[capped : capped + 4_000]
 
     print("\n=== SANITY CHECK: director-window positional ceiling ===")
-    print(f"  uncapped window at {uncapped / len(text):.1%} of the doc -> the back-half decoy, "
-          f"no roster; capped at {capped / len(text):.1%} -> the 3-director roster.")
-    print(f"  On real filings the ceiling ({_DIRECTOR_MAX_FRAC:.0%}) moves EOG (70.0% -> 18.9%, "
-          f"1 -> 9 of 10 directors in-block) and T (53.6% -> the content anchor, 0 -> 4 of 11),")
+    print(
+        f"  uncapped window at {uncapped / len(text):.1%} of the doc -> the back-half decoy, "
+        f"no roster; capped at {capped / len(text):.1%} -> the 3-director roster."
+    )
+    print(
+        f"  On real filings the ceiling ({_DIRECTOR_MAX_FRAC:.0%}) moves EOG (70.0% -> 18.9%, "
+        f"1 -> 9 of 10 directors in-block) and T (53.6% -> the content anchor, 0 -> 4 of 11),"
+    )
     print("  and no other filing of the 22: 191 -> 203 directors reached. Validated.")
 
 
@@ -314,14 +352,16 @@ def test_tabular_sections_capture_rows_in_synthetic():
     directors = _section_body(focused, "DIRECTOR NOMINEES")
     ownership = _section_body(focused, "SECURITY OWNERSHIP")
 
-    assert len(_DIRECTOR_ROW_RE.findall(directors)) >= 3        # Johnson 58, Williams 64, Chen 52
+    assert len(_DIRECTOR_ROW_RE.findall(directors)) >= 3  # Johnson 58, Williams 64, Chen 52
     assert "Alice Johnson" in directors
     own_rows = _OWNERSHIP_ROW_RE.findall(ownership)
     assert len(own_rows) >= 3 and "as a group" in ownership.lower()
 
     print("\n=== SANITY CHECK: tabular slices carry rows ===")
-    print(f"  DIRECTOR slice: {len(_DIRECTOR_ROW_RE.findall(directors))} director rows; "
-          f"OWNERSHIP slice: {len(own_rows)} rows incl 'as a group'. Validated.")
+    print(
+        f"  DIRECTOR slice: {len(_DIRECTOR_ROW_RE.findall(directors))} director rows; "
+        f"OWNERSHIP slice: {len(own_rows)} rows incl 'as a group'. Validated."
+    )
 
 
 def _stub_extractor_cls(captured: dict):
@@ -340,17 +380,15 @@ def _stub_extractor_cls(captured: dict):
             captured["schema"] = schema
             captured["system"] = system
             captured.setdefault("payloads", []).append(user)
-            return _make_expected(), {"input_tokens": 1, "output_tokens": 1,
-                                      "cached_input_tokens": 0}
+            return _make_expected(), {"input_tokens": 1, "output_tokens": 1, "cached_input_tokens": 0}
 
     class _Stubbed(_Real):
-        def initialize_client(self, methode=None, key_index=None):
+        def initialize_client(self, methode=None, key_index=None) -> Any:
             return _StubProvider()
 
         def run_extraction(self, tasks, flatten=None, group_key=None):
             tasks = list(tasks)
-            captured.setdefault("extracted", []).extend(
-                t.meta["filing"]["accession_number"] for t in tasks)
+            captured.setdefault("extracted", []).extend(cast(Any, t.meta)["filing"]["accession_number"] for t in tasks)
             return super().run_extraction(tasks, flatten=flatten, group_key=group_key)
 
     return _Stubbed
@@ -385,15 +423,17 @@ def test_llm_extractor_mock():
     # the tailored prompt now lives in prompt_templates/def14a_system_prompt.md
     assert "=== LABEL ===" in call_kw["instructions"]
     assert "SUMMARY COMPENSATION TABLE" in call_kw["instructions"]
-    assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])   # payload LAST
+    assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])  # payload LAST
     assert call_kw["prompt_cache_key"] == "gpt-5-mini:Def14AExtract"
     # gpt-5-mini is a reasoning model: it 400s on these
     assert "temperature" not in call_kw and "seed" not in call_kw
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
-    print(f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
-          f"payload last, prompt_cache_key={call_kw['prompt_cache_key']!r}, and no "
-          "temperature/seed. Validated.")
+    print(
+        f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
+        f"payload last, prompt_cache_key={call_kw['prompt_cache_key']!r}, and no "
+        "temperature/seed. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -402,9 +442,7 @@ def test_llm_extractor_mock():
 def test_flatten_surfaces_all_signals():
     """_flatten emits ceo_age and every governance / comp / ownership column with the
     right values, sourcing board composition & ownership from the governance summary."""
-    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
-                        "period_of_report": "2023-12-31",
-                        "accession_number": "0000-24-000001"})
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"), "period_of_report": "2023-12-31", "accession_number": "0000-24-000001"})
     row = _flatten("ACME", filing, _make_expected())
 
     # CEO
@@ -435,28 +473,29 @@ def test_flatten_surfaces_all_signals():
     # DELIBERATE addition -- it was the worst column in the retired edgar table at 2.05% fill
     # while the firm name is present in 98% of documents. The technology fields took its place
     # on the dropped list: they were an opinion, not an extraction.
-    for gone in ("n_financial_experts", "n_officers", "n_technology_directors",
-                 "pct_technology_directors", "technology_committee"):
+    for gone in ("n_financial_experts", "n_officers", "n_technology_directors", "pct_technology_directors", "technology_committee"):
         assert gone not in row, f"{gone} reappeared in the flatten"
 
     print("\n=== SANITY CHECK: _flatten expanded signals ===")
-    print(f"  ceo_age={row['ceo_age']} pay_ratio={row['ceo_pay_ratio']:.0f}:1 "
-          f"equity_pay={row['ceo_equity_pay_pct']:.2f} say_on_pay={row['say_on_pay_support_pct']:.2f}")
-    print(f"  board: size={row['board_size']} %indep={row['pct_independent_directors']:.2f} "
-          f"%female={row['pct_female_directors']:.2f}")
-    print(f"  ownership: insider={row['insider_ownership_pct']:.3f} ceo={row['ceo_ownership_pct']:.3f} "
-          f"5%+={row['n_five_percent_holders']}; auditor_fees=${row['auditor_fees']:,.0f}. Validated.")
+    print(
+        f"  ceo_age={row['ceo_age']} pay_ratio={row['ceo_pay_ratio']:.0f}:1 "
+        f"equity_pay={row['ceo_equity_pay_pct']:.2f} say_on_pay={row['say_on_pay_support_pct']:.2f}"
+    )
+    print(f"  board: size={row['board_size']} %indep={row['pct_independent_directors']:.2f} %female={row['pct_female_directors']:.2f}")
+    print(
+        f"  ownership: insider={row['insider_ownership_pct']:.3f} ceo={row['ceo_ownership_pct']:.3f} "
+        f"5%+={row['n_five_percent_holders']}; auditor_fees=${row['auditor_fees']:,.0f}. Validated."
+    )
 
 
 def test_flatten_ceo_age_fallback():
     """When ceo_age isn't given top-level, _flatten recovers it from the CEO's entry
     in the directors list (the CEO is a director nominee)."""
-    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"),
-                        "period_of_report": None, "accession_number": "acc-x"})
+    filing = pd.Series({"filing_date": pd.Timestamp("2024-04-01"), "period_of_report": None, "accession_number": "acc-x"})
     extract = Def14AExtract(
-        company_name="FallbackCo", ceo_name="Bob Stone",   # ceo_age omitted
-        directors=[DirectorInfo(name="Bob Stone", age=61, is_independent=False),
-                   DirectorInfo(name="Jane Roe", age=55, is_independent=True)],
+        company_name="FallbackCo",
+        ceo_name="Bob Stone",  # ceo_age omitted
+        directors=[DirectorInfo(name="Bob Stone", age=61, is_independent=False), DirectorInfo(name="Jane Roe", age=55, is_independent=True)],
     )
     row = _flatten("FBK", filing, extract)
     assert row["ceo_age"] == 61
@@ -480,7 +519,7 @@ def test_llm_extractor_real_apple():
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)
-    model = ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
+    ctx.config.gpt.llm_model[ctx.config.gpt.default_api]
 
     filings = list_filings(ctx, "0000320193", ["DEF 14A"], years=2, company_name="Apple Inc.")
     if filings.empty:
@@ -489,80 +528,85 @@ def test_llm_extractor_real_apple():
     latest = filings.sort_values("filing_date").iloc[-1]
     raw_html = sec_get(ctx, latest["doc_url"]).text
     focused = prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    result = LLMExtractor(ctx, config, action="def14a").extract(Def14AExtract, focused,
-                                                                action="def14a")
+    result = LLMExtractor(ctx, config, action="def14a").extract(Def14AExtract, focused, action="def14a")
     row = _flatten("AAPL", latest, result)
 
     assert len(result.directors) >= 5
-    ceo = next((c for c in result.compensation
-                if "chief executive" in (c.title or "").lower()), None)
+    ceo = next((c for c in result.compensation if "chief executive" in (c.title or "").lower()), None)
     assert ceo is not None and (ceo.stock_awards_usd or 0) > 0, "CEO SCT breakdown not extracted"
     assert row["ceo_total_comp"] and row["ceo_pay_ratio"]
 
     print("\n=== SANITY CHECK: Real DEF 14A extraction (Apple) ===")
     print(f"  {result.company_name} FY{result.fiscal_year}; focused={len(focused):,} chars")
-    print(f"  CEO {ceo.name}: salary=${(ceo.salary_usd or 0):,.0f} stock=${(ceo.stock_awards_usd or 0):,.0f} "
-          f"total=${row['ceo_total_comp']:,.0f}; pay_ratio={row['ceo_pay_ratio']:.0f}:1")
-    print(f"  board size={row['board_size']} %indep={row['pct_independent_directors']} "
-          f"say_on_pay={row['say_on_pay_support_pct']}. Validated.")
+    print(
+        f"  CEO {ceo.name}: salary=${(ceo.salary_usd or 0):,.0f} stock=${(ceo.stock_awards_usd or 0):,.0f} "
+        f"total=${row['ceo_total_comp']:,.0f}; pay_ratio={row['ceo_pay_ratio']:.0f}:1"
+    )
+    print(f"  board size={row['board_size']} %indep={row['pct_independent_directors']} say_on_pay={row['say_on_pay_support_pct']}. Validated.")
 
 
 # --------------------------------------------------------------------------- #
 # fetch_def14a_llm(): schema-constrained LLM -> Postgres def14a_llm table       #
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not os.getenv("DATABASE_URL"),
-                    reason="DATABASE_URL not set — needs the Postgres DB")
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
 def test_fetch_def14a_llm_to_postgres(monkeypatch):
     """End-to-end (network + LLM mocked): the fetcher (1) constrains the LLM to the
     Def14AExtract schema and (2) UPSERTS the flattened row into Postgres."""
     from sqlalchemy import text
+
     from src.context import get_config_context
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     try:
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         ctx.store.exists("def14a_llm")
-    except Exception as e:                                   # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"DB not reachable: {e}")
 
-    TICKER, ACC = "ZZTEST", "9999999999-99-999999"
+    ticker, acc = "ZZTEST", "9999999999-99-999999"
 
     def _cleanup():
         if ctx.store.exists("def14a_llm"):
             with ctx.store.engine.begin() as c:
-                c.execute(text('DELETE FROM def14a_llm WHERE ticker = :t'), {"t": TICKER})
+                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
 
     _cleanup()
     try:
         captured: dict = {}
-        _FakeExtractor = _stub_extractor_cls(captured)       # no OPENAI key needed
+        _fakeextractor = _stub_extractor_cls(captured)  # no OPENAI key needed
 
-        filings = pd.DataFrame([{
-            "accession_number": ACC, "doc_url": "http://example/def14a.htm",
-            "filing_date": pd.Timestamp("2024-04-01"),
-            "period_of_report": "2023-12-31", "form": "DEF 14A",
-        }])
+        filings = pd.DataFrame(
+            [
+                {
+                    "accession_number": acc,
+                    "doc_url": "http://example/def14a.htm",
+                    "filing_date": pd.Timestamp("2024-04-01"),
+                    "period_of_report": "2023-12-31",
+                    "form": "DEF 14A",
+                }
+            ]
+        )
 
         class _Resp:
             text = "<html>proxy statement</html>"
 
-        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
-            {"ticker": [TICKER], "cik": ["0000000000"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
 
         assert captured["schema"] is Def14AExtract, captured
-        assert "SUMMARY COMPENSATION TABLE" in captured["system"]   # the .md prompt is used
+        assert "SUMMARY COMPENSATION TABLE" in captured["system"]  # the .md prompt is used
 
         back = ctx.store.load("def14a_llm")
-        row = back[back["ticker"] == TICKER]
+        assert back is not None
+        row = back[back["ticker"] == ticker]
         assert len(row) == 1, "row not found in def14a_llm table"
         r = row.iloc[0]
-        assert r["accession_number"] == ACC
+        assert r["accession_number"] == acc
         assert int(r["n_directors"]) == 3
         assert float(r["ceo_salary"]) == 850_000.0
         assert int(r["ceo_age"]) == 58
@@ -573,83 +617,100 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
 
         print("\n=== SANITY CHECK: DEF 14A LLM -> Postgres ===")
         print(f"  LLM constrained to {captured['schema'].__name__} with tailored prompt.")
-        print(f"  Upserted: ticker={r['ticker']} n_directors={int(r['n_directors'])} "
-              f"ceo_age={int(r['ceo_age'])} ceo_salary=${float(r['ceo_salary']):,.0f} "
-              f"pay_ratio={float(r['ceo_pay_ratio']):.0f}:1 insider_own={float(r['insider_ownership_pct']):.3f}")
+        print(
+            f"  Upserted: ticker={r['ticker']} n_directors={int(r['n_directors'])} "
+            f"ceo_age={int(r['ceo_age'])} ceo_salary=${float(r['ceo_salary']):,.0f} "
+            f"pay_ratio={float(r['ceo_pay_ratio']):.0f}:1 insider_own={float(r['insider_ownership_pct']):.3f}"
+        )
         print("  Persisted to Postgres, NOT parquet. Validated.")
     finally:
         _cleanup()
 
 
-@pytest.mark.skipif(not os.getenv("DATABASE_URL"),
-                    reason="DATABASE_URL not set — needs the Postgres DB")
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
 def test_fetch_def14a_llm_incremental(monkeypatch):
     """Gap-filling per-filing incremental: the FULL window is listed (no `since` cutoff), and only
     filings whose accession is NOT already in the table hit the LLM — so a MISSING year (a hole
     between two present years) is filled while the present ones are never re-extracted."""
     from sqlalchemy import text
+
     from src.context import get_config_context
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     try:
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
         ctx.store.exists("def14a_llm")
-    except Exception as e:                                   # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         pytest.skip(f"DB not reachable: {e}")
 
     # 2022 + 2024 already stored; 2023 is a HOLE in the middle; a NEW 2025 also appears
-    TICKER = "ZZINC"
-    A22, A23, A24, A25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y%100}{y%100}-{y}11" for y in (1, 2, 3, 4))
-    have_years = {"2022": A22, "2024": A24}
-    gap_years = {"2023": A23, "2025": A25}                   # the two MISSING filings to fill
+    ticker = "ZZINC"
+    a22, a23, a24, a25 = (f"{y}{y}{y}{y}{y}{y}{y}{y}{y}{y}-{y % 100}{y % 100}-{y}11" for y in (1, 2, 3, 4))
+    have_years = {"2022": a22, "2024": a24}
+    gap_years = {"2023": a23, "2025": a25}  # the two MISSING filings to fill
 
     def _cleanup():
         if ctx.store.exists("def14a_llm"):
             with ctx.store.engine.begin() as c:
-                c.execute(text('DELETE FROM def14a_llm WHERE ticker = :t'), {"t": TICKER})
+                c.execute(text("DELETE FROM def14a_llm WHERE ticker = :t"), {"t": ticker})
 
     _cleanup()
     try:
         for yr, acc in have_years.items():
-            ctx.store.save(mod.Tables.def14a_llm, mod._prepare_frame(
-                [_seed_row(TICKER, acc, pd.Timestamp(f"{yr}-04-01"))],
-                tuple(mod._NUMERIC_COLS), ["ticker", "accession_number"]))
+            def14a_fetch: Any = mod
+            ctx.store.save(
+                mod.Tables.def14a_llm,
+                def14a_fetch._prepare_frame(
+                    [_seed_row(ticker, acc, pd.Timestamp(f"{yr}-04-01"))],
+                    tuple(def14a_fetch._NUMERIC_COLS),
+                    ["ticker", "accession_number"],
+                ),
+            )
         captured: dict = {"since_seen": [], "extracted": []}
-        _FakeExtractor = _stub_extractor_cls(captured)
+        _fakeextractor = _stub_extractor_cls(captured)
 
         def _fake_list_filings(context, cik, forms, years, company="", since=None):
-            captured["since_seen"].append(since)            # must be None now (full window)
+            captured["since_seen"].append(since)  # must be None now (full window)
             rows = {**have_years, **gap_years}
-            return pd.DataFrame([{
-                "accession_number": acc, "doc_url": f"http://x/{yr}.htm",
-                "filing_date": pd.Timestamp(f"{yr}-04-01"),
-                "period_of_report": f"{int(yr)-1}-12-31", "form": "DEF 14A",
-            } for yr, acc in rows.items()])
+            return pd.DataFrame(
+                [
+                    {
+                        "accession_number": acc,
+                        "doc_url": f"http://x/{yr}.htm",
+                        "filing_date": pd.Timestamp(f"{yr}-04-01"),
+                        "period_of_report": f"{int(yr) - 1}-12-31",
+                        "form": "DEF 14A",
+                    }
+                    for yr, acc in rows.items()
+                ]
+            )
 
         class _Resp:
             text = "<html>proxy</html>"
 
         # which accessions actually reach the LLM is recorded by the stub extractor
-        monkeypatch.setattr(mod, "LLMExtractor", _FakeExtractor)
+        monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame(
-            {"ticker": [TICKER], "cik": ["0000000001"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "company_name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[TICKER])
+        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
 
         # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
         assert captured["since_seen"] == [None]
         assert set(captured["extracted"]) == set(gap_years.values()), captured["extracted"]
         back = ctx.store.load("def14a_llm")
-        accs = set(back[back["ticker"] == TICKER]["accession_number"])
+        assert back is not None
+        accs = set(back[back["ticker"] == ticker]["accession_number"])
         assert accs == set(have_years.values()) | set(gap_years.values()), accs
 
         print("\n=== SANITY CHECK: DEF 14A gap-filling incremental ===")
-        print(f"  had 2022+2024; listed full window (since={captured['since_seen'][0]}); "
-              f"LLM ran ONLY on the missing {sorted(gap_years)} (2023 hole + new 2025), "
-              f"skipped the 2 present. Table now {len(accs)} filings. Validated.")
+        print(
+            f"  had 2022+2024; listed full window (since={captured['since_seen'][0]}); "
+            f"LLM ran ONLY on the missing {sorted(gap_years)} (2023 hole + new 2025), "
+            f"skipped the 2 present. Table now {len(accs)} filings. Validated."
+        )
     finally:
         _cleanup()
 
@@ -657,10 +718,19 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
 def _seed_row(ticker: str, acc: str, as_of: pd.Timestamp) -> dict:
     """Minimal def14a_llm row for seeding the incremental test (current columns only)."""
     return {
-        "ticker": ticker, "as_of": as_of, "period": as_of,
-        "accession_number": acc, "company_name": "Z", "fiscal_year_extract": as_of.year - 1,
-        "n_directors": 3, "board_size": 3, "avg_director_age": 60.0, "avg_board_tenure": 8.0,
+        "ticker": ticker,
+        "as_of": as_of,
+        "period": as_of,
+        "accession_number": acc,
+        "company_name": "Z",
+        "fiscal_year_extract": as_of.year - 1,
+        "n_directors": 3,
+        "board_size": 3,
+        "avg_director_age": 60.0,
+        "avg_board_tenure": 8.0,
         "pct_independent_directors": 0.66,
-        "ceo_name_proxy": "Old CEO", "ceo_salary": 800_000.0, "ceo_total_comp": 1_000_000.0,
+        "ceo_name_proxy": "Old CEO",
+        "ceo_salary": 800_000.0,
+        "ceo_total_comp": 1_000_000.0,
         "def14a_json": "{}",
     }

@@ -217,11 +217,11 @@ def load_manual_lineage(config_dir: str | None = None) -> dict[str, dict]:
         same = [str(c).strip().zfill(10) for c in entry.get("same_entity", [])]
         own = [str(c).strip().zfill(10) for c in entry.get("own_entity", [])]
         if not same and not own:
-            raise ValueError(f"entity_lineage_manual[{key}]: needs `same_entity` or " "`own_entity`; an entry that asserts nothing decides nothing.")
+            raise ValueError(f"entity_lineage_manual[{key}]: needs `same_entity` or `own_entity`; an entry that asserts nothing decides nothing.")
         if len(same) == 1:
-            raise ValueError(f"entity_lineage_manual[{key}]: `same_entity` needs >= 2 CIKs " "-- one CIK is not a relationship. Use `own_entity`.")
+            raise ValueError(f"entity_lineage_manual[{key}]: `same_entity` needs >= 2 CIKs -- one CIK is not a relationship. Use `own_entity`.")
         if not str(entry.get("evidence", "")).strip():
-            raise ValueError(f"entity_lineage_manual[{key}]: empty `evidence`. An " "undocumented verdict is a guess that moves a decade of rows.")
+            raise ValueError(f"entity_lineage_manual[{key}]: empty `evidence`. An undocumented verdict is a guess that moves a decade of rows.")
         out[key] = {"same_entity": same, "own_entity": own, "evidence": str(entry["evidence"]).strip()}
     return out
 
@@ -250,24 +250,28 @@ def derive_owner_sets(cache: Path, ciks: frozenset[str]) -> dict[str, set[str]]:
             if SUBMISSION_MEMBER not in names or OWNER_MEMBER not in names:
                 continue
             with archive.open(names[SUBMISSION_MEMBER]) as handle:
-                sub = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in {"ACCESSION_NUMBER", "ISSUERCIK"})
-            sub.columns = [c.upper() for c in sub.columns]
+                sub = pd.read_csv(
+                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "ISSUERCIK"}
+                )
+            sub.columns = [str(c).upper() for c in sub.columns]
             sub["ISSUERCIK"] = sub["ISSUERCIK"].astype("string").str.strip().str.zfill(10)
             sub = sub[sub["ISSUERCIK"].isin(ciks)]
             if sub.empty:
                 continue
             issuer_of = dict(zip(sub["ACCESSION_NUMBER"].astype(str), sub["ISSUERCIK"], strict=False))
             with archive.open(names[OWNER_MEMBER]) as handle:
-                own = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: c.upper() in {"ACCESSION_NUMBER", "RPTOWNERCIK"})
-            own.columns = [c.upper() for c in own.columns]
+                own = pd.read_csv(
+                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "RPTOWNERCIK"}
+                )
+            own.columns = [str(c).upper() for c in own.columns]
             own["ISSUER"] = own["ACCESSION_NUMBER"].astype(str).map(issuer_of)
             own = own.dropna(subset=["ISSUER", "RPTOWNERCIK"])
             own["RPTOWNERCIK"] = own["RPTOWNERCIK"].astype("string").str.strip().str.zfill(10)
             for issuer, grp in own.groupby("ISSUER", sort=False):
-                owners[issuer].update(grp["RPTOWNERCIK"])
+                owners[str(issuer)].update(grp["RPTOWNERCIK"].astype(str))
             read += len(own)
     logger.info(
-        "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner " "rows matched); %d CIK(s) have no Form 345 owner at all",
+        "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner rows matched); %d CIK(s) have no Form 345 owner at all",
         len(ciks),
         len(zips),
         read,
@@ -308,7 +312,7 @@ def candidate_ciks(tenure: pd.DataFrame, roster: pd.DataFrame) -> tuple[frozense
     seen = tenure[tenure["symbol"].astype(str).isin(universe)]
     by_ticker: dict[str, set[str]] = {t: {roster_cik[t]} for t in roster_cik}
     for symbol, cik in zip(seen["symbol"].astype(str), seen["issuer_cik"].astype(str), strict=False):
-        by_ticker[symbol].add(cik)
+        by_ticker[str(symbol)].add(str(cik))
     return frozenset().union(*by_ticker.values()), by_ticker, roster_cik
 
 
@@ -320,14 +324,16 @@ def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame,
     }
     errors: list[str] = []
     for row in manual.itertuples(index=False):
-        home_cik = roster_cik.get(row.canonical_ticker)
+        canonical_ticker = str(row.canonical_ticker)
+        issuer_cik = str(row.issuer_cik)
+        home_cik = roster_cik.get(canonical_ticker)
         if home_cik is None:
-            errors.append(f"{row.canonical_ticker}: absent from the current roster")
+            errors.append(f"{canonical_ticker}: absent from the current roster")
             continue
         expected = entity_by_cik.get(home_cik, f"E{home_cik}")
-        actual = entity_by_cik.get(row.issuer_cik, f"E{row.issuer_cik}")
+        actual = entity_by_cik.get(issuer_cik, f"E{issuer_cik}")
         if actual != expected:
-            errors.append(f"{row.canonical_ticker}/{row.symbol}/{row.issuer_cik}: " f"manual entity {actual}, roster entity {expected}")
+            errors.append(f"{canonical_ticker}/{row.symbol}/{issuer_cik}: manual entity {actual}, roster entity {expected}")
     if errors:
         raise ManualTenureEntityError("symbol_tenure_manual contains CIKs outside their canonical current entity: " + "; ".join(errors))
 
@@ -340,14 +346,15 @@ def detect_older_cik_rekeys(existing: pd.DataFrame, candidate: pd.DataFrame) -> 
     new["cik"] = new["cik"].astype(str).str.strip().str.zfill(10)
     old_map = dict(zip(old["cik"], old["entity_id"].astype(str), strict=False))
     new_map = dict(zip(new["cik"], new["entity_id"].astype(str), strict=False))
-    new_members = new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).to_dict()
+    new_members = {str(entity): list(members) for entity, members in new.groupby("entity_id")["cik"].agg(lambda values: sorted(set(values))).items()}
     impacts: list[dict[str, object]] = []
-    for old_entity, group in old.groupby("entity_id", sort=True):
+    for old_entity_value, group in old.groupby("entity_id", sort=True):
+        old_entity = str(old_entity_value)
         members = sorted(set(group["cik"]))
         mapped = {new_map[cik] for cik in members if cik in new_map}
         if len(mapped) != 1:
             continue
-        new_entity = next(iter(mapped))
+        new_entity = str(next(iter(mapped)))
         if new_entity == old_entity or not (old_entity.startswith("E") and new_entity.startswith("E")):
             continue
         added = sorted(set(new_members.get(new_entity, [])) - set(old_map))
@@ -457,7 +464,7 @@ def derive_entity_lineage(
             if verdict == "grey":
                 grey.append((ticker, cik, home, shared, jaccard))
             elif verdict == "same" and union.union(cik, home, source=f"owner_overlap[{ticker}]", confidence=jaccard):
-                claim(cik, "owner_overlap", jaccard, f"{ticker}: {shared} reporting owner(s) shared with {home}, " f"jaccard {jaccard:.3f}")
+                claim(cik, "owner_overlap", jaccard, f"{ticker}: {shared} reporting owner(s) shared with {home}, jaccard {jaccard:.3f}")
     if grey:
         listed = "; ".join(f"{t}/{c} (shared={s}, jaccard={j:.3f})" for t, c, _, s, j in grey)
         raise UndecidedGreyBandError(
@@ -513,10 +520,21 @@ def derive_entity_lineage(
     return out, blocked
 
 
-def build_entity_lineage(context: Context, cache: Path, config_dir: str | None = None) -> pd.DataFrame:
-    """Derive and REPLACE `entity_lineage`; returns the frame written."""
+def build_entity_lineage(
+    context: Context,
+    cache: Path,
+    config_dir: str | None = None,
+    *,
+    approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
+) -> pd.DataFrame:
+    """Derive and REPLACE `entity_lineage`; returns the frame written.
+
+    An older CIK changes the natural entity ID. Such a write stays fail-closed unless every
+    observed ``(old_entity_id, new_entity_id)`` pair is acknowledged exactly for this call.
+    """
     tenure = context.store.load(Tables.symbol_tenure, project=True)
     roster = context.store.load(Tables.sp500_tickers)
+    assert tenure is not None and roster is not None
     existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
     out, blocked = derive_entity_lineage(cache, tenure, roster, config_dir)
     manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
@@ -527,18 +545,22 @@ def build_entity_lineage(context: Context, cache: Path, config_dir: str | None =
     )
     if not blocked.empty:
         logger.warning(
-            "entity_lineage: %d merge(s) refused because they would put two " "universe tickers in one entity:\n%s",
+            "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
             len(blocked),
             blocked.to_string(index=False),
         )
     if existing is None:
-        context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over " f"{out['entity_id'].nunique()} entity(ies)")
+        context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over {out['entity_id'].nunique()} entity(ies)")
     else:
         rekeys = detect_older_cik_rekeys(existing, out)
-        if rekeys:
+        actual_rekeys = frozenset((str(impact["old_entity_id"]), str(impact["new_entity_id"])) for impact in rekeys)
+        if rekeys and actual_rekeys != approved_rekeys:
             manifest = _write_rekey_manifest(config_dir or str(context.config_dir), rekeys)
             context.log.error(f"entity_lineage: older-CIK rekey stop; wrote impact manifest to {manifest}")
             raise EntityRekeyError(rekeys, manifest)
+        if actual_rekeys:
+            approved = ", ".join(f"{old}->{new}" for old, new in sorted(actual_rekeys))
+            context.log.warning(f"entity_lineage: applying explicitly approved older-CIK rekey(s): {approved}")
         old_map = dict(zip(existing["cik"].astype(str), existing["entity_id"].astype(str), strict=False))
         new_map = dict(zip(out["cik"].astype(str), out["entity_id"].astype(str), strict=False))
         changed = sorted(cik for cik in set(old_map) | set(new_map) if old_map.get(cik) != new_map.get(cik))

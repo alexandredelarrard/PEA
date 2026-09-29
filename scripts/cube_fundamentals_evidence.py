@@ -25,17 +25,19 @@ usage:
     python -m scripts.cube_fundamentals_evidence --out reports/2026-09-05/cube-fundamentals-evidence
     python -m scripts.cube_fundamentals_evidence --check      # measure + verify, write nothing
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import text
 
-from scripts.cube_feature_catalogue import CATALOGUE, SUFFIXES, split
+from scripts.cube_feature_catalogue import CATALOGUE, split
 
 TABLE = "cube_part_fundamentals"
 NUMERIC = {"double precision", "real", "numeric", "integer", "bigint", "smallint"}
@@ -48,41 +50,55 @@ CLIP_EDGE = 7.99
 #: `SUFFIXES` and `split` come from `cube_feature_catalogue`, which owns the keying
 #: convention. They used to be duplicated here, and two implementations of "what is a
 #: characteristic" are two possible answers to "is this column documented?".
-VIEW = {"_vs_peers": "peer-z", "_xs": "universe %ile",
-        "_vs_hist": "self-history z", "": "raw"}
+VIEW = {"_vs_peers": "peer-z", "_xs": "universe %ile", "_vs_hist": "self-history z", "": "raw"}
 
-_PROFILE_CHUNK = 12          # 9 aggregates per column; keeps the query plan small
+_PROFILE_CHUNK = 12  # 9 aggregates per column; keeps the query plan small
 _SAT_CHUNK = 25
 
 
 def profile(conn, table: str) -> pd.DataFrame:
-    cols = conn.execute(text(
-        "select column_name, data_type from information_schema.columns "
-        "where table_name = :t order by ordinal_position"), {"t": table}).fetchall()
+    cols = conn.execute(
+        text("select column_name, data_type from information_schema.columns where table_name = :t order by ordinal_position"), {"t": table}
+    ).fetchall()
     n_rows = conn.execute(text(f"select count(*) from {table}")).scalar_one()
     num = [n for n, d in cols if d in NUMERIC and n not in KEYS]
 
     rows = []
     for i in range(0, len(num), _PROFILE_CHUNK):
-        block = num[i:i + _PROFILE_CHUNK]
+        block = num[i : i + _PROFILE_CHUNK]
         sel = []
         for j, col in enumerate(block):
             q = f'"{col}"'
-            sel += [f"count({q}) as c{j}", f"min({q}) as mn{j}", f"max({q}) as mx{j}",
-                    f"avg({q}) as av{j}", f"stddev_samp({q}) as sd{j}",
-                    f"percentile_cont(0.01) within group (order by {q}) as p1_{j}",
-                    f"percentile_cont(0.50) within group (order by {q}) as p50_{j}",
-                    f"percentile_cont(0.99) within group (order by {q}) as p99_{j}",
-                    f"count(distinct {q}) as nd{j}"]
+            sel += [
+                f"count({q}) as c{j}",
+                f"min({q}) as mn{j}",
+                f"max({q}) as mx{j}",
+                f"avg({q}) as av{j}",
+                f"stddev_samp({q}) as sd{j}",
+                f"percentile_cont(0.01) within group (order by {q}) as p1_{j}",
+                f"percentile_cont(0.50) within group (order by {q}) as p50_{j}",
+                f"percentile_cont(0.99) within group (order by {q}) as p99_{j}",
+                f"count(distinct {q}) as nd{j}",
+            ]
         r = conn.execute(text(f"select {', '.join(sel)} from {table}")).mappings().one()
         for j, col in enumerate(block):
             nn = int(r[f"c{j}"])
-            rows.append({"feature": col, "n_rows": n_rows, "n_non_null": nn,
-                         "null_rate": 1.0 - nn / n_rows if n_rows else 1.0,
-                         "n_distinct": int(r[f"nd{j}"]),
-                         "min": r[f"mn{j}"], "p1": r[f"p1_{j}"], "p50": r[f"p50_{j}"],
-                         "p99": r[f"p99_{j}"], "max": r[f"mx{j}"],
-                         "mean": r[f"av{j}"], "std": r[f"sd{j}"]})
+            rows.append(
+                {
+                    "feature": col,
+                    "n_rows": n_rows,
+                    "n_non_null": nn,
+                    "null_rate": 1.0 - nn / n_rows if n_rows else 1.0,
+                    "n_distinct": int(r[f"nd{j}"]),
+                    "min": r[f"mn{j}"],
+                    "p1": r[f"p1_{j}"],
+                    "p50": r[f"p50_{j}"],
+                    "p99": r[f"p99_{j}"],
+                    "max": r[f"mx{j}"],
+                    "mean": r[f"av{j}"],
+                    "std": r[f"sd{j}"],
+                }
+            )
         print(f"  profile {i + len(block)}/{len(num)}", flush=True)
 
     df = pd.DataFrame(rows)
@@ -92,18 +108,24 @@ def profile(conn, table: str) -> pd.DataFrame:
 
 
 def saturation(conn, table: str) -> pd.DataFrame:
-    cols = [r[0] for r in conn.execute(text(
-        "select column_name from information_schema.columns "
-        r"where table_name = :t and column_name like '%\_vs\_%' "
-        "order by ordinal_position"), {"t": table}).fetchall()]
+    cols = [
+        r[0]
+        for r in conn.execute(
+            text(
+                "select column_name from information_schema.columns "
+                r"where table_name = :t and column_name like '%\_vs\_%' "
+                "order by ordinal_position"
+            ),
+            {"t": table},
+        ).fetchall()
+    ]
     rows = []
     for i in range(0, len(cols), _SAT_CHUNK):
-        block = cols[i:i + _SAT_CHUNK]
+        block = cols[i : i + _SAT_CHUNK]
         sel = []
         for j, col in enumerate(block):
             q = f'"{col}"'
-            sel += [f"avg((abs({q}) >= {CLIP_EDGE})::int)::float as s{j}",
-                    f"max(abs({q}))::float as m{j}"]
+            sel += [f"avg((abs({q}) >= {CLIP_EDGE})::int)::float as s{j}", f"max(abs({q}))::float as m{j}"]
         r = conn.execute(text(f"select {', '.join(sel)} from {table}")).mappings().one()
         for j, col in enumerate(block):
             rows.append({"feature": col, "sat_rate": r[f"s{j}"], "max_abs": r[f"m{j}"]})
@@ -132,9 +154,10 @@ def collect(prof: pd.DataFrame, sat: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 
     rows = []
     for char, g in p.groupby("char", sort=True):
+        char = cast(str, char)
         views = ", ".join(sorted(g["view"].unique(), key=lambda v: (v != "raw", v)))
         # null rate from the BEST-covered view: a transform can only lose rows, never add them
-        best = g.loc[g["null_rate"].idxmin()]
+        best = g.loc[cast(Any, g["null_rate"].idxmin())]
         # DISTRIBUTION from the PEER-Z view, never the percentile rank. A percentile rank is
         # uniform on [0, 1] BY CONSTRUCTION, so its p1/p50/p99 are 0.01/0.50/0.99 for every
         # feature in the table and carry no information at all.
@@ -143,12 +166,23 @@ def collect(prof: pd.DataFrame, sat: pd.DataFrame) -> tuple[pd.DataFrame, list[s
             z = g[g["suffix"] == ""]
         z = z.iloc[0] if len(z) else best
         fam, what, why, tail = CATALOGUE.get(char, ("?", "**UNDOCUMENTED**", "", ""))
-        rows.append({"characteristic": char, "family": fam, "views": views,
-                     "null_rate": best["null_rate"], "n_cols": len(g),
-                     "n_rows": int(best["n_rows"]),
-                     "p1": z["p1"], "p50": z["p50"], "p99": z["p99"],
-                     "sat_rate": z.get("sat_rate", float("nan")),
-                     "what": what, "why": why, "tail": tail})
+        rows.append(
+            {
+                "characteristic": char,
+                "family": fam,
+                "views": views,
+                "null_rate": best["null_rate"],
+                "n_cols": len(g),
+                "n_rows": int(best["n_rows"]),
+                "p1": z["p1"],
+                "p50": z["p50"],
+                "p99": z["p99"],
+                "sat_rate": z.get("sat_rate", float("nan")),
+                "what": what,
+                "why": why,
+                "tail": tail,
+            }
+        )
     r = pd.DataFrame(rows).sort_values(["family", "characteristic"])
     r.attrs["n_columns"] = len(p)
     r.attrs["sparsest_null"] = float(p["null_rate"].max())
@@ -157,33 +191,34 @@ def collect(prof: pd.DataFrame, sat: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 
 def build_markdown(r: pd.DataFrame, missing: list[str], unused: list[str]) -> str:
     n_cols, n_rows = r.attrs["n_columns"], int(r["n_rows"].iloc[0])
-    lines = [f"Characteristics: **{len(r)}** across **{n_cols}** cube columns "
-             f"({n_rows:,} rows).\n"]
+    lines = [f"Characteristics: **{len(r)}** across **{n_cols}** cube columns ({n_rows:,} rows).\n"]
     if missing:
-        lines.append(f"⚠ **{len(missing)} column(s) with no catalogue entry**: "
-                     + ", ".join(f"`{m}`" for m in missing) + "\n")
+        lines.append(f"⚠ **{len(missing)} column(s) with no catalogue entry**: " + ", ".join(f"`{m}`" for m in missing) + "\n")
     if unused:
-        lines.append(f"ℹ {len(unused)} catalogued name(s) absent from the table: "
-                     + ", ".join(f"`{m}`" for m in unused) + "\n")
+        lines.append(f"ℹ {len(unused)} catalogued name(s) absent from the table: " + ", ".join(f"`{m}`" for m in unused) + "\n")
 
     s = r["sat_rate"].dropna()
-    lines.append(f"Peer-z clip saturation across the {len(s)} standardised characteristics: "
-                 f"**mean {s.mean():.2%}**, median {s.median():.2%}, worst {s.max():.2%} "
-                 f"(`{r.loc[s.idxmax(), 'characteristic']}`).\n")
+    lines.append(
+        f"Peer-z clip saturation across the {len(s)} standardised characteristics: "
+        f"**mean {s.mean():.2%}**, median {s.median():.2%}, worst {s.max():.2%} "
+        f"(`{r.at[cast(Any, s.idxmax()), 'characteristic']}`).\n"
+    )
 
     for fam, gf in r.groupby("family", sort=True):
-        lines += [f"\n### {fam}\n",
-                  "| feature | views | null rate | peer-z p1 / p50 / p99 | @clip | "
-                  "what it does | why it is right | the tail |",
-                  "|---|---|--:|---|--:|---|---|---|"]
+        lines += [
+            f"\n### {fam}\n",
+            "| feature | views | null rate | peer-z p1 / p50 / p99 | @clip | what it does | why it is right | the tail |",
+            "|---|---|--:|---|--:|---|---|---|",
+        ]
         for _, x in gf.iterrows():
             satv = "-" if pd.isna(x["sat_rate"]) else f"{x['sat_rate']:.1%}"
             # a bare `|` inside a cell ENDS the cell: `|net income|` silently split its row
-            what, why, tail = (str(x[k]).replace("|", r"\|")
-                               for k in ("what", "why", "tail"))
-            lines.append(f"| `{x['characteristic']}` | {x['views']} | {x['null_rate']:.1%} | "
-                         f"{_fmt(x['p1'])} / {_fmt(x['p50'])} / {_fmt(x['p99'])} | {satv} | "
-                         f"{what} | {why} | {tail} |")
+            what, why, tail = (str(x[k]).replace("|", r"\|") for k in ("what", "why", "tail"))
+            lines.append(
+                f"| `{x['characteristic']}` | {x['views']} | {x['null_rate']:.1%} | "
+                f"{_fmt(x['p1'])} / {_fmt(x['p50'])} / {_fmt(x['p99'])} | {satv} | "
+                f"{what} | {why} | {tail} |"
+            )
     return "\n".join(lines)
 
 
@@ -191,21 +226,25 @@ def _meta(r: pd.DataFrame) -> dict:
     """Every measurement the narrative substitutes in. Nothing there is hard-coded."""
     s = r["sat_rate"].dropna()
     return {
-        "subtitle": (f"{int(r['n_rows'].iloc[0]):,} rows · {r.attrs['n_columns']} feature "
-                     f"columns · {len(r)} characteristics · measured 2026-09-05"),
-        "rows": int(r["n_rows"].iloc[0]), "rows_before": 3_852_470,
-        "cols": r.attrs["n_columns"], "cols_before": 209,
-        "chars": len(r), "chars_before": 103,
+        "subtitle": (f"{int(r['n_rows'].iloc[0]):,} rows · {r.attrs['n_columns']} feature columns · {len(r)} characteristics · measured 2026-09-05"),
+        "rows": int(r["n_rows"].iloc[0]),
+        "rows_before": 3_852_470,
+        "cols": r.attrs["n_columns"],
+        "cols_before": 209,
+        "chars": len(r),
+        "chars_before": 103,
         "rebuild_window": "2026-09-05 00:38 to 01:28",
         "n_standardised": len(s),
-        "sat_mean": f"{s.mean():.2%}", "sat_median": f"{s.median():.2%}",
+        "sat_mean": f"{s.mean():.2%}",
+        "sat_median": f"{s.median():.2%}",
         "sat_worst": f"{s.max():.2%}",
-        "sat_worst_name": r.loc[s.idxmax(), "characteristic"],
+        "sat_worst_name": r.at[cast(Any, s.idxmax()), "characteristic"],
         "sparsest_null": f"{r.attrs['sparsest_null']:.1%}",
         "table_lede": (
             f"{len(r)} characteristics across all {r.attrs['n_columns']} cube columns. "
             f"Clip saturation: mean {s.mean():.2%}, median {s.median():.2%}, worst "
-            f"{s.max():.2%} (`{r.loc[s.idxmax(), 'characteristic']}`)."),
+            f"{s.max():.2%} (`{r.at[cast(Any, s.idxmax()), 'characteristic']}`)."
+        ),
     }
 
 
@@ -215,13 +254,18 @@ def _pdf_rows(r: pd.DataFrame) -> list:
     for fam, gf in r.groupby("family", sort=True):
         items = []
         for _, x in gf.iterrows():
-            items.append({
-                "characteristic": x["characteristic"], "views": x["views"],
-                "null": f"{x['null_rate']:.1%}",
-                "dist": f"{_fmt(x['p1'])} / {_fmt(x['p50'])} / {_fmt(x['p99'])}",
-                "clip": "-" if pd.isna(x["sat_rate"]) else f"{x['sat_rate']:.1%}",
-                "what": x["what"], "why": x["why"], "tail": x["tail"],
-            })
+            items.append(
+                {
+                    "characteristic": x["characteristic"],
+                    "views": x["views"],
+                    "null": f"{x['null_rate']:.1%}",
+                    "dist": f"{_fmt(x['p1'])} / {_fmt(x['p50'])} / {_fmt(x['p99'])}",
+                    "clip": "-" if pd.isna(x["sat_rate"]) else f"{x['sat_rate']:.1%}",
+                    "what": x["what"],
+                    "why": x["why"],
+                    "tail": x["tail"],
+                }
+            )
         out.append((fam, items))
     return out
 
@@ -229,15 +273,14 @@ def _pdf_rows(r: pd.DataFrame) -> list:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--table", default=TABLE)
-    ap.add_argument("--out", type=Path, default=None,
-                    help="directory for the artefacts and the rendered report")
-    ap.add_argument("--format", choices=("pdf", "md", "both"), default="pdf",
-                    help="report format (default: pdf)")
-    ap.add_argument("--check", action="store_true",
-                    help="measure and verify coverage; write nothing")
-    ap.add_argument("--from-parquet", action="store_true",
-                    help="re-render from the artefacts already in --out, skipping the DB. "
-                         "Only re-renders; it CANNOT refresh a number.")
+    ap.add_argument("--out", type=Path, default=None, help="directory for the artefacts and the rendered report")
+    ap.add_argument("--format", choices=("pdf", "md", "both"), default="pdf", help="report format (default: pdf)")
+    ap.add_argument("--check", action="store_true", help="measure and verify coverage; write nothing")
+    ap.add_argument(
+        "--from-parquet",
+        action="store_true",
+        help="re-render from the artefacts already in --out, skipping the DB. Only re-renders; it CANNOT refresh a number.",
+    )
     args = ap.parse_args(argv)
 
     if args.from_parquet:
@@ -248,15 +291,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         load_dotenv(find_dotenv(usecwd=True))
         from src.utils.db import get_engine
+
         with get_engine().connect() as conn:
             prof = profile(conn, args.table)
             sat = saturation(conn, args.table)
 
     r, missing, unused = collect(prof, sat)
     n_rows = int(prof["n_rows"].iloc[0])
-    print(f"{args.table}: {n_rows:,} rows, {len(prof)} numeric columns, "
-          f"{len(r)} characteristics; "
-          f"{len(missing)} undocumented, {len(unused)} catalogued-but-absent")
+    print(
+        f"{args.table}: {n_rows:,} rows, {len(prof)} numeric columns, "
+        f"{len(r)} characteristics; "
+        f"{len(missing)} undocumented, {len(unused)} catalogued-but-absent"
+    )
 
     if args.out and not args.check:
         args.out.mkdir(parents=True, exist_ok=True)
@@ -266,14 +312,13 @@ def main(argv: list[str] | None = None) -> int:
             sat.to_parquet(args.out / f"{args.table}_saturation.parquet", index=False)
             written += ["profile.parquet", "saturation.parquet"]
         if args.format in ("md", "both"):
-            (args.out / "feature_table.md").write_text(
-                build_markdown(r, missing, unused), encoding="utf-8")
+            (args.out / "feature_table.md").write_text(build_markdown(r, missing, unused), encoding="utf-8")
             written.append("feature_table.md")
         if args.format in ("pdf", "both"):
             from scripts import cube_evidence_narrative as narrative
             from scripts.cube_evidence_pdf import render
-            path = render(args.out / f"{args.table}_evidence.pdf",
-                          _meta(r), _pdf_rows(r), narrative)
+
+            path = render(args.out / f"{args.table}_evidence.pdf", _meta(r), _pdf_rows(r), narrative)
             written.append(path.name)
         print(f"wrote {len(written)} artefact(s) to {args.out}: {', '.join(written)}")
 

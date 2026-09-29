@@ -8,6 +8,8 @@ is not a short signal (#85). Plus the conflict flag's magnitude, the refusal to 
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 
@@ -105,10 +107,12 @@ def test_absence_of_evidence_is_never_bearish_and_a_count_of_nothing_is_nan():
 
     panel = build_cross_source_panel(make_frames(IDX, PEERS, universe=pd.Index(TICKERS)), sink)
     day = panel[panel["date"] == IDX[-1]].set_index("ticker")
-    assert np.isnan(day.loc["T5", "f_ic_xs_bearish_family_ratio"]), "a ticker with fewer than three available families read as a ratio"
+    assert np.isnan(float(cast(Any, day.loc["T5", "f_ic_xs_bearish_family_ratio"]))), (
+        "a ticker with fewer than three available families read as a ratio"
+    )
     assert day.loc["T5", "f_ic_xs_bearish_available_family_count"] == 0.0
     assert day.loc["T1", "f_ic_xs_bearish_family_ratio"] == 0.0, "a ticker with inputs but no flag must read a real 0"
-    assert np.isnan(day.loc["T5", "f_ic_xs_conflict_ratio"])
+    assert np.isnan(float(cast(Any, day.loc["T5", "f_ic_xs_conflict_ratio"])))
     print("\n=== SANITY CHECK: absence of evidence vs a measured zero ===")
     print(
         "  T5 has denominator 0 and ratio NaN; T1 has all 3 families available and a measured "
@@ -202,11 +206,11 @@ def test_declared_vs_emitted():
         if mode == "raw+xs":
             expected.add(f"f_{name}_xs")
     emitted = {c for c in panel.columns if c.startswith("f_")}
-    assert emitted == expected, f"missing {sorted(expected - emitted)}; " f"undeclared {sorted(emitted - expected)}"
+    assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
     for col in sorted(emitted):
         assert panel[col].notna().any(), f"{col} is declared, emitted and ALL-NaN"
     print("\n=== SANITY CHECK: ic_xs_* declared vs emitted ===")
-    print(f"  {len(EMISSION)} features -> {len(emitted)} legs, exact match, all non-empty. " "Validated.")
+    print(f"  {len(EMISSION)} features -> {len(emitted)} legs, exact match, all non-empty. Validated.")
 
 
 def test_an_unavailable_family_does_not_change_the_ratio_until_it_becomes_available():

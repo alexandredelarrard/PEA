@@ -110,7 +110,6 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `google_trends`, `wiki_pageviews` | ticker × date | Weekly search interest and daily page views. |
 | `earnings_call_sections` | ticker × quarter × section tag | Transcript prose; text is intentionally part of the read payload. |
 | `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores. |
 | `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings with question/answer linkage; text is omitted from the default projection. |

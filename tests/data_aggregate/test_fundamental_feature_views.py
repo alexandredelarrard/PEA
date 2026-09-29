@@ -10,6 +10,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from scripts.cube_feature_catalogue import CATALOGUE, split
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.fundamentals.feature_views import (
     EXCLUDED_FEATURES,
     FEATURE_COLUMNS,
@@ -151,6 +152,42 @@ def test_fundamental_view_builder_emits_raw_and_selected_history_only() -> None:
 
     print("\n=== SANITY CHECK: fundamentals view emission ===")
     print("  raw is universal, history is allow-listed, killed aliases stay internal, and drift fails loudly.")
+
+
+def test_parallel_raw_history_builder_is_bit_identical() -> None:
+    dates = pd.bdate_range("2018-01-01", periods=40)
+    fields = {
+        "dividend_yield": pd.DataFrame({"AAA": np.arange(40.0), "BBB": np.arange(40.0)[::-1]}, index=dates),
+        "asset_growth": pd.DataFrame({"AAA": np.linspace(-0.2, 0.3, 40), "BBB": np.nan}, index=dates),
+        "bank_roa": pd.DataFrame({"AAA": np.nan, "BBB": np.nan}, index=dates),
+    }
+    emission = {
+        "dividend_yield": "raw+hist",
+        "asset_growth": "raw",
+        "bank_roa": "raw+hist",
+    }
+
+    serial = build_peer_relative_panel(
+        fields,
+        {},
+        emission=emission,
+        history_window=10,
+        history_min_periods=4,
+        max_workers=1,
+    )
+    parallel = build_peer_relative_panel(
+        fields,
+        {},
+        emission=emission,
+        history_window=10,
+        history_min_periods=4,
+        max_workers=4,
+    )
+
+    pd.testing.assert_frame_equal(serial, parallel, check_exact=True)
+
+    print("\n=== SANITY CHECK: parallel fundamentals views ===")
+    print("  serial and four-worker raw/history panels have identical keys, nulls, values, dtypes, and order.")
 
 
 def _strings(value: object) -> set[str]:

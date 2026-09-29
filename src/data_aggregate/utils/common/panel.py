@@ -17,6 +17,8 @@ the one thing that is genuinely about PEERS.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pandas as pd
 
@@ -170,6 +172,7 @@ def build_peer_relative_panel(
     semantics: dict | None = None,
     history_window: int = HIST_WINDOW,
     history_min_periods: int = HIST_MIN_PERIODS,
+    max_workers: int = 1,
 ) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
@@ -190,6 +193,10 @@ def build_peer_relative_panel(
     the z-score, whose scale is only meaningful after outlier control; the raw value is a
     quantity in its own units and trimming it would destroy the thing it was emitted for. It is
     still cast to float32 like the other legs, to keep a 100-feature panel off the OOM killer.
+
+    `max_workers` may parallelize explicit raw/raw+history fields. The default stays serial
+    because peer and cross-sectional transforms are shared by other cube parts; the bounded
+    fundamentals caller opts in after exact-output real-data benchmarking.
     """
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -210,11 +217,20 @@ def build_peer_relative_panel(
     stray_semantics = set(semantics) - set(fields)
     if stray_semantics:
         raise KeyError(f"semantics declares field(s) not present in `fields`: {sorted(stray_semantics)}")
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+    if max_workers > 1:
+        parallel_modes = {emission.get(name) for name in fields}
+        unsupported = parallel_modes - {"raw", "raw+hist"}
+        if unsupported:
+            raise ValueError(
+                "parallel panel construction supports only explicit raw/raw+hist modes; " f"found {sorted(str(mode) for mode in unsupported)}"
+            )
 
-    long_frames = []
-    for name, fdf in fields.items():
+    def _build_field(item: tuple[str, pd.DataFrame | None]) -> list[pd.Series]:
+        name, fdf = item
         if fdf is None or fdf.empty:
-            continue
+            return []
         # Guarantee a numeric frame: a stray Python `None` / object cell — a KPI genuinely
         # absent for a name (e.g. sparse earnings-call coverage, "no value to compare with") —
         # must be coerced to NaN. Otherwise the NaN-tolerant peer-z math (`peer_relative`)
@@ -223,7 +239,8 @@ def build_peer_relative_panel(
         # (absent = NaN), not a workaround, and a no-op on already-float frames.
         fdf = fdf.apply(pd.to_numeric, errors="coerce")
         if fdf.empty or not fdf.notna().any().any():
-            continue
+            return []
+        result: list[pd.Series] = []
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
         # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
         # The stacked long columns are cast to float32: these are z-scores / percentile ranks
@@ -236,7 +253,7 @@ def build_peer_relative_panel(
         if mode is not None:
             raw = fdf.stack().astype("float32")
             raw.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(raw.rename(f"f_{name}"))
+            result.append(raw.rename(f"f_{name}"))
             del raw
         if mode is None or mode == "raw+peers":
             rel = winsorize_xs(
@@ -250,7 +267,7 @@ def build_peer_relative_panel(
                 rel = rel.where(~zero_state, 0.0)
             s = rel.stack().astype("float32")
             s.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(s.rename(f"f_{name}_vs_peers"))
+            result.append(s.rename(f"f_{name}_vs_peers"))
             del rel, s
         if mode is None or mode == "raw+xs":
             xs = fdf if semantic == "binary" else xs_rank_pct(comparable)
@@ -258,7 +275,7 @@ def build_peer_relative_panel(
                 xs = xs.where(~zero_state, 0.0)
             s2 = xs.stack().astype("float32")
             s2.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(s2.rename(f"f_{name}_xs"))
+            result.append(s2.rename(f"f_{name}_xs"))
             del xs, s2
         if mode == "raw+hist":
             hist = self_history_z(
@@ -268,9 +285,18 @@ def build_peer_relative_panel(
             )
             hist_long = hist.stack().astype("float32")
             hist_long.index.set_names(["date", "ticker"], inplace=True)
-            long_frames.append(hist_long.rename(f"f_{name}_vs_hist"))
+            result.append(hist_long.rename(f"f_{name}_vs_hist"))
             del hist, hist_long
         del fdf, comparable  # free per-field intermediates promptly
+        return result
+
+    items = list(fields.items())
+    if max_workers == 1:
+        groups = [_build_field(item) for item in items]
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as executor:
+            groups = list(executor.map(_build_field, items))
+    long_frames = [column for group in groups for column in group]
 
     if not long_frames:
         return pd.DataFrame(columns=["date", "ticker"])

@@ -79,6 +79,13 @@ def test_complete_through_uses_the_later_valid_source_frontier():
     print("SANITY: Q2 bulk alone is complete through 2026-06-30; a successful all-ticker daily scan advances the canonical frontier to 2026-09-22.")
 
 
+def test_latest_filing_is_not_a_completeness_frontier():
+    insider = pd.DataFrame({"filing_date": [pd.Timestamp("2026-07-15")]})
+    got = StepCubeInstitutionals._insider_complete_through(None, insider, None)
+    assert got is None
+    print("SANITY: a filing proves one observed event, not that every absent filing through that date is a zero.")
+
+
 def test_live_frontier_requires_coverage_for_every_universe_ticker():
     calls = []
 

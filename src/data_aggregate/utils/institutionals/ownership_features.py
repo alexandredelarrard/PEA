@@ -280,6 +280,41 @@ def _complete_active_window_mask(
     return InstitutionalAvailability.combine(temporal, listed)
 
 
+def _complete_source_mask(
+    frames: PriceFrames,
+    idx: pd.DatetimeIndex,
+    *,
+    source_start: pd.Timestamp,
+    complete_through: pd.Timestamp | None,
+) -> pd.DataFrame | None:
+    """Cells for which source absence is proven rather than merely unobserved."""
+    if complete_through is None or pd.isna(complete_through):
+        return None
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    listed = (
+        frames.close_split.reindex(index=idx, columns=columns).notna()
+        if frames.close_split is not None and not frames.close_split.empty
+        else pd.DataFrame(True, index=idx, columns=columns)
+    )
+    return InstitutionalAvailability.combine(
+        InstitutionalAvailability.date_mask(idx, columns, source_start),
+        InstitutionalAvailability.through_mask(idx, columns, pd.Timestamp(complete_through)),
+        listed,
+    )
+
+
+def _known_13g_identity_mask(canon: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
+    """A holder state is unknowable after a filing whose holder has no usable identity."""
+    mask = pd.DataFrame(True, index=idx, columns=columns)
+    unknown = canon[canon["filer_id"].isna()]
+    for ticker, rows in unknown.groupby("ticker"):
+        if ticker in mask.columns:
+            first = pd.to_datetime(rows["filing_date"], errors="coerce").min()
+            if pd.notna(first):
+                mask.loc[idx >= pd.Timestamp(first).normalize(), ticker] = False
+    return mask
+
+
 def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     """13G<->13D escalation, keyed on each filer's FIRST-EVER filing of each type per ticker
     (an amendment does not re-trigger the transition)."""
@@ -375,10 +410,43 @@ def build_ownership_feature_panel(
         else None
     )
 
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    d_start = pd.to_datetime(canon_13d["filing_date"], errors="coerce").min()
+    act_coverage = (
+        _complete_source_mask(
+            frames,
+            idx,
+            source_start=availability.source_date(Tables.sec_13d) if availability is not None else pd.Timestamp(d_start),
+            complete_through=complete_through_13d,
+        )
+        if pd.notna(d_start)
+        else None
+    )
+    bo_source_coverage = (
+        _complete_source_mask(
+            frames,
+            idx,
+            source_start=pd.Timestamp(g_start),
+            complete_through=complete_through_13g,
+        )
+        if pd.notna(g_start)
+        else None
+    )
+    bo_identity = _known_13g_identity_mask(canon_13g, idx, columns)
+    bo_mask = InstitutionalAvailability.combine(bo_source_coverage, bo_identity) if bo_source_coverage is not None else bo_identity
+    cross_complete = act_coverage is not None and bo_source_coverage is not None
+    cross_mask = InstitutionalAvailability.combine(act_coverage, bo_mask) if cross_complete else bo_identity
+
     fields: dict[str, pd.DataFrame] = {}
     fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
     fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo, coverage=bo_coverage))
     fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
+
+    cross_names = {"ic_bo_escalation_13g_to_13d", "ic_bo_de_escalation_13d_to_13g"}
+    for name, frame in fields.items():
+        mask = act_coverage if name.startswith("ic_act_") else cross_mask if name in cross_names else bo_mask
+        if mask is not None:
+            fields[name] = frame.reindex(index=idx, columns=columns).where(mask)
 
     for name in list(fields):
         if fields[name] is None or fields[name].empty:
@@ -388,8 +456,11 @@ def build_ownership_feature_panel(
 
     if sink is not None and not canon_13d.empty:
         sink.set_frontier("act", complete_through_13d)
-        sink.add_events("act", canon_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
-        initial = canon_13d[~canon_13d["is_amendment"].fillna(0).astype(float).eq(1.0)]
+        observed_13d = canon_13d
+        if complete_through_13d is not None and pd.notna(complete_through_13d):
+            observed_13d = observed_13d[observed_13d["filing_date"] <= pd.Timestamp(complete_through_13d)]
+        sink.add_events("act", observed_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
+        initial = observed_13d[~observed_13d["is_amendment"].fillna(0).astype(float).eq(1.0)]
         sink.add_actors(
             "act",
             initial.dropna(subset=["filer_id"])
@@ -397,45 +468,18 @@ def build_ownership_feature_panel(
             .rename(columns={"filing_date": "date"}),
         )
     if sink is not None:
-        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-        if frames.close_split is not None and not frames.close_split.empty:
-            listed = frames.close_split.reindex(index=idx, columns=columns).notna()
-        else:
-            listed = pd.DataFrame(True, index=idx, columns=columns)
         signal_fields = dict(fields)
         signal_masks: dict[str, pd.DataFrame] = {}
         if "ic_act_initial_13d" in fields:
             raw = fields["ic_act_initial_13d"].reindex(index=idx, columns=columns)
-            mask = (
-                availability.source_mask(
-                    Tables.sec_13d,
-                    idx,
-                    columns,
-                    requirements=(listed,),
-                )
-                if availability is not None
-                else raw.notna()
-            )
+            mask = act_coverage if act_coverage is not None else raw.notna()
             signal_masks["ic_act_initial_13d"] = mask
-            signal_fields["ic_act_initial_13d"] = raw.fillna(0.0).where(mask)
+            signal_fields["ic_act_initial_13d"] = raw.fillna(0.0).where(mask) if act_coverage is not None else raw
         if "ic_bo_escalation_13g_to_13d" in fields:
             raw = fields["ic_bo_escalation_13g_to_13d"].reindex(index=idx, columns=columns)
-            if availability is not None:
-                g_mask = InstitutionalAvailability.date_mask(
-                    idx,
-                    columns,
-                    availability.source_date(Tables.sec_13g),
-                )
-                mask = availability.source_mask(
-                    Tables.sec_13d,
-                    idx,
-                    columns,
-                    requirements=(g_mask, listed),
-                )
-            else:
-                mask = raw.notna()
+            mask = cross_mask if cross_complete else raw.notna()
             signal_masks["ic_bo_escalation_13g_to_13d"] = mask
-            signal_fields["ic_bo_escalation_13g_to_13d"] = raw.fillna(0.0).where(mask)
+            signal_fields["ic_bo_escalation_13g_to_13d"] = raw.fillna(0.0).where(mask) if cross_complete else raw
         sink.keep_signals(signal_fields, signal_masks)
 
     emission = {k: v for k, v in EMISSION.items() if k in fields}

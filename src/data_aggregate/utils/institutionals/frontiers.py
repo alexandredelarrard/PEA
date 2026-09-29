@@ -69,10 +69,7 @@ def insider_complete_through(
         candidates.append(_normalized_timestamp(live_complete_through))
     if candidates:
         return max(candidates)
-
-    filing_dates = insider["filing_date"] if "filing_date" in insider else pd.Series(dtype="datetime64[ns]")
-    latest_filing: Any = pd.to_datetime(filing_dates, errors="coerce").max()
-    return _normalized_timestamp(latest_filing) if pd.notna(latest_filing) else None
+    return None
 
 
 def schedule_complete_through(
@@ -80,7 +77,7 @@ def schedule_complete_through(
     log: logging.Logger,
     table: Table,
     *,
-    expected_ticker_count: int,
+    expected_tickers: Sequence[str],
 ) -> pd.Timestamp | None:
     """Trust only a complete manifest frontier for the analysis universe."""
     path = Path(context.paths["DATA_STORE"]) / Path(context.config.local.filename.extraction)
@@ -96,12 +93,12 @@ def schedule_complete_through(
             table.name,
         )
         return None
-    if int(entry.get("ticker_count", -1)) != expected_ticker_count:
+    expected = sorted(set(map(str, expected_tickers)))
+    if entry.get("tickers") != expected:
         log.warning(
-            "%s manifest covers %s ticker(s), analysis universe has %s; zero semantics disabled",
+            "%s manifest ticker membership does not match the %s-name analysis universe; zero semantics disabled",
             table.name,
-            entry.get("ticker_count"),
-            expected_ticker_count,
+            len(expected),
         )
         return None
     try:

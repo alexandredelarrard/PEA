@@ -445,12 +445,27 @@ class StepCubeInstitutionals(Step):
         one trading day; FTD by ~2 months (its publication delay)."""
         short = self._load_source(Tables.short_interest, frames.universe)
         fails = self._load_source(Tables.sec_fails_to_deliver, frames.universe)
+        universe = sorted(set(map(str, frames.universe)))
+        symbol_tenure = self._store.load(
+            Tables.symbol_tenure,
+            columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
+            where={"symbol": universe},
+            optional=True,
+        )
+        ticker_ciks = self._store.load(
+            Tables.sp500_tickers,
+            columns=("ticker", "cik"),
+            where={"ticker": universe},
+            optional=True,
+        )
         return build_short_flow_feature_panel(
             frames,
             short,
             fails_history=fails,
             shares_out_history=shares,
             splits=splits,
+            symbol_tenure=symbol_tenure,
+            ticker_ciks=ticker_ciks,
             availability=self._availability,
             sink=sink,
         )
@@ -461,14 +476,14 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
-        expected_ticker_count = len(set(map(str, frames.universe)))
+        expected_tickers = sorted(set(map(str, frames.universe)))
         complete_13d = self._schedule_complete_through(
             Tables.sec_13d,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
         complete_13g = self._schedule_complete_through(
             Tables.sec_13g,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
         return build_ownership_feature_panel(
             frames,
@@ -486,13 +501,13 @@ class StepCubeInstitutionals(Step):
         self,
         table: Table,
         *,
-        expected_ticker_count: int,
+        expected_tickers: Sequence[str],
     ) -> pd.Timestamp | None:
         return institutional_frontiers.schedule_complete_through(
             self._context,
             self._log,
             table,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:

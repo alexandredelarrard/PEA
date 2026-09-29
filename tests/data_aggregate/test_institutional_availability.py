@@ -82,8 +82,9 @@ def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path
             encoding="utf-8",
         )
 
+    expected = ["AAA", "BBB"]
     write_entry({"last_run_date": "2026-09-24", "ticker_count": 2})
-    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
 
     write_entry(
         {
@@ -92,22 +93,33 @@ def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path
             "coverage_complete": True,
         }
     )
-    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
 
     write_entry(
         {
             "last_run_date": "2026-09-24",
             "ticker_count": 2,
             "coverage_complete": True,
+            "tickers": ["AAA", "CCC"],
+        }
+    )
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
+
+    write_entry(
+        {
+            "last_run_date": "2026-09-24",
+            "ticker_count": 2,
+            "coverage_complete": True,
+            "tickers": expected,
         }
     )
     assert step._schedule_complete_through(
         Tables.sec_13g,
-        expected_ticker_count=2,
+        expected_tickers=expected,
     ) == pd.Timestamp("2026-09-24")
 
     print("\n=== SANITY CHECK: Schedule absence frontier ===")
-    print("  legacy or partial-universe manifests -> unavailable; complete analysis-universe manifest -> trusted")
+    print("  legacy, partial, or same-sized wrong membership -> unavailable; exact analysis-universe roster -> trusted")
     print("  OK: aggregation emits zeros only behind a proven issuer-side discovery frontier")
 
 

@@ -371,6 +371,7 @@ def test_completeness_sensitive_success_marks_a_trustworthy_frontier(tmp_path, s
 
     entry = get_entry(ctx, _T_MAIN)
     assert entry is not None and entry.get("coverage_complete") is True
+    assert entry.get("tickers") == ["AAPL"]
     print("\n=== SANITY CHECK: complete schedule frontier ===")
     print("  every ticker discovered and saved -> coverage_complete=true in the manifest")
     print("  OK: aggregation can distinguish this run from a legacy or partial walk")

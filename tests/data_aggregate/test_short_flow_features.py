@@ -184,6 +184,53 @@ def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
     print("  OK: zero means observed neutral pressure, never missing source coverage")
 
 
+def test_latest_rolling_outputs_require_their_source_date():
+    dates, tickers, hist = _synth(t=400, n=2)
+    missing_regsho_date = dates[-2]
+    hist = hist[hist["date"] != missing_regsho_date]
+    shares = pd.DataFrame(500_000_000.0, index=dates, columns=tickers)
+    close = pd.DataFrame({ticker: np.linspace(100.0, 120.0, len(dates)) for ticker in tickers}, index=dates)
+    volume = pd.DataFrame(5_000_000.0, index=dates, columns=tickers)
+    short_fields = _shortvol_fields(hist, dates, shares, close, volume)
+    assert all(frame.loc[dates[-1]].isna().all() for frame in short_fields.values())
+
+    source_day = dates[-1 - FTD_PUB_LAG]
+    fails = pd.DataFrame([{"date": day, "ticker": ticker, "fails_quantity": 0.0} for day in dates if day != source_day for ticker in tickers])
+    ftd_fields = _fails_fields(fails, dates, shares, volume)
+    assert all(frame.loc[dates[-1]].isna().all() for frame in ftd_fields.values())
+    print("\n=== SANITY CHECK: rolling source-date completeness ===")
+    print("  a missing RegSHO t-1 or FTD t-40 observation makes every latest derived leg NaN")
+
+
+def test_reused_symbol_is_null_outside_the_current_issuer_tenure():
+    idx = pd.bdate_range("2021-01-04", periods=90)
+    ticker = "REUSED"
+    hist = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 400_000.0, "total_volume": 1_000_000.0} for day in idx])
+    tenure = pd.DataFrame(
+        [
+            {
+                "symbol": ticker,
+                "issuer_cik": "0000000123",
+                "valid_from": idx[20],
+                "valid_to": idx[60],
+            }
+        ]
+    )
+    roster = pd.DataFrame([{"ticker": ticker, "cik": "123"}])
+    panel = build_short_flow_feature_panel(
+        make_frames(idx, {ticker: {}}, universe=pd.Index([ticker])),
+        hist,
+        symbol_tenure=tenure,
+        ticker_ciks=roster,
+    )
+    ratio = panel[panel["ticker"] == ticker].set_index("date")["f_ic_shortvol_ratio_20d"].reindex(idx)
+    assert ratio.loc[: idx[19]].isna().all()
+    assert np.isfinite(ratio.loc[idx[45]])
+    assert ratio.loc[idx[60] :].isna().all()
+    print("\n=== SANITY CHECK: reused-symbol tenure mask ===")
+    print("  RegSHO cells are available only inside the current roster CIK's proven half-open symbol tenure")
+
+
 def test_panel_columns_match_the_emission_map():
     dates, tickers, hist = _synth(t=400)
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}

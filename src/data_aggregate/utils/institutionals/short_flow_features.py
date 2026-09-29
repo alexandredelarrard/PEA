@@ -183,6 +183,39 @@ def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
     return cov.mask(over)
 
 
+def _cik(value: object) -> str:
+    digits = "".join(character for character in str(value) if character.isdigit())
+    return digits.zfill(10) if digits else ""
+
+
+def _proven_tenure_mask(
+    idx: pd.DatetimeIndex,
+    columns: pd.Index,
+    symbol_tenure: pd.DataFrame | None,
+    ticker_ciks: pd.DataFrame | None,
+) -> pd.DataFrame | None:
+    """Current-issuer symbol tenure, when both lineage inputs are available."""
+    if symbol_tenure is None or ticker_ciks is None or symbol_tenure.empty or ticker_ciks.empty:
+        return None
+    if not {"symbol", "issuer_cik", "valid_from", "valid_to"}.issubset(symbol_tenure) or not {"ticker", "cik"}.issubset(ticker_ciks):
+        return None
+    current = {str(row.ticker): _cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
+    mask = pd.DataFrame(False, index=idx, columns=columns)
+    for row in symbol_tenure.itertuples(index=False):
+        symbol = str(row.symbol)
+        if symbol not in mask.columns or _cik(row.issuer_cik) != current.get(symbol):
+            continue
+        start = pd.to_datetime(row.valid_from, errors="coerce")
+        end = pd.to_datetime(row.valid_to, errors="coerce")
+        if pd.isna(start):
+            continue
+        valid = idx >= pd.Timestamp(start).normalize()
+        if pd.notna(end):
+            valid &= idx < pd.Timestamp(end).normalize()
+        mask.loc[valid, symbol] = True
+    return mask
+
+
 def _shortvol_fields(
     hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
@@ -190,10 +223,16 @@ def _shortvol_fields(
     close_total: pd.DataFrame | None,
     volume: pd.DataFrame | None,
     splits: pd.DataFrame | None = None,
+    tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """#56-#63 + the coverage measurement. Every leg is shifted by the publication lag."""
     short = _pivot(hist, "short_volume", idx)
     total = _pivot(hist, "total_volume", idx)
+    if tenure_mask is not None:
+        source_tenure = tenure_mask.reindex(index=idx, columns=short.columns, fill_value=False)
+        short = short.where(source_tenure)
+        total = total.where(source_tenure)
+    observed = short.notna() & total.notna()
     f_dict: dict[str, pd.DataFrame] = {}
 
     ratios: dict[int, pd.DataFrame] = {}
@@ -201,7 +240,7 @@ def _shortvol_fields(
         mp = _min_periods(w)
         num = short.rolling(w, min_periods=mp).sum()
         den = total.rolling(w, min_periods=mp).sum()
-        ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
+        ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
         ratios[w] = ratio.shift(SHORTVOL_PUB_LAG)
         f_dict[f"ic_shortvol_ratio_{w}d"] = ratios[w]
 
@@ -213,7 +252,7 @@ def _shortvol_fields(
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=short.columns)
         turn = short.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).shift(SHORTVOL_PUB_LAG)
+        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).where(observed).shift(SHORTVOL_PUB_LAG)
 
     if close_total is not None and not close_total.empty:
         # The 20-day TOTAL return (`close_total`, never `close_split`): this is a return, and
@@ -227,7 +266,7 @@ def _shortvol_fields(
         tape = volume.reindex(index=idx).reindex(columns=short.columns)
         num = (total * split_adjust_frame(splits, total)).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
         den = tape.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
+        cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
         cov = _guard_coverage(cov)
         f_dict["ic_shortvol_market_coverage"] = cov.shift(SHORTVOL_PUB_LAG)
         live = cov.to_numpy(dtype="float64", na_value=np.nan).ravel()
@@ -241,11 +280,19 @@ def _shortvol_fields(
                 100 * p95,
                 len(live),
             )
+    if tenure_mask is not None:
+        for name, frame in f_dict.items():
+            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
     return f_dict
 
 
 def _fails_fields(
-    fails_hist: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None, volume: pd.DataFrame | None, splits: pd.DataFrame | None = None
+    fails_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    shares_out: pd.DataFrame | None,
+    volume: pd.DataFrame | None,
+    splits: pd.DataFrame | None = None,
+    tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """#64-#67. Zero-filled ONLY on the dates the FTD file covers -- see the module docstring."""
     fails = _pivot(fails_hist, "fails_quantity", idx)
@@ -262,6 +309,10 @@ def _fails_fields(
     # ticker axis explicitly rather than relying on a bare ndarray to align.
     covered_wide = pd.DataFrame({c: on_file for c in fails.columns}, index=idx)
     fails = fails.mask(covered_wide & fails.isna(), 0.0)
+    if tenure_mask is not None:
+        source_tenure = tenure_mask.reindex(index=idx, columns=fails.columns, fill_value=False)
+        fails = fails.where(source_tenure)
+        covered_wide &= source_tenure
 
     f_dict: dict[str, pd.DataFrame] = {}
     pct_so = None
@@ -300,7 +351,12 @@ def _fails_fields(
         z = z.mask(z.isna() & neutral, 0.0)
         f_dict["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
-        f_dict["ic_ftd_persistence_30d"] = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().shift(FTD_PUB_LAG)
+        f_dict["ic_ftd_persistence_30d"] = (
+            flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis).shift(FTD_PUB_LAG)
+        )
+    if tenure_mask is not None:
+        for name, frame in f_dict.items():
+            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
     return f_dict
 
 
@@ -311,6 +367,8 @@ def build_short_flow_feature_panel(
     fails_history: pd.DataFrame | None = None,
     shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    ticker_ciks: pd.DataFrame | None = None,
     availability: InstitutionalAvailability | None = None,
     sink=None,
 ) -> pd.DataFrame:
@@ -348,6 +406,8 @@ def build_short_flow_feature_panel(
         return _empty_panel()
 
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    tenure_mask = _proven_tenure_mask(idx, columns, symbol_tenure, ticker_ciks)
     shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:
         # ⚠ `sharesOutstandingPit`: a fail and a short sale are counts of shares that existed
@@ -359,9 +419,9 @@ def build_short_flow_feature_panel(
 
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits))
+        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits, tenure_mask))
     if fails_history is not None and not fails_history.empty and "fails_quantity" in fails_history.columns:
-        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits))
+        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits, tenure_mask))
 
     for name in list(fields):
         frame = fields[name]

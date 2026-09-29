@@ -20,6 +20,7 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
     _cross_fields,
     build_ownership_feature_panel,
 )
+from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from tests.conftest import make_frames
 
 IDX = pd.bdate_range("2023-01-03", "2025-06-30")
@@ -334,6 +335,98 @@ def test_holder_share_zero_requires_a_complete_active_window():
         f"the completed frontier through {complete_through.date()}, and NaN after it"
     )
     print("  OK: no active filer is a zero only when the source can prove the absence")
+
+
+def test_unidentified_13g_holder_makes_the_ticker_state_unknown():
+    idx = pd.bdate_range("2021-01-04", periods=620)
+    peers = {"AAA": {}}
+    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
+    sec_13g = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": "known",
+                "cusip": "CUS1",
+                "filing_date": idx[0],
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Known Fund",
+            },
+            {
+                "ticker": "AAA",
+                "accession_number": "anonymous",
+                "cusip": "CUS1",
+                "filing_date": idx[400],
+                "reporting_person_cik": None,
+                "reporting_person_name": None,
+            },
+        ]
+    )
+    panel = build_ownership_feature_panel(
+        make_frames(idx, peers, close_split=close),
+        None,
+        sec_13g,
+        complete_through_13g=idx[600],
+    )
+    row = panel.set_index(["date", "ticker"]).reindex(pd.MultiIndex.from_product([[idx[450]], ["AAA"]], names=["date", "ticker"]))
+    bo_columns = [column for column in row if column.startswith("f_ic_bo_")]
+    assert bo_columns and row[bo_columns].isna().all().all()
+    print("\n=== SANITY CHECK: unidentified 13G holder ===")
+    print("  a known filing with neither CIK nor name leaves subsequent holder state NaN, never zero")
+
+
+def test_every_ownership_and_sink_output_stops_at_its_complete_frontier():
+    idx = pd.bdate_range("2025-01-02", periods=90)
+    tickers = ["AAA", "BBB"]
+    close = pd.DataFrame(100.0, index=idx, columns=tickers)
+    sec_13g = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": "g1",
+                "cusip": "CUS1",
+                "filing_date": idx[10],
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Fund",
+            }
+        ]
+    )
+    sec_13d = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": accession,
+                "cusip": "CUS1",
+                "filing_date": day,
+                "is_amendment": 0.0,
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Fund",
+                "item4_purpose_of_transaction": "seek board representation",
+            }
+            for accession, day in (("d1", idx[20]), ("partial-after-frontier", idx[70]))
+        ]
+    )
+    frontier = idx[55]
+    sink = ConditioningSink()
+    panel = build_ownership_feature_panel(
+        make_frames(idx, _peers(tickers), close_split=close),
+        sec_13d,
+        sec_13g,
+        complete_through_13d=frontier,
+        complete_through_13g=frontier,
+        sink=sink,
+    )
+    full_index = pd.MultiIndex.from_product([idx, tickers], names=["date", "ticker"])
+    dense = panel.set_index(["date", "ticker"]).reindex(full_index)
+    feature_columns = [column for column in dense if column.startswith("f_")]
+    assert feature_columns and dense.loc[(slice(idx[56], None), slice(None)), feature_columns].isna().all().all()
+    assert sink.frontiers["act"] == frontier
+    assert sink.events["act"]["date"].max() <= frontier
+    assert sink.actors["act"]["date"].max() <= frontier
+    for signal in sink.signals.values():
+        assert not signal.available.loc[idx[56] :].to_numpy().any()
+        assert signal.values.loc[idx[56] :].isna().all().all()
+    print("\n=== SANITY CHECK: ownership complete-through masking ===")
+    print("  every emitted leg and retained sink signal/event is unavailable after the inclusive source frontier")
 
 
 def test_build_ownership_feature_panel_empty_when_no_source():

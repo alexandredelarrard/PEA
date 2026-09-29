@@ -25,7 +25,7 @@ uses across the fetchers the five `step_extract_*` sub-steps call:
      reverted it -- a filing missed by a bug, or one EDGAR posts out of date
      order, would stay missing forever once the window stops looking behind it.
      `manifest_window` therefore also forces a full-window relist (self-heal)
-     whenever the table's ticker count changed (a new ticker needs its own full
+     whenever the table's exact ticker membership changed (a new ticker needs its own full
      history) or `full_rescan_days` have elapsed since the last full relist --
      bounding any silently-missed filing to that window instead of forever.
 """
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,18 +76,20 @@ def manifest_window(
     ticker_count: int,
     fallback_since: pd.Timestamp,
     full_rescan_days: int,
+    tickers: Iterable[str] | None = None,
 ) -> tuple[pd.Timestamp, bool]:
     """The `since` cutoff an EDGAR filing-lister should use, and whether this run
     counts as a full rescan (pass straight through to `record_run`).
 
     Falls back to `fallback_since` (the fetcher's usual years-history window) --
     marking `is_full_rescan=True` -- when there is no recorded run yet, the
-    ticker universe changed size since that run, or the last full rescan is
+    ticker universe membership changed since that run, or the last full rescan is
     `>= full_rescan_days` old. Otherwise returns the entry's `last_run_date`
     (inclusive) with `is_full_rescan=False`."""
 
     entry = get_entry(context, table)
-    if not entry or entry.get("ticker_count") != ticker_count:
+    expected = sorted({str(ticker) for ticker in tickers}) if tickers is not None else None
+    if not entry or entry.get("ticker_count") != ticker_count or (expected is not None and entry.get("tickers") != expected):
         return fallback_since, True
 
     last_full = entry.get("last_full_rescan_date")
@@ -117,6 +120,7 @@ def record_run(
     run_date: pd.Timestamp | str | None = None,
     backfill_window: tuple[str, str] | None = None,
     coverage_complete: bool = False,
+    tickers: Iterable[str] | None = None,
 ) -> None:
     """Merge this table's run stats into the shared manifest (read-modify-write --
     every fetcher in a step run shares the one file, so this must not clobber
@@ -164,5 +168,7 @@ def record_run(
     }
     if coverage_complete:
         entry["coverage_complete"] = True
+    if tickers is not None:
+        entry["tickers"] = sorted({str(ticker) for ticker in tickers})
     manifest[name] = entry
     _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

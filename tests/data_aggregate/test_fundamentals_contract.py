@@ -44,9 +44,7 @@ def test_fundamentals_requests_the_shared_tail_refresh(monkeypatch):
 
     assert captured["refresh"] == PART_REFRESH_TRADING_DAYS
     print("\n=== SANITY CHECK: fundamentals incremental repair window ===")
-    print(
-        f"  plan_window received refresh={PART_REFRESH_TRADING_DAYS}; the stored maximum " "date is rewritten instead of strict-appended. Validated."
-    )
+    print(f"  plan_window received refresh={PART_REFRESH_TRADING_DAYS}; the stored maximum date is rewritten instead of strict-appended. Validated.")
 
 
 class _SourceStore:
@@ -77,7 +75,8 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
         lambda frame, context, log: frame,
     )
 
-    step._load_fundamentals(("AAA", "BBB"))
+    source_since = pd.Timestamp("2020-09-04")
+    step._load_fundamentals(("AAA", "BBB"), since=source_since)
     step._load_optional(
         Tables.earnings_surprises,
         "earnings-surprise history",
@@ -94,8 +93,40 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
     assert len(store.calls) == 3
     for table, kwargs in store.calls:
         assert kwargs["where"] == {"ticker": ["AAA", "BBB"]}, (table, kwargs)
+    assert store.calls[0][1]["since"] == source_since
+    assert store.calls[0][1]["project"] is True
     print("\n=== SANITY CHECK: fundamentals source universe pushdown ===")
-    print("  fundamentals, earnings, and dividends all carry the same ticker predicate before " "any peer/cross-sectional transform. Validated.")
+    print("  fundamentals is date-bounded and projected; all three sources carry the price-universe predicate. Validated.")
+
+
+def test_sec_fact_reads_are_ticker_and_date_bounded():
+    from src.data_aggregate.utils.fundamentals.fundamental_features import (
+        load_notes_num_scoped,
+        load_pension_facts_scoped,
+    )
+
+    store = _SourceStore()
+    context = SimpleNamespace(store=store)
+    source_since = pd.Timestamp("2020-09-04")
+
+    load_pension_facts_scoped(
+        context,
+        tickers=("AAA", "BBB"),
+        since=source_since,
+    )
+    load_notes_num_scoped(
+        context,
+        tickers=("AAA", "BBB"),
+        since=source_since,
+    )
+
+    assert [table for table, _ in store.calls] == ["pension_facts", "notes_num"]
+    for table, kwargs in store.calls:
+        assert kwargs["where"]["ticker"] == ["AAA", "BBB"], (table, kwargs)
+        assert kwargs["where"]["tag"], (table, kwargs)
+        assert kwargs["since"] == source_since, (table, kwargs)
+    print("\n=== SANITY CHECK: SEC fact source bounds ===")
+    print("  both pension/notes reads push ticker universe, tag projection, and six-year date bound into the store. Validated.")
 
 
 def test_final_fundamentals_panel_is_contained_by_the_price_skeleton():
@@ -116,7 +147,7 @@ def test_final_fundamentals_panel_is_contained_by_the_price_skeleton():
         (date, "BBB"),
     ]
     print("\n=== SANITY CHECK: final fundamentals key containment ===")
-    print("  a ghost ticker and an off-grid date were removed; every persisted row is an exact " "price-skeleton key. Validated.")
+    print("  a ghost ticker and an off-grid date were removed; every persisted row is an exact price-skeleton key. Validated.")
 
 
 def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):

@@ -181,6 +181,8 @@ def build_dividend_feature_panel(
     stock_close: pd.DataFrame,
     level_factor: pd.DataFrame | None = None,
     fundamentals_history: pd.DataFrame | None = None,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Long-format dividend panel using the approved raw/self-history view contract.
     Empty if no dividend history is available."""
@@ -189,4 +191,10 @@ def build_dividend_feature_panel(
     close = stock_close.reindex(trading_index)
     fields = _dividend_fields(dividends_history, close, fundamentals_history, level_factor)
     semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
-    return build_fundamental_views(fields, peer_dict, semantics=semantics)
+    return build_fundamental_views(
+        fields,
+        peer_dict,
+        semantics=semantics,
+        history_fields=history_fields,
+        output_since=output_since,
+    )

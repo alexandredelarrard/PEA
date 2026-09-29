@@ -224,10 +224,6 @@ HISTORY_FEATURES: frozenset[str] = frozenset(
 
 EXCLUDED_FEATURES: frozenset[str] = frozenset({"q_rev_growth", "revenueGrowth"})
 
-# Four workers was the smallest bounded real-data candidate that materially improved the
-# five-year history path while keeping peak memory controlled and outputs bit-identical.
-_MAX_HISTORY_WORKERS = 4
-
 FEATURE_COLUMNS: tuple[str, ...] = tuple([f"f_{name}" for name in sorted(RAW_FEATURES)] + [f"f_{name}_vs_hist" for name in sorted(HISTORY_FEATURES)])
 
 
@@ -238,6 +234,8 @@ def build_fundamental_views(
     semantics: dict[str, str] | None = None,
     history_window: int = HIST_WINDOW,
     history_min_periods: int = HIST_MIN_PERIODS,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Emit the approved raw/history views while rejecting unreviewed characteristics."""
     unknown = set(fields) - RAW_FEATURES - EXCLUDED_FEATURES
@@ -254,5 +252,6 @@ def build_fundamental_views(
         semantics=retained_semantics,
         history_window=history_window,
         history_min_periods=history_min_periods,
-        max_workers=min(_MAX_HISTORY_WORKERS, len(retained)) if retained else 1,
+        history_fields=history_fields,
+        output_since=output_since,
     )

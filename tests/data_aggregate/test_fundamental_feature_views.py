@@ -154,40 +154,50 @@ def test_fundamental_view_builder_emits_raw_and_selected_history_only() -> None:
     print("  raw is universal, history is allow-listed, killed aliases stay internal, and drift fails loudly.")
 
 
-def test_parallel_raw_history_builder_is_bit_identical() -> None:
-    dates = pd.bdate_range("2018-01-01", periods=40)
-    fields = {
-        "dividend_yield": pd.DataFrame({"AAA": np.arange(40.0), "BBB": np.arange(40.0)[::-1]}, index=dates),
-        "asset_growth": pd.DataFrame({"AAA": np.linspace(-0.2, 0.3, 40), "BBB": np.nan}, index=dates),
-        "bank_roa": pd.DataFrame({"AAA": np.nan, "BBB": np.nan}, index=dates),
+def test_seeded_incremental_raw_history_matches_full_tail() -> None:
+    dates = pd.bdate_range("2020-01-01", periods=40)
+    current_dates = dates[-10:]
+    output_since = dates[-5]
+    full_fields = {
+        "dividend_yield": pd.DataFrame(
+            {
+                "AAA": np.linspace(0.01, 0.04, len(dates)),
+                "BBB": np.linspace(0.04, 0.01, len(dates)),
+            },
+            index=dates,
+        ),
+        "asset_growth": pd.DataFrame(
+            {
+                "AAA": np.linspace(-0.2, 0.3, len(dates)),
+                "BBB": np.nan,
+            },
+            index=dates,
+        ),
     }
-    emission = {
-        "dividend_yield": "raw+hist",
-        "asset_growth": "raw",
-        "bank_roa": "raw+hist",
-    }
+    emission = {"dividend_yield": "raw+hist", "asset_growth": "raw"}
 
-    serial = build_peer_relative_panel(
-        fields,
+    full = build_peer_relative_panel(
+        full_fields,
         {},
         emission=emission,
-        history_window=10,
+        history_window=20,
         history_min_periods=4,
-        max_workers=1,
     )
-    parallel = build_peer_relative_panel(
-        fields,
+    incremental = build_peer_relative_panel(
+        {name: frame.loc[current_dates] for name, frame in full_fields.items()},
         {},
         emission=emission,
-        history_window=10,
+        history_window=20,
         history_min_periods=4,
-        max_workers=4,
+        history_fields={name: frame.loc[dates[:-10]] for name, frame in full_fields.items()},
+        output_since=output_since,
     )
 
-    pd.testing.assert_frame_equal(serial, parallel, check_exact=True)
+    expected = full.loc[full["date"] >= output_since].reset_index(drop=True)
+    pd.testing.assert_frame_equal(incremental, expected, check_exact=True)
 
-    print("\n=== SANITY CHECK: parallel fundamentals views ===")
-    print("  serial and four-worker raw/history panels have identical keys, nulls, values, dtypes, and order.")
+    print("\n=== SANITY CHECK: seeded incremental fundamentals views ===")
+    print("  stored raw history plus the recomputed overlap reproduces the exact full-build tail.")
 
 
 def _strings(value: object) -> set[str]:

@@ -17,8 +17,6 @@ the one thing that is genuinely about PEERS.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import numpy as np
 import pandas as pd
 
@@ -172,7 +170,8 @@ def build_peer_relative_panel(
     semantics: dict | None = None,
     history_window: int = HIST_WINDOW,
     history_min_periods: int = HIST_MIN_PERIODS,
-    max_workers: int = 1,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Turn a {name: daily wide frame} dict into the long feature panel, each
     characteristic expressed as `f_<name>_vs_peers` (peer-standardized) and
@@ -194,9 +193,10 @@ def build_peer_relative_panel(
     quantity in its own units and trimming it would destroy the thing it was emitted for. It is
     still cast to float32 like the other legs, to keep a 100-feature panel off the OOM killer.
 
-    `max_workers` may parallelize explicit raw/raw+history fields. The default stays serial
-    because peer and cross-sectional transforms are shared by other cube parts; the bounded
-    fundamentals caller opts in after exact-output real-data benchmarking.
+    `history_fields` optionally supplies an earlier raw daily prefix for self-history only.
+    This lets an incremental caller recompute a short current window while reusing the raw
+    values already persisted by a prior full build. `output_since` then emits only the
+    repaired tail; the prefix exists solely as rolling context.
     """
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -204,7 +204,7 @@ def build_peer_relative_panel(
     semantics = semantics or {}
     unknown = {m for m in emission.values() if m not in _EMISSION_MODES}
     if unknown:
-        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; " f"expected one of {list(_EMISSION_MODES)}")
+        raise ValueError(f"unknown emission mode(s) {sorted(unknown)}; expected one of {list(_EMISSION_MODES)}")
     stray = set(emission) - set(fields)
     if stray:
         # A name in the map that no field produces is a silent no-op -- exactly the drift the
@@ -213,19 +213,10 @@ def build_peer_relative_panel(
         raise KeyError(f"emission declares field(s) not present in `fields`: {sorted(stray)}")
     unknown_semantics = {mode for mode in semantics.values() if mode not in _SEMANTIC_MODES}
     if unknown_semantics:
-        raise ValueError(f"unknown semantic mode(s) {sorted(unknown_semantics)}; " f"expected one of {list(_SEMANTIC_MODES)}")
+        raise ValueError(f"unknown semantic mode(s) {sorted(unknown_semantics)}; expected one of {list(_SEMANTIC_MODES)}")
     stray_semantics = set(semantics) - set(fields)
     if stray_semantics:
         raise KeyError(f"semantics declares field(s) not present in `fields`: {sorted(stray_semantics)}")
-    if max_workers < 1:
-        raise ValueError("max_workers must be at least 1")
-    if max_workers > 1:
-        parallel_modes = {emission.get(name) for name in fields}
-        unsupported = parallel_modes - {"raw", "raw+hist"}
-        if unsupported:
-            raise ValueError(
-                "parallel panel construction supports only explicit raw/raw+hist modes; " f"found {sorted(str(mode) for mode in unsupported)}"
-            )
 
     def _build_field(item: tuple[str, pd.DataFrame | None]) -> list[pd.Series]:
         name, fdf = item
@@ -240,6 +231,9 @@ def build_peer_relative_panel(
         fdf = fdf.apply(pd.to_numeric, errors="coerce")
         if fdf.empty or not fdf.notna().any().any():
             return []
+        output = fdf if output_since is None else fdf.loc[fdf.index >= pd.Timestamp(output_since)]
+        if output.empty:
+            return []
         result: list[pd.Series] = []
         # peer z-score, then trim per-day cross-sectional 1%/99% outliers (the
         # percentile-rank `_xs` below is already outlier-proof, so it uses raw fdf).
@@ -251,7 +245,7 @@ def build_peer_relative_panel(
         zero_state = fdf.eq(0) if semantic == "structural_zero" else None
         comparable = fdf.mask(zero_state) if zero_state is not None else fdf
         if mode is not None:
-            raw = fdf.stack().astype("float32")
+            raw = output.stack().astype("float32")
             raw.index.set_names(["date", "ticker"], inplace=True)
             result.append(raw.rename(f"f_{name}"))
             del raw
@@ -265,6 +259,7 @@ def build_peer_relative_panel(
             )
             if zero_state is not None:
                 rel = rel.where(~zero_state, 0.0)
+            rel = rel.reindex(index=output.index, columns=output.columns)
             s = rel.stack().astype("float32")
             s.index.set_names(["date", "ticker"], inplace=True)
             result.append(s.rename(f"f_{name}_vs_peers"))
@@ -273,29 +268,35 @@ def build_peer_relative_panel(
             xs = fdf if semantic == "binary" else xs_rank_pct(comparable)
             if zero_state is not None:
                 xs = xs.where(~zero_state, 0.0)
+            xs = xs.reindex(index=output.index, columns=output.columns)
             s2 = xs.stack().astype("float32")
             s2.index.set_names(["date", "ticker"], inplace=True)
             result.append(s2.rename(f"f_{name}_xs"))
             del xs, s2
         if mode == "raw+hist":
+            history = None if history_fields is None else history_fields.get(name)
+            if history is not None and not history.empty:
+                history = history.apply(pd.to_numeric, errors="coerce")
+                history_input = pd.concat([history, fdf], axis=0).sort_index()
+                history_input = history_input.loc[~history_input.index.duplicated(keep="last")]
+            else:
+                history_input = fdf
             hist = self_history_z(
-                fdf,
+                history_input,
                 window=history_window,
                 min_periods=history_min_periods,
+                output_since=output_since,
             )
+            hist = hist.reindex(index=output.index, columns=output.columns)
             hist_long = hist.stack().astype("float32")
             hist_long.index.set_names(["date", "ticker"], inplace=True)
             result.append(hist_long.rename(f"f_{name}_vs_hist"))
-            del hist, hist_long
-        del fdf, comparable  # free per-field intermediates promptly
+            del hist, hist_long, history_input
+        del fdf, output, comparable  # free per-field intermediates promptly
         return result
 
     items = list(fields.items())
-    if max_workers == 1:
-        groups = [_build_field(item) for item in items]
-    else:
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as executor:
-            groups = list(executor.map(_build_field, items))
+    groups = [_build_field(item) for item in items]
     long_frames = [column for group in groups for column in group]
 
     if not long_frames:

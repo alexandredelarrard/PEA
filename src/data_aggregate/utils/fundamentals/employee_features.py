@@ -135,6 +135,8 @@ def build_employee_feature_panel(
     headcount_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Long-format workforce panel using the approved raw/self-history view contract.
     Empty if the merged fundamentals/employee-count history is unavailable."""
@@ -142,4 +144,9 @@ def build_employee_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
 
     fields = _employee_fields(headcount_history, trading_index)
-    return build_fundamental_views(fields, peer_dict)
+    return build_fundamental_views(
+        fields,
+        peer_dict,
+        history_fields=history_fields,
+        output_since=output_since,
+    )

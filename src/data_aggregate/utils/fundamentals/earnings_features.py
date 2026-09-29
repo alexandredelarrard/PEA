@@ -195,6 +195,8 @@ def build_earnings_feature_panel(
     trading_index: pd.DatetimeIndex,
     stock_close: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Long-format earnings panel using the approved raw/self-history view contract.
 
@@ -205,12 +207,19 @@ def build_earnings_feature_panel(
 
     prepped = _prep(earnings_history)
     fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor)
-    panel = build_fundamental_views(fields, peer_dict)
+    panel = build_fundamental_views(
+        fields,
+        peer_dict,
+        history_fields=history_fields,
+        output_since=output_since,
+    )
 
     # RAW calendar signal: days since the most recent earnings.
     # Same meaning for every name, so it is emitted as a plain `f_days_since_earnings`
     # (the model splits/loads on the raw value; PEAD decays as this rises).
     dse = days_since_earnings(prepped, trading_index)
+    if output_since is not None:
+        dse = dse.loc[dse.index >= pd.Timestamp(output_since)]
     if not dse.empty and dse.notna().any().any():
         long = dse.stack()
         long.index.set_names(["date", "ticker"], inplace=True)

@@ -258,23 +258,27 @@ def fiscal_prior_positions(
         }
     )
     result = np.full(len(fund_hist), -1, dtype="int64")
-    tolerance = pd.Timedelta(days=int(tolerance_days))
+    tolerance_ns = pd.Timedelta(days=int(tolerance_days)).value
     for _, group in work.groupby("ticker", sort=False):
-        candidates = group.dropna(subset=["as_of", "fiscal_end"])
-        for current in candidates.itertuples(index=False):
-            target = current.fiscal_end - pd.DateOffset(years=int(years))
-            eligible = candidates[(candidates["as_of"] <= current.as_of) & (candidates["fiscal_end"] < current.fiscal_end)].copy()
-            if eligible.empty:
+        positions = group["position"].to_numpy(dtype="int64")
+        as_of = group["as_of"].to_numpy(dtype="datetime64[ns]")
+        fiscal_end = group["fiscal_end"].to_numpy(dtype="datetime64[ns]")
+        valid = ~np.isnat(as_of) & ~np.isnat(fiscal_end)
+        as_of_ns = as_of.astype("int64")
+        fiscal_end_ns = fiscal_end.astype("int64")
+        for offset in np.flatnonzero(valid):
+            target_ns = (pd.Timestamp(fiscal_end[offset]) - pd.DateOffset(years=int(years))).value
+            eligible = np.flatnonzero(valid & (as_of_ns <= as_of_ns[offset]) & (fiscal_end_ns < fiscal_end_ns[offset]))
+            if not len(eligible):
                 continue
-            eligible["_distance"] = (eligible["fiscal_end"] - target).abs()
-            eligible = eligible[eligible["_distance"] <= tolerance]
-            if eligible.empty:
+            distance = np.abs(fiscal_end_ns[eligible] - target_ns)
+            eligible = eligible[distance <= tolerance_ns]
+            distance = distance[distance <= tolerance_ns]
+            if not len(eligible):
                 continue
-            chosen = eligible.sort_values(
-                ["_distance", "as_of", "position"],
-                ascending=[True, False, False],
-            ).iloc[0]
-            result[int(current.position)] = int(chosen["position"])
+            closest = eligible[distance == distance.min()]
+            latest = closest[as_of_ns[closest] == as_of_ns[closest].max()]
+            result[positions[offset]] = positions[latest].max()
     return pd.Series(result, index=fund_hist.index, dtype="int64")
 
 
@@ -649,7 +653,7 @@ class PitFrames:
             )
         if close is not None and self._close is not None:
             if self._close.shape != close.shape or not self._close.columns.equals(close.columns):
-                raise ValueError("PitFrames was built on a different `close` frame " f"({self._close.shape} vs {close.shape})")
+                raise ValueError(f"PitFrames was built on a different `close` frame ({self._close.shape} vs {close.shape})")
 
     def stats(self) -> dict[str, int]:
         """What the cache actually collapsed, so the sub-step can log it and the tests

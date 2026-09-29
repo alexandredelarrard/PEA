@@ -32,6 +32,7 @@ EXACTLY, so the "neutralized" label is identically zero and ships as a valid-loo
 neutralization, it is a deletion, so a group too thin to support a demean is dropped from
 the day's design rather than allowed to absorb the name whole.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -42,9 +43,9 @@ import pandas as pd
 _WINSOR_LO, _WINSOR_HI = 0.01, 0.99
 
 # the three clip policies, named so a call site documents its intent
-XS_CLIP_LABEL = 3.0             # modelling target (targets.py)
-XS_CLIP_CHARACTERISTIC = 4.0    # factor characteristic / regressor (factors.py)
-XS_CLIP_PEER = 8.0             # peer-relative z (panel.py), winsorised again downstream
+XS_CLIP_LABEL = 3.0  # modelling target (targets.py)
+XS_CLIP_CHARACTERISTIC = 4.0  # factor characteristic / regressor (factors.py)
+XS_CLIP_PEER = 8.0  # peer-relative z (panel.py), winsorised again downstream
 
 #: Smallest dispersion a standardizer will divide by, as a FRACTION of the same day's
 #: cross-sectional std. Generalises the `sd > 0` degenerate-case guard from *zero* to
@@ -79,8 +80,7 @@ PEER_DISPERSION_FLOOR = 0.10
 MIN_GROUP_SIZE_FOR_NEUTRALIZATION = 5
 
 
-def winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO,
-                 hi: float = _WINSOR_HI) -> pd.DataFrame:
+def winsorize_xs(df: pd.DataFrame, lo: float = _WINSOR_LO, hi: float = _WINSOR_HI) -> pd.DataFrame:
     """Clip each ROW (date) to its cross-sectional [lo, hi] quantiles across tickers.
     NaN-safe: an all-NaN row yields NaN bounds -> clip is a no-op there."""
     if df is None or df.empty:
@@ -98,9 +98,7 @@ def xs_rank_pct(df: pd.DataFrame) -> pd.DataFrame:
     return df.rank(axis=1, pct=True, method="average")
 
 
-def xs_z(df: pd.DataFrame, clip: float | None, *,
-         zero_sd_to_nan: bool = False,
-         eps: float = 1e-12) -> pd.DataFrame:
+def xs_z(df: pd.DataFrame, clip: float | None, *, zero_sd_to_nan: bool = False, eps: float = 1e-12) -> pd.DataFrame:
     """THE cross-sectional z-score, per date across tickers.
 
     `clip` is required (see the module docstring); pass `None` for unclipped.
@@ -188,9 +186,9 @@ def _day_residual(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     return y_centered - x_centered @ coef
 
 
-def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
-                   dummies: pd.DataFrame | None = None, *,
-                   min_group_size: int | None = None) -> pd.DataFrame:
+def xs_project_out(
+    values: pd.DataFrame, exposures: list[pd.DataFrame], dummies: pd.DataFrame | None = None, *, min_group_size: int | None = None
+) -> pd.DataFrame:
     """Per-day cross-sectional residual of `values` on `exposures` + `dummies`, JOINTLY.
 
     The multivariate sibling of a single-factor neutralization, and the difference is not
@@ -210,10 +208,8 @@ def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
     is simply not forced to a group zero mean that day, so no new NaN is introduced.
     `None` (the default) reproduces the unfloored behaviour exactly, bit for bit.
     """
-    stacked = (np.stack([e.reindex_like(values).to_numpy(float) for e in exposures], axis=2)
-               if exposures else np.zeros((*values.shape, 0)))
-    group_block = (dummies.reindex(values.columns).to_numpy(float)
-                   if dummies is not None else np.zeros((values.shape[1], 0)))
+    stacked = np.stack([e.reindex_like(values).to_numpy(float) for e in exposures], axis=2) if exposures else np.zeros((*values.shape, 0))
+    group_block = dummies.reindex(values.columns).to_numpy(float) if dummies is not None else np.zeros((values.shape[1], 0))
     y = values.to_numpy(float)
     out = np.full_like(y, np.nan)
     for i in range(len(y)):
@@ -222,16 +218,15 @@ def xs_project_out(values: pd.DataFrame, exposures: list[pd.DataFrame],
         if min_group_size is not None and grp.shape[1]:
             grp = _floored_group_block(grp, min_group_size)
         design = np.column_stack([stacked[i][present], grp])
-        if present.sum() > design.shape[1]:          # else the fit is exact and says nothing
+        if present.sum() > design.shape[1]:  # else the fit is exact and says nothing
             out[i, present] = _day_residual(y[i][present], design)
     return pd.DataFrame(out, index=values.index, columns=values.columns)
 
 
-def xs_standardize(feat: pd.DataFrame, method: Literal["rank", "zscore"],
-                   clip: float = XS_CLIP_LABEL) -> pd.DataFrame:
+def xs_standardize(feat: pd.DataFrame, method: Literal["rank", "zscore"], clip: float = XS_CLIP_LABEL) -> pd.DataFrame:
     """Standardize one feature within each day (across stocks).
-      'rank'   -> percentile in [0,1] (robust to outliers)
-      'zscore' -> demean/divide by cross-sectional std, clipped at +/-`clip`
+    'rank'   -> percentile in [0,1] (robust to outliers)
+    'zscore' -> demean/divide by cross-sectional std, clipped at +/-`clip`
     """
     if method == "rank":
         return xs_rank_pct(feat)
@@ -247,9 +242,13 @@ HIST_WINDOW = 1260
 HIST_MIN_PERIODS = 252
 
 
-def self_history_z(field_df: pd.DataFrame, window: int = HIST_WINDOW,
-                   min_periods: int = HIST_MIN_PERIODS,
-                   clip: float = 8.0) -> pd.DataFrame:
+def self_history_z(
+    field_df: pd.DataFrame,
+    window: int = HIST_WINDOW,
+    min_periods: int = HIST_MIN_PERIODS,
+    clip: float = 8.0,
+    output_since: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     """Time-series z-score of each ticker versus its OWN trailing `window`:
 
         z(t) = (x(t) - trailing_mean(t)) / trailing_std(t)
@@ -279,4 +278,6 @@ def self_history_z(field_df: pd.DataFrame, window: int = HIST_WINDOW,
     std = field_df.rolling(window, min_periods=min_periods).std()
     z = (field_df - mean) / std.where(std > 0)
     z = z.clip(-clip, clip).replace([np.inf, -np.inf], np.nan)
-    return winsorize_xs(z)            # trim per-day cross-sectional 1%/99% outliers
+    if output_since is not None:
+        z = z.loc[z.index >= pd.Timestamp(output_since)]
+    return winsorize_xs(z)  # trim per-day cross-sectional 1%/99% outliers

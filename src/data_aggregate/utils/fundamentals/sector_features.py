@@ -378,6 +378,8 @@ def build_sector_feature_panel(
     fundamentals: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Long-format sector-KPI panel using the approved raw/self-history view contract.
 
@@ -403,4 +405,10 @@ def build_sector_feature_panel(
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     semantics = {name: mode for name, mode in SECTOR_TRANSFORM_SEMANTICS.items() if name in fields}
-    return build_fundamental_views(fields, peer_dict, semantics=semantics)
+    return build_fundamental_views(
+        fields,
+        peer_dict,
+        semantics=semantics,
+        history_fields=history_fields,
+        output_since=output_since,
+    )

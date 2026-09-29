@@ -457,23 +457,62 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     )
 
 
-def load_tagged_facts(context: Context, table: str, tags: tuple[str, ...], columns: list[str] | None = None) -> pd.DataFrame | None:
+def load_tagged_facts(
+    context: Context,
+    table: str,
+    tags: tuple[str, ...],
+    columns: list[str] | None = None,
+    *,
+    tickers: tuple[str, ...] | None = None,
+    since: pd.Timestamp | None = None,
+) -> pd.DataFrame | None:
     """Read ONLY the rows whose `tag` the pension/footnote builders actually use — they touch just 2
     tags of each facts table (`notes_num` has 10 tags; only ~16% of its rows are these two). Pulling
     the whole table then filtering in-memory is the same waste pattern as the 13F/embedding tables.
     The tag filter is pushed down server-side. None if the table is absent/empty or no row matches."""
-    df = context.store.load(table, columns=columns or _FACT_COLS, where={"tag": list(tags)}, optional=True)
+    where: dict[str, object] = {"tag": list(tags)}
+    if tickers:
+        where["ticker"] = list(tickers)
+    df = context.store.load(
+        table,
+        columns=columns or _FACT_COLS,
+        where=where,
+        since=since,
+        optional=True,
+    )
     return df.reset_index(drop=True) if df is not None else None
 
 
-def load_pension_facts_scoped(context: Context) -> pd.DataFrame | None:
+def load_pension_facts_scoped(
+    context: Context,
+    *,
+    tickers: tuple[str, ...] | None = None,
+    since: pd.Timestamp | None = None,
+) -> pd.DataFrame | None:
     """`pension_facts` restricted to the recognized net-liability tags the panel reads."""
-    return load_tagged_facts(context, _PENSION_FACTS_TABLE, _NET_PENSION_TAGS)
+    return load_tagged_facts(
+        context,
+        _PENSION_FACTS_TABLE,
+        _NET_PENSION_TAGS,
+        tickers=tickers,
+        since=since,
+    )
 
 
-def load_notes_num_scoped(context: Context) -> pd.DataFrame | None:
+def load_notes_num_scoped(
+    context: Context,
+    *,
+    tickers: tuple[str, ...] | None = None,
+    since: pd.Timestamp | None = None,
+) -> pd.DataFrame | None:
     """`notes_num` restricted to the footnote PBO + plan-asset tags the panel reads."""
-    return load_tagged_facts(context, _NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
+    return load_tagged_facts(
+        context,
+        _NOTES_NUM_TABLE,
+        (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG),
+        tickers=tickers,
+        since=since,
+    )
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
@@ -1661,6 +1700,8 @@ def build_fundamental_feature_panel(
     pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    history_fields: dict[str, pd.DataFrame] | None = None,
+    output_since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel with a raw ``f_<characteristic>`` column for every approved
@@ -1698,4 +1739,6 @@ def build_fundamental_feature_panel(
         semantics=semantics,
         history_window=hist_window,
         history_min_periods=hist_min_periods,
+        history_fields=history_fields,
+        output_since=output_since,
     )

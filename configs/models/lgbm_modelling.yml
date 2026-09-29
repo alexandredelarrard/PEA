@@ -1,7 +1,7 @@
 # lgbm_modelling.yml -- LightGBM member: hyperparameters + its OWN feature set + monotone.
 # Merged into the global config by read_config (distinct top-level key `lgbm`). Robust
 # recipe chosen on cross-fold IC stability (foldIR): lr .02, min_child 100, eval=rmse,
-# monotone ON. Keeps the sparse sector-specific + (not-yet-in-cube) f_ec_* columns --
+# monotone ON. Keeps the sparse sector-specific + earnings-call columns --
 # LightGBM handles NaN/sparsity natively.
 lgbm:
   learning_rate: 0.01
@@ -53,10 +53,13 @@ lgbm:
     - f_ic_shortvol_ratio_20d_vs_peers: -1
     - f_ic_shortvol_acceleration: -1
     - f_ic_ftd_to_adv20_xs: -1
-    - f_ec_tone_xs: 1
-    - f_ec_tone_delta_xs: 1
-    - f_ec_qa_gap_xs: 1
-    - f_ec_uncertainty_xs: -1
+    - f_ec_tone: 1
+    - f_ec_tone_vs_hist: 1
+    - f_ec_tone_delta: 1
+    - f_ec_qa_gap: 1
+    - f_ec_qa_gap_vs_hist: 1
+    - f_ec_uncertainty: -1
+    - f_ec_uncertainty_vs_hist: -1
     - peer_mom_63: 1
     - f_piotroski_f_score_xs: 1
     - f_rule_of_40_xs: 1
@@ -126,12 +129,18 @@ lgbm:
   - f_ic_shortvol_ratio_20d_vs_peers
   - f_ic_shortvol_acceleration
   - f_ic_ftd_to_adv20_xs
-  - f_ec_tone_xs
-  - f_ec_tone_delta_xs
-  - f_ec_qa_gap_xs
-  - f_ec_uncertainty_xs
-  - f_ec_vocab_novelty_xs
-  - f_ec_length_delta_xs
+  - f_ec_tone
+  - f_ec_tone_vs_hist
+  - f_ec_qa_gap
+  - f_ec_qa_gap_vs_hist
+  - f_ec_uncertainty
+  - f_ec_uncertainty_vs_hist
+  - f_ec_qa_coherence_mean
+  - f_ec_qa_coherence_mean_vs_hist
+  - f_ec_tone_delta
+  - f_ec_length_delta
+  - f_ec_qa_qq_distance
+  - f_ec_prep_qq_distance
   - f_tier1_capital_ratio_xs
   - f_combined_ratio_xs
   - f_nii_growth_xs

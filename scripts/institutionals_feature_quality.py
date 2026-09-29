@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import shutil
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,13 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Project imports intentionally follow the repository-root path bootstrap.
+# ruff: noqa: E402
 
 from src.context import get_config_context
 from src.data_store.schema import Table, Tables
@@ -159,7 +167,7 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
     cutoff = pd.Timestamp(as_of).normalize()
     verified = _verified_snapshot(snapshot, metadata, as_of=cutoff)
 
-    context = get_config_context(config, use_cache=False, save=False)
+    _, context = get_config_context(config, use_cache=False, save=False)
     sources = [_source_metadata(context.store, table) for table in SOURCE_TABLES]
     out.mkdir(parents=True, exist_ok=True)
     frozen_path = out / "baseline.parquet"

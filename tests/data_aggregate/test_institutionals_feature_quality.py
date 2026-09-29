@@ -62,7 +62,7 @@ def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, mo
     metadata = _write_snapshot(snapshot, frame)
     (snapshot.parent / "meta.json").write_text(json.dumps(metadata), encoding="utf-8")
     store = _MetadataOnlyStore()
-    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: SimpleNamespace(store=store))
+    monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (None, SimpleNamespace(store=store)))
 
     out = tmp_path / "frozen"
     assert quality.main(["freeze-baseline", "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]) == 0

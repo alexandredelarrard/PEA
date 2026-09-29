@@ -834,6 +834,10 @@ EARNINGS_CALL_TAG_PREPARED = "prepared"  # a prepared-remarks (scripted) managem
 # Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
 # for KPIs ('full' stays in the sections table as a format-proof fallback).
 EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
+# A usable call needs both scored sections and at least this many words after removing
+# greetings/courtesy boilerplate. Model-facing signals live for one quarter only.
+EARNINGS_CALL_MIN_CLEAN_WORDS = 100
+EARNINGS_CALL_SIGNAL_SESSIONS = 66
 
 # SENTIMENT ANALYSIS
 FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"

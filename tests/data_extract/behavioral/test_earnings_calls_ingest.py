@@ -41,7 +41,13 @@ def _seed_cache(tmp_path, pairs):
 
 
 def _ctx(tmp_path, existing_keys) -> Any:
-    existing = pd.DataFrame(existing_keys, columns=["ticker", "quarter"]) if existing_keys else pd.DataFrame(columns=["ticker", "quarter"])
+    existing = pd.DataFrame(
+        [
+            {"ticker": ticker, "quarter": quarter, "tag": tag, "text": text}
+            for ticker, quarter in existing_keys
+            for tag, text in (("prepared_remarks", _PREP), ("qa", _QA))
+        ]
+    )
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
     # `run_manifest._manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.

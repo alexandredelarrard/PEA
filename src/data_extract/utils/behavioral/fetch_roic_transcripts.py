@@ -44,6 +44,7 @@ from src.data_extract.utils.behavioral.utils_split_qa import (
 )
 from src.data_store.schema import Tables
 from src.utils import polite_http as ph
+from src.utils.text_metrics import assess_earnings_call_sections
 
 logger = logging.getLogger(__name__)
 _TABLE = Tables.earnings_call_sections
@@ -145,11 +146,15 @@ def fetch_roic_transcripts(
         for q in to_fetch:
             sections, as_of = roic_transcript_sections(ticker, q, apikey)
             ph.sleep_pace(pause, ROIC_EARNINGS_TRANSCRIPT_URL)
-            for tag, text in sections.items():
+            quality = assess_earnings_call_sections(sections)
+            if not quality.valid:
+                logger.warning("Roic AI %s %s malformed (%s); leaving for Fool retry.", ticker, q, quality.reason)
+                continue
+            for tag, text in quality.cleaned_sections.items():
                 if len(text) < 40:
                     continue
                 rows.append({"ticker": ticker, "quarter": q, "tag": tag, "as_of": as_of or avail.get(q), "url": url, "text": text})
-                got.add(q)  # only a quarter with real text counts as filled
+            got.add(q)  # only a quality-valid quarter counts as filled
         if rows:  # persist per ticker (resume-safe)
             saved = context.store.save(_TABLE, pd.DataFrame(rows))
             total_saved += saved

@@ -143,7 +143,9 @@ def test_quote_discovery_hf_and_local_gap(tmp_path, monkeypatch):
     # pre-seed CCC's gap quarter on disk so it is already complete
     ccc_dir = tmp_path / "call_transcripts" / "CCC"
     ccc_dir.mkdir(parents=True)
-    (ccc_dir / f"{end_q}.html").write_text("cached", encoding="utf-8")
+    useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    cached = f'<div class="transcript-content">CALL PARTICIPANTS\nJane Doe -- CEO\n{useful}\nQuestions and Answers\n{useful}</div>'
+    (ccc_dir / f"{end_q}.html").write_text(cached, encoding="utf-8")
 
     bbb_page = "x " + _t(f"{y}/06/01", f"bbb-q{q}-{y}")  # BBB's latest-quarter link
     calls: list[str] = []

@@ -33,13 +33,16 @@ from pathlib import Path
 from typing import cast
 
 import pandas as pd
+from bs4 import BeautifulSoup
 
 from src.constants.constants import EARNINGS_CALL_REPORT_GRACE_DAYS, EARNINGS_REPORT_TO_QUARTER_LAG_DAYS, NO_EARNINGS_CALL_TICKERS
 from src.context import Context
 from src.data_extract.utils.behavioral.fetch_hf_transcripts import hf_latest_quarter_by_ticker
 from src.data_extract.utils.behavioral.utils_behavior import _index_path, _load_index
+from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_store.schema import Tables
+from src.utils.text_metrics import assess_earnings_call_sections
 
 # --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
 _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
@@ -79,21 +82,34 @@ def _since_floor_index(since: str) -> int:
 
 
 def _local_quarters(cache: Path, ticker: str) -> set[str]:
-    """Quarters ALREADY downloaded to disk for a ticker = the {quarter}.html files under
-    data/call_transcripts/{ticker}/ (so a re-run never re-requests a cached transcript)."""
+    """Only locally cached quarters whose parsed high-signal sections pass quality."""
     d = cache / ticker
-    return {p.stem for p in d.glob("*.html")} if d.exists() else set()
+    if not d.exists():
+        return set()
+    valid: set[str] = set()
+    for path in d.glob("*.html"):
+        try:
+            soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+            div = soup.find("div", class_=lambda c: bool(c and ("transcript-content" in c or "article-body" in c)))
+            text = div.get_text("\n", strip=True) if div else ""
+            if assess_earnings_call_sections(split_prepared_qa(text)).valid:
+                valid.add(path.stem)
+        except OSError:
+            continue
+    return valid
 
 
 def _db_quarters_by_ticker(context: Context) -> dict[str, set]:
     """{ticker: {quarters}} already in the sections table (ANY source, incl. HF). Empty when the
     table is not created yet -> resume on disk + JSON coverage."""
-    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"], optional=True)
+    db = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "tag", "text"], optional=True)
     if db is None:
         return {}
     out: dict[str, set] = {}
-    for tk, q in zip(db["ticker"], db["quarter"], strict=False):
-        out.setdefault(str(tk), set()).add(str(q))
+    for (ticker, quarter), call in db.groupby(["ticker", "quarter"], sort=False):
+        sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
+        if assess_earnings_call_sections(sections).valid:
+            out.setdefault(str(ticker), set()).add(str(quarter))
     return out
 
 
@@ -148,7 +164,9 @@ def _missing_for(
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
     tk_end = released.get(tk, end_idx) if released is not None else end_idx  # actual release, per ticker
     required = set(_quarters_between(gap_start, tk_end))
-    have = _local_quarters(cache, tk) | have_db.get(tk, set()) | have_json.get(tk, set())
+    # An index URL is discovery state, not transcript coverage. Only valid parsed DB/disk
+    # content closes the gap; malformed cached/indexed calls are retried.
+    have = _local_quarters(cache, tk) | have_db.get(tk, set())
     return required - have
 
 

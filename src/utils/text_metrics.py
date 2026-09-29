@@ -26,6 +26,10 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from src.constants.constants import EARNINGS_CALL_MIN_CLEAN_WORDS, EARNINGS_CALL_SCORED_TAGS
 
 # Curated subset of Loughran-McDonald "Uncertainty" + "Weak Modal" words (lowercased).
 LM_UNCERTAINTY: frozenset[str] = frozenset(
@@ -531,3 +535,43 @@ def cosine_similarity(a: Counter, b: Counter) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
+
+
+_SENTENCE_RE = re.compile(r"[^.?!]+[.?!]*")
+_COURTESY_RE = re.compile(
+    r"^(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|morning|afternoon|thanks?|thank\s+you|"
+    r"yeah|yes|sure|okay|ok|great|congrats?|congratulations)\b|taking\s+(?:my|the|our|your)\s+questions?"
+    r"|congrat\w*|appreciate\s+it|back\s+in\s+(?:the\s+)?queue|operator\s+instructions?",
+    re.I,
+)
+
+
+def clean_earnings_call_text(text: object) -> str:
+    """Remove leading/trailing courtesy-only sentences and normalize whitespace."""
+    sentences = [s.strip() for s in _SENTENCE_RE.findall(re.sub(r"\s+", " ", str(text or "")).strip()) if s.strip()]
+    while sentences and "?" not in sentences[0] and len(sentences[0].split()) <= 22 and _COURTESY_RE.search(sentences[0]):
+        sentences.pop(0)
+    while sentences and "?" not in sentences[-1] and len(sentences[-1].split()) <= 22 and _COURTESY_RE.search(sentences[-1]):
+        sentences.pop()
+    return " ".join(sentences).strip()
+
+
+@dataclass(frozen=True)
+class EarningsCallQuality:
+    cleaned_sections: dict[str, str]
+    section_word_counts: dict[str, int]
+    combined_word_count: int
+    valid: bool
+    reason: str | None
+
+
+def assess_earnings_call_sections(sections: Mapping[str, object]) -> EarningsCallQuality:
+    """One shared validity decision for cached, stored, ROIC, and Fool calls."""
+    cleaned = {str(tag): clean_earnings_call_text(text) for tag, text in sections.items()}
+    counts = {tag: word_count(cleaned.get(tag, "")) for tag in EARNINGS_CALL_SCORED_TAGS}
+    missing = [tag for tag, count in counts.items() if count == 0]
+    total = sum(counts.values())
+    reason = f"missing sections: {', '.join(missing)}" if missing else None
+    if reason is None and total < EARNINGS_CALL_MIN_CLEAN_WORDS:
+        reason = f"only {total} cleaned words (<{EARNINGS_CALL_MIN_CLEAN_WORDS})"
+    return EarningsCallQuality(cleaned, counts, total, reason is None, reason)

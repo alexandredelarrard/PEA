@@ -27,6 +27,7 @@ import json
 import logging
 import random
 import re
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
@@ -51,6 +52,7 @@ from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
+from src.utils.text_metrics import assess_earnings_call_sections
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +358,16 @@ def parse_transcript_sections(html: str) -> dict[str, str]:
     return out
 
 
+def _valid_cached_transcript(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        sections = parse_transcript_sections(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    return assess_earnings_call_sections(sections).valid
+
+
 def download_transcripts(
     context: Context, tickers: list[str] | None = None, pause: float = EARNINGS_CALL_REQUEST_PAUSE, limit: int | None = None
 ) -> int:
@@ -367,7 +379,11 @@ def download_transcripts(
     cache = cache_dir(context, context.config.local.paths.call_transcripts)
     index = _load_index(_index_path(context))
     keep = set(tickers) if tickers is not None else None
-    todo = [r for r in index.values() if (keep is None or r["ticker"] in keep) and not (cache / r["ticker"] / f"{r['quarter']}.html").exists()]
+    todo = [
+        r
+        for r in index.values()
+        if (keep is None or r["ticker"] in keep) and not _valid_cached_transcript(cache / r["ticker"] / f"{r['quarter']}.html")
+    ]
 
     # RANDOM order (not index/alphabetical): spreads the load and, with `limit`, samples a random
     # subset rather than always the same head of the index.
@@ -393,10 +409,15 @@ def _existing_section_keys(context: Context) -> set[tuple[str, str]]:
     """(ticker, quarter) already present in `earnings_call_sections` (from ANY source). Lets the MF
     ingest SKIP transcripts already parsed instead of re-reading + re-parsing every cached HTML each
     run. Empty set when the table is missing / unreadable (-> full ingest)."""
-    df = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter"], optional=True)
+    df = context.store.load(Tables.earnings_call_sections, columns=["ticker", "quarter", "tag", "text"], optional=True)
     if df is None:
         return set()
-    return set(map(tuple, df.astype(str).drop_duplicates().to_numpy()))
+    valid: set[tuple[str, str]] = set()
+    for (ticker, quarter), call in df.groupby(["ticker", "quarter"], sort=False):
+        sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
+        if assess_earnings_call_sections(sections).valid:
+            valid.add((str(ticker), str(quarter)))
+    return valid
 
 
 def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, force: bool = False) -> int:
@@ -423,15 +444,16 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
             continue
         rec = index.get((ticker, quarter), {})
         sections = parse_transcript_sections(html_path.read_text(encoding="utf-8", errors="replace"))
-        added = False
-        for tag, text in sections.items():
+        quality = assess_earnings_call_sections(sections)
+        if not quality.valid:
+            logger.warning("MF %s %s malformed (%s); leaving missing for source retry.", ticker, quarter, quality.reason)
+            continue
+        for tag, text in quality.cleaned_sections.items():
             if len(text) < 40:  # skip empty / stub sections
                 continue
             rows.append({"ticker": ticker, "quarter": quarter, "tag": tag, "as_of": rec.get("call_date"), "url": rec.get("url"), "text": text})
-            added = True
-        if added:
-            parsed += 1
-            existing.add((ticker, quarter))  # de-dup within this run too
+        parsed += 1
+        existing.add((ticker, quarter))  # de-dup within this run too
 
     if not rows:
         logger.info("MF ingest: nothing new — %d cached transcript(s) already ingested.", skipped)

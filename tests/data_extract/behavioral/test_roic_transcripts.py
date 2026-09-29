@@ -84,7 +84,12 @@ def test_shared_gap_is_computed_once_and_handed_down(monkeypatch):
     monkeypatch.setattr(roic, "missing_quarters_by_ticker", _must_not_be_called)
     # Roic covers FRT's Q2 only; ZZZ not at all
     monkeypatch.setattr(roic, "roic_list_quarters", lambda t, k: {"2025Q2": "2025-05-01"} if t == "FRT" else {})
-    monkeypatch.setattr(roic, "roic_transcript_sections", lambda t, q, k: ({"full": "operator " * 80}, "2025-05-01"))
+    useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    monkeypatch.setattr(
+        roic,
+        "roic_transcript_sections",
+        lambda t, q, k: ({"prepared_remarks": useful, "qa": useful}, "2025-05-01"),
+    )
 
     missing = {"FRT": ["2025Q2", "2025Q3"], "ZZZ": ["2025Q2"]}
     result = roic.fetch_roic_transcripts(_ctx([]), missing=missing, pause=0.0)

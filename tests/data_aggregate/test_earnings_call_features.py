@@ -215,7 +215,7 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     assert len(calendar) >= 500
     old = build_earnings_call_feature_panel(_sentiment_frame(), calendar, sections=_sections_frame())
     revised_sentiment = _sentiment_frame()
-    mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q2")
+    mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
     revised = build_earnings_call_feature_panel(revised_sentiment, calendar, sections=_sections_frame())
 
@@ -238,14 +238,15 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     store = _Store(old)
     last = pd.Timestamp(old["date"].max())
     default_refresh = calendar[-130]
-    late_refresh = pd.Timestamp("2023-05-02")
+    late_refresh = pd.Timestamp("2023-02-02")
     window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=late_refresh, drop_empty=True)
+    effective_refresh = min(late_refresh, window.refresh_from)
+    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
     expected = revised.sort_values(["date", "ticker"]).reset_index(drop=True)
     actual = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
     first = actual.copy()
-    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=late_refresh, drop_empty=True)
+    write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
     pd.testing.assert_frame_equal(first, store.rows.sort_values(["date", "ticker"]).reset_index(drop=True), check_exact=True)
     print("\n=== SANITY CHECK: earnings-call full/tail equivalence ===")
     print(

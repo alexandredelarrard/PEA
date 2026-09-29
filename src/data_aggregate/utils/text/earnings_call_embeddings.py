@@ -503,29 +503,21 @@ def embed_earnings_calls(
 
 def embedding_kpis_streamed(
     context: Context,
-    symbol_tenure: pd.DataFrame | None = None,
-    entity_lineage: pd.DataFrame | None = None,
+    call_identity: pd.DataFrame | None = None,
 ) -> pd.DataFrame | None:
     """Derive embedding KPIs in bounded issuer-sized batches.
 
-    When issuer lineage is available, predecessor calls under an old symbol remain comparable
-    to the first call under a new symbol. The ticker-only fallback is retained for isolated tests
-    and unseeded stores.
+    The caller supplies the already validated call-to-issuer map, so predecessor calls under an
+    old symbol remain comparable to the first call under a new symbol. The ticker-only fallback
+    is retained for isolated tests and unseeded stores.
     """
     store = context.store
     kparts = []
     groups: list[tuple[str | None, list[str]]] = []
-    if symbol_tenure is not None and not symbol_tenure.empty and entity_lineage is not None and not entity_lineage.empty:
-        unique_lineage = entity_lineage.dropna(subset=["cik", "entity_id"]).copy()
-        unique_lineage["cik"] = unique_lineage["cik"].astype(str)
-        unique_lineage = unique_lineage.groupby("cik", as_index=False).filter(lambda group: group["entity_id"].astype(str).nunique() == 1)
-        mapped = symbol_tenure.assign(issuer_cik=symbol_tenure["issuer_cik"].astype(str)).merge(
-            unique_lineage[["cik", "entity_id"]].drop_duplicates("cik"),
-            left_on="issuer_cik",
-            right_on="cik",
-            how="inner",
-        )
-        groups = [(str(issuer_id), sorted(group["symbol"].astype(str).unique())) for issuer_id, group in mapped.groupby("entity_id", sort=False)]
+    if call_identity is not None and not call_identity.empty:
+        groups = [
+            (str(issuer_id), sorted(group["ticker"].astype(str).unique())) for issuer_id, group in call_identity.groupby("issuer_id", sort=False)
+        ]
     if not groups:
         groups = [(None, [str(ticker)]) for ticker in store.distinct(Tables.earning_calls_embedding, "ticker")]
 
@@ -534,12 +526,7 @@ def embedding_kpis_streamed(
         if emb is None:
             continue
         if issuer_id is not None:
-            # Local import avoids a module cycle: the feature module imports build_embedding_kpis.
-            from src.data_aggregate.utils.text.earnings_call_features import attach_issuer_identity
-
-            calls = emb[["ticker", "quarter", "as_of"]].drop_duplicates(["ticker", "quarter"])
-            calls = attach_issuer_identity(calls, symbol_tenure, entity_lineage)
-            calls = calls[calls["issuer_id"].eq(issuer_id)]
+            calls = call_identity[call_identity["issuer_id"].astype(str).eq(issuer_id)]
             if calls.empty:
                 continue
             emb = emb.merge(calls[["ticker", "quarter", "issuer_id"]], on=["ticker", "quarter"], how="inner")

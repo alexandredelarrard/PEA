@@ -56,8 +56,6 @@ lgbm:
     - f_ec_tone: 1
     - f_ec_tone_vs_hist: 1
     - f_ec_tone_delta: 1
-    - f_ec_qa_gap: 1
-    - f_ec_qa_gap_vs_hist: 1
     - f_ec_uncertainty: -1
     - f_ec_uncertainty_vs_hist: -1
     - peer_mom_63: 1

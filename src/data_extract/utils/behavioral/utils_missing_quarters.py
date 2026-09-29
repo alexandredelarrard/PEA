@@ -102,28 +102,29 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
     return valid
 
 
-def _db_quarters_by_ticker(context: Context) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def _db_quarters_by_ticker(
+    context: Context,
+    tickers: list[str],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Return quality-valid and malformed DB quarters separately."""
-    try:
-        db = context.store.load(
-            Tables.earnings_call_sections,
-            columns=["ticker", "quarter", "tag", "text"],
-            where={"tag": list(EARNINGS_CALL_SCORED_TAGS)},
-            optional=True,
-        )
-    except KeyError:
-        # An optional/uninitialized store can expose an empty frame with no schema.
-        return {}, {}
-    if db is None:
-        return {}, {}
     valid: dict[str, set[str]] = {}
     malformed: dict[str, set[str]] = {}
-    for (ticker, quarter), call in db.groupby(["ticker", "quarter"], sort=False):
-        sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
-        if assess_earnings_call_sections(sections).valid:
-            valid.setdefault(str(ticker), set()).add(str(quarter))
-        else:
-            malformed.setdefault(str(ticker), set()).add(str(quarter))
+    for start in range(0, len(tickers), 25):
+        try:
+            db = context.store.load(
+                Tables.earnings_call_sections,
+                columns=["ticker", "quarter", "tag", "text"],
+                where={"ticker": tickers[start : start + 25], "tag": list(EARNINGS_CALL_SCORED_TAGS)},
+                optional=True,
+            )
+        except KeyError:
+            return {}, {}
+        if db is None:
+            continue
+        for (ticker, quarter), call in db.groupby(["ticker", "quarter"], sort=False):
+            sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
+            target = valid if assess_earnings_call_sections(sections).valid else malformed
+            target.setdefault(str(ticker), set()).add(str(quarter))
     return valid, malformed
 
 
@@ -237,7 +238,7 @@ def missing_quarters_by_ticker(
     end_idx = _latest_expected_quarter_index(grace_days)
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
-    have_db, malformed_db = _db_quarters_by_ticker(context)
+    have_db, malformed_db = _db_quarters_by_ticker(context, universe)
     released = _released_quarter_idx_by_ticker(context)  # latest ACTUALLY-reported quarter per ticker
     out: dict[str, list[str]] = {}
     for tk in universe:

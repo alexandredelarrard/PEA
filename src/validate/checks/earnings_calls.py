@@ -74,18 +74,44 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     releases = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date"], optional=True)
     tenure = context.store.load(
         Tables.symbol_tenure,
-        columns=["symbol", "valid_from", "valid_to"],
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to"],
         optional=True,
     )
+    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
     assert roster is not None
-    release_ranges: dict[str, tuple[int, int]] = {}
+    roster_tickers = roster["ticker"].astype(str).tolist()
+    roster_entity: dict[str, str] = {}
+    aliases_by_entity: dict[str, set[str]] = {}
+    if tenure is not None and not tenure.empty and lineage is not None and not lineage.empty:
+        unique_lineage = lineage.dropna(subset=["cik", "entity_id"]).copy()
+        unique_lineage["cik"] = unique_lineage["cik"].astype(str)
+        unique_lineage = unique_lineage.groupby("cik", as_index=False).filter(lambda group: group["entity_id"].astype(str).nunique() == 1)
+        tenure = tenure.assign(issuer_cik=tenure["issuer_cik"].astype(str)).merge(
+            unique_lineage[["cik", "entity_id"]].drop_duplicates("cik"),
+            left_on="issuer_cik",
+            right_on="cik",
+            how="left",
+        )
+        for entity_id, group in tenure.dropna(subset=["entity_id"]).groupby("entity_id", sort=False):
+            aliases_by_entity[str(entity_id)] = set(group["symbol"].astype(str))
+        today = pd.Timestamp.today().normalize()
+        valid_from = pd.to_datetime(tenure["valid_from"], errors="coerce")
+        valid_to = pd.to_datetime(tenure["valid_to"], errors="coerce")
+        active = tenure[valid_from.le(today) & (valid_to.isna() | valid_to.gt(today))]
+        for ticker in roster_tickers:
+            entities = active.loc[active["symbol"].astype(str).eq(ticker), "entity_id"]
+            if entities.notna().all() and entities.astype(str).nunique() == 1:
+                roster_entity[ticker] = str(entities.iloc[0])
+
+    analysis_symbols = sorted(set(roster_tickers) | {symbol for entity in roster_entity.values() for symbol in aliases_by_entity.get(entity, set())})
+    release_indices: dict[str, list[int]] = {}
     if releases is not None:
         release_date = pd.to_datetime(releases["earnings_date"], errors="coerce")
         releases = releases[release_date.le(pd.Timestamp.today().normalize())]
         for ticker, group in releases.groupby("ticker", sort=False):
             indices = [value for value in group["earnings_date"].map(_quarter_index) if value is not None]
             if indices:
-                release_ranges[str(ticker)] = (max(2006 * 4, min(indices)), max(indices))
+                release_indices[str(ticker)] = indices
 
     ratios: dict[str, float] = {}
     fixed_ratios: dict[str, float] = {}
@@ -93,13 +119,13 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     malformed = valid_calls = observed_calls = 0
     rejected_reasons: dict[str, int] = {}
     valid_dates: dict[str, list[pd.Timestamp]] = {}
-    roster_tickers = roster["ticker"].astype(str).tolist()
-    valid_by_ticker: dict[str, set[str]] = {ticker: set() for ticker in roster_tickers}
+    valid_by_ticker: dict[str, set[str]] = {ticker: set() for ticker in analysis_symbols}
+    valid_dates_by_ticker: dict[str, list[pd.Timestamp]] = {}
     section_columns = ["ticker", "quarter", "tag", "text"]
     if "as_of" in context.store.columns(Tables.earnings_call_sections):
         section_columns.insert(3, "as_of")
-    for start in range(0, len(roster_tickers), 25):
-        batch = roster_tickers[start : start + 25]
+    for start in range(0, len(analysis_symbols), 25):
+        batch = analysis_symbols[start : start + 25]
         sections = context.store.load(
             Tables.earnings_call_sections,
             columns=section_columns,
@@ -116,7 +142,7 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
                     if "as_of" in call:
                         call_date = pd.to_datetime(call["as_of"], errors="coerce").dropna()
                         if not call_date.empty:
-                            valid_dates.setdefault(str(ticker), []).append(pd.Timestamp(call_date.iloc[0]))
+                            valid_dates_by_ticker.setdefault(str(ticker), []).append(pd.Timestamp(call_date.iloc[0]))
                 else:
                     malformed += 1
                     reason = quality.reason or "unknown"
@@ -127,10 +153,14 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
                     rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
 
     for ticker in roster_tickers:
-        valid = valid_by_ticker[ticker]
-        bounds = release_ranges.get(ticker)
+        entity_id = roster_entity.get(ticker)
+        symbols = aliases_by_entity.get(entity_id, {ticker}) if entity_id is not None else {ticker}
+        valid = set().union(*(valid_by_ticker.get(symbol, set()) for symbol in symbols))
+        indices = [index for symbol in symbols for index in release_indices.get(symbol, [])]
+        bounds = (max(2006 * 4, min(indices)), max(indices)) if indices else None
         if bounds is None or bounds[1] < bounds[0]:
             continue
+        valid_dates[ticker] = [date for symbol in symbols for date in valid_dates_by_ticker.get(symbol, [])]
         expected = bounds[1] - bounds[0] + 1
         present = 0
         for quarter in valid:
@@ -148,7 +178,12 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
         fixed_ratios[ticker] = fixed_present / (bounds[1] - fixed_start + 1)
 
         eligible_quarters: set[int] = set()
-        ticker_tenure = pd.DataFrame() if tenure is None else tenure[tenure["symbol"].astype(str) == ticker]
+        if tenure is None:
+            ticker_tenure = pd.DataFrame()
+        elif entity_id is None or "entity_id" not in tenure:
+            ticker_tenure = tenure[tenure["symbol"].astype(str) == ticker]
+        else:
+            ticker_tenure = tenure[tenure["entity_id"].astype(str) == entity_id]
         for row in ticker_tenure.itertuples(index=False):
             start = _calendar_quarter_index(row.valid_from)
             end_date = pd.to_datetime(row.valid_to, errors="coerce")
@@ -168,10 +203,11 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     fixed_values = pd.Series(fixed_ratios, dtype="float64").dropna()
     eligible_values = pd.Series(eligible_ratios, dtype="float64").dropna()
     summary = {
-        "denominator": "current roster; expected quarters from first to latest recorded earnings release, floored at 2006Q1",
+        "denominator": "current roster economic issuers; predecessor symbols linked through point-in-time CIK lineage; future releases excluded; floored at 2006Q1",
         **_coverage_buckets(values),
         "fixed_since_2006": _coverage_buckets(fixed_values),
-        "symbol_tenure_eligible_life": _coverage_buckets(eligible_values),
+        "issuer_linked_insider_filing_tenure_sensitivity": _coverage_buckets(eligible_values),
+        "tenure_sensitivity_note": "symbol_tenure starts at the first observed insider filing, not listing; use only as a sensitivity, not company-life coverage",
         "observed_calls": observed_calls,
         "valid_calls": valid_calls,
         "malformed_calls": malformed,

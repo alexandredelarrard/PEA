@@ -16,6 +16,7 @@ import pandas as pd
 from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import save_earnings_call_sections
 from src.data_store.schema import Tables
+from src.utils.text_metrics import assess_earnings_call_sections
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 _PREP = (
@@ -114,6 +115,29 @@ def test_source_replacement_invalidates_sentiment_and_embedding_caches() -> None
     assert set(store.t[Tables.earning_calls_embedding.name]["quarter"]) == {"2025Q2"}
     print("\n=== SANITY CHECK: transcript replacement invalidates derivatives ===")
     print("  replacing AAA 2025Q1 deletes only that call's sentiment and embedding rows. Validated.")
+
+
+def test_forced_malformed_refresh_replaces_old_signal_with_null_marker(tmp_path) -> None:
+    cache = _seed_cache(tmp_path, [("AAA", "2025Q1")])
+    (cache / "AAA" / "2025Q1.html").write_text(
+        '<html><body><div class="transcript-content">Thanks.</div></body></html>',
+        encoding="utf-8",
+    )
+    context = _ctx(tmp_path, existing_keys=[("AAA", "2025Q1")])
+    stale = pd.DataFrame({"ticker": ["AAA"], "quarter": ["2025Q1"], "tag": ["qa"]})
+    context.store.t[Tables.earnings_call_sentiment.name] = stale.copy()
+    context.store.t[Tables.earning_calls_embedding.name] = stale.assign(section="qa", turn_index=0)
+
+    saved = fe.ingest_earnings_calls(context, force=True)
+
+    current = context.store.t[Tables.earnings_call_sections.name]
+    sections = dict(zip(current["tag"], current["text"], strict=False))
+    assert saved == 2
+    assert not assess_earnings_call_sections(sections).valid
+    assert context.store.t[Tables.earnings_call_sentiment.name].empty
+    assert context.store.t[Tables.earning_calls_embedding.name].empty
+    print("\n=== SANITY CHECK: malformed forced refresh ===")
+    print("  refreshed malformed HTML replaces the old valid call with a retryable null marker and clears both derived caches. Validated.")
 
 
 if __name__ == "__main__":

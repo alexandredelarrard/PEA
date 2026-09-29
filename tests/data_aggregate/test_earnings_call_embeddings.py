@@ -414,16 +414,8 @@ def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> N
 
     store = FakeStore()
     store.t["earning_calls_embedding"] = pd.DataFrame(rows).drop(columns="issuer_id")
-    tenure = pd.DataFrame(
-        {
-            "symbol": ["OLD", "NEW"],
-            "issuer_cik": ["1", "2"],
-            "valid_from": ["2020-01-01", "2024-01-01"],
-            "valid_to": ["2024-01-01", None],
-        }
-    )
-    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
-    streamed = embedding_kpis_streamed(cast(Context, FakeCtx(store)), tenure, lineage)
+    identity = pd.DataFrame({"ticker": ["OLD", "NEW"], "quarter": ["2023Q4", "2024Q1"], "issuer_id": ["E1", "E1"]})
+    streamed = embedding_kpis_streamed(cast(Context, FakeCtx(store)), identity)
     assert streamed is not None
     streamed_new = streamed[streamed["ticker"].eq("NEW")].iloc[0]
     assert pd.notna(streamed_new["ec_qa_qq_distance"])

@@ -89,15 +89,15 @@ class StepCubeText(Step):
     def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
         changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
         per_call = sentiment_kpis_streamed(self._context)
-        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
-        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
-        embedding = embedding_kpis_streamed(self._context, tenure, lineage)
-        if per_call is not None and not per_call.empty and embedding is not None and not embedding.empty:
-            per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
         if per_call is None or per_call.empty:
             return pd.DataFrame(columns=["date", "ticker"]), changed
 
+        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
+        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
         per_call = attach_issuer_identity(per_call, tenure, lineage)
+        embedding = embedding_kpis_streamed(self._context, per_call[["ticker", "quarter", "issuer_id"]])
+        if embedding is not None and not embedding.empty:
+            per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
         panel = build_earnings_call_feature_panel(
             None,
             frames.trading_index,

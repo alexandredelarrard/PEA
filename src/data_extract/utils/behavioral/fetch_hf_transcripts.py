@@ -226,11 +226,11 @@ def ingest_hf_transcripts(
             return 0
 
     path = download_hf_parquet(context)
-    roster = context.store.load("sp500_tickers", columns=["ticker"])
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
     assert roster is not None
     universe = set(cast(pd.Series, roster["ticker"]))
     keep = (universe & set(tickers)) if tickers is not None else universe
-    existing = _existing_keys(context)
+    existing = set() if force else _existing_keys(context)
     url = f"hf://{HF_TRANSCRIPTS_DATASET}"
 
     pf = pq.ParquetFile(path)

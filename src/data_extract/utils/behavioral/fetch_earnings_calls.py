@@ -455,7 +455,20 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
         sections = parse_transcript_sections(html_path.read_text(encoding="utf-8", errors="replace"))
         quality = assess_earnings_call_sections(sections)
         if not quality.valid:
-            logger.warning("MF %s %s malformed (%s); leaving missing for source retry.", ticker, quarter, quality.reason)
+            logger.warning("MF %s %s malformed (%s); storing null-producing marker for source retry.", ticker, quarter, quality.reason)
+            for tag in EARNINGS_CALL_SCORED_TAGS:
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "quarter": quarter,
+                        "tag": tag,
+                        "as_of": rec.get("call_date"),
+                        "url": rec.get("url"),
+                        "text": quality.cleaned_sections.get(tag, ""),
+                    }
+                )
+            parsed += 1
+            existing.add((ticker, quarter))
             continue
         for tag, text in quality.cleaned_sections.items():
             if len(text) < 40:  # skip empty / stub sections

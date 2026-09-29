@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.behavioral import fetch_hf_transcripts as hf
+from src.data_store.schema import Tables
+from tests.conftest import FakeStore
 
 
 def _synthetic_row():
@@ -163,6 +167,50 @@ def test_hf_ingest_short_circuits_when_present(monkeypatch):
         "  table spans 2005Q1..2026Q2 -> ingest returned 0 and NEVER touched the 1.8GB parquet "
         "(download_hf_parquet not called). No more multi-minute '0 new calls' stall. Validated."
     )
+
+
+def test_hf_force_replaces_existing_call_and_invalidates_derivatives(monkeypatch) -> None:
+    content, structured = _synthetic_row()
+
+    class _Batch:
+        def to_pylist(self):
+            return [
+                {
+                    "symbol": "AAA",
+                    "quarter": 1,
+                    "year": 2024,
+                    "date": "2024-05-01",
+                    "content": content,
+                    "structured_content": structured,
+                }
+            ]
+
+    class _Parquet:
+        def iter_batches(self, **_kwargs):
+            return [_Batch()]
+
+    monkeypatch.setattr(hf, "download_hf_parquet", lambda context: Path("unused.parquet"))
+    monkeypatch.setattr(hf.pq, "ParquetFile", lambda path: _Parquet())
+    old = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+    sections = pd.DataFrame([{"ticker": "AAA", "quarter": "2024Q1", "tag": tag, "text": old} for tag in ("prepared_remarks", "qa")])
+    stale = pd.DataFrame({"ticker": ["AAA"], "quarter": ["2024Q1"], "tag": ["qa"]})
+    store = FakeStore(
+        {
+            Tables.sp500_tickers: pd.DataFrame({"ticker": ["AAA"]}),
+            Tables.earnings_call_sections: sections,
+            Tables.earnings_call_sentiment: stale,
+            Tables.earning_calls_embedding: stale.assign(section="qa", turn_index=0),
+        }
+    )
+    context = types.SimpleNamespace(store=store)
+
+    saved = hf.ingest_hf_transcripts(context, force=True)
+
+    assert saved > 0
+    assert store.t[Tables.earnings_call_sentiment.name].empty
+    assert store.t[Tables.earning_calls_embedding.name].empty
+    print("\n=== SANITY CHECK: forced HF replacement ===")
+    print("  force=True re-ingests an existing call and clears its stale sentiment and embedding rows. Validated.")
 
 
 if __name__ == "__main__":

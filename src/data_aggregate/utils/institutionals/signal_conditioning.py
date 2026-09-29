@@ -97,14 +97,11 @@ COST_ANCHOR_WINDOW = 126
 #: Realized-volatility window for #77-#79, in trading days.
 VOL_WINDOW = 20
 
-#: Emission (D27, registry section 0.10). Only the three PLAIN return legs take a percentile:
-#: a raw return's cross-sectional spread is far wider in 2008 than in 2017, so its scale
-#: drifts with the date. The residual and vol-scaled legs have already had their scale removed
-#: (a sector residual, a move in units of its own volatility), the two excursions and the cost
-#: anchor are bounded ratios, and a day count is a day count in 2013 and in 2026.
+#: Ages, returns, residual returns, volatility-scaled moves, excursions, and cost anchors all
+#: remain in their named economic units; no same-day universe percentile is emitted.
 EMISSION: dict[str, str] = {
     **{f"ic_sig_{fam}_age_days": "raw" for fam in FAMILIES},
-    **{f"ic_sig_{fam}_ret_since": "raw+xs" for fam in FAMILIES},
+    **{f"ic_sig_{fam}_ret_since": "raw" for fam in FAMILIES},
     **{f"ic_sig_{fam}_resid_ret_since": "raw" for fam in FAMILIES},
     **{f"ic_sig_{fam}_vol_scaled_move": "raw" for fam in FAMILIES},
     "ic_sig_insider_price_vs_buy": "raw",
@@ -353,5 +350,5 @@ def build_signal_conditioning_panel(
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     logger.info("price-conditioning panel: %s of %s declared features built", len(fields), len(EMISSION))
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

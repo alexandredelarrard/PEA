@@ -69,7 +69,7 @@ from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.decay import decay_events
@@ -104,27 +104,8 @@ _SPLIT_TOL = 0.01
 #: reaches them (tests, notebooks).
 _STALE_QUARTERS = 4
 
-#: Emission policy for elite-manager features (D25/D27).
-#:
-#: This family never emits `_vs_peers`: elite-manager conviction is an absolute
-#: signal, and sparse ticker coverage would make peer-relative legs almost entirely
-#: missing.
-#:
-#: `_xs` is an additional within-date percentile leg used only when it contributes
-#: meaningful cross-date normalization. Pooled raw-vs-percentile correlation is not
-#: sufficient: under manager selection, low-cardinality features create large tie
-#: plateaus whose percentiles mostly reflect changing panel composition.
-#:
-#: Count-like and heavily tied features therefore emit `raw` only:
-#: `top10_holders`, `holders`, `holders_yoy`, `breadth_chg`,
-#: `selection_score`, `conviction_weight`, and `conviction_chg`.
-#:
-#: `shares_chg`, `sp500_share`, and `quarters_held` emit `raw+xs` because their
-#: selected cross-sections remain sufficiently continuous. `max_conviction` emits
-#: `raw` because its raw values already preserve essentially the same pooled ranking.
-#:
-#: The governing criterion is measured tie rate and cardinality, not whether a
-#: feature is bounded, differenced, or evaluated under a particular `top_k`.
+#: Elite-manager levels, changes, counts, scores, and event intensities remain in their
+#: economic units. This family has no defensible sector-relative or universe-rank leg.
 EMISSION: dict[str, str] = {
     "ic_super_holders": "raw",  # a SHARE of the eligible pool (D28)
     "ic_super_breadth_chg": "raw",  # 96% ties under top_k -- see below
@@ -134,16 +115,15 @@ EMISSION: dict[str, str] = {
     "ic_super_conviction_weight_yoy": "raw",
     "ic_super_holders_yoy": "raw",  # 97% ties under top_k
     "ic_super_top10_holders": "raw",  # 98% ties under top_k
-    "ic_super_quarters_held": "raw+xs",  # measured rho 0.933
-    "ic_super_sp500_share": "raw+xs",  # measured rho 0.942
+    "ic_super_quarters_held": "raw",
+    "ic_super_sp500_share": "raw",
     "ic_super_selection_score": "raw",  # a mean of `sel` in [0,1]; see #27
-    "ic_super_shares_chg": "raw+xs",
-    "ic_super_flow_to_mcap": "raw+xs",
-    "ic_super_new_top10": "raw+xs",  # decayed intensities, all five
-    "ic_super_rank_jump": "raw+xs",
-    "ic_super_initiations": "raw+xs",
-    "ic_super_full_exits": "raw+xs",
-    "ic_super_exit_after_top10": "raw+xs",
+    "ic_super_shares_chg": "raw",
+    "ic_super_new_top10": "raw",  # decayed intensities, all five
+    "ic_super_rank_jump": "raw",
+    "ic_super_initiations": "raw",
+    "ic_super_full_exits": "raw",
+    "ic_super_exit_after_top10": "raw",
 }
 
 #: The five features above marked "decayed intensities" are the SPARSE (class-S) ones. An
@@ -607,7 +587,6 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _S
         "ic_super_shares_chg": (ratio - 1.0).where(~guard),  # #24
         "ic_super_quarters_held": across(eff("run_len"), "median"),  # #23
         "ic_super_sp500_share": sp_num / sp_den.where(sp_den > 0),  # #26
-        "_super_value_flow": across((sel_e * eff("value_usd")).fillna(0.0) - (prev_sel_e * eff("prev_value_usd")).fillna(0.0)),
     }
 
     # #27 -- the mean `sel` across this name's HOLDERS. It audits the selector from inside
@@ -729,7 +708,7 @@ def build_superinvestor_feature_panel(
     availability: InstitutionalAvailability | None = None,
     sink=None,
 ) -> pd.DataFrame:
-    """Long-format elite-manager 13F panel -- `f_ic_super_*` (+ `_xs` where the scale drifts).
+    """Long-format elite-manager 13F panel -- raw `f_ic_super_*` characteristics.
 
     `holdings` is the WHOLE-BOOK table from `load_superinvestor_holdings`; `cusip_map` is
     `cusip_ticker_map` and `universe` the analysis tickers, which together resolve the
@@ -742,16 +721,13 @@ def build_superinvestor_feature_panel(
 
     Empty when there are no holdings or the roster resolves to no manager.
 
-    ⚠ `frames` RATHER THAN FIVE UNPACKED FIELDS. `peer_dict`, `trading_index`, `stock_close`,
-    `level_factor` and `universe` were all read off one `PriceFrames` at the call site. Naming
+    ⚠ `frames` RATHER THAN THREE UNPACKED FIELDS. `peer_dict`, `trading_index`, and `universe`
+    were all read off one `PriceFrames` at the call site. Naming
     the object makes the basis un-mistakable: there is one `close_split` and one `close_total`
     on it, and neither can arrive under the other's parameter name.
 
-    ⚠ NO `frames.require(...)`, AND THAT IS MEASURED RATHER THAN FORGOTTEN. Every wide frame
-    this builder reads sits behind an explicit `is None` guard, or is handed to a callee that
-    documents `None` as a MEANING rather than an error -- `daily_market_cap`'s
-    `level_factor=None` IS "S is 1.0 everywhere". `require` would turn each of those graceful
-    degrades into a raise, which is exactly what its own docstring warns against.
+    ⚠ NO `frames.require(...)`: the optional split frame already has an explicit absence
+    policy in the holdings cleaner.
 
     The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
     `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
@@ -760,8 +736,6 @@ def build_superinvestor_feature_panel(
 
     peer_dict = frames.peers
     trading_index = frames.trading_index
-    stock_close = frames.close_split
-    level_factor = frames.level_factor
     universe = frames.universe
     close_split = frames.close_split
 
@@ -794,27 +768,7 @@ def build_superinvestor_feature_panel(
         return empty
     levels, _grid = _aggregate(contrib, st, stale_quarters)
 
-    flow = levels.pop("_super_value_flow", None)
     fields = {name: fundamentals_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
-
-    # #25 -- the size-scaled net dollar flow needs a point-in-time daily market cap.
-    if flow is not None and shares_out_history is not None and not shares_out_history.empty and stock_close is not None and not stock_close.empty:
-        mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
-        if mcap.empty:
-            # ⚠ NOT SILENT -- same trap as `institutional_features`: a `shares_out_history`
-            # projected without `sharesOutstanding` (the VENDOR basis, not the PIT one)
-            # returns a column-less frame and deletes the feature without a word.
-            logger.warning(
-                "daily_market_cap returned no columns (shares_out_history has %s; "
-                "it needs `sharesOutstanding`, the VENDOR basis) -> "
-                "ic_super_flow_to_mcap is skipped.",
-                sorted(shares_out_history.columns),
-            )
-        else:
-            daily = fundamentals_to_daily(_to_long(flow, "ic_super_flow_to_mcap"), "ic_super_flow_to_mcap", trading_index)
-            f2m = (daily / mcap.where(mcap > 0)).replace([np.inf, -np.inf], np.nan)
-            if f2m.notna().any().any():
-                fields["ic_super_flow_to_mcap"] = f2m
 
     # The five class-S features, decayed onto the trading grid. Already stamped on each
     # manager's own availability date -- an event is not tradable before the filing that
@@ -828,7 +782,7 @@ def build_superinvestor_feature_panel(
 
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
     _fill_sink(sink, contrib, fields, frames, availability)
-    emission = {k: EMISSION[k] for k in fields if k in EMISSION}
+    emission = {name: EMISSION[name] for name in fields}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
 
@@ -844,10 +798,9 @@ def _fill_sink(
 
     ⚠ THE TWO EVENT SETS ARE DIFFERENT AND THAT IS THE POINT. `events` is every disclosure by
     a selected manager who holds the name -- the date the conditioning layer measures its
-    price path FROM, regardless of direction. `actors` is the bullish subset: a manager whose
-    portfolio weight in the name ROSE (an initiation counts, since `prev_w` is absent), which
-    is an act rather than a restatement. Counting disclosures as bullish would make
-    `ic_xs_bullish_actor_count` a holder count.
+    price path FROM, regardless of direction. `actors` is the bullish subset retained as sink
+    metadata: a manager whose portfolio weight in the name ROSE (an initiation counts, since
+    `prev_w` is absent), which is an act rather than a restatement.
 
     `avail` is already `max(period + 45d, filing_date)` per manager, so nothing here is
     visible before the filing that disclosed it.

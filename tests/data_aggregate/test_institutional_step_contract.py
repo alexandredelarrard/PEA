@@ -12,7 +12,14 @@ import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from scripts.prove_insider_outliers import _panel as build_proof_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow
+from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
+from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
+from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
+from src.data_aggregate.utils.institutionals.ownership_features import EMISSION as OWNERSHIP_EMISSION
+from src.data_aggregate.utils.institutionals.short_flow_features import EMISSION as SHORT_FLOW_EMISSION
+from src.data_aggregate.utils.institutionals.signal_conditioning import EMISSION as CONDITIONING_EMISSION
 from src.data_aggregate.utils.institutionals.sink import ConditioningSink
+from src.data_aggregate.utils.institutionals.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_store.schema import Tables
 
 
@@ -20,6 +27,44 @@ def _bare_step() -> StepCubeInstitutionals:
     step = object.__new__(StepCubeInstitutionals)
     cast(Any, step)._log = logging.getLogger(__name__)
     return step
+
+
+def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
+    emissions = (
+        CROSS_SOURCE_EMISSION,
+        INSIDER_EMISSION,
+        INSTITUTIONAL_EMISSION,
+        OWNERSHIP_EMISSION,
+        SHORT_FLOW_EMISSION,
+        CONDITIONING_EMISSION,
+        SUPERINVESTOR_EMISSION,
+    )
+    declared = {name: mode for family in emissions for name, mode in family.items()}
+    peer_features = {name for name, mode in declared.items() if mode == "raw+peers"}
+    removed = {
+        "ic_act_campaign_age_days",
+        "ic_act_purpose_board",
+        "ic_act_purpose_strategic",
+        "ic_ftd_z252",
+        "ic_inst_flow_to_mcap",
+        "ic_shortvol_ratio_z252",
+        "ic_super_flow_to_mcap",
+        "ic_xs_bearish_family_ratio",
+        "ic_xs_bullish_actor_count",
+        "ic_xs_bullish_family_ratio",
+        "ic_xs_conflict_ratio",
+    }
+
+    assert len(declared) == sum(map(len, emissions)), "feature names must be unique across institutional families"
+    assert set(declared.values()) == {"raw", "raw+peers"}
+    assert peer_features == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
+    assert removed.isdisjoint(declared)
+    assert len(declared) == 75
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 77
+    print(
+        "SANITY: Phase-3 declares 75 unique characteristics / 77 legs: all raw, with only "
+        "institutional ownership and 20-day short volume retaining an interpretable peer leg."
+    )
 
 
 def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -31,7 +31,7 @@ condition on it and a reader can see when it moves.
 POINT-IN-TIME:
   * RegSHO files are disseminated the NEXT morning -> every `ic_shortvol_*` leg is shifted
     `SHORTVOL_PUB_LAG` trading day. The shift is applied ONCE, to the ratio frames, and every
-    derived leg (z-score, acceleration, the two price interactions) is built from the shifted
+    derived leg (acceleration and the two price interactions) is built from the shifted
     frames -- so no leg can forget the lag.
   * SEC FTD files are published well after the settlement period -> `FTD_PUB_LAG` trading days.
 
@@ -87,14 +87,13 @@ SHORTVOL_PUB_LAG = 1
 #: the signal is lagged to its (conservative) availability date.
 FTD_PUB_LAG = 40
 
-#: Trailing self-history window for the two z-scores (#59, #66) and the minimum history before
-#: one is emitted. 252 is a year; a half-year floor keeps the first year of a new source from
-#: being blank rather than making a z out of 20 days.
+#: Trailing self-history window used internally by the price-regime and FTD-persistence
+#: characteristics. The z-scores themselves are not emitted because their inputs are ratios.
 Z_WINDOW = 252
 Z_MIN_PERIODS = 126
 
-#: #67: how many of the last 30 trading days had `ic_ftd_z252` above `Z_HIGH`. A persistent
-#: settlement backlog is a different statement from one bad day.
+#: How many of the last 30 trading days had internally standardized FTD pressure above
+#: `Z_HIGH`. A persistent settlement backlog is a different statement from one bad day.
 PERSISTENCE_WINDOW = 30
 Z_HIGH = 1.0
 
@@ -107,26 +106,20 @@ BASE_WINDOW = 20
 #: The 20-day price path the two interaction features condition on (#62/#63).
 RET_WINDOW = 20
 
-#: Emission (D27, registry section 0.10). The three ratios are the textbook sector-normed rates --
-#: an 8% short-volume share means nothing without the sector's norm -- and section 0.10a measured
-#: this family's peer legs as the one group with a HEALTHY peer fingerprint (clip 0.05%, NaN
-#: 0%), unlike the insider family. The two z-scores are normalized by construction, so ranking
-#: them is a second normalization that only loses the tail; the interaction products and the
-#: persistence count are bounded or integer-valued; the three fail/turnover rates are skewed
-#: dollar-free rates whose cross-sectional spread drifts with the market, so they take `_xs`.
+#: Preserve raw economic units. Only the 20-day short-volume ratio keeps a peer leg: it is the
+#: stable regime horizon, whereas 5-day noise and the 60-day slow average add no defensible
+#: peer normalization.
 EMISSION: dict[str, str] = {
-    "ic_shortvol_ratio_5d": "raw+peers",
+    "ic_shortvol_ratio_5d": "raw",
     "ic_shortvol_ratio_20d": "raw+peers",
-    "ic_shortvol_ratio_60d": "raw+peers",
-    "ic_shortvol_ratio_z252": "raw",
+    "ic_shortvol_ratio_60d": "raw",
     "ic_shortvol_acceleration": "raw",
-    "ic_shortvol_turnover_20d": "raw+xs",
+    "ic_shortvol_turnover_20d": "raw",
     "ic_shortvol_high_x_weak_price": "raw",
     "ic_shortvol_high_x_strong_price": "raw",
     "ic_shortvol_market_coverage": "raw",
-    "ic_ftd_pct_so": "raw+xs",
-    "ic_ftd_to_adv20": "raw+xs",
-    "ic_ftd_z252": "raw",
+    "ic_ftd_pct_so": "raw",
+    "ic_ftd_to_adv20": "raw",
     "ic_ftd_persistence_30d": "raw",
 }
 
@@ -246,7 +239,6 @@ def _shortvol_fields(
 
     base = ratios[BASE_WINDOW]
     z = self_history_z(base, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-    f_dict["ic_shortvol_ratio_z252"] = z
     f_dict["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
 
     if shares_out is not None and not shares_out.empty:
@@ -349,7 +341,6 @@ def _fails_fields(
         zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
         neutral = applicable & basis.eq(0.0) & expected.ge(Z_MIN_PERIODS) & observed.eq(expected) & zeros.eq(expected)
         z = z.mask(z.isna() & neutral, 0.0)
-        f_dict["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
         f_dict["ic_ftd_persistence_30d"] = (
             flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis).shift(FTD_PUB_LAG)
@@ -457,5 +448,5 @@ def build_short_flow_feature_panel(
             signal_masks[name] = mask
             signal_fields[name] = raw.where(mask)
         sink.keep_signals(signal_fields, signal_masks)
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

@@ -102,7 +102,7 @@ COVERAGE_BREAK_DEFAULT = 0.50
 #: that describe coverage onset rather than institutional activity.
 #:
 #: When the prior quarter has fewer than this threshold, all `DELTA_FEATURES`
-#: and `inst_value_flow` are nulled. Level features remain valid: a stock may
+#: are nulled. Level features remain valid: a stock may
 #: genuinely have few institutional holders in that quarter.
 #:
 #: The threshold of 100 is based on the measured break in delta stability. It is
@@ -118,7 +118,6 @@ DELTA_FEATURES: tuple[str, ...] = (
     "ic_inst_new_buyer_ratio",
     "ic_inst_exit_ratio",
     "ic_inst_cluster_buying",
-    "ic_inst_flow_to_mcap",
 )
 
 #: `ic_inst_ownership_pct` above this many times shares outstanding is a denominator defect,
@@ -136,25 +135,19 @@ LEVEL_FEATURES: tuple[str, ...] = (
     "ic_inst_value_to_mcap",
 )
 
-#: Emission (D27, registry section 0.10), with the two corrections section 0.10a MEASURED on this
-#: family: `_xs` earns its column where the raw leg re-ranks pooled, and the discriminator is
-#: CARDINALITY, not boundedness. `ic_inst_concentration` (rho 0.556) and `ic_inst_value_to_mcap`
-#: (0.607) re-rank heavily and take the percentile leg even though section 0.10 reasoned them as
-#: `raw`; `ic_inst_ownership_pct` is the most date-stable of the family (0.930) and its
-#: `raw+peers` assignment is confirmed -- institutional ownership is the textbook sector-normed
-#: rate, where an absolute 40% means nothing without the sector's norm.
+#: Preserve interpretable economic units. Institutional ownership keeps the sole peer leg in
+#: this family because a level such as 40% is meaningfully different relative to sector norms.
 EMISSION: dict[str, str] = {
     "ic_inst_holders": "raw",  # D28 share of the quarter's filers, in [0, 1]
     "ic_inst_breadth_chg": "raw",  # a difference of that share
-    "ic_inst_shares_chg": "raw+xs",  # unbounded growth rate, distribution drifts
+    "ic_inst_shares_chg": "raw",  # an interpretable growth rate
     "ic_inst_new_buyer_ratio": "raw",  # bounded [0, 1]
     "ic_inst_exit_ratio": "raw",  # bounded [0, 1]
     "ic_inst_cluster_buying": "raw",  # bounded [-1, 1]
-    "ic_inst_concentration": "raw+xs",  # Herfindahl; measured rho 0.556
+    "ic_inst_concentration": "raw",  # Herfindahl concentration
     "ic_inst_net_options_ratio": "raw",  # bounded [-1, 1]
-    "ic_inst_ownership_pct": "raw+peers",  # sector-normed rate; measured rho 0.930
-    "ic_inst_value_to_mcap": "raw+xs",  # measured rho 0.607
-    "ic_inst_flow_to_mcap": "raw+xs",  # mcap-scaled dollar flow, skewed and drifting
+    "ic_inst_ownership_pct": "raw+peers",  # ownership level relative to sector norms
+    "ic_inst_value_to_mcap": "raw",
 }
 
 
@@ -550,7 +543,6 @@ def _quarter_features(
     for ticker, tdf in walk.groupby("ticker", sort=False):
         prev: dict = {}
         prev_total = np.nan
-        prev_value = np.nan
         prev_period = None
         for p, pdf in tdf.groupby("period", sort=True):
             # remove the nan values before doing any sum, otherwise stops
@@ -650,8 +642,6 @@ def _quarter_features(
                         "ic_inst_holders": share,
                         "inst_shares": inst_shares,
                         "inst_value": inst_value,
-                        # net QoQ dollar flow (long value); NaN on the first observed quarter
-                        "inst_value_flow": (inst_value - prev_value) if (has_prev and np.isfinite(prev_value)) else np.nan,
                         "ic_inst_breadth_chg": (share - prev_share) if np.isfinite(prev_share) else np.nan,
                         "ic_inst_shares_chg": (inst_shares / prev_shares - 1.0) if (has_prev and prev_shares > 0) else np.nan,
                         "ic_inst_new_buyer_ratio": ((holders - n_both) / holders) if (has_prev and holders > 0) else np.nan,
@@ -669,7 +659,6 @@ def _quarter_features(
             # The next quarter differences against this one FULLY REVISED -- see the docstring.
             prev = dict(zip(cik_list, share_list, strict=False))
             prev_total = float(sum(prev.values()))
-            prev_value = float(values.sum())
             prev_period = pd.Timestamp(cast(Any, p))
 
     if n_revisions or n_skipped:
@@ -691,8 +680,8 @@ def _quarter_features(
     # revision can repair later rows but cannot unmask an earlier incomplete publication.
     is_hole = qf.pop("_coverage_hole").astype(bool)
     is_break = qf.pop("_coverage_break").astype(bool) | is_hole
-    value_cols = ["inst_shares", "inst_value", "inst_value_flow"]
-    for c in DELTA_FEATURES + ("inst_value_flow",):
+    value_cols = ["inst_shares", "inst_value"]
+    for c in DELTA_FEATURES:
         if c in qf.columns:
             qf.loc[is_break, c] = np.nan
     for c in LEVEL_FEATURES + tuple(value_cols):
@@ -701,13 +690,13 @@ def _quarter_features(
 
     # D16: a hard cutoff on the PERIOD, so nothing computed off the pre-break regime survives.
     qf.loc[qf["period"] < INST_LEVEL_FLOOR_PERIOD, [c for c in LEVEL_FEATURES if c in qf.columns] + value_cols] = np.nan
-    qf.loc[qf["period"] < INST_DELTA_FLOOR_PERIOD, [c for c in DELTA_FEATURES if c in qf.columns] + ["inst_value_flow"]] = np.nan
+    qf.loc[qf["period"] < INST_DELTA_FLOOR_PERIOD, [c for c in DELTA_FEATURES if c in qf.columns]] = np.nan
 
     # The per-ticker coverage-onset guard (see `MIN_PRIOR_HOLDERS`). Same column set as D17's
     # break guard, applied on the TICKER's own prior filer count instead of the universe's.
     # `_prev_holders` is NaN on a ticker's first observed quarter, where every delta is already
     # NaN; `< floor` is False there, so the first quarter is not double-counted in the log.
-    delta_cols = [c for c in DELTA_FEATURES if c in qf.columns] + ["inst_value_flow"]
+    delta_cols = [c for c in DELTA_FEATURES if c in qf.columns]
     thin = qf["_prev_holders"] < min_prior_holders
 
     # ⚠ REPORT THE ROWS THIS GUARD ACTUALLY REMOVES, NOT THE ROWS IT MATCHES. Most thin
@@ -745,7 +734,7 @@ def build_institutional_feature_panel(
 
     `shares_out_history` (fundamentals carrying `sharesOutstandingPit` / `sharesOutstanding`)
     enables `ic_inst_ownership_pct`; with `stock_close` it also enables the value/market-cap
-    weight and the size-scaled net flow, through a point-in-time daily market cap. `splits`
+    weight through a point-in-time daily market cap. `splits`
     (`prices_splits`) restates the prior quarter's share counts -- without it a split reads as
     accumulation, so its absence is logged by the builder rather than silently tolerated.
 
@@ -779,7 +768,7 @@ def build_institutional_feature_panel(
 
     # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
     # point: `_quarter_features` sums value into `ic_inst_concentration`,
-    # `ic_inst_net_options_ratio`, `ic_inst_value_to_mcap` and `ic_inst_flow_to_mcap`.
+    # `ic_inst_net_options_ratio` and `ic_inst_value_to_mcap`.
     # Measured 2026-09-14 on the repaired table, 1.074% of rows (2,458 filings in the
     # divide-by-1000 band) carry 84.08% of the table's filed dollars, against 15.22% for the
     # 95.57% of rows that are already correct. Every value-weighted statement made before this
@@ -811,18 +800,18 @@ def build_institutional_feature_panel(
             fields["ic_inst_ownership_pct"] = _capped_ownership((inst_sh / shares.where(shares > 0)).replace([np.inf, -np.inf], np.nan))
 
     if shares_out_history is not None and close_split is not None and not close_split.empty:
-        # institutional WEIGHT by VALUE and size-scaled net $ flow, via a point-in-time
-        # daily market cap (ffilled sharesOutstanding x daily close x S(d)).
+        # institutional WEIGHT by VALUE via a point-in-time daily market cap
+        # (ffilled sharesOutstanding x daily close x S(d)).
         mcap = daily_market_cap(shares_out_history, close_split, level_factor=level_factor)
         if mcap.empty:
             # ⚠ NOT SILENT. An empty return here means `shares_out_history` was projected
             # without `sharesOutstanding` (the VENDOR basis `daily_market_cap` requires, NOT
-            # `sharesOutstandingPit`), and the two features below would simply be absent from
+            # `sharesOutstandingPit`), and the feature below would simply be absent from
             # the cube with nothing in the log saying so.
             logger.warning(
                 "daily_market_cap returned no columns (shares_out_history has %s; "
                 "it needs `sharesOutstanding`, the VENDOR basis) -> "
-                "ic_inst_value_to_mcap / ic_inst_flow_to_mcap are skipped.",
+                "ic_inst_value_to_mcap is skipped.",
                 sorted(shares_out_history.columns),
             )
         else:
@@ -831,19 +820,15 @@ def build_institutional_feature_panel(
             iv = (inst_val / mpos).replace([np.inf, -np.inf], np.nan)
             if iv.notna().any().any():
                 fields["ic_inst_value_to_mcap"] = iv
-            flow = fundamentals_to_daily(qf, "inst_value_flow", trading_index)
-            fm = (flow / mpos).replace([np.inf, -np.inf], np.nan)
-            if fm.notna().any().any():
-                fields["ic_inst_flow_to_mcap"] = fm
 
     # D16 again, now on the DAILY grid. The period-space mask above cannot reach the two
-    # market-cap-scaled fields (their numerator is a quarterly value but their denominator is
+    # market-cap-scaled field (its numerator is a quarterly value but its denominator is
     # a daily close, so `fundamentals_to_daily` is not the only thing that fills them), and a
     # date-space floor is what L1/L9 actually scores.
     #
     # ⚠ THE AVAILABILITY DATE, NOT `period + 45d`. The bare deadline leaves a 2-5 day window in
-    # which the two market-cap-scaled fields could carry a value that no emission stands
-    # behind -- and L1/L9 now takes the same availability floor, so the two would disagree by
+    # which the market-cap-scaled field could carry a value that no emission stands
+    # behind -- and L1/L9 now takes the same availability floor, so the checks would disagree by
     # exactly that window and the check would fail on a correct panel.
     floors = availability_date(
         pd.DatetimeIndex([INST_LEVEL_FLOOR_PERIOD, INST_DELTA_FLOOR_PERIOD]), trading_index, settle_trading_days=settle_trading_days
@@ -864,5 +849,5 @@ def build_institutional_feature_panel(
     fields = {k: v for k, v in fields.items() if v.notna().any().any()}
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

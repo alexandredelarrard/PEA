@@ -303,7 +303,6 @@ def test_per_ticker_coverage_onset_guard():
         "ic_inst_new_buyer_ratio",
         "ic_inst_exit_ratio",
         "ic_inst_cluster_buying",
-        "inst_value_flow",
     ):
         assert np.isnan(_as_float(on.loc[key, c])), f"{c} survived the per-ticker onset guard"
     # levels untouched, on both the guarded ticker and its broadly-held neighbour
@@ -397,7 +396,9 @@ def test_panel_columns_match_the_emission_map():
     assert emitted <= expected, f"undeclared column(s): {sorted(emitted - expected)}"
     assert "f_ic_inst_holders" in emitted and "f_ic_inst_holders_xs" not in emitted
     assert "f_ic_inst_ownership_pct_vs_peers" in emitted
-    assert "f_ic_inst_concentration_xs" in emitted
+    assert "f_ic_inst_concentration" in emitted
+    assert not any(column.endswith("_xs") for column in emitted)
+    assert {column for column in emitted if column.endswith("_vs_peers")} == {"f_ic_inst_ownership_pct_vs_peers"}
     # A's ownership pct at a late date = 200 shares / 1000 = 0.2
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
@@ -407,8 +408,8 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: 13F emitted columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted, all declared ({len(EMISSION)} features); "
-        f"holders is raw-only, ownership_pct carries the peer leg, concentration the "
-        f"percentile. A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated."
+        f"all characteristics are raw and ownership_pct alone carries the peer leg. "
+        f"A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated."
     )
 
 
@@ -442,7 +443,7 @@ def test_options_concentration_and_the_availability_date():
     # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
     assert abs(q2["ic_inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
     # registry section 1: `inst_value_chg` and `net_options_ratio_chg` are DROPPED -- price
-    # -contaminated and redundant against flow_to_mcap / the level respectively.
+    # contaminated and redundant against the level respectively.
     assert "ic_inst_value_chg" not in qf.columns
     assert "ic_inst_net_options_ratio_chg" not in qf.columns
     print("\n=== SANITY CHECK: 13F options / concentration / availability ===")
@@ -457,7 +458,7 @@ def test_options_concentration_and_the_availability_date():
     )
 
 
-def test_value_to_mcap_and_flow_panel():
+def test_value_to_mcap_panel_excludes_reported_value_change_as_flow():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
@@ -470,11 +471,10 @@ def test_value_to_mcap_and_flow_panel():
         "f_ic_inst_net_options_ratio",
         "f_ic_inst_concentration",
         "f_ic_inst_value_to_mcap",
-        "f_ic_inst_value_to_mcap_xs",
-        "f_ic_inst_flow_to_mcap",
-        "f_ic_inst_flow_to_mcap_xs",
     ):
         assert c in panel.columns, f"{c} missing from panel"
+    assert "f_ic_inst_value_to_mcap_xs" not in panel
+    assert not any("flow_to_mcap" in column for column in panel)
     # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 
@@ -484,9 +484,8 @@ def test_value_to_mcap_and_flow_panel():
     assert abs(iv / mc - 0.40) < 1e-6
     print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
     print(
-        f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "
-        f"value_to_mcap + flow_to_mcap (raw + percentile) and the two bounded ratios. "
-        "Validated."
+        f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; value_to_mcap stays "
+        "raw while reported market-value change is not mislabeled as investor flow. Validated."
     )
 
 

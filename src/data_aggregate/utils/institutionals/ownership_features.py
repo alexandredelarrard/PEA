@@ -6,15 +6,14 @@ name, so amendments and transitions can be followed point in time. Joint-filer m
 resolution remains future data work.
 
 ``ic_bo_holder_count`` uses the same trailing activity window in numerator and denominator;
-without explicit exits, a filer lapses after ``HOLDER_ACTIVE_DAYS``. Item 4 categories use
-deterministic keyword matches. The four ``percent_of_class`` features were removed because
+without explicit exits, a filer lapses after ``HOLDER_ACTIVE_DAYS``. The four
+``percent_of_class`` features were removed because
 their source field is effectively unavailable before the December 2024 XML mandate and is too
 recent for train/test/validation use; restoration requirements are recorded in ``wiki/TODO.md``.
 """
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 
 import numpy as np
@@ -24,7 +23,7 @@ from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.decay import days_since_last_true, decay_events, snap_to_grid
+from src.data_aggregate.utils.institutionals.decay import decay_events, snap_to_grid
 from src.data_store.schema import Tables
 
 #: The columns `_canonicalize` reads off EITHER schedule without checking first. The
@@ -61,34 +60,18 @@ BO_HALFLIFE_DEFAULT = 126.0
 #: reached 1.23.
 HOLDER_ACTIVE_DAYS = 378
 
-_BOARD_RE = re.compile(r"board seat|board representation|board of directors|nominat|director representation", re.IGNORECASE)
-_STRATEGIC_RE = re.compile(
-    r"strategic alternative|strategic review|sale of the (?:issuer|company)|" r"business combination|merger|explore.{0,20}alternative", re.IGNORECASE
-)
-
 EMISSION: dict[str, str] = {
     "ic_act_initial_13d": "raw",  # decayed occurrence; 0.3% ties, no drift
     "ic_act_amendment_intensity": "raw",  # 0.2% ties
-    "ic_act_campaign_age_days": "raw+xs",  # 2.9% ties AND a real drift -- see below
     "ic_act_repeat_activist": "raw",  # 2.2% ties, 36 tickers ever
-    "ic_act_purpose_board": "raw",  # 0.0% ties
-    "ic_act_purpose_strategic": "raw",  # 0.1% ties
     "ic_bo_holder_count": "raw",  # D28-normalized; 70.3% ties -> no xs leg
     "ic_bo_new_holder": "raw",  # 2.9% ties
     "ic_bo_escalation_13g_to_13d": "raw",
     "ic_bo_de_escalation_13d_to_13g": "raw",  # 23.4% ties
 }
 
-#: ⚠ `ic_act_campaign_age_days` IS THE ONE FEATURE THAT TAKES AN `_xs` LEG ON DRIFT RATHER THAN
-#: ON ITS TIE FRACTION, and it is the same argument the plan flags for insider's
-#: `days_since_last_buy`. Measured on the last grid day: 257 names, MEDIAN 3,879 trading days
-#: and a max of 7,800 -- i.e. the typical "campaign age" is 15 years, because the feature keeps
-#: counting long after the campaign ended and the count is mechanically small early in the
-#: sample only because the history is short. The raw leg stays (a day count is a quantity in
-#: its own units), but the within-date percentile is what makes 2003 comparable to 2026.
 
-
-def _canonicalize(df: pd.DataFrame | None, text_col: str | None = None, has_amendment: bool = True) -> pd.DataFrame:
+def _canonicalize(df: pd.DataFrame | None, has_amendment: bool = True) -> pd.DataFrame:
     """One row per `(ticker, accession_number, cusip)` -- see module docstring. `filer_id` is
     the group's identity for time-series tracking; `n_reporting_persons` is the co-filer count
     kept SEPARATE from any ownership number, exactly so nothing downstream is tempted to fold
@@ -96,8 +79,6 @@ def _canonicalize(df: pd.DataFrame | None, text_col: str | None = None, has_amen
     cols = ["ticker", "accession_number", "cusip", "filing_date", "filer_id", "n_reporting_persons"]
     if has_amendment:
         cols.append("is_amendment")
-    if text_col:
-        cols.append("text")
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
 
@@ -120,8 +101,6 @@ def _canonicalize(df: pd.DataFrame | None, text_col: str | None = None, has_amen
     }
     if has_amendment:
         agg_map["is_amendment"] = ("is_amendment", "first")
-    if text_col and text_col in d.columns:
-        agg_map["text"] = (text_col, lambda s: next((x for x in s if isinstance(x, str) and x.strip()), None))
     return d.groupby(key, sort=False).agg(**agg_map).reset_index()
 
 
@@ -129,11 +108,6 @@ def _snap_to_grid(dates: pd.Series, idx: pd.DatetimeIndex) -> pd.Series:
     """Snap each date onto the first trading day >= it -- see `decay.snap_to_grid`, which now
     owns the rule because the conditioning layer needs the same one."""
     return snap_to_grid(dates, idx)
-
-
-def _days_since(bool_wide: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Trading days since the last True per column -- see `decay.days_since_last_true`."""
-    return days_since_last_true(bool_wide.reindex(idx))
 
 
 def _rolling_distinct(events: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -> pd.Series:
@@ -195,21 +169,9 @@ def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> 
     out["ic_act_initial_13d"] = decay_events(initial, idx, halflife, date_col="filing_date")
     out["ic_act_amendment_intensity"] = decay_events(amend, idx, halflife, date_col="filing_date")
 
-    occ = initial.assign(_flag=1.0, _grid_date=_snap_to_grid(initial["filing_date"], idx))
-    occ = occ.dropna(subset=["_grid_date"])
-    wide = occ.pivot_table(index="_grid_date", columns="ticker", values="_flag", aggfunc="max")
-    out["ic_act_campaign_age_days"] = _days_since(wide.reindex(idx).notna(), idx)
-
     initial_sorted = initial.dropna(subset=["filer_id"]).sort_values("filing_date")
     prior_campaigns = initial_sorted.groupby("filer_id").cumcount()
     out["ic_act_repeat_activist"] = decay_events(initial_sorted[prior_campaigns >= 3], idx, halflife, date_col="filing_date")
-
-    if "text" in canon.columns:
-        has_text = canon["text"].notna()
-        board = canon[has_text & canon["text"].str.contains(_BOARD_RE, na=False)]
-        strat = canon[has_text & canon["text"].str.contains(_STRATEGIC_RE, na=False)]
-        out["ic_act_purpose_board"] = decay_events(board, idx, halflife, date_col="filing_date")
-        out["ic_act_purpose_strategic"] = decay_events(strat, idx, halflife, date_col="filing_date")
 
     return out
 
@@ -379,8 +341,8 @@ def build_ownership_feature_panel(
     # D5 entry guard, PER LEG. The two channels are independent fetchers -- a universe with
     # 13G coverage and no 13D still builds the `ic_bo_*` half -- so a leg that cannot be used
     # is nulled rather than failing the whole panel. `_NEED` is what `_canonicalize`
-    # dereferences unconditionally; `is_amendment` and the Item 4 text are NOT in it, because
-    # they are 13D-only and it already builds its column list around their absence.
+    # dereferences unconditionally; `is_amendment` is NOT in it because it is 13D-only and
+    # `_canonicalize` already builds its column list around its absence.
     sec_13d = None if _absent(sec_13d, _NEED) else sec_13d
     sec_13g = None if _absent(sec_13g, _NEED) else sec_13g
     if sec_13d is None and sec_13g is None:
@@ -390,7 +352,7 @@ def build_ownership_feature_panel(
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    canon_13d = _canonicalize(sec_13d, text_col="item4_purpose_of_transaction", has_amendment=True)
+    canon_13d = _canonicalize(sec_13d, has_amendment=True)
     canon_13g = _canonicalize(sec_13g, has_amendment=False)
     if canon_13d.empty and canon_13g.empty:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -482,5 +444,5 @@ def build_ownership_feature_panel(
             signal_fields["ic_bo_escalation_13g_to_13d"] = raw.fillna(0.0).where(mask) if cross_complete else raw
         sink.keep_signals(signal_fields, signal_masks)
 
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

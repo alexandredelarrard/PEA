@@ -91,9 +91,8 @@ def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
 def test_publication_lag_is_one_trading_day():
     dates, tickers, hist = _synth()
     df = _shortvol_fields(hist, dates, None, None, None)
-    assert {"ic_shortvol_ratio_5d", "ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_ratio_z252", "ic_shortvol_acceleration"}.issubset(
-        df
-    )
+    assert {"ic_shortvol_ratio_5d", "ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_acceleration"}.issubset(df)
+    assert "ic_shortvol_ratio_z252" not in df
     # heavily-shorted S0 has the highest ratio cross-sectionally
     assert str(df["ic_shortvol_ratio_20d"].loc[dates[300]].idxmax()) == "S0"
     short = hist.pivot_table(index="date", columns="ticker", values="short_volume", aggfunc="sum")
@@ -122,14 +121,10 @@ def test_price_interactions_are_one_sided_and_complementary():
     assert (weak.fillna(0) >= 0).all().all() and (strong.fillna(0) >= 0).all().all()
     both = (weak > 0) & (strong > 0)
     assert not both.to_numpy().any(), "a cell is both confirming and absorbing"
-    # and a NEGATIVE z (short flow below its own norm) fires neither
-    z = df["ic_shortvol_ratio_z252"]
-    quiet = (z < 0) & z.notna()
-    assert (weak.where(quiet).fillna(0) == 0).all().all()
     print("\n=== SANITY CHECK: the two short-flow price interactions ===")
     print(
-        f"  both legs >= 0; {int(both.to_numpy().sum())} cells fire both (must be 0); a "
-        f"below-norm z fires neither. The asymmetry is shipped, not averaged. Validated."
+        f"  both legs >= 0 and {int(both.to_numpy().sum())} cells fire both (must be 0); "
+        "the internal normalization conditions the economic interactions but is not emitted. Validated."
     )
 
 
@@ -165,21 +160,20 @@ def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
     volume = pd.DataFrame({"ZERO": 1_000_000.0, "CONST": 1_000_000.0}, index=idx)
 
     fields = _fails_fields(fails, idx, None, volume)
-    z = fields["ic_ftd_z252"]
     persistence = fields["ic_ftd_persistence_30d"]
     basis_warmup = max(3, BASE_WINDOW // 2)
     first_neutral = FTD_PUB_LAG + basis_warmup + Z_MIN_PERIODS - 2
     first_persistence = first_neutral + 14
 
-    assert pd.isna(z.loc[idx[first_neutral - 1], "ZERO"])
-    assert z.loc[idx[first_neutral], "ZERO"] == 0.0
+    assert pd.isna(persistence.loc[idx[first_persistence - 1], "ZERO"])
     assert persistence.loc[idx[first_persistence], "ZERO"] == 0.0
-    assert z["CONST"].isna().all(), "a nonzero constant basis has no defined neutral z-score"
-    assert pd.isna(z.loc[idx[-1], "ZERO"]), "an uncovered source date must remain unavailable"
+    assert persistence["CONST"].isna().all(), "a nonzero constant basis has no defined persistence state"
+    assert pd.isna(persistence.loc[idx[-1], "ZERO"]), "an uncovered source date must remain unavailable"
+    assert "ic_ftd_z252" not in fields
     print("\n=== SANITY CHECK: FTD neutral zero versus unavailable ===")
     print(
-        f"  ZERO becomes z=0 after {Z_MIN_PERIODS} fully observed source dates and "
-        "persistence=0 after its usual lookback; CONST and the uncovered tail remain NaN"
+        f"  ZERO becomes persistence=0 after {Z_MIN_PERIODS} fully observed source dates plus "
+        "its lookback; CONST and the uncovered tail remain NaN, while the internal z is not emitted"
     )
     print("  OK: zero means observed neutral pressure, never missing source coverage")
 
@@ -258,8 +252,11 @@ def test_panel_columns_match_the_emission_map():
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
     assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
-    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d_xs", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
+    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
+    assert not any(column.endswith("_xs") for column in emitted)
+    assert {column for column in emitted if column.endswith("_vs_peers")} == {"f_ic_shortvol_ratio_20d_vs_peers"}
+    assert not any(column in panel for column in ("f_ic_shortvol_ratio_z252", "f_ic_ftd_z252"))
     # the three bounded ratios stay in [0, 1]
     for w in (5, 20, 60):
         s = panel[f"f_ic_shortvol_ratio_{w}d"].dropna()
@@ -272,7 +269,8 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: short-flow panel columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted from {len(EMISSION)} declared features, exact match; "
-        f"the three ratios are in [0, 1]; ic_shortvol_days_to_cover is absent (needs FINRA "
+        f"the three ratios are in [0, 1], only 20d keeps a peer leg, and history z outputs are absent; "
+        f"ic_shortvol_days_to_cover is absent (needs FINRA "
         f"settlement positions, out of scope). Validated."
     )
 

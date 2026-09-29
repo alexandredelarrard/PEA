@@ -47,10 +47,11 @@ def test_canonicalize_collapses_reporting_persons_without_ownership_numerics():
         for i in range(1, 5)
     ]
     raw = pd.DataFrame(rows)
-    canon = _canonicalize(raw, text_col="item4_purpose_of_transaction", has_amendment=True)
+    canon = _canonicalize(raw, has_amendment=True)
     assert len(canon) == 1, "one filing, one canonical event -- not one row per reporting person"
     assert canon.loc[0, "n_reporting_persons"] == 4
     assert "percent_of_class" not in canon.columns
+    assert "text" not in canon.columns
     print("\n=== SANITY CHECK: canonical event construction ===")
     print("  Four reporting persons collapse to one filing event; percent_of_class is not carried into feature construction. Validated.")
 
@@ -108,16 +109,14 @@ def test_repeat_activist_fires_on_the_fourth_campaign_only():
     print("  filer's 4th campaign (R4) flags repeat_activist; campaigns 1-3 do not. Validated.")
 
 
-def test_campaign_age_days_resets_and_is_nan_before_first_event():
+def test_open_ended_campaign_age_and_uncontextualized_item4_are_not_constructed():
     canon = pd.DataFrame([_campaign_row("AAA", "F1", "2023-03-01")])
     out = _act_fields(canon, IDX, halflife=126.0)
-    age = out["ic_act_campaign_age_days"]
-    before = age.loc[: pd.Timestamp("2023-02-28"), "AAA"]
-    assert before.isna().all(), "no campaign yet -> NaN, not 0"
-    d0 = age.loc[pd.Timestamp("2023-03-01"), "AAA"]
-    d10 = age.loc[IDX[IDX.get_indexer(pd.DatetimeIndex([pd.Timestamp("2023-03-01")]))[0] + 7], "AAA"]
-    assert float(cast(Any, d0)) == 0
-    assert float(cast(Any, d10)) > float(cast(Any, d0))
+    assert "ic_act_campaign_age_days" not in out
+    assert "ic_act_purpose_board" not in out
+    assert "ic_act_purpose_strategic" not in out
+    print("\n=== SANITY CHECK: unsupported activist interpretations are absent ===")
+    print("  Open-ended campaign age and Item 4 keyword alpha are not constructed without end-state/context evidence. Validated.")
 
 
 def test_escalation_and_deescalation_join():
@@ -236,28 +235,26 @@ def test_panel_columns_and_emission_coverage():
     peers = _peers(["AAA", "BBB"])
     panel = build_ownership_feature_panel(make_frames(IDX, peers), d13, d13g)
     assert not panel.empty
-    # Features that ALWAYS fire on this data (unlike repeat_activist/escalation/strategic,
+    # Features that ALWAYS fire on this data (unlike repeat_activist/escalation,
     # which need a specific trigger this synthetic scenario does not construct -- those are
     # covered directly against `_act_fields`/`_bo_fields`/`_cross_fields` above).
     guaranteed = [
         "ic_act_initial_13d",
         "ic_act_amendment_intensity",
-        "ic_act_campaign_age_days",
-        "ic_act_purpose_board",
         "ic_bo_holder_count",
         "ic_bo_new_holder",
     ]
     for name in guaranteed:
-        mode = EMISSION[name]
+        assert EMISSION[name] == "raw"
         assert f"f_{name}" in panel.columns, f"raw leg f_{name} missing"
-        if mode == "raw+xs":
-            assert f"f_{name}_xs" in panel.columns
-        if mode == "raw+peers":
-            assert f"f_{name}_vs_peers" in panel.columns
 
     assert not any("percent_of_class" in col or "delta_percent_class" in col for col in panel.columns)
+    assert not any(col.endswith(("_xs", "_vs_peers")) for col in panel.columns)
+    assert not any(token in col for col in panel.columns for token in ("campaign_age", "purpose_board", "purpose_strategic"))
     print("\n=== SANITY CHECK: ownership panel columns ===")
-    print(f"  {len(EMISSION)} event-only features remain declared; no emitted column contains percent_of_class. Validated.")
+    print(
+        f"  {len(EMISSION)} raw event/support features remain declared; no rank, peer, age-without-end-state, or Item 4 keyword leg survives. Validated."
+    )
 
 
 def _g_row(ticker, filer, day, pct):
@@ -438,7 +435,7 @@ if __name__ == "__main__":
     test_canonicalize_collapses_reporting_persons_without_ownership_numerics()
     test_canonicalize_empty_and_missing_cik_fallback()
     test_repeat_activist_fires_on_the_fourth_campaign_only()
-    test_campaign_age_days_resets_and_is_nan_before_first_event()
+    test_open_ended_campaign_age_and_uncontextualized_item4_are_not_constructed()
     test_escalation_and_deescalation_join()
     test_bo_holder_count_sums_distinct_filers_not_group_members()
     test_percent_of_class_features_are_not_constructed()

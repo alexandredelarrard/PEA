@@ -838,6 +838,20 @@ EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
 # greetings/courtesy boilerplate. Model-facing signals live for one quarter only.
 EARNINGS_CALL_MIN_CLEAN_WORDS = 100
 EARNINGS_CALL_SIGNAL_SESSIONS = 66
+EARNINGS_CALL_FEATURES = (
+    "ec_tone",
+    "ec_tone_vs_hist",
+    "ec_qa_gap",
+    "ec_qa_gap_vs_hist",
+    "ec_uncertainty",
+    "ec_uncertainty_vs_hist",
+    "ec_qa_coherence_mean",
+    "ec_qa_coherence_mean_vs_hist",
+    "ec_tone_delta",
+    "ec_length_delta",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+)
 
 # SENTIMENT ANALYSIS
 FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"

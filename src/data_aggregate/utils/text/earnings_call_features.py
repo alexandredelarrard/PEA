@@ -38,7 +38,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_SCORED_TAGS, EARNINGS_CALL_SIGNAL_SESSIONS, FINBERT_TONE_MODEL
+from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SCORED_TAGS, EARNINGS_CALL_SIGNAL_SESSIONS, FINBERT_TONE_MODEL
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
@@ -318,20 +318,7 @@ _EMBEDDING_KPI_COLS = [
     "ec_prep_qq_distance",
 ]  # narrative QoQ drift
 _HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
-_KPI_COLS = [
-    "ec_tone",
-    "ec_tone_vs_hist",
-    "ec_qa_gap",
-    "ec_qa_gap_vs_hist",
-    "ec_uncertainty",
-    "ec_uncertainty_vs_hist",
-    "ec_qa_coherence_mean",
-    "ec_qa_coherence_mean_vs_hist",
-    "ec_tone_delta",
-    "ec_length_delta",
-    "ec_qa_qq_distance",
-    "ec_prep_qq_distance",
-]
+_KPI_COLS = list(EARNINGS_CALL_FEATURES)
 
 
 def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:

@@ -28,7 +28,7 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
     sections = pd.DataFrame(
         [
-            {"ticker": ticker, "quarter": "2024Q1", "tag": tag, "text": text}
+            {"ticker": ticker, "quarter": "2024Q1", "as_of": "2024-05-15", "tag": tag, "text": text}
             for ticker, text in (("AAA", useful), ("BBB", "Thanks."))
             for tag in ("prepared_remarks", "qa")
         ]

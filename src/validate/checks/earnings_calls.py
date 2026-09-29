@@ -119,7 +119,6 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     malformed = valid_calls = observed_calls = 0
     rejected_reasons: dict[str, int] = {}
     valid_dates: dict[str, list[pd.Timestamp]] = {}
-    valid_by_ticker: dict[str, set[str]] = {ticker: set() for ticker in analysis_symbols}
     valid_dates_by_ticker: dict[str, list[pd.Timestamp]] = {}
     section_columns = ["ticker", "quarter", "tag", "text"]
     if "as_of" in context.store.columns(Tables.earnings_call_sections):
@@ -133,11 +132,10 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
             optional=True,
         )
         if sections is not None:
-            for (ticker, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
+            for (ticker, _quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
                 observed_calls += 1
                 quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
                 if quality.valid:
-                    valid_by_ticker[str(ticker)].add(str(quarter))
                     valid_calls += 1
                     if "as_of" in call:
                         call_date = pd.to_datetime(call["as_of"], errors="coerce").dropna()
@@ -155,26 +153,18 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     for ticker in roster_tickers:
         entity_id = roster_entity.get(ticker)
         symbols = aliases_by_entity.get(entity_id, {ticker}) if entity_id is not None else {ticker}
-        valid = set().union(*(valid_by_ticker.get(symbol, set()) for symbol in symbols))
         indices = [index for symbol in symbols for index in release_indices.get(symbol, [])]
         bounds = (max(2006 * 4, min(indices)), max(indices)) if indices else None
         if bounds is None or bounds[1] < bounds[0]:
             continue
         valid_dates[ticker] = [date for symbol in symbols for date in valid_dates_by_ticker.get(symbol, [])]
+        valid_indices = {index for index in (_quarter_index(date) for date in valid_dates[ticker]) if index is not None}
         expected = bounds[1] - bounds[0] + 1
-        present = 0
-        for quarter in valid:
-            if len(quarter) == 6 and quarter[4] == "Q" and quarter[:4].isdigit() and quarter[5] in "1234":
-                index = int(quarter[:4]) * 4 + int(quarter[5]) - 1
-                present += bounds[0] <= index <= bounds[1]
+        present = sum(bounds[0] <= index <= bounds[1] for index in valid_indices)
         ratios[ticker] = present / expected
 
         fixed_start = 2006 * 4
-        fixed_present = sum(
-            fixed_start <= int(quarter[:4]) * 4 + int(quarter[5]) - 1 <= bounds[1]
-            for quarter in valid
-            if len(quarter) == 6 and quarter[4] == "Q" and quarter[:4].isdigit() and quarter[5] in "1234"
-        )
+        fixed_present = sum(fixed_start <= index <= bounds[1] for index in valid_indices)
         fixed_ratios[ticker] = fixed_present / (bounds[1] - fixed_start + 1)
 
         eligible_quarters: set[int] = set()
@@ -192,18 +182,14 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
                 eligible_quarters.update(range(max(fixed_start, start), min(bounds[1], end) + 1))
         if not eligible_quarters:
             eligible_quarters.update(range(bounds[0], bounds[1] + 1))
-        present_eligible = sum(
-            int(quarter[:4]) * 4 + int(quarter[5]) - 1 in eligible_quarters
-            for quarter in valid
-            if len(quarter) == 6 and quarter[4] == "Q" and quarter[:4].isdigit() and quarter[5] in "1234"
-        )
+        present_eligible = sum(index in eligible_quarters for index in valid_indices)
         eligible_ratios[ticker] = present_eligible / len(eligible_quarters) if eligible_quarters else np.nan
 
     values = pd.Series(ratios, dtype="float64")
     fixed_values = pd.Series(fixed_ratios, dtype="float64").dropna()
     eligible_values = pd.Series(eligible_ratios, dtype="float64").dropna()
     summary = {
-        "denominator": "current roster economic issuers; predecessor symbols linked through point-in-time CIK lineage; future releases excluded; floored at 2006Q1",
+        "denominator": "current roster economic issuers; call and release dates mapped to calendar reporting quarters; predecessor symbols linked through CIK lineage; future releases excluded; floored at 2006Q1",
         **_coverage_buckets(values),
         "fixed_since_2006": _coverage_buckets(fixed_values),
         "issuer_linked_insider_filing_tenure_sensitivity": _coverage_buckets(eligible_values),

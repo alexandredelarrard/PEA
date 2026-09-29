@@ -37,7 +37,12 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SCORED_TAGS, EARNINGS_CALL_SIGNAL_SESSIONS, FINBERT_TONE_MODEL
+from src.constants.constants import (
+    EARNINGS_CALL_FEATURES,
+    EARNINGS_CALL_SCORED_TAGS,
+    EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
+    EARNINGS_CALL_SIGNAL_SESSIONS,
+)
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
@@ -70,7 +75,7 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
                 "sent_neu": round(float(p["neu"]), 6),
                 "n_words": int(word_count(cast(str, r.text))),
                 "uncertainty_ratio": round(float(uncertainty_ratio(cast(str, r.text))), 6),
-                "model": FINBERT_TONE_MODEL,
+                "model": EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
             }
         )
     return pd.DataFrame(out)
@@ -123,7 +128,12 @@ def score_earnings_calls(
         log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
         return None
     sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
-    done_df = store.load(Tables.earnings_call_sentiment, ["ticker", "quarter", "tag"], optional=True)
+    done_df = store.load(
+        Tables.earnings_call_sentiment,
+        ["ticker", "quarter", "tag"],
+        where={"model": EARNINGS_CALL_SENTIMENT_CACHE_MODEL},
+        optional=True,
+    )
     done = set() if done_df is None else set(map(tuple, done_df.drop_duplicates().to_numpy()))
     todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
     if todo_keys.empty:
@@ -155,8 +165,11 @@ def score_earnings_calls(
 # --------------------------------------------------------------------------- #
 def _validated_sentiment_cache(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd.DataFrame:
     """Keep complete, valid calls and refresh cheap metrics from canonical source text."""
+    if "model" not in sentiment or sentiment.empty:
+        return sentiment.iloc[0:0].copy()
+    sentiment = sentiment[sentiment["model"] == EARNINGS_CALL_SENTIMENT_CACHE_MODEL].copy()
     if sections is None:
-        return sentiment.copy()
+        return sentiment
     metrics = []
     for (ticker, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
         quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))

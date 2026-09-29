@@ -17,6 +17,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+import src.data_aggregate.utils.text.earnings_call_features as ec
+from src.constants.constants import EARNINGS_CALL_SENTIMENT_CACHE_MODEL, FINBERT_TONE_MODEL
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
 from src.data_aggregate.utils.text.earnings_call_features import (
@@ -25,6 +27,7 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     attach_issuer_identity,
     build_earnings_call_feature_panel,
     prepare_earnings_call_kpis,
+    score_earnings_calls,
     sentiment_kpis_streamed,
 )
 from src.data_store.schema import Tables
@@ -50,6 +53,7 @@ def _row(tkr, q, tag, pos, neg, words, unc):
         "sent_neu": round(1 - pos - neg, 6),
         "n_words": words,
         "uncertainty_ratio": unc,
+        "model": EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
     }
 
 
@@ -156,6 +160,31 @@ def test_malformed_or_incomplete_cached_call_is_missing() -> None:
     assert int(refreshed["total_words"].iloc[0]) == expected_words
     print("\n=== SANITY CHECK: current transcript quality dominates stale cache ===")
     print("  incomplete/malformed calls produce no KPI row; stale cached word counts are refreshed. Validated.")
+
+
+def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, monkeypatch) -> None:
+    """A cache produced before cleaned-text scoring must not suppress or feed the new build."""
+    sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    legacy = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").assign(model=FINBERT_TONE_MODEL)
+    sqlite_store.save(Tables.earnings_call_sentiment, legacy)
+
+    class _Engine:
+        device = "test"
+
+        @staticmethod
+        def score_texts(texts):
+            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    score_earnings_calls(cast(Context, _Ctx(sqlite_store)), sections)
+    refreshed = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    assert refreshed is not None
+    assert set(refreshed["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL}
+    assert len(_per_call_kpis(legacy, sections)) == 0
+    assert len(_per_call_kpis(refreshed, sections)) == 1
+    print("\n=== SANITY CHECK: sentiment cache preprocessing version ===")
+    print("  legacy raw-text rows are rejected; both cleaned sections are rescored and replace them. Validated.")
 
 
 def test_panel_columns_lifetime_and_missingness():

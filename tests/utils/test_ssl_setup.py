@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import os
 import ssl
+import sys
 from pathlib import Path
 
 import certifi
 
 from src.utils import ssl_setup
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_bundle_is_valid_and_superset_of_certifi(tmp_path):
@@ -48,6 +51,22 @@ def test_configure_sets_env_then_respects_user_override(tmp_path, monkeypatch):
 
     print("\n=== SANITY CHECK: configure_corporate_ca ===")
     print("  sets SSL_CERT_FILE/CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE; respects a pre-set value (user override wins). Validated.")
+
+
+def test_airflow_reuses_host_bundle_and_writable_yfinance_cache(tmp_path, monkeypatch):
+    bundle = ssl_setup.build_corporate_ca_bundle(tmp_path / "ca.pem")
+    for var in ssl_setup.CA_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert ssl_setup.configure_corporate_ca(dest=bundle) == str(bundle)
+    assert all(os.environ[var] == str(bundle) for var in ssl_setup.CA_ENV_VARS)
+    assert ssl_setup.DEFAULT_BUNDLE == PROJECT_ROOT / ".cache" / "corporate_ca_bundle.pem"
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "XDG_CACHE_HOME: /tmp/pea-cache" in compose
+
+    print("\n=== SANITY CHECK: Airflow corporate TLS + yfinance cache ===")
+    print("  Linux reuses the host CA bundle; yfinance cache resolves under writable /tmp. Validated.")
 
 
 def test_relaxed_context_drops_only_strict_and_still_verifies(tmp_path):

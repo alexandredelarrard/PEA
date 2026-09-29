@@ -76,3 +76,30 @@ After this migration is reviewed:
 - [Live database](./reference/live-database.md)
 - [Source availability](./concepts/source-availability.md)
 - [Cube aggregation](./modules/data-aggregate.md)
+
+
+# extraction data
+- short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)
+- insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec. Done for the latest ones. So should be quick + add the Tickers fixed in gov
+- earnings surprises starts 1999-08, but empty till ~2003
+- financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
+- fix volume to be adjusted to spinoffs in price
+- fix EC extraction history and gaps. 2/3 are available today vs 90% potential
+- fix employee count, lots of MVs and gaps. Play with LLM extract.
+- fine tune def 14 data extraction
+
+# other data checks
+- check data is consistent over time, even for latest 2026 month ?
+- check dag data extract and data aggregate run smoothly end to end
+- Review the price split / spinoff over time (price validation)
+- refine modelling to be as stable as possible
+- review periods when IC drops for few weeks / months
+- add other strats decorrelated : - Super investors replica ?
+
+# # Signals :
+- include move from peers when new results are available -> move all peers info
+- create variables based on clients stock move, geography graph, etc.
+
+# universe expand:
+- fix selection / survival bias for tickers out of sp500.
+- move to the russell 1000 and no bias there

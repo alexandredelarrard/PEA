@@ -18,20 +18,20 @@ This page is the source-facing operating contract: where data comes from, which 
 
 | Domain | Provider | Credentials | Destination | Primary implementation |
 | --- | --- | --- | --- | --- |
-| Equity OHLCV, dividends, splits | yfinance | none | `prices`, `dividends`, `prices_splits` | [prices utilities](../../src/data_extract/utils/prices/) |
+| Equity OHLCV, dividends, splits | yfinance | none | `prices`, `dividends`, `prices_splits` | [price fetcher](../../src/data_extract/utils/prices/fetch_prices.py) |
 | Benchmark, volatility, commodity, energy | yfinance | none | `prices_macro` | [fetch_macro.py](../../src/data_extract/utils/prices/fetch_macro.py) |
 | Rates, credit, breakeven, FX | FRED | `FRED_API_KEY` | `prices_macro` | [fetch_macro.py](../../src/data_extract/utils/prices/fetch_macro.py) |
-| Current S&P 500 roster | Wikipedia | none | `sp500_tickers` | [prices utilities](../../src/data_extract/utils/prices/) |
-| Per-filing fundamentals | SEC EDGAR XBRL | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history_sec` | [fundamentals utilities](../../src/data_extract/utils/fundamentals/) |
-| Vendor fundamentals | Sharadar Direct API | `SHARADAR_API_KEY` | `fundamentals_sharadar` → `fundamentals_history` | [fundamentals_sharadar](../../src/data_extract/utils/fundamentals_sharadar/) |
+| Current S&P 500 roster | Wikipedia | none | `sp500_tickers` | [universe fetcher](../../src/data_extract/utils/prices/fetch_tickers.py) |
+| Per-filing fundamentals | SEC EDGAR XBRL | `SEC_USER_AGENT` | `fundamentals_facts` → `fundamentals_history_sec` | [SEC fundamentals fetcher](../../src/data_extract/utils/fundamentals/fetch_fundamentals_sec.py) |
+| Vendor fundamentals | Sharadar Direct API | `SHARADAR_API_KEY` | `fundamentals_sharadar` → `fundamentals_history` | [Sharadar fetcher](../../src/data_extract/utils/fundamentals_sharadar/fetch_sharadar.py) |
 | Vendor entity/actions/index history | Sharadar | `SHARADAR_API_KEY` | `sharadar_tickers`, `sharadar_actions`, `sharadar_sp500` | same producer |
-| Employee headcount | SEC 10-K body text | `SEC_USER_AGENT` | `fundamentals_employees` | [fundamentals utilities](../../src/data_extract/utils/fundamentals/) |
+| Employee headcount | SEC 10-K body text | `SEC_USER_AGENT` | `fundamentals_employees` | [headcount fetcher](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) |
 | Earnings surprises | yfinance | none | `earnings_surprises` | fundamentals fetchers |
 | Pension and note datasets | SEC bulk ZIPs | `SEC_USER_AGENT` | `pension_facts`, `notes_num`, `notes_text` | fundamentals fetchers |
-| Institutional holdings | SEC 13F bulk | `SEC_USER_AGENT`; optional OpenFIGI key | `sec13f_hr`, `cusip_ticker_map` | [institutional utilities](../../src/data_extract/utils/institutionals/) |
+| Institutional holdings | SEC 13F bulk | `SEC_USER_AGENT`; optional OpenFIGI key | `sec13f_hr`, `cusip_ticker_map` | [13F fetcher](../../src/data_extract/utils/institutionals/fetch_13f.py) |
 | Elite-manager roster/books | Dataroma, Wayback, SEC 13F | `SEC_USER_AGENT` | `superinvestor_roster`, `sec13f_manager_holdings` | institutional utilities |
 | Insider transactions | SEC quarterly datasets plus daily ownership XML | `SEC_USER_AGENT` | canonical, live, coverage, footnote, and quarantine tables | institutional utilities |
-| Governance and compensation | SEC DEF 14A plus OpenAI structured output | `SEC_USER_AGENT`, `OPENAI_API_KEY` | `def14a_llm` and four child tables | [structure utilities](../../src/data_extract/utils/structure/) and [GPT extraction](../modules/gpt-extract.md) |
+| Governance and compensation | SEC DEF 14A plus OpenAI structured output | `SEC_USER_AGENT`, `OPENAI_API_KEY` | `def14a_llm` and four child tables | [DEF 14A fetcher](../../src/data_extract/utils/structure/def14a/fetch.py) and [GPT extraction](../modules/gpt-extract.md) |
 | Pay-versus-performance | DEF 14A inline XBRL | `SEC_USER_AGENT` | `sec_def14a` | DEF 14A ECD reader |
 | Corporate events and shareholder votes | SEC 8-K plus OpenAI for Item 5.07 | SEC and OpenAI keys | `sec_8k`, `sec_8k_votes` | institutional then structure utilities |
 | Activist/passive stakes | SEC Schedule 13D/13G | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions`, `sec_13g` | institutional utilities |
@@ -45,8 +45,8 @@ Secrets live only in the ignored root `.env`, loaded by [Context](../../src/cont
 ## Shared transport and extraction plumbing
 
 - [polite_http.py](../../src/utils/polite_http.py) supplies rate limiting and TLS impersonation for sources that reject ordinary clients.
-- [ssl_setup.py](../../src/utils/ssl_setup.py) configures the corporate CA bundle before `curl_cffi` imports freeze certificate state.
-- [data_extract/utils/common](../../src/data_extract/utils/common/) owns bulk caches, SEC request state, rate limiting, parallel entity walks, the form registry, run manifests, and incremental resume helpers.
+- [ssl_setup.py](../../src/utils/ssl_setup.py) exports the Windows trust store to the ignored `.cache/corporate_ca_bundle.pem`; Linux Airflow processes reuse that file through the repository bind mount before `curl_cffi` imports freeze certificate state. TLS verification remains enabled.
+- [incremental helpers](../../src/data_extract/utils/common/incremental.py) owns bulk caches, SEC request state, rate limiting, parallel entity walks, the form registry, run manifests, and incremental resume helpers.
 - [registrant.py](../../src/data_extract/utils/common/registrant.py) is the single authority on which legal CIKs may supply a ticker's filings.
 - [gpt_extract](../../src/gpt_extract/) is the shared LLM service; source packages provide tasks and schemas, not duplicate OpenAI clients.
 

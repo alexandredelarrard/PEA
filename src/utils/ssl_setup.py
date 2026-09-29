@@ -11,7 +11,8 @@ issuer certificate` from curl_cffi (yfinance / Google Trends), and the equivalen
 from requests (SEC / FRED / Wikipedia / Dataroma) and httpx (OpenAI).
 
 `configure_corporate_ca()` builds a COMBINED bundle = certifi + the OS trust store
-(via `ssl.enum_certificates` on Windows) and points the standard CA env vars at it:
+(via `ssl.enum_certificates` on Windows), stores it in the repo's ignored `.cache`
+directory so the Airflow bind mount can see it, and points the standard CA env vars at it:
 
     SSL_CERT_FILE, CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE
 
@@ -37,7 +38,7 @@ import certifi
 # curl_cffi._default_cacert() checks these in order before falling back to certifi;
 # requests honours REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE; ssl/urllib/httpx use SSL_CERT_FILE.
 CA_ENV_VARS = ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
-DEFAULT_BUNDLE = Path.home() / ".stock_pick_strat" / "corporate_ca_bundle.pem"
+DEFAULT_BUNDLE = Path(__file__).resolve().parents[2] / ".cache" / "corporate_ca_bundle.pem"
 
 
 def _os_store_pem() -> list[str]:
@@ -111,16 +112,21 @@ def configure_corporate_ca(dest: Path | None = None, force: bool = False) -> str
     client trusts the corporate proxy CA.
 
     No-op (returns the existing value) when a CA env var is ALREADY set — the user's
-    own config wins — unless `force=True`. Only builds a bundle where there is an OS
-    store to add (Windows); elsewhere it leaves certifi as the default. Returns the
-    bundle path in effect, or None if nothing was configured.
+    own config wins — unless `force=True`. Windows builds the bundle from its OS store;
+    Linux reuses that bundle when the repo is bind-mounted into Airflow, and otherwise
+    leaves certifi as the default. Returns the bundle path in effect, or None if nothing
+    was configured.
     """
     already = next((os.environ[v] for v in CA_ENV_VARS if os.environ.get(v)), None)
     if already and not force:
         return already
+    target = Path(dest) if dest else DEFAULT_BUNDLE
     if sys.platform != "win32" and not force:
-        return already
-    bundle = str(build_corporate_ca_bundle(dest, force=force))
+        if not bundle_is_usable(target):
+            return already
+        bundle = str(target)
+    else:
+        bundle = str(build_corporate_ca_bundle(target, force=force))
     for v in CA_ENV_VARS:
         os.environ[v] = bundle
     return bundle

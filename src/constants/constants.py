@@ -16,10 +16,6 @@ DATE_FORMAT_COMPACT = "%Y%m%d"  # SEC / FINRA daily-file name stamps
 # --------------------------------------------------------------------------- #
 # Config directory                                                            #
 # --------------------------------------------------------------------------- #
-# THE one declaration. `context.py` resolves it into `Context.config_dir`; every fundamentals
-# loader's default parameter, and the CLI's `-c` default, import it from here rather than
-# re-declaring their own copy -- five independent copies is what let the CLI's `-c` flag be
-# silently discarded by `context.py` for years (see `Context.config_dir`'s docstring).
 DEFAULT_CONFIG_DIR = "./configs"
 
 # --------------------------------------------------------------------------- #
@@ -86,59 +82,6 @@ F13_MAX_EARLY_DAYS = 45
 F13_MAX_LATE_DAYS = 60
 
 # The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
-#
-# The statutory deadline is `period + 45 calendar days`, but the 45th day is not a trading
-# day on 13 of 53 quarters (measured 2026-09-15 against `cube_part_prices`' own calendar: 6
-# Saturdays, 7 Sundays) and the deadline crowd then files on the next session. So the
-# availability date is the deadline SNAPPED FORWARD onto the trading calendar, then advanced
-# this many trading days -- the same snap `decay.snap_to_grid` applies to any event date that
-# misses a session. `availability.availability_date` is the one declaration of that rule.
-#
-# ⚠ SIZED ON SHARES, NEVER ON `value_usd`. A share count carries neither the 1000x unit
-# defect `value_basis` repairs nor a price move; on 2020-12-31 the raw-value basis reads the
-# quarter 33.2% complete and shares read 91.3%, so a sweep on raw value picks the wrong N.
-#
-# Swept 2026-09-15 on the in-universe, banded frame (1,053,978 (ticker, period, filing_date)
-# groups, 489 tickers, 53 quarters), scoring each quarter's SHARES public at its own
-# availability date against its final banded total:
-#
-#     settle N   quarters <90%   <95%   <97%   p50 complete   realised lag (p50)
-#            0               9     23     39         95.71%         45d
-#            1               4     16     29         96.66%         46d
-#            2               4     15     27         96.85%         49d
-#            3               4     14     23         97.64%         50d
-#            4               4     11     21         97.87%         51d
-#            5               4     11     18         98.38%         52d
-#
-# ⚠ THERE IS NO COMPLETENESS KNEE PAST N=1, AND THAT IS NOT WHAT SIZES THIS CONSTANT. N=1
-# collects the weekend population (9 bad quarters -> 4) and everything after it buys the
-# middle of the distribution smoothly. What picks 3 is the DELTA BASIS: the first
-# publication's `shares_chg` is compared against the fully-revised truth on two bases --
-# naive (`q` at first publication against a revised `q-1`) and a matched sample (both sides
-# cut to the filers public at `q`'s first publication) -- and 3 is exactly where naive
-# overtakes matched. Measured on two DISJOINT ticker samples (61 tickers / 3.06M filer-rows,
-# 122 tickers / 5.25M), median absolute error in percentage points:
-#
-#     settle N    naive   matched   winner     (122-ticker sample)
-#            0    4.053     2.034   matched
-#            1    2.699     2.016   matched
-#            2    2.194     2.014   matched
-#            3    1.825     2.012   NAIVE
-#            4    1.581     2.003   NAIVE
-#
-# The matched sample is FLAT at ~2.01pp regardless of N (it cancels the maturity mismatch by
-# construction and is then stuck with the early-filer selection bias); naive improves
-# monotonically and crosses at 3. Both samples give the same crossover. So N=3 is the
-# smallest buffer at which the simple naive difference is the better estimator -- which is
-# what makes "no matched-sample self-join" a measured decision instead of an inherited one.
-#
-# ⚠ THE FOUR RESIDUAL QUARTERS ARE ONE FILER, NOT A DATA GAP AND NOT THE CALENDAR.
-# 2017-06-30 (85.2%), 2018-09-30 (86.5%), 2019-06-30 (85.9%) and 2023-09-30 (85.3%) are the
-# quarters VANGUARD (CIK 0000102909) or BLACKROCK (0001364742) filed late: one filer, 18.9bn
-# to 30.2bn shares, arriving on day 54-79. Each quarter reaches 99.7-100% inside the
-# `[-45, +60]` band, so nothing is lost -- those shares enter the panel on the day they were
-# actually filed, through the revision mechanism. No settle buffer can reach them and none
-# should try.
 F13_SETTLE_TRADING_DAYS = 3
 
 # The materiality gate on a REVISION. A period is first published at its availability date
@@ -175,9 +118,6 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}&type=13F-HR&dateb=&owner=include&count=10&output=atom"
 )
 
-# 8-K events -> `sec_8k`, one row per item code (see fetch_8k_edgar.py
-SEC_8K_FORMS = ["8-K", "8-K/A"]
-
 # Insider ownership events. Quarterly ZIPs remain canonical history; these form names feed
 # the daily EDGAR tail until the next ZIP is published and reconciled.
 SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
@@ -193,49 +133,17 @@ SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovatio
 SEC_INSIDER_FIRST_YEAR = 2006
 SEC_INSIDER_SWAP_YEAR = 2026
 
-# SC 13D activist filings (>5% stake WITH intent to influence) + amendments — the event-driven
-# EDGAR renamed the form type at the structured-XML mandate: filings through 2024-12-16 are
-# "SC 13D", filings from 2024-12-17 are "SCHEDULE 13D". `get_filings(form=...)` matches EXACTLY,
-# so dropping either pair silently truncates the table at the changeover -- measured: 461 filings
-# across 91 S&P 500 tickers were invisible until both pairs were listed.
+# SEC FORMS
+SEC_8K_FORMS = ["8-K", "8-K/A"]
 SEC_13D_FORMS = [
     "SC 13D",
     "SC 13D/A",  # activist; the passive 13G channel is SEC_13G_FORMS
     "SCHEDULE 13D",
     "SCHEDULE 13D/A",
 ]
-
-# Schedule 13G: >5% beneficial ownership WITHOUT intent to influence control -- the passive
-# counterpart of a 13D, filed by qualified institutions (Rule 13d-1(b)), passive investors
-# (13d-1(c)) and exempt investors (13d-1(d)). Same two-era form-string split as 13D, and the
-# same trap: "SC 13G" through 2024-12-16, "SCHEDULE 13G" from 2024-12-17. All four spellings
-# must be listed or the table stops dead at the changeover.
 SEC_13G_FORMS = ["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"]
-
-# 13F institutional holdings, walked per-filing-date via edgartools (fetch_13f.py).
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
-
-# Fundamentals (financial-statement) via edgartools -> `fundamentals_facts` / `fundamentals_history_sec`.
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
-
-# DEF 14A proxy + the DEF 14C information-statement equivalent that CONTROLLED companies file
-# + DEFC14A, the CONTESTED annual proxy, which REPLACES the DEF 14A rather than supplementing
-# it -- so a proxy fight made the whole year invisible to every governance feature.
-#
-# Measured over the 500-ticker universe, 2026-09-09 (`_cache/defc14a_scan.log`): 41 ticker-years
-# across 36 tickers had a definitive proxy the pipeline could not see, and the list corroborates
-# itself against known campaigns -- DIS 2023/2024 (Peltz), QCOM 2018 (Broadcom), PG 2017 (Peltz),
-# MCD 2022 and EBAY 2014 (Icahn), TGT 2009 (Ackman), GM 2017 (Greenlight), CSX 2008, AXP 2010-12.
-# XOM 2021 (Engine No. 1) is a 42nd, absent from that scan only because it was taken before the
-# registrant cutover landed and the roster CIK held no proxies at all.
-#
-# ⚠ DEFR14A IS DELIBERATELY EXCLUDED. It is a REVISED proxy, normally filed ALONGSIDE the
-# original, so it is a duplicate far more often than a recovery: of 232 DEFR14A ticker-years,
-# 220 already hold the DEF 14A. Adding it would fetch 247 filings to recover 3 ticker-years
-# (BDX 2019, BEN 2021, TROW 2001) -- which therefore remain lost, on purpose and on record.
-#
-# DEFM14A / DEFS14A / DEFN14A stay out because they are not annual meetings (merger, special
-# and consent solicitations), so they carry no board, pay or ownership tables to extract.
 DEF14A_FORMS = ["DEF 14A", "DEF 14C", "DEFC14A"]
 
 # The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
@@ -525,14 +433,6 @@ SHARADAR_NEGATE_IF_NON_POSITIVE = "if_non_positive"
 # So the de-adjustment here is unaffected; the market-cap identity for those    #
 # two names is a SEPARATE question (see the Visa cluster in validate/prices).   #
 # --------------------------------------------------------------------------- #
-#: The `sharadar_actions.action` value naming a share split, and the one naming a spinoff.
-#:
-#: ⚠ A `split` row is NOT always a share split, and reading it as one is a 100%-error trap.
-#: HON carries `split` = 0.5 dated 2026-06-29 CO-DATED with `spinoff` = 1 and
-#: `spinoffdividend` = 221.01 (Honeywell Aerospace): it is the spinoff's PRICE adjustment
-#: factor, not a share-count event. HON's own as-filed cover page proves it -- `sharesbas` is
-#: 316,826,560 on 2026-04-23 and 316,940,010 on 2026-07-23, unchanged across the date. So a
-#: split candidate counts only when NO spinoff row shares its (ticker, date).
 SHARADAR_ACTION_SPLIT = "split"
 SHARADAR_ACTION_SPINOFF = "spinoff"
 

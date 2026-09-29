@@ -162,6 +162,15 @@ rtk docker compose up -d airflow-db airflow-init
 rtk docker compose up -d airflow-scheduler airflow-webserver
 ```
 
+On a managed Windows laptop whose HTTPS traffic is re-signed by a corporate proxy, export the Windows trust store once and recreate the Airflow services so the writable yfinance cache setting takes effect:
+
+```bash
+rtk "$PY" -m src.utils.ssl_setup
+rtk docker compose up -d --force-recreate airflow-scheduler airflow-webserver
+```
+
+The generated `.cache/corporate_ca_bundle.pem` is ignored by Git and visible inside Airflow through the repository bind mount. Pipeline startup reuses it on Linux for `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`; certificate and hostname verification remain enabled. Compose also directs yfinance's timezone and cookie caches to writable `/tmp/pea-cache`.
+
 The compose stack mounts the repository, persistent `data/`, and DAG directory separately. Inside containers, use the service hostname `db`, not localhost. Operational pools throttle SEC bulk, SEC API, scraping, and aggregate tasks.
 
 For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-infrastructure.md) and [nightly refresh](../flows/nightly-data-refresh.md).

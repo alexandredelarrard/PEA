@@ -49,14 +49,7 @@ PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 
-# The ordered cube sub-steps. Imported from the part registry rather than hand-listed: the
-# old GROUPS literal was documented as "must match StepBuildCube._GROUP_SOURCES" and had
-# already drifted (`attention` was commented out here but still registered there, so the
-# status gate reported cube_part_attention missing on every run).
-# tests/dags/test_dag_matches_part_registry.py asserts the two stay in step.
-from src.data_aggregate.utils.common.parts import PART_COMMANDS  # noqa: E402
-
-CHAIN = list(PART_COMMANDS)
+CHAIN = ["build-prices", "build-target", "build-fundamentals", "build-momentum", "build-text", "build-institutionals", "build-governance"]
 
 default_args = {
     "owner": "pea",

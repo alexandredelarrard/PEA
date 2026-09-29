@@ -343,6 +343,65 @@ def test_write_part_strict_append_when_no_refresh():
     assert tail["date"].min() > LAST
 
 
+def test_institutionals_historical_correction_requires_forced_full():
+    """A routine institutionals update appends new dates only; rebuilding history is explicit.
+
+    Filing sources can revise an already stored date.  Rewriting that history during a normal
+    update would make a nominally incremental run silently change the training sample, while
+    treating an absent source observation as zero would manufacture information.  The
+    institutionals step therefore keeps strict append semantics and requires ``full=True``
+    for an intentional historical correction.
+    """
+    calendar = pd.bdate_range("2026-08-03", periods=8)
+    new_end = calendar[-1]
+    stored = pd.DataFrame(
+        {
+            "date": calendar[:-1],
+            "ticker": "T0",
+            "f": [1.0, 1.0, 1.0, 1.0, 1.0, float("nan"), 7.0],
+        }
+    )
+    store = _StatefulGovernanceStore(stored)
+    candidate = stored.copy()
+    candidate.loc[candidate["date"] == calendar[1], "f"] = 99.0
+    candidate = pd.concat(
+        [candidate, pd.DataFrame({"date": [new_end], "ticker": ["T0"], "f": [float("nan")]})],
+        ignore_index=True,
+    )
+
+    incremental = plan_window(
+        cast(DataStore, store),
+        Tables.cube_part_institutionals,
+        warmup=5,
+        full=False,
+        trading_index=calendar,
+    )
+    write_part(cast(DataStore, store), Tables.cube_part_institutionals, candidate, incremental)
+
+    assert store.rows.loc[store.rows["date"] == calendar[1], "f"].item() == 1.0
+    assert pd.isna(store.rows.loc[store.rows["date"] == calendar[-3], "f"].item())
+    assert pd.isna(store.rows.loc[store.rows["date"] == new_end, "f"].item())
+    assert store.rows.duplicated(["date", "ticker"]).sum() == 0
+
+    forced = plan_window(
+        cast(DataStore, store),
+        Tables.cube_part_institutionals,
+        warmup=5,
+        full=True,
+        trading_index=calendar,
+    )
+    write_part(cast(DataStore, store), Tables.cube_part_institutionals, candidate, forced)
+    assert store.rows.loc[store.rows["date"] == calendar[1], "f"].item() == 99.0
+    assert store.rows.duplicated(["date", "ticker"]).sum() == 0
+
+    print("\n=== SANITY: institutionals append versus forced full ===")
+    print(
+        f"  normal update kept the stored {calendar[1].date()} value and appended "
+        f"{new_end.date()} as NaN; full=True then applied the historical correction."
+    )
+    print("  missing remained NaN, no fake zero appeared, and keys stayed unique. Validated.")
+
+
 def test_explicit_refresh_from_wins_over_the_part_default():
     """The target step's maturing-label window (~90 trading days) is much wider than the
     shared 5 and must not be narrowed by it."""

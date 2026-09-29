@@ -16,9 +16,9 @@ non-common securities and the unpriced rows, and so does the repair of the filed
 read that module's docstring before trusting any dollar figure here.
 
 POINT-IN-TIME. A Form 4 is due within ~2 business days of the trade, so every aggregate is
-stamped on `filing_date`, never `transaction_date`, and every window is trailing. The
-consensus price in `insider_quality` is the one place a forward-looking window is used, and
-it is a data-quality reference that never reaches the panel.
+stamped on `filing_date`, never `transaction_date`, and every window is trailing. The price
+consensus in `insider_quality` is trailing on that same publication clock; repaired values
+reach the panel, so later filings must never enter the reference.
 
 AVAILABILITY (D16, measured 2026-09-10):
 
@@ -232,6 +232,7 @@ def build_insider_feature_panel(
         return _empty_panel()
 
     t, diag = clean_transactions(insider)
+    unpriced_events = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     if t.empty:
         return pd.DataFrame(columns=["date", "ticker"])
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
@@ -299,6 +300,9 @@ def build_insider_feature_panel(
             net_mask = InstitutionalAvailability.combine(source_started, listed, full_window, observed_through)
         fields[net_name] = fields[net_name].reindex(index=idx, columns=columns).fillna(0.0).where(net_mask)
 
+    unpriced_masks = _unpriced_masks(unpriced_events, idx)
+    _mask_unknown_windows(fields, unpriced_masks)
+
     if sink is not None:
         sink.set_frontier("insider", complete_through)
         # ⚠ PROJECT FIRST, THEN RENAME. `buys` carries BOTH the source `shares` column and
@@ -350,6 +354,10 @@ def build_insider_feature_panel(
                 )
             signal_masks[name] = mask
             signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(mask)
+        _mask_unknown_windows(signal_fields, unpriced_masks)
+        for name, unknown in unpriced_masks.items():
+            if name in signal_masks:
+                signal_masks[name] &= ~unknown.reindex(index=idx, columns=columns, fill_value=False)
         sink.keep_signals(signal_fields, signal_masks)
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(t), len(buys), len(sells))
@@ -440,6 +448,50 @@ def _rolling(txns: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, value_
     calendar = pd.date_range(min(piv.index.min(), idx.min()), max(piv.index.max(), idx.max()), freq="D")
     piv = piv.reindex(calendar).fillna(0.0).rolling(f"{window_days}D").sum()
     return piv.reindex(index=idx, columns=seen.columns).fillna(0.0).where(seen)
+
+
+def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    """Feature windows made unknown by an excluded, unpriced open-market transaction."""
+    if events.empty:
+        return {}
+    groups = (
+        (("P",), WINDOW_60, ("ic_insider_buy_value_mcap_60d",)),
+        (
+            ("P",),
+            WINDOW_120,
+            ("ic_insider_distinct_buyers_120d", "ic_insider_cluster_buy_120d", "ic_insider_owner_surprise_120d"),
+        ),
+        (
+            ("P",),
+            WINDOW_180,
+            (
+                "ic_insider_buy_value_mcap_180d",
+                "ic_insider_buy_shares_so_180d",
+                "ic_insider_ceo_buy_mcap_180d",
+                "ic_insider_cfo_buy_mcap_180d",
+                "ic_insider_director_buy_mcap_180d",
+                "ic_insider_purchase_pct_prior",
+            ),
+        ),
+        (("P", "S"), WINDOW_180, ("ic_insider_net_buy_ratio_180d",)),
+        (("S",), WINDOW_60, ("ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d")),
+    )
+    columns = pd.Index(sorted(events["ticker"].astype(str).unique()), name="ticker")
+    seen = pd.DataFrame(True, index=idx, columns=columns)
+    masks: dict[str, pd.DataFrame] = {}
+    for codes, days, names in groups:
+        affected_events = events[events["code"].isin(codes)]
+        if affected_events.empty:
+            continue
+        affected = _rolling(affected_events, idx, days, None, seen).gt(0)
+        masks.update(dict.fromkeys(names, affected))
+    return masks
+
+
+def _mask_unknown_windows(fields: dict[str, pd.DataFrame], masks: dict[str, pd.DataFrame]) -> None:
+    for name, unknown in masks.items():
+        if name in fields:
+            fields[name] = fields[name].mask(unknown.reindex_like(fields[name]).fillna(False))
 
 
 def _over(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:

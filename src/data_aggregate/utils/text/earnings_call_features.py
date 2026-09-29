@@ -38,16 +38,15 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_SCORED_TAGS, FINBERT_TONE_MODEL
+from src.constants.constants import EARNINGS_CALL_SCORED_TAGS, EARNINGS_CALL_SIGNAL_SESSIONS, FINBERT_TONE_MODEL
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
 from src.data_store.schema import Tables
 from src.utils.nlp_sentiment import get_sentiment_engine
-from src.utils.text_metrics import content_frequency, cosine_similarity, uncertainty_ratio, word_count
+from src.utils.text_metrics import assess_earnings_call_sections, content_frequency, cosine_similarity, uncertainty_ratio, word_count
 
 _TRANSCRIPT_LAG_DAYS = 1  # transcript public the trading day AFTER the call
-_FFILL_LIMIT = 190  # ~9 months: bridge a skipped quarter, but let stale calls die
 _VOCAB_TAG = "prepared_remarks"  # scripted narrative — where a strategy shift shows up
 _SECTION_COLS = ["ticker", "quarter", "tag", "as_of", "text"]  # never SELECT * : `text` is huge
 
@@ -189,14 +188,46 @@ def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd
     # cross-call deltas in CALL ORDER (by call date), per ticker
     per_q = per_q.sort_values(["ticker", "as_of"]).reset_index(drop=True)
     g = per_q.groupby("ticker", sort=False)
-    per_q["ec_tone_delta"] = g["ec_tone"].diff()
+    previous_quarter = g["quarter"].shift(1)
+    consecutive = (per_q["quarter"].map(_quarter_number) - previous_quarter.map(_quarter_number)) == 1
+    per_q["ec_tone_delta"] = g["ec_tone"].diff().where(consecutive)
     prev_words = g["total_words"].shift(1)
-    per_q["ec_length_delta"] = np.log(per_q["total_words"] / prev_words.where(prev_words > 0))
+    per_q["ec_length_delta"] = np.log(per_q["total_words"] / prev_words.where(prev_words > 0)).where(consecutive)
     per_q["ec_length_delta"] = per_q["ec_length_delta"].replace([np.inf, -np.inf], np.nan)
     # quarter-to-quarter tone distance, PER SECTION (qa vs qa, prepared vs prepared)
-    per_q["ec_qa_tone_delta"] = g["qa_tone_lvl"].diff()
-    per_q["ec_prep_tone_delta"] = g["prep_tone_lvl"].diff()
+    per_q["ec_qa_tone_delta"] = g["qa_tone_lvl"].diff().where(consecutive)
+    per_q["ec_prep_tone_delta"] = g["prep_tone_lvl"].diff().where(consecutive)
     return per_q.drop(columns=["qa_tone_lvl", "prep_tone_lvl"])
+
+
+def _quarter_number(value: object) -> float:
+    text = str(value)
+    if len(text) == 6 and text[4] == "Q" and text[:4].isdigit() and text[5] in "1234":
+        return int(text[:4]) * 4 + int(text[5]) - 1
+    return np.nan
+
+
+def _issuer_history_zscore(per_call: pd.DataFrame, value_col: str) -> pd.Series:
+    """Five-year, prior-only issuer z-score; at least four prior calls, sample std."""
+    out = pd.Series(np.nan, index=per_call.index, dtype="float64")
+    identity = "issuer_id" if "issuer_id" in per_call.columns else "ticker"
+    for _, group in per_call.groupby(identity, sort=False):
+        ordered = group.sort_values("as_of")
+        dates = pd.to_datetime(ordered["as_of"], errors="coerce")
+        values = pd.to_numeric(ordered[value_col], errors="coerce")
+        for position, row_index in enumerate(ordered.index):
+            current_date = dates.iloc[position]
+            if pd.isna(current_date):
+                continue
+            prior = values.iloc[:position]
+            prior_dates = dates.iloc[:position]
+            prior = prior[(prior_dates >= current_date - pd.DateOffset(years=5)).to_numpy()].dropna()
+            if len(prior) < 4:
+                continue
+            std = prior.std(ddof=1)
+            if pd.notna(values.iloc[position]) and std > 0:
+                out.loc[row_index] = (values.iloc[position] - prior.mean()) / std
+    return out
 
 
 def _vocab_novelty(sections: pd.DataFrame, tag: str = _VOCAB_TAG) -> pd.DataFrame | None:
@@ -227,32 +258,42 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) 
         return piv
     piv.index = pd.to_datetime(piv.index).normalize()
     piv = piv[~piv.index.duplicated(keep="last")].sort_index()
-    piv = piv.reindex(piv.index.union(idx)).ffill(limit=_FFILL_LIMIT).reindex(idx).shift(_TRANSCRIPT_LAG_DAYS)
+    piv = piv.reindex(piv.index.union(idx)).ffill(limit=EARNINGS_CALL_SIGNAL_SESSIONS - 1).reindex(idx).shift(_TRANSCRIPT_LAG_DAYS)
     return piv
 
 
 # SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
-_SENTIMENT_KPI_COLS = [
+_RAW_KPI_COLS = [
     "ec_tone",
-    "ec_tone_delta",
     "ec_qa_gap",
     "ec_uncertainty",
+    "ec_qa_coherence_mean",
+    "ec_tone_delta",
     "ec_length_delta",
-    "ec_vocab_novelty",
-    "ec_qa_tone_delta",
-    "ec_prep_tone_delta",
-]  # per-section QoQ tone drift
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+]
 # EMBEDDING KPIs — from the OpenAI-embedding pass (`embed_earnings_calls` -> build_embedding_kpis).
 _EMBEDDING_KPI_COLS = [
     "ec_qa_coherence_mean",
-    "ec_qa_coherence_std",
-    "ec_n_qa",
-    "ec_qa_answer_ratio",
-    "ec_qa_answer_ratio_qq",  # answer/question density + QoQ Δ
-    "ec_qa_qq_sim",
-    "ec_prep_qq_sim",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
 ]  # narrative QoQ drift
-_KPI_COLS = _SENTIMENT_KPI_COLS + _EMBEDDING_KPI_COLS
+_HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
+_KPI_COLS = [
+    "ec_tone",
+    "ec_tone_vs_hist",
+    "ec_qa_gap",
+    "ec_qa_gap_vs_hist",
+    "ec_uncertainty",
+    "ec_uncertainty_vs_hist",
+    "ec_qa_coherence_mean",
+    "ec_qa_coherence_mean_vs_hist",
+    "ec_tone_delta",
+    "ec_length_delta",
+    "ec_qa_qq_distance",
+    "ec_prep_qq_distance",
+]
 
 
 def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
@@ -266,8 +307,18 @@ def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
         s = store.load(Tables.earnings_call_sentiment, where={"ticker": tk}, optional=True)
         if s is None:
             continue
-        vocab = store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tk, "tag": _VOCAB_TAG}, optional=True)
-        parts.append(_per_call_kpis(s, vocab))
+        sections = store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tk}, optional=True)
+        if sections is None:
+            continue
+        valid = []
+        for (_, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
+            quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
+            if quality.valid:
+                valid.append(str(quarter))
+        if not valid:
+            continue
+        s = s[s["quarter"].astype(str).isin(valid)]
+        parts.append(_per_call_kpis(s, sections[sections["quarter"].astype(str).isin(valid)]))
     if not parts:
         return None
     return pd.concat(parts, ignore_index=True)
@@ -297,6 +348,12 @@ def build_earnings_call_feature_panel(
     ekpi = build_embedding_kpis(embeddings)
     if ekpi is not None and not ekpi.empty:
         per_call = per_call.merge(ekpi, on=["ticker", "quarter"], how="left")
+    per_call = per_call.copy()
+    for col in _RAW_KPI_COLS:
+        if col not in per_call.columns:
+            per_call[col] = np.nan
+    for col in _HISTORY_BASES:
+        per_call[f"{col}_vs_hist"] = _issuer_history_zscore(per_call, col)
 
     fields: dict[str, pd.DataFrame] = {}
     for col in _KPI_COLS:
@@ -310,7 +367,12 @@ def build_earnings_call_feature_panel(
             fields[col] = frame
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    return build_peer_relative_panel(fields, peer_dict, availability=availability)
+    panel = build_peer_relative_panel(fields, peer_dict, emission={name: "raw" for name in fields}, availability=availability)
+    for name in _KPI_COLS:
+        column = f"f_{name}"
+        if column not in panel.columns:
+            panel[column] = pd.Series(np.nan, index=panel.index, dtype="float32")
+    return panel[["date", "ticker", *[f"f_{name}" for name in _KPI_COLS]]]
 
 
 def build_earnings_call_embedding_panel(

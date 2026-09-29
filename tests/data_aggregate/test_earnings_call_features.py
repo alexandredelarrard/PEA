@@ -77,8 +77,12 @@ def _sections_frame() -> pd.DataFrame:
         ("A", "2023Q3"): "litigation restructuring charges layoffs writedown goodwill impairment",
     }
     rows = []
-    for (tkr, q), t in txt.items():
-        rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "prepared_remarks", "text": t})
+    useful = "revenue growth customer demand margin guidance cash flow outlook " * 12
+    for tkr in ["A", "B", "C", "D", "E"]:
+        for q in _QDATE:
+            prepared = (txt.get((tkr, q), useful) + " ") * 12
+            rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "prepared_remarks", "text": prepared})
+            rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "qa", "text": useful})
     return pd.DataFrame(rows)
 
 

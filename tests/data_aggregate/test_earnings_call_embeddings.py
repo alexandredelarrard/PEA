@@ -333,6 +333,19 @@ def test_force_reembed_drops_stale_turns():
     )
 
 
+def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> None:
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    embed_earnings_calls(ctx, client=StubClient())
+    assert len(store.t["earning_calls_embedding"]) > 0
+    store.t["earnings_call_sections"]["text"] = "Thanks."
+    embed_earnings_calls(ctx, client=StubClient(), force=True)
+    assert store.t["earning_calls_embedding"].empty
+    print("\n=== SANITY CHECK: empty force re-parse ===")
+    print("  a call that now parses to zero turns deletes every previously cached turn. Validated.")
+
+
 def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance() -> None:
     rows = []
     for quarter, value, model in (("2024Q1", [1.0, 0.0], "m1"), ("2024Q3", [0.0, 1.0], "m1")):

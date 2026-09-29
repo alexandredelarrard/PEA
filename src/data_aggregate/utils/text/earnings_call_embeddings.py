@@ -388,7 +388,7 @@ def _drop_stale_turns(store, log, counts: dict[tuple[str, str], int]) -> None:
 
 # columns the KPI derivation needs — everything BUT the bulky `text` (and the audit columns): a
 # projected read keeps the per-ticker KPI streaming from pulling the turn text it never uses.
-_KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding"]
+_KPI_LOAD_COLS = ["ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding", "model"]
 
 
 def _embedded_calls(store) -> set[tuple[str, str]]:
@@ -472,6 +472,7 @@ def embed_earnings_calls(
         mgmt = {t["person"].strip().lower() for t in prep_turns if t.get("person")}
         qa_turns = split_turns(qa_text, _QA_TAG, mgmt_names=mgmt) if isinstance(qa_text, str) and qa_text.strip() else []
         turns = prep_turns + qa_turns
+        counts[(tkr, q)] = len(turns)
         if not turns:
             continue
         vectors = embed_texts([t["text"] for t in turns], model=model, client=client)
@@ -494,7 +495,6 @@ def embed_earnings_calls(
             for i, t in enumerate(turns)
         ]
         store.save(Tables.earning_calls_embedding, pd.DataFrame(rows))  # iterative per-call upsert
-        counts[(tkr, q)] = len(rows)
         n_new += len(rows)
     if force and counts:  # re-embed may yield FEWER turns -> drop orphaned tail rows
         _drop_stale_turns(store, log, counts)
@@ -526,19 +526,27 @@ def embedding_kpis_streamed(context: Context) -> tuple[pd.DataFrame | None, pd.D
 # --------------------------------------------------------------------------- #
 def _pooled_section_vectors(turns: pd.DataFrame, section: str) -> pd.DataFrame:
     """Mean-pool a call's turn embeddings for `section` -> one vector per (ticker, quarter)."""
-    s = turns[turns["section"] == section][["ticker", "quarter", "as_of", "embedding"]]
+    columns = ["ticker", "quarter", "as_of", "embedding"] + (["model"] if "model" in turns.columns else [])
+    s = turns[turns["section"] == section][columns]
     if s.empty:
         return pd.DataFrame(columns=["ticker", "quarter", "as_of", "vec"])
     out = []
     for (tkr, q), g in s.groupby(["ticker", "quarter"], sort=False):
         vecs = [np.asarray(v, dtype="float64") for v in g["embedding"]]
-        out.append({"ticker": tkr, "quarter": q, "as_of": g["as_of"].iloc[0], "vec": np.mean(vecs, axis=0)})
+        out.append(
+            {
+                "ticker": tkr,
+                "quarter": q,
+                "as_of": g["as_of"].iloc[0],
+                "model": g["model"].iloc[0] if "model" in g else None,
+                "vec": np.mean(vecs, axis=0),
+            }
+        )
     return pd.DataFrame(out)
 
 
-def _qq_similarity(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
-    """Per (ticker, quarter): cosine(this call's POOLED section vector, the PRIOR call's), in
-    call order. NaN on a ticker's first call."""
+def _qq_distance(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
+    """Cosine distance to the immediately preceding fiscal quarter only."""
     pooled = _pooled_section_vectors(turns, section)
     if pooled.empty:
         return pd.DataFrame(columns=["ticker", "quarter", name])
@@ -546,13 +554,41 @@ def _qq_similarity(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame
     pooled = pooled.sort_values(["ticker", "as_of"])
     out = []
     for tkr, grp in pooled.groupby("ticker", sort=False):
-        prev = None
+        previous = None
         for r in grp.itertuples(index=False):
-            v = r.vec
-            similarity = np.nan if prev is None else round(cosine(cast(np.ndarray, v), cast(np.ndarray, prev)), 6)
-            out.append({"ticker": tkr, "quarter": r.quarter, name: similarity})
-            prev = v
+            distance = np.nan
+            if previous is not None:
+                consecutive = _quarter_number(r.quarter) - _quarter_number(previous.quarter) == 1
+                comparable = r.model == previous.model and len(r.vec) == len(previous.vec)
+                if consecutive and comparable:
+                    distance = round(1.0 - cosine(cast(np.ndarray, r.vec), cast(np.ndarray, previous.vec)), 6)
+            out.append({"ticker": tkr, "quarter": r.quarter, name: distance})
+            previous = r
     return pd.DataFrame(out)
+
+
+def _quarter_number(value: object) -> float:
+    text = str(value)
+    if len(text) == 6 and text[4] == "Q" and text[:4].isdigit() and text[5] in "1234":
+        return int(text[:4]) * 4 + int(text[5]) - 1
+    return np.nan
+
+
+def _comparable_embedding_calls(turns: pd.DataFrame) -> pd.DataFrame:
+    """Keep calls with one model, one positive finite vector dimension, and no zero vectors."""
+    valid: list[tuple[object, object]] = []
+    for key, group in turns.groupby(["ticker", "quarter"], sort=False):
+        vectors = [np.asarray(value, dtype="float64") for value in group["embedding"]]
+        models = group["model"].dropna().astype(str).nunique() if "model" in group else 0
+        dimensions = {vector.size for vector in vectors}
+        vectors_ok = bool(vectors) and all(vector.size > 0 and np.isfinite(vector).all() and np.linalg.norm(vector) > 0 for vector in vectors)
+        if models <= 1 and len(dimensions) == 1 and vectors_ok:
+            valid.append(key)
+    if not valid:
+        return turns.iloc[0:0].copy()
+    keys = pd.MultiIndex.from_tuples(valid, names=["ticker", "quarter"])
+    current = pd.MultiIndex.from_frame(turns[["ticker", "quarter"]])
+    return turns[current.isin(keys)].copy()
 
 
 def _qa_coherence(turns: pd.DataFrame) -> pd.DataFrame:
@@ -586,8 +622,8 @@ def _qa_coherence(turns: pd.DataFrame) -> pd.DataFrame:
                 "ticker": tkr,
                 "quarter": q,
                 "as_of": g["as_of"].iloc[0],
-                "ec_qa_coherence_mean": round(float(np.mean(per_ex)), 6) if per_ex else np.nan,
-                "ec_qa_coherence_std": round(float(np.std(per_ex)), 6) if per_ex else np.nan,
+                "ec_qa_coherence_mean": round(float(np.mean(per_ex)), 6) if len(per_ex) >= 2 else np.nan,
+                "ec_qa_coherence_std": round(float(np.std(per_ex)), 6) if len(per_ex) >= 2 else np.nan,
                 "ec_n_qa": int(g.loc[g["tag"] == EARNINGS_CALL_TAG_QUESTION, "exchange_idx"].nunique()),
                 "ec_n_answers": n_a,
                 "ec_qa_answer_ratio": round(n_a / n_q, 6) if n_q else np.nan,
@@ -604,7 +640,10 @@ def _qq_delta(kpi: pd.DataFrame, col: str, name: str) -> pd.DataFrame:
     d = kpi[["ticker", "quarter", "as_of", col]].copy()
     d["as_of"] = pd.to_datetime(d["as_of"])
     d = d.sort_values(["ticker", "as_of"])
-    d[name] = d.groupby("ticker", sort=False)[col].diff()
+    grouped = d.groupby("ticker", sort=False)
+    previous_quarter = grouped["quarter"].shift(1)
+    consecutive = (d["quarter"].map(_quarter_number) - previous_quarter.map(_quarter_number)) == 1
+    d[name] = grouped[col].diff().where(consecutive)
     return d[["ticker", "quarter", name]]
 
 
@@ -615,10 +654,12 @@ def build_embedding_kpis(embeddings: pd.DataFrame | None) -> pd.DataFrame | None
     None if the cache is empty."""
     if embeddings is None or embeddings.empty:
         return None
-    kpi = _qa_coherence(embeddings)
+    keys = embeddings[["ticker", "quarter"]].drop_duplicates()
+    comparable = _comparable_embedding_calls(embeddings)
+    kpi = keys.merge(_qa_coherence(comparable), on=["ticker", "quarter"], how="left")
     kpi = kpi.merge(_qq_delta(kpi, "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq"), on=["ticker", "quarter"], how="left")
-    for section, name in ((_QA_TAG, "ec_qa_qq_sim"), (_PREP_TAG, "ec_prep_qq_sim")):
-        kpi = kpi.merge(_qq_similarity(embeddings, section, name), on=["ticker", "quarter"], how="outer")
+    for section, name in ((_QA_TAG, "ec_qa_qq_distance"), (_PREP_TAG, "ec_prep_qq_distance")):
+        kpi = kpi.merge(_qq_distance(comparable, section, name), on=["ticker", "quarter"], how="left")
     kpi = kpi.drop(columns=["as_of"], errors="ignore")  # as_of was only for the QoQ ordering
     for c in ("ec_n_qa", "ec_n_answers", "ec_qa_answer_ratio", "ec_qa_answer_ratio_qq", "ec_qa_coherence_mean", "ec_qa_coherence_std"):
         if c in kpi.columns:

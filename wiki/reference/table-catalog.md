@@ -72,7 +72,7 @@ The identity model has two axes: [registrant policy](../../src/data_extract/util
 | `fundamentals_employees` | ticker × as-of | Annual headcount parsed from 10-K prose, separated from XBRL history because its failure mode is textual. |
 | `earnings_surprises` | ticker × earnings date | Consensus and actual EPS. Future scheduled dates are possible; realized features require a non-null actual. |
 | `pension_facts` | CIK × tag × period × duration | Curated pension facts from SEC bulk datasets. Freshness follows filing date, not period date. |
-| `notes_num`, `notes_text` | accession × tag × period × duration | Monthly numeric and narrative SEC footnote archives. `ddate` is fact time; date-typed `available_at` is the archive publication/acquisition clock used for freshness. Consumers require both clocks and start at `max(filed, available_at)`. |
+| `notes_num`, `notes_text` | accession × tag × period × duration | Monthly numeric and narrative SEC footnote archives. `ddate` is fact time; date-typed `available_at` is intended to record archive availability and drives freshness. Consumers require both clocks and start at `max(filed, available_at)`. Historical availability provenance is unresolved; see [data sources](./data-sources.md). |
 
 The distinction between the two histories is load-bearing: [data extraction](../modules/data-extract.md) builds the SEC replay independently, then the Sharadar producer builds the merged consumer table.
 

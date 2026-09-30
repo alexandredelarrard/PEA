@@ -72,3 +72,11 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Coverage: documented monthly SEC Financial Statement and Notes archive availability, the persisted `available_at` clock, monthly freshness, and fail-closed point-in-time projection from the later of filing and archive availability
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md)
 - Operational boundary: the code and schema declarations are current; the live database still requires the separately authorized column evolution, metadata repair, and full fundamentals-part rebuild
+
+## 2026-09-30: refresh — historical notes availability audit
+
+- Profile: internal/standard
+- source_commit: b91495e
+- Coverage: corrected the archive-availability contract after finding that current ZIP `Last-Modified` and local cache mtime do not establish original public release dates; historical repair and full rebuild are on hold for point-in-time use
+- Pages: [Overview](./OVERVIEW.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md)
+- Evidence: the SEC documents later archive corrections; local older ZIPs were acquired in 2026, and their internal build dates differ from SEC dataset update and acquisition dates

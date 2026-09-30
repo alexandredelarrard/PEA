@@ -69,7 +69,7 @@ The identity model has two axes: [registrant policy](../../src/data_extract/util
 | `sharadar_actions` | date × ticker × action × counter-ticker | Market-wide corporate actions. Literal `"N/A"` values in key fields must not be parsed as null. |
 | `sharadar_sp500` | date × ticker × action | Historical index membership events. Currently ingested but not yet used to make the research universe point-in-time. |
 | `fundamentals_reason_codes` | ticker × as-of × field × reason | Dense explanation for missing or qualified SEC history cells. |
-| `fundamentals_employees` | ticker × as-of | Annual headcount parsed from 10-K prose, separated from XBRL history because its failure mode is textual. |
+| `fundamentals_employees` | ticker × as-of | Annual headcount parsed by an independent 10-K/10-K/A walk. Its manifest tracks terminal and pending accession outcomes separately from XBRL fact completion; facts rebuilds do not write or delete this table. |
 | `earnings_surprises` | ticker × earnings date | Consensus and actual EPS. Future scheduled dates are possible; realized features require a non-null actual. |
 | `pension_facts` | CIK × tag × period × duration | Curated pension facts from SEC bulk datasets. Freshness follows filing date, not period date. |
 | `notes_num`, `notes_text` | accession × tag × period × duration | Numeric and narrative SEC footnote datasets; freshness follows `filed`. |

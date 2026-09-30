@@ -55,11 +55,13 @@ Then apply the approved register change and recover each source according to its
 rtk "$PY" -m src data_extract insider-transactions --reparse
 rtk "$PY" -m src data_extract financial-notes --reparse
 rtk "$PY" -m src data_extract financial-statements --reparse
+rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
+rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract def14a -t TICKER1,TICKER2 -F
 ~~~
 
-The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Run network listing walks serially because SEC rate limiting is process-local.
+The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers compare per-ticker scope fingerprints with the last complete manifest and automatically relist the full configured window only for changed tickers. Run those walks serially because SEC rate limiting is process-local; use `-F` only when every requested ticker needs a full relist.
 
 After rebuilding affected cube parts, compare the frozen state:
 
@@ -86,9 +88,12 @@ Choose the narrowest repair:
 | --- | --- |
 | Stored facts are correct; replay/history logic changed | `fundamentals-history-sec --rebuild-history -t ...` |
 | Fact resolution itself is wrong | `fundamentals --rebuild -t ...` |
+| Employee parser missed or rejected headcount | `fundamentals-employees -F -t ...` |
 | Vendor inputs changed; rebuild merged consumer history | `fundamentals-history-merged -F -t ...` |
 
 A ticker with no stored accessions may not self-heal through an ordinary incremental run. Identify genuinely empty tickers explicitly, then force only that scope.
+
+Employee repair is independent of facts and SEC-history replay. Full employee mode retries prior `no_headcount`, `rejected_outlier`, and `pending_regime` outcomes, skips accessions already saved, and seeds continuity from stored headcount history. Retrieval or body-read failures remain retryable because they do not receive a terminal manifest outcome.
 
 ## Applying a fundamentals schema change
 

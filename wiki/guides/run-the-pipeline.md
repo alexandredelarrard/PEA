@@ -87,12 +87,12 @@ Run `seed-universe` before stages that resolve the default ticker set.
 | Universe/prices | `seed-universe`, `price-history`, `dividends`, `splits`, `macro` | Price history is heavy; split adjustment is retroactive, so a full price refresh can be required after a split. |
 | Institutionals | `thirteen-f`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G and full manager books are heavy. Use the dedicated vote command only after 8-K narratives exist. |
 | Identity | `identity-tables` | Rebuilds `symbol_tenure` and `entity_lineage` together from cached ownership files and database evidence. |
-| Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts are network-heavy; SEC and merged history rebuilds are local once inputs exist. |
+| Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-employees`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts and employees are independent SEC network walks; SEC and merged history rebuilds are local once inputs exist. |
 | Structure/text | `def14a`, `def14a-edgar`, `sec-8k-votes`, `filing-text` | LLM-backed DEF 14A and vote extraction spend API calls; deterministic DEF 14A XBRL is separate. |
 | Behavioral | `wiki-pageviews`, `google-trends` | Google Trends is deliberately rate-limited and slow. |
 | Calls | `download-earnings-calls`, `ingest-earnings-calls` | First caches source files, then parses them into the database. |
 
-Headcount is produced during the fundamentals filing walk; there is no separate employee command. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
+`fundamentals-employees` owns the 10-K/10-K/A headcount walk and can be rerun for parser repair without replaying SEC XBRL facts or `fundamentals_history_sec`. Its full mode retries non-saved parser outcomes while preserving already-saved accessions and stored continuity anchors. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
 
 ## Peers and cube
 
@@ -135,12 +135,13 @@ See [modelling and portfolio](../reference/modelling-and-portfolio.md).
 1. Start the database.
 2. Create the root .env with SEC_USER_AGENT and required provider keys.
 3. Seed the universe.
-4. Run required extraction sources, starting with price history.
-5. Deduce peers.
-6. Build all cube parts and assemble the cube with a full run.
-7. Train the holdout model, backtest it, then full-train production artifacts.
-8. Run portfolio analysis and strategy moves as needed.
-9. Validate the populated domains.
+4. Build `identity-tables` before any identity-consuming SEC extraction.
+5. Run required extraction sources, starting with price history.
+6. Deduce peers.
+7. Build all cube parts and assemble the cube with a full run.
+8. Train the holdout model, backtest it, then full-train production artifacts.
+9. Run portfolio analysis and strategy moves as needed.
+10. Validate the populated domains.
 ```
 
 A cold database is allowed to expose missing tables as errors. Do not “fix” that by turning all reads optional.
@@ -172,6 +173,8 @@ rtk docker compose up -d --force-recreate airflow-scheduler airflow-webserver
 The generated `.cache/corporate_ca_bundle.pem` is ignored by Git and visible inside Airflow through the repository bind mount. Pipeline startup reuses it on Linux for `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`; certificate and hostname verification remain enabled. Compose also directs yfinance's timezone and cookie caches to writable `/tmp/pea-cache`.
 
 The compose stack mounts the repository, persistent `data/`, and DAG directory separately. Inside containers, use the service hostname `db`, not localhost. Operational pools throttle SEC bulk, SEC API, scraping, and aggregate tasks.
+
+In the extraction DAG, `identity-tables` runs after `insider-transactions` and before every identity-consuming SEC task, including facts, standalone employees, deterministic and LLM proxy extraction, 8-K/13D/13G, and filing text. The independent 13F manager chain is not an issuer-identity consumer. Sharadar merge waits for both SEC facts/history and employee extraction.
 
 For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-infrastructure.md) and [nightly refresh](../flows/nightly-data-refresh.md).
 

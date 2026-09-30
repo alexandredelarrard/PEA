@@ -77,7 +77,11 @@ Per-filing XBRL is used because aggregate company-facts feeds can omit dimension
 
 Never join SEC data by free-text entity name. Identifier fields such as CIK, CUSIP, and accession number remain text to preserve leading zeros.
 
-A ticker's price history follows the economic entity, while filings follow legal registrants. [registrant.py](../../src/data_extract/utils/common/registrant.py) applies form-specific combination policy:
+A ticker's price history follows the economic entity, while filings follow legal registrants. Identity-consuming EDGAR fetchers load `symbol_tenure` and `entity_lineage` once, expand same-CIK historical aliases, and persist a per-ticker identity-scope fingerprint in the run manifest. A fingerprint change relists the full configured window for only that ticker; unchanged tickers keep their incremental frontier. Multi-CIK consolidating history still requires a complete curated dated chain and fails closed when the lineage evidence is ambiguous. [registrant.py](../../src/data_extract/utils/common/registrant.py) owns the scope rules, while [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py) owns fingerprint invalidation and manifest advancement.
+
+Employee headcount is an independent annual-filing extraction. [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) walks its own 10-K/10-K/A inventory, writes only `fundamentals_employees`, and records accession-level `saved`, `no_headcount`, `rejected_outlier`, or `pending_regime` outcomes. The XBRL facts rebuild neither writes nor deletes employee history, so a headcount parser repair does not require replaying `fundamentals_history_sec`.
+
+The form-specific combination policy is:
 
 | Form family | Policy | Reason |
 | --- | --- | --- |

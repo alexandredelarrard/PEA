@@ -224,7 +224,7 @@ class GptExtracter(Step):
         provider = _PROVIDER_CLASSES[methode](
             model=model,
             api_key=api_key,
-            temperature=self.temperature,
+            # temperature=self.temperature,
             max_token=self.max_token,
             cache=self.cache,
             reasoning=model in self.reasoning_models,

@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import logging
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -60,6 +61,7 @@ def ensure_zip(
     label: str,
     timeout: int = _DEFAULT_TIMEOUT,
     log: logging.Logger | None = None,
+    on_download: Callable[[str, datetime], None] | None = None,
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
@@ -82,11 +84,14 @@ def ensure_zip(
         if response.status_code != 200:
             log.warning("%s: not available at %s (HTTP %s)", label, url, response.status_code)
             continue
+        first_seen_at = datetime.now(UTC)
         tmp = path.with_suffix(".part")
         with open(tmp, "wb") as fh:
             for chunk in response.iter_content(chunk_size=_CHUNK):
                 fh.write(chunk)
         tmp.replace(path)
+        if on_download is not None:
+            on_download(url, first_seen_at)
         return path
     return None
 

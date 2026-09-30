@@ -66,8 +66,13 @@ REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     "ic_inst_flow_to_mcap": ("broad_13f", "reported-flow proxy duplicated the economically retained holdings changes"),
     "ic_super_flow_to_mcap": ("elite_13f", "reported-flow proxy duplicated the economically retained conviction changes"),
     "ic_super_exit_after_top10": ("elite_13f", "0.9965 correlated with full exits and supported on fewer issuers"),
+    "ic_insider_buy_shares_so_180d": (
+        "insider",
+        "0.9998 rank-correlated with the model-consumed buy-value-to-market-cap feature",
+    ),
     "ic_shortvol_ratio_z252": ("short_flow", "internal rolling z-score is not an economically interpretable output"),
     "ic_ftd_z252": ("short_flow", "internal rolling z-score is retained only as a feature input"),
+    "ic_ftd_pct_so": ("short_flow", "0.9947 rank-correlated with the model-consumed fails-to-ADV20 feature"),
     "ic_act_campaign_age_days": ("beneficial_ownership", "sparse open-ended age is not comparable across issuers"),
     "ic_act_purpose_board": ("beneficial_ownership", "fragile text-derived purpose flag"),
     "ic_act_purpose_strategic": ("beneficial_ownership", "fragile text-derived purpose flag"),
@@ -123,9 +128,7 @@ _BOUNDED = {
 _UNSCALED_LEVEL = {"ic_super_selection_score"}
 _NORMALIZED = {
     "ic_act_amendment_intensity",
-    "ic_ftd_pct_so",
     "ic_ftd_to_adv20",
-    "ic_insider_buy_shares_so_180d",
     "ic_insider_buy_value_mcap_180d",
     "ic_insider_buy_value_mcap_60d",
     "ic_insider_ceo_buy_mcap_180d",
@@ -359,6 +362,8 @@ def _feature_parts(column: str, *, allow_removed: bool = False) -> tuple[str, st
 
 def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[str, Any]:
     meta_path = snapshot.parent / "meta.json"
+    if not meta_path.is_file() and snapshot.name == "baseline.parquet":
+        meta_path = snapshot.parent / "baseline-meta.json"
     if not meta_path.is_file():
         raise FileNotFoundError(f"snapshot metadata does not exist: {meta_path}")
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))

@@ -118,7 +118,6 @@ EMISSION: dict[str, str] = {
     "ic_shortvol_high_x_weak_price": "raw",
     "ic_shortvol_high_x_strong_price": "raw",
     "ic_shortvol_market_coverage": "raw",
-    "ic_ftd_pct_so": "raw",
     "ic_ftd_to_adv20": "raw",
     "ic_ftd_persistence_30d": "raw",
 }
@@ -357,7 +356,6 @@ def _fails_fields(
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
         pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_pct_so"] = pct_so.shift(FTD_PUB_LAG)
     if volume is not None and not volume.empty:
         adv = volume.reindex(index=idx).reindex(columns=fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
         # ⚠ SAME BASIS MISMATCH AS `market_coverage`: `fails_quantity` is an as-traded share

@@ -59,7 +59,6 @@ _add_group(
     (
         "ic_insider_buy_value_mcap_60d",
         "ic_insider_buy_value_mcap_180d",
-        "ic_insider_buy_shares_so_180d",
         "ic_insider_distinct_buyers_120d",
         "ic_insider_cluster_buy_120d",
         "ic_insider_ceo_buy_mcap_180d",
@@ -97,7 +96,6 @@ _add_group(
         "ic_shortvol_high_x_weak_price",
         "ic_shortvol_high_x_strong_price",
         "ic_shortvol_market_coverage",
-        "ic_ftd_pct_so",
         "ic_ftd_to_adv20",
         "ic_ftd_persistence_30d",
     ),

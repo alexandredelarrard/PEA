@@ -114,7 +114,6 @@ _log = logging.getLogger(__name__)
 EMISSION: dict[str, str] = {
     "ic_insider_buy_value_mcap_60d": "raw",
     "ic_insider_buy_value_mcap_180d": "raw",
-    "ic_insider_buy_shares_so_180d": "raw",
     "ic_insider_distinct_buyers_120d": "raw",  # 98.1% ties: a 0-8 integer count
     "ic_insider_cluster_buy_120d": "raw",  # 98.3% ties: the same, gated
     "ic_insider_ceo_buy_mcap_180d": "raw",
@@ -223,7 +222,7 @@ def build_insider_feature_panel(
     insider_floor = availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR
     ten_b5_floor = availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR
 
-    fields.update(_dense_fields(buys, sells, idx, mcap, shares_out, ten_b5_floor))
+    fields.update(_dense_fields(buys, sells, idx, mcap, ten_b5_floor))
     fields.update(_breadth_fields(buys, idx))
     fields.update(_sparse_fields(buys, idx, decay_halflife))
 
@@ -340,10 +339,9 @@ def _dense_fields(
     sells: pd.DataFrame,
     idx: pd.DatetimeIndex,
     mcap: pd.DataFrame | None,
-    shares_out: pd.DataFrame,
     ten_b5_floor: pd.Timestamp = TEN_B5_1_FLOOR,
 ) -> dict[str, pd.DataFrame]:
-    """The six class-D features. Each is a trailing sum over a calendar window, sampled onto
+    """Dense trailing sums over calendar windows, sampled onto
     the trading grid, so a day only ever sees transactions already filed by it."""
     out: dict[str, pd.DataFrame] = {}
     seen = _first_filing(buys, sells, idx)
@@ -352,9 +350,6 @@ def _dense_fields(
 
     if mcap is not None and not mcap.empty:
         out["ic_insider_buy_value_mcap_180d"] = _over(buy_val_180, mcap)
-
-    if not shares_out.empty:
-        out["ic_insider_buy_shares_so_180d"] = _over(_rolling(buys, idx, WINDOW_180, "shares_n", seen), shares_out)
 
     bv, sv = buy_val_180.fillna(0.0), sell_val_180.fillna(0.0)
     denom = bv + sv

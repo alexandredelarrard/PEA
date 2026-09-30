@@ -288,7 +288,7 @@ def test_panel_columns_match_the_emission_map():
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
     assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
-    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
+    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d", "f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
     assert not any(column.endswith("_xs") for column in emitted)
     assert {column for column in emitted if column.endswith("_vs_peers")} == {"f_ic_shortvol_ratio_20d_vs_peers"}

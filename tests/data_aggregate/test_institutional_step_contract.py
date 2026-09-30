@@ -45,7 +45,9 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
         "ic_act_campaign_age_days",
         "ic_act_purpose_board",
         "ic_act_purpose_strategic",
+        "ic_ftd_pct_so",
         "ic_ftd_z252",
+        "ic_insider_buy_shares_so_180d",
         "ic_inst_flow_to_mcap",
         "ic_shortvol_ratio_z252",
         "ic_super_flow_to_mcap",
@@ -60,10 +62,10 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
     assert set(declared.values()) == {"raw", "raw+peers"}
     assert peer_features == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
     assert removed.isdisjoint(declared)
-    assert len(declared) == 74
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 76
+    assert len(declared) == 72
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 74
     print(
-        "SANITY: Phase-3 declares 74 unique characteristics / 76 legs: all raw, with only "
+        "SANITY: Phase-3 declares 72 unique characteristics / 74 legs: all raw, with only "
         "institutional ownership and 20-day short volume retaining an interpretable peer leg."
     )
 

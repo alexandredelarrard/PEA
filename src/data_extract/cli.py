@@ -609,9 +609,15 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     default=False,
     help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
 )
-def financial_notes(config_path: str, tickers: str | None, reparse: bool) -> None:
+@click.option(
+    "--repair-availability",
+    is_flag=True,
+    default=False,
+    help="Rewrite notes available_at metadata using the historical estimate or cached download date; do not reparse ZIPs.",
+)
+def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool) -> None:
     _, context = _ctx(config_path)
-    fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse)
+    fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse, repair_availability=repair_availability)
 
 
 # --------------------------------------------------------------------------- #

@@ -40,6 +40,8 @@ This page is the source-facing operating contract: where data comes from, which 
 | Earnings calls | HuggingFace, Roic AI, Motley Fool | none | `earnings_call_sections` | behavioral utilities |
 | Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | sentiment and embedding tables | behavioral and [gpt_extract](../../src/gpt_extract/) |
 
+The [notes fetcher](../../src/data_extract/utils/fundamentals/fetch_financial_notes.py) applies an explicit archive-date policy. For periods through August 2026, `available_at` is **estimated** as the 12th of the following month, moved to Monday when the 12th falls on a weekend (`2021_08` → 2021-09-13). For September 2026 archives onward, a new download uses its successful completion date in New York; an already-cached ZIP without a recorded download date falls back to its file modification date. HTTP `Last-Modified` is not used. `financial-notes --repair-availability` corrects existing clocks with primary-key-only updates, without rereading ZIP payloads. The [notes feature builder](../../src/data_aggregate/utils/fundamentals/fundamental_features.py) starts numeric facts at `max(filed, available_at)` and forward-fills the latest eligible annual value for at most 460 calendar days unless replaced sooner. The historical 12th is a modelling assumption, **not a verified SEC publication date**; late releases and corrected archives can still create look-ahead bias.
+
 Secrets live only in the ignored root `.env`, loaded by [Context](../../src/context.py). Never copy credentials into config, logs, reports, or wiki content. `SEC_USER_AGENT` must identify a real contact.
 
 ## Shared transport and extraction plumbing

@@ -71,3 +71,27 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - source_commit: 62dc6d3 (was bb65544)
 - Coverage: refreshed SEC registrant discovery, per-ticker identity-scope invalidation, truthful XBRL outcomes, standalone employee repair, Airflow ordering, and recovery guidance
 - Pages: [Data extraction](./modules/data-extract.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [SEC and LLM extraction](./flows/sec-llm-extraction.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md)
+
+## 2026-09-30: refresh — financial notes archive availability
+
+- Profile: internal/standard
+- source_commit: 91395e7 (was bb65544)
+- Coverage: documented monthly SEC Financial Statement and Notes archive availability, the persisted `available_at` clock, monthly freshness, and fail-closed point-in-time projection from the later of filing and archive availability
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md)
+- Operational boundary: the code and schema declarations are current; the live database still requires the separately authorized column evolution, metadata repair, and full fundamentals-part rebuild
+
+## 2026-09-30: refresh — historical notes availability audit
+
+- Profile: internal/standard
+- source_commit: b91495e
+- Coverage: corrected the archive-availability contract after finding that current ZIP `Last-Modified` and local cache mtime do not establish original public release dates; historical repair and full rebuild are on hold for point-in-time use
+- Pages: [Overview](./OVERVIEW.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md)
+- Evidence: the SEC documents later archive corrections; local older ZIPs were acquired in 2026, and their internal build dates differ from SEC dataset update and acquisition dates
+
+## 2026-09-30: refresh — notes estimated and observed date policy
+
+- Profile: internal/standard
+- source_commit: 40cba83 (was c679331)
+- Coverage: historical notes archives through August 2026 use the next-month 12th, rolled to Monday on weekends; archives from September 2026 use the successful New York download date; existing dates can be corrected by a metadata-only CLI path
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
+- Operational boundary: no live schema migration, notes metadata repair, or fundamentals-part rebuild was run; the historical 12th is an estimate and does not guarantee strict point-in-time provenance

@@ -30,6 +30,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _derived_fields,
     _digestion_fields,
     _forensic_fields,
+    _notes_num_daily,
 )
 
 IDX = pd.bdate_range("2022-01-03", periods=300)  # >252 so shift(_YEAR) has a year-ago
@@ -340,7 +341,15 @@ def test_pension_footnote_features_from_notes_num():
     close = pd.DataFrame({"U": 5.0}, index=idx)  # market cap = 100 * 5 = 500
     notes_num = pd.DataFrame(
         [
-            {"ticker": "U", "tag": "DefinedBenefitPlanBenefitObligation", "ddate": "2019-09-30", "qtrs": 0, "value": 1000.0, "filed": "2019-11-15"},
+            {
+                "ticker": "U",
+                "tag": "DefinedBenefitPlanBenefitObligation",
+                "ddate": "2019-09-30",
+                "qtrs": 0,
+                "value": 1000.0,
+                "filed": "2019-11-15",
+                "available_at": "2019-12-01",
+            },
             {
                 "ticker": "U",
                 "tag": "DefinedBenefitPlanFairValueOfPlanAssets",
@@ -348,9 +357,18 @@ def test_pension_footnote_features_from_notes_num():
                 "qtrs": 0,
                 "value": 600.0,
                 "filed": "2019-11-15",
+                "available_at": "2019-12-01",
             },
             # a DURATION fact (qtrs>0) must be ignored by the instant PBO/asset reshape:
-            {"ticker": "U", "tag": "DefinedBenefitPlanBenefitObligation", "ddate": "2019-09-30", "qtrs": 4, "value": 99.0, "filed": "2019-11-15"},
+            {
+                "ticker": "U",
+                "tag": "DefinedBenefitPlanBenefitObligation",
+                "ddate": "2019-09-30",
+                "qtrs": 4,
+                "value": 99.0,
+                "filed": "2019-11-15",
+                "available_at": "2019-12-01",
+            },
         ]
     )
     f = _derived_fields(fh, idx, close, notes_num=notes_num)
@@ -375,6 +393,66 @@ def test_pension_footnote_features_from_notes_num():
         f"& EV=1090 -> ebitda_to_ev={50 / 1090:.4f}. Duration (qtrs>0) PBO ignored. "
         f"Absent notes_num -> features skipped. Validated."
     )
+
+
+def test_notes_num_uses_archive_availability_and_expires_after_day_460():
+    tag = "DefinedBenefitPlanBenefitObligation"
+    first_available = pd.Timestamp("2021-09-13")  # August 2021 ZIP: the 12th was Sunday.
+    second_available = pd.Timestamp("2022-09-12")
+    idx = pd.DatetimeIndex(
+        [
+            first_available - pd.Timedelta(days=1),
+            first_available,
+            second_available - pd.Timedelta(days=1),
+            second_available,
+            second_available + pd.Timedelta(days=460),
+            second_available + pd.Timedelta(days=461),
+        ]
+    )
+    notes = pd.DataFrame(
+        [
+            {
+                "ticker": "U",
+                "tag": tag,
+                "ddate": "2021-06-30",
+                "qtrs": 0,
+                "value": 100.0,
+                "filed": "2021-08-20",
+                "available_at": first_available,
+            },
+            {
+                "ticker": "U",
+                "tag": tag,
+                "ddate": "2022-06-30",
+                "qtrs": 0,
+                "value": 200.0,
+                "filed": "2022-08-20",
+                "available_at": second_available,
+            },
+            {
+                "ticker": "MISSING",
+                "tag": tag,
+                "ddate": "2021-06-30",
+                "qtrs": 0,
+                "value": 999.0,
+                "filed": "2021-08-20",
+                "available_at": pd.NaT,
+            },
+        ]
+    )
+
+    daily = _notes_num_daily(notes, tag, idx)
+
+    assert pd.isna(daily.loc[first_available - pd.Timedelta(days=1), "U"])
+    assert daily.loc[first_available, "U"] == 100.0
+    assert daily.loc[second_available - pd.Timedelta(days=1), "U"] == 100.0
+    assert daily.loc[second_available, "U"] == 200.0
+    assert daily.loc[second_available + pd.Timedelta(days=460), "U"] == 200.0
+    assert pd.isna(daily.loc[second_available + pd.Timedelta(days=461), "U"])
+    assert "MISSING" not in daily or daily["MISSING"].isna().all()
+
+    print("\n=== SANITY CHECK: notes point-in-time boundary and annual lifetime ===")
+    print("  August 2021 filing starts September 13; the 2022 update replaces it; day 460 is valid and day 461 is null. Validated.")
 
 
 def test_liquid_assets_does_not_double_count_short_term_investments():

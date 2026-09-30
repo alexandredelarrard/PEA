@@ -11,7 +11,11 @@ A separate script (scripts-style) exercises a REAL quarterly zip end-to-end.
 from __future__ import annotations
 
 import io
+import os
 import zipfile
+from datetime import UTC, date, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
@@ -240,3 +244,281 @@ def test_notes_periods_falls_back_to_generator(monkeypatch):
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
     got = fn._notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
     assert got and all(fn._period_year(p) >= 2024 for p in got)
+
+
+@pytest.mark.parametrize(
+    ("period", "expected"),
+    [
+        ("2021_08", date(2021, 9, 13)),  # September 12 was Sunday.
+        ("2013q4", date(2014, 1, 13)),  # January 12 was Sunday.
+        ("2025_08", date(2025, 9, 12)),
+        ("2026_08", date(2026, 9, 14)),  # September 12 is Saturday.
+    ],
+)
+def test_historical_archive_available_at_is_next_month_twelfth_or_monday(period: str, expected: date, tmp_path: Path) -> None:
+    assert fn._resolve_archive_available_at(period, tmp_path / f"{period}_notes.zip") == expected
+    print("\n=== SANITY CHECK: estimated historical notes availability ===")
+    print(f"  {period} becomes available on {expected}; weekend twelfths move to Monday. Validated.")
+
+
+def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> None:
+    path = tmp_path / "2026_09_notes.zip"
+    path.write_bytes(b"cached")
+    downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
+    os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
+
+    assert fn._resolve_archive_available_at("2026_09", path) == date(2026, 10, 15)
+    assert fn._resolve_archive_available_at("2026_09", tmp_path / "missing.zip") is None
+    print("\n=== SANITY CHECK: observed future notes availability ===")
+    print("  the first New York download date, even after the twelfth, is used; missing archives have no clock. Validated.")
+
+
+def test_historical_availability_repair_writes_only_primary_keys_and_clock():
+    class Store:
+        def __init__(self) -> None:
+            self.saved: list[tuple[object, pd.DataFrame]] = []
+
+        @staticmethod
+        def columns(table) -> list[str]:
+            return [*table.pk, "period"]
+
+        @staticmethod
+        def load(table, *, columns, where, optional):
+            assert columns == [*table.pk, "period"]
+            assert where == {"period": "2026_08"}
+            assert optional is True
+            return pd.DataFrame(
+                {
+                    "adsh": [AAPL],
+                    "tag": ["DefinedBenefitPlanBenefitObligation"],
+                    "ddate": [pd.Timestamp("2024-09-30")],
+                    "qtrs": [0],
+                    "period": ["2026_08"],
+                }
+            )
+
+        def save(self, table, frame: pd.DataFrame) -> int:
+            self.saved.append((table, frame.copy()))
+            return len(frame)
+
+    store = Store()
+    repaired = fn._repair_period_available_at(SimpleNamespace(store=store), "2026_08", date(2026, 9, 14))
+
+    assert repaired == 2
+    assert [table for table, _ in store.saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
+    for table, frame in store.saved:
+        assert list(frame.columns) == [*table.pk, "available_at"]
+        assert frame["available_at"].eq(date(2026, 9, 14)).all()
+
+    print("\n=== SANITY CHECK: historical notes metadata repair ===")
+    print("  both notes tables receive only their primary key plus available_at; payload columns are not rewritten. Validated.")
+
+
+def test_historical_availability_repair_replaces_wrong_nonnull_clock() -> None:
+    saved: list[pd.DataFrame] = []
+
+    class Store:
+        @staticmethod
+        def columns(table) -> list[str]:
+            return [*table.pk, "period", "available_at"]
+
+        @staticmethod
+        def load(table, *, columns, where, optional):
+            assert columns == [*table.pk, "period"]
+            assert where == {"period": "2021_08"}
+            return pd.DataFrame(
+                {
+                    "adsh": [AAPL],
+                    "tag": ["DefinedBenefitPlanBenefitObligation"],
+                    "ddate": [pd.Timestamp("2021-08-31")],
+                    "qtrs": [0],
+                    "period": ["2021_08"],
+                }
+            )
+
+        @staticmethod
+        def save(table, frame: pd.DataFrame) -> int:
+            saved.append(frame.copy())
+            return len(frame)
+
+    assert fn._repair_period_available_at(SimpleNamespace(store=Store()), "2021_08", date(2021, 9, 13), overwrite=True) == 2
+    assert len(saved) == 2
+    assert all(list(frame.columns) == [*fn.Tables.notes_num.pk, "available_at"] for frame in saved)
+    assert all(frame["available_at"].eq(date(2021, 9, 13)).all() for frame in saved)
+    print("\n=== SANITY CHECK: existing notes clock correction ===")
+    print("  the metadata-only repair overwrites a wrong non-null clock without rereading ZIP payloads. Validated.")
+
+
+def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    period = "2021_08"
+    repaired: list[tuple[str, date, bool]] = []
+    context = SimpleNamespace(
+        store=SimpleNamespace(),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
+    )
+    monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
+    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(
+        fn, "_repair_period_available_at", lambda context, period, available_at, *, overwrite: repaired.append((period, available_at, overwrite)) or 1
+    )
+    monkeypatch.setattr(fn, "load_processed_universe", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
+
+    assert fn.fetch_financial_notes(context, ["AAPL"], repair_availability=True) == 0
+    assert repaired == [(period, date(2021, 9, 13), True)]
+    print("\n=== SANITY CHECK: converged notes metadata repair ===")
+    print("  an already-ingested August 2021 period is relabelled September 13 without a ZIP reparse. Validated.")
+
+
+def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monkeypatch):
+    period = "2026_08"
+    context = SimpleNamespace(
+        store=SimpleNamespace(),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
+    )
+
+    monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
+    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
+    monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        fn,
+        "_stored_period_available_at",
+        lambda context, period: (_ for _ in ()).throw(ValueError("conflicting stored available_at values")),
+    )
+
+    with pytest.raises(ValueError, match="conflicting stored available_at values"):
+        fn.fetch_financial_notes(context, ["AAPL"])
+
+    print("\n=== SANITY CHECK: converged notes archive clock ===")
+    print("  a fully ingested period still validates its immutable stored archive clock before the fast-path skip. Validated.")
+
+
+def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monkeypatch):
+    period = "2026_08"
+    archive_date = date(2026, 9, 14)
+    path = tmp_path / f"{period}_notes.zip"
+    path.write_bytes(b"fixture")
+    saved: list[tuple[object, pd.DataFrame]] = []
+
+    class Store:
+        @staticmethod
+        def save(table, frame: pd.DataFrame) -> int:
+            saved.append((table, frame.copy()))
+            return len(frame)
+
+    context = SimpleNamespace(
+        store=Store(),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
+    )
+    num = pd.DataFrame(
+        [
+            {
+                "cik": "0000320193",
+                "ticker": "AAPL",
+                "adsh": AAPL,
+                "tag": "DefinedBenefitPlanBenefitObligation",
+                "ddate": pd.Timestamp("2024-09-30"),
+                "qtrs": 0,
+                "value": 1.0,
+                "filed": pd.Timestamp("2024-11-01"),
+            }
+        ]
+    )
+    txt = pd.DataFrame(
+        [
+            {
+                "cik": "0000320193",
+                "ticker": "AAPL",
+                "adsh": AAPL,
+                "tag": "DefinedBenefitPlanDisclosureTextBlock",
+                "ddate": pd.Timestamp("2024-09-30"),
+                "qtrs": 0,
+                "value": "text",
+                "filed": pd.Timestamp("2024-11-01"),
+            }
+        ]
+    )
+
+    monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
+    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
+    monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
+    monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
+    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe: (num.copy(), txt.copy()))
+    monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
+
+    assert fn.fetch_financial_notes(context, ["AAPL"]) == 2
+    assert [table for table, _ in saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
+    assert all(frame["available_at"].eq(archive_date).all() for _, frame in saved)
+
+    print("\n=== SANITY CHECK: one archive clock stamps both outputs ===")
+    print("  numeric and text rows from 2026_08 carry the same available_at date. Validated.")
+
+
+def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    period = "2026_09"
+    path = tmp_path / f"{period}_notes.zip"
+    saved: list[pd.DataFrame] = []
+
+    class Store:
+        @staticmethod
+        def save(table, frame: pd.DataFrame) -> int:
+            saved.append(frame.copy())
+            return len(frame)
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            assert tz == fn.MARKET_TZ
+            return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
+
+    def download(*args, **kwargs) -> Path:
+        path.write_bytes(b"fixture")
+        stale = datetime(2026, 10, 1, tzinfo=UTC).timestamp()
+        os.utime(path, (stale, stale))
+        return path
+
+    num = pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "adsh": AAPL,
+                "tag": "DefinedBenefitPlanBenefitObligation",
+                "ddate": pd.Timestamp("2026-08-31"),
+                "qtrs": 0,
+                "value": 1.0,
+                "filed": pd.Timestamp("2026-09-30"),
+            }
+        ]
+    )
+    context = SimpleNamespace(store=Store(), config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))))
+    monkeypatch.setattr(fn, "datetime", Clock)
+    monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
+    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
+    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
+    monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
+    monkeypatch.setattr(fn, "ensure_zip", download)
+    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe: (num.copy(), pd.DataFrame()))
+    monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
+
+    assert fn.fetch_financial_notes(context, ["AAPL"]) == 1
+    assert saved[0]["available_at"].iloc[0] == date(2026, 10, 15)
+    print("\n=== SANITY CHECK: newly downloaded notes ZIP ===")
+    print("  the completed download day in New York wins over the ZIP cache's older file timestamp. Validated.")

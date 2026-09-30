@@ -22,10 +22,14 @@ SQLite-backed and self-contained: no live DB, no network. SQLite takes the same
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_store import store as store_module
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 
 #: Two rows with every column populated -- the "already extracted" state.
@@ -133,3 +137,48 @@ def test_an_insert_of_a_new_key_is_unaffected(store):
     assert row["pct_female_directors"] == pytest.approx(0.38)
     assert pd.isna(row["payload"])
     assert len(store.load("extract")) == 3
+
+
+def test_schema_evolution_uses_the_registered_date_type(monkeypatch):
+    executed: list[str] = []
+
+    class Columns:
+        @staticmethod
+        def keys() -> list[str]:
+            return ["adsh"]
+
+    class Reflected:
+        c = Columns()
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        @staticmethod
+        def execute(statement) -> None:
+            executed.append(str(statement))
+
+    class Engine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        @staticmethod
+        def begin() -> Connection:
+            return Connection()
+
+    monkeypatch.setattr(store_module, "table_exists", lambda engine, name: True)
+    monkeypatch.setattr(store_module, "_reflect", lambda engine, name: Reflected())
+
+    added = store_module.ensure_columns(
+        cast(Any, Engine()),
+        Tables.notes_num.name,
+        pd.DataFrame({"adsh": ["0000320193-24-000001"], "available_at": ["2026-08-31"]}),
+    )
+
+    assert added == ["available_at"]
+    assert executed == ['ALTER TABLE "notes_num" ADD COLUMN IF NOT EXISTS "available_at" DATE']
+
+    print("\n=== SANITY CHECK: live schema evolution type ===")
+    print("  ensure_columns consults Tables.notes_num and adds available_at as DATE, not TIMESTAMP or TEXT. Validated.")

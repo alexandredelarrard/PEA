@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import re
 import zipfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -59,12 +60,15 @@ from src.data_extract.utils.common.bulk_cache import (
 from src.data_extract.utils.common.registrant import drop_rows_outside_segment
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping, load_processed_universe, save_processed_universe
+from src.data_extract.utils.common.sessions import MARKET_TZ
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 500_000
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
+# First archive period whose availability is observed from our download, not estimated.
+_OBSERVED_FROM_MONTH = (2026, 9)
 
 # Curated footnote NUMERIC pension tags (undimensioned totals). Superset of the
 # balance-sheet net-liability tags in pension_facts — adds the footnote detail
@@ -117,8 +121,25 @@ _NUM_USECOLS = {"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnot
 _TXT_USECOLS = {"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"}
 _NUM_PK = ["adsh", "tag", "ddate", "qtrs"]
 _TXT_PK = ["adsh", "tag", "ddate", "qtrs"]
-_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period"]
-_TXT_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "txtlen", "escaped", "value", "footnote", "form", "fy", "fp", "filed", "period"]
+_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
+_TXT_OUT = [
+    "cik",
+    "ticker",
+    "adsh",
+    "tag",
+    "ddate",
+    "qtrs",
+    "txtlen",
+    "escaped",
+    "value",
+    "footnote",
+    "form",
+    "fy",
+    "fp",
+    "filed",
+    "period",
+    "available_at",
+]
 
 SEC_FINNOTES_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{period}_notes.zip"
 SEC_FINNOTES_FIRST_YEAR = 2009  # earliest notes data set (2009q1)
@@ -237,6 +258,86 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
+def _archive_end_month(period: str) -> tuple[int, int]:
+    """Return the calendar month covered by a monthly or quarterly notes ZIP."""
+    return int(period[:4]), int(period[-2:]) if "_" in period else int(period[-1]) * 3
+
+
+def _historical_archive(period: str) -> bool:
+    return _archive_end_month(period) < _OBSERVED_FROM_MONTH
+
+
+def _resolve_archive_available_at(period: str, path: Path) -> date | None:
+    """Estimate historical availability; use the cached download date from September 2026 onward."""
+    if _historical_archive(period):
+        year, month = _archive_end_month(period)
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+        twelfth = date(year, month, 12)
+        # ponytail: Historical release dates are estimated; archived ZIP versions are needed for strict PIT proof.
+        return twelfth + timedelta(days=7 - twelfth.weekday() if twelfth.weekday() >= 5 else 0)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TZ).date()
+    except OSError:
+        return None
+
+
+def _as_date(value: object) -> date | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _stored_period_available_at(context: Context, period: str) -> date | None:
+    """One immutable stored clock for a period, shared across both notes tables."""
+    values: set[date] = set()
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if not {"period", "available_at"} <= columns:
+            continue
+        for value in context.store.distinct(table, "available_at", where={"period": period}):
+            parsed = _as_date(value)
+            if parsed is not None:
+                values.add(parsed)
+    if len(values) > 1:
+        raise ValueError(f"notes {period}: conflicting stored available_at values: {sorted(values)}")
+    return next(iter(values), None)
+
+
+def _periods_missing_available_at(context: Context) -> set[str]:
+    """Stored archive periods with no availability clock in either destination."""
+    missing: set[str] = set()
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if "period" not in columns:
+            continue
+        where = {"available_at": None} if "available_at" in columns else None
+        missing.update(str(value) for value in context.store.distinct(table, "period", where=where))
+    return missing
+
+
+def _repair_period_available_at(context: Context, period: str, available_at: date, *, overwrite: bool = False) -> int:
+    """Patch clocks using only each table's PK plus available_at."""
+    repaired = 0
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if "period" not in columns:
+            continue
+        where: dict[str, object] = {"period": period}
+        if "available_at" in columns and not overwrite:
+            where["available_at"] = None
+        rows = context.store.load(
+            table,
+            columns=[*table.pk, "period"],
+            where=where,
+            optional=True,
+        )
+        if rows is None or rows.empty:
+            continue
+        patch = rows[list(table.pk)].drop_duplicates().copy()
+        patch["available_at"] = available_at
+        repaired += context.store.save(table, patch)
+    return repaired
+
+
 def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
     """Stream a huge .tsv member in chunks, keeping only universe filings, curated
     tags and undimensioned/consolidated rows (dimn==0, no coreg)."""
@@ -275,7 +376,13 @@ def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str]) -> tupl
     return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
 
 
-def fetch_financial_notes(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
+def fetch_financial_notes(
+    context: Context,
+    tickers: list[str],
+    years_history: int = 15,
+    reparse: bool = False,
+    repair_availability: bool = False,
+) -> int:
     """Download (cached) the SEC Financial Statement & Notes data sets over
     `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
     high-signal note TEXT -> `notes_text` for the universe. Returns total rows
@@ -292,7 +399,7 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     carrying the old resolution while the rest carry the new, and nothing downstream can tell
     that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
 
-    Costs no network: a past period's data set is final and every zip is already on disk.
+    `repair_availability` updates stored clocks only and returns before ZIP download or parsing.
     """
 
     cikmap = load_cik_mapping(context)
@@ -300,6 +407,23 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     cache = cache_dir(context, context.config.local.paths.financial_notes)
 
     done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
+    period_clocks: dict[str, date] = {}
+    repair_periods = _periods_missing_available_at(context)
+    if repair_availability:
+        repair_periods.update(done)
+    for period in sorted(repair_periods):
+        inferred = _resolve_archive_available_at(period, cache / f"{period}_notes.zip")
+        available_at = inferred if _historical_archive(period) or repair_availability else _stored_period_available_at(context, period) or inferred
+        if available_at is None:
+            logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
+            continue
+        repaired = _repair_period_available_at(context, period, available_at, overwrite=repair_availability)
+        period_clocks[period] = available_at
+        logger.info("notes %s: repaired available_at=%s on %d stored rows", period, available_at, repaired)
+
+    if repair_availability:
+        return 0  # Metadata-only mode: never download or reparse a ZIP.
+
     new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)  # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
@@ -309,23 +433,37 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     n_num = n_txt = 0
     periods = _notes_periods(context, years_history + 1)
     for period in tqdm(periods, desc="SEC financial-statement notes"):
+        available_at = period_clocks.get(period)
+        if period in done:
+            available_at = available_at or _stored_period_available_at(context, period)
         if period in done and not new_tickers and not reparse:
             continue
 
-        path = ensure_zip(
-            context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger
-        )
+        archive_path = cache / f"{period}_notes.zip"
+        was_cached = archive_path.exists() and archive_path.stat().st_size > 0
+        path = ensure_zip(context, archive_path, SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger)
         if path is None:
+            continue
+
+        available_at = available_at or _stored_period_available_at(context, period)
+        if available_at is None:
+            available_at = (
+                datetime.now(MARKET_TZ).date() if not was_cached and not _historical_archive(period) else _resolve_archive_available_at(period, path)
+            )
+        if available_at is None:
+            logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
 
         num, txt = _read_notes(path, cik2tkr, set(tickers))
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period
+            num["available_at"] = available_at
             n_num += context.store.save(Tables.notes_num, num[[c for c in _NUM_OUT if c in num.columns]])
         if not txt.empty:
             txt = txt.sort_values("filed").drop_duplicates(subset=_TXT_PK, keep="last")
             txt["period"] = period
+            txt["available_at"] = available_at
             n_txt += context.store.save(Tables.notes_text, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
     save_processed_universe(cache, Tables.notes_num, tickers)  # so a converged re-run skips

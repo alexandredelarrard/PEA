@@ -27,11 +27,11 @@ from __future__ import annotations
 import pandas as pd
 from omegaconf import DictConfig
 
+from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.gics import attach_gics_columns
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
-    PART_REFRESH_TRADING_DAYS,
     plan_window,
     write_part,
 )
@@ -80,7 +80,7 @@ class StepCubeFundamentals(Step):
             full=full,
             warmup=self._warmup(),
             trading_index=trading_calendar,
-            refresh=PART_REFRESH_TRADING_DAYS,
+            refresh=FUNDAMENTALS_REFRESH_TRADING_DAYS,
         )
         dividend_frames = self._load_frames(window.since)
         frames = dividend_frames

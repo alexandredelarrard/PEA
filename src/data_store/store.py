@@ -92,9 +92,10 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     missing = [c for c in df.columns if c not in existing]
     if not missing:
         return []
+    spec = resolve(name)
     with engine.begin() as conn:
         for c in missing:
-            sqltype = ddl.sql_type(c, df[c].dtype, spec=None)
+            sqltype = ddl.sql_type(c, df[c].dtype, spec=spec)
             conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
     return missing
 

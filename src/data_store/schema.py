@@ -500,9 +500,9 @@ class Tables:
         "notes_num",
         ("adsh", "tag", "ddate", "qtrs"),
         date_col="ddate",
-        date_type_cols=("ddate", "filed"),
-        freshness="biweekly",
-        freshness_date_col="filed",
+        date_type_cols=("ddate", "filed", "available_at"),
+        freshness="monthly",
+        freshness_date_col="available_at",
     )
     # SEC notes NARRATIVE TEXT blocks (high-signal notes only), stored raw for later
     # embedding / sentiment. Same grain as notes_num; `value` is the text.
@@ -510,9 +510,9 @@ class Tables:
         "notes_text",
         ("adsh", "tag", "ddate", "qtrs"),
         date_col="ddate",
-        date_type_cols=("ddate", "filed"),
-        freshness="biweekly",
-        freshness_date_col="filed",
+        date_type_cols=("ddate", "filed", "available_at"),
+        freshness="monthly",
+        freshness_date_col="available_at",
     )
     # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`

@@ -94,6 +94,8 @@ Run `seed-universe` before stages that resolve the default ticker set.
 
 `fundamentals-employees` owns the 10-K/10-K/A headcount walk and can be rerun for parser repair without replaying SEC XBRL facts or `fundamentals_history_sec`. Its full mode retries non-saved parser outcomes while preserving already-saved accessions and stored continuity anchors. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
 
+For a notes availability-date correction, first obtain the approved `available_at` column migration for both notes tables and back up the affected data. Then run `rtk "$PY" -m src data_extract financial-notes --repair-availability`: this updates existing clocks only and does not download or reparse ZIPs. Check the resulting period dates (for example, `2021_08` → 2021-09-13), then fully rebuild `cube_part_fundamentals` and reassemble `cube`. The ordinary 45-trading-session refresh cannot rewrite the older historical feature rows whose dates changed. See [data sources](../reference/data-sources.md) for the estimated-versus-observed date policy.
+
 ## Peers and cube
 
 ```bash

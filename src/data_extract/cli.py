@@ -63,6 +63,7 @@ from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_e
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
+from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
     fetch_sharadar_sp500,
@@ -315,9 +316,7 @@ def superinvestors(config_path: str, seed: bool) -> None:
 
 @cli.command(
     name="fundamentals-facts",
-    help="SEC per-filing XBRL -> fundamentals_facts (+ headcount from the same "
-    "10-K), resolved from each filer's own calculation linkbase. As-filed "
-    "only; append-only.",
+    help="SEC per-filing XBRL -> fundamentals_facts, resolved from each filer's own calculation linkbase. As-filed only; append-only.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -325,6 +324,23 @@ def superinvestors(config_path: str, seed: bool) -> None:
 def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
     config, context = _ctx(config_path)
     fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full, years_history=int(config.data_extract.years_history))
+
+
+@cli.command(
+    name="fundamentals-employees",
+    help="SEC 10-K prose -> fundamentals_employees, with independent accession resume, continuity outcomes, and registrant lineage.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
+    config, context = _ctx(config_path)
+    fetch_fundamentals_employees(
+        context,
+        tickers=_tickers(context, tickers),
+        full=full,
+        years_history=int(config.data_extract.years_history),
+    )
 
 
 @cli.command(
@@ -369,10 +385,11 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
                 Tables.fundamentals_facts,
                 Tables.fundamentals_history_sec,
                 Tables.fundamentals_reason_codes,
-                Tables.fundamentals_employees,
             ):
                 context.store.delete(table, {"ticker": ticker})
-        context.log.warning("fundamentals: --rebuild deleted all four tables for %d ticker(s); every filing will be refetched", len(names))
+        context.log.warning(
+            "fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names)
+        )
     fetch_fundamentals_sec(context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history))
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
@@ -600,9 +617,6 @@ def financial_notes(config_path: str, tickers: str | None, reparse: bool) -> Non
 # --------------------------------------------------------------------------- #
 # Structure (governance)                                                        #
 # --------------------------------------------------------------------------- #
-# NOTE: there is no `employees` command any more. Headcount is parsed out of the same 10-K
-# the fundamentals walk already opens (`fundamentals_employees.py`) and lands in
-# `fundamentals_employees`, so `fundamentals-facts` above covers it.
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

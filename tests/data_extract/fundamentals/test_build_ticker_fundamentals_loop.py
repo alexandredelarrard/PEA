@@ -65,7 +65,6 @@ def patched(monkeypatch):
     def _install(filings, rows_per_filing):
         monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *a, **k: list(filings))
         monkeypatch.setattr(mod, "filing_rows", lambda ticker, cik, filing, cat, gics, failures=None: rows_per_filing(ticker, cik, filing))
-        monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
 
     return _install
 
@@ -155,7 +154,6 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
         return [_xbrl_filing("0000320193-08-000123")]
 
     monkeypatch.setattr(mod, "resolve_registrant_filings", resolve)
-    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     out = mod.build_ticker_fundamentals(
@@ -182,7 +180,6 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
 def test_cold_ticker_with_only_eligible_no_xbrl_filings_is_incomplete(monkeypatch, caplog):
     filings = [_xbrl_filing("0000320193-08-000123"), _xbrl_filing("0000320193-08-000456")]
     monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
-    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     print("\n=== SANITY: a cold all-no-XBRL walk is incomplete ===")
@@ -197,7 +194,6 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
         _xbrl_filing("0000320193-08-000456", error=ValueError("bad xml")),
     ]
     monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
-    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     try:
@@ -210,3 +206,11 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
     print(f"  log={message.strip()}")
     assert "1 no xbrl" in message
     assert "1 unreadable" in message
+
+
+def test_facts_builder_has_no_employee_side_output(patched):
+    filing = _filing("0001-a", "0000320193", "2024-02-01", form="10-K")
+    patched([filing], lambda t, c, f: [_row(t, c, f)])
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+    assert set(out) == {mod.Tables.fundamentals_facts}
+    print("\nSANITY: fundamentals facts own no employee side output.")

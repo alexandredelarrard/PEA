@@ -47,7 +47,6 @@ from src.data_extract.utils.common.edgar_driver import (
 from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
-from src.data_extract.utils.fundamentals.fundamentals_employees import employee_fact_frame, history_by_ticker, is_headcount_form
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
 from src.data_extract.utils.fundamentals.reason_codes import NOT_DISCLOSED, PERIOD_INTERSECTION_PARTIAL
@@ -948,7 +947,6 @@ def build_ticker_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
     registrants: dict[str, Registrant] | None = None,
-    headcounts: dict[str, list[int]] | None = None,
 ) -> dict[Table, pd.DataFrame]:
     """One ticker's facts, walking EVERY registrant in its chain.
 
@@ -975,8 +973,6 @@ def build_ticker_fundamentals(
     # filings a second time. The continuity guard is seeded from what is already stored and
     # grows as the walk goes -- `new_filings` is oldest-first, so each 10-K is judged against
     # every earlier one exactly as a full-history pass would judge it.
-    accepted = list((headcounts or {}).get(ticker, []))
-    staff: list[dict] = []
     # Unreadable filings, `(accession, error)`. Counted rather than merely skipped: a walk
     # that quietly drops filings and a walk that finds none look identical in the row count.
     failures: list[tuple[str, str]] = []
@@ -986,15 +982,6 @@ def build_ticker_fundamentals(
         # to the roster's when a filing exposes none.
         filing_cik = filed_by(filing, cik)
         rows.extend(filing_rows(ticker, filing_cik, filing, catalogue, gics_by_ticker.get(ticker), failures=failures))
-        if not is_headcount_form(getattr(filing, "form", None)):
-            continue
-        parsed = employee_fact_frame(filing, accepted)
-        if parsed is None:
-            continue
-        count = float(parsed["value"].iloc[0])
-        accepted.append(int(count))
-        staff.append({"ticker": ticker, "as_of": pd.Timestamp(filing.filing_date), "employees": count})
-    employees = pd.DataFrame(staff, columns=["ticker", "as_of", "employees"])
     if failures:
         logger.warning(
             "%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures), len(filings), ", ".join(f"{acc} ({err})" for acc, err in failures)
@@ -1009,7 +996,7 @@ def build_ticker_fundamentals(
         )
     df = pd.DataFrame(rows, columns=_COLS)
     if df.empty:
-        return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
+        return {Tables.fundamentals_facts: df}
     # One filing can tag the same field on the same WINDOW twice (a nudged boundary day).
     # Postgres rejects an upsert touching one PK row twice, so collapse here. Measured over
     # 337,190 swept facts, this now costs **3 rows** -- against 18,604 under the old
@@ -1027,9 +1014,7 @@ def build_ticker_fundamentals(
             f"({', '.join(str(b.date()) for b in entry.boundaries)}) lost accessions in dedup "
             f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap"
         )
-    # Two 10-K/A amendments filed the same day would collide on the employees PK.
-    employees = employees.drop_duplicates(subset=["ticker", "as_of"], keep="last")
-    return {Tables.fundamentals_facts: df, Tables.fundamentals_employees: employees}
+    return {Tables.fundamentals_facts: df}
 
 
 def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: int, *, full: bool = False) -> None:
@@ -1046,13 +1031,6 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
     levels = ["sector", "industry_group", "sub_industry"]
     cik_map = load_cik_mapping(context, tickers)
     gics = {str(row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
-    # The headcount continuity guard's seed, and the ONE read of this table that is
-    # deliberately unfiltered: `history_by_ticker` seeds a per-ticker median from every
-    # stored headcount, and a `where=` on the run's ticker list would silently narrow the
-    # continuity guard to the chunk being fetched. Three columns of an annual, ~500-ticker
-    # table, so the whole-table read is bounded by construction.
-    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of", "employees"], optional=True)
-    headcounts = history_by_ticker(stored.rename(columns={"as_of": "filing_date", "employees": "value"}) if stored is not None else None)
     registrants = load_registrants(str(context.config_dir))
     if registrants:
         context.log.info(
@@ -1064,10 +1042,8 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
         context,
         tickers,
         years_history,
-        # `fundamentals_facts` stays FIRST: it keys the manifest window and the accession
-        # dedup set, and headcount is a by-product of the same filings.
-        tables=(Tables.fundamentals_facts, Tables.fundamentals_employees),
-        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics, registrants=registrants, headcounts=headcounts),
+        tables=(Tables.fundamentals_facts,),
+        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics, registrants=registrants),
         desc="fundamentals (linkbase)",
         full=full,
         cik_map=cik_map,

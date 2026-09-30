@@ -1,198 +1,275 @@
-"""Tests for employee headcount as a `fundamentals_facts` field
-(src/data_extract/utils/fundamentals/fundamentals_employees.py).
-
-Headcount used to be its own fetcher writing its own `employees_history` table.
-It is now parsed out of the SAME 10-K the fundamentals walk already opens and
-appended as an ordinary instant fact, so what needs proving is the JOIN between
-the two halves -- the parser itself is covered by test_employee_extract.py /
-test_employee_extract_audit.py and is unchanged:
-
-  1. the fact row is shaped so the period engine's `instant_stock` accepts it and
-     lands it on the Q4 (fiscal-year-end) snapshot, like a balance-sheet level;
-  2. a 10-Q is never opened for it (the body-text download is the expensive part);
-  3. the continuity guard still fires, now seeded from `fundamentals_facts`;
-  4. `employees` reaches `fundamentals_history_sec` as a real column, carried across
-     the interim quarters rather than populating only the fiscal-year-end row.
-
-Checks 1 and 4 consume the period engine (`periods.instant_stock`) and the history build
-(`build_history.carry_latest_known`). Both are imported at TOP LEVEL, deliberately: they
-were once pinned with `importorskip` on a dotted module string while those modules were
-being rebuilt, which turns a rename into a SKIP -- a test that asserts nothing while
-reporting green. The modules have landed, so a missing symbol must fail at collection.
-
-All network access is faked -- no EDGAR calls.
-"""
+"""Offline contract tests for the standalone SEC employee-headcount extractor."""
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
+
 import pandas as pd
+import pytest
+from click.testing import CliRunner
+from conftest import FakeStore
 
-from src.data_extract.utils.fundamentals.build_history import carry_latest_known
-from src.data_extract.utils.fundamentals.fundamentals_employees import (
-    EMPLOYEES_FIELD,
-    employee_fact_frame,
-    history_by_ticker,
-    is_headcount_form,
-)
-from src.data_extract.utils.fundamentals.periods import instant_stock
-
-_TEXT = "Item 1. Business. As of December 31, 2020, we had approximately 21,400 employees worldwide."
+import src.data_extract.cli as cli_mod
+import src.data_extract.utils.fundamentals.fundamentals_employees as mod
+from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError
+from src.data_extract.utils.common.run_manifest import get_entry, record_filing_outcomes
+from src.data_store.schema import Tables
+from tests.data_extract.fake_context import extract_config
 
 
-class _FakeFiling:
-    """The three attributes `employee_fact_frame` touches, plus the body-text
-    accessor. `html()` returning None forces the `.text()` fallback path."""
-
-    def __init__(self, form="10-K", period="2020-12-31", body=_TEXT, as_html=True):
+class _Filing:
+    def __init__(
+        self,
+        accession: str,
+        filed: str,
+        count: int | None,
+        *,
+        report: str = "2020-12-31",
+        form: str = "10-K",
+        error: Exception | None = None,
+    ) -> None:
+        self.accession_number = accession
+        self.cik = "0000000001"
         self.form = form
-        self.period_of_report = period
-        self.accession_number = "0000000000-20-000001"
-        self._body = body
-        self._as_html = as_html
-        self.html_calls = 0
+        self.filing_date = pd.Timestamp(filed).date()
+        self.period_of_report = report
+        self.count = count
+        self.error = error
 
-    def html(self):
-        self.html_calls += 1
-        return f"<html><body><p>{self._body}</p></body></html>" if self._as_html else None
+    def html(self) -> str:
+        if self.error:
+            raise self.error
+        return "<p>No workforce disclosure.</p>" if self.count is None else f"<p>We had approximately {self.count:,} employees.</p>"
 
-    def text(self):
-        return self._body
+    def text(self) -> str:
+        return ""
 
 
-# --------------------------------------------------------------------------- #
-# 1. Fact-row shape: what `instant_stock` needs to accept it                    #
-# --------------------------------------------------------------------------- #
-def test_employee_fact_row_is_a_year_end_instant():
-    frame = employee_fact_frame(_FakeFiling())
-    assert frame is not None
-    row = frame.iloc[0]
+def _build(monkeypatch, filings: list[_Filing], history: list[int], pending: list[dict] | None = None):
+    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    return mod.build_ticker_employees(
+        "AAA",
+        "0000000001",
+        since=None,
+        done_accessions=frozenset(),
+        registrants={},
+        history=history,
+        pending_outcomes=pending or [],
+    )
 
-    assert row["field"] == EMPLOYEES_FIELD and row["value"] == 21_400.0
-    assert row["period_type"] == "instant"
-    assert row["period_end"] == pd.Timestamp("2020-12-31")
-    # NO period_start is the load-bearing part: it is what tells instant_stock this
-    # is a year-end SNAPSHOT (rename 'FY' -> 'Q4') rather than a duration measure
-    # that legitimately has both an FY and a Q4 flavour (e.g. basicShares).
-    assert pd.isna(row["period_start"])
-    # left blank on purpose -> backfilled from the filing's tagged duration facts
-    assert row["fiscal_year"] is None and row["fiscal_period"] is None
 
-    # ... and now prove instant_stock actually does that with it.
-    facts = pd.DataFrame(
+def test_two_consistent_outliers_establish_a_new_regime(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    result = _build(
+        monkeypatch,
+        [_Filing("acc-1", "2021-02-01", 10_000), _Filing("acc-2", "2022-02-01", 11_000, report="2021-12-31")],
+        [1_000, 1_100],
+    )
+    assert result.frame["employees"].tolist() == [10_000.0, 11_000.0]
+    assert [row["status"] for row in result.outcomes] == ["saved", "saved"]
+    assert result.outcomes[0]["cik"] == "0000000001"
+    assert result.outcomes[0]["report_date"] == "2020-12-31"
+    assert "reason=new_regime" in caplog.text
+    assert "old_anchor=1100" in caplog.text
+    assert "first=acc-1/10000" in caplog.text and "second=acc-2/11000" in caplog.text
+    assert "first_ratio=" in caplog.text and "second_ratio=" in caplog.text
+    print("\nSANITY: two mutually consistent observations establish and save the new regime.")
+
+
+def test_pending_candidate_resumes_and_an_isolated_artifact_does_not_save(monkeypatch):
+    first = _build(monkeypatch, [_Filing("acc-1", "2021-02-01", 10_000)], [1_000])
+    assert first.frame.empty
+    assert first.outcomes[0]["status"] == "pending_regime"
+    assert first.outcomes[0]["candidate"] == 10_000
+
+    resumed = _build(
+        monkeypatch,
+        [_Filing("acc-2", "2022-02-01", 11_000, report="2021-12-31")],
+        [1_000],
+        first.outcomes,
+    )
+    assert resumed.frame["employees"].tolist() == [10_000.0, 11_000.0]
+    assert {row["accession_number"]: row["status"] for row in resumed.outcomes} == {"acc-1": "saved", "acc-2": "saved"}
+    print("\nSANITY: a cached pending candidate is resumable and remains absent until corroborated.")
+
+
+def test_body_retrieval_failure_is_not_a_committable_outcome(monkeypatch):
+    filing = _Filing("acc-broken", "2021-02-01", None, error=RuntimeError("body unavailable"))
+    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: [filing])
+    with pytest.raises(RuntimeError, match="body unavailable"):
+        mod.build_ticker_employees(
+            "AAA",
+            "0000000001",
+            since=None,
+            done_accessions=frozenset(),
+            registrants={},
+            history=[],
+            pending_outcomes=[],
+        )
+    print("\nSANITY: body failure raises before any terminal/pending outcome can be committed.")
+
+
+def test_same_day_amendment_cannot_self_confirm_a_new_regime(monkeypatch):
+    result = _build(
+        monkeypatch,
         [
-            {
-                "fiscal_year": 2020,
-                "fiscal_period": "FY",
-                "value": row["value"],
-                "filing_date": pd.Timestamp("2021-02-18"),
-                "accession_number": "acc-1",
-                "form": "10-K",
-                "period_start": row["period_start"],
-                "period_end": row["period_end"],
-                "source_tag": row["source_tag"],
-                "is_amendment": 0.0,
-                "fiscal_period_source": "native",
-            }
-        ]
+            _Filing("acc-original", "2021-02-01", 10_000),
+            _Filing("acc-amended", "2021-02-01", 11_000, form="10-K/A"),
+        ],
+        [1_000],
     )
-    out = instant_stock(facts)
-    assert len(out) == 1 and out.iloc[0]["fiscal_period"] == "Q4"
-    assert out.iloc[0]["value"] == 21_400.0
+    assert result.frame.empty
+    assert {row["accession_number"]: row["status"] for row in result.outcomes} == {
+        "acc-original": "rejected_outlier",
+        "acc-amended": "pending_regime",
+    }
+    print("\nSANITY: same-day 10-K/10-K/A candidates normalize before continuity and cannot corroborate each other.")
 
-    print("\n=== SANITY CHECK: employee fact row shape ===")
-    print(f"  parsed {row['value']:,.0f} employees -> instant fact, period_end {row['period_end'].date()}, no period_start")
-    print(
-        f"  instant_stock lands it on fiscal_period='{out.iloc[0]['fiscal_period']}' "
-        "(the fiscal-year-end snapshot, same grid as every balance-sheet level). Validated."
+
+def test_unmatched_pending_candidates_remain_pending(monkeypatch):
+    result = _build(
+        monkeypatch,
+        [_Filing("acc-1", "2021-02-01", 10_000), _Filing("acc-2", "2022-02-01", 1_000_000)],
+        [1_000],
+    )
+    assert result.frame.empty
+    assert [row["status"] for row in result.outcomes] == ["pending_regime", "pending_regime"]
+    print("\nSANITY: unrelated outliers remain pending for later annual evidence; neither is prematurely rejected.")
+
+
+def test_continuity_anchor_uses_only_the_last_three_trusted_counts(monkeypatch):
+    result = _build(monkeypatch, [_Filing("acc-current", "2021-02-01", 1_100)], [1] * 10 + [900, 1_000, 1_050])
+    assert result.frame["employees"].tolist() == [1_100.0]
+    assert result.outcomes[0]["status"] == "saved"
+    print("\nSANITY: recent trusted observations, not an obsolete all-history median, anchor continuity.")
+
+
+def test_incomplete_fetch_persists_successful_outcomes_but_not_frontier(monkeypatch, tmp_path):
+    store = FakeStore({Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"])})
+    log = SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None)
+    context = SimpleNamespace(
+        store=store,
+        log=log,
+        paths={"DATA_STORE": tmp_path},
+        config_dir=tmp_path,
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30, "fundamentals_workers": 1}),
+        ensure_edgar_identity=lambda: None,
+    )
+    monkeypatch.setattr(
+        mod,
+        "load_cik_mapping",
+        lambda *args, **kwargs: pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]}),
+    )
+    monkeypatch.setattr(mod, "load_registrants", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        mod,
+        "run_per_ticker",
+        lambda mapping, worker, **kwargs: [worker(ticker, cik) for ticker, cik in mapping[["ticker", "cik"]].itertuples(index=False, name=None)],
+    )
+    saved_outcome = {
+        "ticker": "AAA",
+        "accession_number": "acc-ok",
+        "cik": "0000000001",
+        "form": "10-K",
+        "filing_date": "2021-02-01",
+        "report_date": "2020-12-31",
+        "ordering": 0,
+        "status": "saved",
+    }
+
+    def _build(ticker, *args, **kwargs):
+        if ticker == "BBB":
+            raise RuntimeError("body unavailable")
+        return mod.EmployeeTickerResult(
+            pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2021-02-01"), "employees": 1_000.0}]),
+            [saved_outcome],
+        )
+
+    monkeypatch.setattr(mod, "build_ticker_employees", _build)
+    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
+        mod.fetch_fundamentals_employees(context, ["AAA", "BBB"], 15)
+
+    assert store.t[Tables.fundamentals_employees.name]["ticker"].tolist() == ["AAA"]
+    entry = get_entry(context, Tables.fundamentals_employees)
+    assert entry["filing_outcomes"] == [saved_outcome]
+    assert "last_run_date" not in entry and "coverage_complete" not in entry
+    print("\nSANITY: successful ticker progress is durable while an incomplete batch cannot advance coverage.")
+
+
+def test_standalone_cli_dispatches_employee_fetch(monkeypatch):
+    calls: list[tuple[list[str], bool, int]] = []
+    context = SimpleNamespace()
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    monkeypatch.setattr(cli_mod, "_ctx", lambda path: (config, context))
+    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(
+        cli_mod,
+        "fetch_fundamentals_employees",
+        lambda ctx, tickers, years_history, full=False: calls.append((tickers, full, years_history)),
     )
 
-
-# --------------------------------------------------------------------------- #
-# 2. Only the 10-K is ever opened                                              #
-# --------------------------------------------------------------------------- #
-def test_only_annual_reports_are_downloaded():
-    assert is_headcount_form("10-K") and is_headcount_form("10-K/A")
-    assert not is_headcount_form("10-Q") and not is_headcount_form("10-Q/A")
-    assert not is_headcount_form(None)
-
-    # a 10-Q must SHORT-CIRCUIT before the body text is fetched -- that download is
-    # the whole cost of this feature, and ~75% of the filings walked are 10-Qs
-    tenq = _FakeFiling(form="10-Q", period="2020-09-30")
-    assert employee_fact_frame(tenq) is None
-    assert tenq.html_calls == 0, "10-Q body text was downloaded -- pure waste"
-
-    tenk = _FakeFiling()
-    assert employee_fact_frame(tenk) is not None
-    assert tenk.html_calls == 1
-
-    print("\n=== SANITY CHECK: download only where a headcount can exist ===")
-    print("  10-K/10-K/A -> parsed; 10-Q/10-Q/A -> skipped with ZERO body-text fetches. Validated.")
+    result = CliRunner().invoke(cli_mod.cli, ["fundamentals-employees", "-t", "AAA", "--full"])
+    assert result.exit_code == 0, result.output
+    assert calls == [(["AAA"], True, 15)]
+    print("\nSANITY: fundamentals-employees owns a dedicated CLI dispatch and full flag.")
 
 
-def test_plain_text_submission_fallback():
-    """Pre-2001 filings have no HTML rendition; `.text()` must still be parsed."""
-    frame = employee_fact_frame(_FakeFiling(as_html=False))
-    assert frame is not None and frame.iloc[0]["value"] == 21_400.0
-    print("\n=== SANITY CHECK: .txt submission fallback ===")
-    print("  html() -> None falls back to text() and still parses 21,400. Validated.")
-
-
-# --------------------------------------------------------------------------- #
-# 3. Continuity guard, seeded from fundamentals_facts                          #
-# --------------------------------------------------------------------------- #
-def test_continuity_guard_drops_parse_artifact():
-    """The CSGP failure: a filing that states no headcount at all, where the parser
-    picks up an unrelated "2.3 million people" phrase in a workforce-shaped sentence.
-    It scores WELL (`as of` + `approximately` + a workforce noun), so nothing inside
-    the document betrays it -- only the ticker's own history does."""
-    text = "As of December 31, 2020, approximately 2,300,000 people used our marketplace."
-    assert employee_fact_frame(_FakeFiling(body=text), [1000, 1100, 1155, 1200]) is None
-    # ... and with no history to anchor on (a ticker's FIRST filing) it is accepted:
-    # the guard only ever REJECTS against evidence, it never invents a value
-    first = employee_fact_frame(_FakeFiling(body=text), [])
-    assert first is not None and first.iloc[0]["value"] == 2_300_000.0
-
-    # the seed comes off `fundamentals_facts` rows, in filing-date order
-    stored = pd.DataFrame(
-        {
-            "ticker": ["AAA", "AAA", "BBB"],
-            "filing_date": ["2022-02-01", "2021-02-01", "2020-02-01"],
-            "value": [1200.0, 1000.0, 50.0],
-        }
+def test_full_reconsiders_parser_outcomes_but_not_saved_accessions(monkeypatch, tmp_path):
+    store = FakeStore({Tables.fundamentals_employees: pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2020-02-01"), "employees": 1_000.0}])})
+    context = SimpleNamespace(
+        store=store,
+        log=SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None),
+        paths={"DATA_STORE": tmp_path},
+        config_dir=tmp_path,
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30, "fundamentals_workers": 1}),
+        ensure_edgar_identity=lambda: None,
     )
-    assert history_by_ticker(stored) == {"AAA": [1000, 1200], "BBB": [50]}
-
-    print("\n=== SANITY CHECK: continuity guard on the new fact path ===")
-    print("  2,300,000 against a stored median of 1,155 -> DROPPED; same value with no history -> kept (nothing to contradict it)")
-    print("  guard seeded from fundamentals_facts (ticker/filing_date/value), filing-date ordered. Validated.")
-
-
-# --------------------------------------------------------------------------- #
-# 4. It reaches fundamentals_history_sec as a column                               #
-# --------------------------------------------------------------------------- #
-def test_employees_is_carried_forward_into_the_interim_quarters():
-    """A headcount is disclosed ONCE A YEAR, in the 10-K, so `employees` must reach
-    `fundamentals_history_sec` under an as-of (ffill) alignment rather than populating only
-    the fiscal-year-end row and leaving the three interim quarters blank.
-
-    This is the one property of the field that lives in the history build rather than in
-    the parser, and it is easy to lose when the column list is rewritten."""
-    # one annual headcount (FY2019, filed with the 10-K) against a quarterly grid
-    ends = pd.DatetimeIndex(["2019-12-31", "2020-03-31", "2020-06-30", "2020-09-30"])
-    facts = pd.DataFrame(
-        {
-            "ticker": "AAA",
-            "field": EMPLOYEES_FIELD,
-            "period_end": [ends[0]],
-            "filing_date": [pd.Timestamp("2020-02-14")],
-            "value": [21_400.0],
-        }
+    outcomes = [
+        {"ticker": "AAA", "accession_number": "acc-saved", "status": "saved"},
+        {"ticker": "AAA", "accession_number": "acc-empty", "status": "no_headcount"},
+        {"ticker": "AAA", "accession_number": "acc-rejected", "status": "rejected_outlier"},
+        {"ticker": "AAA", "accession_number": "acc-pending", "status": "pending_regime", "candidate": 10_000},
+    ]
+    record_filing_outcomes(context, Tables.fundamentals_employees, outcomes)
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args, **kwargs: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
+    monkeypatch.setattr(mod, "load_registrants", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        mod,
+        "run_per_ticker",
+        lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")],
     )
-    out = carry_latest_known(facts, ends, field=EMPLOYEES_FIELD)
+    seen: dict[str, object] = {}
 
-    assert EMPLOYEES_FIELD in out.columns, "employees never became a column"
-    assert (out[EMPLOYEES_FIELD] == 21_400.0).all(), "the annual headcount did not carry into the interim quarters"
+    def _build(*args, **kwargs):
+        seen.update(kwargs)
+        return mod.EmployeeTickerResult(pd.DataFrame(columns=["ticker", "as_of", "employees"]), [])
 
-    print("\n=== SANITY CHECK: employees reaches fundamentals_history_sec ===")
-    print(f"  ONE annual disclosure (2019-12-31: 21,400) -> populated on all {len(out)} quarter rows {list(out[EMPLOYEES_FIELD].astype(int))}")
-    print("  as-of (ffill) alignment, so interim quarters are not blank. Validated.")
+    monkeypatch.setattr(mod, "build_ticker_employees", _build)
+    mod.fetch_fundamentals_employees(context, ["AAA"], 15, full=True)
+
+    assert seen["done_accessions"] == frozenset({"acc-saved"})
+    assert seen["pending_outcomes"] == []
+    assert seen["history"] == [1_000]
+    print("\nSANITY: full mode retries parser outcomes, skips saved accessions, and retains stored continuity history.")
+
+
+def test_combined_rebuild_does_not_delete_employee_history(monkeypatch):
+    deleted: list[object] = []
+    store = SimpleNamespace(delete=lambda table, where: deleted.append(table))
+    context = SimpleNamespace(store=store, log=SimpleNamespace(warning=lambda *args, **kwargs: None))
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    monkeypatch.setattr(cli_mod, "_ctx", lambda path: (config, context))
+    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(cli_mod, "fetch_fundamentals_sec", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli_mod, "build_fundamentals_history", lambda *args, **kwargs: None)
+
+    result = CliRunner().invoke(cli_mod.cli, ["fundamentals", "-t", "AAA", "--rebuild"])
+    assert result.exit_code == 0, result.output
+    assert Tables.fundamentals_employees not in deleted
+    assert set(deleted) == {
+        Tables.fundamentals_facts,
+        Tables.fundamentals_history_sec,
+        Tables.fundamentals_reason_codes,
+    }
+    print("\nSANITY: the combined XBRL rebuild cannot delete independently owned employee history.")

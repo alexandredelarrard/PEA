@@ -97,7 +97,8 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 #     superinvestors, short-interest, sec_8k_items, sec_13d and sec_13g (below)
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
-fundamentals = fetch("fundamentals", pool="sec_api")  # incl. 10-K headcount
+fundamentals = fetch("fundamentals", pool="sec_api")
+fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("def14a", pool="sec_api")  # + LLM
 def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
@@ -138,6 +139,7 @@ all_fetchers = [
     financial_notes,
     identity_tables,
     fundamentals,
+    fundamentals_employees,
     fundamentals_sharadar,
     def14a,
     def14a_edgar,
@@ -152,12 +154,27 @@ all_fetchers = [
     thirteen_f_managers,
 ]
 
+identity_consumers = [
+    short_interest,
+    fails_to_deliver,
+    financial_statements,
+    financial_notes,
+    fundamentals,
+    fundamentals_employees,
+    def14a,
+    def14a_edgar,
+    sec_8k_items,
+    sec_13d,
+    sec_13g,
+    filing_text,
+]
+
 seed_universe >> all_fetchers
 splits >> price_history
-insider_transactions >> identity_tables >> [short_interest, fails_to_deliver]
+insider_transactions >> identity_tables >> identity_consumers
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
-fundamentals >> fundamentals_sharadar  # merge only after today's SEC layer is complete
+[fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes
 download_earnings_calls >> ingest_earnings_calls  # ingest parses the downloaded files
 

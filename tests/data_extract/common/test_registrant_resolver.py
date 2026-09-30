@@ -22,7 +22,15 @@ import types
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, Registrant, Segment, combine_for, resolve_registrant_filings
+from src.data_extract.utils.common.registrant import (
+    FORM_POLICY,
+    AmbiguousRegistrantScopeError,
+    Combine,
+    Registrant,
+    Segment,
+    combine_for,
+    resolve_registrant_filings,
+)
 
 BOUNDARY = pd.Timestamp("2026-07-01")
 
@@ -55,6 +63,25 @@ _XOM = {
         ),
     )
 }
+
+
+class _Identity:
+    def __init__(self, ticker: str, entity_by_cik: dict[str, str]) -> None:
+        self._ticker = ticker
+        self._entity_by_cik = {str(cik).zfill(10): entity for cik, entity in entity_by_cik.items()}
+
+    def universe_entity(self, ticker: str) -> str | None:
+        return self._entity_by_cik.get(next(iter(self._entity_by_cik))) if ticker == self._ticker else None
+
+    def entity_of(self, cik: str) -> str | None:
+        return self._entity_by_cik.get(str(cik).zfill(10))
+
+    def ciks_for(self, entity: str) -> frozenset[str]:
+        return frozenset(cik for cik, candidate in self._entity_by_cik.items() if candidate == entity)
+
+
+def _tenure(*pairs: tuple[str, str]) -> pd.DataFrame:
+    return pd.DataFrame(pairs, columns=["symbol", "issuer_cik"])
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +162,102 @@ def test_no_register_entry_is_byte_identical_to_the_plain_ticker_walk(monkeypatc
     assert all(f in plain for f in out), "a filing object was substituted, not just reordered"
     print("\n=== SANITY CHECK: no register entry -> the plain ticker walk ===")
     print("  same 3 filing OBJECTS, sorted oldest-first, nothing added or dropped. Validated.")
+
+
+def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatch):
+    shared = _filing("shared", "2015-01-01")
+    _patch(
+        monkeypatch,
+        {
+            "ZBH": [shared, _filing("new", "2025-01-01")],
+            "ZMH": [_filing("old", "2005-01-01"), shared],
+        },
+    )
+    identity = _Identity("ZBH", {"0001136869": "E-ZBH"})
+
+    out = resolve_registrant_filings(
+        "ZBH",
+        ["10-K"],
+        since=None,
+        done_accessions=frozenset(),
+        registrants={},
+        identity=identity,
+        symbol_tenure=_tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
+        roster_cik="0001136869",
+    )
+
+    assert [f.accession_number for f in out] == ["old", "shared", "new"]
+    print("\n=== SANITY CHECK: same-CIK alias discovery ===")
+    print("  ZBH + ZMH were walked; their shared accession was returned once. Validated.")
+
+
+def test_identity_discovered_cik_transition_requires_a_complete_curated_chain(monkeypatch):
+    _patch(monkeypatch, {"ZBH": []})
+    identity = _Identity("ZBH", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"})
+
+    with pytest.raises(AmbiguousRegistrantScopeError, match="0000058766"):
+        resolve_registrant_filings(
+            "ZBH",
+            ["10-K"],
+            since=None,
+            done_accessions=frozenset(),
+            registrants={},
+            identity=identity,
+            symbol_tenure=_tenure(("ZBH", "0001136869")),
+            roster_cik="0001136869",
+        )
+
+    print("\n=== SANITY CHECK: multi-CIK discovery fails closed ===")
+    print("  lineage found an uncurated predecessor CIK -> explicit dated chain required.")
+
+
+def test_identity_discovered_cik_transition_is_additive_for_union_events(monkeypatch):
+    _patch(
+        monkeypatch,
+        {"ZBH": [_filing("current", "2025-01-01")], 58766: [_filing("predecessor", "2005-01-01")]},
+    )
+    identity = _Identity("ZBH", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"})
+
+    out = resolve_registrant_filings(
+        "ZBH",
+        ["8-K"],
+        since=None,
+        done_accessions=frozenset(),
+        registrants={},
+        identity=identity,
+        symbol_tenure=_tenure(("ZBH", "0001136869")),
+        roster_cik="0001136869",
+    )
+
+    assert [f.accession_number for f in out] == ["predecessor", "current"]
+    print("\n=== SANITY CHECK: multi-CIK UNION discovery is additive ===")
+    print("  lineage's predecessor CIK was walked without inventing a dated boundary. Validated.")
+
+
+def test_complete_curated_chain_remains_authoritative_when_identity_discovers_it(monkeypatch):
+    _patch(
+        monkeypatch,
+        {
+            34088: [_filing("pre", "2026-06-30"), _filing("pre-late", "2026-08-07")],
+            2115436: [_filing("successor", "2026-07-01")],
+        },
+    )
+    identity = _Identity("XOM", {"0000034088": "E-XOM", "0002115436": "E-XOM"})
+
+    out = resolve_registrant_filings(
+        "XOM",
+        ["10-Q"],
+        since=None,
+        done_accessions=frozenset(),
+        registrants=_XOM,
+        identity=identity,
+        symbol_tenure=_tenure(("XOM", "0000034088"), ("XOM", "0002115436")),
+        roster_cik="0002115436",
+    )
+
+    assert [f.accession_number for f in out] == ["pre", "successor"]
+    print("\n=== SANITY CHECK: curated dates remain authoritative ===")
+    print("  identity audited both CIKs; the register still excluded predecessor post-cutover data.")
 
 
 # --------------------------------------------------------------------------- #

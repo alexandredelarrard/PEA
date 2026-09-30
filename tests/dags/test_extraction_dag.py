@@ -33,6 +33,7 @@ REQUIRED_COMMANDS = {
     "superinvestors",
     "thirteen-f-managers",
     "fundamentals",
+    "fundamentals-employees",
     "fundamentals-sharadar",
     "def14a",
     "def14a-edgar",
@@ -85,19 +86,58 @@ def test_freshness_inventory_comes_only_from_schema():
 
 def test_retries_dependencies_and_hard_gates_are_wired():
     source = _source(DAG_FILE)
+    tree = ast.parse(source)
+    identity_consumer_assignment = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "identity_consumers" for target in node.targets)
+    )
+    assert isinstance(identity_consumer_assignment.value, ast.List)
+    identity_consumers = {element.id for element in identity_consumer_assignment.value.elts if isinstance(element, ast.Name)}
+    expected_identity_consumers = {
+        "short_interest",
+        "fails_to_deliver",
+        "financial_statements",
+        "financial_notes",
+        "fundamentals",
+        "fundamentals_employees",
+        "def14a",
+        "def14a_edgar",
+        "sec_8k_items",
+        "sec_13d",
+        "sec_13g",
+        "filing_text",
+    }
+    identity_independent = {
+        "insider_transactions",
+        "thirteen_f",
+        "superinvestors",
+        "thirteen_f_managers",
+        "macro",
+        "earnings_surprises",
+        "splits",
+        "price_history",
+        "dividends",
+        "download_earnings_calls",
+        "ingest_earnings_calls",
+    }
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
     assert "splits >> price_history" in source
-    assert "insider_transactions >> identity_tables >> [short_interest, fails_to_deliver]" in source
-    assert "fundamentals >> fundamentals_sharadar" in source
+    assert identity_consumers == expected_identity_consumers
+    assert identity_consumers.isdisjoint(identity_independent)
+    assert "sec_8k_votes" not in identity_consumers
+    assert "insider_transactions >> identity_tables >> identity_consumers" in source
+    assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
     assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> trigger_aggregation" in source
     assert "trigger_rule=TriggerRule.ALL_SUCCESS" in source
     assert "trigger_rule=TriggerRule.ALL_SUCCESS" in _source(AGG_DAG_FILE)
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
-    print("  fetchers and the schema freshness gate have 3 retries; final gate requires ALL_SUCCESS")
-    print("  OK: stale raw data blocks aggregation, and a red cube blocks prediction")
+    print("  identity producer -> 12 direct consumers; 8-K votes inherit through item/proxy parents")
+    print("  fundamentals facts + employees are siblings; merged history waits for both")
+    print("  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier")
 
 
 def test_scheduled_edgar_walks_require_complete_ticker_coverage():

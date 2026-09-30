@@ -325,6 +325,53 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
+class AmbiguousRegistrantScopeError(RuntimeError):
+    """Identity found a CIK transition that has no complete dated registrant chain."""
+
+
+def _identity_filing_scope(
+    ticker: str,
+    roster_cik: str,
+    identity: Any,
+    symbol_tenure: pd.DataFrame,
+    entry: Registrant | None,
+    policy: Combine,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Audit CIK scope; return same-CIK aliases and additive UNION CIKs."""
+    required = {"symbol", "issuer_cik"}
+    missing = required - set(symbol_tenure.columns)
+    if missing:
+        raise ValueError(f"symbol_tenure is missing required column(s): {sorted(missing)}")
+
+    ticker = str(ticker).strip().upper()
+    roster_cik = _normalise_cik(roster_cik)
+    entity = identity.universe_entity(ticker)
+    discovered_ciks = {_normalise_cik(cik) for cik in identity.ciks_for(entity)} | {roster_cik}
+    aliases: set[str] = set()
+    for row in symbol_tenure.loc[:, ["symbol", "issuer_cik"]].itertuples(index=False):
+        if pd.isna(row.symbol) or pd.isna(row.issuer_cik):
+            continue
+        cik = _normalise_cik(row.issuer_cik)
+        if identity.entity_of(cik) != entity:
+            continue
+        discovered_ciks.add(cik)
+        symbol = str(row.symbol).strip().upper()
+        if cik == roster_cik and symbol and symbol != ticker:
+            aliases.add(symbol)
+
+    curated_ciks = {_normalise_cik(cik) for cik in entry.all_ciks()} if entry is not None else set()
+    missing_from_chain = discovered_ciks - curated_ciks
+    if policy is Combine.SPLIT and len(discovered_ciks) > 1 and missing_from_chain:
+        raise AmbiguousRegistrantScopeError(
+            f"{ticker}: identity discovered registrant CIK(s) "
+            f"{', '.join(sorted(discovered_ciks))}, including uncurated "
+            f"{', '.join(sorted(missing_from_chain))}; add a complete explicit dated "
+            "registrant chain before fetching consolidating filings"
+        )
+    additional_ciks = discovered_ciks - {roster_cik} - curated_ciks
+    return tuple(sorted(aliases)), tuple(sorted(additional_ciks))
+
+
 def resolve_registrant_filings(
     ticker: str,
     forms: Sequence[str],
@@ -332,6 +379,9 @@ def resolve_registrant_filings(
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
     registrants: dict[str, Registrant] | None = None,
+    identity: Any | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> list:
     """Every filing of `forms` for `ticker`, across its registrant chain, oldest first.
 
@@ -361,6 +411,14 @@ def resolve_registrant_filings(
     entry = registrants.get(ticker)
     forms = list(forms)
 
+    identity_inputs = (identity is not None, symbol_tenure is not None, roster_cik is not None)
+    if any(identity_inputs) and not all(identity_inputs):
+        raise ValueError("identity, symbol_tenure and roster_cik must be provided together")
+    aliases: tuple[str, ...] = ()
+    identity_ciks: tuple[str, ...] = ()
+    if identity is not None and symbol_tenure is not None and roster_cik is not None:
+        aliases, identity_ciks = _identity_filing_scope(ticker, roster_cik, identity, symbol_tenure, entry, policy)
+
     def _keep(f) -> pd.Timestamp | None:
         if f.accession_number in done_accessions:
             return None
@@ -368,6 +426,33 @@ def resolve_registrant_filings(
         return None if since is not None and filed < since else filed
 
     if entry is None:
+        additive_ciks = identity_ciks if policy is Combine.UNION else ()
+        if aliases or additive_ciks:
+            by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
+            contributions: dict[str, int] = {}
+            companies = (
+                [(ticker, Company(ticker))]
+                + [(alias, _symbol_company_or_none(Company, alias, ticker)) for alias in aliases]
+                + [(cik, _company_or_none(Company, cik, ticker)) for cik in additive_ciks]
+            )
+            for label, company in companies:
+                if company is None:
+                    continue
+                for f in company.get_filings(form=forms):
+                    if f.accession_number in by_accession:
+                        continue
+                    filed = _keep(f)
+                    if filed is None:
+                        continue
+                    by_accession[f.accession_number] = (filed, f)
+                    contributions[label] = contributions.get(label, 0) + 1
+            if any(label != ticker for label in contributions):
+                logger.info(
+                    "%s: identity scope added filings (%s)",
+                    ticker,
+                    ", ".join(f"{n} from {label}" for label, n in contributions.items()),
+                )
+            return [f for _, f in sorted(by_accession.values(), key=lambda pair: pair[0])]
         dated = [(d, f) for f in Company(ticker).get_filings(form=forms) if (d := _keep(f)) is not None]
         dated.sort(key=lambda pair: pair[0])
         return [f for _, f in dated]
@@ -399,7 +484,8 @@ def resolve_registrant_filings(
     # provenance of everything the pre-register implementation already returned.
     by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
     contributed: dict[str, int] = {}
-    for label, company in [("ticker", Company(ticker))] + [(cik, _company_or_none(Company, cik, ticker)) for cik in entry.all_ciks()]:
+    union_ciks = tuple(dict.fromkeys((*entry.all_ciks(), *identity_ciks)))
+    for label, company in [("ticker", Company(ticker))] + [(cik, _company_or_none(Company, cik, ticker)) for cik in union_ciks]:
         if company is None:
             continue
         listing = company.get_filings(form=forms)
@@ -748,6 +834,15 @@ def _company_or_none(company_cls, cik: str, ticker: str):
         return company_cls(int(cik))
     except Exception:  # noqa: BLE001 -- a dead CIK, not a bug
         logger.warning("%s: register CIK %s could not be resolved", ticker, cik)
+        return None
+
+
+def _symbol_company_or_none(company_cls: Any, symbol: str, ticker: str) -> Any | None:
+    """A stale historical alias cannot break the current ticker's filing walk."""
+    try:
+        return company_cls(symbol)
+    except Exception:  # noqa: BLE001 -- stale EDGAR alias, not a bug
+        logger.warning("%s: historical alias %s could not be resolved", ticker, symbol)
         return None
 
 

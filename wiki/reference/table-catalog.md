@@ -53,7 +53,8 @@ The identity model has two axes: [registrant policy](../../src/data_extract/util
 | `prices_splits` | ticker × ex-date | date | Sparse split/spinoff factors used in price-basis reconciliation. |
 | `prices_macro` | named series × date | date | Long-form benchmark, volatility, commodity, energy, rate, credit, breakeven, FX, and derived macro series. These series never enter the equity `prices` cross-section. |
 | `short_interest` | ticker × date | date | FINRA RegSHO tape. The source is market-wide per day, so incremental resume is global. |
-| `sec_fails_to_deliver` | ticker × date | date | SEC semi-monthly settlement-fail files, kept separate from short volume because cadence and lag differ. |
+| `sec_fails_to_deliver` | ticker × settlement date | date | SEC semi-monthly settlement-fail rows. Its persisted `period` links each row to a ZIP-level availability vintage and is authoritative even when a `b` ZIP contains a day-15 settlement; settlement date is not the feature as-of date. |
+| `sec_ftd_vintages` | ZIP period | available_date | One availability clock per FTD ZIP: `estimated` for historical periods and `observed` for newly downloaded periods. `first_seen_at` and `source_url` audit a successful HTTP observation when present. |
 | `cusip_ticker_map` | CUSIP | none | CUSIP-to-ticker resolution, including curated overrides. |
 | `macro` | date | date | Older wide macro table retained in the registry/live database; new macro consumers use `prices_macro`. |
 

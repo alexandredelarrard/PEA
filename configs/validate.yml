@@ -79,8 +79,9 @@ validate:
       # Cross-source ratios update when an underlying filing/event family updates. A ticker can
       # legitimately hold the same discrete vote for months, so their edge behavior is checked
       # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
-      daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
-                   "_price_vs_buy"]
+      # Returns-since-event legitimately remain 0 when a new filing resets age to 0 each
+      # session (measured for TPL/RSG); cumulative extrema move only at new highs/lows.
+      daily_legs: ["_to_mcap", "_price_vs_buy"]
       # `price_vs_buy` exists only while a qualifying purchase remains in its 126-session
       # value-weighted cost window. A gap while age <= 125 is actionable; anchor-free NaNs are
       # economically undefined and are reported as explained rather than zero-filled.

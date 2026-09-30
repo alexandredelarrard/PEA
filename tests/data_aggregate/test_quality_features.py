@@ -397,8 +397,8 @@ def test_pension_footnote_features_from_notes_num():
 
 def test_notes_num_uses_archive_availability_and_expires_after_day_460():
     tag = "DefinedBenefitPlanBenefitObligation"
-    first_available = pd.Timestamp("2024-10-01")
-    second_available = pd.Timestamp("2025-10-02")
+    first_available = pd.Timestamp("2021-09-13")  # August 2021 ZIP: the 12th was Sunday.
+    second_available = pd.Timestamp("2022-09-12")
     idx = pd.DatetimeIndex(
         [
             first_available - pd.Timedelta(days=1),
@@ -414,28 +414,28 @@ def test_notes_num_uses_archive_availability_and_expires_after_day_460():
             {
                 "ticker": "U",
                 "tag": tag,
-                "ddate": "2024-08-31",
+                "ddate": "2021-06-30",
                 "qtrs": 0,
                 "value": 100.0,
-                "filed": "2024-09-15",
+                "filed": "2021-08-20",
                 "available_at": first_available,
             },
             {
                 "ticker": "U",
                 "tag": tag,
-                "ddate": "2025-08-31",
+                "ddate": "2022-06-30",
                 "qtrs": 0,
                 "value": 200.0,
-                "filed": "2025-09-15",
+                "filed": "2022-08-20",
                 "available_at": second_available,
             },
             {
                 "ticker": "MISSING",
                 "tag": tag,
-                "ddate": "2024-08-31",
+                "ddate": "2021-06-30",
                 "qtrs": 0,
                 "value": 999.0,
-                "filed": "2024-09-15",
+                "filed": "2021-08-20",
                 "available_at": pd.NaT,
             },
         ]
@@ -452,7 +452,7 @@ def test_notes_num_uses_archive_availability_and_expires_after_day_460():
     assert "MISSING" not in daily or daily["MISSING"].isna().all()
 
     print("\n=== SANITY CHECK: notes point-in-time boundary and annual lifetime ===")
-    print("  filing stays hidden until archive availability; the next archive replaces it; day 460 is valid and day 461 is null. Validated.")
+    print("  August 2021 filing starts September 13; the 2022 update replaces it; day 460 is valid and day 461 is null. Validated.")
 
 
 def test_liquid_assets_does_not_double_count_short_term_investments():

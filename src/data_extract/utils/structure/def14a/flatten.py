@@ -15,7 +15,7 @@ function of the same name taking `(rows)`; they are NOT interchangeable.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 import pandas as pd
@@ -99,6 +99,66 @@ _NUMERIC_COLS = [
     "audit_fees_other",
     "auditor_fees_prior",
 ]
+
+#: Scalar parent columns that prove a stored accession contains actual extracted evidence.
+#: `company_name`, `fiscal_year_extract`, keys/dates and `def14a_json` are intentionally
+#: absent. The two structurally inferred booleans remain in the projection because TRUE is
+#: evidence; `_has_parent_evidence` ignores only their FALSE default.
+_DEF14A_EVIDENCE_COLUMNS = tuple(column for column in _NUMERIC_COLS if column != "fiscal_year_extract") + (
+    "ceo_name_proxy",
+    "auditor_name",
+)
+_INFERRED_FALSE_FIELDS = frozenset({"classified_board", "dual_class_shares"})
+
+
+def _contains_evidence(value: object) -> bool:
+    """Whether a parsed scalar/nested value carries something beyond null/blank defaults."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(_contains_evidence(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        return any(_contains_evidence(item) for item in value)
+    return True  # numeric zero and explicit False are disclosed evidence
+
+
+def _has_extract_evidence(extract: Def14AExtract) -> bool:
+    """True when a parsed answer contains any real DEF 14A domain evidence.
+
+    Company/fiscal metadata cannot complete a filing. `classified_board=False` and
+    `dual_class_shares=False` are also ignored because the schema asks the model to infer
+    those values from silence; TRUE remains evidence. Every other explicit false/zero is a
+    meaningful tri-state or numeric disclosure and therefore counts.
+    """
+    payload = extract.model_dump(exclude={"company_name", "fiscal_year"})
+    governance = payload.get("governance")
+    if isinstance(governance, dict):
+        for field in _INFERRED_FALSE_FIELDS:
+            if governance.get(field) is False:
+                governance[field] = None
+    return _contains_evidence(payload)
+
+
+def _has_parent_evidence(row: Mapping[str, object]) -> bool:
+    """Stored-parent equivalent of `_has_extract_evidence` over a bounded projection."""
+    for column in _DEF14A_EVIDENCE_COLUMNS:
+        value = row.get(column)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        try:
+            if bool(pd.isna(value)):
+                continue
+        except (TypeError, ValueError):
+            pass
+        if column in _INFERRED_FALSE_FIELDS:
+            if value is True or (isinstance(value, int | float) and float(value) == 1.0):
+                return True
+            continue
+        return True
+    return False
+
 
 # The task-tailored prompt lives in `src/gpt_extract/prompt_templates/def14a_*.md`. It is
 # precise about WHERE each field lives and how to normalise it, which materially lifts the
@@ -555,6 +615,15 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     filing = cast(pd.Series, result.task.meta["filing"])
     extract = result.parsed
     assert isinstance(extract, Def14AExtract)
+
+    if not _has_extract_evidence(extract):
+        logger.warning(
+            "%s %s (%s): DEF 14A extract contained no domain evidence; writing no completion row so it remains retryable",
+            ticker,
+            filing.get("filing_date", ""),
+            filing.get("accession_number", ""),
+        )
+        return {}
 
     _log_director_comp_recall(ticker, filing, result.task.payload, len(_director_comp_rows(ticker, filing, extract)))
 

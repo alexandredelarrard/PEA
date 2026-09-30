@@ -15,6 +15,7 @@ import threading
 
 import pytest
 
+from src.gpt_extract.transformers import step_gpt_extracter as step_mod
 from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
 from src.gpt_extract.utils.providers import OpenAIProvider
 from src.gpt_extract.utils.usage import UsageTracker
@@ -47,6 +48,26 @@ def test_a_reasoning_model_is_never_sent_temperature_or_seed():
     print(f"  gpt-5-mini  sends {sorted(r_kwargs)}")
     print(f"  gpt-4o-mini sends {sorted(p_kwargs)}")
     print("  temperature/seed suppressed for the reasoning model. Validated.")
+
+
+def test_production_factory_never_supplies_seed_even_for_a_plain_model(monkeypatch):
+    captured: dict = {}
+
+    def _provider_factory(**kwargs):
+        captured.update(kwargs)
+        return OpenAIProvider(client=object(), **kwargs)
+
+    monkeypatch.setitem(step_mod._PROVIDER_CLASSES, "open_ai", _provider_factory)
+    extracter = _extracter(monkeypatch, llm_model={"open_ai": "gpt-4o-mini"}, reasoning_models=[])
+
+    provider = extracter.initialize_client("open_ai")
+    request = provider.request_kwargs(Answer, "system", "user")
+
+    assert "seed" not in captured
+    assert "seed" not in request
+
+    print("\n=== SANITY: production OpenAI factory omits seed ===")
+    print("  configured non-reasoning model received no seed at construction or in Responses.parse kwargs. Validated.")
 
 
 def test_max_token_null_means_no_cap_is_sent():

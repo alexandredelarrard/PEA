@@ -398,8 +398,7 @@ def _stub_extractor_cls(captured: dict):
 # LLMExtractor (mocked)                                                         #
 # --------------------------------------------------------------------------- #
 def test_llm_extractor_mock():
-    """extract() forwards the schema, the tailored `.md` instructions and a stable
-    prompt-cache key to the OpenAI Responses API."""
+    """extract() uses the configured model, tailored instructions and stable cache key."""
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
     from tests.gpt_extract.fakes import fake_context, gpt_config
 
@@ -412,27 +411,32 @@ def test_llm_extractor_mock():
             mock_client.responses.parse.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            extractor = LLMExtractor(fake_context(), gpt_config(), action="def14a")
+            config = gpt_config()
+            extractor = LLMExtractor(fake_context(), config, action="def14a")
             result = extractor.extract(Def14AExtract, _SYNTHETIC, action="def14a")
 
     assert isinstance(result, Def14AExtract)
     assert result.company_name == "ACME Corporation"
     call_kw = mock_client.responses.parse.call_args.kwargs
-    assert call_kw["model"] == "gpt-5-mini"
+    expected_model = str(config.gpt.llm_model[config.gpt.default_api])
+    assert call_kw["model"] == expected_model
     assert call_kw["text_format"] is Def14AExtract
     # the tailored prompt now lives in prompt_templates/def14a_system_prompt.md
     assert "=== LABEL ===" in call_kw["instructions"]
     assert "SUMMARY COMPENSATION TABLE" in call_kw["instructions"]
     assert call_kw["input"].rstrip().endswith(_SYNTHETIC.rstrip()[-60:])  # payload LAST
-    assert call_kw["prompt_cache_key"] == "gpt-5-mini:Def14AExtract"
-    # gpt-5-mini is a reasoning model: it 400s on these
-    assert "temperature" not in call_kw and "seed" not in call_kw
+    assert call_kw["prompt_cache_key"] == f"{expected_model}:Def14AExtract"
+    assert "seed" not in call_kw
+    if expected_model in config.gpt.reasoning_models:
+        assert "temperature" not in call_kw
+    else:
+        assert call_kw["temperature"] == config.gpt.temperature
 
     print("\n=== SANITY CHECK: LLMExtractor mock ===")
     print(
         f"  extract() -> {result.company_name}; parse() got the .md instructions, the "
-        f"payload last, prompt_cache_key={call_kw['prompt_cache_key']!r}, and no "
-        "temperature/seed. Validated."
+        f"payload last, configured model={expected_model!r}, "
+        f"prompt_cache_key={call_kw['prompt_cache_key']!r}, and no seed. Validated."
     )
 
 

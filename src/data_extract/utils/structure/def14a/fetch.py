@@ -74,10 +74,15 @@ from src.data_extract.utils.common.registrant import (
     load_registrants,
 )
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping, sec_get
+from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-from src.data_extract.utils.structure.def14a.flatten import _result_frames
+from src.data_extract.utils.structure.def14a.flatten import (
+    _DEF14A_EVIDENCE_COLUMNS,
+    _has_extract_evidence,
+    _has_parent_evidence,
+    _result_frames,
+)
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,
     consensus,
@@ -275,6 +280,28 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
     return set(requested_tickers).issubset(have)
 
 
+def _completed_accessions(context: Context) -> set[str]:
+    """Accessions whose parent contains real extracted evidence, not merely a PK.
+
+    The projection deliberately excludes the JSON blob and metadata-only columns. Historical
+    empty parents stay in the table for auditability, but no longer suppress a later repair.
+    """
+    if not context.store.exists(Tables.def14a_llm):
+        return set()
+    stored = context.store.load(
+        Tables.def14a_llm,
+        columns=["accession_number", *_DEF14A_EVIDENCE_COLUMNS],
+        optional=True,
+    )
+    if stored is None or stored.empty:
+        return set()
+    return {
+        str(row["accession_number"])
+        for row in stored.to_dict(orient="records")
+        if row.get("accession_number") is not None and _has_parent_evidence(row)
+    }
+
+
 def _finalise_gender(context: Context) -> None:
     """Cross-ticker gender consensus, run ONCE after the per-ticker loop.
 
@@ -358,11 +385,11 @@ def fetch_def14a_llm(
         context.log.info("DEF 14A LLM already up to date — every requested ticker present (%d rows) — skipping", len(existing))
         return existing
 
-    # accessions already extracted -> never re-LLM (accession-only dedup, same convention as
-    # fetch_8k_edgar.py / fetch_13d_edgar.py / fetch_def14a_edgar.py's `existing_filings`)
+    # Accessions with real extracted evidence -> never re-LLM. A historical parent containing
+    # only its key/metadata/default booleans is deliberately absent so a later listing repairs it.
     # a mutable copy: this fetcher is serial and adds each accession as it extracts it,
     # so a ticker filing twice in one run is not sent to the LLM twice
-    seen = set(existing_filings(context, Tables.def14a_llm))
+    seen = _completed_accessions(context)
 
     # Manifest-driven listing window (see run_manifest.py): a routine run only lists
     # filings from the last run's date onward; a ticker-count change or the
@@ -390,7 +417,7 @@ def fetch_def14a_llm(
     if cutovers:
         context.log.info("DEF 14A: %d registrant cutover(s) in force: %s", len(cutovers), ", ".join(sorted(cutovers)))
 
-    total_new, tickers_touched, total_skipped = 0, 0, 0
+    total_new, tickers_touched, total_skipped, total_semantic_empty = 0, 0, 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
         accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
@@ -435,7 +462,15 @@ def fetch_def14a_llm(
         # frames once. LLM calls are paid for, so a ticker is persisted before the next
         # starts and an interrupted run loses at most one ticker's tokens.
         results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
-        extracted = [r for r in results if r.ok]
+        extracted = [r for r in results if r.ok and isinstance(r.parsed, Def14AExtract) and _has_extract_evidence(r.parsed)]
+        semantic_empty = [r for r in results if r.ok and (not isinstance(r.parsed, Def14AExtract) or not _has_extract_evidence(r.parsed))]
+        if semantic_empty:
+            total_semantic_empty += len(semantic_empty)
+            context.log.warning(
+                "%s: %d DEF 14A result(s) contained no domain evidence; no completion row was saved and they remain retryable",
+                ticker,
+                len(semantic_empty),
+            )
         for result in extracted:
             filing = result.task.meta["filing"]
             assert isinstance(filing, pd.Series)
@@ -450,5 +485,8 @@ def fetch_def14a_llm(
     # cannot run inside the loop. Skipped entirely when nothing new was extracted.
     if total_new:
         _finalise_gender(context)
+
+    if total_semantic_empty:
+        context.log.warning("DEF 14A: %d semantic-empty result(s) left retryable", total_semantic_empty)
 
     record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan)

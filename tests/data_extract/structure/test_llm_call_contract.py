@@ -50,7 +50,7 @@ class _RecordingProvider:
         self.calls.append({"schema": schema, "system": system, "user": user})
         if self.fail_on and self.fail_on in user:
             raise RuntimeError("provider blew up on this filing")
-        parsed = Def14AExtract() if schema is Def14AExtract else Item507Extract()
+        parsed = Def14AExtract(ceo_name="Jane CEO") if schema is Def14AExtract else Item507Extract()
         return parsed, {"input_tokens": 5, "output_tokens": 1, "cached_input_tokens": 2}
 
 
@@ -136,7 +136,7 @@ def test_a_failed_filing_does_not_abort_its_ticker():
             self.saves = []
 
         def save(self, table, df, pk=None):
-            self.saves.append((str(table), len(df)))
+            self.saves.append((str(table), df.copy()))
             return len(df)
 
     store = _Store()
@@ -165,11 +165,17 @@ def test_a_failed_filing_does_not_abort_its_ticker():
     assert sum(r.ok for r in results) == 3
     assert results[2].error is not None
     assert not results[2].ok and "blew up" in results[2].error
-    parent_saves = [n for name, n in store.saves if name == "def14a_llm"]
-    assert parent_saves == [3], f"the 3 good filings must still be saved: {store.saves}"
+    parent_saves = [frame for name, frame in store.saves if name == "def14a_llm"]
+    assert [len(frame) for frame in parent_saves] == [3], f"the 3 good filings must still be saved: {store.saves}"
+    assert all("acc-2" not in set(frame.get("accession_number", pd.Series(dtype=str))) for _, frame in store.saves), (
+        "the exact failed accession must be absent from every parent/child save"
+    )
 
     print("\n=== SANITY: one filing fails, the ticker survives ===")
-    print(f"  4 filings, #2 raised -> 3 parsed and {parent_saves[0]} parent row(s) saved; the failure is carried as {results[2].error!r}. Validated.")
+    print(
+        f"  4 filings, #2 raised -> 3 parsed and {len(parent_saves[0])} parent row(s) saved; "
+        f"acc-2 is absent from every save and the failure is carried as {results[2].error!r}. Validated."
+    )
 
 
 # --------------------------------------------------------------------------- #

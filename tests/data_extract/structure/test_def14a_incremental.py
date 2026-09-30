@@ -4,30 +4,49 @@ and the new board-technology-maturity fields must flatten into the output row.
 
 from __future__ import annotations
 
+import logging
 import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
+import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.schemas.def14a_schema import DirectorCompensation as _DirectorCompensation
+from src.data_extract.utils.schemas.def14a_schema import DirectorInfo as _DirectorInfo
+from src.data_extract.utils.schemas.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
 from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
+from src.data_extract.utils.structure.def14a import flatten as flatten_mod
 from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date, _subject_is_accepted
-from src.data_extract.utils.structure.def14a.flatten import _flatten
+from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from tests.data_extract.fake_context import extract_config
 
+BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
+DirectorCompensation: Any = _DirectorCompensation
+DirectorInfo: Any = _DirectorInfo
+ExecutiveCompensation: Any = _ExecutiveCompensation
 GovernanceProfile: Any = _GovernanceProfile
+
+
+def _completed_parent_row(ticker: str, accession: str, as_of: str) -> dict[str, object]:
+    row: dict[str, object] = {column: None for column in flatten_mod._DEF14A_EVIDENCE_COLUMNS}
+    row.update({"ticker": ticker, "accession_number": accession, "as_of": as_of, "ceo_name_proxy": "Already extracted"})
+    return row
 
 
 def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True) -> Any:
     tmp_path.mkdir(parents=True, exist_ok=True)
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
-    ds.save("def14a_llm", pd.DataFrame([{"ticker": t, "accession_number": f"acc-{t}", "as_of": "2024-04-01"} for t in tickers]))
+    ds.save("def14a_llm", pd.DataFrame([_completed_parent_row(t, f"acc-{t}", "2024-04-01") for t in tickers]))
     ctx: Any = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config=extract_config())
     if write_meta_today:
         record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
@@ -51,6 +70,251 @@ def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
         "  all requested present -> skip; a missing ticker (NVDA) -> NOT skipped "
         "(re-processes it); no meta -> re-scan. date+count bug fixed. Validated."
     )
+
+
+@pytest.mark.parametrize(
+    "label, extract, expected",
+    [
+        ("empty", Def14AExtract(), False),
+        ("metadata", Def14AExtract(company_name="ACME", fiscal_year=2025), False),
+        (
+            "inferred false defaults",
+            Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
+            False,
+        ),
+        ("classified true", Def14AExtract(governance=GovernanceProfile(classified_board=True)), True),
+        ("dual class true", Def14AExtract(governance=GovernanceProfile(dual_class_shares=True)), True),
+        ("explicit founder false", Def14AExtract(ceo_is_founder=False), True),
+        (
+            "explicit majority false",
+            Def14AExtract(governance=GovernanceProfile(majority_voting_for_directors=False)),
+            True,
+        ),
+        (
+            "numeric zero",
+            Def14AExtract(governance=GovernanceProfile(insider_ownership_pct=0.0)),
+            True,
+        ),
+        (
+            "ownership only",
+            Def14AExtract(ownership_holders=[BeneficialOwner(holder_name="Example Fund", holder_type="5pct_holder")]),
+            True,
+        ),
+        ("director only", Def14AExtract(directors=[DirectorInfo(name="Jane Director")]), True),
+        (
+            "executive compensation only",
+            Def14AExtract(compensation=[ExecutiveCompensation(name="Jane CEO", title="CEO", fiscal_year=2025)]),
+            True,
+        ),
+        (
+            "director compensation only",
+            Def14AExtract(director_compensation=[DirectorCompensation(name="Jane Director", fiscal_year=2025)]),
+            True,
+        ),
+        ("ceo only", Def14AExtract(ceo_name="Jane CEO"), True),
+        ("auditor only", Def14AExtract(governance=GovernanceProfile(auditor_name="Example Audit LLP")), True),
+        ("board only", Def14AExtract(governance=GovernanceProfile(board_size=8)), True),
+        ("blank scalar", Def14AExtract(ceo_name="   "), False),
+    ],
+)
+def test_evidence_gate_parsed_stored_and_persistence_agree(label, extract, expected):
+    filing = pd.Series(
+        {
+            "accession_number": f"acc-{label}",
+            "filing_date": pd.Timestamp("2025-04-01"),
+            "period_of_report": "2024-12-31",
+        }
+    )
+    row = _flatten("ZZ", filing, extract)
+    projected = {column: row.get(column) for column in flatten_mod._DEF14A_EVIDENCE_COLUMNS}
+    task = LlmTask(seq=0, payload="proxy", schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": "ZZ", "filing": filing})
+    frames = _result_frames(LlmResult(seq=0, task=task, parsed=extract))
+
+    assert flatten_mod._has_extract_evidence(extract) is expected, label
+    assert flatten_mod._has_parent_evidence(projected) is expected, label
+    assert (Tables.def14a_llm in frames) is expected, label
+
+    print(f"\n=== SANITY: DEF 14A evidence gate — {label} ===")
+    print(f"  parsed={expected}, stored={expected}, parent persisted={expected}. Validated.")
+
+
+def _daily_context(tmp_path: Path) -> Any:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    return SimpleNamespace(
+        store=DataStore(create_engine(f"sqlite:///{tmp_path / 'daily.db'}")),
+        log=logging.getLogger("test.def14a.daily"),
+        paths={"DATA_STORE": tmp_path},
+        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
+    )
+
+
+def _listed_filing(accession: str, filing_date: pd.Timestamp) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ticker": "ZZ",
+                "cik": "0000000001",
+                "company_name": "Example Corp",
+                "accession_number": accession,
+                "doc_url": f"https://example.invalid/{accession}",
+                "txt_url": f"https://example.invalid/{accession}.txt",
+                "filing_date": filing_date,
+                "period_of_report": str(filing_date.date()),
+                "form": "DEF 14A",
+            }
+        ]
+    )
+
+
+def _save_parent(context: Any, accession: str, extract: Any, filing_date: pd.Timestamp) -> None:
+    filing = _listed_filing(accession, filing_date).iloc[0]
+    frame = pd.DataFrame([_flatten("ZZ", filing, extract)])
+    for column in ("as_of", "period"):
+        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
+    context.store.save(Tables.def14a_llm, frame)
+
+
+def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
+    class _Extractor:
+        def __init__(self, context, config, action=None, threads=None, methodes=None):
+            del config, action, threads, methodes
+            self._context = context
+
+        def run_extraction(self, tasks, flatten=None, group_key=None):
+            del group_key
+            results = []
+            for task in list(tasks):
+                tasked.append(str(task.meta["filing"]["accession_number"]))
+                answer = responses.pop(0)
+                if isinstance(answer, BaseException):
+                    results.append(LlmResult(seq=task.seq, task=task, parsed=None, error=f"{type(answer).__name__}: {answer}"))
+                else:
+                    results.append(LlmResult(seq=task.seq, task=task, parsed=answer))
+
+            frames: dict[Any, list[pd.DataFrame]] = {}
+            for result in results:
+                if not result.ok:
+                    continue
+                for table, frame in (flatten(result) if flatten is not None else {}).items():
+                    frames.setdefault(table, []).append(frame)
+            for table, parts in frames.items():
+                frame = pd.concat(parts, ignore_index=True)
+                for column in ("as_of", "period"):
+                    if column in frame:
+                        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
+                self._context.store.save(table, frame)
+            return results
+
+    return _Extractor
+
+
+def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, listed_since: list[pd.Timestamp | None]) -> None:
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    def _list(context, ticker, cik, company, years, since, cutovers):
+        del context, ticker, cik, company, years, cutovers
+        listed_since.append(since)
+        return filing.copy()
+
+    monkeypatch.setattr(mod, "LLMExtractor", extractor)
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "company_name": "Example Corp"}]))
+    monkeypatch.setattr(mod, "load_registrants", lambda: {})
+    monkeypatch.setattr(mod, "_list_across_registrants", _list)
+    monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
+    monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
+
+
+def test_provider_failure_is_retried_through_real_daily_manifest_gates(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "daily-provider-failure"
+    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    filing = _listed_filing(accession, yesterday)
+    listed_since: list[pd.Timestamp | None] = []
+    tasked: list[str] = []
+    responses: list[BaseException | Any] = [
+        TypeError("Responses.parse() got an unexpected keyword argument 'seed'"),
+        Def14AExtract(ceo_name="Jane CEO", directors=[DirectorInfo(name="Jane Director", age=55)]),
+    ]
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double(responses, tasked), filing, listed_since)
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    assert not context.store.exists(Tables.def14a_llm), "day-D provider failure must not create a parent"
+
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday)
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    assert listed_since[-1] == yesterday - pd.Timedelta(days=1)
+    assert tasked == [accession, accession]
+    parent = context.store.load(Tables.def14a_llm)
+    assert parent is not None and list(parent["accession_number"]) == [accession]
+
+    print("\n=== SANITY: provider failure retries on D+1 ===")
+    print(f"  day D saved no parent; D+1 listed since {listed_since[-1].date()} and queued {accession} again. Validated.")
+
+
+def test_legacy_empty_parent_is_repaired_through_real_daily_manifest_gates(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "daily-empty-parent"
+    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    _save_parent(
+        context,
+        accession,
+        Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
+        yesterday,
+    )
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday)
+
+    listed_since: list[pd.Timestamp | None] = []
+    tasked: list[str] = []
+    response = Def14AExtract(
+        ceo_name="Jane CEO",
+        directors=[DirectorInfo(name="Jane Director", age=55)],
+        governance=GovernanceProfile(board_size=1),
+    )
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([response], tasked), _listed_filing(accession, yesterday), listed_since)
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    assert listed_since == [yesterday - pd.Timedelta(days=1)]
+    assert tasked == [accession], "the legacy empty key must not count as completed"
+    parent = context.store.load(Tables.def14a_llm)
+    directors = context.store.load(Tables.def14a_directors)
+    assert parent is not None and len(parent) == 1
+    assert parent.iloc[0]["ceo_name_proxy"] == "Jane CEO" and float(parent.iloc[0]["board_size"]) == 1.0
+    assert directors is not None and len(directors) == 1 and directors.iloc[0]["accession_number"] == accession
+
+    print("\n=== SANITY: legacy empty parent repairs on D+1 ===")
+    print(f"  {accession} was re-listed, re-extracted, and upserted to one evidenced parent plus one director. Validated.")
+
+
+def test_valid_parent_is_relisted_but_not_reextracted_next_day(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "daily-valid-parent"
+    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    _save_parent(context, accession, Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8)), yesterday)
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=1, is_full_rescan=True, run_date=yesterday)
+
+    listed_since: list[pd.Timestamp | None] = []
+    tasked: list[str] = []
+    payloads: list[str] = []
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([], tasked), _listed_filing(accession, yesterday), listed_since)
+    monkeypatch.setattr(mod, "_payload_for", lambda *_: payloads.append(accession) or "unused")
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    parent = context.store.load(Tables.def14a_llm)
+    assert listed_since == [yesterday - pd.Timedelta(days=1)]
+    assert tasked == [] and payloads == [], "semantic completion must filter the re-listed accession before token spend"
+    assert parent is not None and len(parent) == 1
+
+    print("\n=== SANITY: valid parent stays idempotent on D+1 ===")
+    print(f"  {accession} was re-listed through the real daily window but produced zero payloads and zero LLM tasks. Validated.")
 
 
 def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
@@ -169,8 +433,8 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
         "def14a_llm",
         pd.DataFrame(
             [  # 2022 + 2024 present; 2023 is a HOLE
-                {"ticker": "ZZ", "accession_number": "a2022", "as_of": "2022-04-01"},
-                {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
+                _completed_parent_row("ZZ", "a2022", "2022-04-01"),
+                _completed_parent_row("ZZ", "a2024", "2024-04-01"),
             ]
         ),
     )
@@ -218,7 +482,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
                 df = pd.DataFrame(rows)
                 df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
                 self._context.store.save("def14a_llm", df)
-            return [SimpleNamespace(ok=True, task=t, parsed=object(), error=None) for t in tasks]
+            return [SimpleNamespace(ok=True, task=t, parsed=Def14AExtract(ceo_name="Fresh extraction"), error=None) for t in tasks]
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
@@ -258,7 +522,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
         "def14a_llm",
         pd.DataFrame(
             [
-                {"ticker": "ZZ", "accession_number": "a2024", "as_of": "2024-04-01"},
+                _completed_parent_row("ZZ", "a2024", "2024-04-01"),
             ]
         ),
     )

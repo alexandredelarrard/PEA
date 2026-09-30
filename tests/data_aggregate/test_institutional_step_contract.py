@@ -49,6 +49,7 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
         "ic_inst_flow_to_mcap",
         "ic_shortvol_ratio_z252",
         "ic_super_flow_to_mcap",
+        "ic_super_exit_after_top10",
         "ic_xs_bearish_family_ratio",
         "ic_xs_bullish_actor_count",
         "ic_xs_bullish_family_ratio",
@@ -59,10 +60,10 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
     assert set(declared.values()) == {"raw", "raw+peers"}
     assert peer_features == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
     assert removed.isdisjoint(declared)
-    assert len(declared) == 75
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 77
+    assert len(declared) == 74
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 76
     print(
-        "SANITY: Phase-3 declares 75 unique characteristics / 77 legs: all raw, with only "
+        "SANITY: Phase-3 declares 74 unique characteristics / 76 legs: all raw, with only "
         "institutional ownership and 20-day short volume retaining an interpretable peer leg."
     )
 
@@ -124,6 +125,32 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
 
 
+def test_symbol_lineage_loader_projects_current_issuers_and_returns_aliases() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class _Store:
+        def load(self, table: object, **kwargs: Any) -> pd.DataFrame:
+            calls.append({"table": table, **kwargs})
+            if table is Tables.sp500_tickers:
+                return pd.DataFrame({"ticker": ["FISV"], "cik": [798354]})
+            return pd.DataFrame(
+                {
+                    "symbol": ["FISV", "FI"],
+                    "issuer_cik": ["0000798354", "0000798354"],
+                    "valid_from": ["2006-01-03", "2023-06-07"],
+                    "valid_to": ["2023-06-07", "2025-11-11"],
+                }
+            )
+
+    tenure, roster, symbols = step_module.institutional_inputs.load_symbol_lineage(cast(Any, _Store()), logging.getLogger(__name__), ["FISV"])
+
+    assert tenure is not None and roster is not None
+    assert symbols == ["FI", "FISV"]
+    assert calls[0]["where"] == {"ticker": ["FISV"]}
+    assert calls[1]["where"] == {"issuer_cik": ["0000798354"]}
+    print("SANITY: the input layer projected the current roster CIK, then expanded FISV to its proven FI/FISV source symbols.")
+
+
 def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
     insider = pd.DataFrame({"ticker": ["AAA", "BBB"], "value_usd": [10.0, 20.0]})
     scoped_insider = insider.loc[insider["ticker"].eq("AAA")].copy()
@@ -157,33 +184,6 @@ def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
     assert step._load_source is original_load
     assert calls == [(Tables.short_interest, ["AAA"])]
     print("SANITY: the insider outlier proof supplies a fresh sink, disables live overlay, forwards universe scope, and restores the loader.")
-
-
-def test_grid_restriction_is_on_exact_date_ticker_pairs(caplog: pytest.LogCaptureFixture) -> None:
-    step = _bare_step()
-    first, second = pd.to_datetime(["2026-01-02", "2026-01-05"])
-    long = pd.DataFrame(
-        {
-            "date": [first, first, second, first],
-            "ticker": ["AAA", "BBB", "AAA", "ZZZ"],
-            "_grid": [1.0, 1.0, pd.NA, pd.NA],
-            "feature": [1.5, pd.NA, 7.0, 9.0],
-        }
-    )
-
-    with caplog.at_level(logging.WARNING):
-        got = step._restrict_to_grid(long)
-
-    assert list(got.columns) == ["date", "ticker", "feature"]
-    assert list(got[["date", "ticker"]].itertuples(index=False, name=None)) == [
-        (first, "AAA"),
-        (first, "BBB"),
-    ]
-    assert got["feature"].iloc[0] == 1.5
-    assert pd.isna(got["feature"].iloc[1])
-    assert "dropped 2 row(s) off the price grid" in caplog.text
-    assert "1 of them appear nowhere" in caplog.text
-    print("SANITY: grid restriction kept exact date/ticker pairs and removed both an off-date pair and an unknown ticker.")
 
 
 def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,8 +5,7 @@ THE CONTRACT BETWEEN THE FOUR SOURCE PANELS AND THE TWO DERIVED ONES.
 
 The price-conditioning layer (`signal_conditioning.py`, registry section 7) needs each family's
 EVENT DATES, and the cross-source layer (`cross_source_features.py`, section 8) needs a handful
-of the family INTENSITY frames plus the identity of each ACTOR behind an event. Neither can
-re-derive them:
+of the family INTENSITY frames. Neither can re-derive them:
 
   * the insider event dates are the output of a 2M-row scope-and-repair pass
     (`insider_quality.clean_transactions`), which is the most expensive read in the step;
@@ -90,23 +89,17 @@ class AvailableSignal:
 
 @dataclass
 class ConditioningSink:
-    """What the source panels hand to the derived ones. Three dicts, one purpose each.
+    """What the source panels hand to the derived ones.
 
     `events[family]` -- `[ticker, date]`, the family's DISCLOSURE dates, whatever their
     direction. This is what the conditioning layer dates its price path from: "how has the
     stock moved since the last time this family said anything". For insiders it also carries
     `value` + `shares` AS FILED, which only the #80 cost anchor reads.
 
-    `actors[family]` -- `[ticker, date, actor]`, the BULLISH subset, carrying the identity of
-    whoever acted. A different set from `events` on purpose: holding a position is a
-    disclosure, but only ADDING to it is a bullish act, and #84 counts distinct actors who
-    acted. An actor id is unique only within its family, so the consumer namespaces it.
-
     `signals[name]` -- a value frame plus its explicit per-cell availability mask.
     """
 
     events: dict[str, pd.DataFrame] = field(default_factory=dict)
-    actors: dict[str, pd.DataFrame] = field(default_factory=dict)
     signals: dict[str, AvailableSignal] = field(default_factory=dict)
     frontiers: dict[str, pd.Timestamp] = field(default_factory=dict)
 
@@ -124,12 +117,8 @@ class ConditioningSink:
         consumer sees an ABSENT family rather than an empty one."""
         self._add(self.events, family, frame, ("ticker", "date", "value", "shares"))
 
-    def add_actors(self, family: str, frame: pd.DataFrame | None) -> None:
-        """Record `family`'s bullish acts with the actor behind each one."""
-        self._add(self.actors, family, frame, ("ticker", "date", "actor"), need_actor=True)
-
     @staticmethod
-    def _add(target: dict, family: str, frame: pd.DataFrame | None, columns: tuple[str, ...], need_actor: bool = False) -> None:
+    def _add(target: dict, family: str, frame: pd.DataFrame | None, columns: tuple[str, ...]) -> None:
         if frame is None or frame.empty:
             return
         # ⚠ DUPLICATE NAMES ARE REJECTED HERE, at the contract point, because the symptom
@@ -141,7 +130,7 @@ class ConditioningSink:
         if dupes:
             raise ValueError(f"{family} frame has duplicate column(s) {dupes} -- project the columns you want BEFORE renaming into them")
         keep = [c for c in columns if c in frame.columns]
-        required = {"ticker", "date"} | ({"actor"} if need_actor else set())
+        required = {"ticker", "date"}
         if not required.issubset(keep):
             raise KeyError(f"{family} needs {sorted(required)}; got {list(frame.columns)}")
         target[family] = frame.loc[:, keep].reset_index(drop=True)

@@ -418,7 +418,6 @@ def test_every_ownership_and_sink_output_stops_at_its_complete_frontier():
     assert feature_columns and dense.loc[(slice(idx[56], None), slice(None)), feature_columns].isna().all().all()
     assert sink.frontiers["act"] == frontier
     assert sink.events["act"]["date"].max() <= frontier
-    assert sink.actors["act"]["date"].max() <= frontier
     for signal in sink.signals.values():
         assert not signal.available.loc[idx[56] :].to_numpy().any()
         assert signal.values.loc[idx[56] :].isna().all().all()

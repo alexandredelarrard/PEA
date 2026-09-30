@@ -736,12 +736,10 @@ def test_the_sink_receives_one_shares_column_not_two():
     assert isinstance(events["shares"], pd.Series), "a duplicate name makes this a DataFrame"
     # and the numbers are the numeric leg, not the raw object column
     assert sorted(events["shares"].tolist()) == [1_000.0, 2_000.0, 3_000.0]
-    assert list(sink.actors["insider"].columns) == ["ticker", "date", "actor"]
-    assert sink.actors["insider"]["actor"].eq("0001").all()
     print(
         f"SANITY: the sink received {len(events)} insider events with exactly "
         f"{list(events.columns)} -- one `shares` column carrying the NUMERIC leg "
-        f"({events['shares'].tolist()}), and {len(sink.actors['insider'])} actor rows."
+        f"({events['shares'].tolist()})."
     )
 
 

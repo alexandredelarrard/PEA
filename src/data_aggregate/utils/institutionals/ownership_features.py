@@ -422,13 +422,6 @@ def build_ownership_feature_panel(
         if complete_through_13d is not None and pd.notna(complete_through_13d):
             observed_13d = observed_13d[observed_13d["filing_date"] <= pd.Timestamp(complete_through_13d)]
         sink.add_events("act", observed_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
-        initial = observed_13d[~observed_13d["is_amendment"].fillna(0).astype(float).eq(1.0)]
-        sink.add_actors(
-            "act",
-            initial.dropna(subset=["filer_id"])
-            .assign(actor=lambda d: d["filer_id"])[["ticker", "filing_date", "actor"]]
-            .rename(columns={"filing_date": "date"}),
-        )
     if sink is not None:
         signal_fields = dict(fields)
         signal_masks: dict[str, pd.DataFrame] = {}

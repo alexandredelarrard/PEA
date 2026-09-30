@@ -51,7 +51,6 @@ _add_group(
         "ic_super_rank_jump",
         "ic_super_initiations",
         "ic_super_full_exits",
-        "ic_super_exit_after_top10",
     ),
     "point-in-time selected-manager 13F books",
 )

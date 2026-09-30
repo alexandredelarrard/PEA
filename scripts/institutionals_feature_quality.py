@@ -64,6 +64,7 @@ SUFFIXES = (("_vs_peers", "peer"), ("_xs", "cross_sectional"), ("_hist", "histor
 REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     "ic_inst_flow_to_mcap": ("broad_13f", "reported-flow proxy duplicated the economically retained holdings changes"),
     "ic_super_flow_to_mcap": ("elite_13f", "reported-flow proxy duplicated the economically retained conviction changes"),
+    "ic_super_exit_after_top10": ("elite_13f", "0.9965 correlated with full exits and supported on fewer issuers"),
     "ic_shortvol_ratio_z252": ("short_flow", "internal rolling z-score is not an economically interpretable output"),
     "ic_ftd_z252": ("short_flow", "internal rolling z-score is retained only as a feature input"),
     "ic_act_campaign_age_days": ("beneficial_ownership", "sparse open-ended age is not comparable across issuers"),
@@ -96,7 +97,6 @@ _COUNT = {
     "ic_super_quarters_held",
     "ic_super_initiations",
     "ic_super_full_exits",
-    "ic_super_exit_after_top10",
     "ic_insider_distinct_buyers_120d",
     "ic_bo_holder_count",
 }

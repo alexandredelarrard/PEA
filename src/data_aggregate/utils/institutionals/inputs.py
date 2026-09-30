@@ -16,6 +16,11 @@ from src.data_store.store import DataStore
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
 
 
+def _cik(value: object) -> str:
+    digits = "".join(character for character in str(value) if character.isdigit())
+    return digits.zfill(10) if digits else ""
+
+
 def load_full_price_frames(
     store: DataStore,
     context: Context,
@@ -90,3 +95,33 @@ def load_shares_out(store: DataStore, log: logging.Logger) -> pd.DataFrame | Non
         log.warning("No fundamentals history -> the market-cap-scaled ownership features are skipped.")
         return None
     return frame
+
+
+def load_symbol_lineage(
+    store: DataStore,
+    log: logging.Logger,
+    universe: Sequence[str],
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, list[str]]:
+    """Load current CIKs and every proven historical symbol for those issuers."""
+    tickers = sorted(set(map(str, universe)))
+    ticker_ciks = store.load(
+        Tables.sp500_tickers,
+        columns=("ticker", "cik"),
+        where={"ticker": tickers},
+        optional=True,
+    )
+    if ticker_ciks is None or ticker_ciks.empty:
+        return None, ticker_ciks, tickers
+
+    ciks = sorted({_cik(value) for value in ticker_ciks["cik"] if _cik(value)})
+    if not ciks:
+        return None, ticker_ciks, tickers
+    symbol_tenure = store.load(
+        Tables.symbol_tenure,
+        columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
+        where={"issuer_cik": ciks},
+        optional=True,
+    )
+    aliases = sorted(set(tickers) | (set(symbol_tenure["symbol"].astype(str)) if symbol_tenure is not None else set()))
+    log.info("Symbol lineage: %s current tickers -> %s proven source symbols", len(tickers), len(aliases))
+    return symbol_tenure, ticker_ciks, aliases

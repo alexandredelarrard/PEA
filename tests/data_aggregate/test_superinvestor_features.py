@@ -305,9 +305,8 @@ def _availability(start: str) -> InstitutionalAvailability:
 
 
 def _assert_super_sink_starts_on_or_after(sink: ConditioningSink, start: pd.Timestamp) -> None:
-    for frames in (sink.events, sink.actors):
-        super_frame = frames.get("super")
-        assert super_frame is None or super_frame.empty or pd.to_datetime(super_frame["date"]).min() >= start
+    super_frame = sink.events.get("super")
+    assert super_frame is None or super_frame.empty or pd.to_datetime(super_frame["date"]).min() >= start
     for name, signal in sink.signals.items():
         if name.startswith("ic_super_"):
             before = signal.values.index < start

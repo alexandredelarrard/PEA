@@ -442,21 +442,10 @@ class StepCubeInstitutionals(Step):
         two price-conditional interactions and short turnover, plus SEC fails-to-deliver
         (settlement stress) as a share of shares outstanding and of ADV20. RegSHO is lagged
         one trading day; FTD by ~2 months (its publication delay)."""
-        short = self._load_source(Tables.short_interest, frames.universe)
-        fails = self._load_source(Tables.sec_fails_to_deliver, frames.universe)
         universe = sorted(set(map(str, frames.universe)))
-        symbol_tenure = self._store.load(
-            Tables.symbol_tenure,
-            columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
-            where={"symbol": universe},
-            optional=True,
-        )
-        ticker_ciks = self._store.load(
-            Tables.sp500_tickers,
-            columns=("ticker", "cik"),
-            where={"ticker": universe},
-            optional=True,
-        )
+        symbol_tenure, ticker_ciks, source_symbols = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
+        short = self._load_source(Tables.short_interest, source_symbols)
+        fails = self._load_source(Tables.sec_fails_to_deliver, source_symbols)
         return build_short_flow_feature_panel(
             frames,
             short,

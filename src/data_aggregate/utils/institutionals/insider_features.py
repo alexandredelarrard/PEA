@@ -279,8 +279,6 @@ def build_insider_feature_panel(
         # past six merged panels -- the unit fixtures only ever carried `shares_n`.
         ev = buys.loc[:, ["ticker", "day", "value", "shares_n"]].rename(columns={"day": "date", "shares_n": "shares"})
         sink.add_events("insider", ev)
-        if "owner_cik" in buys.columns:
-            sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(columns={"day": "date", "owner_cik": "actor"}))
         columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
         if stock_close is not None and not stock_close.empty:
             listed = stock_close.reindex(index=idx, columns=columns).notna()

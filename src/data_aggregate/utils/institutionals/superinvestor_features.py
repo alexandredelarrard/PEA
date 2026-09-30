@@ -123,7 +123,6 @@ EMISSION: dict[str, str] = {
     "ic_super_rank_jump": "raw",
     "ic_super_initiations": "raw",
     "ic_super_full_exits": "raw",
-    "ic_super_exit_after_top10": "raw",
 }
 
 #: The five features above marked "decayed intensities" are the SPARSE (class-S) ones. An
@@ -669,11 +668,6 @@ def _events(contrib: pd.DataFrame) -> pd.DataFrame:
         (~held) & (prev_held == True),  # noqa: E712
         contrib["prev_sel"] * contrib["prev_w"],
     )
-    add(
-        "ic_super_exit_after_top10",
-        (~held) & (prev_held == True) & (contrib["prev_is_top10"] == True),  # noqa: E712
-        contrib["prev_sel"] * contrib["prev_w"],
-    )
     add("ic_super_new_top10", contrib["is_top10"] & (contrib["prev_rank_in_book"] > _TOP_N), contrib["sel"])
     jump = (contrib["prev_rank_in_book"] - contrib["rank_in_book"]).clip(lower=0)
     add("ic_super_rank_jump", held & (jump > 0), contrib["sel"] * jump)
@@ -823,8 +817,6 @@ def _fill_sink(
     live = visible & contrib["held"].fillna(False).to_numpy(dtype=bool) & (contrib["sel"] > 0).to_numpy()
     disclosures = contrib.loc[live, ["ticker", "avail"]].rename(columns={"avail": "date"})
     sink.add_events("super", disclosures.drop_duplicates())
-    added = live & (contrib["w"].fillna(0.0) > contrib["prev_w"].fillna(0.0)).to_numpy()
-    sink.add_actors("super", contrib.loc[added, ["ticker", "avail", "cik"]].rename(columns={"avail": "date", "cik": "actor"}))
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if frames.close_split is not None and not frames.close_split.empty:

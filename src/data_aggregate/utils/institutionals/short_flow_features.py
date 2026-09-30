@@ -33,7 +33,9 @@ POINT-IN-TIME:
     `SHORTVOL_PUB_LAG` trading day. The shift is applied ONCE, to the ratio frames, and every
     derived leg (acceleration and the two price interactions) is built from the shifted
     frames -- so no leg can forget the lag.
-  * SEC FTD files are published well after the settlement period -> `FTD_PUB_LAG` trading days.
+  * SEC FTD rows are published as semi-monthly ZIP vintages: days 1-15 at month-end,
+    days 16-end around the following month's 15th. Every row in one ZIP becomes knowable
+    together; the latest cumulative settlement state is held until the next ZIP.
 
 ⚠ AN ABSENT FTD ROW IS ZERO ONLY ON A DATE THE FILE COVERS. The file lists a security on the
 days it had fails, so within a published settlement date a missing ticker means no fails; a
@@ -84,10 +86,6 @@ logger = logging.getLogger(__name__)
 #: RegSHO: day-t short volume is public on t+1.
 SHORTVOL_PUB_LAG = 1
 
-#: ~2 months of trading days. SEC FTD files are published well after the settlement period, so
-#: the signal is lagged to its (conservative) availability date.
-FTD_PUB_LAG = 40
-
 #: Trailing self-history window used internally by the price-regime and FTD-persistence
 #: characteristics. The z-scores themselves are not emitted because their inputs are ratios.
 Z_WINDOW = 252
@@ -132,6 +130,50 @@ def _pivot(hist: pd.DataFrame, value: str, idx: pd.DatetimeIndex) -> pd.DataFram
     wide = hist.pivot_table(index="date", columns="ticker", values=value, aggfunc="sum")
     wide.index = pd.to_datetime(wide.index).normalize()
     return wide.reindex(idx)
+
+
+def _ftd_publication_date(settlement_date: object) -> pd.Timestamp:
+    """Scheduled SEC availability day for the settlement date's semi-monthly ZIP."""
+    day = pd.Timestamp(settlement_date).normalize()
+    if day.day <= 15:
+        return day + pd.offsets.MonthEnd(0)
+    return day + pd.offsets.MonthBegin(1) + pd.Timedelta(days=14)
+
+
+def _publish_ftd_vintages(
+    settlement_state: pd.DataFrame,
+    fails_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """Expose one cumulative FTD state per ZIP on its first tradable session.
+
+    The projected table omits its persisted ``period``, so the lossless a/b period is derived
+    from settlement day. This models the SEC schedule; exact historical HTTP publication
+    timestamps are not persisted by the extractor.
+    """
+    source_dates = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique()).sort_values()
+    periods: dict[tuple[int, int, str], list[pd.Timestamp]] = {}
+    for day in source_dates:
+        periods.setdefault((day.year, day.month, "a" if day.day <= 15 else "b"), []).append(day)
+
+    events: list[tuple[int, pd.Series]] = []
+    for days in periods.values():
+        observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index)
+        if observed_days.empty:
+            continue
+        publish_at = int(idx.searchsorted(_ftd_publication_date(observed_days[-1]), side="left"))
+        if publish_at >= len(idx):
+            continue
+        latest = settlement_state.reindex(observed_days).ffill().iloc[-1]
+        events.append((publish_at, latest))
+
+    published = pd.DataFrame(np.nan, index=idx, columns=settlement_state.columns)
+    events.sort(key=lambda event: event[0])
+    for position, (start, state) in enumerate(events):
+        stop = events[position + 1][0] if position + 1 < len(events) else len(idx)
+        if stop > start:
+            published.iloc[start:stop] = state.to_numpy()
+    return published
 
 
 def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
@@ -328,7 +370,7 @@ def _fails_fields(
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
         to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = to_adv.shift(FTD_PUB_LAG)
+        f_dict["ic_ftd_to_adv20"] = _publish_ftd_vintages(to_adv, fails_hist, idx)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
@@ -350,9 +392,8 @@ def _fails_fields(
         neutral = applicable & basis.eq(0.0) & expected.ge(Z_MIN_PERIODS) & observed.eq(expected) & zeros.eq(expected)
         z = z.mask(z.isna() & neutral, 0.0)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
-        f_dict["ic_ftd_persistence_30d"] = (
-            flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis).shift(FTD_PUB_LAG)
-        )
+        persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
+        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_vintages(persistence, fails_hist, idx)
     if tenure_mask is not None:
         for name, frame in f_dict.items():
             f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))

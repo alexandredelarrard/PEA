@@ -268,7 +268,6 @@ def build_ownership_feature_panel(
     bo_identity = _known_13g_identity_mask(canon_13g, idx, columns)
     bo_mask = InstitutionalAvailability.combine(bo_source_coverage, bo_identity) if bo_source_coverage is not None else bo_identity
     cross_complete = act_coverage is not None and bo_source_coverage is not None
-    cross_mask = InstitutionalAvailability.combine(act_coverage, bo_mask) if cross_complete else bo_identity
 
     fields: dict[str, pd.DataFrame] = {}
     fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
@@ -276,8 +275,18 @@ def build_ownership_feature_panel(
     fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
 
     cross_names = {"ic_bo_escalation_13g_to_13d", "ic_bo_de_escalation_13d_to_13g"}
+    cross_masks: dict[str, pd.DataFrame] = {}
+    for name in cross_names & fields.keys():
+        observed = fields[name].reindex(index=idx, columns=columns).notna()
+        # An unidentified holder prevents an absence/zero claim, but cannot erase a later
+        # transition proven by the same known filer in both schedules. Source frontiers still
+        # bound that positive state independently, including when only one frontier is known.
+        cross_masks[name] = InstitutionalAvailability.combine(
+            bo_identity | observed,
+            *(mask for mask in (act_coverage, bo_source_coverage) if mask is not None),
+        )
     for name, frame in fields.items():
-        mask = act_coverage if name.startswith("ic_act_") else cross_mask if name in cross_names else bo_mask
+        mask = act_coverage if name.startswith("ic_act_") else cross_masks[name] if name in cross_names else bo_mask
         if mask is not None:
             fields[name] = frame.reindex(index=idx, columns=columns).where(mask)
 
@@ -303,7 +312,7 @@ def build_ownership_feature_panel(
             signal_fields["ic_act_initial_13d"] = raw.fillna(0.0).where(mask) if act_coverage is not None else raw
         if "ic_bo_escalation_13g_to_13d" in fields:
             raw = fields["ic_bo_escalation_13g_to_13d"].reindex(index=idx, columns=columns)
-            mask = cross_mask if cross_complete else raw.notna()
+            mask = cross_masks["ic_bo_escalation_13g_to_13d"] if cross_complete else raw.notna()
             signal_masks["ic_bo_escalation_13g_to_13d"] = mask
             signal_fields["ic_bo_escalation_13g_to_13d"] = raw.fillna(0.0).where(mask) if cross_complete else raw
         sink.keep_signals(signal_fields, signal_masks)

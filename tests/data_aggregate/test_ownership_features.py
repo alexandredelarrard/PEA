@@ -296,6 +296,86 @@ def test_unidentified_13g_holder_makes_the_ticker_state_unknown():
     print("  a known filing with neither CIK nor name leaves subsequent holder state NaN, never zero")
 
 
+def test_known_cross_form_transitions_survive_an_unrelated_unknown_holder_but_stop_at_frontiers():
+    idx = pd.bdate_range("2025-01-02", periods=60)
+    tickers = ["ESC", "DEESC"]
+    close = pd.DataFrame(100.0, index=idx, columns=tickers)
+    sec_13g = pd.DataFrame(
+        [
+            {
+                "ticker": ticker,
+                "accession_number": f"{ticker}-unknown",
+                "cusip": ticker,
+                "filing_date": idx[5],
+                "reporting_person_cik": None,
+                "reporting_person_name": None,
+            }
+            for ticker in tickers
+        ]
+        + [
+            {
+                "ticker": "ESC",
+                "accession_number": "esc-g",
+                "cusip": "ESC",
+                "filing_date": idx[10],
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Escalating Fund",
+            },
+            {
+                "ticker": "DEESC",
+                "accession_number": "deesc-g",
+                "cusip": "DEESC",
+                "filing_date": idx[20],
+                "reporting_person_cik": "0000000002",
+                "reporting_person_name": "De-escalating Fund",
+            },
+        ]
+    )
+    sec_13d = pd.DataFrame(
+        [
+            {
+                "ticker": "ESC",
+                "accession_number": "esc-d",
+                "cusip": "ESC",
+                "filing_date": idx[20],
+                "is_amendment": 0.0,
+                "reporting_person_cik": "0000000001",
+                "reporting_person_name": "Escalating Fund",
+            },
+            {
+                "ticker": "DEESC",
+                "accession_number": "deesc-d",
+                "cusip": "DEESC",
+                "filing_date": idx[10],
+                "is_amendment": 0.0,
+                "reporting_person_cik": "0000000002",
+                "reporting_person_name": "De-escalating Fund",
+            },
+        ]
+    )
+    frontier = idx[40]
+    sink = ConditioningSink()
+    panel = build_ownership_feature_panel(
+        make_frames(idx, _peers(tickers), close_split=close),
+        sec_13d,
+        sec_13g,
+        complete_through_13d=frontier,
+        complete_through_13g=frontier,
+        sink=sink,
+    ).set_index(["date", "ticker"])
+
+    assert panel.loc[(idx[20], "ESC"), "f_ic_bo_escalation_13g_to_13d"] > 0
+    assert panel.loc[(idx[20], "DEESC"), "f_ic_bo_de_escalation_13d_to_13g"] > 0
+    dense = panel.reindex(pd.MultiIndex.from_product([idx, tickers], names=["date", "ticker"]))
+    assert pd.isna(dense.loc[(idx[15], "ESC"), "f_ic_bo_escalation_13g_to_13d"])
+    for feature in ("f_ic_bo_escalation_13g_to_13d", "f_ic_bo_de_escalation_13d_to_13g"):
+        assert dense.loc[(slice(idx[41], None), slice(None)), feature].isna().all()
+    assert sink.signals["ic_bo_escalation_13g_to_13d"].available.loc[idx[20], "ESC"]
+    assert not sink.signals["ic_bo_escalation_13g_to_13d"].available.loc[idx[41] :, "ESC"].any()
+    print("\n=== SANITY CHECK: known 13D/13G transitions override only identity uncertainty ===")
+    print("  both transition directions remain positive after an unrelated anonymous 13G, while absence stays unknown and frontier tails stay NaN")
+
+
 def test_every_ownership_and_sink_output_stops_at_its_complete_frontier():
     idx = pd.bdate_range("2025-01-02", periods=90)
     tickers = ["AAA", "BBB"]

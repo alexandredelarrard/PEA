@@ -94,6 +94,8 @@ Run `seed-universe` before stages that resolve the default ticker set.
 
 Headcount is produced during the fundamentals filing walk; there is no separate employee command. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
 
+For a notes availability-date correction, first obtain the approved `available_at` column migration for both notes tables and back up the affected data. Then run `rtk "$PY" -m src data_extract financial-notes --repair-availability`: this updates existing clocks only and does not download or reparse ZIPs. Check the resulting period dates (for example, `2021_08` → 2021-09-13), then fully rebuild `cube_part_fundamentals` and reassemble `cube`. The ordinary 45-trading-session refresh cannot rewrite the older historical feature rows whose dates changed. See [data sources](../reference/data-sources.md) for the estimated-versus-observed date policy.
+
 ## Peers and cube
 
 ```bash

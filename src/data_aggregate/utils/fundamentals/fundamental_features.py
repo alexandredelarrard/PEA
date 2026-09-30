@@ -131,7 +131,8 @@ from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_dail
 
 _PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
 _NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel uses 2)
-_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]  # the only cols the pension builders read
+_PENSION_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]
+_FACT_COLS = [*_PENSION_FACT_COLS, "available_at"]  # notes add their monthly archive clock
 
 
 #: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
@@ -433,15 +434,22 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeI
 
 def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
     """One footnote-numeric tag from the NOTES sets (`notes_num`) -> daily wide
-    frame, point-in-time on the FILING date, latest period-end (`ddate`) per filing.
+    frame, point-in-time on the later of filing and archive availability, latest
+    period-end (`ddate`) per filing.
     `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
     the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
-    if notes_num is None or notes_num.empty or "tag" not in notes_num.columns or "ticker" not in notes_num.columns:
+    if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at"} <= set(notes_num.columns):
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
         return pd.DataFrame(index=idx)
-    d["as_of"] = pd.to_datetime(d.get("filed"), errors="coerce")
+    filed = pd.to_datetime(d["filed"], errors="coerce")
+    available = pd.to_datetime(d["available_at"], errors="coerce")
+    valid_clock = filed.notna() & available.notna()
+    d = d[valid_clock].copy()
+    filed = filed[valid_clock]
+    available = available[valid_clock]
+    d["as_of"] = filed.where(filed >= available, available)
     d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
     q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
     d = d[(q == 0) if instant else (q > 0)]
@@ -494,6 +502,7 @@ def load_pension_facts_scoped(
         context,
         _PENSION_FACTS_TABLE,
         _NET_PENSION_TAGS,
+        columns=_PENSION_FACT_COLS,
         tickers=tickers,
         since=since,
     )
@@ -506,6 +515,8 @@ def load_notes_num_scoped(
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame | None:
     """`notes_num` restricted to the footnote PBO + plan-asset tags the panel reads."""
+    if "available_at" not in context.store.columns(_NOTES_NUM_TABLE):
+        return None
     return load_tagged_facts(
         context,
         _NOTES_NUM_TABLE,

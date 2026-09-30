@@ -40,6 +40,8 @@ This page is the source-facing operating contract: where data comes from, which 
 | Earnings calls | HuggingFace, Roic AI, Motley Fool | none | `earnings_call_sections` | behavioral utilities |
 | Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | sentiment and embedding tables | behavioral and [gpt_extract](../../src/gpt_extract/) |
 
+SEC Financial Statement and Notes ZIPs are monthly archives. The [notes fetcher](../../src/data_extract/utils/fundamentals/fetch_financial_notes.py) records each ZIP’s HTTP `Last-Modified` date as `available_at`, falling back to the successful cached download’s UTC file date. It reuses the persisted clock on retries, repairs historical metadata with primary-key-only upserts, and never forecasts the next archive date. Notes-derived features remain unavailable until both the filing and archive clocks have passed.
+
 Secrets live only in the ignored root `.env`, loaded by [Context](../../src/context.py). Never copy credentials into config, logs, reports, or wiki content. `SEC_USER_AGENT` must identify a real contact.
 
 ## Shared transport and extraction plumbing

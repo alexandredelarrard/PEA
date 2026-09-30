@@ -45,6 +45,8 @@ from __future__ import annotations
 import logging
 import re
 import zipfile
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import pandas as pd
@@ -117,8 +119,25 @@ _NUM_USECOLS = {"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnot
 _TXT_USECOLS = {"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"}
 _NUM_PK = ["adsh", "tag", "ddate", "qtrs"]
 _TXT_PK = ["adsh", "tag", "ddate", "qtrs"]
-_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period"]
-_TXT_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "txtlen", "escaped", "value", "footnote", "form", "fy", "fp", "filed", "period"]
+_NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
+_TXT_OUT = [
+    "cik",
+    "ticker",
+    "adsh",
+    "tag",
+    "ddate",
+    "qtrs",
+    "txtlen",
+    "escaped",
+    "value",
+    "footnote",
+    "form",
+    "fy",
+    "fp",
+    "filed",
+    "period",
+    "available_at",
+]
 
 SEC_FINNOTES_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{period}_notes.zip"
 SEC_FINNOTES_FIRST_YEAR = 2009  # earliest notes data set (2009q1)
@@ -237,6 +256,103 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
+def _parse_http_date(value: str | None) -> date | None:
+    """Parse an HTTP date into its UTC calendar date."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).date()
+
+
+def _probe_archive_available_at(context: Context, url: str) -> date | None:
+    """Read one archive's Last-Modified header without consuming its body."""
+    response = None
+    try:
+        response = context.sec_session.get(url, timeout=60, stream=True)
+        if response.status_code != 200:
+            return None
+        return _parse_http_date(response.headers.get("Last-Modified"))
+    except Exception as exc:  # noqa: BLE001 (cache mtime remains a valid fallback)
+        logger.warning("notes availability probe failed for %s: %s", url, exc)
+        return None
+    finally:
+        if response is not None:
+            response.close()
+
+
+def _resolve_archive_available_at(context: Context, url: str, path: Path) -> date | None:
+    """Archive publication date, falling back to the cached acquisition mtime in UTC."""
+    published = _probe_archive_available_at(context, url)
+    if published is not None:
+        return published
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date()
+    except OSError:
+        return None
+
+
+def _as_date(value: object) -> date | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _stored_period_available_at(context: Context, period: str) -> date | None:
+    """One immutable stored clock for a period, shared across both notes tables."""
+    values: set[date] = set()
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if not {"period", "available_at"} <= columns:
+            continue
+        for value in context.store.distinct(table, "available_at", where={"period": period}):
+            parsed = _as_date(value)
+            if parsed is not None:
+                values.add(parsed)
+    if len(values) > 1:
+        raise ValueError(f"notes {period}: conflicting stored available_at values: {sorted(values)}")
+    return next(iter(values), None)
+
+
+def _periods_missing_available_at(context: Context) -> set[str]:
+    """Stored archive periods with no availability clock in either destination."""
+    missing: set[str] = set()
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if "period" not in columns:
+            continue
+        where = {"available_at": None} if "available_at" in columns else None
+        missing.update(str(value) for value in context.store.distinct(table, "period", where=where))
+    return missing
+
+
+def _repair_period_available_at(context: Context, period: str, available_at: date) -> int:
+    """Patch missing clocks using only each table's PK plus available_at."""
+    repaired = 0
+    for table in (Tables.notes_num, Tables.notes_text):
+        columns = set(context.store.columns(table))
+        if "period" not in columns:
+            continue
+        where: dict[str, object] = {"period": period}
+        if "available_at" in columns:
+            where["available_at"] = None
+        rows = context.store.load(
+            table,
+            columns=[*table.pk, "period"],
+            where=where,
+            optional=True,
+        )
+        if rows is None or rows.empty:
+            continue
+        patch = rows[list(table.pk)].drop_duplicates().copy()
+        patch["available_at"] = available_at
+        repaired += context.store.save(table, patch)
+    return repaired
+
+
 def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
     """Stream a huge .tsv member in chunks, keeping only universe filings, curated
     tags and undimensioned/consolidated rows (dimn==0, no coreg)."""
@@ -300,6 +416,21 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     cache = cache_dir(context, context.config.local.paths.financial_notes)
 
     done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
+    period_clocks: dict[str, date] = {}
+    for period in sorted(_periods_missing_available_at(context)):
+        url = SEC_FINNOTES_URL_TEMPLATE.format(period=period)
+        available_at = _stored_period_available_at(context, period) or _resolve_archive_available_at(
+            context,
+            url,
+            cache / f"{period}_notes.zip",
+        )
+        if available_at is None:
+            logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
+            continue
+        repaired = _repair_period_available_at(context, period, available_at)
+        period_clocks[period] = available_at
+        logger.info("notes %s: repaired available_at=%s on %d stored rows", period, available_at, repaired)
+
     new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)  # empty once converged
     if new_tickers:
         logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
@@ -309,6 +440,9 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
     n_num = n_txt = 0
     periods = _notes_periods(context, years_history + 1)
     for period in tqdm(periods, desc="SEC financial-statement notes"):
+        available_at = period_clocks.get(period)
+        if period in done:
+            available_at = available_at or _stored_period_available_at(context, period)
         if period in done and not new_tickers and not reparse:
             continue
 
@@ -318,14 +452,23 @@ def fetch_financial_notes(context: Context, tickers: list[str], years_history: i
         if path is None:
             continue
 
+        available_at = available_at or _stored_period_available_at(context, period)
+        if available_at is None:
+            available_at = _resolve_archive_available_at(context, SEC_FINNOTES_URL_TEMPLATE.format(period=period), path)
+        if available_at is None:
+            logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
+            continue
+
         num, txt = _read_notes(path, cik2tkr, set(tickers))
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period
+            num["available_at"] = available_at
             n_num += context.store.save(Tables.notes_num, num[[c for c in _NUM_OUT if c in num.columns]])
         if not txt.empty:
             txt = txt.sort_values("filed").drop_duplicates(subset=_TXT_PK, keep="last")
             txt["period"] = period
+            txt["available_at"] = available_at
             n_txt += context.store.save(Tables.notes_text, txt[[c for c in _TXT_OUT if c in txt.columns]])
 
     save_processed_universe(cache, Tables.notes_num, tickers)  # so a converged re-run skips

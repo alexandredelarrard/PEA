@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_store.schema import Tables, name_of
@@ -23,7 +24,7 @@ class _StopAfterPlanError(RuntimeError):
     pass
 
 
-def test_fundamentals_requests_the_shared_tail_refresh(monkeypatch):
+def test_fundamentals_requests_its_45_session_tail_refresh(monkeypatch):
     captured: dict[str, object] = {}
 
     def _plan(*args, **kwargs):
@@ -42,9 +43,10 @@ def test_fundamentals_requests_the_shared_tail_refresh(monkeypatch):
     with pytest.raises(_StopAfterPlanError):
         step.run(full=False)
 
-    assert captured["refresh"] == PART_REFRESH_TRADING_DAYS
+    assert captured["refresh"] == FUNDAMENTALS_REFRESH_TRADING_DAYS == 45
+    assert PART_REFRESH_TRADING_DAYS == 5
     print("\n=== SANITY CHECK: fundamentals incremental repair window ===")
-    print(f"  plan_window received refresh={PART_REFRESH_TRADING_DAYS}; the stored maximum date is rewritten instead of strict-appended. Validated.")
+    print("  fundamentals requests 45 sessions while the shared sibling-part refresh remains 5. Validated.")
 
 
 class _SourceStore:
@@ -59,6 +61,10 @@ class _SourceStore:
                 "as_of": pd.to_datetime(["2026-01-01", "2026-01-01"]),
             }
         )
+
+    @staticmethod
+    def columns(table) -> list[str]:
+        return ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at"]
 
 
 def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypatch):
@@ -125,6 +131,8 @@ def test_sec_fact_reads_are_ticker_and_date_bounded():
         assert kwargs["where"]["ticker"] == ["AAA", "BBB"], (table, kwargs)
         assert kwargs["where"]["tag"], (table, kwargs)
         assert kwargs["since"] == source_since, (table, kwargs)
+    assert "available_at" not in store.calls[0][1]["columns"]
+    assert "available_at" in store.calls[1][1]["columns"]
     print("\n=== SANITY CHECK: SEC fact source bounds ===")
     print("  both pension/notes reads push ticker universe, tag projection, and six-year date bound into the store. Validated.")
 

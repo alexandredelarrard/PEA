@@ -47,6 +47,17 @@ def test_gate_reads_table_cadence_and_date_column_from_schema(sqlite_store, monk
     print("  OK: the gate reads its table, date column and cadence directly from schema.py")
 
 
+def test_notes_tables_declare_monthly_archive_availability():
+    for table in (Tables.notes_num, Tables.notes_text):
+        assert table.date_col == "ddate"
+        assert table.freshness == "monthly"
+        assert table.freshness_col == "available_at"
+        assert "available_at" in table.date_type_cols
+
+    print("\n=== SANITY CHECK: financial-notes registry contract ===")
+    print("  notes_num and notes_text retain ddate as data time and use date-typed available_at for monthly freshness. Validated.")
+
+
 def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypatch):
     today = pd.Timestamp.today().normalize()
     sqlite_store.replace(

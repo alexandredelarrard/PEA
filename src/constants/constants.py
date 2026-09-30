@@ -860,6 +860,10 @@ DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = ("daily", "weekly", "biweekly", 
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
 # --------------------------------------------------------------------------- #
 
+# Fundamentals can change when monthly notes metadata arrives after its filing date, so its
+# incremental build rewrites a wider bounded tail than the shared five-session price repair.
+FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
+
 # The join keys every feature panel carries; everything else in a panel is a feature column.
 PANEL_KEYS = ["date", "ticker"]
 

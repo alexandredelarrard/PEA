@@ -646,6 +646,7 @@ CREATE TABLE IF NOT EXISTS "notes_num" (
     "fp" TEXT,
     "filed" DATE,
     "period" TEXT,
+    "available_at" DATE,
     PRIMARY KEY ("adsh", "tag", "ddate", "qtrs")
 );
 CREATE INDEX IF NOT EXISTS ix_notes_num_ticker ON "notes_num" ("ticker");
@@ -668,6 +669,7 @@ CREATE TABLE IF NOT EXISTS "notes_text" (
     "fp" TEXT,
     "filed" DATE,
     "period" TEXT,
+    "available_at" DATE,
     PRIMARY KEY ("adsh", "tag", "ddate", "qtrs")
 );
 CREATE INDEX IF NOT EXISTS ix_notes_text_ticker ON "notes_text" ("ticker");

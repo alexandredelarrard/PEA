@@ -79,6 +79,12 @@ def _repair_vector_type(spec: Table, cols: list[tuple[str, str]]) -> list[tuple[
     ]
 
 
+def _overlay_registry_dates(spec: Table, cols: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Append date columns declared by the registry but absent from live reflection."""
+    present = {name for name, _ in cols}
+    return [*cols, *((name, "DATE") for name in spec.date_type_cols if name not in present)]
+
+
 def table_ddl(spec: Table, cols: list[tuple[str, str]]) -> str:
     """`CREATE TABLE` + the ticker / date indexes, from an ordered column list."""
     cols = _repair_vector_type(spec, cols)
@@ -135,7 +141,7 @@ def generate_schema_sql(reflected: dict[str, list[tuple[str, str]]], previous: s
         cols = reflected.get(spec.name)
         if cols:
             blocks.append(f"-- [{spec.kind}] {spec.name}  (pk: {', '.join(spec.pk)})")
-            blocks.append(table_ddl(spec, cols))
+            blocks.append(table_ddl(spec, _overlay_registry_dates(spec, cols)))
         elif spec.name in prior:
             blocks.append(
                 f"-- [{spec.kind}] {spec.name}  (pk: {', '.join(spec.pk)}) "

@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from scipy.stats import ks_2samp
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -708,15 +709,18 @@ def _bounds(path: Path, declared: dict[str, tuple[float, float]], columns: list[
     )
 
 
-def _redundancy(path: Path, stats: dict[str, dict[str, Any]], threshold: float) -> dict[str, Any]:
+def _redundancy_frame(path: Path, stats: dict[str, dict[str, Any]], threshold: float) -> tuple[dict[str, Any], pd.DataFrame]:
     columns = list(stats)
     if len(columns) < 2:
-        return _result("redundancy", "abstain", scope={"columns": len(columns)}, metrics={}, reason="fewer than two numeric feature columns")
+        result = _result("redundancy", "abstain", scope={"columns": len(columns)}, metrics={}, reason="fewer than two numeric feature columns")
+        return result, pd.DataFrame()
     width = len(columns)
     centre = np.array([float(stats[column]["mean"] or 0.0) for column in columns], dtype="float64")
     acc = {name: np.zeros((width, width), dtype="float64") for name in ("n", "sx", "sxx", "sxy", "eq")}
     rows = 0
     parquet = pq.ParquetFile(path)
+    stride = max(1, parquet.metadata.num_rows // 50_000)
+    samples: list[np.ndarray] = []
     for batch in parquet.iter_batches(batch_size=CHUNK_ROWS, columns=columns):
         raw = batch.to_pandas()[columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype="float64")
         present = np.isfinite(raw)
@@ -728,28 +732,56 @@ def _redundancy(path: Path, stats: dict[str, dict[str, Any]], threshold: float) 
         acc["sxy"] += centered.T @ centered
         for index in range(width):
             acc["eq"][index] += ((raw == raw[:, index][:, None]) & present & present[:, index][:, None]).sum(axis=0)
+        take = (rows + np.arange(len(raw))) % stride == 0
+        if take.any():
+            samples.append(raw[take])
         rows += len(raw)
     acc["rows"] = np.array([rows], dtype="float64")
     correlation, overlap = _correlations(acc)
-    min_pair = min(100, rows)
-    pairs: list[dict[str, Any]] = []
+    sample = np.concatenate(samples)[:50_000] if samples else np.empty((0, width))
+    spearman = pd.DataFrame(sample, columns=columns).corr(method="spearman", min_periods=min(100, len(sample))).to_numpy()
+    counts = np.diag(overlap)
+    min_pair = min(10_000, rows)
+    all_pairs: list[dict[str, Any]] = []
     for left in range(width):
         for right in range(left + 1, width):
             n = int(overlap[left, right])
-            exact = n >= max(2, min_pair) and int(acc["eq"][left, right]) == n
-            value = correlation[left, right]
-            high = n >= min_pair and np.isfinite(value) and abs(value) >= threshold
-            if exact or high:
-                pairs.append(
-                    {"left": columns[left], "right": columns[right], "n": n, "r": None if not np.isfinite(value) else float(value), "exact": exact}
-                )
-    pairs.sort(key=lambda item: (not item["exact"], -(abs(item["r"]) if item["r"] is not None else 0.0)))
-    return _result(
+            union = int(counts[left] + counts[right] - n)
+            same_mask = int(rows - counts[left] - counts[right] + 2 * n)
+            pearson_value = correlation[left, right]
+            spearman_value = spearman[left, right]
+            exact = n >= max(2, min_pair) and same_mask == rows and int(acc["eq"][left, right]) == n
+            high = n >= min_pair and (
+                (np.isfinite(pearson_value) and abs(pearson_value) >= threshold) or (np.isfinite(spearman_value) and abs(spearman_value) >= threshold)
+            )
+            all_pairs.append(
+                {
+                    "left": columns[left],
+                    "right": columns[right],
+                    "overlap_n": n,
+                    "overlap_ratio": n / union if union else None,
+                    "identical_null_mask_rate": same_mask / rows if rows else None,
+                    "pearson": None if not np.isfinite(pearson_value) else float(pearson_value),
+                    "spearman_sample": None if not np.isfinite(spearman_value) else float(spearman_value),
+                    "spearman_sample_n": len(sample),
+                    "exact": exact,
+                    "flagged": exact or high,
+                    "disposition": "review" if exact or high else "keep",
+                }
+            )
+    all_pairs.sort(key=lambda item: (not item["flagged"], -(abs(item["pearson"]) if item["pearson"] is not None else 0.0)))
+    flagged = [item for item in all_pairs if item["flagged"]]
+    result = _result(
         "redundancy",
-        "fail" if pairs else "pass",
-        scope={"rows": rows, "columns": width, "threshold": threshold, "min_pairwise_n": min_pair},
-        metrics={"redundant_pairs": pairs[:40], "n_redundant_pairs": len(pairs)},
+        "fail" if flagged else "pass",
+        scope={"rows": rows, "columns": width, "threshold": threshold, "min_pairwise_n": min_pair, "spearman_sample_n": len(sample)},
+        metrics={"redundant_pairs": flagged[:40], "n_redundant_pairs": len(flagged)},
     )
+    return result, pd.DataFrame(all_pairs)
+
+
+def _redundancy(path: Path, stats: dict[str, dict[str, Any]], threshold: float) -> dict[str, Any]:
+    return _redundancy_frame(path, stats, threshold)[0]
 
 
 def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame | None, spec: Any) -> dict[str, Any]:
@@ -1098,8 +1130,42 @@ def _coverage_bucket(numerator: int, denominator: int) -> str:
     return "<=30%"
 
 
+def _sample_even(values: np.ndarray, limit: int = 50_000) -> np.ndarray:
+    finite = values[np.isfinite(values)]
+    if len(finite) <= limit:
+        return finite
+    return finite[np.linspace(0, len(finite) - 1, limit, dtype="int64")]
+
+
+def _period_metrics(values: np.ndarray, mask: np.ndarray, dates: pd.Series) -> dict[str, Any]:
+    sample = values[mask]
+    finite = sample[np.isfinite(sample)]
+    date_values = dates[mask].reset_index(drop=True)
+    daily_variance = pd.Series(sample).groupby(date_values).var().dropna()
+    q25, median, q75 = np.quantile(finite, [0.25, 0.5, 0.75]) if len(finite) else (np.nan, np.nan, np.nan)
+    return {
+        "rows": len(sample),
+        "n_finite": len(finite),
+        "nonnull_share": len(finite) / len(sample) if len(sample) else None,
+        "zero_share": float(np.mean(finite == 0.0)) if len(finite) else None,
+        "median": None if not np.isfinite(median) else float(median),
+        "iqr": None if not np.isfinite(q75 - q25) else float(q75 - q25),
+        "cross_sectional_variance": float(daily_variance.median()) if len(daily_variance) else None,
+        "finite": finite,
+    }
+
+
+def _known_ineligible_mask(spec: Any, ticker: str, feature: str, dates: pd.Series) -> np.ndarray:
+    eligible = np.ones(len(dates), dtype=bool)
+    for rule in spec.known_ineligible:
+        if ticker != rule["ticker"] or not any(feature == field or feature.startswith(field) for field in rule["fields"]):
+            continue
+        eligible &= ~dates.between(rule["start"], rule["end"], inclusive="both").to_numpy()
+    return eligible
+
+
 def _analysis_frames(
-    snapshot: Path, keys: pd.DataFrame, features: list[str], recent_sessions: int
+    snapshot: Path, keys: pd.DataFrame, features: list[str], recent_sessions: int, spec: Any
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, dict[str, Any]]]:
     dates = pd.DatetimeIndex(sorted(keys[TABLE.date_col].dropna().unique()))
     recent_dates = set(dates[-min(recent_sessions, len(dates)) :])
@@ -1119,7 +1185,26 @@ def _analysis_frames(
         present = np.isfinite(array)
         stats = profile_stats(values, None)
         all_stats[feature] = stats
-        distribution_rows.append({"feature": feature, "characteristic": characteristic, "family": family, **stats})
+        finite = array[present]
+        lower, upper = spec.bounds.get(feature, (None, None))
+        bound_breaches = int(((finite < lower) if lower is not None else np.zeros(len(finite), dtype=bool)).sum())
+        bound_breaches += int(((finite > upper) if upper is not None else np.zeros(len(finite), dtype=bool)).sum())
+        distribution_rows.append(
+            {
+                "feature": feature,
+                "characteristic": characteristic,
+                "family": family,
+                **stats,
+                "finite_rate": len(finite) / len(array),
+                "null_rate": 1 - len(finite) / len(array),
+                "zero_rate": float(np.mean(finite == 0.0)) if len(finite) else None,
+                "p05": float(np.quantile(finite, 0.05)) if len(finite) else None,
+                "p95": float(np.quantile(finite, 0.95)) if len(finite) else None,
+                "bound_lower": lower,
+                "bound_upper": upper,
+                "bound_breaches": bound_breaches,
+            }
+        )
 
         scores = modified_zscore(array)
         extreme_positions = np.flatnonzero(present & (scores > 3.5))
@@ -1131,8 +1216,23 @@ def _analysis_frames(
                     "date": keys.iloc[position][TABLE.date_col],
                     "value": float(array[position]),
                     "modified_z": float(scores[position]),
+                    "family": family,
+                    "characteristic": characteristic,
+                    "bound_violation": bool((lower is not None and array[position] < lower) or (upper is not None and array[position] > upper)),
                 }
             )
+
+        active = None
+        rule = spec.conditional_holes.get(feature)
+        if rule is not None:
+            active_values = pd.to_numeric(_read_projected(snapshot, [rule["active_field"]])[rule["active_field"]], errors="coerce").to_numpy(
+                dtype="float64"
+            )
+            active = np.isfinite(active_values)
+            if "min_value" in rule:
+                active &= active_values >= float(rule["min_value"])
+            if "max_value" in rule:
+                active &= active_values <= float(rule["max_value"])
 
         for ticker, positions in ticker_positions.items():
             supported = positions[present[positions]]
@@ -1162,7 +1262,11 @@ def _analysis_frames(
             first_support = keys.iloc[supported[0]][TABLE.date_col]
             complete_through = keys.iloc[supported[-1]][TABLE.date_col]
             group_dates = keys.iloc[positions][TABLE.date_col]
-            eligible = positions[(group_dates >= first_support).to_numpy() & (group_dates <= complete_through).to_numpy()]
+            eligible_mask = (group_dates >= first_support).to_numpy() & (group_dates <= complete_through).to_numpy()
+            eligible_mask &= _known_ineligible_mask(spec, ticker, feature, group_dates)
+            if active is not None:
+                eligible_mask &= active[positions]
+            eligible = positions[eligible_mask]
             recent_eligible = eligible[recent_mask[eligible]]
             full_numerator = int(present[eligible].sum())
             recent_numerator = int(present[recent_eligible].sum())
@@ -1189,40 +1293,57 @@ def _analysis_frames(
                 }
             )
 
-        history_values = array[~recent_mask]
-        recent_values = array[recent_mask]
-        history_ok = history_values[np.isfinite(history_values)]
-        recent_ok = recent_values[np.isfinite(recent_values)]
-        history_sd = float(history_ok.std(ddof=1)) if len(history_ok) > 1 else 0.0
-        history_mean = float(history_ok.mean()) if len(history_ok) else None
-        recent_mean = float(recent_ok.mean()) if len(recent_ok) else None
-        drift_rows.append(
-            {
-                "feature": feature,
-                "history_n": len(history_ok),
-                "recent_n": len(recent_ok),
-                "history_mean": history_mean,
-                "recent_mean": recent_mean,
-                "history_null_share": float(1 - len(history_ok) / len(history_values)) if len(history_values) else None,
-                "recent_null_share": float(1 - len(recent_ok) / len(recent_values)) if len(recent_values) else None,
-                "mean_shift_history_sd": (
-                    (recent_mean - history_mean) / history_sd if history_mean is not None and recent_mean is not None and history_sd > 0 else None
-                ),
-            }
-        )
-        for split, sample in (("history", history_values), ("recent", recent_values)):
-            finite = sample[np.isfinite(sample)]
+        key_dates = keys[TABLE.date_col]
+        for window in sorted({126, recent_sessions}):
+            recent_window_dates = dates[-min(window, len(dates)) :]
+            recent_window = key_dates.isin(recent_window_dates).to_numpy()
+            history_dates = dates[max(0, len(dates) - window - 5 * 252) : max(0, len(dates) - window)]
+            history_window = key_dates.isin(history_dates).to_numpy()
+            history_metrics = _period_metrics(array, history_window, key_dates)
+            recent_metrics = _period_metrics(array, recent_window, key_dates)
+            h_sample, r_sample = _sample_even(history_metrics.pop("finite")), _sample_even(recent_metrics.pop("finite"))
+            distance = float(ks_2samp(h_sample, r_sample, method="asymp").statistic) if len(h_sample) and len(r_sample) else None
+            coverage_ratio = (
+                recent_metrics["nonnull_share"] / history_metrics["nonnull_share"]
+                if history_metrics["nonnull_share"] not in (None, 0) and recent_metrics["nonnull_share"] is not None
+                else None
+            )
+            variance_ratio = (
+                recent_metrics["cross_sectional_variance"] / history_metrics["cross_sectional_variance"]
+                if history_metrics["cross_sectional_variance"] not in (None, 0) and recent_metrics["cross_sectional_variance"] is not None
+                else None
+            )
+            flagged = bool(
+                (coverage_ratio is not None and coverage_ratio < 0.75)
+                or (variance_ratio is not None and variance_ratio < 0.20)
+                or (distance is not None and distance > 0.35)
+            )
+            drift_rows.append(
+                {
+                    "feature": feature,
+                    "recent_sessions": window,
+                    **{f"history_{name}": value for name, value in history_metrics.items()},
+                    **{f"recent_{name}": value for name, value in recent_metrics.items()},
+                    "coverage_ratio": coverage_ratio,
+                    "variance_ratio": variance_ratio,
+                    "distribution_distance_ks": distance,
+                    "flagged": flagged,
+                    "disposition": "investigate" if flagged else "pass",
+                }
+            )
+
+        for fold, fold_dates in enumerate(np.array_split(dates, 5), start=1):
+            fold_mask = key_dates.isin(fold_dates).to_numpy()
+            metrics = _period_metrics(array, fold_mask, key_dates)
+            metrics.pop("finite")
             split_rows.append(
                 {
                     "feature": feature,
-                    "split": split,
-                    "rows": len(sample),
-                    "n_finite": len(finite),
-                    "null_share": float(1 - len(finite) / len(sample)) if len(sample) else None,
-                    "mean": float(finite.mean()) if len(finite) else None,
-                    "p50": float(np.median(finite)) if len(finite) else None,
-                    "min": float(finite.min()) if len(finite) else None,
-                    "max": float(finite.max()) if len(finite) else None,
+                    "fold": fold,
+                    "start": pd.Timestamp(fold_dates[0]) if len(fold_dates) else None,
+                    "end": pd.Timestamp(fold_dates[-1]) if len(fold_dates) else None,
+                    **metrics,
+                    "target_status": "abstained:no_target_in_candidate_snapshot",
                 }
             )
         if index % 20 == 0 or index == len(features):
@@ -1230,7 +1351,10 @@ def _analysis_frames(
     return (
         pd.DataFrame(coverage_rows),
         pd.DataFrame(distribution_rows),
-        pd.DataFrame(outlier_rows, columns=["feature", "ticker", "date", "value", "modified_z"]),
+        pd.DataFrame(
+            outlier_rows,
+            columns=["feature", "ticker", "date", "value", "modified_z", "family", "characteristic", "bound_violation"],
+        ),
         pd.DataFrame(drift_rows),
         pd.DataFrame(split_rows),
         all_stats,
@@ -1268,18 +1392,44 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
     if not features:
         raise ValueError("candidate has no numeric institutional feature")
 
-    coverage, distributions, outliers, drift, splits, stats = _analysis_frames(snapshot, keys, features, recent_sessions)
+    coverage, distributions, outliers, drift, splits, stats = _analysis_frames(snapshot, keys, features, recent_sessions, spec)
     coverage_summary = _coverage_summary(coverage)
-    redundancy = _redundancy(snapshot, stats, spec.redundancy_r)
+    redundancy, redundancy_frame = _redundancy_frame(snapshot, stats, spec.redundancy_r)
     leakage = _leakage(keys, {"as_of": manifest["as_of"]})
+    coverage_wide: dict[str, pd.DataFrame] = {}
+    for horizon in ("full", "recent"):
+        wide = coverage_summary[coverage_summary["horizon"].eq(horizon)].pivot(index="feature", columns="bucket", values="tickers").reset_index()
+        for bucket in _COVERAGE_BUCKETS:
+            if bucket not in wide:
+                wide[bucket] = 0
+        wide["eligible_tickers"] = wide[list(_COVERAGE_BUCKETS[:-1])].sum(axis=1)
+        wide["reconciled"] = wide[list(_COVERAGE_BUCKETS)].sum(axis=1).eq(int(keys["ticker"].nunique()))
+        coverage_wide[horizon] = wide[["feature", *_COVERAGE_BUCKETS, "eligible_tickers", "reconciled"]]
+    item4 = pd.DataFrame(
+        [
+            {
+                "feature": name,
+                "status": "removed",
+                "sample_rows": 0,
+                "reason": "fragile keyword extraction removed before final schema; no text-derived predictor retained",
+            }
+            for name in ("ic_act_purpose_board", "ic_act_purpose_strategic")
+        ]
+    )
     out.mkdir(parents=True, exist_ok=True)
     frames = {
         "coverage.csv": coverage,
         "coverage-summary.csv": coverage_summary,
+        "coverage-full.csv": coverage_wide["full"],
+        "coverage-recent252.csv": coverage_wide["recent"],
         "distributions.csv": distributions,
         "outliers.csv": outliers,
+        "outlier-traces.csv": outliers,
         "drift.csv": drift,
         "splits.csv": splits,
+        "model-fold-diagnostics.csv": splits,
+        "redundancy.csv": redundancy_frame,
+        "item4-text-audit.csv": item4,
     }
     for name, frame in frames.items():
         frame.to_csv(out / name, index=False)

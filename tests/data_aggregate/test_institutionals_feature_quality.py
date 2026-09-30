@@ -492,9 +492,14 @@ def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_pat
     assert (holder["full_numerator"], holder["full_eligible_denominator"]) == (6, 7)
     assert unsupported["full_bucket"] == "no-support"
     assert set(coverage["full_bucket"]) <= {"100%", "70%-<100%", "50%-<70%", "30%-<50%", "<=30%", "no-support"}
+    assert pd.read_csv(out / "coverage-full.csv")["reconciled"].all()
+    assert pd.read_csv(out / "coverage-recent252.csv")["reconciled"].all()
+    assert {"finite_rate", "null_rate", "zero_rate", "p05", "p95", "bound_breaches"}.issubset(pd.read_csv(out / "distributions.csv").columns)
+    assert {"pearson", "spearman_sample", "overlap_n", "overlap_ratio", "identical_null_mask_rate", "disposition"}.issubset(
+        pd.read_csv(out / "redundancy.csv").columns
+    )
+    assert {"coverage_ratio", "variance_ratio", "distribution_distance_ks", "disposition"}.issubset(pd.read_csv(out / "drift.csv").columns)
     assert json.loads((out / "leakage.json").read_text(encoding="utf-8"))["status"] == "abstain"
     summary = json.loads((out / "analysis-summary.json").read_text(encoding="utf-8"))
     assert summary["artifact_reconciliation"]["pass"] is True
-    print(
-        "SANITY: analysis counted only present candidate trading rows inside first/last support, isolated no-support, and reconciled every artifact."
-    )
+    print("SANITY: analysis reconciled feature-specific coverage buckets plus robust distribution, drift, and pairwise redundancy artifacts.")

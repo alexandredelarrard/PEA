@@ -395,10 +395,10 @@ def test_panel_columns_match_the_emission_map():
     # every emitted column is declared, and the two-leg shape matches the map exactly
     assert emitted <= expected, f"undeclared column(s): {sorted(emitted - expected)}"
     assert "f_ic_inst_holders" in emitted and "f_ic_inst_holders_xs" not in emitted
-    assert "f_ic_inst_ownership_pct_vs_peers" in emitted
+    assert "f_ic_inst_ownership_pct" in emitted
     assert "f_ic_inst_concentration" in emitted
     assert not any(column.endswith("_xs") for column in emitted)
-    assert {column for column in emitted if column.endswith("_vs_peers")} == {"f_ic_inst_ownership_pct_vs_peers"}
+    assert not any(column.endswith("_vs_peers") for column in emitted)
     # A's ownership pct at a late date = 200 shares / 1000 = 0.2
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
@@ -408,7 +408,7 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: 13F emitted columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted, all declared ({len(EMISSION)} features); "
-        f"all characteristics are raw and ownership_pct alone carries the peer leg. "
+        f"all characteristics are raw and no peer leg survives without target/OOS evidence. "
         f"A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated."
     )
 

@@ -427,14 +427,13 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
     assert decisions.set_index("baseline_column").loc["f_ic_inst_flow_to_mcap", "requested_decision"] == "remove_characteristic"
     assert decisions.set_index("baseline_column").loc["f_ic_act_initial_13d", "kind"] == "event"
     assert set(peers["characteristic"]) == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
+    assert set(peers["status"]) == {"abstain"}
     assert set(schema["removed"]) == {"f_ic_inst_holders_xs", "f_ic_inst_flow_to_mcap"}
     assert (out / "model-fold-diagnostics.csv").exists()
-    print(
-        "SANITY: taxonomy reconciled retained and retired baseline features, used explicit event/normalization decisions, and measured only the two provisional peers."
-    )
+    print("SANITY: taxonomy reconciled every baseline leg and refuses to pass either peer without target/OOS evidence.")
 
 
-def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_path: Path, monkeypatch: object) -> None:
+def test_analyze_uses_configured_source_eligibility_and_reconciles_artifacts(tmp_path: Path, monkeypatch: object) -> None:
     snapshot = tmp_path / "candidate.parquet"
     dates = pd.bdate_range("2024-01-02", periods=10)
     frame = pd.DataFrame(
@@ -489,8 +488,9 @@ def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_pat
     coverage = pd.read_csv(out / "coverage.csv")
     holder = coverage[(coverage["feature"] == "f_ic_inst_holders") & (coverage["ticker"] == "AAA")].iloc[0]
     unsupported = coverage[(coverage["feature"] == "f_ic_inst_holders") & (coverage["ticker"] == "BBB")].iloc[0]
-    assert (holder["full_numerator"], holder["full_eligible_denominator"]) == (6, 7)
-    assert unsupported["full_bucket"] == "no-support"
+    assert (holder["full_numerator"], holder["full_eligible_denominator"]) == (6, 10)
+    assert (unsupported["full_numerator"], unsupported["full_eligible_denominator"]) == (0, 10)
+    assert unsupported["full_bucket"] == "<=30%"
     assert set(coverage["full_bucket"]) <= {"100%", "70%-<100%", "50%-<70%", "30%-<50%", "<=30%", "no-support"}
     assert pd.read_csv(out / "coverage-full.csv")["reconciled"].all()
     assert pd.read_csv(out / "coverage-recent252.csv")["reconciled"].all()
@@ -502,4 +502,7 @@ def test_analyze_uses_candidate_row_eligibility_and_reconciles_artifacts(tmp_pat
     assert json.loads((out / "leakage.json").read_text(encoding="utf-8"))["status"] == "abstain"
     summary = json.loads((out / "analysis-summary.json").read_text(encoding="utf-8"))
     assert summary["artifact_reconciliation"]["pass"] is True
-    print("SANITY: analysis reconciled feature-specific coverage buckets plus robust distribution, drift, and pairwise redundancy artifacts.")
+    print(
+        "SANITY: configured source onset—not a feature's own finite span—defines coverage; "
+        "never-finite eligible tickers score 0% and every artifact reconciles."
+    )

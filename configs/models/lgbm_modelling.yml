@@ -48,7 +48,9 @@ lgbm:
     - f_combined_ratio_xs: -1
     - mom_12_1: 1
     - max_21: -1
-    - f_ic_shortvol_ratio_20d_vs_peers: -1
+    - f_ic_inst_value_to_mcap: 1
+    - f_ic_super_conviction_chg: 1
+    - f_ic_shortvol_ratio_20d: -1
     - f_ic_shortvol_acceleration: -1
     - f_ic_ftd_to_adv20: -1
     - f_ec_tone_xs: 1
@@ -119,7 +121,9 @@ lgbm:
   - f_refinancing_risk_xs
   - f_ic_insider_net_buy_ratio_180d
   - f_ic_super_initiations
-  - f_ic_shortvol_ratio_20d_vs_peers
+  - f_ic_inst_value_to_mcap
+  - f_ic_super_conviction_chg
+  - f_ic_shortvol_ratio_20d
   - f_ic_shortvol_acceleration
   - f_ic_ftd_to_adv20
   - f_ec_tone_xs

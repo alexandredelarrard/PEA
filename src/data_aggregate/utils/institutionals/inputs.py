@@ -12,13 +12,9 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_price_frames
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.string import pad_cik
 
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
-
-
-def _cik(value: object) -> str:
-    digits = "".join(character for character in str(value) if character.isdigit())
-    return digits.zfill(10) if digits else ""
 
 
 def load_full_price_frames(
@@ -113,7 +109,7 @@ def load_symbol_lineage(
     if ticker_ciks is None or ticker_ciks.empty:
         return None, ticker_ciks
 
-    ciks = sorted({_cik(value) for value in ticker_ciks["cik"] if _cik(value)})
+    ciks = sorted({pad_cik(value) for value in ticker_ciks["cik"] if pad_cik(value)})
     if not ciks:
         return None, ticker_ciks
     symbol_tenure = store.load(

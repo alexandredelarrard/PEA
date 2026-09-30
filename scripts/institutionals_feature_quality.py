@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 from scripts.cube_institutionals_catalogue import INSTITUTIONALS
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
+from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_store.schema import Table, Tables
 from src.utils.config import read_config
 from src.validate.checks.catalogue import _load as load_catalogue
@@ -60,7 +61,8 @@ SOURCE_TABLES: tuple[Table, ...] = (
     Tables.sec_13d,
     Tables.sec_13g,
 )
-PROVISIONAL_PEERS = ("ic_inst_ownership_pct", "ic_shortvol_ratio_20d")
+PEER_CANDIDATES = ("ic_inst_ownership_pct", "ic_shortvol_ratio_20d")
+PROVISIONAL_PEERS: tuple[str, ...] = ()
 SUFFIXES = (("_vs_peers", "peer"), ("_xs", "cross_sectional"), ("_hist", "historical"))
 REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     "ic_inst_flow_to_mcap": ("broad_13f", "reported-flow proxy duplicated the economically retained holdings changes"),
@@ -191,7 +193,7 @@ FAMILY_WARMUP_SESSIONS = {
     "cross_source": 0,
     "cross_source_control": 0,
 }
-ELIGIBILITY_FORMULA = "candidate_rows__first_supported_after_builder_warmup__last_supported_complete_through_v1"
+ELIGIBILITY_FORMULA = "configured_source_onset__ticker_price_rows__builder_warmup__candidate_end_v2"
 
 
 def _sha256(path: Path) -> str:
@@ -980,8 +982,12 @@ def _peer_diagnostic(snapshot: Path, characteristic: str, columns: list[str]) ->
     if raw not in columns or peer not in columns:
         return {
             "characteristic": characteristic,
-            "status": "abstain",
-            "reason": f"candidate is missing {raw if raw not in columns else peer}",
+            "status": "removed" if raw in columns else "abstain",
+            "reason": (
+                "peer leg removed because the frozen feature-only candidate cannot supply the approved target/OOS retention evidence"
+                if raw in columns
+                else f"candidate is missing {raw}"
+            ),
         }
     frame = _read_projected(snapshot, [*KEYS, raw, peer])
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
@@ -996,8 +1002,8 @@ def _peer_diagnostic(snapshot: Path, characteristic: str, columns: list[str]) ->
     whole = _peer_slice(frame, raw, peer)
     return {
         "characteristic": characteristic,
-        "status": "pass",
-        "reason": "",
+        "status": "abstain",
+        "reason": "candidate contains no outcome target; support diagnostics alone cannot pass the OOS retention gate",
         **whole,
         "unchanged_subject_score_jumps": int(unchanged_jump.sum()),
         "unchanged_subject_score_jump_share": float(unchanged_jump.mean()) if len(frame) else None,
@@ -1047,6 +1053,9 @@ def _model_folds(snapshot: Path, features: list[str]) -> pd.DataFrame:
                 "tickers": len(entry["tickers"]),
                 "feature_cells": entry["cells"],
                 "feature_nonnull_share": entry["nonnull"] / entry["cells"] if entry["cells"] else None,
+                "status": "abstain",
+                "target_status": "no_target_in_candidate_snapshot",
+                "diagnostic_scope": "feature_support_only",
             }
             for entry in state
         ]
@@ -1116,7 +1125,7 @@ def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: 
         "last_date": last_date,
         "reconciled_baseline_features": len(decision_frame),
     }
-    peer_frame = pd.DataFrame([_peer_diagnostic(snapshot, characteristic, candidate_columns) for characteristic in PROVISIONAL_PEERS])
+    peer_frame = pd.DataFrame([_peer_diagnostic(snapshot, characteristic, candidate_columns) for characteristic in PEER_CANDIDATES])
     fold_frame = _model_folds(snapshot, [column for column in candidate_columns if column not in KEYS])
     out.mkdir(parents=True, exist_ok=True)
     decision_frame.to_csv(out / "feature-decisions.csv", index=False)
@@ -1178,8 +1187,57 @@ def _known_ineligible_mask(spec: Any, ticker: str, feature: str, dates: pd.Serie
     return eligible
 
 
+def _feature_eligibility_start(
+    availability: InstitutionalAvailability,
+    characteristic: str,
+    family: str,
+) -> pd.Timestamp:
+    """Configured source onset for coverage; never infer it from the feature's own values."""
+    if family == "broad_13f":
+        dependencies = ((Tables.sec13f_hr, None),)
+    elif family == "elite_13f":
+        dependencies = ((Tables.sec13f_manager_holdings, None),)
+    elif family == "insider":
+        field = "is_10b5_1" if characteristic in {"ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d"} else None
+        dependencies = ((Tables.insider_transactions, field),)
+    elif family == "short_flow":
+        dependencies = ((Tables.sec_fails_to_deliver, None),) if characteristic.startswith("ic_ftd_") else ((Tables.short_interest, None),)
+    elif family == "beneficial_ownership":
+        dependencies = ((Tables.sec_13d, None),) if characteristic.startswith("ic_act_") else ((Tables.sec_13d, None), (Tables.sec_13g, None))
+    elif family == "price_conditioning":
+        if characteristic.startswith("ic_sig_super_"):
+            dependencies = ((Tables.sec13f_manager_holdings, None),)
+        elif characteristic.startswith("ic_sig_insider_"):
+            dependencies = ((Tables.insider_transactions, None),)
+        else:
+            dependencies = ((Tables.sec_13d, None),)
+    elif family == "cross_source_control":
+        return min(
+            availability.source_date(table)
+            for table in (
+                Tables.sec13f_hr,
+                Tables.sec13f_manager_holdings,
+                Tables.insider_transactions,
+                Tables.short_interest,
+                Tables.sec_13d,
+            )
+        )
+    else:
+        raise KeyError(f"No coverage dependency declaration for {characteristic!r} ({family!r})")
+    starts = [availability.source_date(table, field) for table, field in dependencies]
+    override = availability.derived_features.get(characteristic)
+    if override is not None:
+        starts.append(override)
+    return max(starts)
+
+
 def _analysis_frames(
-    snapshot: Path, keys: pd.DataFrame, features: list[str], recent_sessions: int, spec: Any
+    snapshot: Path,
+    keys: pd.DataFrame,
+    features: list[str],
+    recent_sessions: int,
+    spec: Any,
+    availability: InstitutionalAvailability,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, dict[str, Any]]]:
     dates = pd.DatetimeIndex(sorted(keys[TABLE.date_col].dropna().unique()))
     recent_dates = set(dates[-min(recent_sessions, len(dates)) :])
@@ -1194,6 +1252,7 @@ def _analysis_frames(
     for index, feature in enumerate(features, start=1):
         characteristic, _ = _feature_parts(feature)
         family = INSTITUTIONALS[characteristic][0]
+        source_start = _feature_eligibility_start(availability, characteristic, family)
         values = pd.to_numeric(_read_projected(snapshot, [feature])[feature], errors="coerce")
         array = values.to_numpy(dtype="float64")
         present = np.isfinite(array)
@@ -1249,8 +1308,17 @@ def _analysis_frames(
                 active &= active_values <= float(rule["max_value"])
 
         for ticker, positions in ticker_positions.items():
-            supported = positions[present[positions]]
-            if not len(supported):
+            group_dates = keys.iloc[positions][TABLE.date_col]
+            source_eligible = positions[(group_dates >= source_start).to_numpy()]
+            warmup = FAMILY_WARMUP_SESSIONS[family]
+            eligible = source_eligible[min(warmup, len(source_eligible)) :]
+            if len(eligible):
+                eligible_dates = keys.iloc[eligible][TABLE.date_col]
+                keep = _known_ineligible_mask(spec, ticker, feature, eligible_dates)
+                if active is not None:
+                    keep &= active[eligible]
+                eligible = eligible[keep]
+            if not len(eligible):
                 coverage_rows.append(
                     {
                         "feature": feature,
@@ -1259,9 +1327,10 @@ def _analysis_frames(
                         "ticker": ticker,
                         "eligibility_formula_id": ELIGIBILITY_FORMULA,
                         "family_warmup_sessions": FAMILY_WARMUP_SESSIONS[family],
-                        "observed_warmup_candidate_rows": None,
-                        "first_support": None,
-                        "complete_through": None,
+                        "configured_source_start": source_start,
+                        "warmup_candidate_rows": warmup,
+                        "eligibility_start": None,
+                        "eligibility_end": None,
                         "full_numerator": 0,
                         "full_eligible_denominator": 0,
                         "full_share": None,
@@ -1273,14 +1342,6 @@ def _analysis_frames(
                     }
                 )
                 continue
-            first_support = keys.iloc[supported[0]][TABLE.date_col]
-            complete_through = keys.iloc[supported[-1]][TABLE.date_col]
-            group_dates = keys.iloc[positions][TABLE.date_col]
-            eligible_mask = (group_dates >= first_support).to_numpy() & (group_dates <= complete_through).to_numpy()
-            eligible_mask &= _known_ineligible_mask(spec, ticker, feature, group_dates)
-            if active is not None:
-                eligible_mask &= active[positions]
-            eligible = positions[eligible_mask]
             recent_eligible = eligible[recent_mask[eligible]]
             full_numerator = int(present[eligible].sum())
             recent_numerator = int(present[recent_eligible].sum())
@@ -1293,9 +1354,10 @@ def _analysis_frames(
                     "ticker": ticker,
                     "eligibility_formula_id": ELIGIBILITY_FORMULA,
                     "family_warmup_sessions": FAMILY_WARMUP_SESSIONS[family],
-                    "observed_warmup_candidate_rows": int(np.flatnonzero(positions == supported[0])[0]),
-                    "first_support": first_support,
-                    "complete_through": complete_through,
+                    "configured_source_start": source_start,
+                    "warmup_candidate_rows": warmup,
+                    "eligibility_start": keys.iloc[eligible[0]][TABLE.date_col],
+                    "eligibility_end": keys.iloc[eligible[-1]][TABLE.date_col],
                     "full_numerator": full_numerator,
                     "full_eligible_denominator": full_denominator,
                     "full_share": full_numerator / full_denominator if full_denominator else None,
@@ -1393,6 +1455,7 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
     manifest = _load_manifest(manifest_path, as_of)
     config_node = read_config(config)
     spec = load_spec(config_node, TABLE)
+    availability = InstitutionalAvailability.from_config(config_node)
     _, columns, _ = _schema(snapshot)
     if not set(KEYS).issubset(columns):
         raise ValueError("candidate snapshot is missing panel keys")
@@ -1406,7 +1469,14 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
     if not features:
         raise ValueError("candidate has no numeric institutional feature")
 
-    coverage, distributions, outliers, drift, splits, stats = _analysis_frames(snapshot, keys, features, recent_sessions, spec)
+    coverage, distributions, outliers, drift, splits, stats = _analysis_frames(
+        snapshot,
+        keys,
+        features,
+        recent_sessions,
+        spec,
+        availability,
+    )
     coverage_summary = _coverage_summary(coverage)
     redundancy, redundancy_frame = _redundancy_frame(snapshot, stats, spec.redundancy_r)
     leakage = _leakage(keys, {"as_of": manifest["as_of"]})
@@ -1438,9 +1508,7 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
         "coverage-recent252.csv": coverage_wide["recent"],
         "distributions.csv": distributions,
         "outliers.csv": outliers,
-        "outlier-traces.csv": outliers,
         "drift.csv": drift,
-        "splits.csv": splits,
         "model-fold-diagnostics.csv": splits,
         "redundancy.csv": redundancy_frame,
         "item4-text-audit.csv": item4,
@@ -1478,10 +1546,11 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
         "eligibility": {
             "formula_id": ELIGIBILITY_FORMULA,
             "candidate_rows_only": True,
-            "first_support": "first finite value per feature and ticker after the builder's own warmup",
-            "observed_warmup": "candidate trading rows before first finite support, recorded per feature and ticker",
-            "complete_through": "last finite supported candidate row per feature and ticker",
-            "absent_aggregate_rows_eligible": False,
+            "source_start": "configured source/derived-feature availability; never inferred from candidate values",
+            "ticker_rows": "candidate price-grid rows on or after source onset",
+            "warmup": "family warmup is removed from the denominator before scoring",
+            "complete_through": "candidate end; trailing nulls remain eligible and reduce coverage",
+            "never_finite": "eligible never-finite tickers score zero coverage rather than no-support",
             "family_warmup_sessions": FAMILY_WARMUP_SESSIONS,
         },
         "leakage_status": leakage["status"],

@@ -135,8 +135,8 @@ LEVEL_FEATURES: tuple[str, ...] = (
     "ic_inst_value_to_mcap",
 )
 
-#: Preserve interpretable economic units. Institutional ownership keeps the sole peer leg in
-#: this family because a level such as 40% is meaningfully different relative to sector norms.
+#: Preserve interpretable economic units. Peer variants are not emitted: the fixed candidate
+#: has no target/OOS evidence with which to pass the approved retention gate.
 EMISSION: dict[str, str] = {
     "ic_inst_holders": "raw",  # D28 share of the quarter's filers, in [0, 1]
     "ic_inst_breadth_chg": "raw",  # a difference of that share
@@ -146,7 +146,7 @@ EMISSION: dict[str, str] = {
     "ic_inst_cluster_buying": "raw",  # bounded [-1, 1]
     "ic_inst_concentration": "raw",  # Herfindahl concentration
     "ic_inst_net_options_ratio": "raw",  # bounded [-1, 1]
-    "ic_inst_ownership_pct": "raw+peers",  # ownership level relative to sector norms
+    "ic_inst_ownership_pct": "raw",
     "ic_inst_value_to_mcap": "raw",
 }
 

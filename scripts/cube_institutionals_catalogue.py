@@ -138,29 +138,6 @@ for direction in ("bullish", "bearish"):
         "Integer-valued; zero means every declared family is provably unavailable, not missing.",
     )
 
-# `src.validate.checks.catalogue` compares a standalone catalogue with persisted column names.
-# Keep `INSTITUTIONALS` at characteristic grain for the combined catalogue registry, then add
-# the two approved peer views. The direct check fails if production adds an undocumented leg.
-_PEER_VARIANTS = (
-    "ic_inst_ownership_pct_vs_peers",
-    "ic_shortvol_ratio_20d_vs_peers",
-)
-
-
-def _variant_entry(name: str, suffix: str, interpretation: str) -> tuple[str, str, str, str]:
-    parent = name.removesuffix(suffix)
-    family, what, why, tail = INSTITUTIONALS[parent]
-    return family, f"{what}; {interpretation}", why, tail
-
-
+# `src.validate.checks.catalogue` compares this standalone catalogue with persisted columns.
+# Every accepted characteristic now emits exactly its raw economic representation.
 CATALOGUE = {f"f_{name}": entry for name, entry in INSTITUTIONALS.items()}
-CATALOGUE.update(
-    {
-        f"f_{name}": _variant_entry(
-            name,
-            "_vs_peers",
-            "peer-relative leg conditioned on the contemporaneous peer basket",
-        )
-        for name in _PEER_VARIANTS
-    }
-)

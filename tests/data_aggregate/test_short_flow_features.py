@@ -245,7 +245,7 @@ def test_canonical_ticker_survives_a_historical_alias_tenure():
             {"symbol": "NEW", "issuer_cik": "0000000123", "valid_from": cutover, "valid_to": None},
         ]
     )
-    roster = pd.DataFrame([{"ticker": "NEW", "cik": "123"}])
+    roster = pd.DataFrame([{"ticker": "NEW", "cik": "123.0"}])
 
     panel = build_short_flow_feature_panel(
         make_frames(idx, {"NEW": {}}, universe=pd.Index(["NEW"])),
@@ -258,7 +258,7 @@ def test_canonical_ticker_survives_a_historical_alias_tenure():
     assert ratio.loc[cutover:].notna().all()
     assert np.isclose(ratio.loc[cutover], 0.4)
     print("\n=== SANITY CHECK: canonical storage across a symbol alias ===")
-    print("  canonical NEW rows survive the OLD tenure because extractors already resolved source symbols before storage")
+    print("  canonical NEW rows survive the OLD tenure, and a float-shaped roster CIK resolves through shared pad_cik")
 
 
 def test_panel_columns_match_the_emission_map():
@@ -288,10 +288,10 @@ def test_panel_columns_match_the_emission_map():
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
     assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
-    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d", "f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"):
+    for leg in ("f_ic_shortvol_ratio_20d", "f_ic_shortvol_turnover_20d", "f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
     assert not any(column.endswith("_xs") for column in emitted)
-    assert {column for column in emitted if column.endswith("_vs_peers")} == {"f_ic_shortvol_ratio_20d_vs_peers"}
+    assert not any(column.endswith("_vs_peers") for column in emitted)
     assert not any(column in panel for column in ("f_ic_shortvol_ratio_z252", "f_ic_ftd_z252"))
     # the three bounded ratios stay in [0, 1]
     for w in (5, 20, 60):
@@ -305,7 +305,7 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: short-flow panel columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted from {len(EMISSION)} declared features, exact match; "
-        f"the three ratios are in [0, 1], only 20d keeps a peer leg, and history z outputs are absent; "
+        f"the three ratios are in [0, 1], no peer leg survives without target/OOS evidence, and history z outputs are absent; "
         f"ic_shortvol_days_to_cover is absent (needs FINRA "
         f"settlement positions, out of scope). Validated."
     )

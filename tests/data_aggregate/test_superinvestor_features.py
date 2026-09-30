@@ -309,8 +309,7 @@ def _assert_super_sink_starts_on_or_after(sink: ConditioningSink, start: pd.Time
     assert super_frame is None or super_frame.empty or pd.to_datetime(super_frame["date"]).min() >= start
     for name, signal in sink.signals.items():
         if name.startswith("ic_super_"):
-            before = signal.values.index < start
-            assert signal.values.loc[before].isna().all().all()
+            before = signal.available.index < start
             assert not signal.available.loc[before].to_numpy().any()
 
 

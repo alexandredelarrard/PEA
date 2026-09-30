@@ -11,7 +11,7 @@ import pytest
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from scripts.prove_insider_outliers import _panel as build_proof_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
 from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
 from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
 from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
@@ -29,7 +29,7 @@ def _bare_step() -> StepCubeInstitutionals:
     return step
 
 
-def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
+def test_final_taxonomy_is_raw_only_without_unproved_peer_legs() -> None:
     emissions = (
         CROSS_SOURCE_EMISSION,
         INSIDER_EMISSION,
@@ -60,14 +60,14 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
     }
 
     assert len(declared) == sum(map(len, emissions)), "feature names must be unique across institutional families"
-    assert set(declared.values()) == {"raw", "raw+peers"}
-    assert peer_features == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
+    assert set(declared.values()) == {"raw"}
+    assert peer_features == set()
     assert removed.isdisjoint(declared)
     assert len(declared) == 71
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 73
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 71
     print(
-        "SANITY: Phase-3 declares 71 unique characteristics / 73 legs: all raw, with only "
-        "institutional ownership and 20-day short volume retaining an interpretable peer leg."
+        "SANITY: the final schema declares 71 unique characteristics / 71 legs, all raw; "
+        "both provisional peer legs were removed because target/OOS evidence was unavailable."
     )
 
 
@@ -340,6 +340,33 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     assert got.loc[0, "f_owner"] == 3.5
     assert second not in got.loc[got["ticker"] == "AAA", "date"].tolist()
     print("SANITY: build_panel kept order, one sink, one input load, exact output schema/dtypes/nulls, and the planned window.")
+
+    incremental_panel, incremental_window = step.build_panel(full=False)
+    pd.testing.assert_frame_equal(got, incremental_panel)
+
+    class _SeededStore:
+        def __init__(self, rows: pd.DataFrame) -> None:
+            self.rows = rows.copy()
+
+        def columns(self, _table: object) -> list[str]:
+            return list(self.rows.columns)
+
+        def append_tail(self, _table: object, tail: pd.DataFrame, cutoff: pd.Timestamp, *, inclusive: bool) -> int:
+            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
+            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
+            return len(tail)
+
+    seeded = _SeededStore(got[got["date"] < second])
+    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
+    first_increment = seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(got, first_increment)
+    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
+    pd.testing.assert_frame_equal(first_increment, seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True))
+    assert not seeded.rows.duplicated(["date", "ticker"]).any()
+    print(
+        "SANITY: StepCubeInstitutionals full and seeded-incremental builds match on keys, "
+        "dtypes, null masks and values; the identical second update is idempotent."
+    )
 
 
 def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.MonkeyPatch) -> None:

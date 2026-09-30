@@ -8,9 +8,7 @@ import pandas as pd
 
 INSIDER_EDGE_COLUMNS = (
     "f_ic_insider_discretionary_sell_mcap_60d",
-    "f_ic_insider_discretionary_sell_mcap_60d_xs",
     "f_ic_insider_planned_sell_mcap_60d",
-    "f_ic_insider_planned_sell_mcap_60d_xs",
     "f_ic_insider_cluster_buy_120d",
     "f_ic_insider_distinct_buyers_120d",
 )

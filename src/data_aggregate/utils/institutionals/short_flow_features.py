@@ -64,6 +64,7 @@ from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -106,12 +107,11 @@ BASE_WINDOW = 20
 #: The 20-day price path the two interaction features condition on (#62/#63).
 RET_WINDOW = 20
 
-#: Preserve raw economic units. Only the 20-day short-volume ratio keeps a peer leg: it is the
-#: stable regime horizon, whereas 5-day noise and the 60-day slow average add no defensible
-#: peer normalization.
+#: Preserve raw economic units. The fixed candidate contains no target/OOS evidence, so no
+#: peer normalization passes the approved retention gate.
 EMISSION: dict[str, str] = {
     "ic_shortvol_ratio_5d": "raw",
-    "ic_shortvol_ratio_20d": "raw+peers",
+    "ic_shortvol_ratio_20d": "raw",
     "ic_shortvol_ratio_60d": "raw",
     "ic_shortvol_acceleration": "raw",
     "ic_shortvol_turnover_20d": "raw",
@@ -175,20 +175,15 @@ def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
     return cov.mask(over)
 
 
-def _cik(value: object) -> str:
-    digits = "".join(character for character in str(value) if character.isdigit())
-    return digits.zfill(10) if digits else ""
-
-
 def _current_ticker_by_cik(ticker_ciks: pd.DataFrame) -> dict[str, str]:
     grouped: dict[str, set[str]] = {}
     for row in ticker_ciks.itertuples(index=False):
-        grouped.setdefault(_cik(row.cik), set()).add(str(row.ticker))
+        grouped.setdefault(pad_cik(row.cik), set()).add(str(row.ticker))
     return {cik: next(iter(tickers)) for cik, tickers in grouped.items() if cik and len(tickers) == 1}
 
 
 def _lineage_target(symbol: object, issuer_cik: object, exact: dict[str, str], unique: dict[str, str]) -> str | None:
-    source_symbol, source_cik = str(symbol), _cik(issuer_cik)
+    source_symbol, source_cik = str(symbol), pad_cik(issuer_cik)
     if exact.get(source_symbol) == source_cik:
         return source_symbol
     return unique.get(source_cik)
@@ -206,7 +201,7 @@ def _proven_tenure_mask(
     if not {"symbol", "issuer_cik", "valid_from", "valid_to"}.issubset(symbol_tenure) or not {"ticker", "cik"}.issubset(ticker_ciks):
         return None
     current = _current_ticker_by_cik(ticker_ciks)
-    exact = {str(row.ticker): _cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
+    exact = {str(row.ticker): pad_cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
     mask = pd.DataFrame(False, index=idx, columns=columns)
     for row in symbol_tenure.itertuples(index=False):
         target = _lineage_target(row.symbol, row.issuer_cik, exact, current)

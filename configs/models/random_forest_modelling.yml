@@ -16,7 +16,7 @@ random_forest:
   lambda_l1: 0.0
   lambda_l2: 1.0
 
-  # DEFAULT feature list (horizon-agnostic) = h60 50-feature RF set (Boruta+SHAP,
+  # DEFAULT feature list (horizon-agnostic) = h60 48-feature RF set (Boruta+SHAP,
   # orthogonal). Used for ANY horizon that has no entry under columns_by_horizon.
   columns:
   - f_pegy_vs_peers
@@ -37,7 +37,7 @@ random_forest:
   - f_sbc_intensity_vs_peers
   - f_implied_useful_life_vs_peers
   - f_implied_useful_life_xs
-  - f_ic_inst_ownership_pct_vs_peers
+  - f_ic_inst_ownership_pct
   - f_ic_insider_distinct_buyers_120d
   - f_dividend_growth_xs
   - f_sales_yield_xs
@@ -70,9 +70,9 @@ random_forest:
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
-    30:   # 30-day RF 49-feature set (earnings-surprise / growth / distress tilted).
-          # Was written as 50 and carried `f_ic_inst_net_options_ratio` TWICE; the repeat is
-          # gone and the count is the distinct one, matching `columns` above.
+    30:   # 30-day RF 48-feature set (earnings-surprise / growth / distress tilted).
+          # One raw holdings-to-market-cap leg replaces the retired raw+cross-sectional
+          # reported-flow proxy, preserving the horizon budget without duplicating a column.
     - f_pegy_vs_peers
     - f_pegy_xs
     - f_ic_inst_net_options_ratio
@@ -81,12 +81,13 @@ random_forest:
     - f_current_ratio_xs
     - f_goodwill_intangibles_to_assets_xs
     - f_book_yield_xs
-    - f_ic_inst_ownership_pct_vs_peers
+    - f_ic_inst_ownership_pct
     - f_aoci_to_equity_xs
     - f_roic_ex_goodwill_xs
     - f_dividend_growth_xs
     - f_current_ratio_vs_peers
     - f_ic_inst_holders
+    - f_ic_inst_value_to_mcap
     - f_days_inventory_outstanding_vs_peers
     - f_sbc_intensity_xs
     - f_sga_intensity_xs

@@ -12,13 +12,13 @@ from the first four:
     conditioning     the price path since each family's last   `ic_sig_*`     (derived)
                      disclosure -- the layer that makes the
                      panel move on a day with no filing
-    cross-source     how many independent families / ACTORS    `ic_xs_*`      (derived)
-                     agree on the name
+    cross-source     how many independent source families are  `ic_xs_*`      (derived)
+                     observable for the name (support metadata)
 
 THE TWO DERIVED PANELS READ A SINK, NOT THE SOURCES AGAIN (`utils/institutionals/sink.py`).
 The insider event dates are the output of a 2M-row scope-and-repair pass and the elite ones of
-the per-manager availability join, so each source panel drops its event dates, its bullish
-actors and its handful of declared signal frames into a `ConditioningSink` on the way past.
+the per-manager availability join, so each source panel drops its event dates and a handful
+of declared availability masks into a `ConditioningSink` on the way past.
 Re-deriving either would double the most expensive read in the step.
 
 WHY IT IS NO LONGER `extras`. "Extras" named no shared property, so it accreted whatever had
@@ -149,7 +149,7 @@ class StepCubeInstitutionals(Step):
         # prices) and the table is small enough that the cost is the read, not the memory.
         splits = self._load_source(Tables.prices_splits)
 
-        # What the two DERIVED panels consume. Filled by the four source panels as they run,
+        # What the two DERIVED panels consume. Filled by the source panels as they run,
         # so nothing here re-reads a source -- see `sink.py`.
         sink = ConditioningSink()
 
@@ -514,6 +514,5 @@ class StepCubeInstitutionals(Step):
         )
 
     def _cross_source_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:
-        """The `ic_xs_*` layer: how many independent families -- and how many distinct
-        ACTORS -- are flagging this name at once, plus the both-sides conflict flag."""
+        """The `ic_xs_*` layer: raw counts of observable independent source families."""
         return build_cross_source_panel(frames, sink)

@@ -800,7 +800,7 @@ def _fill_sink(
     availability: InstitutionalAvailability | None,
     family_start: pd.Timestamp,
 ) -> None:
-    """Hand the derived panels this family's event dates, bullish actors and signal frames.
+    """Hand the derived panels this family's event dates and validated availability masks.
 
     ⚠ THE TWO EVENT SETS ARE DIFFERENT AND THAT IS THE POINT. `events` is every disclosure by
     a selected manager who holds the name -- the date the conditioning layer measures its

@@ -39,7 +39,7 @@ def _available_count(
     resolved, missing = [], []
     for role, name in inputs.items():
         signal = signals.get(name)
-        if signal is None or signal.values.empty:
+        if signal is None or signal.available.empty:
             missing.append(f"{role} ({name})")
             continue
         available = signal.available.reindex(index=idx, columns=columns, fill_value=False)
@@ -101,7 +101,7 @@ def build_cross_source_panel(
     else:
         cols: set[str] = set()
         for signal in signals.values():
-            cols |= set(map(str, signal.values.columns))
+            cols |= set(map(str, signal.available.columns))
         columns = pd.Index(sorted(cols), name="ticker")
     if not len(columns):
         return pd.DataFrame(columns=["date", "ticker"])

@@ -19,7 +19,7 @@ from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.decay import decay_events, snap_to_grid
+from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_store.schema import Tables
 
 #: The columns `_canonicalize` reads off EITHER schedule without checking first. The
@@ -87,12 +87,6 @@ def _canonicalize(df: pd.DataFrame | None, has_amendment: bool = True) -> pd.Dat
     if has_amendment:
         agg_map["is_amendment"] = ("is_amendment", "first")
     return d.groupby(key, sort=False).agg(**agg_map).reset_index()
-
-
-def _snap_to_grid(dates: pd.Series, idx: pd.DatetimeIndex) -> pd.Series:
-    """Snap each date onto the first trading day >= it -- see `decay.snap_to_grid`, which now
-    owns the rule because the conditioning layer needs the same one."""
-    return snap_to_grid(dates, idx)
 
 
 def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:

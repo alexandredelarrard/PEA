@@ -308,12 +308,12 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     peers = {"HI": {"MID": 1.0, "LO": 1.0}, "MID": {"HI": 1.0, "LO": 1.0}, "LO": {"HI": 1.0, "MID": 1.0}}
 
     panel = build_short_flow_feature_panel(make_frames(idx, peers, volume=volume), None, fails_history=fails)
-    assert "f_ic_ftd_to_adv20_xs" in panel.columns
+    assert "f_ic_ftd_to_adv20" in panel.columns
 
     # after the publication lag, HI (0.1 fails/ADV20) ranks above LO (0.0001)
     d = idx[FTD_PUB_LAG + 25]
     row = panel[panel["date"] == d].set_index("ticker")
-    assert row["f_ic_ftd_to_adv20_xs"]["HI"] > row["f_ic_ftd_to_adv20_xs"]["LO"]
+    assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
     assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
 
     # leak-free: before the publication lag the fails signal is not yet visible

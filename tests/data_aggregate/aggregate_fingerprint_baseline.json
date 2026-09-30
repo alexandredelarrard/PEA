@@ -1282,7 +1282,7 @@
   "rows": 43010
  },
  "panel.institutional": {
-  "cols": 13,
+  "cols": 12,
   "columns": [
    "date",
    "f_ic_inst_breadth_chg",
@@ -1293,12 +1293,11 @@
    "f_ic_inst_net_options_ratio",
    "f_ic_inst_new_buyer_ratio",
    "f_ic_inst_ownership_pct",
-   "f_ic_inst_ownership_pct_vs_peers",
    "f_ic_inst_shares_chg",
    "f_ic_inst_value_to_mcap",
    "ticker"
   ],
-  "hash": "12ef0dfaedc4e23e1a3556bd789a4b93",
+  "hash": "e1c18201ab6807d6af8285b152cf5503",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_inst_breadth_chg": "788bd070a1e9ff59",
@@ -1309,7 +1308,6 @@
    "f_ic_inst_net_options_ratio": "8ce17f73db97b575",
    "f_ic_inst_new_buyer_ratio": "b355dc70f4608a26",
    "f_ic_inst_ownership_pct": "e2bea3e8224d0f11",
-   "f_ic_inst_ownership_pct_vs_peers": "acc9754b998bd8d7",
    "f_ic_inst_shares_chg": "a1fe0778afb67504",
    "f_ic_inst_value_to_mcap": "a1e00d98a9de1459",
    "ticker": "20baf79a52b9d113"
@@ -2751,7 +2749,7 @@
   "rows": 43010
  },
  "panel.short_flow": {
-  "cols": 13,
+  "cols": 12,
   "columns": [
    "date",
    "f_ic_ftd_persistence_30d",
@@ -2761,13 +2759,12 @@
    "f_ic_shortvol_high_x_weak_price",
    "f_ic_shortvol_market_coverage",
    "f_ic_shortvol_ratio_20d",
-   "f_ic_shortvol_ratio_20d_vs_peers",
    "f_ic_shortvol_ratio_5d",
    "f_ic_shortvol_ratio_60d",
    "f_ic_shortvol_turnover_20d",
    "ticker"
   ],
-  "hash": "1b91f96b27af3b366b9e563658acbb11",
+  "hash": "1c260fb8dd8df01b8f9f495f15b49e9a",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_ftd_persistence_30d": "3ecb8a6659a9eb27",
@@ -2777,7 +2774,6 @@
    "f_ic_shortvol_high_x_weak_price": "0c16e70758cd05f7",
    "f_ic_shortvol_market_coverage": "b2b3679855e569fc",
    "f_ic_shortvol_ratio_20d": "a8cc6821abcad3f2",
-   "f_ic_shortvol_ratio_20d_vs_peers": "4c7ec9f1a8e54a7a",
    "f_ic_shortvol_ratio_5d": "a211975d2d869e6e",
    "f_ic_shortvol_ratio_60d": "c35df12a89f0637b",
    "f_ic_shortvol_turnover_20d": "9b825b7ecbed6827",

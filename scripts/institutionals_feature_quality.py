@@ -841,6 +841,9 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
             log.info("timeseries candidate: %d/%d columns", index, len(columns))
     stalled = [row for row in frozen if not row["at_extreme"]]
     saturated = [row for row in frozen if row["at_extreme"]]
+    holes_by_field = pd.Series([row["field"] for row in holes], dtype="string").value_counts().to_dict()
+    explained_by_field = pd.Series([row["field"] for row in explained], dtype="string").value_counts().to_dict()
+    frozen_by_field = pd.Series([row["field"] for row in stalled], dtype="string").value_counts().to_dict()
     failures = bool(holes or stalled or missing_conditions)
     return _result(
         "timeseries",
@@ -859,6 +862,9 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
             "n_frozen": len(stalled),
             "n_frozen_at_extreme": len(saturated),
             "n_jumps": len(jumps),
+            "holes_by_field": holes_by_field,
+            "explained_holes_by_field": explained_by_field,
+            "frozen_by_field": frozen_by_field,
             "missing_condition_fields": missing_conditions,
             "worst_holes": sorted(holes, key=lambda row: -row["days"])[:40],
             "worst_frozen": sorted(stalled, key=lambda row: -row["days"])[:40],

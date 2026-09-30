@@ -11,8 +11,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.data_extract.utils.common.run_manifest import changed_scope_tickers, manifest_window, record_filing_outcomes, record_run
 from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
-from src.data_extract.utils.common.run_manifest import manifest_window, record_filing_outcomes, record_run
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
@@ -38,6 +38,23 @@ def test_record_run_roundtrip(tmp_path):
 
     print("\n=== SANITY CHECK: run_manifest round-trip ===")
     print(f"  wrote/read extraction_manifest.json: {entry}. Validated.")
+
+
+def test_identity_scope_change_is_detected_per_ticker_with_unchanged_universe(tmp_path):
+    ctx = _ctx(tmp_path)
+    prior = {"AAA": "same", "BBB": "old"}
+    current = {"AAA": "same", "BBB": "new"}
+    assert changed_scope_tickers({"identity_scope_fingerprints": prior}, current) == frozenset({"BBB"})
+
+    record_run(
+        ctx,
+        "sec_8k",
+        ticker_count=2,
+        rows_added=0,
+        identity_scope_fingerprints=current,
+    )
+    assert get_entry(ctx, "sec_8k")["identity_scope_fingerprints"] == current
+    print("\nSANITY: unchanged ticker count still invalidates only BBB after its identity scope changes.")
 
 
 def test_record_run_does_not_clobber_sibling_tables(tmp_path):

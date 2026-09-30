@@ -49,7 +49,7 @@ from __future__ import annotations
 import logging
 import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal, cast
 
@@ -193,6 +193,8 @@ class Identity:
     roster_proxy_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Separately traded share classes deliberately absent from the modelling universe.
     redundant_symbols: frozenset[str]
+    #: Raw symbol -> observed issuer CIKs, retained for filing-scope discovery.
+    ciks_by_symbol: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ axis A #
 
@@ -612,6 +614,9 @@ def build_identity(
         manual_tenure_by_symbol={s: tuple(v) for s, v in manual_tenure_by_symbol.items()},
         roster_proxy_by_symbol=roster_proxy_by_symbol,
         redundant_symbols=frozenset(str(symbol).strip().upper().replace(".", "-") for symbol in (redundant_symbols or frozenset())),
+        ciks_by_symbol={
+            str(symbol): frozenset(normalise_cik(cik) for cik in rows["issuer_cik"]) for symbol, rows in tenure.groupby("symbol", sort=False)
+        },
     )
 
     _check_d19(identity, allowlist, today)

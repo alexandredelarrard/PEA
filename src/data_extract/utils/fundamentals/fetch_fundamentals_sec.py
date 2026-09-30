@@ -44,6 +44,7 @@ from src.data_extract.utils.common.edgar_driver import (
     period_of_report,
     run_edgar_fetch,
 )
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
@@ -749,7 +750,14 @@ def _row(
 
 
 def filing_rows(
-    ticker: str, cik: str, filing, catalogue: Catalogue, gics: dict[str, str | None] | None, *, failures: list[tuple[str, str]] | None = None
+    ticker: str,
+    cik: str,
+    filing,
+    catalogue: Catalogue,
+    gics: dict[str, str | None] | None,
+    *,
+    failures: list[tuple[str, str]] | None = None,
+    no_xbrl: list[str] | None = None,
 ) -> list[dict]:
     """Every catalogue field, for every period, from one filing.
 
@@ -772,6 +780,8 @@ def filing_rows(
         _note_failure(failures, filing, exc)
         return []
     if xbrl is None:
+        if no_xbrl is not None:
+            no_xbrl.append(str(getattr(filing, "accession_number", "unknown")))
         return []
     try:
         return rows_from_xbrl(ticker, cik, filing, xbrl, catalogue, gics)
@@ -947,6 +957,9 @@ def build_ticker_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
     registrants: dict[str, Registrant] | None = None,
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> dict[Table, pd.DataFrame]:
     """One ticker's facts, walking EVERY registrant in its chain.
 
@@ -966,33 +979,65 @@ def build_ticker_fundamentals(
     The `cik` recorded on each row is the registrant that actually FILED it, not the
     ticker's current one, so a row's provenance survives the boundary.
     """
-    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=since, done_accessions=done_accessions, registrants=registrants)
+    discovery: dict[str, int] = {}
+    filings = resolve_registrant_filings(
+        ticker,
+        FUNDAMENTALS_FORMS,
+        since=since,
+        done_accessions=done_accessions,
+        registrants=registrants,
+        identity=identity,
+        symbol_tenure=symbol_tenure,
+        roster_cik=roster_cik,
+        stats=discovery,
+    )
     rows: list[dict] = []
-    # Headcount rides the SAME walk (decision 35): the number is in the 10-K prose this loop
-    # already has a handle on, so a separate fetcher would list, download and date those
-    # filings a second time. The continuity guard is seeded from what is already stored and
-    # grows as the walk goes -- `new_filings` is oldest-first, so each 10-K is judged against
-    # every earlier one exactly as a full-history pass would judge it.
     # Unreadable filings, `(accession, error)`. Counted rather than merely skipped: a walk
     # that quietly drops filings and a walk that finds none look identical in the row count.
     failures: list[tuple[str, str]] = []
+    no_xbrl: list[str] = []
     for filing in filings:
         # The CIK that FILED this document. The SPLIT walk lists per segment, so the
         # filing already carries its own registrant's CIK; `filed_by` just falls back
         # to the roster's when a filing exposes none.
         filing_cik = filed_by(filing, cik)
-        rows.extend(filing_rows(ticker, filing_cik, filing, catalogue, gics_by_ticker.get(ticker), failures=failures))
+        rows.extend(
+            filing_rows(
+                ticker,
+                filing_cik,
+                filing,
+                catalogue,
+                gics_by_ticker.get(ticker),
+                failures=failures,
+                no_xbrl=no_xbrl,
+            )
+        )
     if failures:
         logger.warning(
             "%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures), len(filings), ", ".join(f"{acc} ({err})" for acc, err in failures)
         )
-    # The line that would have caught the `cols` NameError in hour one instead of hour ten:
-    # filings were walked and NOT ONE of them yielded a fact. Never a normal outcome -- every
-    # 10-K/10-Q in `FUNDAMENTALS_FORMS` carries some catalogue field -- so it is an ERROR even
-    # though the walk itself completed and the run will report success.
+    already_stored = discovery.get("skipped_existing", len(done_accessions))
+    producing = len({str(row["accession_number"]) for row in rows})
+    logger.info(
+        "%s: %d filing(s) resolved: %d already stored, %d no XBRL, %d unreadable, %d produced facts",
+        ticker,
+        already_stored + len(filings),
+        already_stored,
+        len(no_xbrl),
+        len(failures),
+        producing,
+    )
     if filings and not rows:
-        logger.error(
-            "%s: 0 facts from %d filing(s) (%d unreadable) -- the ticker's whole history is missing, not empty", ticker, len(filings), len(failures)
+        if already_stored == 0:
+            raise RuntimeError(
+                f"{ticker}: no usable XBRL from {len(filings)} eligible filing(s) ({len(no_xbrl)} no XBRL, {len(failures)} unreadable)"
+            )
+        logger.info(
+            "%s: complete/no new facts (%d already stored, %d no XBRL, %d unreadable)",
+            ticker,
+            already_stored,
+            len(no_xbrl),
+            len(failures),
         )
     df = pd.DataFrame(rows, columns=_COLS)
     if df.empty:
@@ -1049,4 +1094,5 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
         cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers),
         require_complete=True,
+        identity_aware=True,
     )

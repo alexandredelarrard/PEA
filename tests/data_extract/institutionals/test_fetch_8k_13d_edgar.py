@@ -89,6 +89,7 @@ def test_fetch_8k_edgar_forwards_full_history_to_shared_driver(monkeypatch):
             "desc": "8-K (edgartools)",
             "full": True,
             "require_complete": True,
+            "identity_aware": True,
         }
     ]
     print("\n=== SANITY: 8-K full-history plumbing ===")

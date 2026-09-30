@@ -46,6 +46,7 @@ from src.data_extract.utils.common.edgar_driver import (
     num_or_null,
     run_edgar_fetch,
 )
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.registrant import issuer_ciks
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
@@ -579,6 +580,9 @@ def build_ticker_13d_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> dict[Table, pd.DataFrame]:
     """One row per reporting person plus the filing's Item 5(c) trade log. A filing whose
     `.obj()` parse fails is skipped entirely -- unlike 8-K's item codes, a 13D without its
@@ -591,7 +595,7 @@ def build_ticker_13d_edgar(
     filings whose issuer CIK matches the ticker's own are kept; otherwise every field would
     describe a different company. An unresolvable CIK on either side means "unknown", which
     must NOT reject -- hence the falsiness checks rather than an equality test alone."""
-    ticker_ciks = issuer_ciks(ticker, cik)
+    ticker_ciks = issuer_ciks(ticker, roster_cik or cik, identity=identity)
     rows: list[dict] = []
     txn_rows: list[dict] = []
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13D_FORMS, since, done_accessions):
@@ -635,4 +639,5 @@ def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int, fu
         desc="SC 13D (edgartools)",
         full=full,
         require_complete=True,
+        identity_aware=True,
     )

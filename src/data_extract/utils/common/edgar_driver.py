@@ -16,12 +16,15 @@ from typing import Protocol
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import (
+    identity_scope_fingerprint,
+    load_registrants,
     resolve_registrant_filings,
     resolve_schedule_subject_filings,
 )
-from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
+from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_store.schema import Table
 
@@ -114,10 +117,29 @@ def num_or_null(value, trust_value: bool) -> float:
 
 
 class BuildFn(Protocol):
-    def __call__(self, ticker: str, cik: str, *, since: pd.Timestamp | None, done_accessions: frozenset[str]) -> dict[Table, pd.DataFrame]: ...
+    def __call__(
+        self,
+        ticker: str,
+        cik: str,
+        *,
+        since: pd.Timestamp | None,
+        done_accessions: frozenset[str],
+        identity: Identity | None = None,
+        symbol_tenure: pd.DataFrame | None = None,
+        roster_cik: str | None = None,
+    ) -> dict[Table, pd.DataFrame]: ...
 
 
-def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None, done_accessions: frozenset[str]) -> list:
+def new_filings(
+    ticker: str,
+    forms: list[str],
+    since: pd.Timestamp | None,
+    done_accessions: frozenset[str],
+    *,
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
+) -> list:
     """`ticker`'s filings of `forms`, oldest first, stripped of stored accessions and of
     anything filed before `since`.
 
@@ -131,7 +153,15 @@ def new_filings(ticker: str, forms: list[str], since: pd.Timestamp | None, done_
     silently, is how this defect class stayed invisible for a year, and a new form family
     quietly inheriting the wrong rule would be the same failure wearing different clothes.
     """
-    return resolve_registrant_filings(ticker, forms, since=since, done_accessions=done_accessions)
+    return resolve_registrant_filings(
+        ticker,
+        forms,
+        since=since,
+        done_accessions=done_accessions,
+        identity=identity,
+        symbol_tenure=symbol_tenure,
+        roster_cik=roster_cik,
+    )
 
 
 def new_schedule_filings(
@@ -165,6 +195,7 @@ def run_edgar_fetch(
     minimum_since: pd.Timestamp | None = None,
     completion_table: Table | None = None,
     require_complete: bool = False,
+    identity_aware: bool = False,
 ) -> None:
     """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
     -> {table: frame}`.
@@ -192,6 +223,35 @@ def run_edgar_fetch(
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
+    identity: Identity | None = None
+    symbol_tenure: pd.DataFrame | None = None
+    scope_fingerprints: dict[str, str] | None = None
+    changed_scopes: frozenset[str] = frozenset()
+    if identity_aware:
+        identity = load_identity(context)
+        symbol_tenure = pd.DataFrame(
+            [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
+            columns=["symbol", "issuer_cik"],
+        )
+        registrants = load_registrants(str(context.config_dir))
+        scope_fingerprints = {
+            str(row.ticker): identity_scope_fingerprint(
+                str(row.ticker),
+                str(row.cik),
+                identity,
+                symbol_tenure,
+                registrants,
+            )
+            for row in cik_map.itertuples()
+        }
+        changed_scopes = changed_scope_tickers(get_entry(context, tables[0]), scope_fingerprints)
+        if changed_scopes:
+            context.log.info(
+                "%s: %d ticker identity scope(s) changed -> full-window relist: %s",
+                desc,
+                len(changed_scopes),
+                ", ".join(sorted(changed_scopes)),
+            )
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
     if minimum_since is not None:
         fallback_since = max(fallback_since, pd.Timestamp(minimum_since).normalize())
@@ -240,7 +300,13 @@ def run_edgar_fetch(
 
     def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
         try:
-            frames = build(ticker, cik, since=since, done_accessions=done)
+            kwargs = {
+                "since": fallback_since if ticker in changed_scopes else since,
+                "done_accessions": done,
+            }
+            if identity_aware:
+                kwargs.update(identity=identity, symbol_tenure=symbol_tenure, roster_cik=cik)
+            frames = build(ticker, cik, **kwargs)
         except PROGRAMMING_ERRORS:
             # Our bug, not this ticker's data: let it escape the pool and fail the run.
             # `run_per_ticker` re-raises whatever escapes a worker, which is the point --
@@ -310,4 +376,5 @@ def run_edgar_fetch(
             totals[table],
             is_full_rescan=is_full_rescan,
             coverage_complete=require_complete,
+            identity_scope_fingerprints=scope_fingerprints,
         )

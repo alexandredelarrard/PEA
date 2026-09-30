@@ -162,6 +162,8 @@ def test_incomplete_fetch_persists_successful_outcomes_but_not_frontier(monkeypa
         lambda *args, **kwargs: pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]}),
     )
     monkeypatch.setattr(mod, "load_registrants", lambda *args, **kwargs: {})
+    monkeypatch.setattr(mod, "load_identity", lambda *args, **kwargs: SimpleNamespace(ciks_by_symbol={}))
+    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args, **kwargs: "scope")
     monkeypatch.setattr(
         mod,
         "run_per_ticker",
@@ -234,6 +236,8 @@ def test_full_reconsiders_parser_outcomes_but_not_saved_accessions(monkeypatch, 
     record_filing_outcomes(context, Tables.fundamentals_employees, outcomes)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args, **kwargs: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
     monkeypatch.setattr(mod, "load_registrants", lambda *args, **kwargs: {})
+    monkeypatch.setattr(mod, "load_identity", lambda *args, **kwargs: SimpleNamespace(ciks_by_symbol={}))
+    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args, **kwargs: "scope")
     monkeypatch.setattr(
         mod,
         "run_per_ticker",

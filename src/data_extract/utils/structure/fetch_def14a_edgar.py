@@ -42,6 +42,7 @@ import pandas as pd
 from src.constants.constants import DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Table, Tables
@@ -122,6 +123,9 @@ def build_ticker_def14a_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> dict[Table, pd.DataFrame]:
     """One ECD row per tagged filing. A filing with no `ecd:` facts yields nothing.
 
@@ -131,7 +135,15 @@ def build_ticker_def14a_edgar(
     straight to the facts frame treats both forms alike.
     """
     rows: list[dict] = []
-    for f in new_filings(ticker, DEF14A_FORMS, since, done_accessions):
+    for f in new_filings(
+        ticker,
+        DEF14A_FORMS,
+        since,
+        done_accessions,
+        identity=identity,
+        symbol_tenure=symbol_tenure,
+        roster_cik=roster_cik,
+    ):
         facts = ecd_facts(f)
         if not has_ecd_block(facts):
             continue  # pre-402(v) fiscal year -- correct behaviour, no row
@@ -182,6 +194,7 @@ def fetch_def14a_edgar(context: Context, tickers: list[str], years_history: int)
         years_history,
         tables=tuple(_NUMERIC_COLS),
         build=build_ticker_def14a_edgar,
+        identity_aware=True,
         desc="DEF 14A (ECD XBRL)",
         require_complete=True,
     )

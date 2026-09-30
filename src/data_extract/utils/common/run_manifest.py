@@ -69,6 +69,12 @@ def get_entry(context: Context, table: Table | str) -> dict | None:
     return _load_manifest(context).get(name_of(table))
 
 
+def changed_scope_tickers(entry: dict | None, current: dict[str, str]) -> frozenset[str]:
+    """Tickers whose identity-aware filing scope is new or changed."""
+    prior = (entry or {}).get("identity_scope_fingerprints", {})
+    return frozenset(ticker for ticker, fingerprint in current.items() if prior.get(ticker) != fingerprint)
+
+
 def record_filing_outcomes(
     context: Context,
     table: Table | str,
@@ -152,6 +158,7 @@ def record_run(
     run_date: pd.Timestamp | str | None = None,
     backfill_window: tuple[str, str] | None = None,
     coverage_complete: bool = False,
+    identity_scope_fingerprints: dict[str, str] | None = None,
 ) -> None:
     """Merge this table's run stats into the shared manifest (read-modify-write --
     every fetcher in a step run shares the one file, so this must not clobber
@@ -190,7 +197,7 @@ def record_run(
     last_full_rescan_date = run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date")) else prior["last_full_rescan_date"]
 
     entry = {
-        **{k: v for k, v in prior.items() if k in {"backfills", "filing_outcomes"}},
+        **{k: v for k, v in prior.items() if k in {"backfills", "filing_outcomes", "identity_scope_fingerprints"}},
         "last_run_date": run_date_str,
         "last_full_rescan_date": last_full_rescan_date,
         "ticker_count": int(ticker_count),
@@ -199,5 +206,7 @@ def record_run(
     }
     if coverage_complete:
         entry["coverage_complete"] = True
+    if identity_scope_fingerprints is not None:
+        entry["identity_scope_fingerprints"] = dict(sorted(identity_scope_fingerprints.items()))
     manifest[name] = entry
     _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

@@ -26,6 +26,7 @@ from src.data_extract.utils.common.edgar_driver import (
     period_of_report,
     run_edgar_fetch,
 )
+from src.data_extract.utils.common.identity import Identity
 from src.data_store.schema import Table, Tables
 
 _COLS = [
@@ -190,8 +191,22 @@ def build_ticker_8k_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> dict[Table, pd.DataFrame]:
-    rows = itertools.chain.from_iterable(_filing_row(ticker, cik, f) for f in new_filings(ticker, SEC_8K_FORMS, since, done_accessions))
+    rows = itertools.chain.from_iterable(
+        _filing_row(ticker, cik, f)
+        for f in new_filings(
+            ticker,
+            SEC_8K_FORMS,
+            since,
+            done_accessions,
+            identity=identity,
+            symbol_tenure=symbol_tenure,
+            roster_cik=roster_cik,
+        )
+    )
     df = pd.DataFrame(list(rows), columns=_COLS)
     # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
     # would make the upsert touch one PK row twice, which Postgres rejects outright.
@@ -208,4 +223,5 @@ def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int, ful
         desc="8-K (edgartools)",
         full=full,
         require_complete=True,
+        identity_aware=True,
     )

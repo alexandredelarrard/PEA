@@ -29,6 +29,7 @@ from src.data_extract.utils.common.registrant import (
     Registrant,
     Segment,
     combine_for,
+    identity_scope_fingerprint,
     resolve_registrant_filings,
 )
 
@@ -82,6 +83,35 @@ class _Identity:
 
 def _tenure(*pairs: tuple[str, str]) -> pd.DataFrame:
     return pd.DataFrame(pairs, columns=["symbol", "issuer_cik"])
+
+
+def test_identity_scope_fingerprint_is_order_stable_and_ticker_scoped():
+    identity = _Identity("ZBH", {"0001136869": "zimmer"})
+    first = identity_scope_fingerprint(
+        "ZBH",
+        "0001136869",
+        identity,
+        _tenure(("ZMH", "0001136869"), ("ZBH", "0001136869")),
+        {},
+    )
+    reordered = identity_scope_fingerprint(
+        "ZBH",
+        "0001136869",
+        identity,
+        _tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
+        {},
+    )
+    changed = identity_scope_fingerprint(
+        "ZBH",
+        "0001136869",
+        identity,
+        _tenure(("ZBH", "0001136869"), ("ZMH", "0001136869"), ("OLDZ", "0001136869")),
+        {},
+    )
+
+    assert first == reordered
+    assert first != changed
+    print("\nSANITY: an identity-scope digest is stable under row order and changes only when that ticker's candidates change.")
 
 
 # --------------------------------------------------------------------------- #
@@ -187,8 +217,21 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
     )
 
     assert [f.accession_number for f in out] == ["old", "shared", "new"]
+    stats: dict[str, int] = {}
+    resolve_registrant_filings(
+        "ZBH",
+        ["10-K"],
+        since=None,
+        done_accessions=frozenset({"shared"}),
+        registrants={},
+        identity=identity,
+        symbol_tenure=_tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
+        roster_cik="0001136869",
+        stats=stats,
+    )
+    assert stats == {"skipped_existing": 1}
     print("\n=== SANITY CHECK: same-CIK alias discovery ===")
-    print("  ZBH + ZMH were walked; their shared accession was returned once. Validated.")
+    print("  ZBH + ZMH were walked; their shared accession was returned and counted once. Validated.")
 
 
 def test_identity_discovered_cik_transition_requires_a_complete_curated_chain(monkeypatch):

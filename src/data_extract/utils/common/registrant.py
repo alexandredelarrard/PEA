@@ -35,6 +35,7 @@ nightly path. `tests/data_extract/common/test_registrant_live.py` asserts it ins
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Sequence
@@ -329,6 +330,52 @@ class AmbiguousRegistrantScopeError(RuntimeError):
     """Identity found a CIK transition that has no complete dated registrant chain."""
 
 
+def identity_scope_fingerprint(
+    ticker: str,
+    roster_cik: str,
+    identity: Any,
+    symbol_tenure: pd.DataFrame,
+    registrants: dict[str, Registrant],
+) -> str:
+    """Stable digest of one ticker's discovered and authoritative filing scope."""
+    ticker = str(ticker).strip().upper()
+    roster_cik = _normalise_cik(roster_cik)
+    entity = identity.universe_entity(ticker)
+    candidate_ciks = {_normalise_cik(cik) for cik in identity.ciks_for(entity)} | {roster_cik}
+    candidate_symbols = {ticker}
+    for row in symbol_tenure.loc[:, ["symbol", "issuer_cik"]].itertuples(index=False):
+        if pd.isna(row.symbol) or pd.isna(row.issuer_cik):
+            continue
+        cik = _normalise_cik(row.issuer_cik)
+        if identity.entity_of(cik) != entity:
+            continue
+        candidate_ciks.add(cik)
+        candidate_symbols.add(str(row.symbol).strip().upper())
+
+    entry = registrants.get(ticker)
+    segments = (
+        []
+        if entry is None
+        else [
+            {
+                "cik": _normalise_cik(segment.cik),
+                "valid_from": None if segment.valid_from is None else pd.Timestamp(segment.valid_from).date().isoformat(),
+                "valid_to": None if segment.valid_to is None else pd.Timestamp(segment.valid_to).date().isoformat(),
+            }
+            for segment in entry.segments
+        ]
+    )
+    payload = {
+        "canonical_ticker": ticker,
+        "roster_cik": roster_cik,
+        "candidate_ciks": sorted(candidate_ciks),
+        "candidate_symbols": sorted(candidate_symbols),
+        "authoritative_segments": segments,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _identity_filing_scope(
     ticker: str,
     roster_cik: str,
@@ -382,15 +429,17 @@ def resolve_registrant_filings(
     identity: Any | None = None,
     symbol_tenure: pd.DataFrame | None = None,
     roster_cik: str | None = None,
+    stats: dict[str, int] | None = None,
 ) -> list:
     """Every filing of `forms` for `ticker`, across its registrant chain, oldest first.
 
     THE SINGLE PLACE THAT DECIDES WHICH CIKs A TICKER'S FILINGS COME FROM. Combination is
     per-form, from `FORM_POLICY`; a mixed `forms` list raises.
 
-    ⚠ NO REGISTER ENTRY -> EXACTLY TODAY'S BEHAVIOUR. That path must stay byte-identical to
-    `Company(ticker).get_filings(...)`, because ~449 of the 491 tickers take it and a change
-    there would move every one of them while the register moved none.
+    With no register entry and no identity-discovered alias or CIK, behavior stays identical
+    to `Company(ticker).get_filings(...)`. Identity may add same-CIK historical symbols for
+    discovery; a newly discovered CIK is additive for UNION forms and fails closed for SPLIT
+    forms until the register supplies an authoritative dated chain.
 
     UNION walks `Company(ticker)` PLUS every segment CIK and dedups on accession, with the
     ticker-resolved registrant FIRST so first-writer-wins preserves the provenance of every
@@ -410,6 +459,9 @@ def resolve_registrant_filings(
     registrants = load_registrants() if registrants is None else registrants
     entry = registrants.get(ticker)
     forms = list(forms)
+    skipped_existing: set[str] = set()
+    if stats is not None:
+        stats.setdefault("skipped_existing", 0)
 
     identity_inputs = (identity is not None, symbol_tenure is not None, roster_cik is not None)
     if any(identity_inputs) and not all(identity_inputs):
@@ -421,6 +473,9 @@ def resolve_registrant_filings(
 
     def _keep(f) -> pd.Timestamp | None:
         if f.accession_number in done_accessions:
+            if stats is not None:
+                skipped_existing.add(f.accession_number)
+                stats["skipped_existing"] = len(skipped_existing)
             return None
         filed = pd.Timestamp(f.filing_date)
         return None if since is not None and filed < since else filed
@@ -514,7 +569,12 @@ def resolve_registrant_filings(
     return [f for _, f in dated]
 
 
-def issuer_ciks(ticker: str, roster_cik: str, registrants: dict[str, Registrant] | None = None) -> frozenset[str]:
+def issuer_ciks(
+    ticker: str,
+    roster_cik: str,
+    registrants: dict[str, Registrant] | None = None,
+    identity: Any | None = None,
+) -> frozenset[str]:
     """Every CIK that legitimately identifies THIS ticker as the SUBJECT of a schedule.
 
     ⚠ THE ISSUER/FILER GUARD ON 13D/13G WAS A SINGLE-CIK TEST, AND THE REGISTER BROKE IT.
@@ -536,6 +596,8 @@ def issuer_ciks(ticker: str, roster_cik: str, registrants: dict[str, Registrant]
     entry = registrants.get(ticker)
     if entry is not None:
         ciks.update(entry.all_ciks())
+    if identity is not None:
+        ciks.update(identity.ciks_for(identity.universe_entity(ticker)))
     return frozenset(c for c in ciks if c)
 
 

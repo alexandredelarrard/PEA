@@ -22,9 +22,16 @@ from src.data_extract.utils.common.edgar_driver import (
     period_of_report,
 )
 from src.data_extract.utils.common.edgar_extract import extract_employee_count, html_to_text
+from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.registrant import (
+    Registrant,
+    identity_scope_fingerprint,
+    load_registrants,
+    resolve_registrant_filings,
+)
 from src.data_extract.utils.common.run_manifest import (
+    changed_scope_tickers,
     get_entry,
     manifest_window,
     record_filing_outcomes,
@@ -226,6 +233,9 @@ def build_ticker_employees(
     registrants: dict[str, Registrant] | None,
     history: list[int],
     pending_outcomes: list[dict],
+    identity: Identity | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    roster_cik: str | None = None,
 ) -> EmployeeTickerResult:
     """Parse one ticker's annual filings and classify every readable accession."""
     filings = resolve_registrant_filings(
@@ -234,6 +244,9 @@ def build_ticker_employees(
         since=since,
         done_accessions=done_accessions,
         registrants=registrants,
+        identity=identity,
+        symbol_tenure=symbol_tenure,
+        roster_cik=roster_cik,
     )
     candidates = [_candidate_from_outcome(outcome) for outcome in pending_outcomes]
     outcomes: list[dict] = []
@@ -360,6 +373,23 @@ def fetch_fundamentals_employees(
     cik_map = load_cik_mapping(context, tickers)
     fallback_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     entry = get_entry(context, Tables.fundamentals_employees) or {}
+    identity = load_identity(context)
+    symbol_tenure = pd.DataFrame(
+        [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
+        columns=["symbol", "issuer_cik"],
+    )
+    registrants = load_registrants(str(context.config_dir))
+    scope_fingerprints = {
+        str(row.ticker): identity_scope_fingerprint(
+            str(row.ticker),
+            str(row.cik),
+            identity,
+            symbol_tenure,
+            registrants,
+        )
+        for row in cik_map.itertuples()
+    }
+    changed_scopes = changed_scope_tickers(entry, scope_fingerprints)
     if full or not entry.get("coverage_complete"):
         since, is_full_rescan = fallback_since, True
     else:
@@ -394,7 +424,6 @@ def fetch_fundamentals_employees(
             if outcome.get("status") == PENDING_REGIME:
                 pending_by_ticker.setdefault(str(outcome["ticker"]), []).append(outcome)
 
-    registrants = load_registrants(str(context.config_dir))
     create_lock = threading.Lock()
     created = False
 
@@ -412,11 +441,14 @@ def fetch_fundamentals_employees(
             result = build_ticker_employees(
                 ticker,
                 cik,
-                since=since,
+                since=fallback_since if ticker in changed_scopes else since,
                 done_accessions=done,
                 registrants=registrants,
                 history=histories.get(ticker, []),
                 pending_outcomes=pending_by_ticker.get(ticker, []),
+                identity=identity,
+                symbol_tenure=symbol_tenure,
+                roster_cik=cik,
             )
             if not result.frame.empty:
                 _save(result.frame)
@@ -461,4 +493,5 @@ def fetch_fundamentals_employees(
         rows_added,
         is_full_rescan=is_full_rescan,
         coverage_complete=True,
+        identity_scope_fingerprints=scope_fingerprints,
     )

@@ -22,6 +22,7 @@ from src.data_extract.utils.common.edgar_driver import (
 )
 from src.data_extract.utils.common.registrant import Registrant, Segment
 from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store import schema
 from src.data_store.schema import Table, Tables
@@ -515,6 +516,48 @@ def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path,
 
     print("\n=== SANITY CHECK: driver window + dedup wiring ===")
     print(f"  cold manifest -> since={seen['since'].date()} (15y back); done_accessions read from the table: {sorted(seen['done'])}. Validated.")
+
+
+def test_identity_scope_change_rewinds_only_the_changed_ticker(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
+    ctx.config_dir = tmp_path
+    prior_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    record_run(
+        ctx,
+        _T_MAIN,
+        ticker_count=2,
+        rows_added=0,
+        is_full_rescan=True,
+        run_date=prior_date,
+        identity_scope_fingerprints={"AAPL": "same", "MSFT": "old"},
+    )
+    identity = types.SimpleNamespace(ciks_by_symbol={})
+    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_identity", lambda context: identity)
+    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_registrants", lambda config_dir: {})
+    monkeypatch.setattr(
+        "src.data_extract.utils.common.edgar_driver.identity_scope_fingerprint",
+        lambda ticker, *args: {"AAPL": "same", "MSFT": "new"}[ticker],
+    )
+    seen: dict[str, pd.Timestamp] = {}
+
+    def build(ticker, cik, *, since, done_accessions, identity, symbol_tenure, roster_cik):
+        seen[ticker] = since
+        return {}
+
+    run_edgar_fetch(
+        ctx,
+        ["AAPL", "MSFT"],
+        15,
+        tables=(_T_MAIN,),
+        build=build,
+        desc="identity test",
+        identity_aware=True,
+    )
+
+    assert seen["AAPL"] == prior_date
+    assert seen["MSFT"].year == (pd.Timestamp.today() - pd.DateOffset(years=15)).year
+    assert get_entry(ctx, _T_MAIN)["identity_scope_fingerprints"] == {"AAPL": "same", "MSFT": "new"}
+    print("\nSANITY: unchanged AAPL stayed incremental while only changed-scope MSFT relisted the full window.")
 
 
 def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, monkeypatch):

@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
 _POLICY_MARKER = "__point_in_time_symbol_identity_v1__"
 
-# {period} = "YYYYMMa" for settlement dates 1-15, "YYYYMMb" for 16-end. The SAME
+# {period} names the source semi-monthly ZIP. Its tag, not the settlement day,
+# controls availability: some b ZIPs contain day-15 rows. The SAME
 # cnsfails{period}.zip files (identical pipe format) live under TWO paths:
 #   * current path       -> 2017-06b onward
 #   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)

@@ -418,19 +418,19 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     panel = build_short_flow_feature_panel(make_frames(idx, peers, volume=volume), None, fails_history=fails)
     assert "f_ic_ftd_to_adv20" in panel.columns
 
-    # The entire January-a ZIP becomes visible at month-end; HI ranks above LO.
-    d = pd.Timestamp("2024-01-31")
+    # The entire historical January-a ZIP becomes visible 15 days after its period end.
+    d = pd.Timestamp("2024-01-30")
     row = panel[panel["date"] == d].set_index("ticker")
     assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
     assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
 
     # leak-free: no row from the ZIP is visible before its shared publication date.
-    early = panel[panel["date"] == pd.Timestamp("2024-01-30")]
+    early = panel[panel["date"] == pd.Timestamp("2024-01-29")]
     assert early.empty or early["f_ic_ftd_to_adv20"].isna().all()
 
     print("\n=== SANITY: FTD feature (fails/ADV20, ZIP-publication dated) ===")
     print(
         f"  HI fails/ADV20 {row['f_ic_ftd_to_adv20']['HI']:.4f} ranks above LO "
-        f"{row['f_ic_ftd_to_adv20']['LO']:.6f} when the January-a ZIP publishes on Jan 31; "
-        f"the Jan 30 prefix is absent (leak-free). Validated."
+        f"{row['f_ic_ftd_to_adv20']['LO']:.6f} on estimated Jan 30; "
+        f"the Jan 29 prefix is absent. Validated."
     )

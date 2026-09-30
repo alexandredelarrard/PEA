@@ -177,7 +177,7 @@ def test_ftd_observed_zip_date_overrides_historical_estimate():
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-09"))
     state = pd.DataFrame({"A": np.nan}, index=idx)
     state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
-    fails = pd.DataFrame({"date": ["2024-01-15"]})
+    fails = pd.DataFrame({"date": ["2024-01-15"], "period": ["202401a"]})
     vintages = pd.DataFrame({"period": ["202401a"], "available_date": ["2024-02-03"], "availability_basis": ["observed"]})
 
     published = _publish_ftd_vintages(state, fails, idx, vintages)
@@ -186,6 +186,52 @@ def test_ftd_observed_zip_date_overrides_historical_estimate():
     assert published.loc[pd.Timestamp("2024-02-05"), "A"] == pytest.approx(0.3)
     print("\n=== SANITY CHECK: observed FTD availability ===")
     print("  an observed Saturday ZIP date overrides the Jan 30 estimate and first appears Monday Feb 5")
+
+
+def test_ftd_late_older_zip_does_not_replace_newer_settlement_state():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-23"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
+    state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
+    fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-31"], "period": ["202401a", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-02-20", "2024-02-15"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert pd.isna(published.loc[pd.Timestamp("2024-02-14"), "A"])
+    assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
+    assert published.loc[pd.Timestamp("2024-02-20"), "A"] == pytest.approx(0.9)
+    print("\n=== SANITY CHECK: out-of-order FTD ZIP observations ===")
+    print("  a late older ZIP never rolls the published state back from January b to January a")
+
+
+def test_ftd_publication_uses_persisted_zip_period_at_half_month_boundary():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-12", "2024-02-20"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-12"), "A"] = 0.2
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.5
+    state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
+    fails = pd.DataFrame({"date": ["2024-01-12", "2024-01-31", "2024-01-15"], "period": ["202401a", "202401b", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert published.loc[pd.Timestamp("2024-01-30"), "A"] == pytest.approx(0.2)
+    assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
+    print("\n=== SANITY CHECK: FTD ZIP boundary ===")
+    print("  a settlement on day 15 carried by the b ZIP cannot enter the a-vintage feature")
+
+
+def test_ftd_rejects_ambiguous_settlement_date_across_zip_periods():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-20"))
+    state = pd.DataFrame({"A": 0.1}, index=idx)
+    fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-15"], "period": ["202401a", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
+
+    with pytest.raises(ValueError, match="multiple ZIP periods"):
+        _publish_ftd_vintages(state, fails, idx, vintages)
+    print("\n=== SANITY CHECK: FTD ZIP boundary ambiguity ===")
+    print("  a settlement date carried by two ZIPs fails closed until source grain is resolved")
 
 
 def test_ftd_zip_vintage_preserves_nan_in_latest_state():

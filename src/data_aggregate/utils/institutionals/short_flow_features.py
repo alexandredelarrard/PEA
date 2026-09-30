@@ -152,11 +152,23 @@ def _publish_ftd_vintages(
     Stored availability overrides the historical estimate. The trading index moves a
     weekend or market-holiday date forward to the next tradable session.
     """
-    source_dates = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique()).sort_values()
     periods: dict[str, list[pd.Timestamp]] = {}
-    for day in source_dates:
-        period = f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}"
-        periods.setdefault(period, []).append(day)
+    if "period" in fails_hist:
+        source_periods = fails_hist[["date", "period"]].drop_duplicates().copy()
+        source_periods["date"] = to_day(source_periods["date"])
+        if source_periods.isna().any().any():
+            raise ValueError("FTD source has a null settlement date or ZIP period")
+        if source_periods.groupby("date")["period"].nunique().gt(1).any():
+            raise ValueError("FTD settlement date belongs to multiple ZIP periods")
+        for day, period in source_periods.itertuples(index=False, name=None):
+            periods.setdefault(str(period), []).append(day)
+    elif vintages is not None:
+        raise ValueError("FTD source is missing its persisted ZIP period")
+    else:
+        source_dates = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique()).sort_values()
+        for day in source_dates:
+            period = f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}"
+            periods.setdefault(period, []).append(day)
 
     available_by_period: dict[str, pd.Timestamp] = {}
     if vintages is not None:
@@ -164,9 +176,9 @@ def _publish_ftd_vintages(
             raise ValueError("FTD vintage metadata has duplicate periods")
         available_by_period = dict(zip(vintages["period"].astype(str), pd.to_datetime(vintages["available_date"]), strict=True))
 
-    events: list[tuple[int, pd.Series]] = []
+    events: list[tuple[int, str, pd.Series]] = []
     for period, days in periods.items():
-        observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index)
+        observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index).sort_values()
         if observed_days.empty:
             continue
         if vintages is not None and period not in available_by_period:
@@ -180,12 +192,18 @@ def _publish_ftd_vintages(
         if publish_at >= len(idx):
             continue
         latest = settlement_state.reindex(observed_days).iloc[-1]
-        events.append((publish_at, latest))
+        events.append((publish_at, period, latest))
 
     published = pd.DataFrame(np.nan, index=idx, columns=settlement_state.columns)
-    events.sort(key=lambda event: event[0])
-    for position, (start, state) in enumerate(events):
-        stop = events[position + 1][0] if position + 1 < len(events) else len(idx)
+    events.sort(key=lambda event: (event[0], event[1]))
+    current_period = ""
+    forward_events = []
+    for event in events:
+        if event[1] > current_period:
+            forward_events.append(event)
+            current_period = event[1]
+    for position, (start, _, state) in enumerate(forward_events):
+        stop = forward_events[position + 1][0] if position + 1 < len(forward_events) else len(idx)
         if stop > start:
             published.iloc[start:stop] = state.to_numpy()
     return published

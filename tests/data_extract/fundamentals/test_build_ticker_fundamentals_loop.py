@@ -15,6 +15,7 @@ turn "this function is never executed in CI" into "it is".
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -27,6 +28,21 @@ from src.data_extract.utils.common.registrant import Registrant, Segment
 
 def _filing(accession: str, cik: str, date: str, form: str = "10-Q"):
     return SimpleNamespace(accession_number=accession, cik=cik, form=form, filing_date=pd.Timestamp(date).date())
+
+
+def _xbrl_filing(accession: str, *, error: Exception | None = None):
+    def xbrl():
+        if error is not None:
+            raise error
+        return None
+
+    return SimpleNamespace(
+        accession_number=accession,
+        cik="0000320193",
+        form="10-Q",
+        filing_date=pd.Timestamp("2008-07-31").date(),
+        xbrl=xbrl,
+    )
 
 
 def _registrants() -> dict[str, Registrant]:
@@ -128,3 +144,69 @@ def test_an_empty_walk_returns_empty_frames_without_touching_the_guard(patched):
     patched([], lambda t, c, f: [])
     out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())
     assert out[mod.Tables.fundamentals_facts].empty
+
+
+def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch, caplog):
+    """Stored modern facts make a legacy-only remainder an idempotent no-op, not a lost history."""
+    seen: dict[str, frozenset[str]] = {}
+
+    def resolve(*args, **kwargs):
+        seen["done"] = kwargs["done_accessions"]
+        return [_xbrl_filing("0000320193-08-000123")]
+
+    monkeypatch.setattr(mod, "resolve_registrant_filings", resolve)
+    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+
+    out = mod.build_ticker_fundamentals(
+        "AAPL",
+        "0000320193",
+        done_accessions=frozenset({"0000320193-24-000123"}),
+        catalogue=cast(Any, None),
+        gics_by_ticker={},
+        registrants={},
+    )
+
+    message = caplog.text.lower()
+    print("\n=== SANITY: resumed legacy-only walk is complete ===")
+    print(f"  done={seen['done']}; facts={len(out[mod.Tables.fundamentals_facts])}; log={message.strip()}")
+    assert seen["done"] == frozenset({"0000320193-24-000123"})
+    assert out[mod.Tables.fundamentals_facts].empty
+    assert "no new facts" in message
+    assert "1 already stored" in message
+    assert "1 no xbrl" in message
+    assert "0 unreadable" in message
+    assert "whole history is missing" not in message
+
+
+def test_cold_ticker_with_only_eligible_no_xbrl_filings_is_incomplete(monkeypatch, caplog):
+    filings = [_xbrl_filing("0000320193-08-000123"), _xbrl_filing("0000320193-08-000456")]
+    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+
+    print("\n=== SANITY: a cold all-no-XBRL walk is incomplete ===")
+    print("  expected: no persisted coverage + 2 eligible filings without XBRL raises a ticker-level failure")
+    with pytest.raises(RuntimeError, match="(?i)no usable xbrl"):
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+
+
+def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog):
+    filings = [
+        _xbrl_filing("0000320193-08-000123"),
+        _xbrl_filing("0000320193-08-000456", error=ValueError("bad xml")),
+    ]
+    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(mod, "is_headcount_form", lambda form: False)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+
+    try:
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+    except RuntimeError:
+        pass
+
+    message = caplog.text.lower()
+    print("\n=== SANITY: no-XBRL is distinct from unreadable XBRL ===")
+    print(f"  log={message.strip()}")
+    assert "1 no xbrl" in message
+    assert "1 unreadable" in message

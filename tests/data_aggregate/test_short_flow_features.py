@@ -173,6 +173,19 @@ def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
     print("  January a publishes its latest 300-share balance atomically on Jan 31 (not the 100+300 sum); January b replaces it on Feb 15")
 
 
+def test_ftd_zip_vintage_preserves_nan_in_latest_state():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", "2024-02-02"))
+    settlement_state = pd.DataFrame({"A": np.nan}, index=idx)
+    settlement_state.loc[pd.Timestamp("2024-01-02"), "A"] = 1.0
+    fails_hist = pd.DataFrame({"date": ["2024-01-02", "2024-01-15"]})
+
+    published = _publish_ftd_vintages(settlement_state, fails_hist, idx)
+
+    assert published.loc[pd.Timestamp("2024-01-31") :, "A"].isna().all()
+    print("\n=== SANITY CHECK: FTD ZIP latest-state NaN ===")
+    print("  a [finite, NaN] settlement state publishes NaN; an earlier finite value is not carried into the ZIP's latest state")
+
+
 def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
     idx = pd.DatetimeIndex(pd.bdate_range("2022-01-03", periods=360))
     covered = idx[:300]

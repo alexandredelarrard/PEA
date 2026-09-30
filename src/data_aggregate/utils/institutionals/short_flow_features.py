@@ -164,7 +164,7 @@ def _publish_ftd_vintages(
         publish_at = int(idx.searchsorted(_ftd_publication_date(observed_days[-1]), side="left"))
         if publish_at >= len(idx):
             continue
-        latest = settlement_state.reindex(observed_days).ffill().iloc[-1]
+        latest = settlement_state.reindex(observed_days).iloc[-1]
         events.append((publish_at, latest))
 
     published = pd.DataFrame(np.nan, index=idx, columns=settlement_state.columns)

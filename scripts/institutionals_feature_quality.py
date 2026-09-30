@@ -61,6 +61,19 @@ SOURCE_TABLES: tuple[Table, ...] = (
 )
 PROVISIONAL_PEERS = ("ic_inst_ownership_pct", "ic_shortvol_ratio_20d")
 SUFFIXES = (("_vs_peers", "peer"), ("_xs", "cross_sectional"), ("_hist", "historical"))
+REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
+    "ic_inst_flow_to_mcap": ("broad_13f", "reported-flow proxy duplicated the economically retained holdings changes"),
+    "ic_super_flow_to_mcap": ("elite_13f", "reported-flow proxy duplicated the economically retained conviction changes"),
+    "ic_shortvol_ratio_z252": ("short_flow", "internal rolling z-score is not an economically interpretable output"),
+    "ic_ftd_z252": ("short_flow", "internal rolling z-score is retained only as a feature input"),
+    "ic_act_campaign_age_days": ("beneficial_ownership", "sparse open-ended age is not comparable across issuers"),
+    "ic_act_purpose_board": ("beneficial_ownership", "fragile text-derived purpose flag"),
+    "ic_act_purpose_strategic": ("beneficial_ownership", "fragile text-derived purpose flag"),
+    "ic_xs_bullish_family_ratio": ("cross_source", "opaque normalization of raw available-family support"),
+    "ic_xs_bearish_family_ratio": ("cross_source", "opaque normalization of raw available-family support"),
+    "ic_xs_conflict_ratio": ("cross_source", "opaque normalization of raw available-family support"),
+    "ic_xs_bullish_actor_count": ("cross_source", "redundant actor aggregation without stable economic scale"),
+}
 
 # Explicit economics, not name heuristics. Import-time equality makes a newly catalogued
 # characteristic fail loudly until somebody classifies it.
@@ -329,7 +342,7 @@ def _read_projected(path: Path, columns: Sequence[str]) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0] if parts else pd.DataFrame(columns=list(columns))
 
 
-def _feature_parts(column: str) -> tuple[str, str]:
+def _feature_parts(column: str, *, allow_removed: bool = False) -> tuple[str, str]:
     body = column.removeprefix("f_")
     suffix = "raw"
     characteristic = body
@@ -337,7 +350,8 @@ def _feature_parts(column: str) -> tuple[str, str]:
         if body.endswith(ending):
             suffix, characteristic = label, body.removesuffix(ending)
             break
-    if characteristic not in INSTITUTIONALS or characteristic not in CHARACTERISTIC_KIND:
+    known = characteristic in INSTITUTIONALS and characteristic in CHARACTERISTIC_KIND
+    if not known and not (allow_removed and characteristic in REMOVED_CHARACTERISTICS):
         raise ValueError(f"no explicit institutionals taxonomy for {column!r} (characteristic {characteristic!r})")
     return characteristic, suffix
 
@@ -1008,24 +1022,29 @@ def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: 
 
     decisions: list[dict[str, Any]] = []
     candidate_set = set(candidate_columns)
+    for column in candidate_columns:
+        if column not in KEYS:
+            _feature_parts(column)
     for column in baseline_columns:
         if column in KEYS:
             continue
-        characteristic, suffix = _feature_parts(column)
-        replacement = f"f_{characteristic}"
+        characteristic, suffix = _feature_parts(column, allow_removed=True)
+        removed = REMOVED_CHARACTERISTICS.get(characteristic)
+        replacement = None if removed else f"f_{characteristic}"
         decisions.append(
             {
                 "baseline_column": column,
                 "characteristic": characteristic,
                 "suffix": suffix,
-                "family": INSTITUTIONALS[characteristic][0],
-                "kind": CHARACTERISTIC_KIND[characteristic],
-                "requested_decision": _requested_decision(characteristic, suffix),
+                "family": removed[0] if removed else INSTITUTIONALS[characteristic][0],
+                "kind": "removed" if removed else CHARACTERISTIC_KIND[characteristic],
+                "requested_decision": "remove_characteristic" if removed else _requested_decision(characteristic, suffix),
+                "removal_reason": removed[1] if removed else None,
                 "decision_rule_id": "raw_plus_interpretable_history__peer_only_if_diagnostics_survive_v1",
                 "final_presence": column in candidate_set,
                 "exact_final_presence": column in candidate_set,
-                "retained_raw_presence": replacement in candidate_set,
-                "final_column": column if column in candidate_set else replacement if replacement in candidate_set else None,
+                "retained_raw_presence": replacement in candidate_set if replacement else False,
+                "final_column": column if column in candidate_set else replacement if replacement and replacement in candidate_set else None,
             }
         )
     decision_frame = pd.DataFrame(decisions)
@@ -1260,7 +1279,7 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
         "distributions.csv": distributions,
         "outliers.csv": outliers,
         "drift.csv": drift,
-        "chronological-split-diagnostics.csv": splits,
+        "splits.csv": splits,
     }
     for name, frame in frames.items():
         frame.to_csv(out / name, index=False)

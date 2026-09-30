@@ -377,6 +377,7 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
             "f_ic_shortvol_ratio_20d": np.linspace(0.2, 0.5, 8),
             "f_ic_shortvol_ratio_20d_vs_peers": np.linspace(1.0, -1.0, 8),
             "f_ic_inst_holders_xs": np.linspace(0.1, 0.9, 8),
+            "f_ic_inst_flow_to_mcap": np.linspace(-0.01, 0.01, 8),
             "f_ic_act_initial_13d": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         }
     )
@@ -397,7 +398,7 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
         encoding="utf-8",
     )
     candidate = tmp_path / "candidate.parquet"
-    frame.drop(columns=["f_ic_inst_holders_xs"]).to_parquet(candidate, index=False)
+    frame.drop(columns=["f_ic_inst_holders_xs", "f_ic_inst_flow_to_mcap"]).to_parquet(candidate, index=False)
     out = tmp_path / "taxonomy"
 
     assert (
@@ -423,12 +424,13 @@ def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path
     schema = json.loads((out / "schema-diff.json").read_text(encoding="utf-8"))
     assert len(decisions) == len(frame.columns) - 2
     assert decisions.set_index("baseline_column").loc["f_ic_inst_holders_xs", "requested_decision"] == "remove_cross_sectional_normalization"
+    assert decisions.set_index("baseline_column").loc["f_ic_inst_flow_to_mcap", "requested_decision"] == "remove_characteristic"
     assert decisions.set_index("baseline_column").loc["f_ic_act_initial_13d", "kind"] == "event"
     assert set(peers["characteristic"]) == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
-    assert schema["removed"] == ["f_ic_inst_holders_xs"]
+    assert set(schema["removed"]) == {"f_ic_inst_holders_xs", "f_ic_inst_flow_to_mcap"}
     assert (out / "model-fold-diagnostics.csv").exists()
     print(
-        "SANITY: taxonomy reconciled every baseline feature, used explicit event/normalization decisions, and measured only the two provisional peers."
+        "SANITY: taxonomy reconciled retained and retired baseline features, used explicit event/normalization decisions, and measured only the two provisional peers."
     )
 
 

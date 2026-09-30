@@ -33,9 +33,11 @@ POINT-IN-TIME:
     `SHORTVOL_PUB_LAG` trading day. The shift is applied ONCE, to the ratio frames, and every
     derived leg (acceleration and the two price interactions) is built from the shifted
     frames -- so no leg can forget the lag.
-  * SEC FTD rows are published as semi-monthly ZIP vintages: days 1-15 at month-end,
-    days 16-end around the following month's 15th. Every row in one ZIP becomes knowable
-    together; the latest cumulative settlement state is held until the next ZIP.
+  * SEC FTD rows are published as semi-monthly ZIP vintages. Each archive has one stored
+    availability date: historical estimates are 15 calendar days after the period end;
+    new archives use the first successful SEC observation. The trading calendar moves
+    weekend/holiday dates forward. Every row in one ZIP becomes knowable together;
+    the latest cumulative settlement state is held until the next ZIP.
 
 ⚠ AN ABSENT FTD ROW IS ZERO ONLY ON A DATE THE FILE COVERS. The file lists a security on the
 days it had fails, so within a published settlement date a missing ticker means no fails; a
@@ -132,36 +134,49 @@ def _pivot(hist: pd.DataFrame, value: str, idx: pd.DatetimeIndex) -> pd.DataFram
     return wide.reindex(idx)
 
 
-def _ftd_publication_date(settlement_date: object) -> pd.Timestamp:
-    """Scheduled SEC availability day for the settlement date's semi-monthly ZIP."""
+def _ftd_estimated_available_date(settlement_date: object) -> pd.Timestamp:
+    """Historical ZIP estimate: period end plus 15 calendar days."""
     day = pd.Timestamp(settlement_date).normalize()
-    if day.day <= 15:
-        return day + pd.offsets.MonthEnd(0)
-    return day + pd.offsets.MonthBegin(1) + pd.Timedelta(days=14)
+    period_end = day.replace(day=15) if day.day <= 15 else day + pd.offsets.MonthEnd(0)
+    return period_end + pd.Timedelta(days=15)
 
 
 def _publish_ftd_vintages(
     settlement_state: pd.DataFrame,
     fails_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
+    vintages: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Expose one cumulative FTD state per ZIP on its first tradable session.
 
-    The projected table omits its persisted ``period``, so the lossless a/b period is derived
-    from settlement day. This models the SEC schedule; exact historical HTTP publication
-    timestamps are not persisted by the extractor.
+    Stored availability overrides the historical estimate. The trading index moves a
+    weekend or market-holiday date forward to the next tradable session.
     """
     source_dates = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique()).sort_values()
-    periods: dict[tuple[int, int, str], list[pd.Timestamp]] = {}
+    periods: dict[str, list[pd.Timestamp]] = {}
     for day in source_dates:
-        periods.setdefault((day.year, day.month, "a" if day.day <= 15 else "b"), []).append(day)
+        period = f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}"
+        periods.setdefault(period, []).append(day)
+
+    available_by_period: dict[str, pd.Timestamp] = {}
+    if vintages is not None:
+        if vintages["period"].duplicated().any():
+            raise ValueError("FTD vintage metadata has duplicate periods")
+        available_by_period = dict(zip(vintages["period"].astype(str), pd.to_datetime(vintages["available_date"]), strict=True))
 
     events: list[tuple[int, pd.Series]] = []
-    for days in periods.values():
+    for period, days in periods.items():
         observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index)
         if observed_days.empty:
             continue
-        publish_at = int(idx.searchsorted(_ftd_publication_date(observed_days[-1]), side="left"))
+        if vintages is not None and period not in available_by_period:
+            raise ValueError(f"FTD vintage metadata missing period {period}")
+        available_date = available_by_period[period] if vintages is not None else _ftd_estimated_available_date(observed_days[-1])
+        if pd.isna(available_date):
+            raise ValueError(f"FTD vintage metadata has no available_date for {period}")
+        if available_date < observed_days[-1]:
+            raise ValueError(f"FTD vintage {period} becomes available before its latest settlement date")
+        publish_at = int(idx.searchsorted(available_date, side="left"))
         if publish_at >= len(idx):
             continue
         latest = settlement_state.reindex(observed_days).iloc[-1]
@@ -336,6 +351,7 @@ def _fails_fields(
     volume: pd.DataFrame | None,
     splits: pd.DataFrame | None = None,
     tenure_mask: pd.DataFrame | None = None,
+    vintages: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """#64-#67. Zero-filled ONLY on the dates the FTD file covers -- see the module docstring."""
     fails = _pivot(fails_hist, "fails_quantity", idx)
@@ -370,7 +386,7 @@ def _fails_fields(
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
         to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = _publish_ftd_vintages(to_adv, fails_hist, idx)
+        f_dict["ic_ftd_to_adv20"] = _publish_ftd_vintages(to_adv, fails_hist, idx, vintages)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
@@ -393,7 +409,7 @@ def _fails_fields(
         z = z.mask(z.isna() & neutral, 0.0)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
         persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
-        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_vintages(persistence, fails_hist, idx)
+        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_vintages(persistence, fails_hist, idx, vintages)
     if tenure_mask is not None:
         for name, frame in f_dict.items():
             f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
@@ -405,6 +421,7 @@ def build_short_flow_feature_panel(
     short_history: pd.DataFrame | None,
     *,
     fails_history: pd.DataFrame | None = None,
+    ftd_vintages: pd.DataFrame | None = None,
     shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     symbol_tenure: pd.DataFrame | None = None,
@@ -461,7 +478,7 @@ def build_short_flow_feature_panel(
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
         fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits, tenure_mask))
     if fails_history is not None and not fails_history.empty and "fails_quantity" in fails_history.columns:
-        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits, tenure_mask))
+        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits, tenure_mask, ftd_vintages))
 
     for name in list(fields):
         frame = fields[name]

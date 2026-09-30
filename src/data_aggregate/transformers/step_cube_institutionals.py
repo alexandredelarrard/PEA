@@ -441,7 +441,7 @@ class StepCubeInstitutionals(Step):
         """Volume-weighted RegSHO short-VOLUME ratios (5/20/60d), their self-history z, the
         two price-conditional interactions and short turnover, plus SEC fails-to-deliver
         (settlement stress) as a share of shares outstanding and of ADV20. RegSHO is lagged
-        one trading day; each FTD semi-monthly ZIP appears as one publication vintage."""
+        one trading day; each FTD semi-monthly ZIP appears on its stored availability date."""
         universe = sorted(set(map(str, frames.universe)))
         symbol_tenure, ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
         # Both extractors resolve historical source symbols to today's canonical universe
@@ -449,10 +449,14 @@ class StepCubeInstitutionals(Step):
         # relabelling pass.
         short = self._load_source(Tables.short_interest, universe)
         fails = self._load_source(Tables.sec_fails_to_deliver, universe)
+        ftd_vintages = self._load_source(Tables.sec_ftd_vintages) if fails is not None and not fails.empty else None
+        if fails is not None and not fails.empty and ftd_vintages is None:
+            raise ValueError("FTD vintage availability is missing; run fails-to-deliver extraction before rebuilding institutionals")
         return build_short_flow_feature_panel(
             frames,
             short,
             fails_history=fails,
+            ftd_vintages=ftd_vintages,
             shares_out_history=shares,
             splits=splits,
             symbol_tenure=symbol_tenure,

@@ -118,8 +118,8 @@ CUBE_PARTS: tuple[CubePart, ...] = (
     ),  # QoQ embedding drift
     # ⚠ 160 -> 390, and the two families that forced it are the ones Phase 2.5/2.6 added:
     #   * `short_flow` 322 -- a 252-day self-history z, then a 30-day persistence count on top
-    #     of it, then the 40-day FTD publication shift. Its predecessor entry (103) described
-    #     a module that no longer exists.
+    #     of it, with a conservative publication buffer. ZIP availability now comes from the
+    #     per-period vintage date, not a fixed 40-session shift.
     #   * `conditioning` 252 -- the excursion cap on `ic_sig_insider_max_dd/runup_since_buy`
     #     (`build_cube.institutionals.excursion_lookback`).
     # 390 is the same warm-up targets/betas already use, which is not a coincidence: it is one
@@ -132,7 +132,7 @@ CUBE_PARTS: tuple[CubePart, ...] = (
         "features",
         390,
         (
-            ("short_flow", 322),  # z252 + persistence(30) + FTD shift(40)
+            ("short_flow", 322),  # conservative bound for z252 + persistence(30) + ZIP availability
             # `ownership_features.HOLDER_ACTIVE_DAYS`: both the 13G holder ffill(limit=)
             # and the rolling distinct-filer denominator. The LONGEST bounded look-back in
             # the part, and it was MISSING from this tuple entirely -- which is why

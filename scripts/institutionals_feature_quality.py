@@ -58,6 +58,7 @@ SOURCE_TABLES: tuple[Table, ...] = (
     Tables.insider_transactions_live_coverage,
     Tables.short_interest,
     Tables.sec_fails_to_deliver,
+    Tables.sec_ftd_vintages,
     Tables.sec_13d,
     Tables.sec_13g,
 )

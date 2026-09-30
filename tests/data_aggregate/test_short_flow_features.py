@@ -20,7 +20,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     SHORTVOL_PUB_LAG,
     Z_MIN_PERIODS,
     _fails_fields,
-    _ftd_publication_date,
+    _ftd_estimated_available_date,
     _publish_ftd_vintages,
     _shortvol_fields,
     build_short_flow_feature_panel,
@@ -140,12 +140,12 @@ def test_ftd_absent_ticker_is_zero_and_published_state_is_held():
     volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
     ratio = _fails_fields(fails, idx, None, volume)["ic_ftd_to_adv20"]
 
-    assert ratio.loc[pd.Timestamp("2024-01-30")].isna().all()
-    assert ratio.loc[pd.Timestamp("2024-01-31"), "HI"] == pytest.approx(0.3)
-    assert ratio.loc[pd.Timestamp("2024-01-31"), "LO"] == pytest.approx(0.0)
+    assert ratio.loc[pd.Timestamp("2024-01-29")].isna().all()
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "HI"] == pytest.approx(0.3)
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
     assert ratio.loc[pd.Timestamp("2024-02-14"), "HI"] == pytest.approx(0.3)
     print("\n=== SANITY CHECK: FTD coverage semantics ===")
-    print("  LO is observed zero on the ZIP's latest covered date; the Jan-a state appears Jan 31 and is held until the next ZIP")
+    print("  LO is observed zero on the ZIP's latest covered date; the Jan-a estimate appears Jan 30 and is held until the next ZIP")
 
 
 def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
@@ -163,14 +163,29 @@ def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
 
     ratio = _fails_fields(fails, idx, None, volume)["ic_ftd_to_adv20"]
 
-    assert ratio.loc[pd.Timestamp("2024-01-30")].isna().all()
-    assert ratio.loc[pd.Timestamp("2024-01-31"), "HI"] == pytest.approx(0.3)
-    assert ratio.loc[pd.Timestamp("2024-01-31"), "LO"] == pytest.approx(0.0)
+    assert ratio.loc[pd.Timestamp("2024-01-29")].isna().all()
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "HI"] == pytest.approx(0.3)
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
     assert ratio.loc[pd.Timestamp("2024-02-14"), "HI"] == pytest.approx(0.3)
     assert ratio.loc[pd.Timestamp("2024-02-15"), "HI"] == pytest.approx(0.9)
 
     print("\n=== SANITY CHECK: FTD ZIP publication vintage ===")
-    print("  January a publishes its latest 300-share balance atomically on Jan 31 (not the 100+300 sum); January b replaces it on Feb 15")
+    print("  January a publishes its latest 300-share balance atomically on estimated Jan 30; January b replaces it on Feb 15")
+
+
+def test_ftd_observed_zip_date_overrides_historical_estimate():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-09"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
+    fails = pd.DataFrame({"date": ["2024-01-15"]})
+    vintages = pd.DataFrame({"period": ["202401a"], "available_date": ["2024-02-03"], "availability_basis": ["observed"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert published.loc[:"2024-02-02", "A"].isna().all()
+    assert published.loc[pd.Timestamp("2024-02-05"), "A"] == pytest.approx(0.3)
+    print("\n=== SANITY CHECK: observed FTD availability ===")
+    print("  an observed Saturday ZIP date overrides the Jan 30 estimate and first appears Monday Feb 5")
 
 
 def test_ftd_zip_vintage_preserves_nan_in_latest_state():
@@ -181,7 +196,7 @@ def test_ftd_zip_vintage_preserves_nan_in_latest_state():
 
     published = _publish_ftd_vintages(settlement_state, fails_hist, idx)
 
-    assert published.loc[pd.Timestamp("2024-01-31") :, "A"].isna().all()
+    assert published.loc[pd.Timestamp("2024-01-30") :, "A"].isna().all()
     print("\n=== SANITY CHECK: FTD ZIP latest-state NaN ===")
     print("  a [finite, NaN] settlement state publishes NaN; an earlier finite value is not carried into the ZIP's latest state")
 
@@ -238,14 +253,14 @@ def test_ftd_publication_snaps_weekend_and_holiday_forward():
     holiday_hist = pd.DataFrame([{"date": "2023-12-29"}])
     holiday_published = _publish_ftd_vintages(holiday_state, holiday_hist, holiday_idx)
 
-    assert _ftd_publication_date("2024-06-14") == pd.Timestamp("2024-06-30")
+    assert _ftd_estimated_available_date("2024-06-14") == pd.Timestamp("2024-06-30")
     assert pd.isna(weekend_published.loc[pd.Timestamp("2024-06-28"), "A"])
     assert weekend_published.loc[pd.Timestamp("2024-07-01"), "A"] == 1.0
-    assert _ftd_publication_date("2023-12-29") == pd.Timestamp("2024-01-15")
+    assert _ftd_estimated_available_date("2023-12-29") == pd.Timestamp("2024-01-15")
     assert pd.isna(holiday_published.loc[pd.Timestamp("2024-01-12"), "A"])
     assert holiday_published.loc[pd.Timestamp("2024-01-16"), "A"] == 2.0
     print("\n=== SANITY CHECK: FTD publication-date snapping ===")
-    print("  Sunday month-end publishes Monday Jul 1; the Jan 15 market holiday publishes on the first tradable session, Jan 16")
+    print("  estimated Sunday Jun 30 appears Monday Jul 1; the Jan 15 market holiday appears on the first tradable session, Jan 16")
 
 
 def test_appending_later_ftd_zip_does_not_rewrite_published_prefix():

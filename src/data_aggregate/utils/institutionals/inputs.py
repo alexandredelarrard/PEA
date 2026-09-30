@@ -101,8 +101,8 @@ def load_symbol_lineage(
     store: DataStore,
     log: logging.Logger,
     universe: Sequence[str],
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None, list[str]]:
-    """Load current CIKs and every proven historical symbol for those issuers."""
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Load the issuer lineage used to validate already-canonical source rows."""
     tickers = sorted(set(map(str, universe)))
     ticker_ciks = store.load(
         Tables.sp500_tickers,
@@ -111,17 +111,17 @@ def load_symbol_lineage(
         optional=True,
     )
     if ticker_ciks is None or ticker_ciks.empty:
-        return None, ticker_ciks, tickers
+        return None, ticker_ciks
 
     ciks = sorted({_cik(value) for value in ticker_ciks["cik"] if _cik(value)})
     if not ciks:
-        return None, ticker_ciks, tickers
+        return None, ticker_ciks
     symbol_tenure = store.load(
         Tables.symbol_tenure,
         columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
         where={"issuer_cik": ciks},
         optional=True,
     )
-    aliases = sorted(set(tickers) | (set(symbol_tenure["symbol"].astype(str)) if symbol_tenure is not None else set()))
-    log.info("Symbol lineage: %s current tickers -> %s proven source symbols", len(tickers), len(aliases))
-    return symbol_tenure, ticker_ciks, aliases
+    aliases = len(set(symbol_tenure["symbol"].astype(str))) if symbol_tenure is not None else 0
+    log.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
+    return symbol_tenure, ticker_ciks

@@ -225,14 +225,14 @@ def test_reused_symbol_is_null_outside_the_current_issuer_tenure():
     print("  RegSHO cells are available only inside the current roster CIK's proven half-open symbol tenure")
 
 
-def test_historical_alias_is_mapped_to_the_current_issuer_ticker():
+def test_canonical_ticker_survives_a_historical_alias_tenure():
     idx = pd.bdate_range("2023-05-01", periods=80)
     cutover = idx[35]
     history = pd.DataFrame(
         [
             {
                 "date": day,
-                "ticker": "OLD" if day < cutover else "NEW",
+                "ticker": "NEW",
                 "short_volume": 400_000.0,
                 "total_volume": 1_000_000.0,
             }
@@ -257,8 +257,8 @@ def test_historical_alias_is_mapped_to_the_current_issuer_ticker():
 
     assert ratio.loc[cutover:].notna().all()
     assert np.isclose(ratio.loc[cutover], 0.4)
-    print("\n=== SANITY CHECK: issuer-continuous symbol alias ===")
-    print("  OLD history is mapped to NEW by the proven date/CIK tenure, preserving the rolling window across the rename")
+    print("\n=== SANITY CHECK: canonical storage across a symbol alias ===")
+    print("  canonical NEW rows survive the OLD tenure because extractors already resolved source symbols before storage")
 
 
 def test_panel_columns_match_the_emission_map():

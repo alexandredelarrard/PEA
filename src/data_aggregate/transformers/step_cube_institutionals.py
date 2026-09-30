@@ -443,9 +443,12 @@ class StepCubeInstitutionals(Step):
         (settlement stress) as a share of shares outstanding and of ADV20. RegSHO is lagged
         one trading day; FTD by ~2 months (its publication delay)."""
         universe = sorted(set(map(str, frames.universe)))
-        symbol_tenure, ticker_ciks, source_symbols = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
-        short = self._load_source(Tables.short_interest, source_symbols)
-        fails = self._load_source(Tables.sec_fails_to_deliver, source_symbols)
+        symbol_tenure, ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
+        # Both extractors resolve historical source symbols to today's canonical universe
+        # ticker before storage. Lineage is therefore a validation mask here, not a second
+        # relabelling pass.
+        short = self._load_source(Tables.short_interest, universe)
+        fails = self._load_source(Tables.sec_fails_to_deliver, universe)
         return build_short_flow_feature_panel(
             frames,
             short,

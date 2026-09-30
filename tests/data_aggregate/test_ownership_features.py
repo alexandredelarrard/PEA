@@ -6,14 +6,11 @@ event-only history, and removal of the short-history `percent_of_class` feature 
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.ownership_features import (
     EMISSION,
-    HOLDER_ACTIVE_DAYS,
     _act_fields,
     _bo_fields,
     _canonicalize,
@@ -142,22 +139,6 @@ def test_escalation_and_deescalation_join():
     print("  prior-13G-then-13D -> escalation; prior-13D-then-13G -> de-escalation. Validated.")
 
 
-def test_bo_holder_count_sums_distinct_filers_not_group_members():
-    canon = pd.DataFrame(
-        [
-            _campaign_row("AAA", "F1", "2023-01-05"),
-            _campaign_row("AAA", "F2", "2023-01-06"),
-            _campaign_row("BBB", "F3", "2023-01-05"),
-        ]
-    )
-    out = _bo_fields(canon, IDX, halflife=126.0)
-    hc = out["ic_bo_holder_count"]
-    # 2 distinct filers on AAA / 3 filers total that year -> 2/3; 1 of 3 on BBB -> 1/3
-    assert np.isclose(float(cast(Any, hc.loc[pd.Timestamp("2023-01-10"), "AAA"])), 2 / 3)
-    assert np.isclose(float(cast(Any, hc.loc[pd.Timestamp("2023-01-10"), "BBB"])), 1 / 3)
-    assert hc.loc[: pd.Timestamp("2023-01-04"), "AAA"].isna().all(), "before any filer -> NaN"
-
-
 def test_percent_of_class_features_are_not_constructed():
     canon = pd.DataFrame(
         [
@@ -241,7 +222,6 @@ def test_panel_columns_and_emission_coverage():
     guaranteed = [
         "ic_act_initial_13d",
         "ic_act_amendment_intensity",
-        "ic_bo_holder_count",
         "ic_bo_new_holder",
     ]
     for name in guaranteed:
@@ -277,61 +257,6 @@ def test_delta_ignores_a_newly_observed_filer():
     assert "ic_bo_percent_of_class" not in out and "ic_bo_delta_percent_class" not in out
     print("\n=== SANITY CHECK: no short-history stake-change proxy ===")
     print("  Adding a newly observed filer cannot create a percent-of-class level or delta. Validated.")
-
-
-def test_holder_count_is_a_bounded_share_and_lapses():
-    """Both halves of the D28 ratio share one trailing window, so it is a share: built with a
-    never-releasing numerator over a calendar-year denominator it measured 1.23 on live data."""
-    canon = pd.DataFrame([_g_row("AAA", "F1", "2023-01-05", np.nan), _g_row("BBB", "F2", "2023-01-05", np.nan)])
-    hc = _bo_fields(canon, IDX, halflife=126.0)["ic_bo_holder_count"]
-    vals = hc.to_numpy()
-    assert np.nanmax(vals) <= 1.0, "a share cannot exceed 1"
-    assert hc.loc[pd.Timestamp("2023-02-01"), "AAA"] == 0.5  # 1 of the 2 active filers
-    # F1 lapses HOLDER_ACTIVE_DAYS after its only filing, so AAA stops being held
-    lapsed = IDX[IDX.get_indexer(pd.DatetimeIndex([pd.Timestamp("2023-01-05")]))[0] + HOLDER_ACTIVE_DAYS + 5]
-    lapsed_value = float(cast(Any, hc.loc[lapsed, "AAA"]))
-    assert pd.isna(lapsed_value) or lapsed_value == 0.0
-    print("\n=== SANITY CHECK: holder_count is a bounded share that lapses ===")
-    print(f"  max {np.nanmax(vals):.2f} <= 1; a filer lapses after {HOLDER_ACTIVE_DAYS} trading days. Validated.")
-
-
-def test_holder_share_zero_requires_a_complete_active_window():
-    idx = pd.bdate_range("2021-01-04", periods=620)
-    tickers = ["ACTIVE", "EMPTY"]
-    peers = _peers(tickers)
-    close = pd.DataFrame(100.0, index=idx, columns=tickers)
-    sec_13g = pd.DataFrame(
-        [
-            {
-                "ticker": "ACTIVE",
-                "accession_number": f"a{i}",
-                "cusip": "CUS1",
-                "filing_date": day,
-                "reporting_person_cik": "0000000001",
-                "reporting_person_name": "Fund",
-            }
-            for i, day in enumerate((idx[0], idx[300]))
-        ]
-    )
-    complete_through = idx[500]
-    panel = build_ownership_feature_panel(
-        make_frames(idx, peers, close_split=close),
-        None,
-        sec_13g,
-        complete_through_13g=complete_through,
-    )
-    holder = panel.pivot(index="date", columns="ticker", values="f_ic_bo_holder_count")
-
-    assert pd.isna(holder.loc[idx[HOLDER_ACTIVE_DAYS - 2], "EMPTY"])
-    assert holder.loc[idx[400], "EMPTY"] == 0.0
-    assert holder.loc[idx[400], "ACTIVE"] == 1.0
-    assert pd.isna(holder.loc[idx[501], "EMPTY"])
-    print("\n=== SANITY CHECK: holder-share zero versus incomplete coverage ===")
-    print(
-        f"  EMPTY is NaN before a full {HOLDER_ACTIVE_DAYS}-session state window, 0 inside "
-        f"the completed frontier through {complete_through.date()}, and NaN after it"
-    )
-    print("  OK: no active filer is a zero only when the source can prove the absence")
 
 
 def test_unidentified_13g_holder_makes_the_ticker_state_unknown():
@@ -436,11 +361,9 @@ if __name__ == "__main__":
     test_repeat_activist_fires_on_the_fourth_campaign_only()
     test_open_ended_campaign_age_and_uncontextualized_item4_are_not_constructed()
     test_escalation_and_deescalation_join()
-    test_bo_holder_count_sums_distinct_filers_not_group_members()
     test_percent_of_class_features_are_not_constructed()
     test_event_features_remain_available_before_the_structured_data_mandate()
     test_panel_columns_and_emission_coverage()
     test_retired_bo_numeric_features_are_absent_from_private_builder()
     test_delta_ignores_a_newly_observed_filer()
-    test_holder_count_is_a_bounded_share_and_lapses()
     test_build_ownership_feature_panel_empty_when_no_source()

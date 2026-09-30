@@ -45,6 +45,7 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
         "ic_act_campaign_age_days",
         "ic_act_purpose_board",
         "ic_act_purpose_strategic",
+        "ic_bo_holder_count",
         "ic_ftd_pct_so",
         "ic_ftd_z252",
         "ic_insider_buy_shares_so_180d",
@@ -62,10 +63,10 @@ def test_phase3_taxonomy_is_raw_except_two_interpretable_peer_legs() -> None:
     assert set(declared.values()) == {"raw", "raw+peers"}
     assert peer_features == {"ic_inst_ownership_pct", "ic_shortvol_ratio_20d"}
     assert removed.isdisjoint(declared)
-    assert len(declared) == 72
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 74
+    assert len(declared) == 71
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 73
     print(
-        "SANITY: Phase-3 declares 72 unique characteristics / 74 legs: all raw, with only "
+        "SANITY: Phase-3 declares 71 unique characteristics / 73 legs: all raw, with only "
         "institutional ownership and 20-day short volume retaining an interpretable peer leg."
     )
 
@@ -127,7 +128,7 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
 
 
-def test_symbol_lineage_loader_projects_current_issuers_and_returns_aliases() -> None:
+def test_symbol_lineage_loader_projects_current_issuers() -> None:
     calls: list[dict[str, Any]] = []
 
     class _Store:
@@ -144,13 +145,12 @@ def test_symbol_lineage_loader_projects_current_issuers_and_returns_aliases() ->
                 }
             )
 
-    tenure, roster, symbols = step_module.institutional_inputs.load_symbol_lineage(cast(Any, _Store()), logging.getLogger(__name__), ["FISV"])
+    tenure, roster = step_module.institutional_inputs.load_symbol_lineage(cast(Any, _Store()), logging.getLogger(__name__), ["FISV"])
 
     assert tenure is not None and roster is not None
-    assert symbols == ["FI", "FISV"]
     assert calls[0]["where"] == {"ticker": ["FISV"]}
     assert calls[1]["where"] == {"issuer_cik": ["0000798354"]}
-    print("SANITY: the input layer projected the current roster CIK, then expanded FISV to its proven FI/FISV source symbols.")
+    print("SANITY: the input layer projected FISV's current CIK and its FI/FISV lineage without relabelling canonical source rows twice.")
 
 
 def test_insider_outlier_proof_uses_the_current_step_contract() -> None:

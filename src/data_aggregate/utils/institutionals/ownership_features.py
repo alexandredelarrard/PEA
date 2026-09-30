@@ -5,18 +5,14 @@ features are built. ``filer_id`` uses the smallest reporting-person CIK, falling
 name, so amendments and transitions can be followed point in time. Joint-filer membership
 resolution remains future data work.
 
-``ic_bo_holder_count`` uses the same trailing activity window in numerator and denominator;
-without explicit exits, a filer lapses after ``HOLDER_ACTIVE_DAYS``. The four
-``percent_of_class`` features were removed because
+The normalized holder-count proxy and four ``percent_of_class`` features were removed because
+they lack a stable, source-complete denominator and
 their source field is effectively unavailable before the December 2024 XML mandate and is too
 recent for train/test/validation use; restoration requirements are recorded in ``wiki/TODO.md``.
 """
 
 from __future__ import annotations
 
-from collections import Counter
-
-import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.errors import _empty_panel
@@ -50,21 +46,10 @@ def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
 ACT_HALFLIFE_DEFAULT = 126.0
 BO_HALFLIFE_DEFAULT = 126.0
 
-#: How long a 13G filing keeps its filer counted as a holder, in TRADING days (~18 months).
-#: The schema carries no "no longer holds >5%" signal, so activity has to stand in for
-#: holding, and Rule 13d-2(b) sets the cadence it stands on: a 13G holder owed an annual
-#: amendment within 45 days of year-end (quarterly since the 2024 amendments), so a still-live
-#: >5% position refiles at least yearly and 18 months tolerates one late or skipped cycle.
-#: Both sides of `holder_count` use this ONE window -- an ever-accumulating numerator over a
-#: recent-flow denominator is not a share of anything, and measured that way the "share"
-#: reached 1.23.
-HOLDER_ACTIVE_DAYS = 378
-
 EMISSION: dict[str, str] = {
     "ic_act_initial_13d": "raw",  # decayed occurrence; 0.3% ties, no drift
     "ic_act_amendment_intensity": "raw",  # 0.2% ties
     "ic_act_repeat_activist": "raw",  # 2.2% ties, 36 tickers ever
-    "ic_bo_holder_count": "raw",  # D28-normalized; 70.3% ties -> no xs leg
     "ic_bo_new_holder": "raw",  # 2.9% ties
     "ic_bo_escalation_13g_to_13d": "raw",
     "ic_bo_de_escalation_13d_to_13g": "raw",  # 23.4% ties
@@ -110,55 +95,6 @@ def _snap_to_grid(dates: pd.Series, idx: pd.DatetimeIndex) -> pd.Series:
     return snap_to_grid(dates, idx)
 
 
-def _rolling_distinct(events: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -> pd.Series:
-    """Distinct `filer_id` with an event in the trailing `window` TRADING DAYS, as of each
-    grid day.
-
-    THIS IS THE D28 DENOMINATOR AND IT HAS TO BE POINT-IN-TIME. A per-CALENDAR-YEAR distinct
-    count is not: the newest year is always PARTIAL, so it reads low (measured 2026-09-08: 102
-    filers year-to-date against 140 for all of 2025 and 187 for 2024) and every value computed
-    inside that year is revised downward as the year fills in -- an inflated `holder_count`
-    exactly where the predictions are made. A trailing window is stable the day it is computed
-    and never revised. An exact rolling distinct count, not a decayed one (a decayed distinct
-    count is not a distinct count).
-
-    It shares `window` with the numerator's activity window on purpose: a ratio of an
-    ever-accumulating numerator to a recent-flow denominator is not a share of anything, and
-    measured that way `holder_count` reached **1.23**."""
-    ev = events.dropna(subset=["filing_date", "filer_id"])
-    if ev.empty or len(idx) == 0:
-        return pd.Series(0.0, index=idx)
-    ev = ev.assign(_grid_date=_snap_to_grid(ev["filing_date"], idx)).dropna(subset=["_grid_date"])
-    if ev.empty:
-        return pd.Series(0.0, index=idx)
-    # Work in GRID POSITIONS, so one constant in trading days drives both sides of the ratio.
-    pos = idx.get_indexer(pd.DatetimeIndex(ev["_grid_date"]))
-    order = np.argsort(pos, kind="stable")
-    pos, filers = pos[order], ev["filer_id"].astype(str).to_numpy()[order]
-    active: Counter = Counter()
-    out = np.zeros(len(idx), dtype="float64")
-    enter = leave = 0
-    for k in range(len(idx)):
-        while enter < len(pos) and pos[enter] <= k:
-            active[filers[enter]] += 1
-            enter += 1
-        while leave < len(pos) and pos[leave] <= k - window:
-            key = filers[leave]
-            active[key] -= 1
-            if active[key] <= 0:
-                del active[key]
-            leave += 1
-        out[k] = len(active)
-    return pd.Series(out, index=idx)
-
-
-def _sum_over_filers(wide: pd.DataFrame) -> pd.DataFrame:
-    """Collapse a `(ticker, filer_id)`-columned wide frame to `ticker`, NaN-preserving: a
-    ticker with no active filer at all stays NaN (`min_count=1`) rather than reading as a
-    measured zero."""
-    return wide.T.groupby(level="ticker").sum(min_count=1).T
-
-
 def _act_fields(canon: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if canon.empty:
@@ -180,8 +116,6 @@ def _bo_fields(
     canon: pd.DataFrame,
     idx: pd.DatetimeIndex,
     halflife: float,
-    *,
-    coverage: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if canon.empty:
@@ -190,56 +124,10 @@ def _bo_fields(
     if ce.empty:
         return out
 
-    occ = ce.assign(_flag=1.0, _grid_date=_snap_to_grid(ce["filing_date"], idx))
-    occ = occ.dropna(subset=["_grid_date"])
-    occ_wide = occ.pivot_table(index="_grid_date", columns=["ticker", "filer_id"], values="_flag", aggfunc="max")
-    # `limit=` is the whole exit policy: a filer counts as a holder for HOLDER_ACTIVE_DAYS
-    # after each filing, then lapses. See the constant.
-    occ_wide = occ_wide.reindex(idx).ffill(limit=HOLDER_ACTIVE_DAYS)
-    active_count = _sum_over_filers(occ_wide)
-    if coverage is not None:
-        active_count = active_count.reindex(index=idx, columns=coverage.columns).fillna(0.0).where(coverage)
-
-    denom = _rolling_distinct(ce, idx, window=HOLDER_ACTIVE_DAYS)
-    out["ic_bo_holder_count"] = active_count.divide(denom.where(denom > 0), axis=0)
-
     first_holder = ce.sort_values("filing_date").drop_duplicates(subset=["ticker", "filer_id"], keep="first")
     out["ic_bo_new_holder"] = decay_events(first_holder, idx, halflife, date_col="filing_date")
 
     return out
-
-
-def _complete_active_window_mask(
-    frames: PriceFrames,
-    idx: pd.DatetimeIndex,
-    *,
-    source_start: pd.Timestamp,
-    complete_through: pd.Timestamp | None,
-) -> pd.DataFrame | None:
-    """Eligibility for interpreting no 13G filing as an observed zero holder numerator."""
-    if complete_through is None or pd.isna(complete_through):
-        return None
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-    if frames.close_split is not None and not frames.close_split.empty:
-        listed = frames.close_split.reindex(index=idx, columns=columns).notna()
-    else:
-        listed = pd.DataFrame(True, index=idx, columns=columns)
-
-    # The active-filer state looks back HOLDER_ACTIVE_DAYS trading sessions. Before that many
-    # sessions have elapsed from the source floor, a missing filer could have filed just before
-    # observable history began, so it is unavailable rather than zero.
-    start_pos = int(idx.searchsorted(pd.Timestamp(source_start).normalize(), side="left"))
-    first_complete = start_pos + HOLDER_ACTIVE_DAYS - 1
-    history_complete = pd.Series(False, index=idx)
-    if first_complete < len(idx):
-        history_complete.iloc[first_complete:] = True
-    through = pd.Series(idx <= pd.Timestamp(complete_through).normalize(), index=idx)
-    temporal = pd.DataFrame(
-        np.broadcast_to((history_complete & through).to_numpy()[:, None], (len(idx), len(columns))).copy(),
-        index=idx,
-        columns=columns,
-    )
-    return InstitutionalAvailability.combine(temporal, listed)
 
 
 def _complete_source_mask(
@@ -361,17 +249,6 @@ def build_ownership_feature_panel(
         g_start = availability.source_date(Tables.sec_13g)
     else:
         g_start = pd.to_datetime(canon_13g["filing_date"], errors="coerce").min()
-    bo_coverage = (
-        _complete_active_window_mask(
-            frames,
-            idx,
-            source_start=pd.Timestamp(g_start),
-            complete_through=complete_through_13g,
-        )
-        if pd.notna(g_start)
-        else None
-    )
-
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
     d_start = pd.to_datetime(canon_13d["filing_date"], errors="coerce").min()
     act_coverage = (
@@ -401,7 +278,7 @@ def build_ownership_feature_panel(
 
     fields: dict[str, pd.DataFrame] = {}
     fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
-    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo, coverage=bo_coverage))
+    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo))
     fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
 
     cross_names = {"ic_bo_escalation_13g_to_13d", "ic_bo_de_escalation_13d_to_13g"}

@@ -80,7 +80,7 @@ validate:
       # legitimately hold the same discrete vote for months, so their edge behavior is checked
       # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
       daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
-                   "_price_vs_buy", "_max_runup_since_buy", "_max_dd_since_buy"]
+                   "_price_vs_buy"]
       # `price_vs_buy` exists only while a qualifying purchase remains in its 126-session
       # value-weighted cost window. A gap while age <= 125 is actionable; anchor-free NaNs are
       # economically undefined and are reported as explained rather than zero-filled.
@@ -119,7 +119,6 @@ validate:
       # All other PIT families retain the stricter per-ticker first-event comparison above.
       pit_observed_zero_sources:
         f_ic_ftd_:                          sec_fails_to_deliver
-        f_ic_bo_holder_count:               [sec_13d, sec_13g]
         f_ic_insider_net_buy_ratio_180d:    insider_transactions
       # Only physical/economic bounds live here. Heavy-tailed one-sided fields are reviewed
       # through robust distribution and traced-outlier evidence rather than arbitrary clips.
@@ -141,7 +140,6 @@ validate:
         f_ic_super_selection_score:           [0.0, 1.0]
         f_ic_insider_net_buy_ratio_180d:     [-1.0, 1.0]
         f_ic_insider_owner_surprise_120d:     [0.0, 1.0]
-        f_ic_bo_holder_count:                 [0.0, 1.0]
         f_ic_shortvol_ratio_5d:               [0.0, 1.0]
         f_ic_shortvol_ratio_20d:              [0.0, 1.0]
         f_ic_shortvol_ratio_60d:              [0.0, 1.0]

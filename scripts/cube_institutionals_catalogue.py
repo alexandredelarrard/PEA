@@ -78,7 +78,6 @@ _add_group(
         "ic_act_initial_13d",
         "ic_act_amendment_intensity",
         "ic_act_repeat_activist",
-        "ic_bo_holder_count",
         "ic_bo_new_holder",
         "ic_bo_escalation_13g_to_13d",
         "ic_bo_de_escalation_13d_to_13g",

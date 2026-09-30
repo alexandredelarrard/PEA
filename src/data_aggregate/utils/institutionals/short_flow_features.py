@@ -194,36 +194,6 @@ def _lineage_target(symbol: object, issuer_cik: object, exact: dict[str, str], u
     return unique.get(source_cik)
 
 
-def _canonicalize_current_issuer_symbols(
-    history: pd.DataFrame | None,
-    symbol_tenure: pd.DataFrame | None,
-    ticker_ciks: pd.DataFrame | None,
-) -> pd.DataFrame | None:
-    """Map a dated source symbol to its unique current-universe ticker by issuer CIK."""
-    if history is None or history.empty or symbol_tenure is None or ticker_ciks is None or symbol_tenure.empty or ticker_ciks.empty:
-        return history
-    current = _current_ticker_by_cik(ticker_ciks)
-    exact = {str(row.ticker): _cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
-    if not current:
-        return history.iloc[0:0].copy()
-    dates = pd.to_datetime(history["date"], errors="coerce").dt.normalize()
-    symbols = history["ticker"].astype(str)
-    mapped = pd.Series(index=history.index, dtype=object)
-    for row in symbol_tenure.itertuples(index=False):
-        target = _lineage_target(row.symbol, row.issuer_cik, exact, current)
-        start = pd.to_datetime(row.valid_from, errors="coerce")
-        if target is None or pd.isna(start):
-            continue
-        valid = symbols.eq(str(row.symbol)) & dates.ge(pd.Timestamp(start).normalize())
-        end = pd.to_datetime(row.valid_to, errors="coerce")
-        if pd.notna(end):
-            valid &= dates.lt(pd.Timestamp(end).normalize())
-        mapped.loc[valid] = target
-    out = history.loc[mapped.notna()].copy()
-    out["ticker"] = mapped.loc[out.index].astype(str)
-    return out
-
-
 def _proven_tenure_mask(
     idx: pd.DatetimeIndex,
     columns: pd.Index,
@@ -442,8 +412,6 @@ def build_short_flow_feature_panel(
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
     tenure_mask = _proven_tenure_mask(idx, columns, symbol_tenure, ticker_ciks)
-    short_history = _canonicalize_current_issuer_symbols(short_history, symbol_tenure, ticker_ciks)
-    fails_history = _canonicalize_current_issuer_symbols(fails_history, symbol_tenure, ticker_ciks)
     shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:
         # ⚠ `sharesOutstandingPit`: a fail and a short sale are counts of shares that existed

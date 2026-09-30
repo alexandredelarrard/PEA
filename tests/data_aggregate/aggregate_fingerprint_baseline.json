@@ -1317,21 +1317,19 @@
   "rows": 43010
  },
  "panel.ownership": {
-  "cols": 6,
+  "cols": 5,
   "columns": [
    "date",
    "f_ic_act_amendment_intensity",
    "f_ic_act_initial_13d",
-   "f_ic_bo_holder_count",
    "f_ic_bo_new_holder",
    "ticker"
   ],
-  "hash": "14b57a2a4517bc1c885eb3531d9ed3af",
+  "hash": "1bd080dbe901a1f7919b669cbcc0a18e",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_act_amendment_intensity": "f078c3f08bac5bcb",
    "f_ic_act_initial_13d": "ae0330d20d9c317f",
-   "f_ic_bo_holder_count": "bae17fa2bf6c99d2",
    "f_ic_bo_new_holder": "c497aa3d7bb40cfd",
    "ticker": "20baf79a52b9d113"
   },

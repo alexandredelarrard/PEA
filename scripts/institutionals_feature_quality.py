@@ -74,6 +74,10 @@ REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     "ic_ftd_z252": ("short_flow", "internal rolling z-score is retained only as a feature input"),
     "ic_ftd_pct_so": ("short_flow", "0.9947 rank-correlated with the model-consumed fails-to-ADV20 feature"),
     "ic_act_campaign_age_days": ("beneficial_ownership", "sparse open-ended age is not comparable across issuers"),
+    "ic_bo_holder_count": (
+        "beneficial_ownership",
+        "misleading count name hid a filing-activity ratio without a stable source-complete denominator",
+    ),
     "ic_act_purpose_board": ("beneficial_ownership", "fragile text-derived purpose flag"),
     "ic_act_purpose_strategic": ("beneficial_ownership", "fragile text-derived purpose flag"),
     "ic_xs_bullish_family_ratio": ("cross_source", "opaque normalization of raw available-family support"),
@@ -104,7 +108,6 @@ _COUNT = {
     "ic_super_initiations",
     "ic_super_full_exits",
     "ic_insider_distinct_buyers_120d",
-    "ic_bo_holder_count",
 }
 _AGE = {"ic_sig_super_age_days", "ic_sig_insider_age_days", "ic_sig_act_age_days"}
 _SUPPORT = {

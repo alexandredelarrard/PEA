@@ -3,6 +3,7 @@
 # all coefs -> NaN). Drops the sparse sector-specific features (NaN->0 for a linear model)
 # and the f_ec_* (not in the cube yet).
 linear:
+  task: regression             # the linear family is regression-only
   kind: elasticnet
   alpha: 0.001
   l1_ratio: 0.6

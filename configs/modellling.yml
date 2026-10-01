@@ -10,10 +10,10 @@ model:
   target_type: rank            # which stored cube target to train on: rank | zscore
                                # (rank won on both mean IC and cross-fold stability; zscore
                                #  added a negative LightGBM fold)
-  type: ensemble               # single-model fallback used only when `ensemble` is unset
   ensemble: [elasticnet, lgbm, random_forest]   # families to train; per-day-standardized preds are averaged.
-                            
-  save_models: true
+
+  models_dir: output/models    # fitted members (model_h<h>_<family>.pkl) + metadata.json, under the
+                               # data store (absolute paths are used as-is)
   weight_decay:
     enabled: false             # OFF: time-decay up-weighted recent folds and WIDENED the
                                # cross-fold IC spread. Off lifts fold-IR 1.85 -> 2.50 (tighter,
@@ -37,6 +37,10 @@ model:
     shap_sample: 12000         # rows sampled for SHAP / partial dependence (speed). Also the
                                # row count of shap_values.parquet, per member per horizon.
     pdp_grid: 30               # partial-dependence grid resolution
+
+  backtest:                    # label-only quantile backtest of each horizon's OOS CV predictions,
+                               # the last stage of training (diagnostics/<run_stamp>/h<H>/backtest_*)
+    n_quantiles: 10            # buckets per date; top-minus-bottom = the dollar-neutral spread
 
 train:
   start_date: 2011-01-01

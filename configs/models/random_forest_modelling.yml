@@ -5,6 +5,7 @@
 # and monotone map (no `columns:` here) -- add a `columns:` list to give RF its own variables.
 # Add "random_forest" to model.ensemble in modellling.yml to include it in the blend.
 random_forest:
+  task: regression             # regression | classification (classification needs a {0,1} label)
   boosting: rf
   num_boost_round: 500         # number of bagged trees (RF: more trees lower variance, no overfit)
   bagging_fraction: 0.6        # row subsample per tree (REQUIRED for rf mode, with bagging_freq>0)

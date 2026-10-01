@@ -1,8 +1,9 @@
 """
 ls_model.py  (src/strategies/utils/ls_model.py)
 -----------------------------------------------
-Shared L/S MODEL signal builder: load the trained ensemble artifacts, project the cube (feature
-cols only, OOS window date >= train_end), score each horizon's ensemble, blend across horizons →
+Shared L/S MODEL signal builder: load the trained ensemble members (pickled transformers, see
+src/modelling/utils/artifacts.py), project the cube (OOS window date >= train_end), score each
+horizon's ensemble, blend across horizons →
 per-name combined z-signal, and load the equity return / price panels. Used by BOTH the
 market-neutral L/S sleeve (`step_ls`) and the long-only sleeve (`step_eq_long_only`) so the
 model/signal is defined once and neither strategy depends on the other's step.
@@ -10,12 +11,9 @@ model/signal is defined once and neither strategy depends on the other's step.
 
 from __future__ import annotations
 
-import json
-import pickle
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
@@ -25,7 +23,8 @@ from src.context import Context
 from src.data_aggregate.utils.assemble.cube import panel_from_cube, target_column
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_store.schema import Tables
-from src.modelling.long_short.utils import model as ml
+from src.modelling.utils.artifacts import load_ensemble, models_dir, read_metadata
+from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, optimal_forecast_weights
 from src.utils.macro import load_macro_series
 
 
@@ -44,34 +43,15 @@ class SignalBundle:
     horizons: list
 
 
-def _load_models(context: Context, cube_cfg: DictConfig, model_cfg: DictConfig):
-    models_dir = context.paths["MODELS_DIR"]
-    meta_path = models_dir / "metadata.json"
-    if not meta_path.exists():
-        raise FileNotFoundError(f"No models at {models_dir}. Train the L/S models first.")
-    meta = json.loads(meta_path.read_text())
-    target_type = meta.get("target_type", model_cfg.get("target_type", "rank"))
-    model_types = list(meta.get("model_types") or [meta.get("model_type", "lightgbm")])
-    horizons = list(cube_cfg.targets.horizons)
-    models: dict = {}
-    for h in horizons:
-        members = {}
-        for kind in model_types:
-            p = ml.member_model_path(models_dir, h, kind)
-            if not p.exists():
-                continue
-            if kind in ml.BOOSTER_MEMBER_KINDS:
-                b = lgb.Booster(model_file=str(p))
-                cast(Any, b).feature_names = b.feature_name()
-                members[kind] = b
-            else:
-                with p.open("rb") as f:
-                    members[kind] = pickle.load(f)
-        if members:
-            models[h] = members
-    if not models:
-        raise FileNotFoundError(f"No saved model files found in {models_dir}.")
-    return meta, models, target_type, horizons
+def _load_models(context: Context, config: DictConfig) -> tuple[dict, dict[int, dict[str, Any]], str, list[int]]:
+    """metadata.json + every saved member for the configured cube horizons (missing ones skipped).
+    Raises when nothing is trained or the artifacts predate the current pickle layout."""
+    directory = models_dir(context, config)
+    meta = read_metadata(directory)
+    target_type = meta.get("target_type", config.strategy_ls.get("target_type", "rank"))
+    model_types = list(meta.get("model_types") or [])
+    horizons = [int(h) for h in config.build_cube.targets.horizons]
+    return meta, load_ensemble(directory, horizons, model_types), target_type, horizons
 
 
 def _project_cube(context: Context, meta: dict, models: dict, target_type: str, start: pd.Timestamp, end) -> pd.DataFrame:
@@ -129,7 +109,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
     """Load the ensemble, project the OOS cube, score + blend horizons -> combined z-signal, and
     load the equity returns/prices. `config.strategy_ls` holds the model windows/blend params."""
     cube_cfg, model_cfg = config.build_cube, config.strategy_ls
-    meta, models, target_type, _ = _load_models(context, cube_cfg, model_cfg)
+    meta, models, target_type, _ = _load_models(context, config)
     start = pd.Timestamp(meta["train_end"])
     train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
     cube = _project_cube(context, meta, models, target_type, start, end)
@@ -148,7 +128,7 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
         panel = panel[(panel["date"] >= start) & (panel["date"] <= end_ts)]
         if panel.empty:
             continue
-        scores, _ = ml.ensemble_predict(members, panel, meta["feature_cols"])
+        scores, _ = ensemble_predict(members, panel)
         df = panel[["date", "ticker"]].copy()
         df["z"] = pd.Series(scores.to_numpy(), index=panel.index)
         df["z"] = df.groupby("date")["z"].transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
@@ -167,12 +147,8 @@ def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle
     if str(model_cfg.get("blend", "ir")) == "equal":
         bw = {h: 1.0 / len(hs) for h in hs}
     else:
-        bw = ml.optimal_forecast_weights({h: blended[f"z_{h}"].to_numpy() for h in hs}, ir, shrink=float(model_cfg.get("blend_shrink", 0.5)))
-    w = np.array([bw[h] for h in hs])
-    z = blended[zc].to_numpy()
-    mask = ~np.isnan(z)
-    wsum = np.where(mask, w, 0).sum(axis=1)
-    blended["combined"] = np.where(wsum > 0, np.nansum(np.where(mask, z * w, 0), axis=1) / np.where(wsum > 0, wsum, 1), np.nan)
+        bw = optimal_forecast_weights({h: blended[f"z_{h}"].to_numpy() for h in hs}, ir, shrink=float(model_cfg.get("blend_shrink", 0.5)))
+    blended["combined"] = blend_horizons(blended[zc].to_numpy(), np.array([bw[h] for h in hs]))
     signal = blended.pivot(index="date", columns="ticker", values="combined")
     signal.index = pd.to_datetime(signal.index)
     return SignalBundle(

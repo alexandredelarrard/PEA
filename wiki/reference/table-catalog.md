@@ -125,7 +125,7 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 | `predictions` | ticker × date | Backtest-time scores, replaced by training runs. |
 | `cube_signal` | ticker × date | Blended cross-horizon signal. |
 | `predictions_latest` | date × ticker × horizon × model | Long-form production scores with distinct as-of, prediction horizon, and production timestamp semantics. |
-| `trend_asset_returns` | date | Net returns for the macro trend sleeve. |
+| `trend_asset_returns` | date | Net returns of the removed macro trend sleeve; unused since 2026-10 (registry entry kept until the next data-store change). |
 | `strategy` | trading day × sleeve × ticker | Upserted trade ledger; opening rows are completed when exits occur. |
 | `extraction_run` | table × run id | Durable extraction-run ledger. Different scopes on the same day remain distinct. |
 

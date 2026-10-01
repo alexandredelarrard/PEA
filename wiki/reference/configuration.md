@@ -31,9 +31,9 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
-| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, and train/holdout boundaries. The filename intentionally contains three “l” characters. |
+| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), `backtest.n_quantiles` (label-only backtest buckets), and train/holdout boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
 | `linear`, `lgbm`, `random_forest` | [configs/models](../../configs/models/) | Family hyperparameters and family-specific feature columns. |
-| `strategy_ls`, `strategy_eq_long_only`, `strategy_long_book`, `strategy_trend` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
+| `strategy_ls`, `strategy_eq_long_only` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
 | `data_availability`, `source_freshness` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, live-insider lag, and the parity-approved bulk quarter. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
@@ -101,7 +101,7 @@ Training boundaries describe the holdout evaluation run. Production `full-train`
 
 ## Strategies and portfolio
 
-The portfolio currently selects `ls_equity`, `eq_long_only`, and `long_book`; `trend_cta` remains available but unselected. The portfolio owns capital, global target volatility, costs, risk-free rate, covariance/blending policy, rebalance frequency, leverage, and output switches.
+The portfolio selects `ls_equity` and `eq_long_only`, the only registered sleeves. The portfolio owns capital, global target volatility, costs, risk-free rate, covariance/blending policy, rebalance frequency, leverage, and output switches.
 
 Sleeve YAML owns only sleeve construction. [PortfolioInputs](../../src/strategies/base.py) passes portfolio-level values down. A sleeve can override trading costs where explicitly supported, but must not duplicate capital or global risk settings.
 

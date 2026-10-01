@@ -22,7 +22,7 @@ Every major `src/` package owns a `step_*.py` orchestrator. A step:
 3. exposes `run()` as its only public operation; and
 4. keeps implementation in package-local private helpers or composed sub-steps.
 
-Class names use `StepPascalCase`; files use `step_snake_case.py`. Strategies are the deliberate exception and implement [Strategy.run](../../src/strategies/base.py).
+Class names use `StepPascalCase`; files use `step_snake_case.py`. Strategies are the deliberate exception and implement [Strategy.run](../../src/strategies/base.py). [StepLongShort](../../src/modelling/steps/step_long_short.py) is the second exception: it lives in `src/modelling/steps/` and exposes `run_train()` and `run_predict()` besides `run()` (which calls `run_train()`), because training and prediction share one step's configuration.
 
 Do not cross-import between sibling `src/` packages. Shared logic belongs in the [runtime and shared utilities](../modules/runtime-and-shared-utils.md) package. The sanctioned service exception is [src/gpt_extract](../../src/gpt_extract/), which centralizes LLM clients, prompts, and embeddings.
 

@@ -15,8 +15,8 @@ tags:
 ## Responsibilities
 
 - Define immutable portfolio inputs and the common strategy-result shape.
-- Implement long/short equity, equity long-only, long-book, and trend-CTA sleeves.
-- Convert forecasts or macro signals into constrained weights.
+- Implement the long/short equity and equity long-only sleeves.
+- Convert model forecasts into constrained weights.
 - Apply trading costs, turnover controls, position sizing, and optional integer-share projection.
 - Produce the exact weight and price panels needed to reconstruct trades.
 - Provide sleeve-specific analysis and plots.
@@ -25,19 +25,19 @@ tags:
 
 - `PortfolioInputs`, `StrategyResult`, and abstract `Strategy.run()` in [base.py](../../src/strategies/base.py).
 - `STRATEGY_REGISTRY` in [strategies/__init__.py](../../src/strategies/__init__.py).
-- `LongShortStrategy`, `EqLongOnlyStrategy`, `LongBookStrategy`, and `TrendCTAStrategy` in their respective [step modules](../../src/strategies/).
+- `LongShortStrategy` and `EqLongOnlyStrategy` in their respective [step modules](../../src/strategies/) (the `long_book` and `trend_cta` sleeves were removed in 2026-10).
 
 ## Key files
 
 - [step_ls.py](../../src/strategies/step_ls.py) implements market-neutral equity long/short.
 - [step_eq_long_only.py](../../src/strategies/step_eq_long_only.py) selects a buffered top-N long book.
-- [step_long_book.py](../../src/strategies/step_long_book.py) wraps multi-asset ERC, trend, and regime tilts.
-- [step_trend.py](../../src/strategies/step_trend.py) implements multi-speed time-series momentum.
+- [utils/ls_model.py](../../src/strategies/utils/ls_model.py) scores the saved ensemble for both sleeves (through `modelling.utils` only).
+- [analysis/common.py](../../src/strategies/analysis/common.py) and its siblings hold the per-sleeve analysis and plots.
 - [utils/strategies_opt.py](../../src/strategies/utils/strategies_opt.py), [integer_shares.py](../../src/strategies/utils/integer_shares.py), and [blotter.py](../../src/strategies/utils/blotter.py) support construction and execution.
 
 ## Dependencies
 
-Sleeves consume outputs from [modelling](./modelling.md), macro prices from [DataStore](./data-store.md), and per-sleeve YAML under [configs/strategy](../../configs/strategy/). They depend on the shared [strategy-sleeves contract](../concepts/strategy-sleeves.md).
+Sleeves consume the trained ensemble from [modelling](./modelling.md), prices from [DataStore](./data-store.md), and per-sleeve YAML under [configs/strategy](../../configs/strategy/). They depend on the shared [strategy-sleeves contract](../concepts/strategy-sleeves.md).
 
 ## Participates in
 

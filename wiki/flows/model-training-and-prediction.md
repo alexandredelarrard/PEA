@@ -21,7 +21,7 @@ Training and prediction have different cadences and data requirements. The weekl
 ~~~mermaid
 sequenceDiagram
   participant Weekly as Weekly DAG
-  participant Model as StepModelling
+  participant Model as StepLongShort
   participant Backtest as StepPortfolio
   participant Artifacts as Model artifacts
   participant Daily as Daily prediction DAG
@@ -39,12 +39,12 @@ sequenceDiagram
 
 ## Steps
 
-1. `StepModelling.run()` in [step_train.py](../../src/modelling/long_short/step_train.py) resolves cube columns and horizons without loading the full cube.
+1. `StepLongShort.run_train()` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) resolves cube columns and horizons without loading the full cube.
 2. It loads one labelled horizon panel at a time, cross-validates, trains each configured family, and frees the panel.
-3. It saves member artifacts, `metadata.json`, predictions, signals, SHAP data, and run KPIs.
+3. It saves one pickle per member, `metadata.json`, predictions, signals, the `Monitor` diagnostics (IC and drawdown, SHAP, PDPs), a label-only quantile backtest per horizon, and run KPIs.
 4. The portfolio backtest uses the holdout artifacts before production refitting.
-5. `run(full_history=True)` trains the production ensemble on all history.
-6. `predict_latest()` loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
+5. `run_train(full_history=True)` trains the production ensemble on all history.
+6. `run_predict()` loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
 
 ## Failure modes
 

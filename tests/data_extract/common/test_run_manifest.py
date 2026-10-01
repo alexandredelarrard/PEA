@@ -126,6 +126,24 @@ def test_manifest_window_full_rescan_when_ticker_count_changes(tmp_path):
     print("  ticker_count 5 -> 6 -> full rescan (new ticker needs full history). Validated.")
 
 
+def test_manifest_window_full_rescan_when_same_size_membership_changes(tmp_path):
+    ctx = _ctx(tmp_path)
+    record_run(ctx, "sec_13d", ticker_count=2, rows_added=1, is_full_rescan=True, tickers=["AAA", "BBB"])
+
+    fallback = pd.Timestamp("2011-01-01")
+    since, is_full_rescan = manifest_window(
+        ctx,
+        "sec_13d",
+        ticker_count=2,
+        tickers=["AAA", "CCC"],
+        fallback_since=fallback,
+        full_rescan_days=30,
+    )
+    assert is_full_rescan is True and since == fallback
+    print("\n=== SANITY CHECK: manifest membership identity ===")
+    print("  AAA/BBB -> AAA/CCC keeps count=2 but forces a full rescan. Validated.")
+
+
 def test_manifest_window_full_rescan_after_self_heal_window_elapses(tmp_path):
     ctx = _ctx(tmp_path)
     stale = pd.Timestamp.today().normalize() - pd.Timedelta(days=31)

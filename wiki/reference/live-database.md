@@ -68,6 +68,7 @@ Important measured state:
 - `symbol_tenure` contains overlapping observed intervals; overlap is expected and must not be collapsed into a one-row lookup.
 - `entity_lineage` is sparse by design: a missing CIK row means a singleton entity.
 - On SEC-derived tables, `cik` means the filer that actually submitted the document, not the current roster CIK. Group company history by ticker and apply registrant policy.
+- A targeted 2026-09-30 FTD audit read 1,079,328 stored rows and found 413 source ZIP periods, all with estimated vintage availability after metadata backfill. Exactly 36,299 rows (3.36%) have day-15 settlements carried by a `b` ZIP; no settlement date spans two stored ZIP periods. Feature publication must use persisted `period`, never infer the half from the settlement day. The [short-flow builder](../../src/data_aggregate/utils/institutionals/short_flow_features.py) enforces the persisted-period and single-ZIP-per-date contracts.
 
 ## Known table-presence and coverage traps
 

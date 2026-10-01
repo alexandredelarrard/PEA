@@ -303,7 +303,6 @@ def test_per_ticker_coverage_onset_guard():
         "ic_inst_new_buyer_ratio",
         "ic_inst_exit_ratio",
         "ic_inst_cluster_buying",
-        "inst_value_flow",
     ):
         assert np.isnan(_as_float(on.loc[key, c])), f"{c} survived the per-ticker onset guard"
     # levels untouched, on both the guarded ticker and its broadly-held neighbour
@@ -396,8 +395,10 @@ def test_panel_columns_match_the_emission_map():
     # every emitted column is declared, and the two-leg shape matches the map exactly
     assert emitted <= expected, f"undeclared column(s): {sorted(emitted - expected)}"
     assert "f_ic_inst_holders" in emitted and "f_ic_inst_holders_xs" not in emitted
-    assert "f_ic_inst_ownership_pct_vs_peers" in emitted
-    assert "f_ic_inst_concentration_xs" in emitted
+    assert "f_ic_inst_ownership_pct" in emitted
+    assert "f_ic_inst_concentration" in emitted
+    assert not any(column.endswith("_xs") for column in emitted)
+    assert not any(column.endswith("_vs_peers") for column in emitted)
     # A's ownership pct at a late date = 200 shares / 1000 = 0.2
     from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
@@ -407,8 +408,8 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: 13F emitted columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted, all declared ({len(EMISSION)} features); "
-        f"holders is raw-only, ownership_pct carries the peer leg, concentration the "
-        f"percentile. A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated."
+        f"all characteristics are raw and no peer leg survives without target/OOS evidence. "
+        f"A latest inst_shares={inst_sh:.0f} (/1000 = 0.2). Validated."
     )
 
 
@@ -442,7 +443,7 @@ def test_options_concentration_and_the_availability_date():
     # Herfindahl of manager value shares (1.0/1.5/1.5 of 4.0M)
     assert abs(q2["ic_inst_concentration"] - ((1 / 4) ** 2 + 2 * (1.5 / 4) ** 2)) < 1e-6
     # registry section 1: `inst_value_chg` and `net_options_ratio_chg` are DROPPED -- price
-    # -contaminated and redundant against flow_to_mcap / the level respectively.
+    # contaminated and redundant against the level respectively.
     assert "ic_inst_value_chg" not in qf.columns
     assert "ic_inst_net_options_ratio_chg" not in qf.columns
     print("\n=== SANITY CHECK: 13F options / concentration / availability ===")
@@ -457,7 +458,7 @@ def test_options_concentration_and_the_availability_date():
     )
 
 
-def test_value_to_mcap_and_flow_panel():
+def test_value_to_mcap_panel_excludes_reported_value_change_as_flow():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
@@ -470,11 +471,10 @@ def test_value_to_mcap_and_flow_panel():
         "f_ic_inst_net_options_ratio",
         "f_ic_inst_concentration",
         "f_ic_inst_value_to_mcap",
-        "f_ic_inst_value_to_mcap_xs",
-        "f_ic_inst_flow_to_mcap",
-        "f_ic_inst_flow_to_mcap_xs",
     ):
         assert c in panel.columns, f"{c} missing from panel"
+    assert "f_ic_inst_value_to_mcap_xs" not in panel
+    assert not any("flow_to_mcap" in column for column in panel)
     # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 
@@ -484,9 +484,8 @@ def test_value_to_mcap_and_flow_panel():
     assert abs(iv / mc - 0.40) < 1e-6
     print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
     print(
-        f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; panel exposes "
-        f"value_to_mcap + flow_to_mcap (raw + percentile) and the two bounded ratios. "
-        "Validated."
+        f"  A inst_value=${iv:,.0f} / mcap=${mc:,.0f} = {iv / mc:.2f}; value_to_mcap stays "
+        "raw while reported market-value change is not mislabeled as investor flow. Validated."
     )
 
 
@@ -876,6 +875,55 @@ def test_a_filing_after_the_availability_date_is_revised_never_excluded():
         f"{first['as_of'].date()} carries {first['inst_shares']:.0f} shares (M1 only, no leak); "
         f"revision {revision['as_of'].date()} carries {revision['inst_shares']:.0f} (both, "
         f"cumulative). Nothing is dropped. Validated."
+    )
+
+
+def test_late_filers_do_not_rewrite_the_first_publication_pool_or_coverage_state():
+    """A rebuild with later filings must leave the already-public first snapshot unchanged."""
+
+    def filings(on_time: int) -> pd.DataFrame:
+        rows = []
+        for period in ("2021-09-30", "2022-03-31"):
+            filed = pd.Timestamp(period) + pd.Timedelta(days=40)
+            rows.extend(
+                {"cik": f"M{i}", "period": period, "filing_date": filed, "ticker": "Z", "shares": 100.0, "value_usd": 100.0} for i in range(10)
+            )
+        period = "2021-12-31"
+        early = pd.Timestamp(period) + pd.Timedelta(days=40)
+        late = pd.Timestamp(period) + pd.Timedelta(days=75)
+        rows.extend(
+            {
+                "cik": f"M{i}",
+                "period": period,
+                "filing_date": early if i < on_time else late,
+                "ticker": "A" if i == 0 else "Z",
+                "shares": 100.0,
+                "value_usd": 100.0,
+            }
+            for i in range(10)
+        )
+        return pd.DataFrame(rows)
+
+    six_public = filings(on_time=6)
+    six_only = six_public[~((six_public["period"] == "2021-12-31") & (six_public["filing_date"] > pd.Timestamp("2022-02-15")))]
+    rebuilt = _qf(_stamped(six_public), min_prior_holders=0)
+    truncated = _qf(_stamped(six_only), min_prior_holders=0)
+    period = pd.Timestamp("2021-12-31")
+    rebuilt_first = rebuilt[(rebuilt["ticker"] == "A") & (rebuilt["period"] == period)].iloc[0]
+    truncated_first = truncated[(truncated["ticker"] == "A") & (truncated["period"] == period)].iloc[0]
+    assert rebuilt_first["ic_inst_holders"] == truncated_first["ic_inst_holders"] == pytest.approx(1 / 6)
+    rebuilt_last = rebuilt[(rebuilt["ticker"] == "A") & (rebuilt["period"] == period)].iloc[-1]
+    assert rebuilt_last["ic_inst_holders"] == pytest.approx(1 / 10), "the public denominator must update from the late filer's date onward"
+
+    two_public = _qf(_stamped(filings(on_time=2)), min_prior_holders=0)
+    two_public_a = two_public[(two_public["ticker"] == "A") & (two_public["period"] == period)]
+    two_public_first = two_public_a.iloc[0]
+    assert np.isnan(two_public_first["ic_inst_holders"]), "two of ten public filers is a contemporaneous coverage hole"
+    assert two_public_a.iloc[-1]["ic_inst_holders"] == pytest.approx(1 / 10), "the repaired coverage state must become usable prospectively"
+    print(
+        "\n=== SANITY CHECK: 13F publication-time denominator and coverage ===\n"
+        "  Four later filers leave the first breadth at 1/6 then update it to 1/10; eight "
+        "later filers cannot retroactively hide a 2/10 coverage hole, but repair it prospectively. Validated."
     )
 
 

@@ -305,8 +305,9 @@ def build_ticker_13g_edgar(
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13G_FORMS, since, done_accessions):
         try:
             filing_rows = _filing_rows(filing)
-        except Exception:  # noqa: BLE001 -- one filing, best-effort
-            continue
+        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
+            accession = getattr(filing, "accession_number", "unknown")
+            raise RuntimeError(f"SC 13G accession {accession} could not be parsed") from exc
 
         issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:

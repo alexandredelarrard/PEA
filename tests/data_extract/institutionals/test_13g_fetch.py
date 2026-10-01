@@ -14,6 +14,7 @@ so the guard is tested without a network call -- the `get_fn`-injection preceden
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
     _COLS,
@@ -236,6 +237,20 @@ def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
     assert len(build_ticker_13g_edgar("JNJ", "0000200406")[Tables.sec_13g]) == 1
     _patch_new_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
     assert len(build_ticker_13g_edgar("JNJ", "")[Tables.sec_13g]) == 1
+
+
+def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
+    filing = _filing(accession="0001-broken")
+
+    def fail_parse():
+        raise ValueError("broken schedule")
+
+    filing.obj = fail_parse
+    _patch_new_filings(monkeypatch, [filing])
+    with pytest.raises(RuntimeError, match="0001-broken"):
+        build_ticker_13g_edgar("JNJ", "0000200406")
+    print("\n=== SANITY CHECK: known 13G parse failure ===")
+    print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 
 
 if __name__ == "__main__":

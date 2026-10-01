@@ -12,13 +12,13 @@ from the first four:
     conditioning     the price path since each family's last   `ic_sig_*`     (derived)
                      disclosure -- the layer that makes the
                      panel move on a day with no filing
-    cross-source     how many independent families / ACTORS    `ic_xs_*`      (derived)
-                     agree on the name
+    cross-source     how many independent source families are  `ic_xs_*`      (derived)
+                     observable for the name (support metadata)
 
 THE TWO DERIVED PANELS READ A SINK, NOT THE SOURCES AGAIN (`utils/institutionals/sink.py`).
 The insider event dates are the output of a 2M-row scope-and-repair pass and the elite ones of
-the per-manager availability join, so each source panel drops its event dates, its bullish
-actors and its handful of declared signal frames into a `ConditioningSink` on the way past.
+the per-manager availability join, so each source panel drops its event dates and a handful
+of declared availability masks into a `ConditioningSink` on the way past.
 Re-deriving either would double the most expensive read in the step.
 
 WHY IT IS NO LONGER `extras`. "Extras" named no shared property, so it accreted whatever had
@@ -149,7 +149,7 @@ class StepCubeInstitutionals(Step):
         # prices) and the table is small enough that the cost is the read, not the memory.
         splits = self._load_source(Tables.prices_splits)
 
-        # What the two DERIVED panels consume. Filled by the four source panels as they run,
+        # What the two DERIVED panels consume. Filled by the source panels as they run,
         # so nothing here re-reads a source -- see `sink.py`.
         sink = ConditioningSink()
 
@@ -178,7 +178,6 @@ class StepCubeInstitutionals(Step):
         return institutional_inputs.load_full_price_frames(
             self._store,
             self._context,
-            self._config,
             self._FIELDS,
         )
 
@@ -442,15 +441,26 @@ class StepCubeInstitutionals(Step):
         """Volume-weighted RegSHO short-VOLUME ratios (5/20/60d), their self-history z, the
         two price-conditional interactions and short turnover, plus SEC fails-to-deliver
         (settlement stress) as a share of shares outstanding and of ADV20. RegSHO is lagged
-        one trading day; FTD by ~2 months (its publication delay)."""
-        short = self._load_source(Tables.short_interest, frames.universe)
-        fails = self._load_source(Tables.sec_fails_to_deliver, frames.universe)
+        one trading day; each FTD semi-monthly ZIP appears on its stored availability date."""
+        universe = sorted(set(map(str, frames.universe)))
+        symbol_tenure, ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
+        # Both extractors resolve historical source symbols to today's canonical universe
+        # ticker before storage. Lineage is therefore a validation mask here, not a second
+        # relabelling pass.
+        short = self._load_source(Tables.short_interest, universe)
+        fails = self._load_source(Tables.sec_fails_to_deliver, universe)
+        ftd_vintages = self._load_source(Tables.sec_ftd_vintages) if fails is not None and not fails.empty else None
+        if fails is not None and not fails.empty and ftd_vintages is None:
+            raise ValueError("FTD vintage availability is missing; run fails-to-deliver extraction before rebuilding institutionals")
         return build_short_flow_feature_panel(
             frames,
             short,
             fails_history=fails,
+            ftd_vintages=ftd_vintages,
             shares_out_history=shares,
             splits=splits,
+            symbol_tenure=symbol_tenure,
+            ticker_ciks=ticker_ciks,
             availability=self._availability,
             sink=sink,
         )
@@ -461,14 +471,14 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
-        expected_ticker_count = len(set(map(str, frames.universe)))
+        expected_tickers = sorted(set(map(str, frames.universe)))
         complete_13d = self._schedule_complete_through(
             Tables.sec_13d,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
         complete_13g = self._schedule_complete_through(
             Tables.sec_13g,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
         return build_ownership_feature_panel(
             frames,
@@ -486,13 +496,13 @@ class StepCubeInstitutionals(Step):
         self,
         table: Table,
         *,
-        expected_ticker_count: int,
+        expected_tickers: Sequence[str],
     ) -> pd.Timestamp | None:
         return institutional_frontiers.schedule_complete_through(
             self._context,
             self._log,
             table,
-            expected_ticker_count=expected_ticker_count,
+            expected_tickers=expected_tickers,
         )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
@@ -508,6 +518,5 @@ class StepCubeInstitutionals(Step):
         )
 
     def _cross_source_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:
-        """The `ic_xs_*` layer: how many independent families -- and how many distinct
-        ACTORS -- are flagging this name at once, plus the both-sides conflict flag."""
+        """The `ic_xs_*` layer: raw counts of observable independent source families."""
         return build_cross_source_panel(frames, sink)

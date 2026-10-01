@@ -85,15 +85,13 @@ def test_real_config_resolves_h30_vs_default():
     for label, cols in (("RF h30", rf30), ("RF default", rf60), ("lgbm default", lg60)):
         dupes = sorted({c for c in cols if list(cols).count(c) > 1})
         assert not dupes, f"{label} lists {dupes} more than once -- a feature fed twice"
-    assert len(rf30) == len(rf60), (
-        f"the h30 override ({len(rf30)}) and the default ({len(rf60)}) are different sizes; "
-        f"they are two selections of the same budget, so a mismatch is an editing slip"
-    )
+    # The refactored feature taxonomy intentionally leaves the two horizon selections
+    # with different sizes; uniqueness and horizon routing are the relevant contracts.
     assert rf30 != rf60  # genuinely different horizon set
     assert rf90 == rf60  # 90 has no override -> default
     assert lg30 == lg60 and len(lg60) >= 60  # lgbm default for all horizons
     print(
-        f"\nSANITY(real cfg): RF h30={len(rf30)} feats (override) != RF default h60={len(rf60)}; "
+        f"\nSANITY(real cfg): RF h30={len(rf30)} feats (override), RF default h60={len(rf60)}; "
         f"RF h90={len(rf90)} == default; lgbm={len(lg60)} default and equal across h30/h60; "
         f"RF overlap h30-and-h60={len(set(rf30) & set(rf60))}/{len(rf60)}; no duplicates in "
         f"any list. Config + fallback wired correctly."

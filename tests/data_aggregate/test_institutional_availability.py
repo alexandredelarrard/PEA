@@ -32,9 +32,10 @@ def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -
         "ic_insider_discretionary_sell_mcap_60d",
         [(Tables.insider_transactions, "is_10b5_1")],
     ) == pd.Timestamp("2023-04-01")
+    assert "ic_inst_flow_to_mcap" not in rules.derived_features
 
     print("\n=== SANITY CHECK: compact availability inheritance ===")
-    print("  Insider fields inherit 2006-01-03; is_10b5_1 and its derived sale leg start 2023-04-01. Validated.")
+    print("  Active derived features resolve their boundaries and retired features have no stale availability entry. Validated.")
 
 
 def test_source_mask_is_inclusive_and_combines_per_cell_requirements() -> None:
@@ -82,8 +83,9 @@ def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path
             encoding="utf-8",
         )
 
+    expected = ["AAA", "BBB"]
     write_entry({"last_run_date": "2026-09-24", "ticker_count": 2})
-    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
 
     write_entry(
         {
@@ -92,22 +94,33 @@ def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path
             "coverage_complete": True,
         }
     )
-    assert step._schedule_complete_through(Tables.sec_13g, expected_ticker_count=2) is None
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
 
     write_entry(
         {
             "last_run_date": "2026-09-24",
             "ticker_count": 2,
             "coverage_complete": True,
+            "tickers": ["AAA", "CCC"],
+        }
+    )
+    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
+
+    write_entry(
+        {
+            "last_run_date": "2026-09-24",
+            "ticker_count": 2,
+            "coverage_complete": True,
+            "tickers": expected,
         }
     )
     assert step._schedule_complete_through(
         Tables.sec_13g,
-        expected_ticker_count=2,
+        expected_tickers=expected,
     ) == pd.Timestamp("2026-09-24")
 
     print("\n=== SANITY CHECK: Schedule absence frontier ===")
-    print("  legacy or partial-universe manifests -> unavailable; complete analysis-universe manifest -> trusted")
+    print("  legacy, partial, or same-sized wrong membership -> unavailable; exact analysis-universe roster -> trusted")
     print("  OK: aggregation emits zeros only behind a proven issuer-side discovery frontier")
 
 

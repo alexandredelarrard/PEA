@@ -98,7 +98,8 @@ def decay_events(
     Returns a wide (date x ticker) float frame ready to hand to `build_peer_relative_panel`.
 
     `magnitude_col=None` means every event counts 1.0 -- the right default for a count-style
-    signal ("a 13D was filed"). Pass a column to weight by size ($ bought, % of shares).
+    signal ("a 13D was filed"). Pass a column to weight by size ($ bought, % of shares); rows
+    whose supplied magnitude is unavailable do not enter that weighted series.
 
     An event dated on a non-trading day (a weekend filing, a holiday) lands on the NEXT trading
     day: that is the first day the information could be acted on, so rounding it backwards would
@@ -116,10 +117,9 @@ def decay_events(
     ev = ev.dropna(subset=[date_col, ticker_col])
     if magnitude_col:
         ev["_m"] = pd.to_numeric(ev[magnitude_col], errors="coerce")
-        # A NaN magnitude is an event whose SIZE is unknown, not an event that did not happen.
-        # Dropping the row would erase the occurrence; counting it as 1.0 keeps the event in the
-        # series on the same footing as an unweighted one.
-        ev["_m"] = ev["_m"].fillna(1.0)
+        # A weighted series promises the magnitude's units. Turning an unknown dollar/ratio
+        # into 1.0 silently changes units; callers wanting occurrence counts omit magnitude_col.
+        ev = ev.dropna(subset=["_m"])
     else:
         ev["_m"] = 1.0
 

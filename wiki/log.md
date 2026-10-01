@@ -95,3 +95,19 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Coverage: historical notes archives through August 2026 use the next-month 12th, rolled to Monday on weekends; archives from September 2026 use the successful New York download date; existing dates can be corrected by a metadata-only CLI path
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
 - Operational boundary: no live schema migration, notes metadata repair, or fundamentals-part rebuild was run; the historical 12th is an estimate and does not guarantee strict point-in-time provenance
+
+## 2026-09-30: refresh — FTD ZIP availability and settlement lineage
+
+- Profile: internal/standard
+- source_commit: 29f81a3 (was b91495e)
+- Coverage: added the ZIP-grain `sec_ftd_vintages` table and the estimated/observed availability policy; documented that source `period`, not settlement day, controls FTD publication, including day-15 rows in some `b` ZIPs
+- Pages: [Overview](./OVERVIEW.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Live database](./reference/live-database.md), [Source availability](./concepts/source-availability.md), [Data extraction](./modules/data-extract.md), [Cube aggregation](./modules/data-aggregate.md)
+- Measurement: 1,079,328 stored FTD rows, 413 vintage periods, 36,299 date-inferred-period mismatches, and zero settlement dates shared across stored ZIP periods on 2026-09-30
+
+## 2026-09-30: refresh — institutionals merge and model-readiness backlog
+
+- Profile: internal/standard
+- source_commit: 11d8735+838064d (pre-merge parent tips)
+- Coverage: reconciled FTD ZIP availability and SEC identity/extraction documentation with current `dev`; added the train/holdout label-boundary and historical-universe P0 gates plus institutionals validation follow-ups
+- Pages: [Overview](./OVERVIEW.md), [TODO](./TODO.md), [Cube aggregation](./modules/data-aggregate.md), [Data sources](./reference/data-sources.md)
+- Validation: the approved FTD ZIP-publication correction moved only `f_ic_ftd_to_adv20` and `f_ic_ftd_persistence_30d` in the frozen short-flow panel; the updated regression passes all 37 outputs and 1,749 hashed columns

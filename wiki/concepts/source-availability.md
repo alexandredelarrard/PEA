@@ -16,7 +16,7 @@ Source availability describes whether a source could have produced an observatio
 
 Treating unavailable data as zero fabricates negative evidence and changes cross-sectional ranks. The institutional feature system carries value-plus-availability payloads, while validation uses source clocks and a narrow observed-zero declaration to decide whether a feature appeared too early.
 
-Configuration dates are only outer bounds; they do not fill missing cells or prove ticker eligibility. Deferred source-history repairs are tracked in [TODO](../TODO.md).
+Configuration dates are only outer bounds; they do not fill missing cells or prove ticker eligibility. FTD settlement dates are likewise not availability dates: the [ZIP-vintage table](../reference/table-catalog.md) supplies the shared as-of clock by persisted source period, estimated for historical ZIPs and first-HTTP-observed for newly downloaded ZIPs. Some `b` ZIPs contain day-15 settlements, so the half cannot be inferred safely from settlement date. Feature publication moves to the next trading session when necessary; missing FTD evidence remains null rather than a fabricated zero. Deferred source-history repairs are tracked in [TODO](../TODO.md).
 
 ## Where it lives
 

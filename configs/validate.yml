@@ -87,8 +87,9 @@ validate:
       # Cross-source ratios update when an underlying filing/event family updates. A ticker can
       # legitimately hold the same discrete vote for months, so their edge behavior is checked
       # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
-      daily_legs: ["_to_mcap", "_ret_since", "_resid_ret_since", "_vol_scaled_move",
-                   "_price_vs_buy", "_max_runup_since_buy", "_max_dd_since_buy"]
+      # Returns-since-event legitimately remain 0 when a new filing resets age to 0 each
+      # session (measured for TPL/RSG); cumulative extrema move only at new highs/lows.
+      daily_legs: ["_to_mcap", "_price_vs_buy"]
       # `price_vs_buy` exists only while a qualifying purchase remains in its 126-session
       # value-weighted cost window. A gap while age <= 125 is actionable; anchor-free NaNs are
       # economically undefined and are reported as explained rather than zero-filled.
@@ -127,15 +128,36 @@ validate:
       # All other PIT families retain the stricter per-ticker first-event comparison above.
       pit_observed_zero_sources:
         f_ic_ftd_:                          sec_fails_to_deliver
-        f_ic_bo_holder_count:               [sec_13d, sec_13g]
         f_ic_insider_net_buy_ratio_180d:    insider_transactions
-      # Cross-source vote ratios and their weaker-side conflict are normalized to [0, 1].
-      # Available-family counts are audit denominators, not alpha legs.
-      # Other percent-named legs use their own semantic scales and are profiled separately.
+      # Only physical/economic bounds live here. Heavy-tailed one-sided fields are reviewed
+      # through robust distribution and traced-outlier evidence rather than arbitrary clips.
       bounds:
-        f_ic_xs_bullish_family_ratio: [0.0, 1.0]
-        f_ic_xs_bearish_family_ratio: [0.0, 1.0]
-        f_ic_xs_conflict_ratio:       [0.0, 1.0]
+        f_ic_inst_holders:                    [0.0, 1.0]
+        f_ic_inst_breadth_chg:               [-1.0, 1.0]
+        f_ic_inst_new_buyer_ratio:            [0.0, 1.0]
+        f_ic_inst_exit_ratio:                 [0.0, 1.0]
+        f_ic_inst_cluster_buying:            [-1.0, 1.0]
+        f_ic_inst_concentration:              [0.0, 1.0]
+        f_ic_inst_net_options_ratio:         [-1.0, 1.0]
+        f_ic_inst_ownership_pct:              [0.0, 2.0]
+        f_ic_super_holders:                   [0.0, 1.0]
+        f_ic_super_conviction_weight:         [0.0, 1.0]
+        f_ic_super_max_conviction:            [0.0, 1.0]
+        f_ic_super_breadth_chg:              [-1.0, 1.0]
+        f_ic_super_conviction_chg:           [-1.0, 1.0]
+        f_ic_super_sp500_share:               [0.0, 1.0]
+        f_ic_super_selection_score:           [0.0, 1.0]
+        f_ic_insider_net_buy_ratio_180d:     [-1.0, 1.0]
+        f_ic_insider_owner_surprise_120d:     [0.0, 1.0]
+        f_ic_shortvol_ratio_5d:               [0.0, 1.0]
+        f_ic_shortvol_ratio_20d:              [0.0, 1.0]
+        f_ic_shortvol_ratio_60d:              [0.0, 1.0]
+        f_ic_shortvol_acceleration:          [-1.0, 1.0]
+        f_ic_shortvol_market_coverage:        [0.0, 1.0]
+        f_ic_ftd_persistence_30d:             [0.0, 30.0]
+        f_ic_sig_insider_max_dd_since_buy:   [-1.0, 0.0]
+        f_ic_xs_bullish_available_family_count: [0.0, 4.0]
+        f_ic_xs_bearish_available_family_count: [0.0, 3.0]
 
     # 105 columns, 3,045,028 rows. Peer-z views only -- there is no `_xs` leg in this part, so
     # declaring one would make `clip` measure tie mass over an empty set and call it a pass.

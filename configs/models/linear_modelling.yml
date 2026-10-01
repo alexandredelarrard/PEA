@@ -9,7 +9,7 @@ linear:
   max_iter: 1000
   tol: 1.0e-06
   columns:
-  - f_ic_shortvol_ratio_20d_vs_peers
+  - f_ic_shortvol_ratio_20d
   - f_goodwill_impairment_intensity_vs_peers
   - f_rd_capitalized_roic
   - f_current_ratio
@@ -37,5 +37,5 @@ linear:
   - f_gross_margin_chg
   - f_diluted_shares_growth
   - volume_cv_63
-  - f_ic_insider_buy_value_mcap_180d_xs
-  - f_ic_super_initiations_xs
+  - f_ic_insider_buy_value_mcap_180d
+  - f_ic_super_initiations

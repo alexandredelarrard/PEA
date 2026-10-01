@@ -48,11 +48,11 @@ lgbm:
     - f_combined_ratio_xs: -1
     - mom_12_1: 1
     - max_21: -1
-    - f_ic_inst_flow_to_mcap_xs: 1
-    - f_ic_super_flow_to_mcap_xs: 1
-    - f_ic_shortvol_ratio_20d_vs_peers: -1
+    - f_ic_inst_value_to_mcap: 1
+    - f_ic_super_conviction_chg: 1
+    - f_ic_shortvol_ratio_20d: -1
     - f_ic_shortvol_acceleration: -1
-    - f_ic_ftd_to_adv20_xs: -1
+    - f_ic_ftd_to_adv20: -1
     - f_ec_tone: 1
     - f_ec_tone_vs_hist: 1
     - f_ec_tone_delta: 1
@@ -67,7 +67,7 @@ lgbm:
     - f_float_growth_xs: 1
     - f_affo_dividend_coverage: 1
     - f_nii_growth_xs: 1
-    - f_ic_super_initiations_xs: 1
+    - f_ic_super_initiations: 1
     - f_q_margin_vs_ttm: 1
     - f_eps_expectation_growth: 1
     - f_intrinsic_yield: 1
@@ -121,12 +121,12 @@ lgbm:
   - f_net_debt_to_ebitda
   - f_refinancing_risk
   - f_ic_insider_net_buy_ratio_180d
-  - f_ic_inst_flow_to_mcap_xs
-  - f_ic_super_initiations_xs
-  - f_ic_super_flow_to_mcap_xs
-  - f_ic_shortvol_ratio_20d_vs_peers
+  - f_ic_super_initiations
+  - f_ic_inst_value_to_mcap
+  - f_ic_super_conviction_chg
+  - f_ic_shortvol_ratio_20d
   - f_ic_shortvol_acceleration
-  - f_ic_ftd_to_adv20_xs
+  - f_ic_ftd_to_adv20
   - f_ec_tone
   - f_ec_tone_vs_hist
   - f_ec_qa_gap

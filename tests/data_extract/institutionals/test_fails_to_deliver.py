@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.short_flow_features import FTD_PUB_LAG, build_short_flow_feature_panel
+from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
+from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
@@ -156,7 +158,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
 
     requested: list[str] = []
 
-    def _fake_ensure_zip(context, path, urls, *, label, timeout, log):
+    def _fake_ensure_zip(context, path, urls, *, label, timeout, log, on_download):
         requested.append(label)
         return path
 
@@ -293,9 +295,115 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     print("  OK: a partial cache can never become a complete-looking replacement")
 
 
+def test_ftd_vintage_estimate_and_observed_dates():
+    historical = ftd._vintage_frame(["202401a", "202405b"], {})
+    assert historical["available_date"].tolist() == [pd.Timestamp("2024-01-30"), pd.Timestamp("2024-06-17")]
+    assert set(historical["availability_basis"]) == {"estimated"}
+
+    fetched = {
+        "202608b": ("https://www.sec.gov/new.zip", datetime(2026, 9, 16, 14, tzinfo=UTC)),
+        "201501a": ("https://www.sec.gov/old.zip", datetime(2026, 9, 16, 14, tzinfo=UTC)),
+    }
+    vintages = ftd._vintage_frame(["202608b", "201501a"], fetched).set_index("period")
+    assert vintages.loc["202608b", "available_date"] == pd.Timestamp("2026-09-16")
+    assert vintages.loc["202608b", "availability_basis"] == "observed"
+    assert vintages.loc["201501a", "available_date"] == pd.Timestamp("2015-01-30")
+    assert vintages.loc["201501a", "availability_basis"] == "estimated"
+    print("\n=== SANITY CHECK: FTD ZIP availability ===")
+    print("  Jan 1-15 -> Jan 30; weekend Jun 15 -> Mon Jun 17; current HTTP 200 -> observed; old re-download -> estimated.")
+
+
+def test_ftd_vintage_metadata_backfill_preserves_observed(sqlite_store, monkeypatch, tmp_path):
+    ctx = _context(sqlite_store, tmp_path)
+    identity = _identity()
+    sqlite_store.replace(
+        Tables.sec_fails_to_deliver,
+        pd.DataFrame(
+            {
+                "ticker": ["AAPL", "AAPL"],
+                "date": pd.to_datetime(["2024-01-02", "2024-01-16"]),
+                "fails_quantity": [1.0, 2.0],
+                "period": ["202401a", "202401b"],
+            }
+        ),
+    )
+    sqlite_store.save(
+        Tables.sec_ftd_vintages,
+        pd.DataFrame(
+            {
+                "period": ["202401b"],
+                "available_date": [pd.Timestamp("2024-02-16")],
+                "availability_basis": ["observed"],
+                "first_seen_at": [pd.Timestamp("2024-02-16")],
+                "source_url": ["https://www.sec.gov/observed.zip"],
+            }
+        ),
+    )
+    cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
+    ftd.save_processed_universe(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
+    monkeypatch.setattr(ftd, "ensure_zip", lambda *a, **k: pytest.fail("stored periods must not download"))
+    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+
+    for _ in range(2):
+        assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
+    vintages = sqlite_store.load(Tables.sec_ftd_vintages).set_index("period")
+    assert len(vintages) == 2
+    assert pd.Timestamp(vintages.loc["202401a", "available_date"]) == pd.Timestamp("2024-01-30")
+    assert vintages.loc["202401a", "availability_basis"] == "estimated"
+    assert pd.Timestamp(vintages.loc["202401b", "available_date"]) == pd.Timestamp("2024-02-16")
+    assert vintages.loc["202401b", "availability_basis"] == "observed"
+    print("\n=== SANITY CHECK: FTD metadata-only backfill ===")
+    print("  One missing vintage backfilled from distinct stored periods; no ZIP parsed and observed date survives rerun.")
+
+
+def test_ftd_first_successful_http_response_sets_observed_date(sqlite_store, monkeypatch, tmp_path):
+    ctx = _context(sqlite_store, tmp_path)
+    identity = _identity()
+    requested: list[str] = []
+
+    class _Clock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 9, 30, 15, tzinfo=UTC)
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def iter_content(chunk_size):
+            yield b"downloaded archive"
+
+    def _get(url, **kwargs):
+        requested.append(url)
+        return _Response()
+
+    ctx.sec_session = SimpleNamespace(get=_get)
+    monkeypatch.setattr(bulk_cache, "datetime", _Clock)
+    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202609a"])
+    monkeypatch.setattr(
+        ftd,
+        "read_zip_text",
+        lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|037833100|AAPL|100|APPLE INC|190.00\n",
+    )
+    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+
+    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 1
+    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
+    vintage = sqlite_store.load(Tables.sec_ftd_vintages).iloc[0]
+    assert len(requested) == 1
+    assert vintage["period"] == "202609a"
+    assert pd.Timestamp(vintage["available_date"]) == pd.Timestamp("2026-09-30")
+    assert vintage["availability_basis"] == "observed"
+    assert pd.Timestamp(vintage["first_seen_at"]) == pd.Timestamp("2026-09-30 15:00:00")
+    assert vintage["source_url"] == requested[0]
+    print("\n=== SANITY CHECK: first successful FTD HTTP response ===")
+    print("  SEC HTTP 200 stamped 2026-09-30; rerun reused stored observed date without a second request.")
+
+
 def test_ftd_feature_ranks_high_fails_and_is_leak_free():
-    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-01", periods=120))
-    days = idx[:30]
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"))
+    days = pd.DatetimeIndex(pd.bdate_range("2024-01-02", "2024-01-15"))
     fails = pd.concat(
         [
             pd.DataFrame({"date": days, "ticker": "HI", "fails_quantity": 1e5}),
@@ -308,21 +416,21 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     peers = {"HI": {"MID": 1.0, "LO": 1.0}, "MID": {"HI": 1.0, "LO": 1.0}, "LO": {"HI": 1.0, "MID": 1.0}}
 
     panel = build_short_flow_feature_panel(make_frames(idx, peers, volume=volume), None, fails_history=fails)
-    assert "f_ic_ftd_to_adv20_xs" in panel.columns
+    assert "f_ic_ftd_to_adv20" in panel.columns
 
-    # after the publication lag, HI (0.1 fails/ADV20) ranks above LO (0.0001)
-    d = idx[FTD_PUB_LAG + 25]
+    # The entire historical January-a ZIP becomes visible 15 days after its period end.
+    d = pd.Timestamp("2024-01-30")
     row = panel[panel["date"] == d].set_index("ticker")
-    assert row["f_ic_ftd_to_adv20_xs"]["HI"] > row["f_ic_ftd_to_adv20_xs"]["LO"]
+    assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
     assert row["f_ic_ftd_to_adv20"]["HI"] > row["f_ic_ftd_to_adv20"]["LO"]
 
-    # leak-free: before the publication lag the fails signal is not yet visible
-    early = panel[panel["date"] == idx[5]]
+    # leak-free: no row from the ZIP is visible before its shared publication date.
+    early = panel[panel["date"] == pd.Timestamp("2024-01-29")]
     assert early.empty or early["f_ic_ftd_to_adv20"].isna().all()
 
-    print("\n=== SANITY: FTD feature (fails/ADV20, publication-lagged) ===")
+    print("\n=== SANITY: FTD feature (fails/ADV20, ZIP-publication dated) ===")
     print(
         f"  HI fails/ADV20 {row['f_ic_ftd_to_adv20']['HI']:.4f} ranks above LO "
-        f"{row['f_ic_ftd_to_adv20']['LO']:.6f} after the {FTD_PUB_LAG}d lag; "
-        f"pre-lag signal absent (leak-free). Validated."
+        f"{row['f_ic_ftd_to_adv20']['LO']:.6f} on estimated Jan 30; "
+        f"the Jan 29 prefix is absent. Validated."
     )

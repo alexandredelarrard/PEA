@@ -153,6 +153,108 @@ def test_an_overpriced_row_is_repaired_to_shares_times_the_consensus():
     )
 
 
+def test_consensus_never_uses_a_later_transaction():
+    """Appending later filings cannot change an earlier filing's repaired value."""
+    earlier = [
+        _txn(
+            accession_number=f"prior-{i}",
+            owner_cik=f"{i:04d}",
+            filing_date=f"2015-05-{17 + i:02d}",
+            transaction_date=f"2015-05-{16 + i:02d}",
+            shares=10.0,
+            price_per_share=100.0,
+            value_usd=1_000.0,
+        )
+        for i in range(3)
+    ]
+    earlier.append(
+        _txn(
+            accession_number="suspect",
+            owner_cik="9999",
+            filing_date="2015-05-21",
+            transaction_date="2015-05-20",
+            shares=10.0,
+            price_per_share=10_000.0,
+            value_usd=100_000.0,
+        )
+    )
+    later = [
+        _txn(
+            accession_number=f"later-{i}",
+            owner_cik=f"8{i:03d}",
+            filing_date=f"2015-05-{22 + i:02d}",
+            # Deliberately on/before the suspect trade date: merely switching to a trailing
+            # transaction-date window would still leak these later publications.
+            transaction_date=f"2015-05-{17 + i:02d}",
+            shares=10.0,
+            price_per_share=10_000.0,
+            value_usd=100_000.0,
+        )
+        for i in range(4)
+    ]
+
+    prefix, _ = clean_transactions(_frame(earlier))
+    full, _ = clean_transactions(_frame(earlier + later))
+    prefix_row = prefix.set_index("accession_number").loc["suspect"]
+    full_row = full.set_index("accession_number").loc["suspect"]
+
+    assert prefix_row["price_repaired"] and prefix_row["value"] == pytest.approx(1_000.0)
+    assert full_row["price_repaired"] and full_row["value"] == pytest.approx(prefix_row["value"])
+    print(
+        "SANITY: the suspect filing is repaired to $1,000 with the publication prefix "
+        f"and remains ${full_row['value']:,.0f} after four later-filed $10,000 prices are appended."
+    )
+
+
+@pytest.mark.parametrize(("unknown_code", "known_code"), [("P", "S"), ("S", "P")])
+def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
+    """A complete source does not make an unpriced P/S transaction a zero-sized one."""
+    unknown_day = pd.Timestamp("2015-08-03")
+    rows = [
+        _txn(
+            accession_number="old-priced",
+            transaction_code=known_code,
+            filing_date="2015-01-05",
+            transaction_date="2015-01-02",
+        ),
+        _txn(
+            accession_number="other-ticker-priced",
+            ticker="BBB",
+            owner_cik="0002",
+            transaction_code=known_code,
+            filing_date="2015-01-05",
+            transaction_date="2015-01-02",
+        ),
+        _txn(
+            accession_number="unpriced",
+            transaction_code=unknown_code,
+            filing_date=unknown_day,
+            transaction_date="2015-07-31",
+            price_per_share=np.nan,
+            value_usd=np.nan,
+        ),
+    ]
+    fh, close = _prices(("AAA", "BBB"))
+    panel = build_insider_feature_panel(
+        make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
+        _frame(rows),
+        shares_out_history=fh,
+        complete_through=TRADING_INDEX.max(),
+    )
+    panel = panel[panel["ticker"].eq("AAA")].set_index("date")
+    ratio = panel["f_ic_insider_net_buy_ratio_180d"]
+    affected = ratio.loc[unknown_day : unknown_day + pd.Timedelta(days=179)]
+    after = ratio.loc[unknown_day + pd.Timedelta(days=180) :]
+
+    assert affected.isna().all()
+    assert not after.empty and after.eq(0.0).all()
+    print(
+        f"SANITY: the unpriced {unknown_code} leaves all {len(affected)} sessions in its "
+        f"180-day net-buy window unknown; after it ages out, {len(after)} complete sessions "
+        "return to a genuine zero."
+    )
+
+
 def test_an_underpriced_row_is_counted_but_never_inflated():
     """The one-sided rule. Repairing upward is what turned nine real ~$25m AXON purchases
     into $326m ones, because that ticker carries another company's rows."""
@@ -634,12 +736,10 @@ def test_the_sink_receives_one_shares_column_not_two():
     assert isinstance(events["shares"], pd.Series), "a duplicate name makes this a DataFrame"
     # and the numbers are the numeric leg, not the raw object column
     assert sorted(events["shares"].tolist()) == [1_000.0, 2_000.0, 3_000.0]
-    assert list(sink.actors["insider"].columns) == ["ticker", "date", "actor"]
-    assert sink.actors["insider"]["actor"].eq("0001").all()
     print(
         f"SANITY: the sink received {len(events)} insider events with exactly "
         f"{list(events.columns)} -- one `shares` column carrying the NUMERIC leg "
-        f"({events['shares'].tolist()}), and {len(sink.actors['insider'])} actor rows."
+        f"({events['shares'].tolist()})."
     )
 
 

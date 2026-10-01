@@ -43,10 +43,9 @@ into the per-share field.
 THE SCREEN IS SPLIT-FREE, DELIBERATELY. The obvious check -- compare `price_per_share` to
 `close_split` -- fails on every name that ever split, because the filer's price is as-traded
 and `close_split` is restated to today's basis. So the reference is the median
-`price_per_share` of the OTHER market-priced filings on the same ticker within +/-15 days.
-Both sides then carry the same unknown split basis and it cancels. 92.4% of ticker-days have
-2+ filings behind that median (p50 = 8); the 7.59% backed by a single row are undetectable by
-construction, and only 3 of the 210 hits sit on such a day.
+`price_per_share` of market-priced filings for the same ticker and share class in the
+trailing 31 days ending on each filing/publication day. Both sides then carry the same
+unknown split basis and it cancels. A later filing never enters an earlier reference.
 
 ⚠ THE CONSENSUS MUST BE COMMON-STOCK-ONLY. BAC 2016-09-22 has exactly two market-priced
 non-derivative rows -- common at $15.61 and PREFERRED at $100.00 par -- and their median is
@@ -116,7 +115,7 @@ PRICE_TOLERANCE: float = 10.0
 #: at $163.7m -- the repair inventing 4,600x the value it was written to remove.
 _CLASS_RE = re.compile(r"\bCLASS\s+([A-Z])\b|\bSERIES\s+([A-Z])\b", re.I)
 
-#: Centred calendar window behind the consensus median -- 31 days is +/-15 either side.
+#: Trailing publication-time window behind the consensus median.
 CONSENSUS_WINDOW: str = "31D"
 
 #: A single transaction above this share of the company is reported, never dropped -- see the
@@ -188,40 +187,46 @@ def security_class(security_title: pd.Series) -> pd.Series:
 
 def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd.Series:
     """Per-row reference price: the median filed price for that ticker AND SHARE CLASS
-    within +/-`window`.
+    over the trailing `window` ending on its filing/publication day.
 
     Built from common-stock, market-priced rows only, as a per-(ticker, class,
-    transaction_date) median first so one busy day cannot outvote a quiet one, then a
-    trailing and a leading rolling median whose midpoint is the reference. Returned aligned
-    to `txns.index`, NaN where the ticker-day has no reference.
+    filing_date) median first so one busy day cannot outvote a quiet one, then a trailing
+    rolling median. Returned aligned to `txns.index`, NaN where the filing day has no
+    reference. Filing date is the clock because it is when the price becomes public; using
+    transaction date would let a late-filed row rewrite an earlier publication snapshot.
     """
-    need = {"ticker", "transaction_date", "price_per_share", "transaction_code", "security_title"}
+    need = {"ticker", "filing_date", "price_per_share", "transaction_code", "security_title"}
     if txns.empty or not need.issubset(txns.columns):
         return pd.Series(np.nan, index=txns.index, dtype="float64")
 
     code = txns["transaction_code"].astype(str).str.upper().str.strip()
     pps = pd.to_numeric(txns["price_per_share"], errors="coerce")
-    tdate = pd.to_datetime(txns["transaction_date"], errors="coerce")
-    usable = code.isin(MARKET_PRICED_CODES) & (pps > 0) & tdate.notna() & common_stock_mask(txns["security_title"]) & txns["ticker"].notna()
+    publication_day = to_day(txns["filing_date"])
+    usable = code.isin(MARKET_PRICED_CODES) & (pps > 0) & publication_day.notna() & common_stock_mask(txns["security_title"]) & txns["ticker"].notna()
 
     if not usable.any():
         return pd.Series(np.nan, index=txns.index, dtype="float64")
 
     klass = security_class(txns["security_title"])
-    src = pd.DataFrame({"ticker": txns.loc[usable, "ticker"].astype(str), "klass": klass[usable], "tdate": tdate[usable], "pps": pps[usable]})
-    day = src.groupby(["ticker", "klass", "tdate"], sort=False)["pps"].median().rename("m").reset_index()
+    src = pd.DataFrame(
+        {
+            "ticker": txns.loc[usable, "ticker"].astype(str),
+            "klass": klass[usable],
+            "publication_day": publication_day[usable],
+            "pps": pps[usable],
+        }
+    )
+    day = src.groupby(["ticker", "klass", "publication_day"], sort=False)["pps"].median().rename("m").reset_index()
 
     out = []
     for (tkr, cls), g in day.groupby(["ticker", "klass"], sort=False):
-        g = g.set_index("tdate").sort_index()
-        # CENTRED, so the reference is a median over the days either side rather than a
-        # blend of two one-sided medians. Look forward to sanity check, not to fill
-        med = g["m"].rolling(window, center=True).median()
-        out.append(pd.DataFrame({"ticker": tkr, "klass": cls, "tdate": g.index, "consensus": med.to_numpy()}))
+        g = g.set_index("publication_day").sort_index()
+        med = g["m"].rolling(window).median()
+        out.append(pd.DataFrame({"ticker": tkr, "klass": cls, "publication_day": g.index, "consensus": med.to_numpy()}))
     ref = pd.concat(out, ignore_index=True)
 
-    keyed = pd.DataFrame({"ticker": txns["ticker"].astype(str), "klass": klass, "tdate": tdate})
-    merged = keyed.merge(ref, on=["ticker", "klass", "tdate"], how="left")
+    keyed = pd.DataFrame({"ticker": txns["ticker"].astype(str), "klass": klass, "publication_day": publication_day})
+    merged = keyed.merge(ref, on=["ticker", "klass", "publication_day"], how="left")
     merged.index = txns.index
     return merged["consensus"]
 
@@ -288,6 +293,7 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     priced = pps > 0
     diag["dropped_unpriced"] = int((~priced).sum())
     diag["dropped_unpriced_shares"] = float(t.loc[~priced, "shares_n"].sum()) / t["shares_n"].sum()
+    diag["unpriced_events"] = t.loc[~priced, ["ticker", "day", "code"]].copy()
     t, pps = t[priced], pps[priced]
 
     ref = consensus_price(insider).reindex(t.index)

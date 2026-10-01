@@ -157,11 +157,21 @@ def test_events_after_the_grid_are_dropped_not_clamped():
     assert out.empty or "AAA" not in out.columns or out["AAA"].isna().all()
 
 
-def test_nan_magnitude_keeps_the_event_at_unit_weight():
-    """An event whose SIZE is unknown still happened; dropping the row would erase it."""
+def test_nan_weight_is_not_a_unit_event_but_unweighted_occurrence_is():
+    """Selecting a magnitude column promises weighted units; unknown size stays unavailable."""
     idx = _grid(100)
-    out = decay_events(_events([(idx[5], "AAA", np.nan)]), idx, 21, magnitude_col="magnitude")
-    assert out.loc[idx[5], "AAA"] == pytest.approx(1.0)
+    event = _events([(idx[5], "AAA", np.nan)])
+
+    weighted = decay_events(event, idx, 21, magnitude_col="magnitude")
+    unweighted = decay_events(event, idx, 21)
+
+    assert weighted.empty or "AAA" not in weighted or weighted["AAA"].isna().all()
+    assert unweighted.loc[idx[5], "AAA"] == pytest.approx(1.0)
+    print(
+        "\n=== SANITY CHECK: weighted decay preserves units ===\n"
+        "  A supplied NaN magnitude emits no weighted event; omitting magnitude_col explicitly "
+        "counts the same occurrence at unit weight. Validated."
+    )
 
 
 def test_empty_and_invalid_inputs():

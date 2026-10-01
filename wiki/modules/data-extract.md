@@ -31,7 +31,7 @@ tags:
 ## Key files
 
 - [step_extract_prices.py](../../src/data_extract/transformers/step_extract_prices.py) writes equity prices, dividends, splits, and named macro series.
-- [step_extract_institutionals.py](../../src/data_extract/transformers/step_extract_institutionals.py) owns 13F, superinvestors, insiders, 13D/13G, 8-K, short-volume, and fails-to-deliver sources.
+- [step_extract_institutionals.py](../../src/data_extract/transformers/step_extract_institutionals.py) owns 13F, superinvestors, insiders, 13D/13G, 8-K, short-volume, and fails-to-deliver sources. The [FTD fetcher](../../src/data_extract/utils/institutionals/fetch_fails_to_deliver.py) writes ZIP-grain `sec_ftd_vintages` availability through DataStore separately from settlement rows.
 - [step_extract_fundamentals_sharadar.py](../../src/data_extract/transformers/step_extract_fundamentals_sharadar.py) builds the vendor layer and merged consumer history.
 - [step_extract_fundamentals.py](../../src/data_extract/transformers/step_extract_fundamentals.py) builds SEC facts and the replay history.
 - [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) independently lists annual filings, repairs missing headcount, and writes only `fundamentals_employees`.

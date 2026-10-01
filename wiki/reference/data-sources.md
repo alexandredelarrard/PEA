@@ -36,7 +36,7 @@ This page is the source-facing operating contract: where data comes from, which 
 | Corporate events and shareholder votes | SEC 8-K plus OpenAI for Item 5.07 | SEC and OpenAI keys | `sec_8k`, `sec_8k_votes` | institutional then structure utilities |
 | Activist/passive stakes | SEC Schedule 13D/13G | `SEC_USER_AGENT` | `sec_13d`, `sec_13d_transactions`, `sec_13g` | institutional utilities |
 | Filing narrative | SEC 10-K/10-Q | `SEC_USER_AGENT` | `sec_filing_text` | structure utilities |
-| Short volume and settlement fails | FINRA RegSHO, SEC | none | `short_interest`, `sec_fails_to_deliver` | institutional utilities |
+| Short volume and settlement fails | FINRA RegSHO, SEC | none | `short_interest`, `sec_fails_to_deliver`, `sec_ftd_vintages` | [FTD fetcher](../../src/data_extract/utils/institutionals/fetch_fails_to_deliver.py) and institutional utilities |
 | Earnings calls | HuggingFace, Roic AI, Motley Fool | none | `earnings_call_sections` | behavioral utilities |
 | Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | sentiment and embedding tables | behavioral and [gpt_extract](../../src/gpt_extract/) |
 
@@ -48,7 +48,7 @@ Secrets live only in the ignored root `.env`, loaded by [Context](../../src/cont
 
 - [polite_http.py](../../src/utils/polite_http.py) supplies rate limiting and TLS impersonation for sources that reject ordinary clients.
 - [ssl_setup.py](../../src/utils/ssl_setup.py) exports the Windows trust store to the ignored `.cache/corporate_ca_bundle.pem`; Linux Airflow processes reuse that file through the repository bind mount before `curl_cffi` imports freeze certificate state. TLS verification remains enabled.
-- [incremental helpers](../../src/data_extract/utils/common/incremental.py) owns bulk caches, SEC request state, rate limiting, parallel entity walks, the form registry, run manifests, and incremental resume helpers.
+- `src/data_extract/utils/common/` owns bulk caches, SEC request state, rate limiting, parallel entity walks, the form registry, run manifests, and incremental resume helpers.
 - [registrant.py](../../src/data_extract/utils/common/registrant.py) is the single authority on which legal CIKs may supply a ticker's filings.
 - [gpt_extract](../../src/gpt_extract/) is the shared LLM service; source packages provide tasks and schemas, not duplicate OpenAI clients.
 
@@ -100,7 +100,7 @@ Source history and usable feature history differ:
 - 13F holdings are an S&P 500 slice; complete manager books provide the denominator for manager portfolio weights.
 - Insider bulk history begins at the dataset's filing-date floor. Older transaction dates do not prove older publication coverage.
 - RegSHO history is a moving provider window; the oldest stored anomaly is not a guaranteed recoverable boundary.
-- SEC fails-to-deliver history has a fixed publication start.
+- SEC fails-to-deliver history has a fixed publication start. Each semi-monthly ZIP has one `sec_ftd_vintages.available_date`, keyed by its persisted `period`, not inferred from settlement dates. A real-data audit found day-15 rows in 141 `b` ZIPs, so the date-derived half can be wrong. Historical periods use period end plus 15 calendar days, advanced past a weekend; the feature builder snaps to the next trading session, including holidays. For a newly downloaded period within 60 days of its end, the first successful SEC HTTP response is recorded as `observed` availability. This is an observation bound, not proof of the exact posting instant. A local cache timestamp never sets availability. See the [FTD fetcher](../../src/data_extract/utils/institutionals/fetch_fails_to_deliver.py), [bulk cache](../../src/data_extract/utils/common/bulk_cache.py), and [short-flow builder](../../src/data_aggregate/utils/institutionals/short_flow_features.py).
 - Schedule 13D/13G filer identity and event dates exist historically, while reliable ownership numerics begin with structured-data mandates.
 - Missing data after a global source start can still be unavailable for a security, denominator, filing, or completeness frontier.
 

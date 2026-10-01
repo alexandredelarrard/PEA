@@ -29,7 +29,6 @@ _add_group(
         "ic_inst_net_options_ratio",
         "ic_inst_ownership_pct",
         "ic_inst_value_to_mcap",
-        "ic_inst_flow_to_mcap",
     ),
     "all-filer 13F holdings",
 )
@@ -48,12 +47,10 @@ _add_group(
         "ic_super_sp500_share",
         "ic_super_selection_score",
         "ic_super_shares_chg",
-        "ic_super_flow_to_mcap",
         "ic_super_new_top10",
         "ic_super_rank_jump",
         "ic_super_initiations",
         "ic_super_full_exits",
-        "ic_super_exit_after_top10",
     ),
     "point-in-time selected-manager 13F books",
 )
@@ -62,7 +59,6 @@ _add_group(
     (
         "ic_insider_buy_value_mcap_60d",
         "ic_insider_buy_value_mcap_180d",
-        "ic_insider_buy_shares_so_180d",
         "ic_insider_distinct_buyers_120d",
         "ic_insider_cluster_buy_120d",
         "ic_insider_ceo_buy_mcap_180d",
@@ -81,11 +77,7 @@ _add_group(
     (
         "ic_act_initial_13d",
         "ic_act_amendment_intensity",
-        "ic_act_campaign_age_days",
         "ic_act_repeat_activist",
-        "ic_act_purpose_board",
-        "ic_act_purpose_strategic",
-        "ic_bo_holder_count",
         "ic_bo_new_holder",
         "ic_bo_escalation_13g_to_13d",
         "ic_bo_de_escalation_13d_to_13g",
@@ -98,15 +90,12 @@ _add_group(
         "ic_shortvol_ratio_5d",
         "ic_shortvol_ratio_20d",
         "ic_shortvol_ratio_60d",
-        "ic_shortvol_ratio_z252",
         "ic_shortvol_acceleration",
         "ic_shortvol_turnover_20d",
         "ic_shortvol_high_x_weak_price",
         "ic_shortvol_high_x_strong_price",
         "ic_shortvol_market_coverage",
-        "ic_ftd_pct_so",
         "ic_ftd_to_adv20",
-        "ic_ftd_z252",
         "ic_ftd_persistence_30d",
     ),
     "lagged FINRA RegSHO and SEC fails-to-deliver history",
@@ -135,111 +124,20 @@ _add_group(
 _add_group(
     "cross_source",
     (
-        "ic_xs_bullish_family_ratio",
         "ic_xs_bullish_available_family_count",
-        "ic_xs_bullish_actor_count",
-        "ic_xs_bearish_family_ratio",
         "ic_xs_bearish_available_family_count",
-        "ic_xs_conflict_ratio",
     ),
-    "availability-aware agreement across independent source families",
-)
-
-INSTITUTIONALS["ic_xs_bullish_family_ratio"] = (
-    "cross_source",
-    "Share of available bullish families above their same-date 80th percentile.",
-    "The numerator and denominator change together; the ratio is emitted only with at least three available families.",
-    "Bounded [0, 1]; compare only dates with the persisted availability count.",
-)
-INSTITUTIONALS["ic_xs_bearish_family_ratio"] = (
-    "cross_source",
-    "Share of available bearish families above their same-date 80th percentile.",
-    "Uses insider net selling, elite full exits and price-confirmed short flow, all jointly available from 2019.",
-    "Bounded [0, 1]; a zero is measured only when all three families are observable.",
-)
-INSTITUTIONALS["ic_xs_conflict_ratio"] = (
-    "cross_source",
-    "The weaker of the bullish and bearish normalized family ratios.",
-    "Defined only when both directional ratios meet the three-family evidence floor.",
-    "High values mean independent bullish and bearish evidence coexist; NaN means insufficient evidence.",
+    "raw availability support across independent source families",
 )
 for direction in ("bullish", "bearish"):
     name = f"ic_xs_{direction}_available_family_count"
     INSTITUTIONALS[name] = (
         "cross_source_control",
         f"Number of observable {direction} source families for this ticker-date.",
-        "Persisted for audit and denominator reconciliation, not as a normalized alpha leg.",
-        "Integer-valued; the corresponding ratio is unavailable below three.",
+        "Persisted as raw support metadata for audit and denominator reconciliation.",
+        "Integer-valued; zero means every declared family is provably unavailable, not missing.",
     )
 
-# `src.validate.checks.catalogue` compares a standalone catalogue with persisted column names.
-# Keep `INSTITUTIONALS` at characteristic grain for the combined catalogue registry, then add
-# the explicitly emitted conditioning legs here. The direct check should fail if production adds
-# a new leg without documenting it.
-_XS_VARIANTS = (
-    "ic_act_campaign_age_days_xs",
-    "ic_ftd_pct_so_xs",
-    "ic_ftd_to_adv20_xs",
-    "ic_insider_buy_shares_so_180d_xs",
-    "ic_insider_buy_value_mcap_180d_xs",
-    "ic_insider_buy_value_mcap_60d_xs",
-    "ic_insider_ceo_buy_mcap_180d_xs",
-    "ic_insider_cfo_buy_mcap_180d_xs",
-    "ic_insider_director_buy_mcap_180d_xs",
-    "ic_insider_discretionary_sell_mcap_60d_xs",
-    "ic_insider_planned_sell_mcap_60d_xs",
-    "ic_insider_purchase_pct_prior_xs",
-    "ic_inst_concentration_xs",
-    "ic_inst_flow_to_mcap_xs",
-    "ic_inst_shares_chg_xs",
-    "ic_inst_value_to_mcap_xs",
-    "ic_shortvol_turnover_20d_xs",
-    "ic_sig_act_ret_since_xs",
-    "ic_sig_insider_ret_since_xs",
-    "ic_sig_super_ret_since_xs",
-    "ic_super_exit_after_top10_xs",
-    "ic_super_flow_to_mcap_xs",
-    "ic_super_full_exits_xs",
-    "ic_super_initiations_xs",
-    "ic_super_new_top10_xs",
-    "ic_super_quarters_held_xs",
-    "ic_super_rank_jump_xs",
-    "ic_super_shares_chg_xs",
-    "ic_super_sp500_share_xs",
-    "ic_xs_bullish_actor_count_xs",
-)
-_PEER_VARIANTS = (
-    "ic_inst_ownership_pct_vs_peers",
-    "ic_shortvol_ratio_20d_vs_peers",
-    "ic_shortvol_ratio_5d_vs_peers",
-    "ic_shortvol_ratio_60d_vs_peers",
-)
-
-
-def _variant_entry(name: str, suffix: str, interpretation: str) -> tuple[str, str, str, str]:
-    parent = name.removesuffix(suffix)
-    family, what, why, tail = INSTITUTIONALS[parent]
-    return family, f"{what}; {interpretation}", why, tail
-
-
+# `src.validate.checks.catalogue` compares this standalone catalogue with persisted columns.
+# Every accepted characteristic now emits exactly its raw economic representation.
 CATALOGUE = {f"f_{name}": entry for name, entry in INSTITUTIONALS.items()}
-CATALOGUE.update(
-    {
-        f"f_{name}": _variant_entry(
-            name,
-            "_xs",
-            "cross-sectional rank conditioned on the same date and eligible universe",
-        )
-        for name in _XS_VARIANTS
-    }
-)
-CATALOGUE.update(
-    {
-        f"f_{name}": _variant_entry(
-            name,
-            "_vs_peers",
-            "peer-relative leg conditioned on the contemporaneous peer basket",
-        )
-        for name in _PEER_VARIANTS
-    }
-)

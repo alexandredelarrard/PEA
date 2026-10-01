@@ -16,9 +16,9 @@ non-common securities and the unpriced rows, and so does the repair of the filed
 read that module's docstring before trusting any dollar figure here.
 
 POINT-IN-TIME. A Form 4 is due within ~2 business days of the trade, so every aggregate is
-stamped on `filing_date`, never `transaction_date`, and every window is trailing. The
-consensus price in `insider_quality` is the one place a forward-looking window is used, and
-it is a data-quality reference that never reaches the panel.
+stamped on `filing_date`, never `transaction_date`, and every window is trailing. The price
+consensus in `insider_quality` is trailing on that same publication clock; repaired values
+reach the panel, so later filings must never enter the reference.
 
 AVAILABILITY (D16, measured 2026-09-10):
 
@@ -68,11 +68,10 @@ Features -- registry #28-#41:
     #36 purchase_pct_prior          S  decayed  shares bought / shares held before
     #37 owner_surprise_120d         S  decayed  this purchase's percentile in that owner's
                                                 OWN prior purchases, expanding window
-    #38 days_since_last_buy         D  --       trading days since the last P filing
-    #39 net_buy_ratio_180d          D  180d     (P$ - S$) / (P$ + S$), in [-1, 1]
-    #40 discretionary_sell_mcap_60d D  60d      S value, not on a plan and not an
+    #38 net_buy_ratio_180d          D  180d     (P$ - S$) / (P$ + S$), in [-1, 1]
+    #39 discretionary_sell_mcap_60d D  60d      S value, not on a plan and not an
                                                 exercise-and-sell, / market cap
-    #41 planned_sell_mcap_60d       D  60d      S value on a 10b5-1 plan / market cap
+    #40 planned_sell_mcap_60d       D  60d      S value on a 10b5-1 plan / market cap
 
 #36 and #37 are RATIOS, so their class-S treatment is a decay-WEIGHTED MEAN -- numerator and
 denominator are decayed with the same half-life and divided -- not a decayed sum. A decayed
@@ -110,54 +109,21 @@ def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
 
 _log = logging.getLogger(__name__)
 
-#: Emission class per feature (D27), MEASURED on the live panel rather than assigned from the
-#: shape of the formula. The discriminator is not boundedness: it is whether a within-date
-#: percentile carries information, and the test that settles that is the TIE FRACTION. An
-#: `_xs` leg over a cross-section that is 90%+ tied is a plateau -- almost every name shares
-#: one rank, so the column moves on which names happen to be present, not on the signal.
-#:
-#:     feature                       nonnull   uniq/date   ties/date   rho(raw,xs)   emit
-#:     buy_value_mcap_60d              56.3%         445        0.0%        0.9397   raw+xs
-#:     purchase_pct_prior              52.8%         417        0.4%        0.9943   raw+xs
-#:     director_buy_mcap_180d          54.4%         435        0.0%        0.9379   raw+xs
-#:     ceo_buy_mcap_180d               24.2%         184        0.0%        0.8756   raw+xs
-#:     cfo_buy_mcap_180d               18.9%         152        0.0%        0.7724   raw+xs
-#:     planned_sell_mcap_60d            6.3%         149       50.8%        0.9021   raw+xs
-#:     discretionary_sell_mcap_60d      9.7%         178       62.0%        0.8476   raw+xs
-#:     buy_shares_so_180d              60.4%         124       72.5%        0.7886   raw+xs
-#:     buy_value_mcap_180d             60.2%         124       72.5%        0.7883   raw+xs
-#:     owner_surprise_120d             48.3%         350        9.8%             -   raw
-#:     days_since_last_buy             56.3%         338       25.3%             -   raw
-#:     net_buy_ratio_180d              56.2%         107       74.8%             -   raw
-#:     cluster_buy_120d                56.3%           7       98.3%        0.4583   raw
-#:     distinct_buyers_120d            56.3%           8       98.1%        0.7237   raw
-#:
-#: ⚠ THE TEST REMOVES LEGS, IT DOES NOT ADD THEM. `owner_surprise_120d` (9.8% ties) and
-#: `days_since_last_buy` (25.3%) sit far below the threshold and are still `raw`, because a
-#: low tie fraction is not a reason to rank something that is already comparable across
-#: dates: a percentile of a percentile is a re-rank, and a day count means the same thing in
-#: 2009 as in 2025. `net_buy_ratio_180d` is bounded [-1, 1] AND 74.8% tied -- its median is
-#: exactly -1, so more than half the cross-section is one plateau -- which is two independent
-#: reasons for the same answer.
-#:
-#: ⚠ `days_since_last_buy` IS THE ONE WORTH RE-EXAMINING IN 2.8. Early in the sample every
-#: ticker's count is small because the history is short, so part of the raw level is calendar
-#: rather than signal -- the one case here where `_xs` would remove a real drift. Left as the
-#: registry declares it rather than changed on an argument that has not been measured.
+#: Insider magnitudes, ratios, counts, and event intensities stay in their economic units.
+#: Same-day cross-sectional ranks would replace those units with universe-composition noise.
 EMISSION: dict[str, str] = {
-    "ic_insider_buy_value_mcap_60d": "raw+xs",
-    "ic_insider_buy_value_mcap_180d": "raw+xs",
-    "ic_insider_buy_shares_so_180d": "raw+xs",
+    "ic_insider_buy_value_mcap_60d": "raw",
+    "ic_insider_buy_value_mcap_180d": "raw",
     "ic_insider_distinct_buyers_120d": "raw",  # 98.1% ties: a 0-8 integer count
     "ic_insider_cluster_buy_120d": "raw",  # 98.3% ties: the same, gated
-    "ic_insider_ceo_buy_mcap_180d": "raw+xs",
-    "ic_insider_cfo_buy_mcap_180d": "raw+xs",
-    "ic_insider_director_buy_mcap_180d": "raw+xs",
-    "ic_insider_purchase_pct_prior": "raw+xs",
+    "ic_insider_ceo_buy_mcap_180d": "raw",
+    "ic_insider_cfo_buy_mcap_180d": "raw",
+    "ic_insider_director_buy_mcap_180d": "raw",
+    "ic_insider_purchase_pct_prior": "raw",
     "ic_insider_owner_surprise_120d": "raw",  # already a percentile in [0, 1]
     "ic_insider_net_buy_ratio_180d": "raw",  # bounded [-1, 1] by construction
-    "ic_insider_discretionary_sell_mcap_60d": "raw+xs",
-    "ic_insider_planned_sell_mcap_60d": "raw+xs",
+    "ic_insider_discretionary_sell_mcap_60d": "raw",
+    "ic_insider_planned_sell_mcap_60d": "raw",
 }
 
 #: No `_vs_peers` leg anywhere in this family, for the same reason as `ic_super_*` (D25): an
@@ -191,12 +157,12 @@ def build_insider_feature_panel(
     complete_through: pd.Timestamp | None = None,
     sink=None,
 ) -> pd.DataFrame:
-    """Long-format insider feature panel (`f_<name>` and `f_<name>_xs`, per `EMISSION`).
+    """Long-format insider feature panel (`f_<name>` per `EMISSION`).
 
     Empty when there are no usable transactions. `shares_out_history` + `stock_close` are
-    what make the **8 size-scaled** features possible; without them only the **6 scale-free**
-    ones (`distinct_buyers`, `cluster_buy`, `days_since_last_buy`, `net_buy_ratio`,
-    `purchase_pct_prior`, `owner_surprise`) are emitted, because a dollar flow that is not
+    what make the size-scaled features possible; without them only the scale-free
+    ones (`distinct_buyers`, `cluster_buy`, `net_buy_ratio`, `purchase_pct_prior`,
+    `owner_surprise`) are emitted, because a dollar flow that is not
     divided by the company's size is a market-cap proxy.
 
     `sink` is the optional `ConditioningSink` the price-conditioning and cross-source panels
@@ -232,6 +198,7 @@ def build_insider_feature_panel(
         return _empty_panel()
 
     t, diag = clean_transactions(insider)
+    unpriced_events = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     if t.empty:
         return pd.DataFrame(columns=["date", "ticker"])
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
@@ -255,7 +222,7 @@ def build_insider_feature_panel(
     insider_floor = availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR
     ten_b5_floor = availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR
 
-    fields.update(_dense_fields(buys, sells, idx, mcap, shares_out, ten_b5_floor))
+    fields.update(_dense_fields(buys, sells, idx, mcap, ten_b5_floor))
     fields.update(_breadth_fields(buys, idx))
     fields.update(_sparse_fields(buys, idx, decay_halflife))
 
@@ -299,6 +266,9 @@ def build_insider_feature_panel(
             net_mask = InstitutionalAvailability.combine(source_started, listed, full_window, observed_through)
         fields[net_name] = fields[net_name].reindex(index=idx, columns=columns).fillna(0.0).where(net_mask)
 
+    unpriced_masks = _unpriced_masks(unpriced_events, idx)
+    _mask_unknown_windows(fields, unpriced_masks)
+
     if sink is not None:
         sink.set_frontier("insider", complete_through)
         # ⚠ PROJECT FIRST, THEN RENAME. `buys` carries BOTH the source `shares` column and
@@ -308,8 +278,6 @@ def build_insider_feature_panel(
         # past six merged panels -- the unit fixtures only ever carried `shares_n`.
         ev = buys.loc[:, ["ticker", "day", "value", "shares_n"]].rename(columns={"day": "date", "shares_n": "shares"})
         sink.add_events("insider", ev)
-        if "owner_cik" in buys.columns:
-            sink.add_actors("insider", buys.loc[:, ["ticker", "day", "owner_cik"]].rename(columns={"day": "date", "owner_cik": "actor"}))
         columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
         if stock_close is not None and not stock_close.empty:
             listed = stock_close.reindex(index=idx, columns=columns).notna()
@@ -350,10 +318,14 @@ def build_insider_feature_panel(
                 )
             signal_masks[name] = mask
             signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(mask)
+        _mask_unknown_windows(signal_fields, unpriced_masks)
+        for name, unknown in unpriced_masks.items():
+            if name in signal_masks:
+                signal_masks[name] &= ~unknown.reindex(index=idx, columns=columns, fill_value=False)
         sink.keep_signals(signal_fields, signal_masks)
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(t), len(buys), len(sells))
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
 
 
@@ -367,10 +339,9 @@ def _dense_fields(
     sells: pd.DataFrame,
     idx: pd.DatetimeIndex,
     mcap: pd.DataFrame | None,
-    shares_out: pd.DataFrame,
     ten_b5_floor: pd.Timestamp = TEN_B5_1_FLOOR,
 ) -> dict[str, pd.DataFrame]:
-    """The six class-D features. Each is a trailing sum over a calendar window, sampled onto
+    """Dense trailing sums over calendar windows, sampled onto
     the trading grid, so a day only ever sees transactions already filed by it."""
     out: dict[str, pd.DataFrame] = {}
     seen = _first_filing(buys, sells, idx)
@@ -379,9 +350,6 @@ def _dense_fields(
 
     if mcap is not None and not mcap.empty:
         out["ic_insider_buy_value_mcap_180d"] = _over(buy_val_180, mcap)
-
-    if not shares_out.empty:
-        out["ic_insider_buy_shares_so_180d"] = _over(_rolling(buys, idx, WINDOW_180, "shares_n", seen), shares_out)
 
     bv, sv = buy_val_180.fillna(0.0), sell_val_180.fillna(0.0)
     denom = bv + sv
@@ -442,6 +410,52 @@ def _rolling(txns: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, value_
     return piv.reindex(index=idx, columns=seen.columns).fillna(0.0).where(seen)
 
 
+def _unpriced_masks(events: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    """Feature windows made unknown by an excluded, unpriced open-market transaction."""
+    if events.empty:
+        return {}
+    groups = (
+        (("P",), WINDOW_60, ("ic_insider_buy_value_mcap_60d",)),
+        (
+            ("P",),
+            WINDOW_120,
+            ("ic_insider_distinct_buyers_120d", "ic_insider_cluster_buy_120d", "ic_insider_owner_surprise_120d"),
+        ),
+        (
+            ("P",),
+            WINDOW_180,
+            (
+                "ic_insider_buy_value_mcap_180d",
+                "ic_insider_buy_shares_so_180d",
+                "ic_insider_ceo_buy_mcap_180d",
+                "ic_insider_cfo_buy_mcap_180d",
+                "ic_insider_director_buy_mcap_180d",
+                "ic_insider_purchase_pct_prior",
+            ),
+        ),
+        (("P", "S"), WINDOW_180, ("ic_insider_net_buy_ratio_180d",)),
+        (("S",), WINDOW_60, ("ic_insider_discretionary_sell_mcap_60d", "ic_insider_planned_sell_mcap_60d")),
+    )
+    columns = pd.Index(sorted(events["ticker"].astype(str).unique()), name="ticker")
+    seen = pd.DataFrame(True, index=idx, columns=columns)
+    masks: dict[str, pd.DataFrame] = {}
+    for codes, days, names in groups:
+        affected_events = events[events["code"].isin(codes)]
+        if affected_events.empty:
+            continue
+        affected = _rolling(affected_events, idx, days, None, seen).gt(0)
+        masks.update(dict.fromkeys(names, affected))
+    return masks
+
+
+def _mask_unknown_windows(fields: dict[str, pd.DataFrame], masks: dict[str, pd.DataFrame]) -> None:
+    for name, unknown in masks.items():
+        if name in fields:
+            field = fields[name]
+            aligned = unknown.reindex(index=field.index, columns=field.columns, fill_value=False).astype(bool)
+            fields[name] = field.mask(aligned)
+
+
 def _over(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:
     """`numerator / denominator` on the intersection, NaN where the denominator is absent or
     non-positive. Never zero-fills the denominator: a missing share count is unknown size,
@@ -451,30 +465,6 @@ def _over(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(index=numerator.index)
     den = denominator.reindex(index=numerator.index)[cols]
     return (numerator[cols] / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
-
-
-def _days_since(buys: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Trading days since the most recent purchase filing, NaN before a ticker's first.
-
-    Counted in ROWS OF THE GRID, so a long weekend is one day, matching every other
-    trading-day clock in the cube (`decay_events`, the momentum windows).
-    """
-    if buys.empty:
-        return pd.DataFrame(index=idx)
-    days = buys.groupby(["day", "ticker"]).size().unstack("ticker")
-    # `side="left"`: a Form 4 filed on a non-trading day is first actionable on the NEXT
-    # session, so it must not be credited to the previous one.
-    pos = idx.searchsorted(days.index.to_numpy(), side="left")
-    keep = pos < len(idx)
-    grid = np.zeros((len(idx), days.shape[1]), dtype=bool)
-    if keep.any():
-        rows = pos[keep]
-        vals = days.to_numpy()[keep] > 0
-        np.logical_or.at(grid, rows, vals)
-    ordinal = np.arange(len(idx))[:, None]
-    last = np.maximum.accumulate(np.where(grid, ordinal, -1), axis=0)
-    out = np.where(last >= 0, ordinal - last, np.nan).astype("float64")
-    return pd.DataFrame(out, index=idx, columns=days.columns)
 
 
 # --------------------------------------------------------------------------- #

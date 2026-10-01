@@ -11,8 +11,15 @@ import pytest
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from scripts.prove_insider_outliers import _panel as build_proof_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
+from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
+from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
+from src.data_aggregate.utils.institutionals.ownership_features import EMISSION as OWNERSHIP_EMISSION
+from src.data_aggregate.utils.institutionals.short_flow_features import EMISSION as SHORT_FLOW_EMISSION
+from src.data_aggregate.utils.institutionals.signal_conditioning import EMISSION as CONDITIONING_EMISSION
 from src.data_aggregate.utils.institutionals.sink import ConditioningSink
+from src.data_aggregate.utils.institutionals.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_store.schema import Tables
 
 
@@ -20,6 +27,48 @@ def _bare_step() -> StepCubeInstitutionals:
     step = object.__new__(StepCubeInstitutionals)
     cast(Any, step)._log = logging.getLogger(__name__)
     return step
+
+
+def test_final_taxonomy_is_raw_only_without_unproved_peer_legs() -> None:
+    emissions = (
+        CROSS_SOURCE_EMISSION,
+        INSIDER_EMISSION,
+        INSTITUTIONAL_EMISSION,
+        OWNERSHIP_EMISSION,
+        SHORT_FLOW_EMISSION,
+        CONDITIONING_EMISSION,
+        SUPERINVESTOR_EMISSION,
+    )
+    declared = {name: mode for family in emissions for name, mode in family.items()}
+    peer_features = {name for name, mode in declared.items() if mode == "raw+peers"}
+    removed = {
+        "ic_act_campaign_age_days",
+        "ic_act_purpose_board",
+        "ic_act_purpose_strategic",
+        "ic_bo_holder_count",
+        "ic_ftd_pct_so",
+        "ic_ftd_z252",
+        "ic_insider_buy_shares_so_180d",
+        "ic_inst_flow_to_mcap",
+        "ic_shortvol_ratio_z252",
+        "ic_super_flow_to_mcap",
+        "ic_super_exit_after_top10",
+        "ic_xs_bearish_family_ratio",
+        "ic_xs_bullish_actor_count",
+        "ic_xs_bullish_family_ratio",
+        "ic_xs_conflict_ratio",
+    }
+
+    assert len(declared) == sum(map(len, emissions)), "feature names must be unique across institutional families"
+    assert set(declared.values()) == {"raw"}
+    assert peer_features == set()
+    assert removed.isdisjoint(declared)
+    assert len(declared) == 71
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 71
+    print(
+        "SANITY: the final schema declares 71 unique characteristics / 71 legs, all raw; "
+        "both provisional peer legs were removed because target/OOS evidence was unavailable."
+    )
 
 
 def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,8 +98,8 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     fake_step._config = config
     fake_step._store = store
 
-    def load_peers(actual_context: object, actual_config: object) -> dict[str, dict[str, float]]:
-        calls["peers"] = {"context": actual_context, "config": actual_config}
+    def load_peers(actual_context: object) -> dict[str, dict[str, float]]:
+        calls["peers"] = {"context": actual_context}
         return peers
 
     def load_prices(actual_store: object, *, peers: object, fields: object, since: object) -> object:
@@ -63,7 +112,7 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     assert step._load_frames() is price_frames
     assert step._load_shares_out() is shares
     assert calls == {
-        "peers": {"context": context, "config": config},
+        "peers": {"context": context},
         "prices": {
             "store": store,
             "peers": peers,
@@ -77,6 +126,31 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
         },
     }
     print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
+
+
+def test_symbol_lineage_loader_projects_current_issuers() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class _Store:
+        def load(self, table: object, **kwargs: Any) -> pd.DataFrame:
+            calls.append({"table": table, **kwargs})
+            if table is Tables.sp500_tickers:
+                return pd.DataFrame({"ticker": ["FISV"], "cik": [798354]})
+            return pd.DataFrame(
+                {
+                    "symbol": ["FISV", "FI"],
+                    "issuer_cik": ["0000798354", "0000798354"],
+                    "valid_from": ["2006-01-03", "2023-06-07"],
+                    "valid_to": ["2023-06-07", "2025-11-11"],
+                }
+            )
+
+    tenure, roster = step_module.institutional_inputs.load_symbol_lineage(cast(Any, _Store()), logging.getLogger(__name__), ["FISV"])
+
+    assert tenure is not None and roster is not None
+    assert calls[0]["where"] == {"ticker": ["FISV"]}
+    assert calls[1]["where"] == {"issuer_cik": ["0000798354"]}
+    print("SANITY: the input layer projected FISV's current CIK and its FI/FISV lineage without relabelling canonical source rows twice.")
 
 
 def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
@@ -112,33 +186,6 @@ def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
     assert step._load_source is original_load
     assert calls == [(Tables.short_interest, ["AAA"])]
     print("SANITY: the insider outlier proof supplies a fresh sink, disables live overlay, forwards universe scope, and restores the loader.")
-
-
-def test_grid_restriction_is_on_exact_date_ticker_pairs(caplog: pytest.LogCaptureFixture) -> None:
-    step = _bare_step()
-    first, second = pd.to_datetime(["2026-01-02", "2026-01-05"])
-    long = pd.DataFrame(
-        {
-            "date": [first, first, second, first],
-            "ticker": ["AAA", "BBB", "AAA", "ZZZ"],
-            "_grid": [1.0, 1.0, pd.NA, pd.NA],
-            "feature": [1.5, pd.NA, 7.0, 9.0],
-        }
-    )
-
-    with caplog.at_level(logging.WARNING):
-        got = step._restrict_to_grid(long)
-
-    assert list(got.columns) == ["date", "ticker", "feature"]
-    assert list(got[["date", "ticker"]].itertuples(index=False, name=None)) == [
-        (first, "AAA"),
-        (first, "BBB"),
-    ]
-    assert got["feature"].iloc[0] == 1.5
-    assert pd.isna(got["feature"].iloc[1])
-    assert "dropped 2 row(s) off the price grid" in caplog.text
-    assert "1 of them appear nowhere" in caplog.text
-    print("SANITY: grid restriction kept exact date/ticker pairs and removed both an off-date pair and an unknown ticker.")
 
 
 def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -293,6 +340,33 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     assert got.loc[0, "f_owner"] == 3.5
     assert second not in got.loc[got["ticker"] == "AAA", "date"].tolist()
     print("SANITY: build_panel kept order, one sink, one input load, exact output schema/dtypes/nulls, and the planned window.")
+
+    incremental_panel, incremental_window = step.build_panel(full=False)
+    pd.testing.assert_frame_equal(got, incremental_panel)
+
+    class _SeededStore:
+        def __init__(self, rows: pd.DataFrame) -> None:
+            self.rows = rows.copy()
+
+        def columns(self, _table: object) -> list[str]:
+            return list(self.rows.columns)
+
+        def append_tail(self, _table: object, tail: pd.DataFrame, cutoff: pd.Timestamp, *, inclusive: bool) -> int:
+            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
+            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
+            return len(tail)
+
+    seeded = _SeededStore(got[got["date"] < second])
+    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
+    first_increment = seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(got, first_increment)
+    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
+    pd.testing.assert_frame_equal(first_increment, seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True))
+    assert not seeded.rows.duplicated(["date", "ticker"]).any()
+    print(
+        "SANITY: StepCubeInstitutionals full and seeded-incremental builds match on keys, "
+        "dtypes, null masks and values; the identical second update is idempotent."
+    )
 
 
 def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.MonkeyPatch) -> None:

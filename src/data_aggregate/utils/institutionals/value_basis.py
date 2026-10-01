@@ -93,7 +93,7 @@ def repair_value_basis(
     Applies to BOTH holdings tables. Measured 2026-09-14 on `sec13f_manager_holdings`: the
     defect is present there too but one-directional and 14x smaller -- 43 filings / 0.33% of
     rows in the divide-by-1000 band, and the multiply band is EMPTY (not one filing below 0.5,
-    against 6,581 on `sec13f_hr`). So `ic_super_conviction` / `ic_super_flow_to_mcap` need this
+    against 6,581 on `sec13f_hr`). So elite-manager value-weighted characteristics need this
     as well, just far less of it.
 
     Returns `(repaired, register)`. `register` is one row per `(cik, period)` with the measured

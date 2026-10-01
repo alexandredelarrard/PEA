@@ -16,12 +16,12 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.short_flow_features import (
-    BASE_WINDOW,
     EMISSION,
-    FTD_PUB_LAG,
     SHORTVOL_PUB_LAG,
     Z_MIN_PERIODS,
     _fails_fields,
+    _ftd_estimated_available_date,
+    _publish_ftd_vintages,
     _shortvol_fields,
     build_short_flow_feature_panel,
 )
@@ -91,9 +91,8 @@ def test_the_ratio_is_volume_weighted_not_an_average_of_daily_ratios():
 def test_publication_lag_is_one_trading_day():
     dates, tickers, hist = _synth()
     df = _shortvol_fields(hist, dates, None, None, None)
-    assert {"ic_shortvol_ratio_5d", "ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_ratio_z252", "ic_shortvol_acceleration"}.issubset(
-        df
-    )
+    assert {"ic_shortvol_ratio_5d", "ic_shortvol_ratio_20d", "ic_shortvol_ratio_60d", "ic_shortvol_acceleration"}.issubset(df)
+    assert "ic_shortvol_ratio_z252" not in df
     # heavily-shorted S0 has the highest ratio cross-sectionally
     assert str(df["ic_shortvol_ratio_20d"].loc[dates[300]].idxmax()) == "S0"
     short = hist.pivot_table(index="date", columns="ticker", values="short_volume", aggfunc="sum")
@@ -122,38 +121,130 @@ def test_price_interactions_are_one_sided_and_complementary():
     assert (weak.fillna(0) >= 0).all().all() and (strong.fillna(0) >= 0).all().all()
     both = (weak > 0) & (strong > 0)
     assert not both.to_numpy().any(), "a cell is both confirming and absorbing"
-    # and a NEGATIVE z (short flow below its own norm) fires neither
-    z = df["ic_shortvol_ratio_z252"]
-    quiet = (z < 0) & z.notna()
-    assert (weak.where(quiet).fillna(0) == 0).all().all()
     print("\n=== SANITY CHECK: the two short-flow price interactions ===")
     print(
-        f"  both legs >= 0; {int(both.to_numpy().sum())} cells fire both (must be 0); a "
-        f"below-norm z fires neither. The asymmetry is shipped, not averaged. Validated."
+        f"  both legs >= 0 and {int(both.to_numpy().sum())} cells fire both (must be 0); "
+        "the internal normalization conditions the economic interactions but is not emitted. Validated."
     )
 
 
-def test_ftd_absent_date_is_nan_and_absent_ticker_is_zero():
-    """An FTD file lists a security only on days it had fails, so within a PUBLISHED date a
-    missing ticker means no fails -- but a date the file never covered is unknown, not zero."""
-    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-01", periods=120))
-    covered = idx[:60]
-    fails = pd.DataFrame([{"date": d, "ticker": "HI", "fails_quantity": 1e5} for d in covered])
-    volume = pd.DataFrame({t: 1e6 for t in ("HI", "LO")}, index=idx)
-    df = _fails_fields(fails, idx, None, volume)
-    ratio = df["ic_ftd_to_adv20"]
-    # LO never appears in the file at all -> it is not a column of the source pivot
-    assert "HI" in ratio.columns
-    # HI on a covered date, read after the publication lag: a real number
-    assert np.isfinite(float(cast(Any, ratio.loc[idx[FTD_PUB_LAG + 30], "HI"])))
-    # a date the file does not cover: NaN, not 0
-    assert np.isnan(float(cast(Any, ratio.loc[idx[-1], "HI"])))
+def test_ftd_absent_ticker_is_zero_and_published_state_is_held():
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"))
+    fails = pd.DataFrame(
+        [
+            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0},
+            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0},
+            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0},
+        ]
+    )
+    volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
+    ratio = _fails_fields(fails, idx, None, volume)["ic_ftd_to_adv20"]
+
+    assert ratio.loc[pd.Timestamp("2024-01-29")].isna().all()
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "HI"] == pytest.approx(0.3)
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
+    assert ratio.loc[pd.Timestamp("2024-02-14"), "HI"] == pytest.approx(0.3)
     print("\n=== SANITY CHECK: FTD coverage semantics ===")
-    print(
-        f"  file covers {len(covered)} of {len(idx)} grid days: HI reads "
-        f"{ratio.loc[idx[FTD_PUB_LAG + 30], 'HI']:.4f} inside the covered span and NaN "
-        f"outside it -- 'not published' is never reported as 'no fails'. Validated."
+    print("  LO is observed zero on the ZIP's latest covered date; the Jan-a estimate appears Jan 30 and is held until the next ZIP")
+
+
+def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-20"))
+    fails = pd.DataFrame(
+        [
+            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0},
+            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0},
+            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0},
+            {"date": "2024-01-16", "ticker": "HI", "fails_quantity": 800.0},
+            {"date": "2024-01-31", "ticker": "HI", "fails_quantity": 900.0},
+        ]
     )
+    volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
+
+    ratio = _fails_fields(fails, idx, None, volume)["ic_ftd_to_adv20"]
+
+    assert ratio.loc[pd.Timestamp("2024-01-29")].isna().all()
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "HI"] == pytest.approx(0.3)
+    assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
+    assert ratio.loc[pd.Timestamp("2024-02-14"), "HI"] == pytest.approx(0.3)
+    assert ratio.loc[pd.Timestamp("2024-02-15"), "HI"] == pytest.approx(0.9)
+
+    print("\n=== SANITY CHECK: FTD ZIP publication vintage ===")
+    print("  January a publishes its latest 300-share balance atomically on estimated Jan 30; January b replaces it on Feb 15")
+
+
+def test_ftd_observed_zip_date_overrides_historical_estimate():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-09"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
+    fails = pd.DataFrame({"date": ["2024-01-15"], "period": ["202401a"]})
+    vintages = pd.DataFrame({"period": ["202401a"], "available_date": ["2024-02-03"], "availability_basis": ["observed"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert published.loc[:"2024-02-02", "A"].isna().all()
+    assert published.loc[pd.Timestamp("2024-02-05"), "A"] == pytest.approx(0.3)
+    print("\n=== SANITY CHECK: observed FTD availability ===")
+    print("  an observed Saturday ZIP date overrides the Jan 30 estimate and first appears Monday Feb 5")
+
+
+def test_ftd_late_older_zip_does_not_replace_newer_settlement_state():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-23"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
+    state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
+    fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-31"], "period": ["202401a", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-02-20", "2024-02-15"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert pd.isna(published.loc[pd.Timestamp("2024-02-14"), "A"])
+    assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
+    assert published.loc[pd.Timestamp("2024-02-20"), "A"] == pytest.approx(0.9)
+    print("\n=== SANITY CHECK: out-of-order FTD ZIP observations ===")
+    print("  a late older ZIP never rolls the published state back from January b to January a")
+
+
+def test_ftd_publication_uses_persisted_zip_period_at_half_month_boundary():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-12", "2024-02-20"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-01-12"), "A"] = 0.2
+    state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.5
+    state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
+    fails = pd.DataFrame({"date": ["2024-01-12", "2024-01-31", "2024-01-15"], "period": ["202401a", "202401b", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
+
+    published = _publish_ftd_vintages(state, fails, idx, vintages)
+
+    assert published.loc[pd.Timestamp("2024-01-30"), "A"] == pytest.approx(0.2)
+    assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
+    print("\n=== SANITY CHECK: FTD ZIP boundary ===")
+    print("  a settlement on day 15 carried by the b ZIP cannot enter the a-vintage feature")
+
+
+def test_ftd_rejects_ambiguous_settlement_date_across_zip_periods():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-20"))
+    state = pd.DataFrame({"A": 0.1}, index=idx)
+    fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-15"], "period": ["202401a", "202401b"]})
+    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
+
+    with pytest.raises(ValueError, match="multiple ZIP periods"):
+        _publish_ftd_vintages(state, fails, idx, vintages)
+    print("\n=== SANITY CHECK: FTD ZIP boundary ambiguity ===")
+    print("  a settlement date carried by two ZIPs fails closed until source grain is resolved")
+
+
+def test_ftd_zip_vintage_preserves_nan_in_latest_state():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", "2024-02-02"))
+    settlement_state = pd.DataFrame({"A": np.nan}, index=idx)
+    settlement_state.loc[pd.Timestamp("2024-01-02"), "A"] = 1.0
+    fails_hist = pd.DataFrame({"date": ["2024-01-02", "2024-01-15"]})
+
+    published = _publish_ftd_vintages(settlement_state, fails_hist, idx)
+
+    assert published.loc[pd.Timestamp("2024-01-30") :, "A"].isna().all()
+    print("\n=== SANITY CHECK: FTD ZIP latest-state NaN ===")
+    print("  a [finite, NaN] settlement state publishes NaN; an earlier finite value is not carried into the ZIP's latest state")
 
 
 def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
@@ -165,23 +256,147 @@ def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
     volume = pd.DataFrame({"ZERO": 1_000_000.0, "CONST": 1_000_000.0}, index=idx)
 
     fields = _fails_fields(fails, idx, None, volume)
-    z = fields["ic_ftd_z252"]
     persistence = fields["ic_ftd_persistence_30d"]
-    basis_warmup = max(3, BASE_WINDOW // 2)
-    first_neutral = FTD_PUB_LAG + basis_warmup + Z_MIN_PERIODS - 2
-    first_persistence = first_neutral + 14
+    observed_zero = persistence["ZERO"].dropna()
 
-    assert pd.isna(z.loc[idx[first_neutral - 1], "ZERO"])
-    assert z.loc[idx[first_neutral], "ZERO"] == 0.0
-    assert persistence.loc[idx[first_persistence], "ZERO"] == 0.0
-    assert z["CONST"].isna().all(), "a nonzero constant basis has no defined neutral z-score"
-    assert pd.isna(z.loc[idx[-1], "ZERO"]), "an uncovered source date must remain unavailable"
+    assert not observed_zero.empty
+    assert observed_zero.eq(0.0).all()
+    assert persistence["CONST"].isna().all(), "a nonzero constant basis has no defined persistence state"
+    assert persistence.loc[idx[-1], "ZERO"] == 0.0, "the latest published ZIP state is held until another ZIP supersedes it"
+    assert "ic_ftd_z252" not in fields
     print("\n=== SANITY CHECK: FTD neutral zero versus unavailable ===")
     print(
-        f"  ZERO becomes z=0 after {Z_MIN_PERIODS} fully observed source dates and "
-        "persistence=0 after its usual lookback; CONST and the uncovered tail remain NaN"
+        f"  ZERO becomes persistence=0 after {Z_MIN_PERIODS} fully observed source dates plus its lookback and the published state is held; "
+        "CONST remains unavailable, while the internal z is not emitted"
     )
     print("  OK: zero means observed neutral pressure, never missing source coverage")
+
+
+def test_latest_rolling_outputs_require_their_source_date():
+    dates, tickers, hist = _synth(t=400, n=2)
+    missing_regsho_date = dates[-2]
+    hist = hist[hist["date"] != missing_regsho_date]
+    shares = pd.DataFrame(500_000_000.0, index=dates, columns=tickers)
+    close = pd.DataFrame({ticker: np.linspace(100.0, 120.0, len(dates)) for ticker in tickers}, index=dates)
+    volume = pd.DataFrame(5_000_000.0, index=dates, columns=tickers)
+    short_fields = _shortvol_fields(hist, dates, shares, close, volume)
+    assert all(frame.loc[dates[-1]].isna().all() for frame in short_fields.values())
+
+    print("\n=== SANITY CHECK: rolling source-date completeness ===")
+    print("  a missing RegSHO t-1 observation makes every latest derived leg NaN")
+
+
+def test_ftd_publication_snaps_weekend_and_holiday_forward():
+    weekend_idx = pd.DatetimeIndex(pd.bdate_range("2024-06-03", "2024-07-03"))
+    weekend_state = pd.DataFrame({"A": np.nan}, index=weekend_idx)
+    weekend_state.loc[pd.Timestamp("2024-06-14"), "A"] = 1.0
+    weekend_hist = pd.DataFrame([{"date": "2024-06-14"}])
+    weekend_published = _publish_ftd_vintages(weekend_state, weekend_hist, weekend_idx)
+
+    holiday_idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-01-17")).difference(pd.DatetimeIndex(["2024-01-15"]))
+    holiday_state = pd.DataFrame({"A": np.nan}, index=holiday_idx)
+    holiday_state.loc[pd.Timestamp("2023-12-29"), "A"] = 2.0
+    holiday_hist = pd.DataFrame([{"date": "2023-12-29"}])
+    holiday_published = _publish_ftd_vintages(holiday_state, holiday_hist, holiday_idx)
+
+    assert _ftd_estimated_available_date("2024-06-14") == pd.Timestamp("2024-06-30")
+    assert pd.isna(weekend_published.loc[pd.Timestamp("2024-06-28"), "A"])
+    assert weekend_published.loc[pd.Timestamp("2024-07-01"), "A"] == 1.0
+    assert _ftd_estimated_available_date("2023-12-29") == pd.Timestamp("2024-01-15")
+    assert pd.isna(holiday_published.loc[pd.Timestamp("2024-01-12"), "A"])
+    assert holiday_published.loc[pd.Timestamp("2024-01-16"), "A"] == 2.0
+    print("\n=== SANITY CHECK: FTD publication-date snapping ===")
+    print("  estimated Sunday Jun 30 appears Monday Jul 1; the Jan 15 market holiday appears on the first tradable session, Jan 16")
+
+
+def test_appending_later_ftd_zip_does_not_rewrite_published_prefix():
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-20"))
+    first = pd.DataFrame(
+        [
+            {"date": "2024-01-02", "ticker": "A", "fails_quantity": 100.0},
+            {"date": "2024-01-15", "ticker": "A", "fails_quantity": 300.0},
+        ]
+    )
+    later = pd.DataFrame(
+        [
+            {"date": "2024-01-16", "ticker": "A", "fails_quantity": 800.0},
+            {"date": "2024-01-31", "ticker": "A", "fails_quantity": 900.0},
+        ]
+    )
+    volume = pd.DataFrame(1_000.0, index=idx, columns=["A"])
+
+    before = _fails_fields(first, idx, None, volume)["ic_ftd_to_adv20"]
+    after = _fails_fields(pd.concat([first, later], ignore_index=True), idx, None, volume)["ic_ftd_to_adv20"]
+
+    pd.testing.assert_frame_equal(before.loc[:"2024-02-14"], after.loc[:"2024-02-14"])
+    assert after.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
+    print("\n=== SANITY CHECK: FTD appended-ZIP prefix invariance ===")
+    print("  adding January b leaves every January-a published cell unchanged and replaces the held state only on Feb 15")
+
+
+def test_reused_symbol_is_null_outside_the_current_issuer_tenure():
+    idx = pd.bdate_range("2021-01-04", periods=90)
+    ticker = "REUSED"
+    hist = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 400_000.0, "total_volume": 1_000_000.0} for day in idx])
+    tenure = pd.DataFrame(
+        [
+            {
+                "symbol": ticker,
+                "issuer_cik": "0000000123",
+                "valid_from": idx[20],
+                "valid_to": idx[60],
+            }
+        ]
+    )
+    roster = pd.DataFrame([{"ticker": ticker, "cik": "123"}])
+    panel = build_short_flow_feature_panel(
+        make_frames(idx, {ticker: {}}, universe=pd.Index([ticker])),
+        hist,
+        symbol_tenure=tenure,
+        ticker_ciks=roster,
+    )
+    ratio = panel[panel["ticker"] == ticker].set_index("date")["f_ic_shortvol_ratio_20d"].reindex(idx)
+    assert ratio.loc[: idx[19]].isna().all()
+    assert np.isfinite(ratio.loc[idx[45]])
+    assert ratio.loc[idx[60] :].isna().all()
+    print("\n=== SANITY CHECK: reused-symbol tenure mask ===")
+    print("  RegSHO cells are available only inside the current roster CIK's proven half-open symbol tenure")
+
+
+def test_canonical_ticker_survives_a_historical_alias_tenure():
+    idx = pd.bdate_range("2023-05-01", periods=80)
+    cutover = idx[35]
+    history = pd.DataFrame(
+        [
+            {
+                "date": day,
+                "ticker": "NEW",
+                "short_volume": 400_000.0,
+                "total_volume": 1_000_000.0,
+            }
+            for day in idx
+        ]
+    )
+    tenure = pd.DataFrame(
+        [
+            {"symbol": "OLD", "issuer_cik": "0000000123", "valid_from": idx[0], "valid_to": cutover},
+            {"symbol": "NEW", "issuer_cik": "0000000123", "valid_from": cutover, "valid_to": None},
+        ]
+    )
+    roster = pd.DataFrame([{"ticker": "NEW", "cik": "123.0"}])
+
+    panel = build_short_flow_feature_panel(
+        make_frames(idx, {"NEW": {}}, universe=pd.Index(["NEW"])),
+        history,
+        symbol_tenure=tenure,
+        ticker_ciks=roster,
+    )
+    ratio = panel.set_index("date")["f_ic_shortvol_ratio_20d"].reindex(idx)
+
+    assert ratio.loc[cutover:].notna().all()
+    assert np.isclose(ratio.loc[cutover], 0.4)
+    print("\n=== SANITY CHECK: canonical storage across a symbol alias ===")
+    print("  canonical NEW rows survive the OLD tenure, and a float-shaped roster CIK resolves through shared pad_cik")
 
 
 def test_panel_columns_match_the_emission_map():
@@ -211,8 +426,11 @@ def test_panel_columns_match_the_emission_map():
             expected.add(f"f_{name}_vs_peers")
     emitted = {c for c in panel.columns if c.startswith("f_")}
     assert emitted == expected, f"missing {sorted(expected - emitted)}; undeclared {sorted(emitted - expected)}"
-    for leg in ("f_ic_shortvol_ratio_20d_vs_peers", "f_ic_shortvol_turnover_20d_xs", "f_ic_ftd_pct_so", "f_ic_shortvol_market_coverage"):
+    for leg in ("f_ic_shortvol_ratio_20d", "f_ic_shortvol_turnover_20d", "f_ic_ftd_to_adv20", "f_ic_shortvol_market_coverage"):
         assert panel[leg].notna().any(), f"{leg} is all-NaN"
+    assert not any(column.endswith("_xs") for column in emitted)
+    assert not any(column.endswith("_vs_peers") for column in emitted)
+    assert not any(column in panel for column in ("f_ic_shortvol_ratio_z252", "f_ic_ftd_z252"))
     # the three bounded ratios stay in [0, 1]
     for w in (5, 20, 60):
         s = panel[f"f_ic_shortvol_ratio_{w}d"].dropna()
@@ -225,7 +443,8 @@ def test_panel_columns_match_the_emission_map():
     print("\n=== SANITY CHECK: short-flow panel columns vs the EMISSION map ===")
     print(
         f"  {len(emitted)} legs emitted from {len(EMISSION)} declared features, exact match; "
-        f"the three ratios are in [0, 1]; ic_shortvol_days_to_cover is absent (needs FINRA "
+        f"the three ratios are in [0, 1], no peer leg survives without target/OOS evidence, and history z outputs are absent; "
+        f"ic_shortvol_days_to_cover is absent (needs FINRA "
         f"settlement positions, out of scope). Validated."
     )
 

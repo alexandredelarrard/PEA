@@ -372,6 +372,7 @@ def test_completeness_sensitive_success_marks_a_trustworthy_frontier(tmp_path, s
 
     entry = get_entry(ctx, _T_MAIN)
     assert entry is not None and entry.get("coverage_complete") is True
+    assert entry.get("tickers") == ["AAPL"]
     print("\n=== SANITY CHECK: complete schedule frontier ===")
     print("  every ticker discovered and saved -> coverage_complete=true in the manifest")
     print("  OK: aggregation can distinguish this run from a legacy or partial walk")
@@ -530,6 +531,7 @@ def test_identity_scope_change_rewinds_only_the_changed_ticker(tmp_path, sqlite_
         is_full_rescan=True,
         run_date=prior_date,
         identity_scope_fingerprints={"AAPL": "same", "MSFT": "old"},
+        tickers=["AAPL", "MSFT"],
     )
     identity = types.SimpleNamespace(ciks_by_symbol={})
     monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_identity", lambda context: identity)
@@ -557,6 +559,7 @@ def test_identity_scope_change_rewinds_only_the_changed_ticker(tmp_path, sqlite_
     assert seen["AAPL"] == prior_date
     assert seen["MSFT"].year == (pd.Timestamp.today() - pd.DateOffset(years=15)).year
     assert get_entry(ctx, _T_MAIN)["identity_scope_fingerprints"] == {"AAPL": "same", "MSFT": "new"}
+    assert get_entry(ctx, _T_MAIN)["tickers"] == ["AAPL", "MSFT"]
     print("\nSANITY: unchanged AAPL stayed incremental while only changed-scope MSFT relisted the full window.")
 
 

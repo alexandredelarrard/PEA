@@ -40,7 +40,6 @@ data_availability:
       ic_inst_new_buyer_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_inst_exit_ratio: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_inst_cluster_buying: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
-      ic_inst_flow_to_mcap: "2013-09-30"  # Needs a prior post-coverage 13F quarter.
       ic_super_conviction_chg: "2013-02-14"  # First tradable elite-manager filing state.
       ic_super_full_exits: "2013-02-14"  # Same elite-manager public-state boundary.
       ic_insider_discretionary_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.

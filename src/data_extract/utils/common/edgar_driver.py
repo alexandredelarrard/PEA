@@ -279,6 +279,7 @@ def run_edgar_fetch(
             len(cik_map),
             fallback_since=fallback_since,
             full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
+            tickers=cik_map["ticker"],
         )
     done = existing_filings(context, tables[0])
     declared = set(tables)
@@ -377,4 +378,5 @@ def run_edgar_fetch(
             is_full_rescan=is_full_rescan,
             coverage_complete=require_complete,
             identity_scope_fingerprints=scope_fingerprints,
+            tickers=cik_map["ticker"],
         )

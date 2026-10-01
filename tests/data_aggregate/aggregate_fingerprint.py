@@ -822,7 +822,7 @@ def compute() -> dict:
     )
     # ⚠ THE SINK IS THREADED THROUGH ALL FOUR SOURCE PANELS, because the two DERIVED panels
     # (`ic_sig_*`, `ic_xs_*`) are functions of what the source panels hand it -- their event
-    # dates, their bullish actors and eight declared signal frames. Digesting the derived
+    # dates and their declared availability masks. Digesting the derived
     # panels without it would freeze two empty frames.
     sink = ConditioningSink()
     # `splits=` is not decoration: RegSHO volume is AS-TRADED and yfinance `Volume` is

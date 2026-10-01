@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
@@ -872,6 +873,23 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
     out = build_ticker_13d_edgar("AAPL", "0000320193")[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
     assert out.iloc[0]["issuer_name"] == "Apple Inc."
+
+
+def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
+    filing = _fake_13d_filing(accession="0001-broken")
+
+    def fail_parse():
+        raise ValueError("broken schedule")
+
+    filing.obj = fail_parse
+    monkeypatch.setattr(
+        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
+        lambda ticker, subject_ciks, forms, since, done: [filing],
+    )
+    with pytest.raises(RuntimeError, match="0001-broken"):
+        build_ticker_13d_edgar("AAPL", "0000320193")
+    print("\n=== SANITY CHECK: known 13D parse failure ===")
+    print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 
 
 def test_13d_item3_and_item6_use_correct_structured_attribute_names():

@@ -31,9 +31,13 @@ condition on it and a reader can see when it moves.
 POINT-IN-TIME:
   * RegSHO files are disseminated the NEXT morning -> every `ic_shortvol_*` leg is shifted
     `SHORTVOL_PUB_LAG` trading day. The shift is applied ONCE, to the ratio frames, and every
-    derived leg (z-score, acceleration, the two price interactions) is built from the shifted
+    derived leg (acceleration and the two price interactions) is built from the shifted
     frames -- so no leg can forget the lag.
-  * SEC FTD files are published well after the settlement period -> `FTD_PUB_LAG` trading days.
+  * SEC FTD rows are published as semi-monthly ZIP vintages. Each archive has one stored
+    availability date: historical estimates are 15 calendar days after the period end;
+    new archives use the first successful SEC observation. The trading calendar moves
+    weekend/holiday dates forward. Every row in one ZIP becomes knowable together;
+    the latest cumulative settlement state is held until the next ZIP.
 
 ⚠ AN ABSENT FTD ROW IS ZERO ONLY ON A DATE THE FILE COVERS. The file lists a security on the
 days it had fails, so within a published settlement date a missing ticker means no fails; a
@@ -64,6 +68,7 @@ from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -83,18 +88,13 @@ logger = logging.getLogger(__name__)
 #: RegSHO: day-t short volume is public on t+1.
 SHORTVOL_PUB_LAG = 1
 
-#: ~2 months of trading days. SEC FTD files are published well after the settlement period, so
-#: the signal is lagged to its (conservative) availability date.
-FTD_PUB_LAG = 40
-
-#: Trailing self-history window for the two z-scores (#59, #66) and the minimum history before
-#: one is emitted. 252 is a year; a half-year floor keeps the first year of a new source from
-#: being blank rather than making a z out of 20 days.
+#: Trailing self-history window used internally by the price-regime and FTD-persistence
+#: characteristics. The z-scores themselves are not emitted because their inputs are ratios.
 Z_WINDOW = 252
 Z_MIN_PERIODS = 126
 
-#: #67: how many of the last 30 trading days had `ic_ftd_z252` above `Z_HIGH`. A persistent
-#: settlement backlog is a different statement from one bad day.
+#: How many of the last 30 trading days had internally standardized FTD pressure above
+#: `Z_HIGH`. A persistent settlement backlog is a different statement from one bad day.
 PERSISTENCE_WINDOW = 30
 Z_HIGH = 1.0
 
@@ -107,26 +107,18 @@ BASE_WINDOW = 20
 #: The 20-day price path the two interaction features condition on (#62/#63).
 RET_WINDOW = 20
 
-#: Emission (D27, registry section 0.10). The three ratios are the textbook sector-normed rates --
-#: an 8% short-volume share means nothing without the sector's norm -- and section 0.10a measured
-#: this family's peer legs as the one group with a HEALTHY peer fingerprint (clip 0.05%, NaN
-#: 0%), unlike the insider family. The two z-scores are normalized by construction, so ranking
-#: them is a second normalization that only loses the tail; the interaction products and the
-#: persistence count are bounded or integer-valued; the three fail/turnover rates are skewed
-#: dollar-free rates whose cross-sectional spread drifts with the market, so they take `_xs`.
+#: Preserve raw economic units. The fixed candidate contains no target/OOS evidence, so no
+#: peer normalization passes the approved retention gate.
 EMISSION: dict[str, str] = {
-    "ic_shortvol_ratio_5d": "raw+peers",
-    "ic_shortvol_ratio_20d": "raw+peers",
-    "ic_shortvol_ratio_60d": "raw+peers",
-    "ic_shortvol_ratio_z252": "raw",
+    "ic_shortvol_ratio_5d": "raw",
+    "ic_shortvol_ratio_20d": "raw",
+    "ic_shortvol_ratio_60d": "raw",
     "ic_shortvol_acceleration": "raw",
-    "ic_shortvol_turnover_20d": "raw+xs",
+    "ic_shortvol_turnover_20d": "raw",
     "ic_shortvol_high_x_weak_price": "raw",
     "ic_shortvol_high_x_strong_price": "raw",
     "ic_shortvol_market_coverage": "raw",
-    "ic_ftd_pct_so": "raw+xs",
-    "ic_ftd_to_adv20": "raw+xs",
-    "ic_ftd_z252": "raw",
+    "ic_ftd_to_adv20": "raw",
     "ic_ftd_persistence_30d": "raw",
 }
 
@@ -140,6 +132,81 @@ def _pivot(hist: pd.DataFrame, value: str, idx: pd.DatetimeIndex) -> pd.DataFram
     wide = hist.pivot_table(index="date", columns="ticker", values=value, aggfunc="sum")
     wide.index = pd.to_datetime(wide.index).normalize()
     return wide.reindex(idx)
+
+
+def _ftd_estimated_available_date(settlement_date: object) -> pd.Timestamp:
+    """Historical ZIP estimate: period end plus 15 calendar days."""
+    day = pd.Timestamp(settlement_date).normalize()
+    period_end = day.replace(day=15) if day.day <= 15 else day + pd.offsets.MonthEnd(0)
+    return period_end + pd.Timedelta(days=15)
+
+
+def _publish_ftd_vintages(
+    settlement_state: pd.DataFrame,
+    fails_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    vintages: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Expose one cumulative FTD state per ZIP on its first tradable session.
+
+    Stored availability overrides the historical estimate. The trading index moves a
+    weekend or market-holiday date forward to the next tradable session.
+    """
+    periods: dict[str, list[pd.Timestamp]] = {}
+    if "period" in fails_hist:
+        source_periods = fails_hist[["date", "period"]].drop_duplicates().copy()
+        source_periods["date"] = to_day(source_periods["date"])
+        if source_periods.isna().any().any():
+            raise ValueError("FTD source has a null settlement date or ZIP period")
+        if source_periods.groupby("date")["period"].nunique().gt(1).any():
+            raise ValueError("FTD settlement date belongs to multiple ZIP periods")
+        for day, period in source_periods.itertuples(index=False, name=None):
+            periods.setdefault(str(period), []).append(day)
+    elif vintages is not None:
+        raise ValueError("FTD source is missing its persisted ZIP period")
+    else:
+        source_dates = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique()).sort_values()
+        for day in source_dates:
+            period = f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}"
+            periods.setdefault(period, []).append(day)
+
+    available_by_period: dict[str, pd.Timestamp] = {}
+    if vintages is not None:
+        if vintages["period"].duplicated().any():
+            raise ValueError("FTD vintage metadata has duplicate periods")
+        available_by_period = dict(zip(vintages["period"].astype(str), pd.to_datetime(vintages["available_date"]), strict=True))
+
+    events: list[tuple[int, str, pd.Series]] = []
+    for period, days in periods.items():
+        observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index).sort_values()
+        if observed_days.empty:
+            continue
+        if vintages is not None and period not in available_by_period:
+            raise ValueError(f"FTD vintage metadata missing period {period}")
+        available_date = available_by_period[period] if vintages is not None else _ftd_estimated_available_date(observed_days[-1])
+        if pd.isna(available_date):
+            raise ValueError(f"FTD vintage metadata has no available_date for {period}")
+        if available_date < observed_days[-1]:
+            raise ValueError(f"FTD vintage {period} becomes available before its latest settlement date")
+        publish_at = int(idx.searchsorted(available_date, side="left"))
+        if publish_at >= len(idx):
+            continue
+        latest = settlement_state.reindex(observed_days).iloc[-1]
+        events.append((publish_at, period, latest))
+
+    published = pd.DataFrame(np.nan, index=idx, columns=settlement_state.columns)
+    events.sort(key=lambda event: (event[0], event[1]))
+    current_period = ""
+    forward_events = []
+    for event in events:
+        if event[1] > current_period:
+            forward_events.append(event)
+            current_period = event[1]
+    for position, (start, _, state) in enumerate(forward_events):
+        stop = forward_events[position + 1][0] if position + 1 < len(forward_events) else len(idx)
+        if stop > start:
+            published.iloc[start:stop] = state.to_numpy()
+    return published
 
 
 def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
@@ -183,6 +250,49 @@ def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
     return cov.mask(over)
 
 
+def _current_ticker_by_cik(ticker_ciks: pd.DataFrame) -> dict[str, str]:
+    grouped: dict[str, set[str]] = {}
+    for row in ticker_ciks.itertuples(index=False):
+        grouped.setdefault(pad_cik(row.cik), set()).add(str(row.ticker))
+    return {cik: next(iter(tickers)) for cik, tickers in grouped.items() if cik and len(tickers) == 1}
+
+
+def _lineage_target(symbol: object, issuer_cik: object, exact: dict[str, str], unique: dict[str, str]) -> str | None:
+    source_symbol, source_cik = str(symbol), pad_cik(issuer_cik)
+    if exact.get(source_symbol) == source_cik:
+        return source_symbol
+    return unique.get(source_cik)
+
+
+def _proven_tenure_mask(
+    idx: pd.DatetimeIndex,
+    columns: pd.Index,
+    symbol_tenure: pd.DataFrame | None,
+    ticker_ciks: pd.DataFrame | None,
+) -> pd.DataFrame | None:
+    """Current-issuer symbol tenure, when both lineage inputs are available."""
+    if symbol_tenure is None or ticker_ciks is None or symbol_tenure.empty or ticker_ciks.empty:
+        return None
+    if not {"symbol", "issuer_cik", "valid_from", "valid_to"}.issubset(symbol_tenure) or not {"ticker", "cik"}.issubset(ticker_ciks):
+        return None
+    current = _current_ticker_by_cik(ticker_ciks)
+    exact = {str(row.ticker): pad_cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
+    mask = pd.DataFrame(False, index=idx, columns=columns)
+    for row in symbol_tenure.itertuples(index=False):
+        target = _lineage_target(row.symbol, row.issuer_cik, exact, current)
+        if target not in mask.columns:
+            continue
+        start = pd.to_datetime(row.valid_from, errors="coerce")
+        end = pd.to_datetime(row.valid_to, errors="coerce")
+        if pd.isna(start):
+            continue
+        valid = idx >= pd.Timestamp(start).normalize()
+        if pd.notna(end):
+            valid &= idx < pd.Timestamp(end).normalize()
+        mask.loc[valid, target] = True
+    return mask
+
+
 def _shortvol_fields(
     hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
@@ -190,10 +300,16 @@ def _shortvol_fields(
     close_total: pd.DataFrame | None,
     volume: pd.DataFrame | None,
     splits: pd.DataFrame | None = None,
+    tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """#56-#63 + the coverage measurement. Every leg is shifted by the publication lag."""
     short = _pivot(hist, "short_volume", idx)
     total = _pivot(hist, "total_volume", idx)
+    if tenure_mask is not None:
+        source_tenure = tenure_mask.reindex(index=idx, columns=short.columns, fill_value=False)
+        short = short.where(source_tenure)
+        total = total.where(source_tenure)
+    observed = short.notna() & total.notna()
     f_dict: dict[str, pd.DataFrame] = {}
 
     ratios: dict[int, pd.DataFrame] = {}
@@ -201,19 +317,18 @@ def _shortvol_fields(
         mp = _min_periods(w)
         num = short.rolling(w, min_periods=mp).sum()
         den = total.rolling(w, min_periods=mp).sum()
-        ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
+        ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
         ratios[w] = ratio.shift(SHORTVOL_PUB_LAG)
         f_dict[f"ic_shortvol_ratio_{w}d"] = ratios[w]
 
     base = ratios[BASE_WINDOW]
     z = self_history_z(base, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-    f_dict["ic_shortvol_ratio_z252"] = z
     f_dict["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
 
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=short.columns)
         turn = short.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).shift(SHORTVOL_PUB_LAG)
+        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).where(observed).shift(SHORTVOL_PUB_LAG)
 
     if close_total is not None and not close_total.empty:
         # The 20-day TOTAL return (`close_total`, never `close_split`): this is a return, and
@@ -227,7 +342,7 @@ def _shortvol_fields(
         tape = volume.reindex(index=idx).reindex(columns=short.columns)
         num = (total * split_adjust_frame(splits, total)).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
         den = tape.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
+        cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
         cov = _guard_coverage(cov)
         f_dict["ic_shortvol_market_coverage"] = cov.shift(SHORTVOL_PUB_LAG)
         live = cov.to_numpy(dtype="float64", na_value=np.nan).ravel()
@@ -241,11 +356,20 @@ def _shortvol_fields(
                 100 * p95,
                 len(live),
             )
+    if tenure_mask is not None:
+        for name, frame in f_dict.items():
+            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
     return f_dict
 
 
 def _fails_fields(
-    fails_hist: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None, volume: pd.DataFrame | None, splits: pd.DataFrame | None = None
+    fails_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    shares_out: pd.DataFrame | None,
+    volume: pd.DataFrame | None,
+    splits: pd.DataFrame | None = None,
+    tenure_mask: pd.DataFrame | None = None,
+    vintages: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """#64-#67. Zero-filled ONLY on the dates the FTD file covers -- see the module docstring."""
     fails = _pivot(fails_hist, "fails_quantity", idx)
@@ -262,6 +386,10 @@ def _fails_fields(
     # ticker axis explicitly rather than relying on a bare ndarray to align.
     covered_wide = pd.DataFrame({c: on_file for c in fails.columns}, index=idx)
     fails = fails.mask(covered_wide & fails.isna(), 0.0)
+    if tenure_mask is not None:
+        source_tenure = tenure_mask.reindex(index=idx, columns=fails.columns, fill_value=False)
+        fails = fails.where(source_tenure)
+        covered_wide &= source_tenure
 
     f_dict: dict[str, pd.DataFrame] = {}
     pct_so = None
@@ -269,7 +397,6 @@ def _fails_fields(
     if shares_out is not None and not shares_out.empty:
         so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
         pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_pct_so"] = pct_so.shift(FTD_PUB_LAG)
     if volume is not None and not volume.empty:
         adv = volume.reindex(index=idx).reindex(columns=fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
         # ⚠ SAME BASIS MISMATCH AS `market_coverage`: `fails_quantity` is an as-traded share
@@ -277,7 +404,7 @@ def _fails_fields(
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
         to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = to_adv.shift(FTD_PUB_LAG)
+        f_dict["ic_ftd_to_adv20"] = _publish_ftd_vintages(to_adv, fails_hist, idx, vintages)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
@@ -298,9 +425,12 @@ def _fails_fields(
         zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
         neutral = applicable & basis.eq(0.0) & expected.ge(Z_MIN_PERIODS) & observed.eq(expected) & zeros.eq(expected)
         z = z.mask(z.isna() & neutral, 0.0)
-        f_dict["ic_ftd_z252"] = z.shift(FTD_PUB_LAG)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
-        f_dict["ic_ftd_persistence_30d"] = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().shift(FTD_PUB_LAG)
+        persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
+        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_vintages(persistence, fails_hist, idx, vintages)
+    if tenure_mask is not None:
+        for name, frame in f_dict.items():
+            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
     return f_dict
 
 
@@ -309,8 +439,11 @@ def build_short_flow_feature_panel(
     short_history: pd.DataFrame | None,
     *,
     fails_history: pd.DataFrame | None = None,
+    ftd_vintages: pd.DataFrame | None = None,
     shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
+    symbol_tenure: pd.DataFrame | None = None,
+    ticker_ciks: pd.DataFrame | None = None,
     availability: InstitutionalAvailability | None = None,
     sink=None,
 ) -> pd.DataFrame:
@@ -348,6 +481,8 @@ def build_short_flow_feature_panel(
         return _empty_panel()
 
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    tenure_mask = _proven_tenure_mask(idx, columns, symbol_tenure, ticker_ciks)
     shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:
         # ⚠ `sharesOutstandingPit`: a fail and a short sale are counts of shares that existed
@@ -359,9 +494,9 @@ def build_short_flow_feature_panel(
 
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits))
+        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits, tenure_mask))
     if fails_history is not None and not fails_history.empty and "fails_quantity" in fails_history.columns:
-        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits))
+        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits, tenure_mask, ftd_vintages))
 
     for name in list(fields):
         frame = fields[name]
@@ -397,5 +532,5 @@ def build_short_flow_feature_panel(
             signal_masks[name] = mask
             signal_fields[name] = raw.where(mask)
         sink.keep_signals(signal_fields, signal_masks)
-    emission = {k: v for k, v in EMISSION.items() if k in fields}
+    emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

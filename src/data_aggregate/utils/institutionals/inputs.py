@@ -6,13 +6,13 @@ import logging
 from collections.abc import Sequence
 
 import pandas as pd
-from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_price_frames
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
+from src.utils.string import pad_cik
 
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
 
@@ -20,13 +20,12 @@ SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstanding
 def load_full_price_frames(
     store: DataStore,
     context: Context,
-    config: DictConfig,
     fields: Sequence[str],
 ) -> PriceFrames:
-    """Load the institutional part's full-calendar price inputs."""
+    """Load full-calendar price inputs from the already-persisted peer dependency."""
     return load_price_frames(
         store,
-        peers=load_peers_or_raise(context, config),
+        peers=load_peers_or_raise(context),
         fields=fields,
         since=None,
     )
@@ -92,3 +91,33 @@ def load_shares_out(store: DataStore, log: logging.Logger) -> pd.DataFrame | Non
         log.warning("No fundamentals history -> the market-cap-scaled ownership features are skipped.")
         return None
     return frame
+
+
+def load_symbol_lineage(
+    store: DataStore,
+    log: logging.Logger,
+    universe: Sequence[str],
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Load the issuer lineage used to validate already-canonical source rows."""
+    tickers = sorted(set(map(str, universe)))
+    ticker_ciks = store.load(
+        Tables.sp500_tickers,
+        columns=("ticker", "cik"),
+        where={"ticker": tickers},
+        optional=True,
+    )
+    if ticker_ciks is None or ticker_ciks.empty:
+        return None, ticker_ciks
+
+    ciks = sorted({pad_cik(value) for value in ticker_ciks["cik"] if pad_cik(value)})
+    if not ciks:
+        return None, ticker_ciks
+    symbol_tenure = store.load(
+        Tables.symbol_tenure,
+        columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
+        where={"issuer_cik": ciks},
+        optional=True,
+    )
+    aliases = len(set(symbol_tenure["symbol"].astype(str))) if symbol_tenure is not None else 0
+    log.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
+    return symbol_tenure, ticker_ciks

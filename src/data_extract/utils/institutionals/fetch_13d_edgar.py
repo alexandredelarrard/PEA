@@ -601,8 +601,9 @@ def build_ticker_13d_edgar(
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13D_FORMS, since, done_accessions):
         try:
             filing_rows = _filing_rows(filing)
-        except Exception:  # noqa: BLE001 -- best-effort only
-            filing_rows = []
+        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
+            accession = getattr(filing, "accession_number", "unknown")
+            raise RuntimeError(f"SC 13D accession {accession} could not be parsed") from exc
 
         issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
@@ -618,8 +619,9 @@ def build_ticker_13d_edgar(
             fallback_person = person_names[0] if len(person_names) == 1 else None
             filing_date = cast(pd.Timestamp | None, filing_rows[0].get("filing_date")) if filing_rows else pd.Timestamp(cast(Any, filing.filing_date))
             exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
-        except Exception:  # noqa: BLE001 -- best-effort only
-            exhibit_rows = []
+        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
+            accession = getattr(filing, "accession_number", "unknown")
+            raise RuntimeError(f"SC 13D accession {accession} transaction exhibit could not be parsed") from exc
 
         cik_val = filing_rows[0].get("cik") if filing_rows else cik
         for seq, tr in enumerate(exhibit_rows):

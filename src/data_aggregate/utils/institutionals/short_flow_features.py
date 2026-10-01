@@ -33,7 +33,7 @@ POINT-IN-TIME:
     `SHORTVOL_PUB_LAG` trading day. The shift is applied ONCE, to the ratio frames, and every
     derived leg (acceleration and the two price interactions) is built from the shifted
     frames -- so no leg can forget the lag.
-  * SEC FTD rows are published as semi-monthly ZIP vintages. Availability is derived
+  * SEC FTD rows are published by semi-monthly ZIP period. Availability is derived
     from the stored ZIP period: period end plus 15 calendar days, past weekends;
     the newest recently cached ZIP can use its local file timestamp for two days.
     The trading calendar moves market-holiday dates forward. Every row in one ZIP becomes knowable together;
@@ -205,7 +205,7 @@ def _ftd_available_dates(
     return available
 
 
-def _publish_ftd_vintages(
+def _publish_ftd_zip_states(
     settlement_state: pd.DataFrame,
     fails_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
@@ -454,7 +454,7 @@ def _fails_fields(
         # split ratio. Restate the fails onto the adjusted basis so the ratio is basis-free.
         fails_adj = fails * split_adjust_frame(splits, fails)
         to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = _publish_ftd_vintages(to_adv, fails_hist, idx, available_by_period)
+        f_dict["ic_ftd_to_adv20"] = _publish_ftd_zip_states(to_adv, fails_hist, idx, available_by_period)
     # The z-score prefers the share-count basis (a fail is a share count, and shares
     # outstanding is the only denominator that makes two names comparable); it falls back to
     # the ADV basis so the family is not lost when fundamentals are absent.
@@ -477,7 +477,7 @@ def _fails_fields(
         z = z.mask(z.isna() & neutral, 0.0)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
         persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
-        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_vintages(persistence, fails_hist, idx, available_by_period)
+        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(persistence, fails_hist, idx, available_by_period)
     if tenure_mask is not None:
         for name, frame in f_dict.items():
             f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))

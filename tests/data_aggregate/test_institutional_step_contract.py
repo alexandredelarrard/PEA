@@ -164,7 +164,7 @@ def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.M
 
     assert out is not None and len(out) == 1
     assert calls == [Tables.short_interest, Tables.sec_fails_to_deliver]
-    print("SANITY: the institutionals step builds FTD from source rows and the ZIP cache path without any vintage-table read.")
+    print("SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read.")
 
 
 def test_symbol_lineage_loader_projects_current_issuers() -> None:

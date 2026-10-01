@@ -300,7 +300,7 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     print("  OK: a partial cache can never become a complete-looking replacement")
 
 
-def test_ftd_resume_needs_no_vintage_metadata(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_resume_uses_only_stored_source_periods(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
     identity = _identity()
     sqlite_store.replace(
@@ -322,10 +322,10 @@ def test_ftd_resume_needs_no_vintage_metadata(sqlite_store, monkeypatch, tmp_pat
 
     for _ in range(2):
         assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
-    assert len(sqlite_store.load(Tables.sec_fails_to_deliver)) == 2
-    assert not hasattr(Tables, "sec_ftd_vintages")
-    print("\n=== SANITY CHECK: FTD resume without vintage table ===")
-    print("  Two stored periods skip ZIP reads on rerun; no availability metadata table exists in the registry.")
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver)
+    assert len(stored) == 2 and set(stored["period"]) == {"202401a", "202401b"}
+    print("\n=== SANITY CHECK: FTD resume from stored source periods ===")
+    print("  Two stored periods skip ZIP reads on rerun and preserve their source period tags.")
 
 
 def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
@@ -360,7 +360,7 @@ def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, m
     assert stored["period"] == "202609a"
     assert (ftd.cache_dir(ctx, "sec_fails_to_deliver") / "cnsfails202609a.zip").is_file()
     print("\n=== SANITY CHECK: first successful FTD HTTP response ===")
-    print("  SEC HTTP 200 stored the source period and ZIP once; rerun skipped the period without metadata writes.")
+    print("  SEC HTTP 200 stored the source period and ZIP once; rerun skipped the stored period.")
 
 
 def test_ftd_feature_ranks_high_fails_and_is_leak_free():

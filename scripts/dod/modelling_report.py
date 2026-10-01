@@ -3,7 +3,7 @@ modelling_report.py  (scripts/dod/modelling_report.py)
 ------------------------------------------------------
 The MODELLING Definition-of-Done report. A **PURE READER**: it never trains, never re-fits and
 never touches the model artifacts. Everything it needs was already written by
-`src/modelling/long_short/utils/diagnostics.py` under
+`src/modelling/transformers/monitor.py` (the `Monitor` of a `modelling train` run) under
 
     <OUTPUT_DIR>/diagnostics/<run_stamp>/
         kpis.json / kpis.csv          run level, one CSV row per (horizon, member)
@@ -29,7 +29,7 @@ Design notes
     member name in the flat case. The kpis file is the only unambiguous source.
   * A MEMBER THAT GOT DIAGNOSTICS IS A BOOSTER. `save_member_diagnostics` is called only for
     tree members, and it is what writes `shap_available` / `n_pdp` into the member dict. A
-    member carrying only `cv_mean_ic` (elasticnet, added by the CV-KPI merge in `step_train`)
+    member carrying only `cv_mean_ic` (elasticnet, added by the CV-KPI merge in `StepLongShort`)
     never had SHAP to begin with, so M3/M4 report it as N/A **with the reason named**.
   * PNGs ARE COPIED, NOT LINKED. `data/` is gitignored, so a report linking into it is dead for
     every reader but the person who ran it. A bounded set (one SHAP plot per member, one IC
@@ -62,7 +62,7 @@ from scripts.dod.report_common import (  # noqa: E402
 
 # The writer's own filesystem-safe name function. Imported rather than re-implemented: if the
 # two ever disagree the reader silently looks in the wrong folder.
-from src.modelling.long_short.utils.diagnostics import _safe as safe_name  # noqa: E402
+from src.modelling.utils.artifacts import safe_filename as safe_name  # noqa: E402
 
 GENERATOR = "scripts/dod/modelling_report.py@1"
 MAX_ASSETS = 12

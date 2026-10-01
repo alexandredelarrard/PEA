@@ -123,3 +123,5 @@ specs/
 reports/
 **/specs/**
 **/reports/**
+
+.codegraph/

@@ -28,25 +28,93 @@ def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
             "qtrs": [0, 0, 0, 0, 0],
             "value": [13.2e9, 12.9e9, 7e9, 6e9, 5e8],
             "filed": ["2024-02-15", "2024-02-15", "2024-02-20", "2024-02-20", "2024-07-30"],
+            "available_at": ["2024-04-12", "2024-04-12", "2024-04-12", "2024-04-12", "2024-07-12"],
         }
     )
     out = _pension_deficit_daily(pf, idx)
-    # point-in-time: nothing before the filing
-    assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-02-01"), "VZ"])))
-    # after filing: the LATEST period-end (2023: 13.2B), not the prior-year comparative
-    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-03-01"), "VZ"])) - 13.2e9) < 1
+    # point-in-time: the earlier filing cannot reveal the later bulk ZIP
+    assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-04-11"), "VZ"])))
+    # after archive availability: latest period-end, not the prior-year comparative
+    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-04-15"), "VZ"])) - 13.2e9) < 1
     # GE reports BOTH tags same filing -> primary (7B) preferred over variant (6B)
-    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-03-01"), "GE"])) - 7e9) < 1
-    # MSFT reports only the variant -> variant fills; still PIT (only after its July filing)
+    assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-04-15"), "GE"])) - 7e9) < 1
+    # MSFT reports only the variant; filing later than the archive is the clock
     assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-06-03"), "MSFT"])))
     assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-08-15"), "MSFT"])) - 5e8) < 1
 
     print("\n=== SANITY: pension_facts -> PIT net deficit ===")
     print(
-        f"  VZ 2024-03 = ${out.loc[pd.Timestamp('2024-03-01'), 'VZ']:,.0f} (latest FY, PIT after filing); "
-        f"GE = ${out.loc[pd.Timestamp('2024-03-01'), 'GE']:,.0f} (primary tag preferred); "
-        f"MSFT variant fills. Validated."
+        f"  VZ 2024-04-15 = ${out.loc[pd.Timestamp('2024-04-15'), 'VZ']:,.0f} "
+        f"(latest FY, PIT after ZIP availability); GE primary tag preferred; "
+        f"MSFT later filing date and variant fill. Validated."
     )
+
+
+def test_pension_deficit_daily_preserves_zip_vintages_and_requires_availability():
+    idx = pd.DatetimeIndex(["2026-04-10", "2026-04-13", "2026-07-10", "2026-07-13"])
+    pf = pd.DataFrame(
+        {
+            "ticker": ["BDX", "BDX", "BAD"],
+            "tag": [PRIMARY, PRIMARY, PRIMARY],
+            "ddate": ["2025-09-30"] * 3,
+            "qtrs": [0] * 3,
+            "value": [1.069e9, 1.027e9, 999.0],
+            "filed": ["2026-02-09", "2026-05-07", "2026-02-09"],
+            "available_at": ["2026-04-13", "2026-07-13", None],
+        }
+    )
+    out = _pension_deficit_daily(pf, idx)
+    assert np.isnan(float(out.loc[pd.Timestamp("2026-04-10"), "BDX"]))
+    assert float(out.loc[pd.Timestamp("2026-04-13"), "BDX"]) == 1.069e9
+    assert float(out.loc[pd.Timestamp("2026-07-10"), "BDX"]) == 1.069e9
+    assert float(out.loc[pd.Timestamp("2026-07-13"), "BDX"]) == 1.027e9
+    assert "BAD" not in out or out["BAD"].isna().all()
+    assert _pension_deficit_daily(pf.drop(columns="available_at"), idx).empty
+    print("\n=== SANITY: pension ZIP vintages stay point-in-time ===")
+    print("  BDX Q1 vintage starts Apr 13; Q2 revision replaces it Jul 13; missing archive clocks cannot leak. Validated.")
+
+
+def test_pension_deficit_daily_uses_latest_zip_when_downloaded_same_day():
+    day = pd.Timestamp("2027-01-15")
+    pf = pd.DataFrame(
+        {
+            "ticker": ["BDX", "BDX"],
+            "tag": [PRIMARY, PRIMARY],
+            "ddate": ["2025-09-30", "2025-09-30"],
+            "qtrs": [0, 0],
+            "value": [200.0, 100.0],  # deliberately put the newer ZIP first
+            "filed": ["2026-05-07", "2026-05-07"],
+            "available_at": [day, day],
+            "quarter": ["2026q4", "2026q3"],
+        }
+    )
+
+    out = _pension_deficit_daily(pf, pd.DatetimeIndex([day]))
+
+    assert float(out.loc[day, "BDX"]) == 200.0
+    print("\n=== SANITY: same-day pension ZIP catch-up ===")
+    print("  The newer Q4 revision wins even when both ZIPs were first downloaded on one day. Validated.")
+
+
+def test_pension_deficit_daily_expires_after_460_days():
+    start = pd.Timestamp("2025-01-13")
+    idx = pd.DatetimeIndex([start + pd.Timedelta(days=460), start + pd.Timedelta(days=461)])
+    pf = pd.DataFrame(
+        {
+            "ticker": ["X"],
+            "tag": [PRIMARY],
+            "ddate": ["2024-12-31"],
+            "qtrs": [0],
+            "value": [42.0],
+            "filed": ["2025-01-01"],
+            "available_at": [start],
+        }
+    )
+    out = _pension_deficit_daily(pf, idx)
+    assert float(out.loc[idx[0], "X"]) == 42.0
+    assert np.isnan(float(out.loc[idx[1], "X"]))
+    print("\n=== SANITY: pension availability age bound ===")
+    print("  Observation remains on day 460 and expires on day 461. Validated.")
 
 
 def _insider_txns():

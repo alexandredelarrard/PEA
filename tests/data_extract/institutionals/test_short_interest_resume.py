@@ -188,13 +188,13 @@ def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):
 
 
 def test_parse_keeps_source_symbol_until_identity_resolution():
-    parsed = si._parse_regsho(_regsho("20200305", [("FI", 10, 20), ("FI", 5, 10)]))
-    assert parsed.iloc[0]["source_symbol"] == "FI"
-    assert parsed.iloc[0]["short_volume"] == 15
+    parsed = si._parse_regsho(_regsho("20200305", [("FI", 10, 20), ("FI", 5, 10), ("BRK/B", 7, 14)]))
+    assert parsed.loc[parsed["source_symbol"].eq("FI"), "short_volume"].iloc[0] == 15
+    assert "BRK-B" in set(parsed["source_symbol"])
     assert "ticker" not in parsed.columns
 
     print("\n=== SANITY CHECK: RegSHO parse identity boundary ===")
-    print("  two FI rows aggregate as source_symbol=FI; no destination ticker exists yet")
+    print("  two FI rows aggregate as source_symbol=FI; BRK/B normalizes to BRK-B")
     print("  OK: canonical identity is assigned only after the dated source parse")
 
 

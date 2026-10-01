@@ -156,6 +156,11 @@ def normalise_cik(value) -> str:
     return text.zfill(10) if text.isdigit() else text
 
 
+def normalise_market_symbol(value: object) -> str:
+    """Use the roster's hyphen spelling for market share-class separators."""
+    return str(value).strip().upper().replace(".", "-").replace("/", "-")
+
+
 def _as_timestamp(value) -> pd.Timestamp | None:
     """`None` for a null, a `Timestamp` for anything else.
 
@@ -271,7 +276,8 @@ class Identity:
         identity. Collapsing to entities first is what keeps this raise rare enough to mean
         something when it fires.
         """
-        rows = self.tenure_by_symbol.get(str(symbol).strip().upper())
+        key = normalise_market_symbol(symbol)
+        rows = self.tenure_by_symbol.get(key)
         if not rows:
             return None
         if as_of is None:
@@ -286,7 +292,7 @@ class Identity:
             return next(iter(entities))
 
         stamp = pd.Timestamp(as_of)
-        manual_rows = self.manual_tenure_by_symbol.get(str(symbol).strip().upper(), ())
+        manual_rows = self.manual_tenure_by_symbol.get(key, ())
         manual_hits = {entity for entity, start, end, _ in manual_rows if start <= stamp and (end is None or stamp < end)}
         if len(manual_hits) > 1:
             raise AmbiguousSymbolTenureError(
@@ -316,7 +322,7 @@ class Identity:
         against a thousand real filings, and a latest-observation rule hands them the symbol.
         So: prefer still-open tenures, then take the heaviest.
         """
-        key = str(symbol).strip().upper()
+        key = normalise_market_symbol(symbol)
         rows = self.tenure_by_symbol.get(key)
         if not rows:
             return None
@@ -346,7 +352,7 @@ class Identity:
         universe: frozenset[str],
     ) -> SymbolResolution:
         """Resolve one historical symbol/date to the caller's canonical universe ticker."""
-        source_symbol = str(symbol).strip().upper().replace(".", "-")
+        source_symbol = normalise_market_symbol(symbol)
         stamp = _as_timestamp(as_of)
         requested = frozenset(str(ticker).strip().upper() for ticker in universe)
         rows = self.tenure_by_symbol.get(source_symbol)
@@ -376,8 +382,22 @@ class Identity:
             except AmbiguousSymbolTenureError:
                 return SymbolResolution(source_symbol, stamp, "ambiguous")
             if entity_id is None:
-                return SymbolResolution(source_symbol, stamp, "unknown_gap")
-            match_kind = "exact_dated_tenure"
+                # A last Form 4 is not a delisting. Continue only the latest observed
+                # current-roster interval, and never extend an explicit manual end or
+                # a symbol that a different entity subsequently held.
+                latest_start = max(start for _, start, _, _ in rows)
+                latest = [row for row in rows if row[1] == latest_start]
+                roster_entity = self.entity_of(self.roster_cik[source_symbol]) if source_symbol in self.roster_cik else None
+                if (
+                    roster_entity is None
+                    or any(row[0] != roster_entity or row[2] is None or stamp < row[2] for row in latest)
+                    or any(row in self.manual_tenure_by_symbol.get(source_symbol, ()) for row in latest)
+                ):
+                    return SymbolResolution(source_symbol, stamp, "unknown_gap")
+                entity_id = roster_entity
+                match_kind = "roster_tenure_proxy"
+            else:
+                match_kind = "exact_dated_tenure"
 
         ticker = self.ticker_by_entity.get(entity_id)
         if ticker is None or ticker not in requested:
@@ -432,7 +452,7 @@ def resolve_symbol_rows(
         return empty, empty.copy()
 
     work = frame.copy()
-    work[symbol_col] = work[symbol_col].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False)
+    work[symbol_col] = work[symbol_col].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
     pairs = work[[symbol_col, date_col]].drop_duplicates(ignore_index=True)
     records = []
@@ -585,7 +605,7 @@ def build_identity(
             continue  # a tenure with no start cannot answer a dated test
         key = normalise_cik(cik)
         row = (entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n))
-        normalized_symbol = symbol.strip().upper()
+        normalized_symbol = normalise_market_symbol(symbol)
         tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
         if source.strip().lower() == "manual":
             manual_tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
@@ -613,7 +633,7 @@ def build_identity(
         tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()},
         manual_tenure_by_symbol={s: tuple(v) for s, v in manual_tenure_by_symbol.items()},
         roster_proxy_by_symbol=roster_proxy_by_symbol,
-        redundant_symbols=frozenset(str(symbol).strip().upper().replace(".", "-") for symbol in (redundant_symbols or frozenset())),
+        redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
         ciks_by_symbol={
             str(symbol): frozenset(normalise_cik(cik) for cik in rows["issuer_cik"]) for symbol, rows in tenure.groupby("symbol", sort=False)
         },

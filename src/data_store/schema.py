@@ -493,14 +493,14 @@ class Tables:
     )
     earnings_surprises = Table("earnings_surprises", ("ticker", "earnings_date"), date_col="earnings_date", freshness="quarterly")
     # SEC Financial Statement Data Sets (num/sub): curated pension facts per
-    # company/tag/period-end (`ddate`) / duration (`qtrs`).
+    # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.
     pension_facts = Table(
         "pension_facts",
-        ("cik", "tag", "ddate", "qtrs"),
+        ("cik", "tag", "ddate", "qtrs", "quarter"),
         date_col="ddate",
-        date_type_cols=("ddate", "filed"),
+        date_type_cols=("ddate", "filed", "available_at"),
         freshness="quarterly",
-        freshness_date_col="filed",
+        freshness_date_col="available_at",
     )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,

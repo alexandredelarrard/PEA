@@ -111,3 +111,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Coverage: reconciled FTD ZIP availability and SEC identity/extraction documentation with current `dev`; added the train/holdout label-boundary and historical-universe P0 gates plus institutionals validation follow-ups
 - Pages: [Overview](./OVERVIEW.md), [TODO](./TODO.md), [Cube aggregation](./modules/data-aggregate.md), [Data sources](./reference/data-sources.md)
 - Validation: the approved FTD ZIP-publication correction moved only `f_ic_ftd_to_adv20` and `f_ic_ftd_persistence_30d` in the frozen short-flow panel; the updated regression passes all 37 outputs and 1,749 hashed columns
+
+## 2026-10-01: refresh — quarterly pension ZIP availability
+
+- Profile: internal/standard
+- source_commit: 2f8f8da (working-tree pension fix not yet committed; previous wiki stamp 11d8735+838064d)
+- Coverage: SEC Financial Statement Data Sets now retain quarterly `pension_facts` vintages with an estimated historical quarter-end-plus-12-day clock, an observed future download clock, and a feature start at the later of filing and archive availability
+- Pages: [Overview](./OVERVIEW.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
+- Measurement: the table was backed up, recreated, and replayed from 66 CRC-checked ZIPs; 12,742 rows across 66 quarters, no null clocks or duplicate keys, and zero historical date-rule mismatches. The existing fundamentals cube part was not rebuilt and remains stale until a separate full build and assembly.
+- Limitation: historical +12 is an estimate, not a verified SEC first-publication date; the generic raw-table leakage validator abstains, while targeted availability/PIT tests and the BDX revision check pass.

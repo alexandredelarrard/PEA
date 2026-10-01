@@ -1,6 +1,30 @@
 {
   "version": 1,
   "tickers": {
+    "BNY": [
+      {
+        "symbol": "BK",
+        "issuer_cik": "0001390777",
+        "valid_from": "2007-07-03",
+        "valid_to": "2026-05-21",
+        "evidence": [
+          "https://www.bny.com/corporate/global/en/about-us/newsroom/press-release/bny-announces-planned-change-of-stock-ticker-symbol-to-bny-130465.html",
+          "https://www.sec.gov/Archives/edgar/data/2100217/000110465926064934/tm2615285d1_497.htm"
+        ],
+        "reason": "BK remained the common-stock ticker through the session before BNY became effective at the 2026-05-21 market open."
+      },
+      {
+        "symbol": "BNY",
+        "issuer_cik": "0001390777",
+        "valid_from": "2026-05-21",
+        "valid_to": null,
+        "evidence": [
+          "https://www.bny.com/corporate/global/en/about-us/newsroom/press-release/bny-announces-planned-change-of-stock-ticker-symbol-to-bny-130465.html",
+          "https://www.sec.gov/Archives/edgar/data/2100217/000110465926064934/tm2615285d1_497.htm"
+        ],
+        "reason": "BNY became the common-stock ticker at the 2026-05-21 market open; earlier BNY filings belong to an unrelated fund."
+      }
+    ],
     "A": [
       {
         "symbol": "A",

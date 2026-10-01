@@ -18,7 +18,7 @@ Each quarter's zip carries:
 We keep the CONSOLIDATED company-level rows (no dimensional `segments` member, no
 `coreg`) for a curated set of pension tags, join to sub for cik / form / filed,
 map to our tickers, and upsert to `pension_facts` (one row per company / tag /
-period-end / duration). The tag list is easily extended. The footnote PBO / plan-asset
+period-end / duration / ZIP quarter). The tag list is easily extended. The footnote PBO / plan-asset
 detail from the Financial Statement AND Notes sets is already wired -- separately, in
 `fetch_financial_notes.py` (`notes_num` / `notes_text`).
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import zipfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -48,6 +49,7 @@ from src.data_extract.utils.common.sec_utils import (
     load_processed_universe,
     save_processed_universe,
 )
+from src.data_extract.utils.common.sessions import MARKET_TZ
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -70,10 +72,11 @@ _PENSION_TAGS = frozenset(
         "DefinedBenefitPlanAccumulatedBenefitObligation",
     }
 )
-_OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value", "adsh", "filed", "form", "fy", "fp", "quarter"]
+_OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value", "adsh", "filed", "form", "fy", "fp", "quarter", "available_at"]
 
 SEC_FINSTMT_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
 SEC_FINSTMT_FIRST_YEAR = 2009
+_OBSERVED_FROM_QUARTER = (2026, 3)
 
 
 # --------------------------------------------------------------------------- #
@@ -116,6 +119,36 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
+
+
+def _historical_archive(quarter: str) -> bool:
+    return (int(quarter[:4]), int(quarter[-1])) < _OBSERVED_FROM_QUARTER
+
+
+def _resolve_archive_available_at(quarter: str, path: Path) -> date | None:
+    """Estimate old ZIP availability; use cache download day for a new-era cached ZIP."""
+    if _historical_archive(quarter):
+        release = pd.Period(quarter.upper(), freq="Q").end_time.date() + timedelta(days=12)
+        # ponytail: Historical first-posting dates are estimated, not proven SEC publication dates.
+        return release + timedelta(days=7 - release.weekday() if release.weekday() >= 5 else 0)
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TZ).date()
+    except OSError:
+        return None
+
+
+def _stored_quarter_available_at(context: Context, quarter: str) -> date | None:
+    """Keep an observed quarter clock stable across cached reparses."""
+    if not {"quarter", "available_at"} <= set(context.store.columns(Tables.pension_facts)):
+        return None
+    values = {
+        pd.Timestamp(value).date()
+        for value in context.store.distinct(Tables.pension_facts, "available_at", where={"quarter": quarter})
+        if pd.notna(value)
+    }
+    if len(values) > 1:
+        raise ValueError(f"pension_facts {quarter}: conflicting stored available_at values: {sorted(values)}")
+    return next(iter(values), None)
 
 
 def _read_pension_facts(path: Path) -> pd.DataFrame | None:
@@ -161,7 +194,7 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
     carrying the old resolution while the rest carry the new, and nothing downstream can tell
     that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
 
-    Costs no network: a past period's data set is final and every zip is already on disk.
+    Cached periods cost no network; a newly published quarter may still be downloaded.
     """
 
     cikmap = load_cik_mapping(context)
@@ -179,8 +212,19 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
     for q in tqdm(quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR), desc="financial-statement data sets"):
         if q in done_q and not new_tickers and not reparse:
             continue
-        path = ensure_zip(context, cache / f"{q}.zip", SEC_FINSTMT_URL_TEMPLATE.format(quarter=q), label=f"finstmt {q}", log=logger)
+        cached_path = cache / f"{q}.zip"
+        was_cached = cached_path.exists() and cached_path.stat().st_size > 0
+        path = ensure_zip(context, cached_path, SEC_FINSTMT_URL_TEMPLATE.format(quarter=q), label=f"finstmt {q}", log=logger)
         if path is None:
+            continue
+        stored = _stored_quarter_available_at(context, q)
+        available_at = (
+            _resolve_archive_available_at(q, path)
+            if _historical_archive(q)
+            else stored or (datetime.now(MARKET_TZ).date() if not was_cached else _resolve_archive_available_at(q, path))
+        )
+        if available_at is None:
+            logger.warning("finstmt %s: archive clock unavailable -> leaving quarter un-ingested", q)
             continue
         facts = _read_pension_facts(path)
         if facts is None or facts.empty:
@@ -195,6 +239,7 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
         # keep the latest-filed value per (cik, tag, period-end, duration)
         facts = facts.sort_values("filed").drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last")
         facts["quarter"] = q
+        facts["available_at"] = available_at
         saved += context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
     save_processed_universe(cache, Tables.pension_facts, tickers)  # so a converged re-run skips

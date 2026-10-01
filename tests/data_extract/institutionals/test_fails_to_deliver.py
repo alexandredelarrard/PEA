@@ -103,6 +103,7 @@ def test_parse_ftd_math_and_na_price():
         "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
         "20240102|X|AAPL|1000|APPLE INC|180.50\n"
         "20240102|Y|MSFT|500|MICROSOFT|.\n"  # PRICE '.' = N/A
+        "20240102|B|BRK/B|1|BERKSHIRE|300.00\n"
         "20240103|Z|AAPL|200|APPLE INC|181.00\n"
     )
     df = ftd._parse_ftd(raw)
@@ -110,9 +111,9 @@ def test_parse_ftd_math_and_na_price():
     assert a["fails_quantity"] == 1000.0 and abs(a["fails_value"] - 180_500.0) < 1e-6
     m = df[df["source_symbol"] == "MSFT"].iloc[0]
     assert m["fails_quantity"] == 500.0 and pd.isna(m["fails_value"])  # '.' price -> value NaN
-    assert set(df["source_symbol"]) == {"AAPL", "MSFT"} and len(df) == 3
+    assert set(df["source_symbol"]) == {"AAPL", "MSFT", "BRK-B"} and len(df) == 4
     print("\n=== SANITY: FTD parse ===")
-    print("  AAPL 1000@180.5 -> fails_value $180.5k; MSFT price '.' -> fails_value NaN. Validated.")
+    print("  AAPL 1000@180.5 -> fails_value $180.5k; MSFT price '.' -> NaN; BRK/B -> BRK-B. Validated.")
 
 
 def test_parse_ftd_matches_real_legacy_and_modern_samples():
@@ -190,7 +191,13 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
     stored = sqlite_store.load("sec_fails_to_deliver")
     assert len(stored) == 2  # seeded 202401a row + new 202401b row
 
-    # 2) universe grows (MSFT) -> both cached periods are re-parsed, but the upsert on
+    # 2) an identity-policy revision replays both cached periods even with a stable universe
+    requested.clear()
+    monkeypatch.setattr(ftd, "_POLICY_MARKER", "__point_in_time_symbol_identity_v3__")
+    assert ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity) == 2
+    assert requested == ["FTD 202401a", "FTD 202401b"]
+
+    # 3) universe grows (MSFT) -> both cached periods are re-parsed, but the upsert on
     #    (ticker, date) must not duplicate the 202401a/202401b AAPL rows already stored
     requested.clear()
     saved2 = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL", "MSFT"], years_history=1, identity=identity)
@@ -201,8 +208,8 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
 
     print("\n=== SANITY CHECK: FTD resume + universe-growth reparse ===")
     print(
-        f"  stable universe -> 202401a skipped (no fetch), only 202401b fetched; "
-        f"universe growth -> both reparsed, {len(stored2)} distinct rows stored "
+        f"  stable universe -> 202401a skipped; policy revision and universe growth each reparse both periods; "
+        f"{len(stored2)} distinct rows stored "
         "(upsert, no duplicates). Validated."
     )
 

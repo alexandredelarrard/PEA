@@ -1030,7 +1030,16 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
     8 footnote tags are never materialised (the notes_num waste this optimization targets). Runs on
     a REAL DataStore (SQLite), so it exercises the server-side `tag IN (...)` pushdown itself."""
     rows = [
-        {"adsh": f"0000-{i}", "ticker": "AAA", "tag": tag, "ddate": "2024-12-31", "qtrs": 0, "value": 100.0, "filed": "2025-02-14"}
+        {
+            "adsh": f"0000-{i}",
+            "ticker": "AAA",
+            "tag": tag,
+            "ddate": "2024-12-31",
+            "qtrs": 0,
+            "value": 100.0,
+            "filed": "2025-02-14",
+            "available_at": "2025-03-12",
+        }
         for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
     sqlite_store.save("notes_num", pd.DataFrame(rows))
@@ -1038,7 +1047,7 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
     out = load_notes_num_scoped(ctx)
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG}, "non-pension footnote tags leaked in"
     assert len(out) == 2, f"expected only the 2 pension tags, got {len(out)}"
-    assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed"]
+    assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at"]
     # no matching tag -> None (builder then treats pension as unavailable)
     assert load_tagged_facts(ctx, "notes_num", ("NoSuchTag",)) is None
     # table absent entirely (cold DB) -> None, not a raise
@@ -1046,7 +1055,7 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
     print("\n=== SANITY CHECK: scoped facts read ===")
     print(
         f"  notes_num (10 tags in prod) -> only {_FN_PBO_TAG} + {_FN_PLAN_ASSETS_TAG} loaded "
-        "(2/4 synthetic rows) via server-side tag IN; projected to the 6 columns the builders "
+        "(2/4 synthetic rows) via server-side tag IN; projected to the 7 columns the builders "
         "read; no-match -> None; absent pension_facts -> None. Validated."
     )
 

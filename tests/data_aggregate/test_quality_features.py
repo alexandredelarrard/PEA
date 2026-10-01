@@ -262,6 +262,7 @@ def test_pension_adjusted_ev_and_overhang_leverage():
                 "qtrs": 0,
                 "value": 80.0,
                 "filed": "2019-11-15",
+                "available_at": "2019-10-14",
             },
             # a DURATION fact (qtrs>0) is periodic pension COST, not the balance -> must be ignored
             {
@@ -271,6 +272,7 @@ def test_pension_adjusted_ev_and_overhang_leverage():
                 "qtrs": 4,
                 "value": 999.0,
                 "filed": "2019-11-15",
+                "available_at": "2019-10-14",
             },
         ]
     )

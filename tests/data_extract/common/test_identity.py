@@ -402,6 +402,65 @@ def test_active_manual_tenure_overrides_conflicting_derived_evidence():
     print("  OK: precedence is dated and deterministic; no current-ticker fallback is used")
 
 
+def test_current_roster_tenure_continues_after_last_insider_filing_only_when_safe():
+    tenure = _tenure(
+        [
+            ("DOV", "0000000100", "2006-01-10", "2026-03-18", 1047),
+            ("REUSE", "0000000200", "2006-01-10", "2026-03-18", 100),
+            ("REUSE", "0000000900", "2026-04-01", "2026-04-02", 1),
+            ("MAN", "0000000300", "2006-01-10", "2026-03-18", 100),
+        ]
+    )
+    tenure.loc[tenure["symbol"].eq("MAN"), "source"] = "manual"
+    identity = build_identity(
+        lineage=_lineage(
+            [
+                ("0000000100", "E_DOV", "roster"),
+                ("0000000200", "E_REUSE", "roster"),
+                ("0000000300", "E_MAN", "roster"),
+            ]
+        ),
+        tenure=tenure,
+        roster=_roster([("DOV", "0000000100"), ("REUSE", "0000000200"), ("MAN", "0000000300")]),
+    )
+    universe = frozenset({"DOV", "REUSE", "MAN"})
+    assert identity.resolve_symbol_ticker("DOV", "2026-03-17", universe).verdict == "exact_dated_tenure"
+    continued = identity.resolve_symbol_ticker("DOV", "2026-03-18", universe)
+    assert (continued.ticker, continued.verdict) == ("DOV", "roster_tenure_proxy")
+    assert identity.resolve_symbol_ticker("DOV", "2006-01-09", universe).verdict == "unknown_gap"
+    assert identity.resolve_symbol_ticker("REUSE", "2026-09-29", universe).verdict == "unknown_gap"
+    assert identity.resolve_symbol_ticker("MAN", "2026-09-29", universe).verdict == "unknown_gap"
+
+    print("\n=== SANITY CHECK: last Form 4 is not a delisting ===")
+    print("  DOV continues after its observed filing end; earlier dates stay unknown")
+    print("  later symbol reuse and an explicit manual end both block continuation")
+
+
+def test_market_share_class_spellings_resolve_without_merging_classes():
+    identity = build_identity(
+        lineage=_lineage([("0001067983", "E_BERKSHIRE", "roster")]),
+        tenure=_tenure(
+            [
+                ("BRK.A", "0001067983", "2006-02-14", None, 218),
+                ("BRK/A", "0001067983", "2006-01-03", "2006-01-06", 4),
+                ("BRK.B", "0001067983", "2006-09-28", None, 103),
+                ("BRK/B", "0001067983", "2009-07-02", "2009-10-07", 68),
+            ]
+        ),
+        roster=_roster([("BRK-B", "0001067983")]),
+        redundant_symbols=frozenset({"BRK-A"}),
+    )
+    universe = frozenset({"BRK-B"})
+    assert identity.resolve_symbol_ticker("BRK/B", "2026-09-29", universe).ticker == "BRK-B"
+    assert identity.resolve_symbol_ticker("BRK.B", "2026-09-29", universe).ticker == "BRK-B"
+    assert identity.resolve_symbol_ticker("BRK/A", "2026-09-29", universe).verdict == "redundant_share_class"
+    assert identity.resolve_symbol_ticker("BRK.A", "2026-09-29", universe).verdict == "redundant_share_class"
+    assert {"BRK-A", "BRK-B"} <= identity.candidate_symbols(universe)
+
+    print("\n=== SANITY CHECK: Berkshire share classes ===")
+    print("  slash and dot Class B resolve to BRK-B; Class A is excluded as a separate security")
+
+
 def test_closed_manual_predecessor_does_not_own_a_reused_symbol_today():
     lineage = _lineage(
         [

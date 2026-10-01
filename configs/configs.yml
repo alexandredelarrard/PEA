@@ -12,7 +12,7 @@ data_extract:
   # window past ~33 years buys nothing and 31 leaves 1993-12..1995-08 unfetched by choice.
   sharadar_years_history: 31
   sharadar_request_pace: 0.35
-  redundant_ticks: ["GOOG", "FOX", "NWS", "EA"] #EA got acquired
+  redundant_ticks: ["GOOG", "FOX", "NWS", "EA", "BRK-A"] #EA got acquired; BRK-A is a separate class from roster BRK-B
   # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
   # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
   manifest_full_rescan_days: 30

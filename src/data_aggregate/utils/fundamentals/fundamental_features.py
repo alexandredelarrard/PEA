@@ -131,8 +131,8 @@ from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_dail
 
 _PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
 _NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel uses 2)
-_PENSION_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed"]
-_FACT_COLS = [*_PENSION_FACT_COLS, "available_at"]  # notes add their monthly archive clock
+_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at"]
+_PENSION_FACT_COLS = [*_FACT_COLS, "quarter"]  # only quarterly ZIPs have this tie-break
 
 
 #: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
@@ -399,13 +399,20 @@ def _scope_to_universe(facts: pd.DataFrame | None, universe: set[str]) -> pd.Dat
 
 def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Universe-wide recognized net DB-pension deficit from the Financial Statement
-    Data Sets (`pension_facts` table), point-in-time on the FILING date, taking the
-    latest period-end per filing. Primary net-liability tag preferred, the pension-
-    only variant fills gaps. Empty frame if the table is unavailable."""
-    if pension_facts is None or pension_facts.empty or "tag" not in pension_facts.columns or "ticker" not in pension_facts.columns:
+    Data Sets (`pension_facts` table), point-in-time on the later of filing and
+    ZIP availability, taking the latest period-end per vintage. Primary net-
+    liability tag preferred; the pension-only variant fills gaps. Empty frame
+    if the table is unavailable or its archive clock is missing."""
+    if pension_facts is None or pension_facts.empty or not {"tag", "ticker", "filed", "available_at"} <= set(pension_facts.columns):
         return pd.DataFrame(index=idx)
     pf = pension_facts.copy()
-    pf["as_of"] = pd.to_datetime(pf.get("filed"), errors="coerce")
+    filed = pd.to_datetime(pf["filed"], errors="coerce")
+    available = pd.to_datetime(pf["available_at"], errors="coerce")
+    valid_clock = filed.notna() & available.notna()
+    pf = pf[valid_clock].copy()
+    filed = filed[valid_clock]
+    available = available[valid_clock]
+    pf["as_of"] = filed.where(filed >= available, available)
     pf["value"] = pd.to_numeric(pf.get("value"), errors="coerce")
     if "qtrs" in pf.columns:  # instant (balance-sheet) facts only
         pf = pf[pd.to_numeric(pf["qtrs"], errors="coerce").fillna(0) == 0]
@@ -415,8 +422,11 @@ def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeI
         d = pf[pf["tag"] == tag]
         if d.empty:
             return pd.DataFrame(index=idx)
-        # sort so the latest period-end (ddate) wins within a filing (aggfunc='last')
-        d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": "pension_deficit"})
+        # Latest period-end wins; if ZIPs share one download day, the newer ZIP wins ties.
+        order = ["ticker", "as_of", "ddate"]
+        if "quarter" in d.columns:
+            order.append("quarter")
+        d = d.sort_values(order).rename(columns={"value": "pension_deficit"})
         return fundamentals_to_daily(
             d,
             "pension_deficit",

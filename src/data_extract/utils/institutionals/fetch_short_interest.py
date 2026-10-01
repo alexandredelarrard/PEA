@@ -74,7 +74,7 @@ def _parse_regsho(text: str) -> pd.DataFrame:
     out = pd.DataFrame(
         {
             "date": pd.to_datetime(df["Date"].astype(str), format="%Y%m%d", errors="coerce"),
-            "source_symbol": (df["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False).str.strip()),
+            "source_symbol": (df["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False).str.replace("/", "-", regex=False).str.strip()),
             "short_volume": pd.to_numeric(df["ShortVolume"], errors="coerce"),
             "total_volume": pd.to_numeric(df["TotalVolume"], errors="coerce"),
         }

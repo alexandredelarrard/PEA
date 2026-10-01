@@ -131,7 +131,8 @@ def test_sec_fact_reads_are_ticker_and_date_bounded():
         assert kwargs["where"]["ticker"] == ["AAA", "BBB"], (table, kwargs)
         assert kwargs["where"]["tag"], (table, kwargs)
         assert kwargs["since"] == source_since, (table, kwargs)
-    assert "available_at" not in store.calls[0][1]["columns"]
+    assert "available_at" in store.calls[0][1]["columns"]
+    assert "quarter" in store.calls[0][1]["columns"]
     assert "available_at" in store.calls[1][1]["columns"]
     print("\n=== SANITY CHECK: SEC fact source bounds ===")
     print("  both pension/notes reads push ticker universe, tag projection, and six-year date bound into the store. Validated.")

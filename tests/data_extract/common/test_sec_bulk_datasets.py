@@ -8,7 +8,10 @@ query is tested against a throwaway SQLite DB.
 
 from __future__ import annotations
 
+import os
+from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -202,6 +205,145 @@ def test_pension_join_filters_segments_and_coreg():
     assert r["cik"] == "0000320193" and r["qtrs"] == 0.0
     print("\n=== SANITY: pension join (consolidated only) ===")
     print("  kept the 1 consolidated pension fact ($1000), dropped the plan-segment / co-registrant / non-pension rows. Validated.")
+
+
+@pytest.mark.parametrize(
+    ("quarter", "expected"),
+    [
+        ("2025q2", date(2025, 7, 14)),  # July 12 was Saturday.
+        ("2026q1", date(2026, 4, 13)),  # April 12 was Sunday.
+        ("2026q2", date(2026, 7, 13)),  # July 12 was Sunday.
+        ("2025q3", date(2025, 10, 13)),
+    ],
+)
+def test_pension_historical_zip_available_after_quarter_end_plus_twelve_days(quarter: str, expected: date, tmp_path: Path) -> None:
+    assert fin._resolve_archive_available_at(quarter, tmp_path / f"{quarter}.zip") == expected
+    print("\n=== SANITY CHECK: estimated quarterly pension availability ===")
+    print(f"  {quarter} is available on {expected}; weekend dates move to Monday. Validated.")
+
+
+def test_pension_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> None:
+    path = tmp_path / "2026q3.zip"
+    path.write_bytes(b"cached")
+    downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
+    os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
+
+    assert fin._resolve_archive_available_at("2026q3", path) == date(2026, 10, 15)
+    assert fin._resolve_archive_available_at("2026q3", tmp_path / "missing.zip") is None
+    print("\n=== SANITY CHECK: cached future pension ZIP clock ===")
+    print("  the cached file uses its New York modification date only as a fallback; a missing file has no clock. Validated.")
+
+
+def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = DataStore(create_engine("sqlite:///:memory:"))
+    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    tag = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
+
+    def fact(path: Path) -> pd.DataFrame:
+        q1 = path.stem == "2026q1"
+        return pd.DataFrame(
+            [
+                {
+                    "cik": "0000010795",
+                    "tag": tag,
+                    "ddate": pd.Timestamp("2025-09-30"),
+                    "qtrs": 0,
+                    "uom": "USD",
+                    "value": 1_069_000_000.0 if q1 else 1_027_000_000.0,
+                    "adsh": "0000010795-26-000005" if q1 else "0000010795-26-000026",
+                    "filed": pd.Timestamp("2026-02-09" if q1 else "2026-05-07"),
+                    "form": "10-K" if q1 else "10-Q",
+                    "fy": "2025",
+                    "fp": "FY" if q1 else "Q2",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
+    monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)
+    monkeypatch.setattr(fin, "record_run", lambda *args: None)
+    monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1", "2026q2"])
+    monkeypatch.setattr(fin, "ensure_zip", lambda context, path, url, **kwargs: path)
+    monkeypatch.setattr(fin, "_read_pension_facts", fact)
+    monkeypatch.setattr(fin, "drop_rows_outside_segment", lambda facts, **kwargs: facts)
+
+    assert fin.fetch_financial_statements(context, ["BDX"]) == 2
+    assert fin.fetch_financial_statements(context, ["BDX"], reparse=True) == 2
+    rows = store.load(fin.Tables.pension_facts, columns=["cik", "tag", "ddate", "qtrs", "quarter", "value", "available_at"])
+    assert rows is not None and len(rows) == 2
+    rows = rows.sort_values("quarter")
+    assert rows["quarter"].tolist() == ["2026q1", "2026q2"]
+    assert rows["value"].tolist() == [1_069_000_000.0, 1_027_000_000.0]
+    assert pd.to_datetime(rows["available_at"]).dt.date.tolist() == [date(2026, 4, 13), date(2026, 7, 13)]
+    print("\n=== SANITY CHECK: two pension ZIP vintages ===")
+    print("  BDX's Q1 and Q2 values coexist at separate availability dates; reparse remains idempotent. Validated.")
+
+
+def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = DataStore(create_engine("sqlite:///:memory:"))
+    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    path = tmp_path / "2026q3.zip"
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            assert tz == fin.MARKET_TZ
+            return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
+
+        @staticmethod
+        def fromtimestamp(value, tz):
+            return datetime.fromtimestamp(value, tz=tz)
+
+    def download(context, path: Path, url: str, **kwargs) -> Path:
+        if not path.exists():
+            path.write_bytes(b"fixture")
+            stale = datetime(2026, 10, 1, tzinfo=UTC).timestamp()
+            os.utime(path, (stale, stale))
+        return path
+
+    monkeypatch.setattr(fin, "datetime", Clock)
+    monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
+    monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)
+    monkeypatch.setattr(fin, "record_run", lambda *args: None)
+    monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q3"])
+    monkeypatch.setattr(fin, "ensure_zip", download)
+    monkeypatch.setattr(fin, "drop_rows_outside_segment", lambda facts, **kwargs: facts)
+    monkeypatch.setattr(
+        fin,
+        "_read_pension_facts",
+        lambda path: pd.DataFrame(
+            [
+                {
+                    "cik": "0000010795",
+                    "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+                    "ddate": pd.Timestamp("2026-06-30"),
+                    "qtrs": 0,
+                    "uom": "USD",
+                    "value": 1.0,
+                    "adsh": "new",
+                    "filed": pd.Timestamp("2026-08-01"),
+                    "form": "10-Q",
+                    "fy": "2026",
+                    "fp": "Q3",
+                }
+            ]
+        ),
+    )
+
+    assert fin.fetch_financial_statements(context, ["BDX"]) == 1
+    future_mtime = datetime(2026, 10, 25, tzinfo=UTC).timestamp()
+    os.utime(path, (future_mtime, future_mtime))
+    assert fin.fetch_financial_statements(context, ["BDX"], reparse=True) == 1
+    rows = store.load(fin.Tables.pension_facts, columns=["quarter", "available_at"])
+    assert rows is not None and pd.to_datetime(rows["available_at"]).dt.date.tolist() == [date(2026, 10, 15)]
+    print("\n=== SANITY CHECK: first successful future ZIP download ===")
+    print("  new Q3 uses the New York completion day, and cached reparse cannot change its stored clock. Validated.")
 
 
 @pytest.mark.skipif(not FINSTMT_ZIP.exists(), reason="cached financial-statement 2024q1 zip absent")

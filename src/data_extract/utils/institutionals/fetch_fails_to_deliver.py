@@ -43,7 +43,7 @@ from src.data_store.schema import Tables
 logger = logging.getLogger(__name__)
 
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
-_POLICY_MARKER = "__point_in_time_symbol_identity_v1__"
+_POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
 
 # {period} names the source semi-monthly ZIP. Its tag, not the settlement day,
 # controls availability: some b ZIPs contain day-15 rows. The SAME
@@ -88,7 +88,12 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
     out = pd.DataFrame(
         {
             "date": pd.to_datetime(col("SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
-            "source_symbol": col("SYMBOL").astype("string").str.upper().str.replace(".", "-", regex=False).str.strip(),
+            "source_symbol": col("SYMBOL")
+            .astype("string")
+            .str.upper()
+            .str.replace(".", "-", regex=False)
+            .str.replace("/", "-", regex=False)
+            .str.strip(),
             "cusip": col("CUSIP").astype("string").str.strip(),
             "fails_quantity": qty,
             "fails_value": qty * price,

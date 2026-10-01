@@ -80,16 +80,32 @@ def employee_excerpt(text: str, limit: int) -> str:
 
 
 def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | None:
-    """Accept only a count supported by an exact text claim; abstain on bounds."""
+    """Accept a source-backed claim; allow table ellipses only between real anchors."""
     if answer.status != "found" or answer.count is None or answer.count <= 0 or not answer.quote:
         return None
-    quote = " ".join(answer.quote.split()).casefold()
-    source = " ".join(source_text.split()).casefold()
-    if quote not in source or _BOUND_RE.search(quote):
+    quote = re.sub(r"\s+([,;:])", r"\1", " ".join(answer.quote.split()).casefold())
+    source = re.sub(r"\s+([,;:])", r"\1", " ".join(source_text.split()).casefold())
+    if "[... filing gap ...]" in quote or _BOUND_RE.search(quote):
+        return None
+    spans = [(match.start(), match.end()) for match in re.finditer(re.escape(quote), source)]
+    if not spans and quote.count(" ... ") == 1:
+        heading, total = quote.split(" ... ")
+        if len(heading) >= 40 and "employ" in heading and total.startswith("total ") and len(total) >= 20:
+            for start in re.finditer(re.escape(heading), source):
+                end = source.find(total, start.end())
+                gap = source[start.end() : end] if end >= 0 else ""
+                if (
+                    0 <= end - start.end() <= 2_000
+                    and "[... filing gap ...]" not in gap
+                    and not re.search(r"\bas of\b", gap)
+                    and len(re.findall(r"\bnumber of employees\b", gap)) <= 1
+                ):
+                    spans.append((start.start(), end + len(total)))
+    if not spans:
         return None
     # A model can trim "over" off an otherwise literal source quote.
-    for match in re.finditer(re.escape(quote), source):
-        if _BOUND_RE.search(source[max(0, match.start() - 32) : match.end()]):
+    for start, end in spans:
+        if _BOUND_RE.search(source[max(0, start - 32) : end]):
             return None
     split = _SPLIT_RE.search(quote)
     if split and split.group(2).casefold() != split.group(4).casefold():

@@ -109,6 +109,37 @@ def test_source_guard_rejects_bounds_and_unsupported_claims():
     )
 
 
+def test_source_guard_recovers_punctuation_and_anchored_table_quote():
+    apple_source = "Employees As of September 28, 2019 , the Company had approximately 137,000 full-time equivalent employees."
+    apple_quote = "As of September 28, 2019, the Company had approximately 137,000 full-time equivalent employees."
+    heading = (
+        "The following tables set forth information about the Company's employees as of December 31, 2020. Number of Employees by Contract and Region"
+    )
+    total = "Total 17,163 20,412 1,513 39,088"
+    table_quote = f"{heading} ... {total}"
+    table_source = f"{heading} North America 8,196 10,227 270 18,693 EMEA 4,586 4,847 564 9,997 {total}"
+    assert mod.supported_employee_count(answer(137000, apple_quote), apple_source) == 137000
+    assert mod.supported_employee_count(answer(39088, table_quote), table_source) == 39088
+    intro = heading.split(" Number of Employees", 1)[0]
+    intro_quote = f"{intro} ... {total}"
+    assert mod.supported_employee_count(answer(39088, intro_quote), table_source) == 39088
+    assert mod.supported_employee_count(answer(39089, table_quote), table_source) is None
+    assert mod.supported_employee_count(answer(39088, table_quote), total) is None
+    assert mod.supported_employee_count(answer(39088, table_quote), f"{heading} {'other data ' * 300} {total}") is None
+    assert mod.supported_employee_count(answer(39088, table_quote), f"{heading} [... filing gap ...] {total}") is None
+    assert mod.supported_employee_count(answer(39088, f"{heading} [... filing gap ...] {total}"), f"{heading} [... filing gap ...] {total}") is None
+    assert mod.supported_employee_count(answer(39088, table_quote), f"{heading} As of December 31, 2019, employees {total}") is None
+    assert (
+        mod.supported_employee_count(answer(39088, intro_quote), f"{intro} Number of Employees by Type Number of Employees by Region {total}") is None
+    )
+    assert (
+        mod.supported_employee_count(answer(44043, "ADM employed approximately 44,000 people."), "ADM employed approximately 44,000 people.") is None
+    )
+    print(
+        "\nSANITY: punctuation noise and a nearby real table heading/total recover supported counts; missing, distant, cross-gap, conflicting or imprecise claims abstain."
+    )
+
+
 def test_legacy_annual_form_uses_dated_registrant_scope():
     assert combine_for(mod.HEADCOUNT_FORMS) is Combine.SPLIT
     print("\nSANITY: 10-K405 joins the dated annual registrant scope used with entity lineage and symbol tenure.")

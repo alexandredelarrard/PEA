@@ -68,15 +68,15 @@ def test_write_trades_excel(tmp_path):
     w = pd.DataFrame({"AAA": [0.1, 0.2, 0.1]}, index=idx)
     trades = {
         "ls_equity": trade_blotter(w, 1e6, 2.0, 8.0, "ls_equity"),
-        "trend_cta": trade_blotter(w * -1, 1e6, 2.0, 8.0, "trend_cta"),
-        "long_book": None,
+        "eq_long_only": trade_blotter(w * -1, 1e6, 2.0, 8.0, "eq_long_only"),
+        "idle_sleeve": None,
     }  # a sleeve with no trades still gets a sheet
     path = tmp_path / "trades.xlsx"
     write_trades_excel(trades, path)
     assert path.exists()
     wb = openpyxl.load_workbook(path)
     assert wb.sheetnames[0] == "summary"
-    assert set(["ls_equity", "trend_cta", "long_book"]).issubset(set(wb.sheetnames))
+    assert set(["ls_equity", "eq_long_only", "idle_sleeve"]).issubset(set(wb.sheetnames))
     summ = pd.read_excel(path, sheet_name="summary").set_index("sleeve")
     assert float(cast(Any, summ.loc["ls_equity", "n_trades"])) > 0
     assert float(cast(Any, summ.loc["ls_equity", "total_cost_usd"])) > 0

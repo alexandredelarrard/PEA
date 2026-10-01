@@ -34,7 +34,7 @@ from src.utils.macro import load_macro_series
 from src.utils.risk_parity import base_weights, daily_frame
 from src.utils.step import Step
 
-_SLEEVE_COLORS = {"ls_equity": "#1f77b4", "eq_long_only": "#17becf", "long_book": "#2ca02c", "trend_cta": "#d62728"}
+_SLEEVE_COLORS = {"ls_equity": "#1f77b4", "eq_long_only": "#17becf"}
 
 
 class StepPortfolio(Step):
@@ -94,7 +94,7 @@ class StepPortfolio(Step):
 
     def load_sleeves(self) -> None:
         inputs = self._inputs()
-        names = [str(s) for s in self._cfg.get("sleeves", ["ls_equity", "long_book", "trend_cta"])]
+        names = [str(s) for s in self._cfg.get("sleeves", ["ls_equity", "eq_long_only"])]
         streams, self.results = {}, {}
 
         for n in names:
@@ -250,7 +250,7 @@ class StepPortfolio(Step):
         ax1.set_yscale("log")
         ax1.set_ylabel("Growth of $1 (log)")
         ax1.legend(fontsize=8, ncol=2)
-        ax1.set_title("Portfolio (3 strategies) vs SP500")
+        ax1.set_title(f"Portfolio ({len(self.sleeve_rets.columns)} strategies) vs SP500")
         ax1.grid(True, alpha=0.3)
         eq = d["portfolio_value"].to_numpy()
         pk = np.maximum.accumulate(eq)

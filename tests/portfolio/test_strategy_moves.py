@@ -41,14 +41,14 @@ def _panels(n_days: int = 8):
 def _step(monkeypatch, erc_weight: float = 0.4, leverage: float = 1.5, capital: float = 1_000_000.0, saved: list | None = None):
     """A StepStrategyMoves whose portfolio blend is stubbed to fixed ERC weights + leverage."""
     w, px = _panels()
-    result = StrategyResult(name="trend_cta", returns=pd.Series(0.0, index=w.index), metrics={}, book_weights=w, book_prices=px)
+    result = StrategyResult(name="eq_long_only", returns=pd.Series(0.0, index=w.index), metrics={}, book_weights=w, book_prices=px)
 
     def fake_load(self):
-        self.results = {"trend_cta": result}
-        self.sleeve_rets = pd.DataFrame({"trend_cta": pd.Series(0.0, index=w.index)})
+        self.results = {"eq_long_only": result}
+        self.sleeve_rets = pd.DataFrame({"eq_long_only": pd.Series(0.0, index=w.index)})
 
     def fake_blend(self):
-        self.weights = pd.DataFrame({"trend_cta": erc_weight}, index=w.index)
+        self.weights = pd.DataFrame({"eq_long_only": erc_weight}, index=w.index)
         self.blended = pd.DataFrame({"leverage": leverage}, index=w.index)
 
     monkeypatch.setattr(sm.StepPortfolio, "load_sleeves", fake_load)
@@ -57,7 +57,7 @@ def _step(monkeypatch, erc_weight: float = 0.4, leverage: float = 1.5, capital: 
     config = OmegaConf.create(
         {
             "portfolio": {"starting_capital": capital, "fee_bps": 2.0, "spread_bps": 8.0, "scheme": "erc", "portfolio_vol_target": 0.10},
-            "strategy_trend": {"fee_bps": 1.0, "spread_bps": 5.0},
+            "strategy_eq_long_only": {"fee_bps": 1.0, "spread_bps": 5.0},
         }
     )
     store = types.SimpleNamespace(save=lambda t, df: ((saved if saved is not None else []).append((t, df)), len(df))[1])
@@ -94,7 +94,9 @@ def test_sleeve_is_sized_by_its_erc_allocation_not_full_capital(monkeypatch):
 
     print("\n=== SANITY CHECK: sleeve sized by its ERC allocation ===")
     print(f"  starting_capital ${capital:,.0f} | ERC weight 0.40 x leverage 1.50 = 0.60 of it")
-    print(f"  trend_cta AAA target weight 0.60 -> day-1 notional ${aaa['amount_invested']:,.0f} ({aaa['shares']:,.1f} shares @ ${aaa['price']:.2f})")
+    print(
+        f"  eq_long_only AAA target weight 0.60 -> day-1 notional ${aaa['amount_invested']:,.0f} ({aaa['shares']:,.1f} shares @ ${aaa['price']:.2f})"
+    )
     print(
         f"  standalone full-capital sizing would have been ${0.6 * capital:,.0f} — {0.6 * capital / aaa['amount_invested']:.2f}x too big. Validated."
     )
@@ -108,25 +110,28 @@ def test_resizing_uses_the_weight_panel_not_scaled_dollars(monkeypatch):
     idx = w.index
     ramp = pd.Series(np.linspace(0.2, 0.8, len(idx)), index=idx)  # ERC weight grows daily
 
-    result = StrategyResult(name="trend_cta", returns=pd.Series(0.0, index=idx), metrics={}, book_weights=w, book_prices=px)
+    result = StrategyResult(name="eq_long_only", returns=pd.Series(0.0, index=idx), metrics={}, book_weights=w, book_prices=px)
     monkeypatch.setattr(
         sm.StepPortfolio,
         "load_sleeves",
         lambda self: (
-            setattr(self, "results", {"trend_cta": result}),
-            setattr(self, "sleeve_rets", pd.DataFrame({"trend_cta": pd.Series(0.0, index=idx)})),
+            setattr(self, "results", {"eq_long_only": result}),
+            setattr(self, "sleeve_rets", pd.DataFrame({"eq_long_only": pd.Series(0.0, index=idx)})),
         )[0],
     )
     monkeypatch.setattr(
         sm.StepPortfolio,
         "blend",
         lambda self: (
-            setattr(self, "weights", pd.DataFrame({"trend_cta": ramp})),
+            setattr(self, "weights", pd.DataFrame({"eq_long_only": ramp})),
             setattr(self, "blended", pd.DataFrame({"leverage": 1.0}, index=idx)),
         )[0],
     )
     config = OmegaConf.create(
-        {"portfolio": {"starting_capital": 1_000_000.0, "fee_bps": 2.0, "spread_bps": 8.0}, "strategy_trend": {"fee_bps": 1.0, "spread_bps": 5.0}}
+        {
+            "portfolio": {"starting_capital": 1_000_000.0, "fee_bps": 2.0, "spread_bps": 8.0},
+            "strategy_eq_long_only": {"fee_bps": 1.0, "spread_bps": 5.0},
+        }
     )
     context: Any = types.SimpleNamespace(
         save=False, store=None, logger=logging.getLogger("moves-test"), log=logging.getLogger("moves-test"), paths={}, config_dir="./configs"
@@ -181,17 +186,17 @@ def test_ledger_is_upserted_with_the_position_pk(monkeypatch):
 
 
 def test_sleeve_fee_override_is_charged(monkeypatch):
-    """The ledger charges the sleeve's OWN fee/spread (strategy_trend: 1.0 + 5.0 bps = 6 bps),
+    """The ledger charges the sleeve's OWN fee/spread (strategy_eq_long_only: 1.0 + 5.0 bps = 6 bps),
     resolved through the strategy class's `config_key`, not the portfolio default (2 + 8)."""
     step, _, _ = _step(monkeypatch)
     led = cast(pd.DataFrame, step.run())
     row = led.iloc[0]
     assert row["fee"] == pytest.approx(row["amount_invested"] * 6.0 / 1e4, rel=1e-9)
-    assert step._sleeve_cfg("trend_cta")["fee_bps"] == 1.0
+    assert step._sleeve_cfg("eq_long_only")["fee_bps"] == 1.0
 
     print("\n=== SANITY CHECK: sleeve fee override ===")
-    print(f"  strategy_trend fee 1.0bps + spread 5.0bps = 6bps -> ${row['fee']:,.2f} on ${row['amount_invested']:,.0f} traded")
-    print("  resolved via TrendCTAStrategy.config_key ('strategy_trend'); the portfolio default (2+8bps) was NOT used. Validated.")
+    print(f"  strategy_eq_long_only fee 1.0bps + spread 5.0bps = 6bps -> ${row['fee']:,.2f} on ${row['amount_invested']:,.0f} traded")
+    print("  resolved via EqLongOnlyStrategy.config_key ('strategy_eq_long_only'); the portfolio default (2+8bps) was NOT used. Validated.")
 
 
 if __name__ == "__main__":

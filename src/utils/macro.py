@@ -2,7 +2,7 @@
 macro.py  (src/utils/macro.py)
 ------------------------------
 THE long->wide adapter for `prices_macro`, shared by every consumer: the cube's beta/target
-step, the long-book and trend-CTA sleeves, the portfolio benchmark, the L/S diagnostics.
+step, the portfolio benchmark, the L/S diagnostics.
 
 `prices_macro` stores (date, ticker, close) where `ticker` is the series NAME -- so pivoting
 it reproduces exactly the column vocabulary the two old wide tables (`macro`,

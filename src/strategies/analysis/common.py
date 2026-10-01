@@ -3,8 +3,8 @@ common.py  (src/strategies/analysis/common.py)
 ----------------------------------------------
 Shared analytics primitives for the per-strategy + portfolio analysis modules: daily
 cross-sectional IC, rolling Sharpe / drawdown / beta / correlation, rolling pairwise
-correlation, and a loader for the market/energy reference return series (from
-`prices_macro`) used in the L/S neutrality and trend crisis-alpha checks.
+correlation, and a loader for the energy reference return series (from `prices_macro`)
+used in the L/S idiosyncrasy check.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.strategies.utils.accuracy import forward_return
 from src.utils.macro import load_macro_wide
 
@@ -75,15 +74,13 @@ def rolling_pairwise_corr(df: pd.DataFrame, window: int = 126) -> tuple[dict[str
 
 
 def load_market_refs(store) -> dict[str, pd.Series]:
-    """Reference daily returns from `prices_macro`: {'sp': the market series, 'energy': energy}.
-    Used to check L/S market-neutrality (beta vs SP) and idiosyncrasy (corr vs energy)."""
-    df = load_macro_wide(store, series=[MACRO_MARKET_SERIES, "energy"])
+    """Reference daily returns from `prices_macro`: {'energy': energy}. Used to check L/S
+    idiosyncrasy (corr vs energy); the market leg comes from each sleeve's own `spy_ret`."""
+    df = load_macro_wide(store, series=["energy"])
     out: dict[str, pd.Series] = {}
     if df is None:
         return out
     d = df.sort_values("date").set_index("date")
-    if MACRO_MARKET_SERIES in d.columns:
-        out["sp"] = d[MACRO_MARKET_SERIES].astype(float).pct_change(fill_method=None)
     if "energy" in d.columns:
         out["energy"] = d["energy"].astype(float).pct_change(fill_method=None)
     return out

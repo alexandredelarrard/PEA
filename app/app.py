@@ -9,9 +9,9 @@ Layout:
     per-sleeve target vol, window, capital, fees). One "Run" builds the whole book.
   * Main panel — PORTFOLIO results FIRST (KPIs vs SP, per-strategy Sharpe table, sleeve
     correlation matrix, equity curve, dynamic $-allocation, sleeve-correlation evolution).
-  * Tabs — one PER STRATEGY: its KPIs + analysis metrics + analysis plots (L/S: IC / Sharpe /
-    market-neutrality; long_book: asset-class correlation; trend: crisis-alpha / exposure), so
-    you can check how accurate / well-behaved each sleeve is.
+  * Tabs — one PER STRATEGY: its KPIs + analysis metrics + analysis plots (IC / Sharpe /
+    market-neutrality for the L/S book, IC / beta for the long-only book), so you can check how
+    accurate / well-behaved each sleeve is.
 
 The models are assumed pre-trained (StepModelling). L/S is out-of-sample from the model train_end.
 """
@@ -71,7 +71,7 @@ TRAIN_END = model_train_end()
 
 # model-dependent equity sleeves (need the trained ensemble; OOS from its train_end)
 MODEL_SLEEVES = ("ls_equity", "eq_long_only")
-ALL_SLEEVES = ["ls_equity", "eq_long_only", "long_book", "trend_cta"]
+ALL_SLEEVES = ["ls_equity", "eq_long_only"]
 
 # friendly per-sleeve blurb (what to look for in its analysis tab)
 SLEEVE_INFO = {
@@ -83,14 +83,6 @@ SLEEVE_INFO = {
         "Long-only top-N equity (no shorts)",
         "Long the model's best-ranked names (top-N, hold-band). Check IC > 0; "
         "**beta-to-SP ≈ 1** here (it's a long book / smart-beta tilt, retail-viable).",
-    ),
-    "long_book": (
-        "Multi-asset long book (ERC)",
-        "Check: the asset classes stay lowly/negatively correlated over time (diversification holds; watch stress spikes).",
-    ),
-    "trend_cta": (
-        "Trend / CTA (long-short)",
-        "Check: profits when SP falls (crisis-alpha, beta-to-SP ≈ 0 / negative) and positions flip long/short with the trend.",
     ),
 }
 

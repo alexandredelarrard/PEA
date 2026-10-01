@@ -5,8 +5,8 @@
 # See src/portfolio/step_portfolio.py.
 portfolio:
   # subset of strategies to blend. Options: ls_equity (market-neutral L/S), eq_long_only
-  # (long-only top-N, no shorts — retail-viable), long_book (multi-asset ERC), trend_cta.
-  sleeves: [ls_equity, eq_long_only, long_book] #, trend_cta
+  # (long-only top-N, no shorts — retail-viable).
+  sleeves: [ls_equity, eq_long_only]
   # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
   start: "2022-01-01"
   end: null                    # null -> last common date

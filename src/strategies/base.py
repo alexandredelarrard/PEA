@@ -6,8 +6,7 @@ any other strategy or on a backtest step) and follows the same flow in `run(inpu
   1. read its own config (`configs/strategy/strategy_*.yml`)
   2. read the PortfolioInputs handed down by the portfolio (capital, target vol, window, fees)
   3. read the data it needs (DB)
-  4. predict the underlying signal (L/S: model scores; trend: vol-normalized forecasts;
-     long_book: risk-parity target weights)
+  4. predict the underlying signal (the equity sleeves: ensemble model scores)
   5. construct the book + optimize weights per its config
   6. compute per-day P&L / positions / metrics -> StrategyResult
 
@@ -52,8 +51,8 @@ class StrategyResult:
     trades: pd.DataFrame | None = None  # per-(day, instrument) trade blotter ($ traded/fee/spread)
     extra: dict = field(default_factory=dict)  # sleeve-specific diagnostics (leverage, cash, ...)
     # The EXACT panels `trades` was built from, so a caller can rebuild the blotter at a
-    # different capital. `positions` is not a substitute: long_book reports its pre-leverage
-    # allocation there while trading the levered panel, and ls_equity reports None. The daily
+    # different capital. `positions` is not a substitute: a sleeve may report a diagnostic
+    # view there (ls_equity reports None) while trading a different panel. The daily
     # `strategy` ledger needs the traded panel re-sized by the portfolio's per-sleeve ERC
     # weight x leverage, which is time-varying -- so it must re-run the blotter on
     # `book_weights * factor(t)` rather than scale the resulting $ figures (share counts are

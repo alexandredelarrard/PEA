@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 from src.strategies.analysis.common import rolling_pairwise_corr
 
-_SLEEVE_COLORS = {"ls_equity-long_book": "#1f77b4", "ls_equity-trend_cta": "#9467bd", "long_book-trend_cta": "#2ca02c"}
+_SLEEVE_COLORS = {"ls_equity-eq_long_only": "#1f77b4"}
 
 
 def analyze_portfolio(sleeve_rets: pd.DataFrame, out_dir, window: int = 126) -> dict:

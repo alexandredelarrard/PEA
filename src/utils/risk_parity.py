@@ -1,16 +1,14 @@
 """
 risk_parity.py  (src/utils/risk_parity.py)
 ------------------------------------------
-SHARED risk-parity / weighting primitives, used by BOTH the long-book allocation
-(src/modelling/long_book/allocation.py) AND the portfolio sleeve blender
-(src/portfolio/utils/blend.py) — so there is one definition of ERC / EWMA covariance /
-point-in-time weighting and no cross-package import.
+SHARED risk-parity / weighting primitives, used by the portfolio sleeve blender
+(src/portfolio/step_portfolio.py), the long-only equity book (src/strategies/utils/long_only.py)
+and the sleeves' metrics — so there is one definition of ERC / EWMA covariance / point-in-time
+weighting and no cross-package import.
 
   * erc_weights           -- Equal-Risk-Contribution weights (cyclical coordinate descent)
   * risk_contributions    -- fractional risk contribution per asset (ERC verification)
   * cov_window / ewma_cov -- annualized simple / EWMA covariance over a trailing window
-  * risk_on_score         -- point-in-time crash-probability regime score in [0,1]
-  * tilted_budget         -- regime-tilted ERC risk budgets (offensive vs defensive)
   * base_weights          -- date x asset point-in-time MIX weights (erc | inverse_vol)
   * series_metrics        -- ann return / vol / Sharpe / maxDD of a daily return series
   * daily_frame           -- assemble the portfolio-vs-benchmark daily frame for metrics/plots
@@ -97,46 +95,6 @@ def ewma_cov(window_rets: pd.DataFrame, halflife: int, min_obs: int = 20) -> tup
     return cov * _ANN, cols
 
 
-def risk_on_score(
-    rets: pd.DataFrame, vix: pd.Series | None = None, equity: str = "equity", trend_win: int = 252, vol_hl: int = 42, z_win: int = 756
-) -> pd.Series:
-    """Point-in-time RISK-ON score in [0,1]: HIGH when crash-probability is low (equity in an
-    uptrend AND vol/VIX low vs their own recent history), LOW in stress. Equal-weight blend of:
-      * equity 12m trend up (1/0),
-      * equity EWMA-vol LOW vs its trailing z-score,
-      * (if `vix` given) VIX LOW vs its trailing z-score.
-    Shifted 1 day so date t uses only info up to t-1."""
-    px = (1.0 + rets[equity].fillna(0.0)).cumprod()
-    trend_on = (px.pct_change(trend_win) > 0).astype(float)
-    evol = np.sqrt(rets[equity].pow(2).ewm(halflife=vol_hl).mean()) * np.sqrt(_ANN)
-    ez = (evol - evol.rolling(z_win, min_periods=252).mean()) / evol.rolling(z_win, min_periods=252).std()
-    parts = [trend_on, (0.5 - 0.5 * ez).clip(0.0, 1.0)]
-    if vix is not None:
-        v = vix.reindex(rets.index).ffill()
-        vz = (v - v.rolling(z_win, min_periods=252).mean()) / v.rolling(z_win, min_periods=252).std()
-        parts.append((0.5 - 0.5 * vz).clip(0.0, 1.0))
-    s = cast(pd.Series, sum(parts)) / float(len(parts))
-    return s.clip(0.0, 1.0).shift(1)
-
-
-def tilted_budget(cols: list[str], score: float, offensive: tuple[str, ...], off_range: tuple[float, float]) -> np.ndarray:
-    """Regime-tilted ERC risk budgets: give the OFFENSIVE sleeves (equity/energy) a larger risk
-    share when `score` (risk-on) is high, the DEFENSIVE sleeves (bond/gold/fx) more when low.
-    off_share = clip(0.2 + 0.6*score, *off_range); split equally within each group. Sums to 1."""
-    lo, hi = off_range
-    off = [c for c in cols if c in offensive]
-    deff = [c for c in cols if c not in offensive]
-    if not off or not deff:  # only one group live -> equal
-        return np.ones(len(cols)) / len(cols)
-    off_share = float(np.clip(0.2 + 0.6 * score, lo, hi))
-    b = np.zeros(len(cols))
-    for c in off:
-        b[cols.index(c)] = off_share / len(off)
-    for c in deff:
-        b[cols.index(c)] = (1.0 - off_share) / len(deff)
-    return b / b.sum()
-
-
 def base_weights(
     rets: pd.DataFrame,
     window: int,
@@ -145,14 +103,10 @@ def base_weights(
     *,
     cov_mode: str = "std",
     cov_halflife: int = 42,
-    score: pd.Series | None = None,
-    offensive: tuple[str, ...] = ("equity", "energy"),
-    off_share_range: tuple[float, float] = (0.15, 0.85),
 ) -> pd.DataFrame:
     """date x asset base MIX weights (sum=1 across the live assets), point-in-time: recompute
     every `rebalance_freq` days on the trailing `window` (strictly up to t-1), hold (ffill) in
-    between. `scheme` in {erc, inverse_vol}; `cov_mode` in {std, ewma}. If `score` (a risk-on
-    series in [0,1]) is given, budgets are REGIME-TILTED toward the offensive names."""
+    between. `scheme` in {erc, inverse_vol}; `cov_mode` in {std, ewma}."""
     idx = rets.index
     reb = np.zeros(len(idx), dtype=bool)
     reb[:: max(1, int(rebalance_freq))] = True
@@ -164,18 +118,11 @@ def base_weights(
         cov, cols = ewma_cov(win, cov_halflife) if cov_mode == "ewma" else cov_window(win)
         if not cols:
             continue
-        budget = None
-        if score is not None:
-            s = cast(float, score.get(t, np.nan))
-            s = 0.5 if not np.isfinite(s) else float(s)
-            budget = tilted_budget(cols, s, offensive, off_share_range)
         if scheme == "erc":
-            w = erc_weights(cov, budget=budget)
+            w = erc_weights(cov)
         elif scheme == "inverse_vol":
             vol = np.sqrt(np.diag(cov))
             inv = np.where(vol > 0, 1.0 / vol, 0.0)
-            if budget is not None:
-                inv = inv * budget  # tilt inverse-vol too
             w = inv / inv.sum() if inv.sum() > 0 else np.full(len(cols), 1.0 / len(cols))
         else:
             raise ValueError(f"unknown scheme '{scheme}' (use erc | inverse_vol)")

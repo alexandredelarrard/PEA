@@ -1,8 +1,8 @@
 """
 Per-strategy + portfolio analysis modules (src/strategies/analysis, src/portfolio/analysis).
 Validates on synthetic data that: L/S IC is high for a signal aligned with forward returns and
-the neutrality metrics compute; the long-book / portfolio correlation analyses return a matrix +
-average pairwise corr and save their plots.
+the neutrality metrics compute; the portfolio correlation analysis returns an average pairwise
+corr and saves its plot.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import pandas as pd
 
 from src.portfolio.analysis import analyze_portfolio
 from src.strategies.analysis.common import daily_ic, rolling_pairwise_corr
-from src.strategies.analysis.long_book_analysis import analyze_long_book
 from src.strategies.analysis.ls_analysis import analyze_ls
 
 
@@ -23,7 +22,7 @@ def test_rolling_pairwise_corr_survives_misaligned_calendar():
     b = pd.Series(rng.normal(0, 0.01, len(idx)), index=idx)
     c = pd.Series(rng.normal(0, 0.01, len(idx)), index=idx)
     c[rng.random(len(idx)) < 0.1] = np.nan  # L/S-like: ~10% dates missing
-    df = pd.DataFrame({"long_book": a, "trend_cta": b, "ls_equity": c})
+    df = pd.DataFrame({"eq_long_only": a, "sleeve_b": b, "ls_equity": c})
     pair_corr, avg = rolling_pairwise_corr(df, window=126)
     # every pair (incl. the misaligned ls_equity ones) must produce real rolling values
     for name, s in pair_corr.items():
@@ -69,16 +68,11 @@ def test_correlation_analyses(tmp_path):
     assets = pd.DataFrame(
         {"equity": rng.normal(0, 0.011, len(idx)), "gold": rng.normal(0, 0.01, len(idx)), "bond": rng.normal(0, 0.004, len(idx))}, index=idx
     )
-    lb = analyze_long_book(assets, tmp_path / "lb")
-    pf = analyze_portfolio(assets.rename(columns={"equity": "ls_equity", "gold": "long_book", "bond": "trend_cta"}), tmp_path / "pf")
-    assert (tmp_path / "lb" / "long_book_correlations.png").exists()
+    pf = analyze_portfolio(assets.rename(columns={"equity": "ls_equity", "gold": "eq_long_only", "bond": "sleeve_c"}), tmp_path / "pf")
     assert (tmp_path / "pf" / "sleeve_correlation_evolution.png").exists()
-    assert lb["full_corr"].shape == (3, 3) and np.isfinite(pf["avg_pairwise_corr"])
-    print("\n=== SANITY CHECK: long-book + portfolio correlation analysis ===")
-    print(
-        f"  long-book avg pairwise corr {lb['avg_pairwise_corr']:+.2f}; "
-        f"portfolio avg pairwise corr {pf['avg_pairwise_corr']:+.2f}; plots saved. Validated."
-    )
+    assert np.isfinite(pf["avg_pairwise_corr"])
+    print("\n=== SANITY CHECK: portfolio correlation analysis ===")
+    print(f"  portfolio avg pairwise corr {pf['avg_pairwise_corr']:+.2f}; plot saved. Validated.")
 
 
 if __name__ == "__main__":

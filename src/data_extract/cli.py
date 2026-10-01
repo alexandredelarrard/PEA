@@ -535,17 +535,12 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     default=False,
     help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
-@click.option(
-    "--live-full",
-    is_flag=True,
-    default=False,
-    help="Re-fetch and reparse the full open-quarter EDGAR tail, including stored accessions.",
-)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
 def insider_transactions(
     config_path: str,
     tickers: str | None,
     reparse: bool,
-    live_full: bool,
+    full: bool,
 ) -> None:
     config, context = _ctx(config_path)
     names = _tickers(context, tickers)
@@ -554,7 +549,7 @@ def insider_transactions(
         context,
         tickers=names,
         years_history=int(config.data_extract.years_history),
-        full=live_full,
+        full=full,
     )
 
 

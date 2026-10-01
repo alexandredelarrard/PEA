@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FTD availability · harness report · 2026-10-01</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, Segoe UI, sans-serif; color: #172334; background: #f5f7fa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.55; }
+    main { max-width: 1080px; margin: auto; padding: 48px 24px 80px; }
+    h1 { font-size: clamp(2rem, 4vw, 3.2rem); letter-spacing: -.035em; line-height: 1.1; margin: .3em 0; }
+    h2 { margin: 2.3rem 0 .7rem; font-size: 1.35rem; }
+    p { max-width: 78ch; }
+    .eyebrow { color: #526479; font-size: .8rem; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    .lede { font-size: 1.16rem; color: #33465b; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 30px 0; }
+    .card { background: white; border: 1px solid #dce4ec; border-radius: 12px; padding: 18px; box-shadow: 0 3px 12px #17314d0a; }
+    .card strong { display: block; font-size: 1.65rem; line-height: 1.2; }
+    .card span { color: #526479; font-size: .88rem; }
+    .banner { padding: 16px 20px; border-radius: 10px; border-left: 5px solid #127a5a; background: #e8f6f0; }
+    .banner.warn { border-left-color: #b15d0b; background: #fff1df; margin-top: 12px; }
+    .table-wrap { overflow-x: auto; background: white; border: 1px solid #dce4ec; border-radius: 12px; }
+    table { border-collapse: collapse; width: 100%; min-width: 650px; }
+    th, td { padding: 11px 14px; border-bottom: 1px solid #e7edf2; text-align: left; vertical-align: top; }
+    th { background: #eef3f8; font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+    tr:last-child td { border-bottom: 0; }
+    .pass { color: #08724e; font-weight: 700; }.fail { color: #a64718; font-weight: 700; }.open { color: #636f7b; font-weight: 700; }
+    code { background: #eaf0f5; padding: .1em .3em; border-radius: 3px; overflow-wrap: anywhere; }
+    details { margin: 12px 0; background: white; border: 1px solid #dce4ec; border-radius: 10px; padding: 12px 16px; }
+    summary { cursor: pointer; font-weight: 650; }
+    a { color: #145b9b; }
+    footer { margin-top: 42px; color: #667688; font-size: .85rem; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Harness report · 1 October 2026 · harness/ftd-on-the-fly</div>
+  <h1>FTD ZIP availability, derived when features build</h1>
+  <p class="lede">The candidate removes the <code>sec_ftd_vintages</code> dependency. A stored ZIP period determines the historical availability date; the recent global ZIP can use its local download date inside the approved two-day window.</p>
+  <div class="banner"><strong>Code ready for review.</strong> Focused tests, aggregate compatibility, real-row comparison, and independent correctness re-review passed.</div>
+  <div class="banner warn"><strong>Saved cube not clean for model or production readiness.</strong> The unchanged institutional cube has stale recent coverage and a critical beneficial-ownership leakage finding. No saved rows were rebuilt in this run.</div>
+
+  <div class="grid">
+    <div class="card"><strong>41 / 41</strong><span>focused extraction, date, cache, and step tests passed</span></div>
+    <div class="card"><strong>37 / 37</strong><span>aggregate outputs matched baseline; 1,749 hashes matched</span></div>
+    <div class="card"><strong>0</strong><span>production reads or writes to the vintage table remain</span></div>
+    <div class="card"><strong>21</strong><span>real AAPL FTD rows in the April–May comparison</span></div>
+  </div>
+
+  <h2>Rule and observed result</h2>
+  <div class="table-wrap"><table><thead><tr><th>Case</th><th>Availability decision</th><th>Evidence</th></tr></thead><tbody>
+    <tr><td>Historical ZIP</td><td>End of <code>YYYYMMa/b</code> period + 15 calendar days, then roll a weekend to Monday. The feature starts on the first trading session on or after that date.</td><td>An April 15 row stored in <code>202404b</code> first appears May 15; AAPL balance moves from 3,438 on May 14 to 5,200 on May 15.</td></tr>
+    <tr><td>Recent globally latest ZIP</td><td>Use cached ZIP mtime's New York date only when its distance from today is 0 or 1 calendar day and the period end is at most 60 days old.</td><td><code>202609a</code> cache mtime September 29 is two days old on October 1, so its derived date is September 30.</td></tr>
+    <tr><td>Partial-universe build</td><td>Choose latest eligibility from global stored periods, then apply the cache override only if that period appears in the requested tickers.</td><td>A freshly cached <code>202608b</code> remains dated September 15 when <code>202609a</code> exists for another ticker.</td></tr>
+  </tbody></table></div>
+
+  <h2>Validation results</h2>
+  <p>The saved-data validators measured 3,265,378 existing institutional cube rows through September 4, 2026. They do not evaluate the new in-memory FTD series.</p>
+  <div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Result</th></tr></thead><tbody>
+    <tr><td>Read-only FTD candidate</td><td class="pass">PASS</td><td>21 AAPL rows, exact 10 feature names, correct May 15 ZIP publication; 42,145 projected 2024 rows contain 1,443 day-15 <code>b</code> rows and no period conflicts.</td></tr>
+    <tr><td>Grain / profile / bounds</td><td class="pass">PASS</td><td>No findings on the saved institutional cube.</td></tr>
+    <tr><td>Coverage</td><td class="fail">FAIL</td><td>37 saved-data findings; latest saved session is September 4 although the price reference has later September sessions.</td></tr>
+    <tr><td>Catalogue</td><td class="fail">FAIL</td><td>40 undocumented saved columns, including retired FTD legs in the unchanged cube.</td></tr>
+    <tr><td>Leakage</td><td class="fail">FAIL</td><td>One critical existing beneficial-ownership issue: <code>f_ic_bo_holder_count</code> precedes its first source event for 232 tickers. Six persisted FTD legs were checked without an FTD finding; label-horizon half abstained.</td></tr>
+    <tr><td>Redundancy</td><td class="open">INCOMPLETE</td><td>Exact saved-cube scan stopped at 600,000 of 3,265,378 rows; no result.</td></tr>
+    <tr><td>Clip / timeseries</td><td class="open">NOT RUN</td><td>Further broad saved-data scans were stopped after the critical unrelated finding. Candidate FTD behavior is covered by targeted checks.</td></tr>
+  </tbody></table></div>
+
+  <details><summary>Change and review details</summary>
+    <p>The extractor no longer creates or backfills availability metadata. Aggregation reads FTD source rows, their stored <code>period</code>, the global distinct period list, and at most one existing ZIP cache timestamp. The table registry, bootstrap DDL, and quality-script source requirement no longer name <code>sec_ftd_vintages</code>.</p>
+    <p>The correctness reviewer found one partial-universe bug, which was fixed and independently re-reviewed with no remaining issue. The simplicity reviewer proposed removing a day-15-only regression, but that distinct test failed against the old fallback and protects the reported defect.</p>
+  </details>
+  <details><summary>Limits and operational boundary</summary>
+    <p>The historical 15-day clock is an estimate, not verified SEC first-publication provenance. The physical vintage table may remain in PostgreSQL but no product path uses it. No database table was dropped; no saved cube rows, ZIP cache, aggregate fingerprint baseline, or user data were changed. This worktree has not been committed, pushed, or opened as a PR.</p>
+  </details>
+  <footer>Source revision: <code>7ce4ad7</code> · Evidence root: <code>reports/validate/2026-10-01-ftd-on-the-fly</code> · This HTML contains its own styles and needs no external assets.</footer>
+</main>
+</body>
+</html>

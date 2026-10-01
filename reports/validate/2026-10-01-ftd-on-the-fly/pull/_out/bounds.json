@@ -1,0 +1,364 @@
+{
+  "check": "bounds",
+  "table": "cube_part_institutionals",
+  "status": "pass",
+  "exit_code": 0,
+  "reason": "",
+  "worst_score": 0,
+  "scope": {
+    "rows": 3265378,
+    "tickers": 491,
+    "first_date": "1995-09-01T00:00:00",
+    "last_date": "2026-09-04T00:00:00",
+    "legs_declared": 26,
+    "legs_tested": 26,
+    "source": "db(float64)",
+    "elapsed_s": 422.7
+  },
+  "findings": [],
+  "metrics": {
+    "declared": {
+      "f_ic_inst_holders": [
+        0.0,
+        1.0
+      ],
+      "f_ic_inst_breadth_chg": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_inst_new_buyer_ratio": [
+        0.0,
+        1.0
+      ],
+      "f_ic_inst_exit_ratio": [
+        0.0,
+        1.0
+      ],
+      "f_ic_inst_cluster_buying": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_inst_concentration": [
+        0.0,
+        1.0
+      ],
+      "f_ic_inst_net_options_ratio": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_inst_ownership_pct": [
+        0.0,
+        2.0
+      ],
+      "f_ic_super_holders": [
+        0.0,
+        1.0
+      ],
+      "f_ic_super_conviction_weight": [
+        0.0,
+        1.0
+      ],
+      "f_ic_super_max_conviction": [
+        0.0,
+        1.0
+      ],
+      "f_ic_super_breadth_chg": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_super_conviction_chg": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_super_sp500_share": [
+        0.0,
+        1.0
+      ],
+      "f_ic_super_selection_score": [
+        0.0,
+        1.0
+      ],
+      "f_ic_insider_net_buy_ratio_180d": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_insider_owner_surprise_120d": [
+        0.0,
+        1.0
+      ],
+      "f_ic_shortvol_ratio_5d": [
+        0.0,
+        1.0
+      ],
+      "f_ic_shortvol_ratio_20d": [
+        0.0,
+        1.0
+      ],
+      "f_ic_shortvol_ratio_60d": [
+        0.0,
+        1.0
+      ],
+      "f_ic_shortvol_acceleration": [
+        -1.0,
+        1.0
+      ],
+      "f_ic_shortvol_market_coverage": [
+        0.0,
+        1.0
+      ],
+      "f_ic_ftd_persistence_30d": [
+        0.0,
+        30.0
+      ],
+      "f_ic_sig_insider_max_dd_since_buy": [
+        -1.0,
+        0.0
+      ],
+      "f_ic_xs_bullish_available_family_count": [
+        0.0,
+        4.0
+      ],
+      "f_ic_xs_bearish_available_family_count": [
+        0.0,
+        3.0
+      ]
+    },
+    "stale": [],
+    "legs": {
+      "f_ic_inst_holders": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 1448214,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.00014086491,
+        "max": 0.7986549
+      },
+      "f_ic_inst_breadth_chg": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 1409143,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.12348492,
+        "max": 0.38174152
+      },
+      "f_ic_inst_new_buyer_ratio": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 1409143,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.028239202,
+        "max": 0.938983
+      },
+      "f_ic_inst_exit_ratio": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 1409143,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.030911064,
+        "max": 0.9583333
+      },
+      "f_ic_inst_cluster_buying": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 1409143,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.8048215,
+        "max": 0.5816514
+      },
+      "f_ic_inst_concentration": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 1448214,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.015420288,
+        "max": 1.0
+      },
+      "f_ic_inst_net_options_ratio": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 1448214,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.8654373,
+        "max": 0.56503654
+      },
+      "f_ic_inst_ownership_pct": {
+        "lo": 0.0,
+        "hi": 2.0,
+        "n_ok": 1448054,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 5.244598e-08,
+        "max": 1.9732766
+      },
+      "f_ic_super_holders": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 917409,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 0.6666667
+      },
+      "f_ic_super_conviction_weight": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 917409,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 0.106581904
+      },
+      "f_ic_super_max_conviction": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 917409,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "f_ic_super_breadth_chg": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 905757,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.2,
+        "max": 0.1875
+      },
+      "f_ic_super_conviction_chg": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 905757,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.071428575,
+        "max": 0.071428575
+      },
+      "f_ic_super_sp500_share": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 917409,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.00011578606,
+        "max": 1.0
+      },
+      "f_ic_super_selection_score": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 917409,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "f_ic_insider_net_buy_ratio_180d": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 2314137,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "f_ic_insider_owner_surprise_120d": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 1948858,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "f_ic_shortvol_ratio_5d": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 975656,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.03796219,
+        "max": 0.94382495
+      },
+      "f_ic_shortvol_ratio_20d": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 972271,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.078766,
+        "max": 0.90201175
+      },
+      "f_ic_shortvol_ratio_60d": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 962514,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.15132934,
+        "max": 0.8380634
+      },
+      "f_ic_shortvol_acceleration": {
+        "lo": -1.0,
+        "hi": 1.0,
+        "n_ok": 962474,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.426903,
+        "max": 0.27966493
+      },
+      "f_ic_shortvol_market_coverage": {
+        "lo": 0.0,
+        "hi": 1.0,
+        "n_ok": 972271,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.05032236,
+        "max": 0.7591607
+      },
+      "f_ic_ftd_persistence_30d": {
+        "lo": 0.0,
+        "hi": 30.0,
+        "n_ok": 1910443,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 30.0
+      },
+      "f_ic_sig_insider_max_dd_since_buy": {
+        "lo": -1.0,
+        "hi": 0.0,
+        "n_ok": 2121320,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": -0.9846221,
+        "max": 0.0
+      },
+      "f_ic_xs_bullish_available_family_count": {
+        "lo": 0.0,
+        "hi": 4.0,
+        "n_ok": 3265378,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 4.0
+      },
+      "f_ic_xs_bearish_available_family_count": {
+        "lo": 0.0,
+        "hi": 3.0,
+        "n_ok": 3265378,
+        "n_violations": 0,
+        "share": 0.0,
+        "min": 0.0,
+        "max": 3.0
+      }
+    }
+  }
+}

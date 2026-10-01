@@ -57,7 +57,7 @@ Key distinctions:
 - `sharadar_years_history` is separate because entitlement and response size differ;
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
-- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml), not extraction Python.
+- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`.
 
 ## Data availability and freshness
 

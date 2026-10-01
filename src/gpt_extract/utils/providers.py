@@ -71,6 +71,7 @@ class OpenAIProvider:
         max_token: int | None = None,
         cache: bool = True,
         reasoning: bool = False,
+        reasoning_effort: str | None = None,
         base_url: str | None = None,
         client: Any | None = None,
     ) -> None:
@@ -83,6 +84,7 @@ class OpenAIProvider:
         #: configured list by the caller rather than pattern-matched on the model name, so
         #: a new model is a config change and not a 400 in the middle of a paid run.
         self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
         self._client = client if client is not None else OpenAI(api_key=api_key, base_url=base_url)
 
     def request_kwargs(self, schema: type[T], system: str, user: str) -> dict[str, Any]:
@@ -101,6 +103,8 @@ class OpenAIProvider:
             kwargs["prompt_cache_key"] = f"{self.model}:{schema.__name__}"
         if self.max_token:
             kwargs["max_output_tokens"] = self.max_token
+        if self.reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": self.reasoning_effort}
         if not self.reasoning:
             if self.temperature is not None:
                 kwargs["temperature"] = self.temperature

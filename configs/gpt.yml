@@ -1,7 +1,8 @@
 gpt:
   # provider -> model. `default_api` picks which one a run uses.
   llm_model:
-    open_ai: "gpt-6-luna"
+    open_ai: "gpt-6-sol"
+    open_ai_cheap: "gpt-6-luna"  # model choice for high-volume employee extraction
     google: gemini-2.5-flash-lite-preview-06-17
     groq: llama-3.1-8b-instant
     deepseek: deepseek-chat
@@ -10,7 +11,12 @@ gpt:
 
   # Reasoning models REJECT `temperature` and `seed`. Listed rather than pattern-matched so a
   # new model name is a config change and not a 400 in the middle of a paid run.
-  reasoning_models: ["gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"] #"gpt-6-luna"
+  reasoning_models: ["gpt-6-sol", "gpt-6-luna", "gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"]
+  reasoning_effort:
+    employees: none
+  prices_per_million:
+    gpt-6-sol: {input: 2.00, cached_input: 0.20, output: 10.00}
+    gpt-6-luna: {input: 0.10, cached_input: 0.01, output: 0.50}
   temperature: 0.01
   seed: 1234
 
@@ -26,6 +32,7 @@ gpt:
   max_chars:
     def14a: 130000
     sec8k_votes: 40000
+    employees: 60000
 
   embedding:
     model: text-embedding-3-small

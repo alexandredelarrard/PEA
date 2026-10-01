@@ -38,6 +38,7 @@ T = TypeVar("T", bound=BaseModel)
 #: name, so several keys for one provider (`OPENAI_API_KEY_2`) are all found and rotated.
 _KEY_PATTERNS: dict[str, tuple[str, ...]] = {
     "open_ai": ("OPENAI_API_KEY", "OPEN_AI_API_KEY"),
+    "open_ai_cheap": ("OPENAI_API_KEY", "OPEN_AI_API_KEY"),
     "groq": ("GROQ_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "google": ("GOOGLE_API_KEY",),
@@ -51,13 +52,19 @@ _LOCAL_BASE_URL = "http://localhost:1234/v1"
 
 _PROVIDER_CLASSES: dict[str, type] = {
     "open_ai": OpenAIProvider,
+    "open_ai_cheap": OpenAIProvider,
     "local": OpenAIProvider,
     "google": GeminiProvider,
 }
 
 
 def with_gpt_overrides(
-    config: DictConfig, action: str, model: str | None = None, max_chars: int | None = None, cache: bool | None = None
+    config: DictConfig,
+    action: str,
+    model: str | None = None,
+    max_chars: int | None = None,
+    cache: bool | None = None,
+    provider: str | None = None,
 ) -> DictConfig:
     """`config` with per-call overrides folded into its `gpt` branch.
 
@@ -66,8 +73,10 @@ def with_gpt_overrides(
     alone", so the default path is exactly the configured one.
     """
     overrides: dict[str, Any] = {}
+    if provider is not None:
+        overrides["default_api"] = provider
     if model is not None:
-        overrides["llm_model"] = {config.gpt.default_api: model}
+        overrides["llm_model"] = {provider or config.gpt.default_api: model}
     if max_chars is not None:
         overrides["max_chars"] = {action: max_chars}
     if cache is not None:
@@ -93,6 +102,8 @@ class GptExtracter(Step):
         self.cache = bool(gpt.get("cache", True))
         reasoning_models = OmegaConf.to_container(gpt.get("reasoning_models")) if gpt.get("reasoning_models") is not None else []
         self.reasoning_models = set(cast(Sequence[str], reasoning_models))
+        self.reasoning_effort: Mapping[str, str] = gpt.get("reasoning_effort") or {}
+        self.prices_per_million: Mapping[str, Mapping[str, float]] = gpt.get("prices_per_million") or {}
         self.max_chars: Mapping[str, int] = gpt.get("max_chars") or {}
         self.embedding: Mapping[str, Any] = gpt.get("embedding") or {}
 
@@ -228,6 +239,7 @@ class GptExtracter(Step):
             max_token=self.max_token,
             cache=self.cache,
             reasoning=model in self.reasoning_models,
+            reasoning_effort=self.reasoning_effort.get(self.action or ""),
             base_url=_LOCAL_BASE_URL if methode == "local" else None,
         )
         self._log.info("initialized client=%s model=%s key=%d/%d", methode, model, key_index + 1, max(len(keys), 1))

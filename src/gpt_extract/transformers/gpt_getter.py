@@ -169,7 +169,7 @@ class LLMExtractor(GptExtracter):
             "%d call(s), %s, $%.2f, cached input %.0f%%",
             self.usage.totals["calls"],
             self.usage.totals,
-            self.usage.spend_estimate(),
+            self.usage.spend_estimate(self.prices_per_million.get(self.llm_model[self.default_api])),
             100 * self.usage.cached_share,
         )
         return results

@@ -1,364 +1,228 @@
-"""Standalone SEC 10-K employee-headcount extraction.
-
-The employee table owns its filing discovery, accession outcomes, continuity
-state and resume frontier. It deliberately does not share the XBRL facts walk:
-a successfully parsed fact accession says nothing about whether its prose
-headcount was read.
-"""
+"""Source-backed SEC annual employee counts, dated by the filing's public date."""
 
 from __future__ import annotations
 
-import logging
+import re
 import threading
 from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
+from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
-    PROGRAMMING_ERRORS,
-    IncompleteEdgarRunError,
-    filed_by,
-    period_of_report,
-)
-from src.data_extract.utils.common.edgar_extract import extract_employee_count, html_to_text
+from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS, IncompleteEdgarRunError, filed_by, period_of_report
+from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import (
-    Registrant,
-    identity_scope_fingerprint,
-    load_registrants,
-    resolve_registrant_filings,
-)
-from src.data_extract.utils.common.run_manifest import (
-    changed_scope_tickers,
-    get_entry,
-    manifest_window,
-    record_filing_outcomes,
-    record_run,
-)
+from src.data_extract.utils.common.registrant import Registrant, identity_scope_fingerprint, load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_filing_outcomes, record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
+from src.gpt_extract.utils.schemas_gpt import LlmTask
 
-HEADCOUNT_FORMS: tuple[str, ...] = ("10-K", "10-K/A")
-HEADCOUNT_CONTINUITY_MIN = 0.2
-HEADCOUNT_CONTINUITY_MAX = 5.0
-
+HEADCOUNT_FORMS = ("10-K", "10-K/A", "10-K405")
 SAVED = "saved"
 NO_HEADCOUNT = "no_headcount"
-REJECTED_OUTLIER = "rejected_outlier"
-PENDING_REGIME = "pending_regime"
-TERMINAL_STATUSES = frozenset({SAVED, NO_HEADCOUNT, REJECTED_OUTLIER})
-logger = logging.getLogger(__name__)
+AMBIGUOUS = "ambiguous"
+SUPERSEDED = "superseded"
+TERMINAL_STATUSES = frozenset({SAVED, NO_HEADCOUNT, SUPERSEDED})
+
+# Locate filing context and check LLM evidence; none of these extracts a fallback count.
+_CONTEXT_RE = re.compile(
+    r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
+    r"personnel|staff|colleagues?|full[- ]time|part[- ]time)\b",
+    re.I,
+)
+_BOUND_RE = re.compile(r"\b(?:over|nearly|more than|less than|at least|at most|up to|fewer than|greater than)\s+[\d,]+", re.I)
+_SPLIT_RE = re.compile(r"([\d,]+)\s+(full|part)[- ]time employees\s+and\s+([\d,]+)\s+(full|part)[- ]time employees", re.I)
+_NUMBER_RE = re.compile(r"\b\d[\d,]*\b")
 
 
-@dataclass(frozen=True)
-class EmployeeCandidate:
-    ticker: str
-    accession_number: str
-    cik: str
-    form: str
-    filing_date: pd.Timestamp
-    report_date: pd.Timestamp
-    count: int
-    ordering: int
-
-    def outcome(self, status: str) -> dict:
-        row: dict = {
-            "ticker": self.ticker,
-            "accession_number": self.accession_number,
-            "cik": self.cik,
-            "form": self.form,
-            "filing_date": self.filing_date.strftime("%Y-%m-%d"),
-            "report_date": self.report_date.strftime("%Y-%m-%d"),
-            "ordering": self.ordering,
-            "status": status,
-        }
-        if status == PENDING_REGIME:
-            row["candidate"] = self.count
-        return row
+class EmployeeAnswer(BaseModel):
+    status: Literal["found", "not_disclosed", "image_only", "ambiguous"]
+    count: int | None = Field(description="Issuer-wide current-period employees or FTE, or null")
+    quote: str | None = Field(description="Short exact contiguous source quote, or null")
+    measurement_period: str | None = Field(description="Headcount date or period as stated, at original precision")
+    qualifier: str | None = Field(description="For example approximate or FTE, if stated")
+    reason: str
 
 
 @dataclass(frozen=True)
 class EmployeeTickerResult:
     frame: pd.DataFrame
     outcomes: list[dict]
+    unavailable_dates: frozenset[pd.Timestamp]
 
 
-def is_headcount_form(form: str | None) -> bool:
-    return str(form or "").upper() in HEADCOUNT_FORMS
-
-
-def _recent_anchor(history: list[int]) -> float | None:
-    recent = history[-3:]
-    return None if not recent else float(sorted(recent)[len(recent) // 2])
-
-
-def is_continuous(count: int, history: list[int]) -> bool:
-    """Whether a count fits the ticker's trusted headcount regime."""
-    anchor = _recent_anchor(history)
-    if anchor is None:
-        return True
-    if anchor <= 0:
-        return True
-    return HEADCOUNT_CONTINUITY_MIN <= count / anchor <= HEADCOUNT_CONTINUITY_MAX
-
-
-def history_by_ticker(rows: pd.DataFrame | None) -> dict[str, list[int]]:
-    """Accepted counts by ticker, supporting employee-table and legacy fact shapes."""
-    if rows is None or rows.empty or "ticker" not in rows.columns:
-        return {}
-    date_col = "as_of" if "as_of" in rows.columns else "filing_date"
-    value_col = "employees" if "employees" in rows.columns else "value"
-    if date_col not in rows.columns or value_col not in rows.columns:
-        return {}
-    selected = rows[["ticker", date_col, value_col]].copy()
-    selected[date_col] = pd.to_datetime(selected[date_col], errors="coerce")
-    selected[value_col] = pd.to_numeric(selected[value_col], errors="coerce")
-    selected = selected.dropna(subset=[date_col, value_col]).sort_values(date_col)
-    return {str(ticker): group[value_col].astype(int).tolist() for ticker, group in selected.groupby("ticker")}
-
-
-def filing_body_text(filing) -> str:
+def filing_body_text(filing: object) -> str:
+    """Use SEC filing text, including visible HTML table cells, without OCR."""
     raw = filing.html()
-    if raw:
-        return html_to_text(raw)
-    return filing.text() or ""
+    return html_to_text(raw) if raw else filing.text() or ""
 
 
-def _filing_key(filing) -> tuple[pd.Timestamp, int, str]:
-    return (
-        pd.Timestamp(filing.filing_date).normalize(),
-        1 if str(getattr(filing, "form", "")).upper() == "10-K/A" else 0,
-        str(filing.accession_number),
-    )
+def employee_excerpt(text: str, limit: int) -> str:
+    """Keep filing opening text and the first workforce contexts, as in the benchmark."""
+    spans = [(0, min(8_000, len(text)))]
+    for match in _CONTEXT_RE.finditer(text):
+        spans.append((max(0, match.start() - 550), min(len(text), match.end() + 850)))
+        if len(spans) >= 121:
+            break
+    merged: list[list[int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return "\n\n[... filing gap ...]\n\n".join(text[start:end] for start, end in merged)[:limit]
 
 
-def _candidate_from_outcome(outcome: dict) -> EmployeeCandidate:
-    return EmployeeCandidate(
-        ticker=str(outcome["ticker"]),
-        accession_number=str(outcome["accession_number"]),
-        cik=str(outcome["cik"]),
-        form=str(outcome["form"]),
-        filing_date=pd.Timestamp(outcome["filing_date"]).normalize(),
-        report_date=pd.Timestamp(outcome["report_date"]).normalize(),
-        count=int(outcome["candidate"]),
-        ordering=int(outcome.get("ordering", 0)),
-    )
+def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | None:
+    """Accept only a count supported by an exact text claim; abstain on bounds."""
+    if answer.status != "found" or answer.count is None or answer.count <= 0 or not answer.quote:
+        return None
+    quote = " ".join(answer.quote.split()).casefold()
+    source = " ".join(source_text.split()).casefold()
+    if quote not in source or _BOUND_RE.search(quote):
+        return None
+    # A model can trim "over" off an otherwise literal source quote.
+    for match in re.finditer(re.escape(quote), source):
+        if _BOUND_RE.search(source[max(0, match.start() - 32) : match.end()]):
+            return None
+    split = _SPLIT_RE.search(quote)
+    if split and split.group(2).casefold() != split.group(4).casefold():
+        first = int(split.group(1).replace(",", ""))
+        second = int(split.group(3).replace(",", ""))
+        return first + second if answer.count in {first, second, first + second} else None
+    numbers = {int(token.replace(",", "")) for token in _NUMBER_RE.findall(quote)}
+    return answer.count if answer.count in numbers else None
 
 
-def _resolve_continuity(
-    candidates: list[EmployeeCandidate],
-    history: list[int],
-) -> tuple[list[EmployeeCandidate], list[dict]]:
-    accepted_values = list(history)
-    saved: list[EmployeeCandidate] = []
-    outcomes: list[dict] = []
-    pending: list[EmployeeCandidate] = []
-
-    for candidate in candidates:
-        if is_continuous(candidate.count, accepted_values):
-            anchor = _recent_anchor(accepted_values)
-            for prior in pending:
-                outcomes.append(prior.outcome(REJECTED_OUTLIER))
-                logger.warning(
-                    "employees decision reason=rejected_outlier ticker=%s accession=%s "
-                    "count=%d anchor=%s ratio=%s; accession %s returned to the trusted regime",
-                    prior.ticker,
-                    prior.accession_number,
-                    prior.count,
-                    f"{anchor:.0f}" if anchor is not None else "none",
-                    f"{prior.count / anchor:.3f}" if anchor and anchor > 0 else "n/a",
-                    candidate.accession_number,
-                )
-            pending.clear()
-            saved.append(candidate)
-            accepted_values.append(candidate.count)
-            outcomes.append(candidate.outcome(SAVED))
-            continue
-        if pending and is_continuous(candidate.count, [pending[-1].count]):
-            old_anchor = _recent_anchor(accepted_values)
-            for prior in pending[:-1]:
-                outcomes.append(prior.outcome(REJECTED_OUTLIER))
-                logger.warning(
-                    "employees decision reason=rejected_outlier ticker=%s accession=%s count=%d anchor=%s ratio=%s; a later regime was corroborated",
-                    prior.ticker,
-                    prior.accession_number,
-                    prior.count,
-                    f"{old_anchor:.0f}" if old_anchor is not None else "none",
-                    f"{prior.count / old_anchor:.3f}" if old_anchor and old_anchor > 0 else "n/a",
-                )
-            prior = pending[-1]
-            saved.extend((prior, candidate))
-            outcomes.extend((prior.outcome(SAVED), candidate.outcome(SAVED)))
-            accepted_values = [prior.count, candidate.count]
-            logger.info(
-                "employees decision reason=new_regime ticker=%s old_anchor=%s "
-                "first=%s/%d first_ratio=%s second=%s/%d second_ratio=%s mutual_ratio=%.3f",
-                candidate.ticker,
-                f"{old_anchor:.0f}" if old_anchor is not None else "none",
-                prior.accession_number,
-                prior.count,
-                f"{prior.count / old_anchor:.3f}" if old_anchor and old_anchor > 0 else "n/a",
-                candidate.accession_number,
-                candidate.count,
-                f"{candidate.count / old_anchor:.3f}" if old_anchor and old_anchor > 0 else "n/a",
-                candidate.count / prior.count,
-            )
-            pending.clear()
-            continue
-        pending.append(candidate)
-
-    for candidate in pending:
-        anchor = _recent_anchor(accepted_values)
-        ratio = candidate.count / anchor if anchor and anchor > 0 else float("nan")
-        logger.warning(
-            "employees decision reason=pending_regime ticker=%s accession=%s count=%d anchor=%s ratio=%s",
-            candidate.ticker,
-            candidate.accession_number,
-            candidate.count,
-            f"{anchor:.0f}" if anchor is not None else "none",
-            f"{ratio:.3f}" if pd.notna(ratio) else "n/a",
-        )
-        outcomes.append(candidate.outcome(PENDING_REGIME))
-    return saved, outcomes
+def _filing_key(filing: object) -> tuple[pd.Timestamp, int, str]:
+    return (pd.Timestamp(filing.filing_date).normalize(), 1 if str(filing.form).upper() == "10-K/A" else 0, str(filing.accession_number))
 
 
 def build_ticker_employees(
+    context: Context,
     ticker: str,
     cik: str,
     *,
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
-    registrants: dict[str, Registrant] | None,
-    history: list[int],
-    pending_outcomes: list[dict],
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    registrants: dict[str, Registrant],
+    identity: Identity,
+    symbol_tenure: pd.DataFrame,
 ) -> EmployeeTickerResult:
-    """Parse one ticker's annual filings and classify every readable accession."""
-    filings = resolve_registrant_filings(
-        ticker,
-        HEADCOUNT_FORMS,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=registrants,
-        identity=identity,
-        symbol_tenure=symbol_tenure,
-        roster_cik=roster_cik,
+    """Read every eligible annual filing and validate its LLM answer before saving."""
+    filings = sorted(
+        resolve_registrant_filings(
+            ticker,
+            HEADCOUNT_FORMS,
+            since=since,
+            done_accessions=done_accessions,
+            registrants=registrants,
+            identity=identity,
+            symbol_tenure=symbol_tenure,
+            roster_cik=cik,
+        ),
+        key=_filing_key,
     )
-    candidates = [_candidate_from_outcome(outcome) for outcome in pending_outcomes]
-    outcomes: list[dict] = []
+    if not filings:
+        return EmployeeTickerResult(pd.DataFrame(columns=["ticker", "as_of", "employees"]), [], frozenset())
 
-    for filing in sorted(filings, key=_filing_key):
-        ordering = len(candidates) + len(outcomes)
-        filing_date = pd.Timestamp(filing.filing_date).normalize()
+    config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
+    extractor = LLMExtractor(context, config, action="employees", threads=1)
+    model_name = str(config.gpt.llm_model.open_ai_cheap)
+    max_chars = int(config.gpt.max_chars.employees)
+    for sequence, filing in enumerate(filings):
+        actual_cik = getattr(filing, "cik", None)
+        if not actual_cik or not identity.owns(ticker, actual_cik):
+            raise ValueError(f"{ticker} {filing.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
         report = period_of_report(filing)
-        provenance = {
+        text = filing_body_text(filing)
+        if not text.strip():
+            raise ValueError(f"{ticker} {filing.accession_number}: filing text unavailable")
+        filed = pd.Timestamp(filing.filing_date).normalize()
+        report_date = pd.Timestamp(report).normalize() if report is not None else None
+        prefix = (
+            f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
+            f"SEC filing date: {filed.date()}\nAccession: {filing.accession_number}\n"
+            "The following is an excerpt, not necessarily the complete 10-K:\n\n"
+        )
+        if max_chars <= len(prefix):
+            raise ValueError("gpt.max_chars.employees is too small for filing metadata")
+        source_text = employee_excerpt(text, max_chars - len(prefix))
+        extractor.submit(
+            LlmTask(
+                seq=sequence,
+                payload=prefix + source_text,
+                schema=EmployeeAnswer,
+                meta={"filing": filing, "report_date": report_date, "source_text": source_text},
+            )
+        )
+
+    results = extractor.run()
+    if len(results) != len(filings) or any(not result.ok for result in results):
+        errors = [f"{result.task.meta['filing'].accession_number}: {result.error}" for result in results if not result.ok]
+        raise RuntimeError(f"{ticker}: employee LLM extraction incomplete: {errors}")
+
+    outcomes: list[dict] = []
+    chosen: dict[pd.Timestamp, tuple[int, int]] = {}
+    all_dates: set[pd.Timestamp] = set()
+    for result in results:
+        answer = result.parsed
+        if not isinstance(answer, EmployeeAnswer):
+            raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
+        filing = result.task.meta["filing"]
+        filed = pd.Timestamp(filing.filing_date).normalize()
+        report_date = result.task.meta["report_date"]
+        count = supported_employee_count(answer, str(result.task.meta["source_text"]))
+        if count is not None:
+            status = SAVED
+        elif answer.status in {"not_disclosed", "image_only"} and answer.count is None:
+            status = NO_HEADCOUNT
+        else:
+            status = AMBIGUOUS
+        outcome = {
             "ticker": ticker,
             "accession_number": str(filing.accession_number),
             "cik": filed_by(filing, cik),
             "form": str(filing.form),
-            "filing_date": filing_date.strftime("%Y-%m-%d"),
-            "report_date": None if report is None else pd.Timestamp(report).strftime("%Y-%m-%d"),
-            "ordering": ordering,
+            "filing_date": filed.strftime("%Y-%m-%d"),
+            "report_date": report_date.strftime("%Y-%m-%d") if report_date is not None else None,
+            "measurement_period": answer.measurement_period,
+            "qualifier": answer.qualifier,
+            "source_quote": answer.quote,
+            "model": model_name,
+            "source_status": answer.status,
+            "reason": answer.reason,
+            "ordering": result.seq,
+            "status": status,
         }
-        if report is None:
-            outcomes.append({**provenance, "status": NO_HEADCOUNT})
-            logger.info(
-                "employees decision reason=no_headcount ticker=%s accession=%s cik=%s form=%s filing_date=%s report_date=none",
-                ticker,
-                filing.accession_number,
-                provenance["cik"],
-                filing.form,
-                provenance["filing_date"],
-            )
-            continue
-        count = extract_employee_count(filing_body_text(filing))
-        if count is None:
-            outcomes.append({**provenance, "status": NO_HEADCOUNT})
-            logger.info(
-                "employees decision reason=no_headcount ticker=%s accession=%s cik=%s form=%s filing_date=%s report_date=%s",
-                ticker,
-                filing.accession_number,
-                provenance["cik"],
-                filing.form,
-                provenance["filing_date"],
-                provenance["report_date"],
-            )
-            continue
-        candidates.append(
-            EmployeeCandidate(
-                ticker=ticker,
-                accession_number=str(filing.accession_number),
-                cik=filed_by(filing, cik),
-                form=str(filing.form),
-                filing_date=filing_date,
-                report_date=pd.Timestamp(report).normalize(),
-                count=int(count),
-                ordering=ordering,
-            )
+        all_dates.add(filed)
+        if count is not None:
+            prior = chosen.get(filed)
+            if prior is not None:
+                outcomes[prior[1]]["status"] = SUPERSEDED
+            chosen[filed] = (count, len(outcomes))
+        outcomes.append(outcome)
+        context.log.info(
+            "employees decision ticker=%s accession=%s cik=%s as_of=%s status=%s count=%s",
+            ticker,
+            filing.accession_number,
+            outcome["cik"],
+            outcome["filing_date"],
+            status,
+            count,
         )
 
-    ordered = sorted(
-        candidates,
-        key=lambda candidate: (
-            candidate.filing_date,
-            1 if candidate.form.upper() == "10-K/A" else 0,
-            candidate.accession_number,
-        ),
-    )
-    ordered = [EmployeeCandidate(**{**candidate.__dict__, "ordering": ordering}) for ordering, candidate in enumerate(ordered)]
-    by_filing_date: dict[pd.Timestamp, EmployeeCandidate] = {}
-    superseded: list[EmployeeCandidate] = []
-    for candidate in ordered:
-        prior = by_filing_date.get(candidate.filing_date)
-        if prior is not None:
-            superseded.append(prior)
-        by_filing_date[candidate.filing_date] = candidate
-    ordered = list(by_filing_date.values())
-    anchor = _recent_anchor(history)
-    for candidate in superseded:
-        outcomes.append(candidate.outcome(REJECTED_OUTLIER))
-        logger.warning(
-            "employees decision reason=rejected_outlier ticker=%s accession=%s count=%d anchor=%s ratio=%s; same-date form/accession precedence",
-            candidate.ticker,
-            candidate.accession_number,
-            candidate.count,
-            f"{anchor:.0f}" if anchor is not None else "none",
-            f"{candidate.count / anchor:.3f}" if anchor and anchor > 0 else "n/a",
-        )
-    saved, continuity_outcomes = _resolve_continuity(ordered, history)
     frame = pd.DataFrame(
-        [
-            {
-                "ticker": candidate.ticker,
-                "as_of": candidate.filing_date,
-                "employees": float(candidate.count),
-                "_ordering": candidate.ordering,
-            }
-            for candidate in saved
-        ],
-        columns=["ticker", "as_of", "employees", "_ordering"],
+        [{"ticker": ticker, "as_of": filed, "employees": float(count)} for filed, (count, _) in sorted(chosen.items())],
+        columns=["ticker", "as_of", "employees"],
     )
-    if not frame.empty:
-        frame = (
-            frame.sort_values("_ordering").drop_duplicates(subset=["ticker", "as_of"], keep="last").drop(columns="_ordering").reset_index(drop=True)
-        )
-    else:
-        frame = frame.drop(columns="_ordering")
-    return EmployeeTickerResult(
-        frame=frame,
-        outcomes=sorted(
-            [*outcomes, *continuity_outcomes],
-            key=lambda outcome: (
-                str(outcome.get("filing_date", "")),
-                int(outcome.get("ordering", 0)),
-                str(outcome["accession_number"]),
-            ),
-        ),
-    )
+    return EmployeeTickerResult(frame, outcomes, frozenset(all_dates - chosen.keys()))
 
 
 def fetch_fundamentals_employees(
@@ -368,9 +232,12 @@ def fetch_fundamentals_employees(
     *,
     full: bool = False,
 ) -> None:
-    """Fetch employee disclosures with an independent completeness frontier."""
+    """Fetch issuer-wide counts; recheck legacy decisions and clear unsupported rows."""
     context.ensure_edgar_identity()
     cik_map = load_cik_mapping(context, tickers)
+    missing = set(tickers) - set(cik_map["ticker"])
+    if missing:
+        raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     fallback_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     entry = get_entry(context, Tables.fundamentals_employees) or {}
     identity = load_identity(context)
@@ -380,18 +247,18 @@ def fetch_fundamentals_employees(
     )
     registrants = load_registrants(str(context.config_dir))
     scope_fingerprints = {
-        str(row.ticker): identity_scope_fingerprint(
-            str(row.ticker),
-            str(row.cik),
-            identity,
-            symbol_tenure,
-            registrants,
-        )
+        str(row.ticker): identity_scope_fingerprint(str(row.ticker), str(row.cik), identity, symbol_tenure, registrants)
         for row in cik_map.itertuples()
     }
     changed_scopes = changed_scope_tickers(entry, scope_fingerprints)
-    if full or not entry.get("coverage_complete"):
-        since, is_full_rescan = fallback_since, True
+    model_name = str(context.config.gpt.llm_model.open_ai_cheap)
+    requested = set(tickers)
+    relevant = [outcome for outcome in entry.get("filing_outcomes", []) if str(outcome.get("ticker")) in requested]
+    needs_migration = any(outcome.get("model") != model_name for outcome in relevant)
+    pending = [outcome for outcome in relevant if outcome.get("status") not in TERMINAL_STATUSES]
+    pending_dates = [pd.Timestamp(outcome["filing_date"]).normalize() for outcome in pending if outcome.get("filing_date")]
+    if full or needs_migration or pending or not entry.get("coverage_complete"):
+        since, is_full_rescan = min([fallback_since, *pending_dates]), True
     else:
         since, is_full_rescan = manifest_window(
             context,
@@ -400,30 +267,27 @@ def fetch_fundamentals_employees(
             fallback_since=fallback_since,
             full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
         )
-
-    stored = context.store.load(
-        Tables.fundamentals_employees,
-        columns=["ticker", "as_of", "employees"],
-        where={"ticker": tickers},
-        optional=True,
-    )
-    histories = history_by_ticker(stored)
-    prior_outcomes = list(entry.get("filing_outcomes", []))
-    relevant = [outcome for outcome in prior_outcomes if str(outcome.get("ticker")) in set(tickers)]
-    if full:
-        done = frozenset(str(outcome["accession_number"]) for outcome in relevant if outcome.get("status") == SAVED)
-    else:
-        done = frozenset(
+    done = (
+        frozenset()
+        if full
+        else frozenset(
             str(outcome["accession_number"])
             for outcome in relevant
-            if outcome.get("status") in TERMINAL_STATUSES or outcome.get("status") == PENDING_REGIME
+            if outcome.get("model") == model_name and outcome.get("status") in TERMINAL_STATUSES
         )
-    pending_by_ticker: dict[str, list[dict]] = {}
-    if not full:
-        for outcome in relevant:
-            if outcome.get("status") == PENDING_REGIME:
-                pending_by_ticker.setdefault(str(outcome["ticker"]), []).append(outcome)
-
+    )
+    saved_dates = (
+        {}
+        if full
+        else {
+            ticker: frozenset(
+                pd.Timestamp(outcome["filing_date"]).normalize()
+                for outcome in relevant
+                if outcome.get("ticker") == ticker and outcome.get("model") == model_name and outcome.get("status") == SAVED
+            )
+            for ticker in requested
+        }
+    )
     create_lock = threading.Lock()
     created = False
 
@@ -439,23 +303,24 @@ def fetch_fundamentals_employees(
     def _worker(ticker: str, cik: str) -> EmployeeTickerResult | None:
         try:
             result = build_ticker_employees(
+                context,
                 ticker,
                 cik,
                 since=fallback_since if ticker in changed_scopes else since,
                 done_accessions=done,
                 registrants=registrants,
-                history=histories.get(ticker, []),
-                pending_outcomes=pending_by_ticker.get(ticker, []),
                 identity=identity,
                 symbol_tenure=symbol_tenure,
-                roster_cik=cik,
             )
             if not result.frame.empty:
                 _save(result.frame)
+            for filed in result.unavailable_dates:
+                if filed not in saved_dates.get(ticker, ()):
+                    context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
             return result
         except PROGRAMMING_ERRORS:
             raise
-        except Exception as exc:  # noqa: BLE001 -- one ticker must not hide batch progress
+        except Exception as exc:  # noqa: BLE001 -- one ticker cannot hide incomplete coverage
             context.log.warning("fundamentals employees: %s failed (%s)", ticker, exc)
             return None
 
@@ -466,31 +331,28 @@ def fetch_fundamentals_employees(
         max_workers=int(context.config.data_extract.fundamentals_workers),
     )
     successful = [result for result in results if result is not None]
-    record_filing_outcomes(
-        context,
-        Tables.fundamentals_employees,
-        [outcome for result in successful for outcome in result.outcomes],
-    )
+    record_filing_outcomes(context, Tables.fundamentals_employees, [outcome for result in successful for outcome in result.outcomes])
     failed = len(results) - len(successful)
-    rows_added = sum(len(result.frame) for result in successful)
+    ambiguous = sum(any(outcome["status"] == AMBIGUOUS for outcome in result.outcomes) for result in successful)
+    rows_written = sum(len(result.frame) for result in successful)
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) ok, %d failed -> +%d rows",
+        "fundamentals employees: %d/%d ticker(s) read, %d failed, %d ambiguous -> %d rows written",
         len(successful),
         len(cik_map),
         failed,
-        rows_added,
+        ambiguous,
+        rows_written,
     )
-    if failed:
+    if failed or ambiguous:
         raise IncompleteEdgarRunError(
-            f"fundamentals employees: {failed}/{len(cik_map)} ticker(s) failed; rows and "
-            "accession outcomes already saved remain idempotent, but no run manifest was "
-            "advanced because coverage is incomplete"
+            f"fundamentals employees: {failed} ticker(s) failed and {ambiguous} ambiguous; "
+            "accession outcomes were saved, but no complete frontier was advanced"
         )
     record_run(
         context,
         Tables.fundamentals_employees,
         len(cik_map),
-        rows_added,
+        rows_written,
         is_full_rescan=is_full_rescan,
         coverage_complete=True,
         identity_scope_fingerprints=scope_fingerprints,

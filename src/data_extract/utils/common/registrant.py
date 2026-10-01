@@ -289,6 +289,7 @@ FORM_POLICY: dict[str, Combine] = {
     # consolidating -- periodic reports and the narrative carved out of them
     "10-K": Combine.SPLIT,
     "10-K/A": Combine.SPLIT,
+    "10-K405": Combine.SPLIT,
     "10-Q": Combine.SPLIT,
     "10-Q/A": Combine.SPLIT,
     # consolidating -- the proxy family

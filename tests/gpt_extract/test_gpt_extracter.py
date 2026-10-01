@@ -14,9 +14,10 @@ from __future__ import annotations
 import threading
 
 import pytest
+from omegaconf import OmegaConf
 
 from src.gpt_extract.transformers import step_gpt_extracter as step_mod
-from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
+from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter, with_gpt_overrides
 from src.gpt_extract.utils.providers import OpenAIProvider
 from src.gpt_extract.utils.usage import UsageTracker
 from tests.gpt_extract.fakes import Answer, StubProvider, fake_context, gpt_config
@@ -48,6 +49,21 @@ def test_a_reasoning_model_is_never_sent_temperature_or_seed():
     print(f"  gpt-5-mini  sends {sorted(r_kwargs)}")
     print(f"  gpt-4o-mini sends {sorted(p_kwargs)}")
     print("  temperature/seed suppressed for the reasoning model. Validated.")
+
+
+def test_employee_cheap_variant_selects_luna_without_reasoning(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
+    config = OmegaConf.load("configs/gpt.yml")
+    assert config.gpt.llm_model.open_ai == "gpt-6-sol"
+    assert config.gpt.llm_model.open_ai_cheap == "gpt-6-luna"
+    employee_config = with_gpt_overrides(config, "employees", provider="open_ai_cheap")
+    extractor = GptExtracter(fake_context(), employee_config, action="employees")
+    request = extractor.initialize_client().request_kwargs(Answer, "system", "filing text")
+    assert request["model"] == "gpt-6-luna"
+    assert request["reasoning"] == {"effort": "none"}
+    assert "temperature" not in request and "seed" not in request
+    assert extractor.prices_per_million["gpt-6-luna"]["input"] == 0.10
+    print("\nSANITY: default GPT-6 Sol stays expensive; employee calls select Luna with explicit no-reasoning and Luna prices.")
 
 
 def test_production_factory_never_supplies_seed_even_for_a_plain_model(monkeypatch):

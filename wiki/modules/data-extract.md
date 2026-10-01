@@ -34,7 +34,7 @@ tags:
 - [step_extract_institutionals.py](../../src/data_extract/transformers/step_extract_institutionals.py) owns 13F, superinvestors, insiders, 13D/13G, 8-K, short-volume, and fails-to-deliver sources. The [FTD fetcher](../../src/data_extract/utils/institutionals/fetch_fails_to_deliver.py) writes ZIP-grain `sec_ftd_vintages` availability through DataStore separately from settlement rows.
 - [step_extract_fundamentals_sharadar.py](../../src/data_extract/transformers/step_extract_fundamentals_sharadar.py) builds the vendor layer and merged consumer history.
 - [step_extract_fundamentals.py](../../src/data_extract/transformers/step_extract_fundamentals.py) builds SEC facts and the replay history.
-- [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) independently lists annual filings, repairs missing headcount, and writes only `fundamentals_employees`.
+- [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) independently lists annual filings across the dated CIK chain, validates Luna's quoted headcount against filing text, and writes only `fundamentals_employees` with SEC filing-date `as_of`.
 - [step_extract_structure.py](../../src/data_extract/transformers/step_extract_structure.py) handles filing text, DEF 14A, and Item 5.07 votes.
 - [step_extract_behavioral.py](../../src/data_extract/transformers/step_extract_behavioral.py) handles earnings-call transcripts; retired Wikipedia and Google Trends sources are not part of the nightly contract.
 - [schema.py](../../src/data_store/schema.py) is the sole freshness inventory: `freshness_tables()` exposes each checked table, cadence, and publication date column to the CLI gate.

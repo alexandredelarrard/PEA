@@ -30,7 +30,7 @@ tags:
 
 ## Key files
 
-- [prompt_templates](../../src/gpt_extract/prompt_templates/) contains action-specific prompt pairs for DEF 14A and Item 5.07 extraction.
+- [prompt_templates](../../src/gpt_extract/prompt_templates/) contains action-specific prompt pairs for DEF 14A, Item 5.07, and employee extraction. Employee tasks select the configured `open_ai_cheap` Luna variant with no reasoning; Sol remains the default for other actions.
 - [usage.py](../../src/gpt_extract/utils/usage.py) accounts for request usage.
 - [embeddings.py](../../src/gpt_extract/utils/embeddings.py) wraps embedding batches.
 - [customed_parser.py](../../src/gpt_extract/utils/customed_parser.py) is the fallback parser for providers without structured output.

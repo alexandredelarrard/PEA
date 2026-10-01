@@ -9,6 +9,7 @@ emitted `f_*` columns against the module's own EMISSION map.
 
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 import numpy as np
@@ -132,9 +133,9 @@ def test_ftd_absent_ticker_is_zero_and_published_state_is_held():
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"))
     fails = pd.DataFrame(
         [
-            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0},
-            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0},
-            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0},
+            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0, "period": "202401a"},
+            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0, "period": "202401a"},
+            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0, "period": "202401a"},
         ]
     )
     volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
@@ -152,11 +153,11 @@ def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-20"))
     fails = pd.DataFrame(
         [
-            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0},
-            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0},
-            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0},
-            {"date": "2024-01-16", "ticker": "HI", "fails_quantity": 800.0},
-            {"date": "2024-01-31", "ticker": "HI", "fails_quantity": 900.0},
+            {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0, "period": "202401a"},
+            {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0, "period": "202401a"},
+            {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0, "period": "202401a"},
+            {"date": "2024-01-16", "ticker": "HI", "fails_quantity": 800.0, "period": "202401b"},
+            {"date": "2024-01-31", "ticker": "HI", "fails_quantity": 900.0, "period": "202401b"},
         ]
     )
     volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
@@ -173,19 +174,17 @@ def test_ftd_zip_vintage_publishes_atomically_without_summing_balances():
     print("  January a publishes its latest 300-share balance atomically on estimated Jan 30; January b replaces it on Feb 15")
 
 
-def test_ftd_observed_zip_date_overrides_historical_estimate():
+def test_ftd_available_date_on_weekend_publishes_next_session():
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-09"))
     state = pd.DataFrame({"A": np.nan}, index=idx)
     state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
     fails = pd.DataFrame({"date": ["2024-01-15"], "period": ["202401a"]})
-    vintages = pd.DataFrame({"period": ["202401a"], "available_date": ["2024-02-03"], "availability_basis": ["observed"]})
-
-    published = _publish_ftd_vintages(state, fails, idx, vintages)
+    published = _publish_ftd_vintages(state, fails, idx, {"202401a": pd.Timestamp("2024-02-03")})
 
     assert published.loc[:"2024-02-02", "A"].isna().all()
     assert published.loc[pd.Timestamp("2024-02-05"), "A"] == pytest.approx(0.3)
-    print("\n=== SANITY CHECK: observed FTD availability ===")
-    print("  an observed Saturday ZIP date overrides the Jan 30 estimate and first appears Monday Feb 5")
+    print("\n=== SANITY CHECK: weekend FTD availability ===")
+    print("  a Saturday ZIP availability date first appears on Monday Feb 5")
 
 
 def test_ftd_late_older_zip_does_not_replace_newer_settlement_state():
@@ -194,9 +193,7 @@ def test_ftd_late_older_zip_does_not_replace_newer_settlement_state():
     state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.3
     state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
     fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-31"], "period": ["202401a", "202401b"]})
-    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-02-20", "2024-02-15"]})
-
-    published = _publish_ftd_vintages(state, fails, idx, vintages)
+    published = _publish_ftd_vintages(state, fails, idx, {"202401a": pd.Timestamp("2024-02-20"), "202401b": pd.Timestamp("2024-02-15")})
 
     assert pd.isna(published.loc[pd.Timestamp("2024-02-14"), "A"])
     assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
@@ -212,9 +209,7 @@ def test_ftd_publication_uses_persisted_zip_period_at_half_month_boundary():
     state.loc[pd.Timestamp("2024-01-15"), "A"] = 0.5
     state.loc[pd.Timestamp("2024-01-31"), "A"] = 0.9
     fails = pd.DataFrame({"date": ["2024-01-12", "2024-01-31", "2024-01-15"], "period": ["202401a", "202401b", "202401b"]})
-    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
-
-    published = _publish_ftd_vintages(state, fails, idx, vintages)
+    published = _publish_ftd_vintages(state, fails, idx)
 
     assert published.loc[pd.Timestamp("2024-01-30"), "A"] == pytest.approx(0.2)
     assert published.loc[pd.Timestamp("2024-02-15"), "A"] == pytest.approx(0.9)
@@ -222,14 +217,83 @@ def test_ftd_publication_uses_persisted_zip_period_at_half_month_boundary():
     print("  a settlement on day 15 carried by the b ZIP cannot enter the a-vintage feature")
 
 
+def test_ftd_day_15_b_zip_uses_its_period_without_metadata():
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-04-15", "2024-05-17"))
+    state = pd.DataFrame({"A": np.nan}, index=idx)
+    state.loc[pd.Timestamp("2024-04-15"), "A"] = 5.0
+    fails = pd.DataFrame({"date": ["2024-04-15"], "period": ["202404b"]})
+
+    published = _publish_ftd_vintages(state, fails, idx)
+
+    assert published.loc[:"2024-05-14", "A"].isna().all()
+    assert published.loc[pd.Timestamp("2024-05-15"), "A"] == 5.0
+    print("SANITY: a day-15 row carried by the April b ZIP first appears May 15, without vintage metadata.")
+
+
+def test_ftd_recent_cache_timestamp_has_strict_two_day_window(tmp_path):
+    from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates
+
+    latest = pd.DataFrame({"date": ["2026-09-14"], "period": ["202609a"]})
+    old = pd.DataFrame({"date": ["2024-01-15"], "period": ["202401a"]})
+    zip_path = tmp_path / "cnsfails202609a.zip"
+    zip_path.touch()
+    today = pd.Timestamp("2026-09-30")
+    observed = []
+    for stamp in ["2026-09-30", "2026-09-29", "2026-09-28", "2026-10-01"]:
+        mtime = pd.Timestamp(f"{stamp} 12:00", tz="America/New_York").timestamp()
+        os.utime(zip_path, (mtime, mtime))
+        observed.append(_ftd_available_dates(latest, tmp_path, today=today)["202609a"])
+    assert observed == list(map(pd.Timestamp, ["2026-09-30", "2026-09-29", "2026-09-30", "2026-09-30"]))
+
+    old_path = tmp_path / "cnsfails202401a.zip"
+    old_path.touch()
+    os.utime(old_path, (mtime, mtime))
+    assert _ftd_available_dates(old, tmp_path, today=today)["202401a"] == pd.Timestamp("2024-01-30")
+    zip_path.unlink()
+    assert _ftd_available_dates(latest, tmp_path, today=today)["202609a"] == pd.Timestamp("2026-09-30")
+    print("SANITY: only the latest stored ZIP uses a 0/1-day New York cache date; day 2, future, old ZIP, and missing file use the estimate.")
+
+
+def test_ftd_partial_universe_uses_global_latest_period(tmp_path):
+    from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates
+
+    scoped_rows = pd.DataFrame({"date": ["2026-08-31"], "period": ["202608b"]})
+    older_zip = tmp_path / "cnsfails202608b.zip"
+    older_zip.touch()
+    mtime = pd.Timestamp("2026-10-01 12:00", tz="America/New_York").timestamp()
+    os.utime(older_zip, (mtime, mtime))
+
+    available = _ftd_available_dates(
+        scoped_rows,
+        tmp_path,
+        stored_periods=["202608b", "202609a"],
+        today=pd.Timestamp("2026-10-01"),
+    )
+
+    assert available == {"202608b": pd.Timestamp("2026-09-15")}
+    print("SANITY: a fresh cached older ZIP cannot replace its historical date when another ticker has rows in the global latest ZIP.")
+
+
+def test_ftd_period_must_be_present_and_valid():
+    from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates
+
+    for frame in [
+        pd.DataFrame({"date": ["2024-04-15"]}),
+        pd.DataFrame({"date": ["2024-04-15"], "period": [None]}),
+        pd.DataFrame({"date": ["2024-04-15"], "period": ["202413b"]}),
+        pd.DataFrame({"date": ["2024-04-15", "2024-04-16"], "period": ["202404b", 2024041]}),
+    ]:
+        with pytest.raises(ValueError, match="period|ZIP"):
+            _ftd_available_dates(frame, None, today=pd.Timestamp("2024-05-20"))
+    print("SANITY: missing, null, and malformed ZIP periods fail closed before feature publication.")
+
+
 def test_ftd_rejects_ambiguous_settlement_date_across_zip_periods():
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-15", "2024-02-20"))
     state = pd.DataFrame({"A": 0.1}, index=idx)
     fails = pd.DataFrame({"date": ["2024-01-15", "2024-01-15"], "period": ["202401a", "202401b"]})
-    vintages = pd.DataFrame({"period": ["202401a", "202401b"], "available_date": ["2024-01-30", "2024-02-15"]})
-
     with pytest.raises(ValueError, match="multiple ZIP periods"):
-        _publish_ftd_vintages(state, fails, idx, vintages)
+        _publish_ftd_vintages(state, fails, idx)
     print("\n=== SANITY CHECK: FTD ZIP boundary ambiguity ===")
     print("  a settlement date carried by two ZIPs fails closed until source grain is resolved")
 
@@ -238,7 +302,7 @@ def test_ftd_zip_vintage_preserves_nan_in_latest_state():
     idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", "2024-02-02"))
     settlement_state = pd.DataFrame({"A": np.nan}, index=idx)
     settlement_state.loc[pd.Timestamp("2024-01-02"), "A"] = 1.0
-    fails_hist = pd.DataFrame({"date": ["2024-01-02", "2024-01-15"]})
+    fails_hist = pd.DataFrame({"date": ["2024-01-02", "2024-01-15"], "period": ["202401a", "202401a"]})
 
     published = _publish_ftd_vintages(settlement_state, fails_hist, idx)
 
@@ -253,6 +317,7 @@ def test_ftd_observed_all_zero_history_is_neutral_but_unavailable_is_nan():
     fails = pd.DataFrame(
         [{"date": day, "ticker": ticker, "fails_quantity": value} for day in covered for ticker, value in (("ZERO", 0.0), ("CONST", 100.0))]
     )
+    fails["period"] = fails["date"].map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")
     volume = pd.DataFrame({"ZERO": 1_000_000.0, "CONST": 1_000_000.0}, index=idx)
 
     fields = _fails_fields(fails, idx, None, volume)
@@ -290,37 +355,38 @@ def test_ftd_publication_snaps_weekend_and_holiday_forward():
     weekend_idx = pd.DatetimeIndex(pd.bdate_range("2024-06-03", "2024-07-03"))
     weekend_state = pd.DataFrame({"A": np.nan}, index=weekend_idx)
     weekend_state.loc[pd.Timestamp("2024-06-14"), "A"] = 1.0
-    weekend_hist = pd.DataFrame([{"date": "2024-06-14"}])
+    weekend_hist = pd.DataFrame([{"date": "2024-06-14", "period": "202406a"}])
     weekend_published = _publish_ftd_vintages(weekend_state, weekend_hist, weekend_idx)
 
     holiday_idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-01-17")).difference(pd.DatetimeIndex(["2024-01-15"]))
     holiday_state = pd.DataFrame({"A": np.nan}, index=holiday_idx)
     holiday_state.loc[pd.Timestamp("2023-12-29"), "A"] = 2.0
-    holiday_hist = pd.DataFrame([{"date": "2023-12-29"}])
+    holiday_hist = pd.DataFrame([{"date": "2023-12-29", "period": "202312b"}])
     holiday_published = _publish_ftd_vintages(holiday_state, holiday_hist, holiday_idx)
 
-    assert _ftd_estimated_available_date("2024-06-14") == pd.Timestamp("2024-06-30")
+    assert _ftd_estimated_available_date("202406a") == pd.Timestamp("2024-07-01")
+    assert _ftd_estimated_available_date("202405b") == pd.Timestamp("2024-06-17")
     assert pd.isna(weekend_published.loc[pd.Timestamp("2024-06-28"), "A"])
     assert weekend_published.loc[pd.Timestamp("2024-07-01"), "A"] == 1.0
-    assert _ftd_estimated_available_date("2023-12-29") == pd.Timestamp("2024-01-15")
+    assert _ftd_estimated_available_date("202312b") == pd.Timestamp("2024-01-15")
     assert pd.isna(holiday_published.loc[pd.Timestamp("2024-01-12"), "A"])
     assert holiday_published.loc[pd.Timestamp("2024-01-16"), "A"] == 2.0
     print("\n=== SANITY CHECK: FTD publication-date snapping ===")
-    print("  estimated Sunday Jun 30 appears Monday Jul 1; the Jan 15 market holiday appears on the first tradable session, Jan 16")
+    print("  Saturday Jun 15 and Sunday Jun 30 roll to Monday; the Jan 15 market holiday appears on the first tradable session, Jan 16")
 
 
 def test_appending_later_ftd_zip_does_not_rewrite_published_prefix():
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-20"))
     first = pd.DataFrame(
         [
-            {"date": "2024-01-02", "ticker": "A", "fails_quantity": 100.0},
-            {"date": "2024-01-15", "ticker": "A", "fails_quantity": 300.0},
+            {"date": "2024-01-02", "ticker": "A", "fails_quantity": 100.0, "period": "202401a"},
+            {"date": "2024-01-15", "ticker": "A", "fails_quantity": 300.0, "period": "202401a"},
         ]
     )
     later = pd.DataFrame(
         [
-            {"date": "2024-01-16", "ticker": "A", "fails_quantity": 800.0},
-            {"date": "2024-01-31", "ticker": "A", "fails_quantity": 900.0},
+            {"date": "2024-01-16", "ticker": "A", "fails_quantity": 800.0, "period": "202401b"},
+            {"date": "2024-01-31", "ticker": "A", "fails_quantity": 900.0, "period": "202401b"},
         ]
     )
     volume = pd.DataFrame(1_000.0, index=idx, columns=["A"])
@@ -414,6 +480,7 @@ def test_panel_columns_match_the_emission_map():
             "fails_quantity": rng.lognormal(8, 1.2, int(keep.sum())).round(0),
         }
     )
+    ftd["period"] = pd.to_datetime(ftd["date"]).map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")
     panel = build_short_flow_feature_panel(
         make_frames(dates, peers, volume=volume, close_total=close), hist, fails_history=ftd, shares_out_history=fund
     )

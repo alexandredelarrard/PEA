@@ -190,18 +190,6 @@ CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
     PRIMARY KEY ("ticker", "date")
 );
 
--- [extract] sec_ftd_vintages  (pk: period)
-
-CREATE TABLE IF NOT EXISTS "sec_ftd_vintages" (
-    "period" TEXT NOT NULL,
-    "available_date" DATE,
-    "availability_basis" TEXT,
-    "first_seen_at" TIMESTAMP,
-    "source_url" TEXT,
-    PRIMARY KEY ("period")
-);
-CREATE INDEX IF NOT EXISTS ix_sec_ftd_vintages_available_date ON "sec_ftd_vintages" ("available_date");
-
 -- [extract] prices_macro  (pk: ticker, date)
 
 CREATE TABLE IF NOT EXISTS "prices_macro" (

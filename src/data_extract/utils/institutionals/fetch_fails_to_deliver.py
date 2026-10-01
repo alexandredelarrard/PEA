@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 from tqdm import tqdm
 
+from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir,
@@ -125,36 +124,6 @@ def _cached_periods(cache: Path) -> set[str]:
     return {path.stem.removeprefix("cnsfails") for path in cache.glob("cnsfails*.zip")}
 
 
-def _vintage_frame(periods: list[str], downloaded: dict[str, tuple[str, datetime]]) -> pd.DataFrame:
-    """One availability date per ZIP; cached history never inherits local file times."""
-    rows = []
-    for period in periods:
-        if len(period) != 7 or period[-1] not in {"a", "b"}:
-            raise ValueError(f"Invalid FTD period: {period!r}")
-        month = pd.Timestamp(f"{period[:4]}-{period[4:6]}-01")
-        end = month + (pd.Timedelta(days=14) if period[-1] == "a" else pd.offsets.MonthEnd(0))
-        estimate = end + pd.Timedelta(days=15)
-        if estimate.weekday() >= 5:
-            estimate += pd.offsets.BDay(1)
-        source_url, seen_at = downloaded.get(period, (None, None))
-        # Operational classification: HTTP 200 on a file >60 days after its
-        # settlement half is a historical backfill, not its original posting.
-        recent = seen_at is not None and 0 <= (seen_at.date() - end.date()).days <= 60
-        available = pd.Timestamp(seen_at.astimezone(ZoneInfo("America/New_York")).date()) if recent else estimate
-        rows.append(
-            {
-                "period": period,
-                "available_date": available,
-                "availability_basis": "observed" if recent else "estimated",
-                "first_seen_at": seen_at,
-                "source_url": source_url,
-            }
-        )
-    frame = pd.DataFrame(rows)
-    frame["first_seen_at"] = pd.to_datetime(frame["first_seen_at"], utc=True).dt.tz_localize(None)
-    return frame
-
-
 def _canonicalise_ftd(
     context: Context,
     frame: pd.DataFrame,
@@ -212,11 +181,6 @@ def fetch_fails_to_deliver(
     changed_scope = policy_scope - processed_scope
     stored_periods = ingested_periods(context, Tables.sec_fails_to_deliver)
     done = set() if full else stored_periods
-    vintage_periods = set(context.store.distinct(Tables.sec_ftd_vintages, "period")) if context.store.exists(Tables.sec_ftd_vintages) else set()
-    missing_vintages = sorted(stored_periods - vintage_periods)
-    if missing_vintages:
-        context.store.save(Tables.sec_ftd_vintages, _vintage_frame(missing_vintages, {}))
-        vintage_periods.update(missing_vintages)
     if changed_scope and not full:
         logger.info("FTD: identity scope changed by %d symbol(s) -> re-parsing cache", len(changed_scope))
 
@@ -225,19 +189,16 @@ def fetch_fails_to_deliver(
     periods = sorted(initial_cached | set(_periods(years_history + 1)))
     raw_frames: list[pd.DataFrame] = []
     parsed_periods: set[str] = set()
-    downloaded: dict[str, tuple[str, datetime]] = {}
-    new_vintage_periods: list[str] = []
     for period in tqdm(periods, desc="SEC fails-to-deliver"):
         if period in done and not changed_scope:
             continue
         path = ensure_zip(
             context,
-            cache / f"cnsfails{period}.zip",
+            cache / FTD_ZIP_NAME_TEMPLATE.format(period=period),
             _period_urls(period),
             label=f"FTD {period}",
             timeout=180,
             log=logger,
-            on_download=lambda url, seen_at, p=period: downloaded.update({p: (url, seen_at)}),
         )
         if path is None:
             if full and period in stored_periods:
@@ -250,16 +211,11 @@ def fetch_fails_to_deliver(
             continue
         df = _parse_ftd(raw)
         parsed_periods.add(period)
-        if period not in vintage_periods:
-            new_vintage_periods.append(period)
         df = df[df["source_symbol"].isin(candidates)].copy()
         if df.empty:
             continue
         df["period"] = period
         raw_frames.append(df)
-
-    if new_vintage_periods:
-        context.store.save(Tables.sec_ftd_vintages, _vintage_frame(new_vintage_periods, downloaded))
 
     raw_complete = (
         pd.concat(raw_frames, ignore_index=True)

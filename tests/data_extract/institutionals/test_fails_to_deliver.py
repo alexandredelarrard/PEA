@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,7 +11,6 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
-from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
@@ -159,7 +157,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
 
     requested: list[str] = []
 
-    def _fake_ensure_zip(context, path, urls, *, label, timeout, log, on_download):
+    def _fake_ensure_zip(context, path, urls, *, label, timeout, log):
         requested.append(label)
         return path
 
@@ -302,25 +300,7 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     print("  OK: a partial cache can never become a complete-looking replacement")
 
 
-def test_ftd_vintage_estimate_and_observed_dates():
-    historical = ftd._vintage_frame(["202401a", "202405b"], {})
-    assert historical["available_date"].tolist() == [pd.Timestamp("2024-01-30"), pd.Timestamp("2024-06-17")]
-    assert set(historical["availability_basis"]) == {"estimated"}
-
-    fetched = {
-        "202608b": ("https://www.sec.gov/new.zip", datetime(2026, 9, 16, 14, tzinfo=UTC)),
-        "201501a": ("https://www.sec.gov/old.zip", datetime(2026, 9, 16, 14, tzinfo=UTC)),
-    }
-    vintages = ftd._vintage_frame(["202608b", "201501a"], fetched).set_index("period")
-    assert vintages.loc["202608b", "available_date"] == pd.Timestamp("2026-09-16")
-    assert vintages.loc["202608b", "availability_basis"] == "observed"
-    assert vintages.loc["201501a", "available_date"] == pd.Timestamp("2015-01-30")
-    assert vintages.loc["201501a", "availability_basis"] == "estimated"
-    print("\n=== SANITY CHECK: FTD ZIP availability ===")
-    print("  Jan 1-15 -> Jan 30; weekend Jun 15 -> Mon Jun 17; current HTTP 200 -> observed; old re-download -> estimated.")
-
-
-def test_ftd_vintage_metadata_backfill_preserves_observed(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_resume_needs_no_vintage_metadata(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
     identity = _identity()
     sqlite_store.replace(
@@ -334,18 +314,6 @@ def test_ftd_vintage_metadata_backfill_preserves_observed(sqlite_store, monkeypa
             }
         ),
     )
-    sqlite_store.save(
-        Tables.sec_ftd_vintages,
-        pd.DataFrame(
-            {
-                "period": ["202401b"],
-                "available_date": [pd.Timestamp("2024-02-16")],
-                "availability_basis": ["observed"],
-                "first_seen_at": [pd.Timestamp("2024-02-16")],
-                "source_url": ["https://www.sec.gov/observed.zip"],
-            }
-        ),
-    )
     cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
     ftd.save_processed_universe(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
@@ -354,25 +322,16 @@ def test_ftd_vintage_metadata_backfill_preserves_observed(sqlite_store, monkeypa
 
     for _ in range(2):
         assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
-    vintages = sqlite_store.load(Tables.sec_ftd_vintages).set_index("period")
-    assert len(vintages) == 2
-    assert pd.Timestamp(vintages.loc["202401a", "available_date"]) == pd.Timestamp("2024-01-30")
-    assert vintages.loc["202401a", "availability_basis"] == "estimated"
-    assert pd.Timestamp(vintages.loc["202401b", "available_date"]) == pd.Timestamp("2024-02-16")
-    assert vintages.loc["202401b", "availability_basis"] == "observed"
-    print("\n=== SANITY CHECK: FTD metadata-only backfill ===")
-    print("  One missing vintage backfilled from distinct stored periods; no ZIP parsed and observed date survives rerun.")
+    assert len(sqlite_store.load(Tables.sec_fails_to_deliver)) == 2
+    assert not hasattr(Tables, "sec_ftd_vintages")
+    print("\n=== SANITY CHECK: FTD resume without vintage table ===")
+    print("  Two stored periods skip ZIP reads on rerun; no availability metadata table exists in the registry.")
 
 
-def test_ftd_first_successful_http_response_sets_observed_date(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
     identity = _identity()
     requested: list[str] = []
-
-    class _Clock:
-        @staticmethod
-        def now(tz):
-            return datetime(2026, 9, 30, 15, tzinfo=UTC)
 
     class _Response:
         status_code = 200
@@ -386,7 +345,6 @@ def test_ftd_first_successful_http_response_sets_observed_date(sqlite_store, mon
         return _Response()
 
     ctx.sec_session = SimpleNamespace(get=_get)
-    monkeypatch.setattr(bulk_cache, "datetime", _Clock)
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202609a"])
     monkeypatch.setattr(
         ftd,
@@ -397,15 +355,12 @@ def test_ftd_first_successful_http_response_sets_observed_date(sqlite_store, mon
 
     assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 1
     assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
-    vintage = sqlite_store.load(Tables.sec_ftd_vintages).iloc[0]
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver).iloc[0]
     assert len(requested) == 1
-    assert vintage["period"] == "202609a"
-    assert pd.Timestamp(vintage["available_date"]) == pd.Timestamp("2026-09-30")
-    assert vintage["availability_basis"] == "observed"
-    assert pd.Timestamp(vintage["first_seen_at"]) == pd.Timestamp("2026-09-30 15:00:00")
-    assert vintage["source_url"] == requested[0]
+    assert stored["period"] == "202609a"
+    assert (ftd.cache_dir(ctx, "sec_fails_to_deliver") / "cnsfails202609a.zip").is_file()
     print("\n=== SANITY CHECK: first successful FTD HTTP response ===")
-    print("  SEC HTTP 200 stamped 2026-09-30; rerun reused stored observed date without a second request.")
+    print("  SEC HTTP 200 stored the source period and ZIP once; rerun skipped the period without metadata writes.")
 
 
 def test_ftd_feature_ranks_high_fails_and_is_leak_free():
@@ -419,6 +374,7 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
         ],
         ignore_index=True,
     )
+    fails["period"] = "202401a"
     volume = pd.DataFrame({t: 1e6 for t in ("HI", "MID", "LO")}, index=idx)
     peers = {"HI": {"MID": 1.0, "LO": 1.0}, "MID": {"HI": 1.0, "LO": 1.0}, "LO": {"HI": 1.0, "MID": 1.0}}
 

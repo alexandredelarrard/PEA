@@ -1,15 +1,17 @@
 """
 edgar_driver.py (src/data_extract/utils/common/edgar_driver.py)
 -----------------------------------------------------------------
-Shared driver for the per-ticker edgartools fetchers (8-K, 13D, DEF 14A, filing
-text): resolve the listing window, dedup by accession, walk tickers on a thread
-pool, upsert each ticker's frames and record the run. Each fetcher supplies only
-its forms and its row builder.
+Shared driver for the per-ticker edgartools fetchers (8-K, 13D, 13G, DEF 14A, filing
+text, fundamentals, insider live): resolve the listing window, dedup by accession, walk
+tickers on a thread pool, upsert each ticker's frames and record the run. Each fetcher
+declares one `EdgarFetch`; the single-table filing fetchers build their rows with
+`build_filing_rows` and supply only a per-filing row function.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Protocol
@@ -18,6 +20,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.edgar_fillings import archive_url
+from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import (
@@ -25,7 +28,6 @@ from src.data_extract.utils.common.registrant import (
     identity_scope_fingerprint,
     load_registrants,
     resolve_registrant_filings,
-    resolve_schedule_subject_filings,
 )
 from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
@@ -137,16 +139,44 @@ class BuildFn(Protocol):
     ) -> dict[Table, pd.DataFrame]: ...
 
 
-def new_filings(
+@dataclass(frozen=True)
+class EdgarFetch:
+    """One per-ticker EDGAR fetch, declared once and walked by `run_edgar_fetch`.
+
+    `tables[0]` keys the manifest window and the accession dedup set; every table gets a
+    `record_run` entry. `build(ticker, cik, since=, done_accessions=, scope=)` returns
+    `{table: frame}`. `require_complete` makes a failed ticker fatal to the run manifest;
+    `identity_aware` resolves through the identity layer and relists a ticker whose identity
+    scope changed; `minimum_since` floors the listing window; `completion_table` is saved last
+    and only when every earlier frame saved.
+    """
+
+    desc: str
+    tables: tuple[Table, ...]
+    build: BuildFn
+    require_complete: bool = True
+    identity_aware: bool = True
+    minimum_since: pd.Timestamp | None = None
+    completion_table: Table | None = None
+
+
+def build_filing_rows(
     ticker: str,
-    forms: list[str],
-    since: pd.Timestamp | None,
-    done_accessions: frozenset[str],
+    cik: str,
+    *,
+    since: pd.Timestamp | None = None,
+    done_accessions: frozenset[str] = frozenset(),
     scope: EdgarScope,
-) -> list:
-    """`ticker`'s filings of `forms` resolved against `scope`, oldest first, stripped of stored
-    accessions and of anything filed before `since` (see `registrant.resolve_registrant_filings`)."""
-    return resolve_registrant_filings(
+    forms: Sequence[str],
+    table: Table,
+    columns: Sequence[str],
+    row_fn: Callable[[str, FilingStamp], list[dict]],
+    numeric: Sequence[str] = (),
+) -> dict[Table, pd.DataFrame]:
+    """`ticker`'s new filings of `forms` resolved against `scope` (oldest first, stored accessions
+    and pre-`since` filings dropped), `row_fn(ticker, stamp)` rows per filing, one `table` frame
+    finalised by `finalise_frame`."""
+    filings = resolve_registrant_filings(
         ticker,
         forms,
         since=since,
@@ -154,23 +184,8 @@ def new_filings(
         registrants=scope.registrants,
         identity=scope.identity,
     )
-
-
-def new_schedule_filings(
-    ticker: str,
-    subject_ciks: frozenset[str],
-    forms: list[str],
-    since: pd.Timestamp | None,
-    done_accessions: frozenset[str],
-) -> list:
-    """Issuer-side schedule discovery, including filings submitted under holder CIKs."""
-    return resolve_schedule_subject_filings(
-        ticker,
-        subject_ciks,
-        forms,
-        since=since,
-        done_accessions=done_accessions,
-    )
+    rows = [row for filing in filings for row in row_fn(ticker, FilingStamp.of(filing, cik))]
+    return {table: finalise_frame(table, rows, columns=columns, numeric=numeric)}
 
 
 def load_edgar_scope(
@@ -197,32 +212,26 @@ def run_edgar_fetch(
     context: Context,
     tickers: list[str],
     years_history: int,
+    fetch: EdgarFetch,
     *,
-    tables: tuple[Table, ...],
-    build: BuildFn,
-    desc: str,
-    max_workers: int | None = None,
     full: bool = False,
     cik_map: pd.DataFrame | None = None,
-    minimum_since: pd.Timestamp | None = None,
-    completion_table: Table | None = None,
-    require_complete: bool = False,
-    identity_aware: bool = False,
+    max_workers: int | None = None,
 ) -> None:
-    """Fetch `tables` for `tickers` using `build(ticker, cik, since=, done_accessions=, scope=)
-    -> {table: frame}`; `scope` comes from `load_edgar_scope`.
+    """Run `fetch` for `tickers`: every ticker's `fetch.build` frames are upserted and each of
+    `fetch.tables` gets a `record_run` entry, even with zero rows (see `EdgarFetch`).
 
-    `tables[0]` keys the manifest window and the accession dedup set; every declared table gets
-    a `record_run` entry, even with zero rows. `cik_map` lets a caller that already loaded the
-    universe pass it in. `completion_table` is saved last and only when every earlier frame
-    saved. `require_complete` makes build and save failures fatal to the run manifest (saved
-    rows stay as idempotent progress).
+    `full` takes the whole `years_history` window without consulting the manifest. `cik_map`
+    lets a caller that already loaded the universe pass it in. Under `fetch.require_complete`
+    build and save failures are fatal to the run manifest (saved rows stay as idempotent
+    progress).
     """
+    tables, desc, completion_table, require_complete = fetch.tables, fetch.desc, fetch.completion_table, fetch.require_complete
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
     entry = get_entry(context, tables[0])
-    scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=identity_aware)
+    scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=fetch.identity_aware)
     if changed_scopes:
         context.log.info(
             "%s: %d ticker identity scope(s) changed -> full-window relist: %s",
@@ -231,8 +240,8 @@ def run_edgar_fetch(
             ", ".join(sorted(changed_scopes)),
         )
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
-    if minimum_since is not None:
-        fallback_since = max(fallback_since, pd.Timestamp(minimum_since).normalize())
+    if fetch.minimum_since is not None:
+        fallback_since = max(fallback_since, pd.Timestamp(fetch.minimum_since).normalize())
     if full:
         # `-F/--full`: take the whole years-history window and do not consult the manifest.
         #
@@ -263,7 +272,7 @@ def run_edgar_fetch(
     declared = set(tables)
 
     def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
-        frames = build(ticker, cik, since=fallback_since if ticker in changed_scopes else since, done_accessions=done, scope=scope)
+        frames = fetch.build(ticker, cik, since=fallback_since if ticker in changed_scopes else since, done_accessions=done, scope=scope)
         counts: dict[Table, int] = {}
         failed_save = False
         ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]

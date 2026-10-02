@@ -20,7 +20,7 @@ inside them, matching the other extract steps.
 
 ORDER MATTERS in two places:
   * the CUSIP map is built inside `fetch_13f`, which is why no separate call appears below;
-  * `fetch_8k_edgar` must run BEFORE `StepExtractStructure`, whose `fetch_8k_votes_llm` reads
+  * the 8-K fetch must run BEFORE `StepExtractStructure`, whose `fetch_8k_votes_llm` reads
     the `sec_8k` Item 5.07 narratives this step stores. `StepExtractAllData` orders the two
     steps accordingly -- running structure first leaves the vote parser reading yesterday's
     8-Ks.
@@ -30,14 +30,15 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
-from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
@@ -78,11 +79,11 @@ class StepExtractInstitutionals(Step):
         # activist stakes (SC 13D) then the passive ones (SC 13G), 13D first because it is
         # ~7x cheaper and a failure there is the cheaper one to discover. Same grain and column
         # names, so the escalation join across them is a plain union.
-        fetch_13d_edgar(self._context, tickers=tickers, years_history=years_history)
-        fetch_13g_edgar(self._context, tickers=tickers, years_history=years_history)
+        run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_13D_FETCH)
+        run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_13G_FETCH)
 
         # corporate events (8-K)
-        fetch_8k_edgar(self._context, tickers=tickers, years_history=years_history)
+        run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_8K_FETCH)
 
         # Refresh the two-axis identity dimension after the insider cache producer, then hand
         # one frozen resolver to the two symbol-only tapes at the end of the step.

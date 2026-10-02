@@ -194,10 +194,10 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
     from src.data_extract.utils.common.edgar_driver import load_edgar_scope
     from src.data_extract.utils.common.sec_utils import load_cik_mapping
-    from src.data_extract.utils.structure.fetch_def14a_edgar import build_ticker_def14a_edgar
+    from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 
     # edgartools' identity is PROCESS-GLOBAL and the production fetcher sets it via the
-    # Context; a script calling `build_ticker_def14a_edgar` directly bypasses that and every
+    # Context; a script calling `DEF14A_EDGAR_FETCH.build` directly bypasses that and every
     # request fails with IdentityNotSetError.
     context.ensure_edgar_identity()
 
@@ -224,7 +224,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
         try:
             # returns {Table: DataFrame}, keyed by the registry object -- one entry since
             # Phase 4 slimmed this path to `sec_def14a` alone
-            df = build_ticker_def14a_edgar(t, cik, since=cutoff, scope=scope)[Tables.def14a_edgar]
+            df = DEF14A_EDGAR_FETCH.build(t, cik, since=cutoff, done_accessions=frozenset(), scope=scope)[Tables.def14a_edgar]
         except Exception as e:
             print(f"  {t}: FAILED {type(e).__name__}: {e}")
             continue

@@ -14,15 +14,8 @@ import re
 import pandas as pd
 
 from src.constants.constants import SEC_13G_FORMS
-from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
-    EdgarScope,
-    FilingStamp,
-    new_schedule_filings,
-    num_or_null,
-    run_edgar_fetch,
-)
-from src.data_extract.utils.common.registrant import issuer_ciks
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, num_or_null
+from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
@@ -239,7 +232,7 @@ def build_ticker_13g_edgar(
     checks rather than an equality test alone."""
     ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
     rows: list[dict] = []
-    for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13G_FORMS, since, done_accessions):
+    for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, SEC_13G_FORMS, since=since, done_accessions=done_accessions):
         stamp = FilingStamp.of(filing, cik)
         try:
             filing_rows = _filing_rows(stamp)
@@ -257,15 +250,4 @@ def build_ticker_13g_edgar(
     return {Tables.sec_13g: pd.DataFrame(rows, columns=_COLS)}
 
 
-def fetch_13g_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        tables=(Tables.sec_13g,),
-        build=build_ticker_13g_edgar,
-        desc="SC 13G (edgartools)",
-        full=full,
-        require_complete=True,
-        identity_aware=True,
-    )
+SEC_13G_FETCH = EdgarFetch(desc="SC 13G (edgartools)", tables=(Tables.sec_13g,), build=build_ticker_13g_edgar)

@@ -40,15 +40,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 from src.constants.constants import SEC_13D_FORMS
-from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
-    EdgarScope,
-    FilingStamp,
-    new_schedule_filings,
-    num_or_null,
-    run_edgar_fetch,
-)
-from src.data_extract.utils.common.registrant import issuer_ciks
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, num_or_null
+from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
@@ -585,7 +578,7 @@ def build_ticker_13d_edgar(
     ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
     rows: list[dict] = []
     txn_rows: list[dict] = []
-    for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13D_FORMS, since, done_accessions):
+    for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, SEC_13D_FORMS, since=since, done_accessions=done_accessions):
         stamp = FilingStamp.of(filing, cik)
         try:
             filing_rows = _filing_rows(stamp)
@@ -615,15 +608,4 @@ def build_ticker_13d_edgar(
     return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
 
 
-def fetch_13d_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        tables=(Tables.sec_13d, Tables.sec_13d_transactions),
-        build=build_ticker_13d_edgar,
-        desc="SC 13D (edgartools)",
-        full=full,
-        require_complete=True,
-        identity_aware=True,
-    )
+SEC_13D_FETCH = EdgarFetch(desc="SC 13D (edgartools)", tables=(Tables.sec_13d, Tables.sec_13d_transactions), build=build_ticker_13d_edgar)

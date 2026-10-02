@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from functools import partial
 from typing import Any, cast
 from xml.etree import ElementTree
 
@@ -16,8 +17,9 @@ from edgar import Filing
 
 from src.constants.constants import SEC_INSIDER_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, run_edgar_fetch
 from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_atom import (
     SEC_INSIDER_FORM_FAMILIES,
     SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
@@ -136,9 +138,15 @@ def insider_filings(
     scope: EdgarScope,
 ) -> list[Any]:
     """Union issuer submissions with the owner-inclusive issuer search."""
-    discovered: dict[str, Any] = {
-        str(filing.accession_number): filing for filing in new_filings(ticker, SEC_INSIDER_FORMS, since, done_accessions, scope)
-    }
+    issuer_filings = resolve_registrant_filings(
+        ticker,
+        SEC_INSIDER_FORMS,
+        since=since,
+        done_accessions=done_accessions,
+        registrants=scope.registrants,
+        identity=scope.identity,
+    )
+    discovered: dict[str, Any] = {str(filing.accession_number): filing for filing in issuer_filings}
     for filing in ownership_filings(
         ticker,
         cik,
@@ -214,8 +222,12 @@ def build_ticker_insider_edgar(
     identity: Identity,
     scan_through: pd.Timestamp,
     scope: EdgarScope,
+    rescan_stored: bool = False,
 ) -> dict[Table, pd.DataFrame]:
-    """Build live rows for one ticker and a coverage row even when no filing was found."""
+    """Build live rows for one ticker and a coverage row even when no filing was found.
+
+    `rescan_stored` (a `--full` run) ignores `done_accessions` and re-reads stored filings.
+    """
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     transaction_frames: list[pd.DataFrame] = []
     footnote_frames: list[pd.DataFrame] = []
@@ -225,7 +237,7 @@ def build_ticker_insider_edgar(
         cik,
         since=since,
         through=scan_through,
-        done_accessions=done_accessions,
+        done_accessions=frozenset() if rescan_stored else done_accessions,
         scope=scope,
     ):
         transactions, footnotes, quarantine = _filing_frames(
@@ -279,39 +291,17 @@ def fetch_insider_edgar(
     bulk_frontier = _bulk_frontier(context)
     minimum_since = bulk_frontier + pd.Timedelta(days=1) if bulk_frontier is not None else None
 
-    def build(
-        ticker: str,
-        cik: str,
-        *,
-        since: pd.Timestamp | None,
-        done_accessions: frozenset[str],
-        scope: EdgarScope,
-    ) -> dict[Table, pd.DataFrame]:
-        return build_ticker_insider_edgar(
-            ticker,
-            cik,
-            since=since,
-            done_accessions=(frozenset() if full else done_accessions),
-            universe=tickers,
-            identity=identity,
-            scan_through=scan_through,
-            scope=scope,
-        )
-
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
+    fetch = EdgarFetch(
+        desc="insider Forms 3/4/5 (EDGAR live)",
         tables=(
             Tables.insider_transactions_live,
             Tables.insider_footnotes,
             Tables.insider_transactions_quarantine,
             Tables.insider_transactions_live_coverage,
         ),
-        build=build,
-        desc="insider Forms 3/4/5 (EDGAR live)",
+        build=partial(build_ticker_insider_edgar, universe=tickers, identity=identity, scan_through=scan_through, rescan_stored=full),
+        identity_aware=False,
         minimum_since=minimum_since,
         completion_table=Tables.insider_transactions_live_coverage,
-        full=full,
-        require_complete=True,
     )
+    run_edgar_fetch(context, tickers, years_history, fetch, full=full)

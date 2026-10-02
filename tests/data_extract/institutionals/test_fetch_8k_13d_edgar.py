@@ -2,22 +2,23 @@
 Unit tests for the edgartools-based 8-K / SC 13D fetchers
 (fetch_8k_edgar.py / fetch_13d_edgar.py). Pure-synthetic, no network -- filings
 and their typed `.obj()` results are faked with SimpleNamespace so the row-
-building logic (`_filing_row` / `_filing_rows`) is exercised without needing a
+building logic (`_filing_row` / `_filing_rows`, both fed a `FilingStamp`) is exercised without needing a
 live `Company(ticker).get_filings(...)` call.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.constants.constants import SEC_13D_FORMS
+from src.constants.constants import SEC_8K_FORMS, SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
-from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, build_filing_rows, run_edgar_fetch
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     _carve_with,
@@ -27,7 +28,6 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _filing_rows,
     _normalize_item_text,
     build_ticker_13d_edgar,
-    fetch_13d_edgar,
 )
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -49,7 +49,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     owns. Counting only one step would let the other quietly start reading config again."""
     import inspect
 
-    for fn in (fetch_8k_edgar, fetch_13d_edgar):
+    for fn in (run_edgar_fetch,):
         params = inspect.signature(fn).parameters
         assert "years_history" in params, f"{fn.__name__} must take years_history"
         assert params["years_history"].default is inspect.Parameter.empty, (
@@ -79,28 +79,21 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     )
 
 
-def test_fetch_8k_edgar_forwards_full_history_to_shared_driver(monkeypatch):
-    calls: list[dict[str, object]] = []
-
-    monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_8k_edgar.run_edgar_fetch",
-        lambda *args, **kwargs: calls.append(kwargs),
-    )
-
-    fetch_8k_edgar(SimpleNamespace(), ["PSKY", "JCI", "EVRG"], 15, full=True)
-
-    assert calls == [
-        {
-            "tables": (Tables.sec_8k,),
-            "build": build_ticker_8k_edgar,
-            "desc": "8-K (edgartools)",
-            "full": True,
-            "require_complete": True,
-            "identity_aware": True,
-        }
-    ]
-    print("\n=== SANITY: 8-K full-history plumbing ===")
-    print("  fetch_8k_edgar(..., full=True) forwards the existing full-rescan flag to the shared EDGAR driver.")
+def test_sec_8k_fetch_declares_its_driver_settings():
+    """The 8-K fetch is one declaration: its table, description, completeness and identity
+    settings, and the generic filing-rows builder bound to the 8-K forms and row function.
+    (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
+    assert SEC_8K_FETCH.tables == (Tables.sec_8k,)
+    assert SEC_8K_FETCH.desc == "8-K (edgartools)"
+    assert SEC_8K_FETCH.require_complete is True
+    assert SEC_8K_FETCH.identity_aware is True
+    build = cast(Any, SEC_8K_FETCH.build)
+    assert build.func is build_filing_rows
+    assert build.keywords["forms"] == SEC_8K_FORMS
+    assert build.keywords["table"] == Tables.sec_8k
+    assert build.keywords["row_fn"] is _filing_row
+    print("\n=== SANITY: 8-K fetch declaration ===")
+    print("  SEC_8K_FETCH -> sec_8k, require_complete + identity_aware, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
 
 
 def _fake_8k_filing(
@@ -134,7 +127,7 @@ def test_8k_filing_row_reads_current_report_flags():
     same flags/n_items, each carrying its own item code."""
     obj = SimpleNamespace(has_earnings=True, has_press_release=False)
     filing = _fake_8k_filing(obj=obj)
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(r["has_earnings"] == 1.0 for r in rows)
     assert all(r["has_press_release"] == 0.0 for r in rows)
@@ -151,7 +144,7 @@ def test_8k_filing_row_survives_failed_obj_parse():
     NaN, not None: `store.ensure_table` types a cold table's columns from the first
     frame written to it, so an all-None flag column would be created TEXT."""
     filing = _fake_8k_filing()  # obj=None -> .obj() raises
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(pd.isna(r["has_earnings"]) for r in rows)
     assert all(pd.isna(r["has_press_release"]) for r in rows)
@@ -161,7 +154,7 @@ def test_8k_filing_row_survives_failed_obj_parse():
 
 def test_8k_amendment_flag_from_form_suffix():
     filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False))
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert all(r["is_amendment"] == 1.0 for r in rows)
 
 
@@ -190,7 +183,7 @@ This text must not leak into Item 5.07.
 """
     filing = _fake_8k_filing(items="5.07,9.01", obj=_CurrentReport(stub), text=primary)
 
-    rows = _filing_row("TRV", "0000086312", filing)
+    rows = _filing_row("TRV", FilingStamp.of(filing, "0000086312"))
     item = next(row for row in rows if row["item"] == "5.07")
 
     assert "1,234,567" in item["item_text"]
@@ -201,7 +194,7 @@ def test_8k_item_507_preserves_complete_structured_text_without_reading_primary_
     complete = "Final voting results below. Votes For 1,234,567; Votes Against 23,456; Votes Abstained 1,234."
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete))
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == complete
 
@@ -211,7 +204,7 @@ def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
     primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nNo results were included.\nSIGNATURES"
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == stub
 
@@ -220,7 +213,7 @@ def test_8k_item_507_does_not_read_primary_document_without_results_follow_signa
     stub = "The annual meeting occurred on May 1, 2026."
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub))
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == stub
 
@@ -872,8 +865,8 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
-        lambda ticker, subject_ciks, forms, since, done: [good_filing, bad_filing],
+        "src.data_extract.utils.institutionals.fetch_13d_edgar.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: [good_filing, bad_filing],
     )
 
     out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))[Tables.sec_13d]
@@ -889,8 +882,8 @@ def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
 
     filing.obj = fail_parse
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
-        lambda ticker, subject_ciks, forms, since, done: [filing],
+        "src.data_extract.utils.institutionals.fetch_13d_edgar.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: [filing],
     )
     with pytest.raises(RuntimeError, match="0001-broken"):
         build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))

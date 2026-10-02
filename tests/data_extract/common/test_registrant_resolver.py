@@ -2,7 +2,7 @@
 come from, and how they combine.
 
 Before this there were two implementations of one rule, and they looked contradictory:
-`edgar_driver.new_filings` unioned the register's CIKs while `cik_cutover.cutover_filings`
+the event-fetcher listing helper unioned the register's CIKs while `cik_cutover.cutover_filings`
 split them by date. Both were right, for different form families, and neither said so at the
 other's call site -- so the five event fetchers and the fundamentals walk each carried half
 the reasoning. `FORM_POLICY` is that reasoning made explicit, and these tests pin it.

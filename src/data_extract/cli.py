@@ -54,6 +54,7 @@ from src.data_extract.utils.behavioral.fetch_earnings_calls import (
 
 # --- identity: which company is this ticker, and when ----------------------- #
 from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
@@ -76,13 +77,13 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 
 # --- institutionals: who owns, trades and shorts each name ------------------ #
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
@@ -96,8 +97,8 @@ from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
-from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
+from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 
 # --- structure -------------------------------------------------------------- #
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
@@ -640,7 +641,9 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, full=full)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_8K_FETCH, full=full
+    )
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
@@ -658,7 +661,9 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     config, context = _ctx(config_path)
-    fetch_13d_edgar(context, tickers=_tickers(context, tickers), full=full, years_history=years or config.data_extract.years_history)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13D_FETCH, full=full
+    )
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
@@ -671,7 +676,9 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
     13D's ~8). Chunk it with `-t` + `-F` for a from-scratch backfill: the manifest's incremental
     test is "did the universe change size", which a chunked walk defeats."""
     config, context = _ctx(config_path)
-    fetch_13g_edgar(context, tickers=_tickers(context, tickers), full=full, years_history=years or config.data_extract.years_history)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13G_FETCH, full=full
+    )
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
@@ -680,7 +687,7 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None) -> None:
     config, context = _ctx(config_path)
-    fetch_filing_text(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=FILING_TEXT_FETCH)
 
 
 @cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
@@ -689,7 +696,7 @@ def filing_text(config_path: str, tickers: str | None, years: int | None) -> Non
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> None:
     config, context = _ctx(config_path)
-    fetch_def14a_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=DEF14A_EDGAR_FETCH)
 
 
 # --------------------------------------------------------------------------- #

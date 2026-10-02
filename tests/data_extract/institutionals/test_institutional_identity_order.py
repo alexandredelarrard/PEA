@@ -29,11 +29,10 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
         "fetch_13f_managers",
         "fetch_insider_transactions",
         "fetch_insider_edgar",
-        "fetch_13d_edgar",
-        "fetch_13g_edgar",
-        "fetch_8k_edgar",
     ):
         monkeypatch.setattr(module, name, mark(name))
+    # 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
+    monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].desc))
     monkeypatch.setattr(module, "cache_dir", lambda *args: Path("cache"))
     monkeypatch.setattr(module, "build_symbol_tenure", mark("symbol_tenure"))
     monkeypatch.setattr(module, "build_entity_lineage", mark("entity_lineage"))

@@ -204,7 +204,7 @@ def _list_across_registrants(
     """That ticker's DEF 14A filings, across a registrant boundary when it has one.
 
     ⚠ THIS MODULE IS THE ONLY PIPELINE IN THE REPO THAT RESOLVES BY CIK. Every other EDGAR
-    fetcher goes through `edgar_driver.new_filings`, i.e. `Company(ticker)`. That makes
+    fetcher goes through `registrant.resolve_registrant_filings`, i.e. `Company(ticker)`. That makes
     `sp500_tickers.cik` a single-pipeline dependency -- and it is why a wrong or superseded CIK
     shows up as a governance-only hole while prices, fundamentals and 8-K stay clean.
 
@@ -225,10 +225,9 @@ def _list_across_registrants(
 
     ⚠ THE PER-FILING CIK COMES OUT RIGHT FOR FREE, and that is the point of listing per
     registrant rather than post-labelling. `list_filings` stamps each row with the CIK whose
-    submissions document it parsed, so a row's `cik` is the CIK that actually filed it. Compare
-    `fetch_def14a_edgar.build_ticker_def14a_edgar`, which stamps `cik=cik` from the roster onto
-    filings it resolved by TICKER -- which is how 521 XOM 8-K rows came to carry a CIK holding
-    29 filings.
+    submissions document it parsed, so a row's `cik` is the CIK that actually filed it. Stamping
+    the roster CIK onto filings resolved by TICKER is how 521 XOM 8-K rows came to carry a CIK
+    holding 29 filings.
     """
     entry = cutovers.get(ticker)
     if entry is None:

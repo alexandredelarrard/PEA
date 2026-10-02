@@ -216,9 +216,10 @@ def test_empty_reporting_persons_yields_one_nan_fallback_row():
 # --------------------------------------------------------------------------- #
 # The issuer/filer guard                                                        #
 # --------------------------------------------------------------------------- #
-def _patch_new_filings(monkeypatch, filings):
+def _patch_schedule_filings(monkeypatch, filings):
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13g_edgar.new_schedule_filings", lambda ticker, subject_ciks, forms, since, done: filings
+        "src.data_extract.utils.institutionals.fetch_13g_edgar.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: filings,
     )
 
 
@@ -227,7 +228,7 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
     and Rapport Therapeutics. Kept, every field would describe a different company."""
     own = _filing(issuer_cik="0000200406", issuer_name="JOHNSON & JOHNSON")
     other = _filing(issuer_cik="0001739410", issuer_name="Rallybio Corporation", accession="0000904454-26-000233")
-    _patch_new_filings(monkeypatch, [own, other])
+    _patch_schedule_filings(monkeypatch, [own, other])
     frame = build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
@@ -239,9 +240,9 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
 def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
     """An unknown CIK on either side means "unknown", which must not reject -- otherwise a
     header that failed to parse would silently cost the ticker its whole history."""
-    _patch_new_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
+    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
     assert len(build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
-    _patch_new_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
+    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
     assert len(build_ticker_13g_edgar("JNJ", "", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
 
 
@@ -252,7 +253,7 @@ def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
         raise ValueError("broken schedule")
 
     filing.obj = fail_parse
-    _patch_new_filings(monkeypatch, [filing])
+    _patch_schedule_filings(monkeypatch, [filing])
     with pytest.raises(RuntimeError, match="0001-broken"):
         build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13G parse failure ===")

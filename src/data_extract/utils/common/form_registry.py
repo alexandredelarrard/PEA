@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from src.constants.constants import (
     DEF14A_FORMS,
@@ -31,16 +32,17 @@ from src.constants.constants import (
     SEC_13G_FORMS,
     SEC_INSIDER_FORMS,
 )
+from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
-from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FORMS, fetch_filing_text
+from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_FORMS
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         sec_forms=tuple(SEC_8K_FORMS),
         discovery="per_cik_accession",
         table="sec_8k",
-        handler=fetch_8k_edgar,
+        handler=partial(run_edgar_fetch, fetch=SEC_8K_FETCH),
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_8k_edgar.py), replacing the "
@@ -107,7 +109,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         sec_forms=tuple(SEC_13D_FORMS),
         discovery="per_cik_accession",
         table="sec_13d",
-        handler=fetch_13d_edgar,
+        handler=partial(run_edgar_fetch, fetch=SEC_13D_FETCH),
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="edgartools per-filing retrieval (fetch_13d_edgar.py) reading the typed "
@@ -121,7 +123,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         sec_forms=tuple(SEC_13G_FORMS),
         discovery="per_cik_accession",
         table="sec_13g",
-        handler=fetch_13g_edgar,
+        handler=partial(run_edgar_fetch, fetch=SEC_13G_FETCH),
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="the PASSIVE >5% beneficial-ownership channel, the counterpart of sec_13d and "
@@ -150,7 +152,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         sec_forms=tuple(DEF14A_FORMS),
         discovery="per_cik_accession",
         table="sec_def14a",
-        handler=fetch_def14a_edgar,
+        handler=partial(run_edgar_fetch, fetch=DEF14A_EDGAR_FETCH),
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="the Pay-versus-Performance / ECD inline-XBRL block only (filer-tagged "
@@ -164,7 +166,7 @@ FORM_REGISTRY: dict[str, FormHandlerSpec] = {
         sec_forms=tuple(FILING_TEXT_FORMS),
         discovery="per_cik_accession",
         table="sec_filing_text",
-        handler=fetch_filing_text,
+        handler=partial(run_edgar_fetch, fetch=FILING_TEXT_FETCH),
         call_shape="(context, tickers, years_history)",
         step_chain_wired=True,
         notes="10-K Item 1A + Item 7 and 10-Q Item 2 narrative text, one row per (ticker, accession, section), for the embedding/drift feature layer",

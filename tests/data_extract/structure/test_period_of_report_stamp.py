@@ -15,8 +15,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.edgar_driver import EdgarScope
-from src.data_extract.utils.structure.fetch_def14a_edgar import build_ticker_def14a_edgar
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_MIN_CHARS, build_ticker_filing_text
+from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
 from src.data_store.schema import Tables
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -49,7 +49,7 @@ def test_def14a_walk_stores_none_when_period_of_report_raises(monkeypatch: pytes
     filing.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: facts))  # type: ignore[attr-defined]
     _list(monkeypatch, [filing])
 
-    df = build_ticker_def14a_edgar("BA", "0000012927", scope=EdgarScope(None, {}))[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.def14a_edgar]
 
     assert len(df) == 1
     row = df.iloc[0]
@@ -66,7 +66,7 @@ def test_filing_text_walk_stores_none_when_period_of_report_raises(monkeypatch: 
     filing.obj = lambda: SimpleNamespace(risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
     _list(monkeypatch, [filing])
 
-    df = build_ticker_filing_text("AAPL", "0000320193", scope=EdgarScope(None, {}))[Tables.filing_risk_text]
+    df = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.filing_risk_text]
 
     assert len(df) == 1
     row = df.iloc[0]

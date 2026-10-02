@@ -12,21 +12,13 @@ out of scope -- it would store unstandardized figures competing with
 
 from __future__ import annotations
 
-import itertools
 import re
+from functools import partial
 from typing import Any
 
-import pandas as pd
-
 from src.constants.constants import SEC_8K_FORMS
-from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
-    EdgarScope,
-    FilingStamp,
-    new_filings,
-    run_edgar_fetch,
-)
-from src.data_store.schema import Table, Tables
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_store.schema import Tables
 
 _COLS = [
     "ticker",
@@ -128,13 +120,14 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     return item_text
 
 
-def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
+def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     """One 8-K -> one row per item code. `has_earnings`/`has_press_release` are
     best-effort: a filing whose `.obj()` parse fails keeps its item rows (those come
     straight from the filing index) with both flags NaN.
 
     NaN rather than None: `store.ensure_table` infers column types from the first frame
     written to a cold table, so an all-None column would be created TEXT for good."""
+    filing = stamp.filing
     # Item codes come free off the filing index. Read them BEFORE `.obj()`: with no item codes
     # this filing yields no rows at all, so the parse would be thrown away.
     items = getattr(filing, "items", "") or ""
@@ -151,7 +144,6 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
     except Exception:  # noqa: BLE001 -- best-effort only
         pass
 
-    stamp = FilingStamp.of(filing, cik)
     base = {
         "ticker": ticker,
         # The CIK that FILED this 8-K, not the roster's: the union walks every registrant in
@@ -184,39 +176,10 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
     return rows
 
 
-def build_ticker_8k_edgar(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    scope: EdgarScope,
-) -> dict[Table, pd.DataFrame]:
-    rows = itertools.chain.from_iterable(
-        _filing_row(ticker, cik, f)
-        for f in new_filings(
-            ticker,
-            SEC_8K_FORMS,
-            since,
-            done_accessions,
-            scope,
-        )
-    )
-    df = pd.DataFrame(list(rows), columns=_COLS)
-    # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
-    # would make the upsert touch one PK row twice, which Postgres rejects outright.
-    return {Tables.sec_8k: df.drop_duplicates(subset=list(Tables.sec_8k.pk), keep="last")}
-
-
-def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        tables=(Tables.sec_8k,),
-        build=build_ticker_8k_edgar,
-        desc="8-K (edgartools)",
-        full=full,
-        require_complete=True,
-        identity_aware=True,
-    )
+#: A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02") yields
+#: one PK row twice; `build_filing_rows` collapses it (Postgres rejects such an upsert).
+SEC_8K_FETCH = EdgarFetch(
+    desc="8-K (edgartools)",
+    tables=(Tables.sec_8k,),
+    build=partial(build_filing_rows, forms=SEC_8K_FORMS, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
+)

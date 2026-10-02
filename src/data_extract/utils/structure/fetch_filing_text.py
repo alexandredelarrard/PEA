@@ -18,12 +18,10 @@ Two extraction paths:
 from __future__ import annotations
 
 import re
+from functools import partial
 
-import pandas as pd
-
-from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, new_filings, run_edgar_fetch
-from src.data_store.schema import Table, Tables
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_store.schema import Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
@@ -184,51 +182,29 @@ def _filing_sections(filing) -> dict[str, str]:
     return sections
 
 
-def build_ticker_filing_text(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    scope: EdgarScope,
-) -> dict[Table, pd.DataFrame]:
-    rows: list[dict] = []
-    for f in new_filings(
-        ticker,
-        FILING_TEXT_FORMS,
-        since,
-        done_accessions,
-        scope,
-    ):
-        stamp = FilingStamp.of(f, cik)
-        filed = stamp.filed.normalize()
-        for section, body in _filing_sections(f).items():
-            rows.append(
-                {
-                    # The CIK that FILED it: `FILING_TEXT_FORMS` is SPLIT, so each row's
-                    # registrant is unambiguous and worth recording.
-                    "ticker": ticker,
-                    "cik": stamp.cik,
-                    "accession_number": stamp.accession_number,
-                    "form": str(stamp.form),
-                    "filed": filed,
-                    "period_of_report": stamp.period_of_report,
-                    "section": section,
-                    "text": body,
-                    "n_words": len(body.split()),
-                }
-            )
-    return {Tables.filing_risk_text: pd.DataFrame(rows, columns=_COLS)}
+def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
+    """One row per extracted section of the filing; none when no section could be read."""
+    filed = stamp.filed.normalize()
+    return [
+        {
+            # The CIK that FILED it: `FILING_TEXT_FORMS` is SPLIT, so each row's
+            # registrant is unambiguous and worth recording.
+            "ticker": ticker,
+            "cik": stamp.cik,
+            "accession_number": stamp.accession_number,
+            "form": str(stamp.form),
+            "filed": filed,
+            "period_of_report": stamp.period_of_report,
+            "section": section,
+            "text": body,
+            "n_words": len(body.split()),
+        }
+        for section, body in _filing_sections(stamp.filing).items()
+    ]
 
 
-def fetch_filing_text(context: Context, tickers: list[str], years_history: int) -> None:
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        tables=(Tables.filing_risk_text,),
-        build=build_ticker_filing_text,
-        identity_aware=True,
-        desc="10-K/10-Q text (edgartools)",
-        require_complete=True,
-    )
+FILING_TEXT_FETCH = EdgarFetch(
+    desc="10-K/10-Q text (edgartools)",
+    tables=(Tables.filing_risk_text,),
+    build=partial(build_filing_rows, forms=FILING_TEXT_FORMS, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
+)

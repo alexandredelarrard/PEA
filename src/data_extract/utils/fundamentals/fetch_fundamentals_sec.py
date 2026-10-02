@@ -36,6 +36,7 @@ import pandas as pd
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
+    EdgarFetch,
     EdgarScope,
     FilingStamp,
     run_edgar_fetch,
@@ -1039,16 +1040,17 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
             len(registrants),
             ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}" for t, r in sorted(registrants.items())),
         )
+    fetch = EdgarFetch(
+        desc="fundamentals (linkbase)",
+        tables=(Tables.fundamentals_facts,),
+        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
+    )
     run_edgar_fetch(
         context,
         tickers,
         years_history,
-        tables=(Tables.fundamentals_facts,),
-        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
-        desc="fundamentals (linkbase)",
+        fetch,
         full=full,
         cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers),
-        require_complete=True,
-        identity_aware=True,
     )

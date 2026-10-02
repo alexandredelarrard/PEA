@@ -13,17 +13,19 @@ from xml.etree import ElementTree
 
 import pandas as pd
 from edgar import Filing
-from edgar.httprequests import download_text
 
-from src.constants.constants import (
-    SEC_INSIDER_FORM_FAMILIES,
-    SEC_INSIDER_FORMS,
-    SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
-    SEC_INSIDER_OWNER_ATOM_URL,
-)
+from src.constants.constants import SEC_INSIDER_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import EdgarScope, new_filings, run_edgar_fetch
 from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.sec_atom import (
+    SEC_INSIDER_FORM_FAMILIES,
+    SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
+    atom_filing,
+    atom_page_url,
+    fetch_atom_entries,
+    parse_atom_entry,
+)
 from src.data_extract.utils.institutionals.fetch_insider_transactions import (
     _filter_universe,
     _repair_transaction_dates,
@@ -44,13 +46,7 @@ _LIVE_COLUMNS = (
     "acceptance_datetime",
     "fetched_at",
 )
-_ATOM_NAMESPACE = {"atom": "http://www.w3.org/2005/Atom"}
 _LOG = logging.getLogger(__name__)
-
-
-def _atom_text(entry: ElementTree.Element, name: str) -> str | None:
-    value = entry.findtext(f"atom:content/atom:{name}", namespaces=_ATOM_NAMESPACE)
-    return value.strip() if value and value.strip() else None
 
 
 def ownership_filings(
@@ -64,63 +60,70 @@ def ownership_filings(
     """List issuer ownership filings, including forms submitted under an owner's CIK."""
     start_date = pd.Timestamp(since).normalize() if since is not None else None
     end_date = pd.Timestamp(through).normalize()
-    target_forms = frozenset(SEC_INSIDER_FORMS)
     filings: dict[str, Filing] = {}
     for family in SEC_INSIDER_FORM_FAMILIES:
-        start = 0
-        while True:
-            url = SEC_INSIDER_OWNER_ATOM_URL.format(
-                cik=pad_cik(cik),
-                form=family,
-                date_from=start_date.strftime("%Y%m%d") if start_date is not None else "",
-                date_to=end_date.strftime("%Y%m%d"),
-                start=start,
-                count=SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
-            )
-            try:
-                text = download_text(url)
-                if text is None:
-                    raise ValueError("empty SEC ownership search response")
-                root = ElementTree.fromstring(text)
-            except Exception as exc:  # noqa: BLE001 -- preserve other discovery channels
-                _LOG.warning(
-                    "ownership filing search failed for %s form %s at offset %d: %r",
-                    ticker,
-                    family,
-                    start,
-                    exc,
-                )
-                break
-            entries = root.findall("atom:entry", _ATOM_NAMESPACE)
-            if not entries:
-                break
-            oldest = end_date
-            for entry in entries:
-                form = _atom_text(entry, "filing-type")
-                accession = _atom_text(entry, "accession-number")
-                filing_date = pd.to_datetime(cast(Any, _atom_text(entry, "filing-date")), errors="coerce")
-                if pd.notna(filing_date):
-                    oldest = min(oldest, filing_date.normalize())
-                if (
-                    form not in target_forms
-                    or accession is None
-                    or accession in done_accessions
-                    or pd.isna(filing_date)
-                    or filing_date.normalize() > end_date
-                    or (start_date is not None and filing_date.normalize() < start_date)
-                ):
-                    continue
-                filings[accession] = Filing(
-                    cik=int(cik),
-                    company=ticker,
-                    form=form,
-                    filing_date=filing_date.strftime("%Y-%m-%d"),
-                    accession_no=accession,
-                )
-            if len(entries) < SEC_INSIDER_OWNER_ATOM_PAGE_SIZE or (start_date is not None and oldest < start_date):
-                break
-            start += SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+        filings.update(_family_filings(ticker, cik, family, start_date, end_date, done_accessions))
     return sorted(filings.values(), key=lambda filing: filing.filing_date)
+
+
+def _family_filings(
+    ticker: str,
+    cik: str,
+    family: str,
+    start_date: pd.Timestamp | None,
+    end_date: pd.Timestamp,
+    done_accessions: frozenset[str],
+) -> dict[str, Filing]:
+    """Page one form family newest-first until a short page or an entry older than `start_date`.
+
+    A failed page logs a warning and ends this family with the pages already read.
+    """
+    filings: dict[str, Filing] = {}
+    start = 0
+    while True:
+        url = atom_page_url(pad_cik(cik), family, start_date, end_date, start)
+        try:
+            entries = fetch_atom_entries(url, f"{ticker} {family} offset {start}", retry=False)
+        except Exception as exc:  # noqa: BLE001 -- preserve other discovery channels
+            _LOG.warning("ownership filing search failed for %s form %s at offset %d: %r", ticker, family, start, exc)
+            break
+        if not entries:
+            break
+        page, oldest = _page_filings(entries, ticker, cik, start_date, end_date, done_accessions)
+        filings.update(page)
+        if len(entries) < SEC_INSIDER_OWNER_ATOM_PAGE_SIZE or (start_date is not None and oldest < start_date):
+            break
+        start += SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+    return filings
+
+
+def _page_filings(
+    entries: list[ElementTree.Element],
+    ticker: str,
+    cik: str,
+    start_date: pd.Timestamp | None,
+    end_date: pd.Timestamp,
+    done_accessions: frozenset[str],
+) -> tuple[dict[str, Filing], pd.Timestamp]:
+    """Kept insider filings on one page by accession, and the page's oldest dated entry (capped at `end_date`)."""
+    target_forms = frozenset(SEC_INSIDER_FORMS)
+    filings: dict[str, Filing] = {}
+    oldest = end_date
+    for raw in entries:
+        entry = parse_atom_entry(raw)
+        if entry is None:
+            continue
+        oldest = min(oldest, entry.filing_date)
+        if (
+            entry.form not in target_forms
+            or entry.accession is None
+            or entry.accession in done_accessions
+            or entry.filing_date > end_date
+            or (start_date is not None and entry.filing_date < start_date)
+        ):
+            continue
+        filings[entry.accession] = atom_filing(entry, cik=cik, company=ticker)
+    return filings, oldest
 
 
 def insider_filings(

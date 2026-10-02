@@ -129,13 +129,6 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
 # Insider ownership events. Quarterly ZIPs remain canonical history; these form names feed
 # the daily EDGAR tail until the next ZIP is published and reconciled.
 SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
-SEC_INSIDER_FORM_FAMILIES = ("3", "4", "5")
-SEC_INSIDER_OWNER_ATOM_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}"
-    "&type={form}&datea={date_from}&dateb={date_to}&owner=include"
-    "&start={start}&count={count}&output=atom"
-)
-SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
 SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_FIRST_YEAR = 2006

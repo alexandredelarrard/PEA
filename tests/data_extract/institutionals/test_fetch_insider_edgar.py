@@ -132,7 +132,7 @@ def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
         family = next(form for form in feeds if f"type={form}&" in url)
         return f'<feed xmlns="http://www.w3.org/2005/Atom">{feeds[family]}</feed>'
 
-    monkeypatch.setattr(module, "download_text", download)
+    monkeypatch.setattr("edgar.httprequests.download_text", download)
     filings = module.ownership_filings(
         "DLR",
         "0001494877",

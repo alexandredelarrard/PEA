@@ -128,6 +128,45 @@ def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monke
     print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
 
 
+def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    step = _bare_step()
+    fake_step = cast(Any, step)
+
+    class _Store:
+        def distinct(self, table: object, column: str) -> list[str]:
+            assert table is Tables.sec_fails_to_deliver and column == "period"
+            return ["202608b", "202609a"]
+
+    fake_step._store = _Store()
+    fake_step._context = SimpleNamespace(
+        paths={"DATA_STORE": tmp_path},
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
+    )
+    fake_step._availability = None
+    calls: list[object] = []
+    fails = pd.DataFrame({"date": [pd.Timestamp("2024-04-15")], "ticker": ["AAPL"], "period": ["202404b"], "fails_quantity": [5.0]})
+
+    def load_source(table: object, universe: object = None) -> pd.DataFrame | None:
+        calls.append(table)
+        return fails if table is Tables.sec_fails_to_deliver else None
+
+    def build_panel(frames: object, short: object, **kwargs: Any) -> pd.DataFrame:
+        assert short is None
+        assert kwargs["fails_history"] is fails
+        assert kwargs["ftd_cache_dir"] == tmp_path / "sec_fails_to_deliver"
+        assert kwargs["ftd_stored_periods"] == ["202608b", "202609a"]
+        return pd.DataFrame({"date": [pd.Timestamp("2024-05-15")], "ticker": ["AAPL"]})
+
+    fake_step._load_source = load_source
+    monkeypatch.setattr(step_module.institutional_inputs, "load_symbol_lineage", lambda *args: (None, None))
+    monkeypatch.setattr(step_module, "build_short_flow_feature_panel", build_panel)
+    out = step._short_flow_panel(SimpleNamespace(universe=["AAPL"]), None, None, cast(Any, object()))
+
+    assert out is not None and len(out) == 1
+    assert calls == [Tables.short_interest, Tables.sec_fails_to_deliver]
+    print("SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read.")
+
+
 def test_symbol_lineage_loader_projects_current_issuers() -> None:
     calls: list[dict[str, Any]] = []
 

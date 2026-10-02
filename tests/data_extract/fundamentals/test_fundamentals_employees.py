@@ -49,7 +49,13 @@ def answer(
     )
 
 
-def build(monkeypatch, filings: list[Filing], answers: dict[str, mod.EmployeeAnswer]) -> mod.EmployeeTickerResult:
+def build(
+    monkeypatch: pytest.MonkeyPatch,
+    filings: list[Filing],
+    answers: dict[str, mod.EmployeeAnswer],
+    *,
+    skip_dates: frozenset[pd.Timestamp] = frozenset(),
+) -> mod.EmployeeTickerResult:
     def listing(ticker, forms, **kwargs):
         assert ticker == "AAA"
         assert "10-K405" in forms
@@ -87,9 +93,69 @@ def build(monkeypatch, filings: list[Filing], answers: dict[str, mod.EmployeeAns
         "0000000001",
         since=None,
         done_accessions=frozenset(),
+        skip_dates=skip_dates,
         registrants={},
         identity=identity,
         symbol_tenure=pd.DataFrame([{"symbol": "AAA", "issuer_cik": "0000000001"}]),
+    )
+
+
+def test_incremental_skips_stored_filing_before_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    filings = [
+        Filing("stored", "2024-03-01", "We had 40,000 employees."),
+        Filing("new", "2025-03-01", "We had 41,000 employees."),
+    ]
+    filings[0].html = lambda: pytest.fail("stored filing text was fetched")
+    result = build(
+        monkeypatch,
+        filings,
+        {"new": answer(41000, "We had 41,000 employees.")},
+        skip_dates=frozenset({pd.Timestamp("2024-03-01")}),
+    )
+    assert result.frame["as_of"].tolist() == [pd.Timestamp("2025-03-01")]
+    assert [outcome["accession_number"] for outcome in result.outcomes] == ["new"]
+    print("\nSANITY: a stored filing date is excluded before filing text and the employee LLM are called.")
+
+
+def test_incremental_reads_stored_dates_when_manifest_lacks_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved_date = pd.Timestamp("2024-03-01")
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def load(table: object, **kwargs: object) -> pd.DataFrame:
+        calls.append((table, kwargs))
+        return pd.DataFrame([{"ticker": "AAA", "as_of": saved_date}])
+
+    context = SimpleNamespace(
+        store=SimpleNamespace(load=load),
+        config=SimpleNamespace(
+            data_extract=SimpleNamespace(manifest_full_rescan_days=30),
+            gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
+        ),
+    )
+    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2026-09-30"), False))
+    plan = mod._resume_plan(context, {"coverage_complete": True}, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
+    assert calls == [
+        (
+            mod.Tables.fundamentals_employees,
+            {
+                "columns": ["ticker", "as_of"],
+                "where": {"ticker": ["AAA"]},
+                "since": pd.Timestamp("2000-01-01"),
+                "optional": True,
+            },
+        )
+    ]
+    assert plan.skip_dates["AAA"] == frozenset({saved_date})
+    assert plan.done_accessions == frozenset()
+    old_model = {
+        "coverage_complete": True,
+        "filing_outcomes": [{"ticker": "AAA", "accession_number": "stored", "status": "saved", "model": "regex", "filing_date": "2024-03-01"}],
+    }
+    plan = mod._resume_plan(context, old_model, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
+    assert plan.done_accessions == frozenset({"stored"})
+    assert plan.skip_dates["AAA"] == frozenset()
+    print(
+        "\nSANITY: stored dates skip without a manifest; a prior accession skips across model changes while a new same-day amendment stays eligible."
     )
 
 
@@ -137,6 +203,39 @@ def test_source_guard_recovers_punctuation_and_anchored_table_quote():
     )
     print(
         "\nSANITY: punctuation noise and a nearby real table heading/total recover supported counts; missing, distant, cross-gap, conflicting or imprecise claims abstain."
+    )
+
+
+class NoPrimaryDocumentFiling(Filing):
+    """edgartools 5.51 `Filing.html()` reads `homepage.primary_html_document.empty` without a
+    None check, and `text()` goes through `html()`; both raise AttributeError from the library."""
+
+    def __init__(self, accession: str, filed: str, submission: str) -> None:
+        super().__init__(accession, filed, "")
+        self.submission = submission
+
+    def html(self) -> str:
+        return None.empty  # type: ignore[attr-defined]
+
+    def text(self) -> str:
+        return self.html()
+
+    def full_text_submission(self) -> str:
+        return self.submission
+
+
+def test_missing_primary_document_reads_full_submission(monkeypatch):
+    submission = "<SEC-DOCUMENT><TEXT>As of December 31, 1999, we had 1,234 employees.</TEXT></SEC-DOCUMENT>"
+    filing = NoPrimaryDocumentFiling("no-primary", "2000-03-01", submission)
+    assert mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
+    result = build(monkeypatch, [filing], {"no-primary": answer(1234, "we had 1,234 employees.")})
+    assert result.frame["employees"].tolist() == [1234.0]
+    unreadable = NoPrimaryDocumentFiling("unreadable", "2000-03-01", "")
+    with pytest.raises(ValueError, match="filing text unavailable"):
+        build(monkeypatch, [unreadable], {})
+    print(
+        "\nSANITY: a filing whose index lists no primary document no longer aborts the run with AttributeError; "
+        "its full submission supplies the source text, and a truly empty one fails only its ticker."
     )
 
 
@@ -204,7 +303,9 @@ def test_full_replay_rechecks_saved_accession_and_clears_null(monkeypatch):
     saved = []
     outcomes = []
     runs = []
-    store = SimpleNamespace(save=lambda table, frame: saved.append(frame), delete=lambda table, where: deleted.append(where))
+    store = SimpleNamespace(
+        save=lambda table, frame: saved.append(frame), delete=lambda table, where: deleted.append(where), load=lambda *args, **kwargs: None
+    )
     config = SimpleNamespace(
         data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
         gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
@@ -228,6 +329,7 @@ def test_full_replay_rechecks_saved_accession_and_clears_null(monkeypatch):
             "filing_outcomes": [{"ticker": "AAA", "accession_number": "old", "status": "saved"}],
         },
     )
+    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2024-01-01"), False))
     monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: outcomes.extend(args[-1]))
     monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
     monkeypatch.setattr(
@@ -258,13 +360,17 @@ def test_full_replay_rechecks_saved_accession_and_clears_null(monkeypatch):
     assert seen["done_accessions"] == frozenset()
     assert deleted == [{"ticker": "AAA", "as_of": pd.Timestamp("2024-02-26")}]
     assert len(runs) == 1
-    print("\nSANITY: full replay and routine legacy migration revisit old decisions and clear only their now-null filing-date row.")
+    print("\nSANITY: full replay revisits old decisions; a missing table row remains retryable in a routine run.")
 
 
 def test_new_null_amendment_preserves_skipped_supported_original(monkeypatch):
     deleted = []
     context = SimpleNamespace(
-        store=SimpleNamespace(save=lambda *args: None, delete=lambda table, where: deleted.append(where)),
+        store=SimpleNamespace(
+            save=lambda *args: None,
+            delete=lambda table, where: deleted.append(where),
+            load=lambda *args, **kwargs: pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2024-03-01")}]),
+        ),
         config=SimpleNamespace(
             data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
             gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
@@ -311,6 +417,7 @@ def test_new_null_amendment_preserves_skipped_supported_original(monkeypatch):
     monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
     mod.fetch_fundamentals_employees(context, ["AAA"], 15)
     assert seen["done_accessions"] == frozenset({"original"})
+    assert seen["skip_dates"] == frozenset()
     assert deleted == []
     print("\nSANITY: a new image-only amendment cannot erase the saved same-day original skipped by the routine frontier.")
 
@@ -319,7 +426,7 @@ def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
     # The guard may reject a paid answer; it must remain retryable and cannot certify coverage.
     saved_outcomes = []
     context = SimpleNamespace(
-        store=SimpleNamespace(save=lambda *args: None, delete=lambda *args, **kwargs: None),
+        store=SimpleNamespace(save=lambda *args: None, delete=lambda *args, **kwargs: None, load=lambda *args, **kwargs: None),
         config=SimpleNamespace(
             data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
             gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),

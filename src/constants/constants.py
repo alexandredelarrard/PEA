@@ -13,6 +13,14 @@ from __future__ import annotations
 DATE_FORMAT = "%Y-%m-%d"  # ISO day — as_of / filing / query dates
 DATE_FORMAT_COMPACT = "%Y%m%d"  # SEC / FINRA daily-file name stamps
 
+# SEC fails-to-deliver ZIP publication policy. The cache timestamp is only a
+# short-lived observation for the newest stored period; older ZIPs use the estimate.
+FTD_ZIP_NAME_TEMPLATE = "cnsfails{period}.zip"
+FTD_HISTORICAL_LAG_DAYS = 15
+FTD_LATEST_PERIOD_MAX_AGE_DAYS = 60
+FTD_RECENT_CACHE_DAYS = 2
+FTD_MARKET_TIMEZONE = "America/New_York"
+
 # --------------------------------------------------------------------------- #
 # Config directory                                                            #
 # --------------------------------------------------------------------------- #

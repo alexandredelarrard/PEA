@@ -248,16 +248,6 @@ class Tables:
         freshness="biweekly",
         read_columns=("date", "ticker", "fails_quantity", "period"),
     )
-    # One publication clock per semi-monthly FTD ZIP. Historical rows use an
-    # estimated date; newly observed SEC responses use the first successful fetch.
-    sec_ftd_vintages = Table(
-        "sec_ftd_vintages",
-        ("period",),
-        date_col="available_date",
-        ticker_col=None,
-        date_type_cols=("available_date",),
-        read_columns=("period", "available_date", "availability_basis"),
-    )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,
     # 31y) -- which double-stored yield_10y and vix from two sources at two depths -- and

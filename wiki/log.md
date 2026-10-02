@@ -121,10 +121,27 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Measurement: the table was backed up, recreated, and replayed from 66 CRC-checked ZIPs; 12,742 rows across 66 quarters, no null clocks or duplicate keys, and zero historical date-rule mismatches. The existing fundamentals cube part was not rebuilt and remains stale until a separate full build and assembly.
 - Limitation: historical +12 is an estimate, not a verified SEC first-publication date; the generic raw-table leakage validator abstains, while targeted availability/PIT tests and the BDX revision check pass.
 
+## 2026-10-01: refresh — derive FTD ZIP availability during feature builds
+
+- Profile: internal/standard
+- source_commit: 7ce4ad7 (uncommitted `harness/ftd-on-the-fly` worktree)
+- Coverage: removed the `sec_ftd_vintages` registry, bootstrap DDL, extraction writes, quality-script requirement, and cube read; the feature builder now derives each ZIP date from stored `period` plus 15 days and weekend roll. The globally latest eligible stored ZIP alone may use its local cache date when that New York date is today or yesterday.
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Source availability](./concepts/source-availability.md), [Data extraction](./modules/data-extract.md), [Cube aggregation](./modules/data-aggregate.md), [TODO](./TODO.md)
+- Validation: 41 focused tests passed, including partial-universe latest-period selection; 37 aggregate regression outputs and 1,749 hashed columns matched the baseline; a read-only AAPL sample confirmed that the April 15 `202404b` row first publishes May 15.
+- Operational boundary: the old physical table may still exist in PostgreSQL; this worktree did not drop it or rewrite persisted cube rows. The 15-day historical clock is an estimate, not verified SEC first-publication provenance.
+
+## 2026-10-01: refresh — employee incremental resume
+
+- Profile: internal/standard
+- source_commit: 3e955eb (working-tree employee resume fix; wiki-wide freshness anchor remains 2f8f8da)
+- Coverage: routine employee extraction skips filing dates already stored in `fundamentals_employees` even when the accession manifest is empty; `--full` remains the explicit replay
+- Pages: [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
+- Evidence: the local table had 11,257 rows while its manifest had zero accession outcomes; a read-only plan skipped 31 AAPL and 30 CSCO stored dates, and 14 focused tests passed.
+
 ## 2026-10-01: refresh — modelling refactor
 
 - Profile: internal/standard
-- source_commit: d6b68f6
-- Coverage: `src/modelling` split into `steps/` (StepLongShort), `transformers/` (model families, Monitor, Backtest) and `utils/`; `long_book` and `trend_cta` sleeves removed; new config keys `model.models_dir`, `model.backtest`, per-family `task`; artifact format `transformer-pickle-v1`
+- source_commit: f9ab52d (harness/modelling-transformers-refactor, merged into dev)
+- Coverage: `src/modelling` split into `steps/` (StepLongShort), `transformers/` (model families, Monitor, Backtest) and `utils/`; `long_book` and `trend_cta` sleeves removed; new config keys `model.models_dir`, `model.backtest`, per-family `task`; artifact format `transformer-pickle-v1` (portable member pickles; metadata records library versions)
 - Pages: [Modelling](./modules/modelling.md), [Strategies](./modules/strategies.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Model training and daily prediction](./flows/model-training-and-prediction.md), [Add a model or sleeve](./guides/add-a-model-or-sleeve.md), [Coding standards](./guides/coding-standards.md), [Step pattern](./concepts/step-pattern.md), [Feature-to-portfolio pipeline](./architecture/feature-to-portfolio.md), [TODO](./TODO.md)
 - Agent entry points: [AGENTS.md](../AGENTS.md)

@@ -1,0 +1,41 @@
+{
+  "available_202404b": "2024-05-15",
+  "feature_columns": [
+    "f_ic_ftd_persistence_30d",
+    "f_ic_ftd_to_adv20",
+    "f_ic_shortvol_acceleration",
+    "f_ic_shortvol_high_x_strong_price",
+    "f_ic_shortvol_high_x_weak_price",
+    "f_ic_shortvol_market_coverage",
+    "f_ic_shortvol_ratio_20d",
+    "f_ic_shortvol_ratio_5d",
+    "f_ic_shortvol_ratio_60d",
+    "f_ic_shortvol_turnover_20d"
+  ],
+  "latest_available_date": "2026-09-30",
+  "latest_cached_mtime_new_york": "2026-09-29T18:50:19.427469-04:00",
+  "latest_cached_zip": "C:\\Users\\de larrard alexandre\\OneDrive - The Boston Consulting Group, Inc\\Documents\\repos_github\\PEA\\data\\sec_fails_to_deliver\\cnsfails202609a.zip",
+  "latest_stored_period": "202609a",
+  "periods": [
+    "202404a",
+    "202404b",
+    "202405a",
+    "202405b"
+  ],
+  "published_aapl_fails_quantity": {
+    "2024-04-29": null,
+    "2024-04-30": 3438.0,
+    "2024-05-14": 3438.0,
+    "2024-05-15": 5200.0,
+    "2024-05-16": 5200.0
+  },
+  "scope": {
+    "since": "2024-04-01",
+    "ticker": "AAPL",
+    "until": "2024-05-31"
+  },
+  "source_rows": 21,
+  "year_2024_conflicted_settlement_days": {},
+  "year_2024_day_15_b_rows": 1443,
+  "year_2024_projected_rows": 42145
+}

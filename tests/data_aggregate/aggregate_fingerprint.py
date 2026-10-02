@@ -431,6 +431,7 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
             "fails_quantity": rng.lognormal(8.0, 1.2, int(keep.sum())).round(0),
         }
     )
+    ftd["period"] = pd.to_datetime(ftd["date"]).map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")
     return si, ftd
 
 

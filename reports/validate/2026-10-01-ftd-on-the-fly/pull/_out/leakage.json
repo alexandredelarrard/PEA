@@ -1,0 +1,1393 @@
+{
+  "check": "leakage",
+  "table": "cube_part_institutionals",
+  "status": "fail",
+  "exit_code": 1,
+  "reason": "cube_part_institutionals declares no `label_pattern`, so the horizon half ABSTAINED -- an `_h<n>` suffix does not make a column a forward label, and cube_part_momentum's backward-looking seasonal_h30/60/90 read as three leaks at score 10 when it was matched blind",
+  "worst_score": 10,
+  "scope": {
+    "rows": 3265378,
+    "first_date": "1995-09-01T00:00:00",
+    "last_date": "2026-09-04T00:00:00",
+    "halves_run": [
+      "pit"
+    ],
+    "horizon_legs": 0,
+    "horizon_pattern": null,
+    "reference": "prices",
+    "last_reference_session": "2026-09-30T00:00:00",
+    "pit_prefixes": [
+      "f_ic_act_",
+      "f_ic_bo_",
+      "f_ic_ftd_",
+      "f_ic_insider_",
+      "f_ic_shortvol_",
+      "f_ic_sig_act_",
+      "f_ic_sig_insider_"
+    ],
+    "pit_legs_tested": 65,
+    "pit_observed_zero_prefixes": [
+      "f_ic_ftd_",
+      "f_ic_insider_net_buy_ratio_180d"
+    ],
+    "source": "cache",
+    "elapsed_s": 266.4
+  },
+  "findings": [
+    {
+      "score": 10,
+      "severity": "critical",
+      "field": "f_ic_bo_holder_count",
+      "ticker": "TKO",
+      "observed": "232 ticker(s) carry a value before their first event in the source; worst TKO, first value 1999-10-19 against a first publication of 2023-11-24 -- 8,802 days early",
+      "expected": "a feature cannot be non-null before the first date its own source PUBLISHED anything for that ticker. Measured on the source's freshness column, so a filing lag is already allowed for",
+      "evidence": {
+        "n_tickers": 232,
+        "tickers": [
+          "A",
+          "ABBV",
+          "ACN",
+          "ADM",
+          "AEE",
+          "AIG",
+          "AIZ",
+          "AKAM",
+          "ALGN",
+          "ALLE",
+          "AMCR",
+          "AME",
+          "AMGN",
+          "AMP",
+          "AMT",
+          "AMZN",
+          "ANET",
+          "APO",
+          "APP",
+          "APTV"
+        ],
+        "worst": {
+          "prefix": "f_ic_bo_",
+          "leg": "f_ic_bo_holder_count",
+          "ticker": "TKO",
+          "panel_first": "1999-10-19T00:00:00",
+          "src_first": "2023-11-24T00:00:00",
+          "lead_days": 8802,
+          "availability_mode": "per_ticker_event"
+        }
+      }
+    }
+  ],
+  "metrics": {
+    "pit_sheet": [
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_value_mcap_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_value_mcap_180d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_shares_so_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_shares_so_180d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_net_buy_ratio_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_discretionary_sell_mcap_60d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_discretionary_sell_mcap_60d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_planned_sell_mcap_60d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_planned_sell_mcap_60d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_distinct_buyers_120d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_cluster_buy_120d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_value_mcap_60d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_buy_value_mcap_60d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_ceo_buy_mcap_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 286,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_ceo_buy_mcap_180d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 286,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_cfo_buy_mcap_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 206,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_cfo_buy_mcap_180d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 206,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_director_buy_mcap_180d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 480,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_director_buy_mcap_180d_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 480,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_purchase_pct_prior",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 469,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_purchase_pct_prior_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 469,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_insider_",
+        "leg": "f_ic_insider_owner_surprise_120d",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 473,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_age_days",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_ret_since",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_ret_since_xs",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_resid_ret_since",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_vol_scaled_move",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_price_vs_buy",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_max_runup_since_buy",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_insider_",
+        "leg": "f_ic_sig_insider_max_dd_since_buy",
+        "clock": [
+          "insider_transactions.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 485,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_initial_13d",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 260,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_amendment_intensity",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 246,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_campaign_age_days",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 260,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_campaign_age_days_xs",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 260,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_repeat_activist",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 38,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_purpose_board",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 214,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_act_",
+        "leg": "f_ic_act_purpose_strategic",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 174,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_act_",
+        "leg": "f_ic_sig_act_age_days",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 277,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_act_",
+        "leg": "f_ic_sig_act_ret_since",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 275,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_act_",
+        "leg": "f_ic_sig_act_ret_since_xs",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 275,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_act_",
+        "leg": "f_ic_sig_act_resid_ret_since",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 275,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_sig_act_",
+        "leg": "f_ic_sig_act_vol_scaled_move",
+        "clock": [
+          "sec_13d.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 275,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_5d",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_5d_vs_peers",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_20d",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_20d_vs_peers",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_60d",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_60d_vs_peers",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_ratio_z252",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_acceleration",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_turnover_20d",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_turnover_20d_xs",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_high_x_weak_price",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_high_x_strong_price",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_shortvol_",
+        "leg": "f_ic_shortvol_market_coverage",
+        "clock": [
+          "sec_short_interest.date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 489,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_pct_so",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_pct_so_xs",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_to_adv20",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_to_adv20_xs",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_z252",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_ftd_",
+        "leg": "f_ic_ftd_persistence_30d",
+        "clock": [
+          "sec_fails_to_deliver.date"
+        ],
+        "availability_mode": "global_observed_zero",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "clock": [
+          "sec_13d.filing_date",
+          "sec_13g.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 491,
+        "tickers_without_source": 1,
+        "tickers_early": 232,
+        "worst_lead_days": 8802
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_new_holder",
+        "clock": [
+          "sec_13d.filing_date",
+          "sec_13g.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 490,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_escalation_13g_to_13d",
+        "clock": [
+          "sec_13d.filing_date",
+          "sec_13g.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 52,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_de_escalation_13d_to_13g",
+        "clock": [
+          "sec_13d.filing_date",
+          "sec_13g.filing_date"
+        ],
+        "availability_mode": "per_ticker_event",
+        "tested": true,
+        "tickers_with_values": 43,
+        "tickers_without_source": 0,
+        "tickers_early": 0,
+        "worst_lead_days": 0
+      }
+    ],
+    "n_pit_violations": 232,
+    "pit_violations": [
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "TKO",
+        "panel_first": "1999-10-19T00:00:00",
+        "src_first": "2023-11-24T00:00:00",
+        "lead_days": 8802,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "TPL",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2021-01-12T00:00:00",
+        "lead_days": 8573,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "EVRG",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2018-07-10T00:00:00",
+        "lead_days": 7656,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "MRVL",
+        "panel_first": "2000-06-30T00:00:00",
+        "src_first": "2021-05-10T00:00:00",
+        "lead_days": 7619,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "DD",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2018-02-01T00:00:00",
+        "lead_days": 7497,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "PEP",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2013-01-30T00:00:00",
+        "lead_days": 5669,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "XOM",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2010-01-29T00:00:00",
+        "lead_days": 4572,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "EMR",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2009-02-05T00:00:00",
+        "lead_days": 4214,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "PSA",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2008-11-25T00:00:00",
+        "lead_days": 4142,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "TROW",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2008-02-14T00:00:00",
+        "lead_days": 3857,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "VMC",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2008-02-12T00:00:00",
+        "lead_days": 3855,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "BNY",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2008-02-06T00:00:00",
+        "lead_days": 3849,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "RF",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2008-02-06T00:00:00",
+        "lead_days": 3849,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "DUK",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2007-02-14T00:00:00",
+        "lead_days": 3492,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ORCL",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2006-02-13T00:00:00",
+        "lead_days": 3126,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ACN",
+        "panel_first": "2001-07-19T00:00:00",
+        "src_first": "2010-02-03T00:00:00",
+        "lead_days": 3121,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "MDT",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2005-02-14T00:00:00",
+        "lead_days": 2762,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "MOS",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2004-11-01T00:00:00",
+        "lead_days": 2657,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "CRH",
+        "panel_first": "1999-05-27T00:00:00",
+        "src_first": "2006-02-09T00:00:00",
+        "lead_days": 2450,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "SYY",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2004-02-17T00:00:00",
+        "lead_days": 2399,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "PRU",
+        "panel_first": "2001-12-13T00:00:00",
+        "src_first": "2008-02-14T00:00:00",
+        "lead_days": 2254,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "CNP",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2003-02-13T00:00:00",
+        "lead_days": 2030,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "TT",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2003-02-13T00:00:00",
+        "lead_days": 2030,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "NEM",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2003-01-10T00:00:00",
+        "lead_days": 1996,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "CMCSA",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-11-25T00:00:00",
+        "lead_days": 1950,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "COP",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-11-12T00:00:00",
+        "lead_days": 1937,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ARES",
+        "panel_first": "2014-05-02T00:00:00",
+        "src_first": "2019-01-14T00:00:00",
+        "lead_days": 1718,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "KO",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-02-14T00:00:00",
+        "lead_days": 1666,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "SLB",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-02-14T00:00:00",
+        "lead_days": 1666,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "D",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-02-13T00:00:00",
+        "lead_days": 1665,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "COR",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-02-12T00:00:00",
+        "lead_days": 1664,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "EXC",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2002-02-12T00:00:00",
+        "lead_days": 1664,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "NOC",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-04-13T00:00:00",
+        "lead_days": 1359,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "MNST",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-03-23T00:00:00",
+        "lead_days": 1338,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "BMY",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-02-13T00:00:00",
+        "lead_days": 1300,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "NEE",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-02-13T00:00:00",
+        "lead_days": 1300,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "NI",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-02-12T00:00:00",
+        "lead_days": 1299,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ATO",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2001-02-09T00:00:00",
+        "lead_days": 1296,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "FERG",
+        "panel_first": "2021-03-08T00:00:00",
+        "src_first": "2024-09-10T00:00:00",
+        "lead_days": 1282,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "PFE",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2000-12-19T00:00:00",
+        "lead_days": 1244,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ELV",
+        "panel_first": "2001-10-30T00:00:00",
+        "src_first": "2005-02-14T00:00:00",
+        "lead_days": 1203,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "WBD",
+        "panel_first": "2005-07-08T00:00:00",
+        "src_first": "2008-09-26T00:00:00",
+        "lead_days": 1176,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "EG",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2000-04-10T00:00:00",
+        "lead_days": 991,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "SRE",
+        "panel_first": "1998-06-29T00:00:00",
+        "src_first": "2001-02-14T00:00:00",
+        "lead_days": 961,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "ED",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "2000-02-14T00:00:00",
+        "lead_days": 935,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "IVZ",
+        "panel_first": "1999-09-17T00:00:00",
+        "src_first": "2002-02-13T00:00:00",
+        "lead_days": 880,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "UPS",
+        "panel_first": "1999-11-10T00:00:00",
+        "src_first": "2002-02-19T00:00:00",
+        "lead_days": 832,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "DVN",
+        "panel_first": "1997-07-24T00:00:00",
+        "src_first": "1999-08-27T00:00:00",
+        "lead_days": 764,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "PM",
+        "panel_first": "2008-03-17T00:00:00",
+        "src_first": "2010-01-29T00:00:00",
+        "lead_days": 683,
+        "availability_mode": "per_ticker_event"
+      },
+      {
+        "prefix": "f_ic_bo_",
+        "leg": "f_ic_bo_holder_count",
+        "ticker": "SMCI",
+        "panel_first": "2007-03-29T00:00:00",
+        "src_first": "2009-01-30T00:00:00",
+        "lead_days": 673,
+        "availability_mode": "per_ticker_event"
+      }
+    ],
+    "pit_clocks": {
+      "insider_transactions": "filing_date",
+      "sec_13d": "filing_date",
+      "sec_short_interest": "date",
+      "sec_fails_to_deliver": "date",
+      "sec_13g": "filing_date"
+    }
+  }
+}

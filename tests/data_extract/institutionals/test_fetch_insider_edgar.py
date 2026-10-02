@@ -11,6 +11,14 @@ from src.data_extract.utils.institutionals import fetch_insider_edgar as module
 from src.data_store.ddl import columns_from_frame
 from src.data_store.schema import Tables
 
+_FORM4_XML = """<ownershipDocument><documentType>4</documentType>
+  <issuer><issuerCik>0000000001</issuerCik><issuerTradingSymbol>AAA</issuerTradingSymbol></issuer>
+  <nonDerivativeTable><nonDerivativeTransaction>
+    <transactionDate><value>2026-07-01</value></transactionDate><transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+    <transactionAmounts><transactionShares><value>10</value></transactionShares><transactionPricePerShare><value>20</value></transactionPricePerShare></transactionAmounts>
+  </nonDerivativeTransaction></nonDerivativeTable>
+</ownershipDocument>"""
+
 
 class _Filing:
     accession_number = "0000000001-26-000001"
@@ -19,25 +27,7 @@ class _Filing:
 
     @staticmethod
     def xml() -> str:
-        return "<ownershipDocument/>"
-
-
-def _parsed_transaction() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "source_row_sequence": 1,
-                "security_type": "nonderiv",
-                "issuer_cik": "0000000001",
-                "ticker": "AAA",
-                "transaction_date": pd.Timestamp("2026-07-01"),
-                "transaction_code": "P",
-                "shares": 10.0,
-                "price_per_share": 20.0,
-                "value_usd": 200.0,
-            }
-        ]
-    )
+        return _FORM4_XML
 
 
 def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch):
@@ -65,16 +55,7 @@ def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch)
 
 def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
     monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [_Filing(), _Filing()])
-    monkeypatch.setattr(
-        module,
-        "parse_ownership_xml",
-        lambda xml: (_parsed_transaction(), pd.DataFrame(columns=["footnote_id", "footnote_text"])),
-    )
-    monkeypatch.setattr(
-        module,
-        "_filter_universe",
-        lambda frame, universe, identity: (frame, pd.DataFrame()),
-    )
+    monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame, pd.DataFrame()))
     out = module.build_ticker_insider_edgar(
         "AAA",
         "1",
@@ -87,6 +68,7 @@ def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
     assert len(live) == 1
     assert live.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
     assert live.iloc[0]["accession_number"] == _Filing.accession_number
+    assert live.iloc[0]["value_usd"] == 200.0
     print("SANITY: listing the same accession twice produced one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
 
 

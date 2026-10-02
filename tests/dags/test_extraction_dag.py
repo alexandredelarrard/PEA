@@ -7,6 +7,7 @@ from pathlib import Path
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
+EDGAR_DRIVER_FILE = "src/data_extract/utils/common/edgar_driver.py"
 STRICT_EDGAR_FILES = (
     "src/data_extract/utils/fundamentals/fetch_fundamentals_sec.py",
     "src/data_extract/utils/institutionals/fetch_8k_edgar.py",
@@ -142,8 +143,34 @@ def test_retries_dependencies_and_hard_gates_are_wired():
 
 def test_scheduled_edgar_walks_require_complete_ticker_coverage():
     root = DAG_FILE.parents[2]
-    missing = [path for path in STRICT_EDGAR_FILES if "require_complete=True" not in _source(root / path)]
-    assert not missing, f"scheduled EDGAR walks still allow partial success: {missing}"
+    driver = ast.parse(_source(root / EDGAR_DRIVER_FILE))
+    defaults = {
+        node.target.id: node.value
+        for cls in ast.walk(driver)
+        if isinstance(cls, ast.ClassDef) and cls.name == "EdgarFetch"
+        for node in cls.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    default = defaults.get("require_complete")
+    assert isinstance(default, ast.Constant) and default.value is True, "EdgarFetch.require_complete must default to True"
+
+    missing, relaxed = [], []
+    for path in STRICT_EDGAR_FILES:
+        specs = [
+            call
+            for call in ast.walk(ast.parse(_source(root / path)))
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "EdgarFetch"
+        ]
+        if not specs:
+            missing.append(path)
+        relaxed += [
+            path
+            for call in specs
+            for kw in call.keywords
+            if kw.arg == "require_complete" and not (isinstance(kw.value, ast.Constant) and kw.value.value is True)
+        ]
+    assert not missing, f"scheduled EDGAR walks no longer declare an EdgarFetch spec: {missing}"
+    assert not relaxed, f"scheduled EDGAR walks still allow partial success: {relaxed}"
 
     print("\n=== SANITY CHECK: strict EDGAR walks ===")
     print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers require complete coverage")

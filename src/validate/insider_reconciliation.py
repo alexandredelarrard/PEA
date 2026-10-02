@@ -23,8 +23,8 @@ from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.institutionals.fetch_insider_edgar import (
-    _filing_frames,
     insider_filings,
+    live_insider_frames,
 )
 from src.data_store.schema import Tables
 from src.validate.checks.insider_parity import (
@@ -156,12 +156,7 @@ def replay_completed_quarter(
                 continue
             listed_accessions.append(accession)
             try:
-                transactions, _, _ = _filing_frames(
-                    filing,
-                    universe=tickers,
-                    identity=identity,
-                    fetched_at=pd.Timestamp.now(tz="UTC").tz_localize(None),
-                )
+                transactions, _, _ = live_insider_frames([filing], universe=tickers, identity=identity)
             except PROGRAMMING_ERRORS:
                 raise
             except Exception as exc:  # noqa: BLE001 -- retained in the report as evidence

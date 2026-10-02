@@ -67,8 +67,8 @@ WHAT THIS MODULE DOES NOT FIX, stated because a silent residual is worse than a 
     Constellation Energy rows under `CEG`, and 2,075 Trane rows under `IR` -- whose CIK
     0001466258 is `TT`'s own universe CIK. Against the registrant register, **38,910 rows
     (1.92%), 8,640 of them P/S, across 72 in-universe tickers** sit outside their ticker's lineage. That
-    is an extraction defect and is not repaired here; see `_filter_universe` in
-    `data_extract/utils/institutionals/fetch_insider_transactions.py`.
+    is an extraction defect and is not repaired here; see `screen_insider_rows` in
+    `data_extract/utils/institutionals/insider_common.py`.
 """
 
 from __future__ import annotations

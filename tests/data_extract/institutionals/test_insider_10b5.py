@@ -14,13 +14,37 @@ import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import quarter_periods
 from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    _FOOTNOTE_COLS,
     SEC_INSIDER_FIRST_YEAR,
-    _footnotes,
-    _normalize_10b5_1,
-    _parse_insider,
-    _transactions,
+    _footnote_strings,
+    extract_bulk_strings,
 )
+from src.data_extract.utils.institutionals.insider_common import FOOTNOTE_COLUMNS, build_insider_frame, filter_footnotes, normalize_flag
+
+#: A submission + owner row the transaction-only fixtures below are joined to.
+_SUB_ROW = {
+    "ACCESSION_NUMBER": "0001-26-000002",
+    "ISSUERCIK": "320193",
+    "ISSUERTRADINGSYMBOL": "AAPL",
+    "DOCUMENT_TYPE": "4",
+    "FILING_DATE": "05-FEB-2026",
+}
+_OWN_ROW = {"ACCESSION_NUMBER": "0001-26-000002", "RPTOWNERCIK": "1", "RPTOWNER_RELATIONSHIP": "Director"}
+
+
+def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
+    """The bulk path: zip members -> canonical strings -> typed frame."""
+    return build_insider_frame(extract_bulk_strings(sub, own, nonderiv, deriv), value_rule="shares_x_price_first", numeric_rule="to_numeric")
+
+
+def _transactions(df: pd.DataFrame, security_type: str) -> pd.DataFrame:
+    """One transaction table parsed against the fixed submission/owner row."""
+    sub, own = pd.DataFrame([_SUB_ROW]), pd.DataFrame([_OWN_ROW])
+    tables = (df, pd.DataFrame()) if security_type == "nonderiv" else (pd.DataFrame(), df)
+    return _parse_insider(sub, own, *tables)
+
+
+def _footnotes(notes: pd.DataFrame | None, keep: set[str]) -> pd.DataFrame:
+    return filter_footnotes(_footnote_strings(notes), keep)
 
 
 def _submission(rows: list[dict], *, with_10b5: bool = True) -> pd.DataFrame:
@@ -37,7 +61,7 @@ def test_aff10b5one_normalization_table():
     """The raw column is mixed-encoding within a single quarter. Measured 2026q1:
     '0' 42,435 - 'false' 11,525 - '1' 3,620 - 'true' 1,162 - NaN 10,517."""
     raw = pd.Series(["1", "true", "TRUE", "Y", "0", "false", "FALSE", "N", "", "  ", None, "maybe"], dtype="object")
-    out = _normalize_10b5_1(raw)
+    out = normalize_flag(raw)
     assert list(out[:4]) == [1.0, 1.0, 1.0, 1.0]
     assert list(out[4:8]) == [0.0, 0.0, 0.0, 0.0]
     assert out[8:].isna().all(), "an unrecognised value must be NaN, never False"
@@ -148,7 +172,7 @@ def test_derivative_block_reads_secs_own_misspelling():
             }
         ]
     )
-    out = _transactions(deriv, "DERIV_TRANS_SK", "deriv")
+    out = _transactions(deriv, "deriv")
     row = out.iloc[0]
     assert row["exercise_price"] == 42.5
     assert row["exercise_date"] == pd.Timestamp("2020-02-01")
@@ -162,7 +186,7 @@ def test_derivative_columns_are_null_on_nonderivative_rows():
     nonderiv = pd.DataFrame(
         [
             {
-                "ACCESSION_NUMBER": "0001-26-000003",
+                "ACCESSION_NUMBER": "0001-26-000002",
                 "NONDERIV_TRANS_SK": "30",
                 "TRANS_DATE": "03-FEB-2026",
                 "TRANS_CODE": "P",
@@ -172,7 +196,7 @@ def test_derivative_columns_are_null_on_nonderivative_rows():
             }
         ]
     )
-    out = _transactions(nonderiv, "NONDERIV_TRANS_SK", "nonderiv")
+    out = _transactions(nonderiv, "nonderiv")
     for col in ("exercise_price", "exercise_date", "expiration_date", "underlying_security_title", "underlying_shares", "underlying_value"):
         assert out[col].isna().all(), f"{col} should be NULL on a non-derivative row"
 
@@ -191,7 +215,7 @@ def test_footnotes_key_on_accession_and_id_and_respect_the_universe():
         ]
     )
     out = _footnotes(notes, {"A"})
-    assert list(out.columns) == _FOOTNOTE_COLS
+    assert list(out.columns) == FOOTNOTE_COLUMNS
     assert len(out) == 2 and set(out["accession_number"]) == {"A"}
     assert not out.duplicated(["accession_number", "footnote_id"]).any()
     print("\n=== SANITY: insider footnotes ===")
@@ -200,7 +224,7 @@ def test_footnotes_key_on_accession_and_id_and_respect_the_universe():
 
 def test_footnotes_tolerate_an_absent_or_empty_table():
     assert _footnotes(pd.DataFrame(), {"A"}).empty
-    assert list(_footnotes(None, {"A"}).columns) == _FOOTNOTE_COLS
+    assert list(_footnotes(None, {"A"}).columns) == FOOTNOTE_COLUMNS
 
 
 # --------------------------------------------------------------------------- #

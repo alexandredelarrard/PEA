@@ -1,4 +1,4 @@
-"""The identity screen inside `_filter_universe`: CIK-first resolution, the quarantine
+"""The identity screen inside `screen_insider_rows`: CIK-first resolution, the quarantine
 partition, and the stored-row sweep that the upsert cannot do.
 
 The fixture is the four real cases the screen was designed against, shrunk to the two
@@ -22,7 +22,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.institutionals.fetch_insider_transactions import _filter_universe, _to_quarantine, _verdicts
+from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnote_strings
+from src.data_extract.utils.institutionals.insider_common import filter_footnotes, insider_verdicts, screen_insider_rows
 from src.data_store.schema import Tables
 
 # --------------------------------------------------------------------------- #
@@ -117,9 +118,9 @@ def test_a_trane_row_filed_under_ir_is_relabelled_to_tt_not_quarantined(identity
     instead of deleting real insider history. Measured live: 2,554 of the 2,558 relabelled
     rows are exactly this group. Rejection is for a symbol whose earlier holder is not in the
     universe at all -- `COR`/CoreSite, next test."""
-    kept, rejected = _filter_universe(_rows([("IR", TRANE)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("IR", TRANE)]), UNIVERSE, identity)
 
-    assert rejected.empty, "Trane's entity holds TT, so the row moves rather than dying"
+    assert quarantine.empty, "Trane's entity holds TT, so the row moves rather than dying"
     assert list(kept["ticker"]) == ["TT"]
     assert list(kept["claimed_ticker"]) == ["IR"]
     print("\n=== the IR case: a THIRD outcome ===")
@@ -129,13 +130,13 @@ def test_a_trane_row_filed_under_ir_is_relabelled_to_tt_not_quarantined(identity
 def test_a_coresite_row_filed_under_cor_is_rejected_with_both_entity_ids(identity):
     """The rejection shape: CoreSite Realty held `COR` until 2021 and its entity holds NO
     universe ticker, so there is nowhere for its 1,207 rows to go but the quarantine."""
-    kept, rejected = _filter_universe(_rows([("COR", CORESITE)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("COR", CORESITE)]), UNIVERSE, identity)
 
     assert kept.empty, "a CoreSite filing must not be kept under COR"
-    assert len(rejected) == 1
-    row = rejected.iloc[0]
+    assert len(quarantine) == 1
+    row = quarantine.iloc[0]
     assert row["reject_reason"] == "entity_mismatch"
-    assert row["claimed_ticker"] == "COR"
+    assert row["ticker"] == "COR"  # the quarantine stores the claim
     assert row["resolved_entity_id"] == "E0001490892"  # the entity the CIK really is
     assert row["universe_entity_id"] == "E0001140859"  # the entity `COR` names today
     assert row["resolved_entity_id"] != row["universe_entity_id"]
@@ -149,9 +150,9 @@ def test_a_coresite_row_filed_under_cor_is_rejected_with_both_entity_ids(identit
 def test_a_dupont_e_i_row_filed_under_dd_is_kept(identity):
     """The case a fail-closed rule would destroy: 3,422 rows of genuine predecessor history.
     Same entity, different CIK -- which is exactly what `entity_lineage` exists to say."""
-    kept, rejected = _filter_universe(_rows([("DD", DUPONT_EI)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("DD", DUPONT_EI)]), UNIVERSE, identity)
 
-    assert rejected.empty
+    assert quarantine.empty
     assert list(kept["ticker"]) == ["DD"]
     print("\n=== the DD case ===")
     print(f"  DuPont E I {DUPONT_EI} kept under DD: predecessor history is not symbol reuse.")
@@ -161,9 +162,9 @@ def test_an_amerisourcebergen_row_filed_as_abc_is_admitted_as_cor(identity):
     """⚠ THE ADMIT CASE, and the reason this change is not purely subtractive. `ABC` is not a
     universe ticker, so the symbol path dropped the row outright; the CIK path resolves it to
     the ticker its own entity holds today. Measured live: 2,275 rows come back this way."""
-    kept, rejected = _filter_universe(_rows([("ABC", ABC)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("ABC", ABC)]), UNIVERSE, identity)
 
-    assert rejected.empty, "an admitted row is not a rejected row"
+    assert quarantine.empty, "an admitted row is not a rejected row"
     assert list(kept["ticker"]) == ["COR"]
     assert list(kept["claimed_ticker"]) == ["ABC"]
     print("\n=== the COR admit case ===")
@@ -173,10 +174,10 @@ def test_an_amerisourcebergen_row_filed_as_abc_is_admitted_as_cor(identity):
 def test_avicena_is_rejected_while_every_broadcom_segment_is_kept(identity):
     """One symbol, a register CHAIN and a reuse case at once -- the shape that cannot be
     expressed by one CIK per ticker, and the reason axis A is a table rather than a dict."""
-    kept, rejected = _filter_universe(_rows([("AVGO", AVICENA), ("AVGO", BROADCOM), ("AVGO", BROADCOM_LTD)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("AVGO", AVICENA), ("AVGO", BROADCOM), ("AVGO", BROADCOM_LTD)]), UNIVERSE, identity)
 
-    assert list(rejected["issuer_cik"]) == [AVICENA]
-    assert rejected.iloc[0]["reject_reason"] == "entity_mismatch"
+    assert list(quarantine["issuer_cik"]) == [AVICENA]
+    assert quarantine.iloc[0]["reject_reason"] == "entity_mismatch"
     assert set(kept["issuer_cik"]) == {BROADCOM, BROADCOM_LTD}
     assert set(kept["ticker"]) == {"AVGO"}
     print("\n=== the AVGO case ===")
@@ -192,9 +193,9 @@ def test_a_row_with_no_issuer_cik_gets_its_own_reason(identity):
     """Measured ZERO across all 4,402,307 filings in the 81 cached quarters, which is why no
     symbol fallback is built. The branch exists so that a source change is a LABELLED
     quarantine row and not a silently dropped one."""
-    _, rejected = _filter_universe(_rows([("DD", None)]), UNIVERSE, identity)
+    _, quarantine = screen_insider_rows(_rows([("DD", None)]), UNIVERSE, identity)
 
-    assert list(rejected["reject_reason"]) == ["no_issuer_cik"]
+    assert list(quarantine["reject_reason"]) == ["no_issuer_cik"]
     print("\n=== no_issuer_cik ===")
     print("  a CIK-less row is quarantined with its own reason, never silently dropped.")
 
@@ -204,10 +205,10 @@ def test_a_departed_universe_ticker_is_reason_entity_not_in_universe(identity):
     cannot see them at all (no zip row claims a ticker the universe lost AND resolves), so
     this reason is mostly produced by the stored-row sweep -- but the label is the same one."""
     frame = _rows([("COR", CORESITE)])
-    scored = _verdicts(frame, UNIVERSE, identity)
+    scored = insider_verdicts(frame, UNIVERSE, identity)
 
     assert list(scored["reject_reason"]) == ["entity_mismatch"]  # COR IS in the universe
-    gone = _verdicts(frame, tuple(symbol for symbol in UNIVERSE if symbol != "COR"), identity)
+    gone = insider_verdicts(frame, tuple(symbol for symbol in UNIVERSE if symbol != "COR"), identity)
     assert list(gone["reject_reason"]) == ["entity_not_in_universe"]
     print("\n=== the two rejection reasons are distinguishable ===")
     print("  the same CoreSite row reads entity_mismatch while COR is in the universe and entity_not_in_universe once it leaves.")
@@ -219,24 +220,23 @@ def test_the_partition_is_disjoint_and_loses_no_in_scope_row(identity):
     an EXHAUSTIVE quarantine would store ~50M rows about companies nothing here reads."""
     pairs = [("IR", TRANE), ("DD", DUPONT_EI), ("ABC", ABC), ("AVGO", AVICENA), ("AVGO", BROADCOM), ("COR", CORESITE), ("ZZZZ", "0009999999")]
     frame = _rows(pairs)
-    kept, rejected = _filter_universe(frame, UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(frame, UNIVERSE, identity)
 
     keys = ["accession_number", "security_type", "transaction_sk"]
     kept_keys = set(map(tuple, kept[keys].to_numpy()))
-    rej_keys = set(map(tuple, rejected[keys].to_numpy()))
+    rej_keys = set(map(tuple, quarantine[keys].to_numpy()))
     assert not (kept_keys & rej_keys), "a row cannot be both kept and quarantined"
-    assert len(kept) + len(rejected) == len(frame) - 1, "only the off-universe row is dropped"
-    assert "ZZZZ" not in set(rejected["claimed_ticker"])
+    assert len(kept) + len(quarantine) == len(frame) - 1, "only the off-universe row is dropped"
+    assert "ZZZZ" not in set(quarantine["ticker"])
     print("\n=== partition ===")
-    print(f"  {len(frame)} rows in -> {len(kept)} kept + {len(rejected)} quarantined, disjoint; 1 unrelated filer dropped rather than quarantined.")
+    print(f"  {len(frame)} rows in -> {len(kept)} kept + {len(quarantine)} quarantined, disjoint; 1 unrelated filer dropped rather than quarantined.")
 
 
 def test_the_quarantine_frame_stores_the_claimed_ticker(identity):
-    """⚠ `_to_quarantine` overwrites `ticker` with the claim on purpose. A NULL there would
+    """⚠ The quarantine overwrites `ticker` with the claim on purpose. A NULL there would
     lose the only evidence of what the old screen believed, and the resolved side survives as
     an entity id, which no downstream join can mistake for a tradable symbol."""
-    _, rejected = _filter_universe(_rows([("COR", CORESITE)]), UNIVERSE, identity)
-    out = _to_quarantine(rejected)
+    _, out = screen_insider_rows(_rows([("COR", CORESITE)]), UNIVERSE, identity)
 
     assert list(out["ticker"]) == ["COR"]
     assert out.iloc[0]["screened_on"] == pd.Timestamp("2015-06-01")  # D18: filing_date
@@ -247,10 +247,10 @@ def test_the_quarantine_frame_stores_the_claimed_ticker(identity):
 
 def test_an_empty_frame_returns_two_frames_not_one(identity):
     """The caller unpacks unconditionally, so the empty path must keep the same arity."""
-    kept, rejected = _filter_universe(pd.DataFrame(), UNIVERSE, identity)
-    assert kept.empty and rejected.empty
+    kept, quarantine = screen_insider_rows(pd.DataFrame(), UNIVERSE, identity)
+    assert kept.empty and quarantine.empty
     print("\n=== empty input ===")
-    print("  (kept, rejected) arity preserved on an empty quarter.")
+    print("  (kept, quarantine) arity preserved on an empty quarter.")
 
 
 def test_no_date_filter_runs_on_a_post_boundary_predecessor_row(identity):
@@ -259,25 +259,23 @@ def test_no_date_filter_runs_on_a_post_boundary_predecessor_row(identity):
     frame = _rows([("DD", DUPONT_EI), ("DD", DUPONT_EI)])
     frame.loc[0, "filing_date"] = pd.Timestamp("2006-02-01")  # inside the tenure
     frame.loc[1, "filing_date"] = pd.Timestamp("2025-02-01")  # long past its close
-    kept, rejected = _filter_universe(frame, UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(frame, UNIVERSE, identity)
 
-    assert len(kept) == 2 and rejected.empty
+    assert len(kept) == 2 and quarantine.empty
     print("\n=== no date filter ===")
     print("  a DuPont E I Form 4 filed in 2025 is kept: the union policy is unchanged.")
 
 
 def test_footnotes_follow_the_kept_accessions_only(identity):
-    """`_footnotes` rides `set(kept['accession_number'])`, which is why the screen creates no
+    """`filter_footnotes` rides `set(kept['accession_number'])`, which is why the screen creates no
     NEW orphans. Pre-existing orphans are left in place and documented (D13); measured live,
     `insider_footnotes` has 0 of them today."""
-    from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnotes
-
-    kept, rejected = _filter_universe(_rows([("DD", DUPONT_EI), ("COR", CORESITE)]), UNIVERSE, identity)
+    kept, quarantine = screen_insider_rows(_rows([("DD", DUPONT_EI), ("COR", CORESITE)]), UNIVERSE, identity)
     notes = pd.DataFrame({"ACCESSION_NUMBER": ["a0", "a1"], "FOOTNOTE_ID": ["F1", "F1"], "FOOTNOTE_TXT": ["kept", "quarantined"]})
-    out = _footnotes(notes, set(kept["accession_number"]))
+    out = filter_footnotes(_footnote_strings(notes), set(kept["accession_number"]))
 
     assert list(out["accession_number"]) == ["a0"]
-    assert "a1" in set(rejected["accession_number"])
+    assert "a1" in set(quarantine["accession_number"])
     print("\n=== footnotes ===")
     print("  the quarantined accession's footnote is not stored, so no new orphan appears.")
 

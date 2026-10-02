@@ -28,22 +28,22 @@ from src.data_extract.utils.common.sec_atom import (
     fetch_atom_entries,
     parse_atom_entry,
 )
-from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    _filter_universe,
-    _repair_transaction_dates,
-    _to_quarantine,
+from src.data_extract.utils.institutionals.insider_common import (
+    INSIDER_COLUMNS,
+    build_insider_frame,
+    empty_footnotes,
+    filter_footnotes,
+    screen_insider_rows,
 )
-from src.data_extract.utils.institutionals.insider_edgar_parser import (
-    FOOTNOTE_COLUMNS,
-    TRANSACTION_COLUMNS,
-    parse_ownership_xml,
-)
+from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
 _LIVE_COLUMNS = (
     "accession_number",
-    *TRANSACTION_COLUMNS,
+    "source_row_sequence",
+    *(column for column in INSIDER_COLUMNS if column not in ("accession_number", "transaction_sk", "filing_date", "quarter")),
+    "footnote_ids",
     "filing_date",
     "acceptance_datetime",
     "fetched_at",
@@ -173,43 +173,50 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
-def _filing_frames(
-    filing: object,
-    *,
-    universe: Sequence[str],
-    identity: Identity,
-    fetched_at: pd.Timestamp,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """One ownership filing -> kept transactions, footnotes, and rejected transactions."""
-    filing_obj = cast(Any, filing)
-    xml = filing_obj.xml()
-    if not xml:
-        raise ValueError(f"{getattr(filing_obj, 'accession_number', '?')}: no ownership XML")
-    transactions, footnotes = parse_ownership_xml(xml)
-    if transactions.empty:
-        return transactions, pd.DataFrame(columns=("accession_number", *FOOTNOTE_COLUMNS)), pd.DataFrame()
-
-    accession = str(filing_obj.accession_number)
-    transactions = transactions.assign(
-        accession_number=accession,
-        filing_date=pd.Timestamp(filing_obj.filing_date).normalize(),
-        acceptance_datetime=_acceptance_datetime(filing_obj),
-        fetched_at=fetched_at,
-    )
-    transactions = _repair_transaction_dates(transactions)
-    kept, rejected = _filter_universe(transactions, universe, identity)
-
-    kept_notes = pd.DataFrame(columns=("accession_number", *FOOTNOTE_COLUMNS))
-    if not kept.empty and not footnotes.empty:
-        kept_notes = footnotes.assign(accession_number=accession)[["accession_number", *FOOTNOTE_COLUMNS]]
-
-    quarantine = pd.DataFrame()
-    if not rejected.empty:
-        rejected = rejected.assign(
-            transaction_sk=("edgar:" + rejected["security_type"].astype(str) + ":" + rejected["source_row_sequence"].astype(str))
+def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (canonical string transactions, footnotes, filing metadata), keyed on accession."""
+    transaction_frames: list[pd.DataFrame] = []
+    footnote_frames: list[pd.DataFrame] = []
+    metadata: list[dict[str, object]] = []
+    for filing in filings:
+        xml = filing.xml()
+        if not xml:
+            raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
+        df_str, df_notes = extract_xml_strings(xml)
+        if df_str.empty:
+            continue
+        accession = str(filing.accession_number)
+        transaction_frames.append(df_str.assign(accession_number=accession))
+        if not df_notes.empty:
+            footnote_frames.append(df_notes.assign(accession_number=accession))
+        metadata.append(
+            {
+                "accession_number": accession,
+                "filing_date": pd.Timestamp(filing.filing_date).normalize(),
+                "acceptance_datetime": _acceptance_datetime(filing),
+            }
         )
-        quarantine = _to_quarantine(rejected)
-    return kept, kept_notes, quarantine
+    df_str = pd.concat(transaction_frames, ignore_index=True) if transaction_frames else pd.DataFrame()
+    df_notes = pd.concat(footnote_frames, ignore_index=True) if footnote_frames else empty_footnotes()
+    return df_str, df_notes, pd.DataFrame(metadata)
+
+
+def _screen_live_rows(df_str: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Type the string rows, attach filing metadata and an `edgar:` row key, then screen into (kept, quarantine)."""
+    df_built = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float")
+    df_built = df_built.merge(df_meta.drop_duplicates("accession_number", keep="last"), on="accession_number", how="left")
+    df_built["transaction_sk"] = "edgar:" + df_built["security_type"].astype(str) + ":" + df_built["source_row_sequence"].astype(str)
+    return screen_insider_rows(df_built, universe, identity)
+
+
+def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
+    df_str, df_notes, df_meta = _ticker_strings(filings)
+    if df_str.empty:
+        return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
+    df_kept, df_quarantine = _screen_live_rows(df_str, df_meta, universe, identity)
+    df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"])) if not df_kept.empty else empty_footnotes()
+    return df_kept, df_kept_notes, df_quarantine
 
 
 def build_ticker_insider_edgar(
@@ -229,41 +236,22 @@ def build_ticker_insider_edgar(
     `rescan_stored` (a `--full` run) ignores `done_accessions` and re-reads stored filings.
     """
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
-    transaction_frames: list[pd.DataFrame] = []
-    footnote_frames: list[pd.DataFrame] = []
-    quarantine_frames: list[pd.DataFrame] = []
-    for filing in insider_filings(
-        ticker,
-        cik,
-        since=since,
-        through=scan_through,
-        done_accessions=frozenset() if rescan_stored else done_accessions,
-        scope=scope,
-    ):
-        transactions, footnotes, quarantine = _filing_frames(
-            filing,
-            universe=universe,
-            identity=identity,
-            fetched_at=fetched_at,
-        )
-        if not transactions.empty:
-            transaction_frames.append(transactions)
-        if not footnotes.empty:
-            footnote_frames.append(footnotes)
-        if not quarantine.empty:
-            quarantine_frames.append(quarantine)
+    filings = insider_filings(
+        ticker, cik, since=since, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
+    )
+    df_kept, df_notes, df_quarantine = live_insider_frames(filings, universe=universe, identity=identity)
 
-    live = pd.concat(transaction_frames, ignore_index=True) if transaction_frames else pd.DataFrame(columns=_LIVE_COLUMNS)
-    if not live.empty:
-        live = live[[column for column in _LIVE_COLUMNS if column in live.columns]]
-        live = live.drop_duplicates(subset=list(Tables.insider_transactions_live.pk), keep="last")
-    notes = pd.concat(footnote_frames, ignore_index=True) if footnote_frames else pd.DataFrame(columns=("accession_number", *FOOTNOTE_COLUMNS))
-    rejected = pd.concat(quarantine_frames, ignore_index=True) if quarantine_frames else pd.DataFrame()
+    live = pd.DataFrame(columns=_LIVE_COLUMNS)
+    if not df_kept.empty:
+        df_live = df_kept.assign(fetched_at=fetched_at)
+        live = df_live[[column for column in _LIVE_COLUMNS if column in df_live.columns]].drop_duplicates(
+            subset=list(Tables.insider_transactions_live.pk), keep="last"
+        )
     coverage = pd.DataFrame([{"ticker": ticker, "complete_through": scan_through, "updated_at": fetched_at}])
     return {
         Tables.insider_transactions_live: live,
-        Tables.insider_footnotes: notes,
-        Tables.insider_transactions_quarantine: rejected,
+        Tables.insider_footnotes: df_notes,
+        Tables.insider_transactions_quarantine: df_quarantine if not df_quarantine.empty else pd.DataFrame(),
         Tables.insider_transactions_live_coverage: coverage,
     }
 

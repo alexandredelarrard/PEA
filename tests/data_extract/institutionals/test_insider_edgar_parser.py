@@ -5,7 +5,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.insider_edgar_parser import parse_ownership_xml
+from src.data_extract.utils.institutionals.insider_common import build_insider_frame
+from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
+
+
+def parse_ownership_xml(xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The live path: ownership XML -> canonical strings -> typed frame, plus footnotes."""
+    df_str, footnotes = extract_xml_strings(xml)
+    return build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float"), footnotes
+
 
 FORM4_XML = """<?xml version="1.0"?>
 <ownershipDocument>

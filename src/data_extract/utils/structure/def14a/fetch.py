@@ -97,6 +97,7 @@ from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def _subject_is_accepted(
 ) -> bool:
     """Reject only a known subject that is outside the accepted registrant entity."""
     accession = str(filing["accession_number"])
-    filer_cik = str(filing["cik"]).zfill(10)
+    filer_cik = pad_cik(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
@@ -413,7 +414,7 @@ def fetch_def14a_llm(
     # The registrant-boundary register. Curated JSON rather than an `sp500_tickers` column
     # precisely because that table is rebuilt from Wikipedia, so a roster refresh would
     # silently overwrite it -- see `cik_cutover`. `{}` when the file is absent.
-    cutovers = load_registrants()
+    cutovers = load_registrants(str(context.config_dir))
     if cutovers:
         context.log.info("DEF 14A: %d registrant cutover(s) in force: %s", len(cutovers), ", ".join(sorted(cutovers)))
 

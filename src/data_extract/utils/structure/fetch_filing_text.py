@@ -22,8 +22,7 @@ import re
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import filed_by, new_filings, run_edgar_fetch
-from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.edgar_driver import EdgarScope, filed_by, new_filings, run_edgar_fetch
 from src.data_store.schema import Table, Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
@@ -191,9 +190,7 @@ def build_ticker_filing_text(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
     rows: list[dict] = []
     for f in new_filings(
@@ -201,9 +198,7 @@ def build_ticker_filing_text(
         FILING_TEXT_FORMS,
         since,
         done_accessions,
-        identity=identity,
-        symbol_tenure=symbol_tenure,
-        roster_cik=roster_cik,
+        scope,
     ):
         filed = pd.Timestamp(f.filing_date).normalize()
         for section, body in _filing_sections(f).items():

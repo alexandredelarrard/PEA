@@ -22,6 +22,7 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
+from src.utils.string import pad_cik
 
 
 def _full_submission_url(cik: str, accession: str) -> str:
@@ -120,7 +121,7 @@ def list_filings(
     are skipped without being downloaded. When `cache_dir` is given, every raw
     submissions page is written there before parsing.
     """
-    cik = str(cik).zfill(10)
+    cik = pad_cik(cik)
     forms_set = set(forms)
     cutoff = pd.Timestamp.today() - pd.DateOffset(years=years)
     if since is not None:

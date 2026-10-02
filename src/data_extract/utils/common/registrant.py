@@ -43,16 +43,21 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote_plus
 from xml.etree import ElementTree
 
+import edgar
+import edgar.httprequests
 import pandas as pd
 
 from src.constants.constants import SEC_INSIDER_OWNER_ATOM_PAGE_SIZE, SEC_INSIDER_OWNER_ATOM_URL
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, pad_cik_series
+
+if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
+    from src.data_extract.utils.common.identity import FilingScope, Identity
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +190,7 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
             raise ValueError(f"registrant[{ticker}] segment {i}: missing `valid_to`.")
         segments.append(
             Segment(
-                cik=_normalise_cik(seg["cik"]),
+                cik=pad_cik(seg["cik"]),
                 valid_from=_stamp(ticker, i, seg.get("valid_from")),
                 valid_to=_stamp(ticker, i, seg.get("valid_to")),
                 evidence=str(seg["evidence"]),
@@ -331,35 +336,14 @@ class AmbiguousRegistrantScopeError(RuntimeError):
     """Identity found a CIK transition that has no complete dated registrant chain."""
 
 
-def identity_scope_fingerprint(
-    ticker: str,
-    roster_cik: str,
-    identity: Any,
-    symbol_tenure: pd.DataFrame,
-    registrants: dict[str, Registrant],
-) -> str:
-    """Stable digest of one ticker's discovered and authoritative filing scope."""
-    ticker = str(ticker).strip().upper()
-    roster_cik = _normalise_cik(roster_cik)
-    entity = identity.universe_entity(ticker)
-    candidate_ciks = {_normalise_cik(cik) for cik in identity.ciks_for(entity)} | {roster_cik}
-    candidate_symbols = {ticker}
-    for row in symbol_tenure.loc[:, ["symbol", "issuer_cik"]].itertuples(index=False):
-        if pd.isna(row.symbol) or pd.isna(row.issuer_cik):
-            continue
-        cik = _normalise_cik(row.issuer_cik)
-        if identity.entity_of(cik) != entity:
-            continue
-        candidate_ciks.add(cik)
-        candidate_symbols.add(str(row.symbol).strip().upper())
-
-    entry = registrants.get(ticker)
+def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> str:
+    """Stable digest of one ticker's discovered scope and its authoritative register segments."""
     segments = (
         []
         if entry is None
         else [
             {
-                "cik": _normalise_cik(segment.cik),
+                "cik": segment.cik,
                 "valid_from": None if segment.valid_from is None else pd.Timestamp(segment.valid_from).date().isoformat(),
                 "valid_to": None if segment.valid_to is None else pd.Timestamp(segment.valid_to).date().isoformat(),
             }
@@ -367,57 +351,33 @@ def identity_scope_fingerprint(
         ]
     )
     payload = {
-        "canonical_ticker": ticker,
-        "roster_cik": roster_cik,
-        "candidate_ciks": sorted(candidate_ciks),
-        "candidate_symbols": sorted(candidate_symbols),
+        "canonical_ticker": scope.ticker,
+        "roster_cik": scope.roster_cik,
+        "candidate_ciks": list(scope.ciks),
+        "candidate_symbols": list(scope.symbols),
         "authoritative_segments": segments,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _identity_filing_scope(
-    ticker: str,
-    roster_cik: str,
-    identity: Any,
-    symbol_tenure: pd.DataFrame,
-    entry: Registrant | None,
-    policy: Combine,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Audit CIK scope; return same-CIK aliases and additive UNION CIKs."""
-    required = {"symbol", "issuer_cik"}
-    missing = required - set(symbol_tenure.columns)
-    if missing:
-        raise ValueError(f"symbol_tenure is missing required column(s): {sorted(missing)}")
+def _split_scope_check(scope: FilingScope, entry: Registrant | None, policy: Combine) -> tuple[str, ...]:
+    """The identity CIKs outside the roster CIK and the register chain, sorted.
 
-    ticker = str(ticker).strip().upper()
-    roster_cik = _normalise_cik(roster_cik)
-    entity = identity.universe_entity(ticker)
-    discovered_ciks = {_normalise_cik(cik) for cik in identity.ciks_for(entity)} | {roster_cik}
-    aliases: set[str] = set()
-    for row in symbol_tenure.loc[:, ["symbol", "issuer_cik"]].itertuples(index=False):
-        if pd.isna(row.symbol) or pd.isna(row.issuer_cik):
-            continue
-        cik = _normalise_cik(row.issuer_cik)
-        if identity.entity_of(cik) != entity:
-            continue
-        discovered_ciks.add(cik)
-        symbol = str(row.symbol).strip().upper()
-        if cik == roster_cik and symbol and symbol != ticker:
-            aliases.add(symbol)
-
-    curated_ciks = {_normalise_cik(cik) for cik in entry.all_ciks()} if entry is not None else set()
-    missing_from_chain = discovered_ciks - curated_ciks
-    if policy is Combine.SPLIT and len(discovered_ciks) > 1 and missing_from_chain:
+    Raises for a SPLIT form when identity found more than one CIK and the register does not
+    curate all of them: consolidating filings need an explicit dated chain.
+    """
+    discovered = set(scope.ciks)
+    curated = set(entry.all_ciks()) if entry is not None else set()
+    missing_from_chain = discovered - curated
+    if policy is Combine.SPLIT and len(discovered) > 1 and missing_from_chain:
         raise AmbiguousRegistrantScopeError(
-            f"{ticker}: identity discovered registrant CIK(s) "
-            f"{', '.join(sorted(discovered_ciks))}, including uncurated "
+            f"{scope.ticker}: identity discovered registrant CIK(s) "
+            f"{', '.join(sorted(discovered))}, including uncurated "
             f"{', '.join(sorted(missing_from_chain))}; add a complete explicit dated "
             "registrant chain before fetching consolidating filings"
         )
-    additional_ciks = discovered_ciks - {roster_cik} - curated_ciks
-    return tuple(sorted(aliases)), tuple(sorted(additional_ciks))
+    return tuple(sorted(discovered - {scope.roster_cik} - curated))
 
 
 def resolve_registrant_filings(
@@ -426,51 +386,34 @@ def resolve_registrant_filings(
     *,
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
-    registrants: dict[str, Registrant] | None = None,
-    identity: Any | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    registrants: dict[str, Registrant],
+    identity: Identity | None = None,
     stats: dict[str, int] | None = None,
 ) -> list:
     """Every filing of `forms` for `ticker`, across its registrant chain, oldest first.
 
-    THE SINGLE PLACE THAT DECIDES WHICH CIKs A TICKER'S FILINGS COME FROM. Combination is
-    per-form, from `FORM_POLICY`; a mixed `forms` list raises.
+    Combination is per-form, from `FORM_POLICY`; a mixed `forms` list raises. With no register
+    entry and no identity-discovered alias or CIK this is `Company(ticker).get_filings(...)`.
+    Identity adds same-CIK historical symbols; a discovered CIK is additive for UNION forms and
+    fails closed for SPLIT forms until the register supplies a dated chain.
 
-    With no register entry and no identity-discovered alias or CIK, behavior stays identical
-    to `Company(ticker).get_filings(...)`. Identity may add same-CIK historical symbols for
-    discovery; a newly discovered CIK is additive for UNION forms and fails closed for SPLIT
-    forms until the register supplies an authoritative dated chain.
-
-    UNION walks `Company(ticker)` PLUS every segment CIK and dedups on accession, with the
-    ticker-resolved registrant FIRST so first-writer-wins preserves the provenance of every
-    filing the old implementation already returned. Register CIKs are ADDED, never
-    substituted, so a stale or wrong entry can never LOSE a filing.
-
-    SPLIT gives each segment only the filings inside `[valid_from, valid_to)`, disjoint by
-    construction. A duplicate accession is therefore impossible; if one appears the REGISTER
-    is wrong, so it is logged rather than silently deduped.
-
-    `since` and `done_accessions` are applied BEFORE the sort, so a routine incremental run
-    orders a handful of new filings rather than a ticker's full multi-decade history.
+    UNION walks `Company(ticker)` first, then every segment / identity CIK, deduping on
+    accession (first writer wins). SPLIT gives each segment only the filings inside
+    `[valid_from, valid_to)`; a duplicate accession there is logged as a register error.
+    `since` and `done_accessions` are applied before the sort.
     """
-    from edgar import Company
-
     policy = combine_for(forms)
-    registrants = load_registrants() if registrants is None else registrants
     entry = registrants.get(ticker)
     forms = list(forms)
     skipped_existing: set[str] = set()
     if stats is not None:
         stats.setdefault("skipped_existing", 0)
 
-    identity_inputs = (identity is not None, symbol_tenure is not None, roster_cik is not None)
-    if any(identity_inputs) and not all(identity_inputs):
-        raise ValueError("identity, symbol_tenure and roster_cik must be provided together")
     aliases: tuple[str, ...] = ()
     identity_ciks: tuple[str, ...] = ()
-    if identity is not None and symbol_tenure is not None and roster_cik is not None:
-        aliases, identity_ciks = _identity_filing_scope(ticker, roster_cik, identity, symbol_tenure, entry, policy)
+    if identity is not None:
+        scope = identity.filing_scope(ticker)
+        aliases, identity_ciks = scope.aliases, _split_scope_check(scope, entry, policy)
 
     def _keep(f) -> pd.Timestamp | None:
         if f.accession_number in done_accessions:
@@ -487,9 +430,9 @@ def resolve_registrant_filings(
             by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
             contributions: dict[str, int] = {}
             companies = (
-                [(ticker, Company(ticker))]
-                + [(alias, _symbol_company_or_none(Company, alias, ticker)) for alias in aliases]
-                + [(cik, _company_or_none(Company, cik, ticker)) for cik in additive_ciks]
+                [(ticker, edgar.Company(ticker))]
+                + [(alias, _symbol_company_or_none(edgar.Company, alias, ticker)) for alias in aliases]
+                + [(cik, _company_or_none(edgar.Company, cik, ticker)) for cik in additive_ciks]
             )
             for label, company in companies:
                 if company is None:
@@ -509,7 +452,7 @@ def resolve_registrant_filings(
                     ", ".join(f"{n} from {label}" for label, n in contributions.items()),
                 )
             return [f for _, f in sorted(by_accession.values(), key=lambda pair: pair[0])]
-        dated = [(d, f) for f in Company(ticker).get_filings(form=forms) if (d := _keep(f)) is not None]
+        dated = [(d, f) for f in edgar.Company(ticker).get_filings(form=forms) if (d := _keep(f)) is not None]
         dated.sort(key=lambda pair: pair[0])
         return [f for _, f in dated]
 
@@ -517,7 +460,7 @@ def resolve_registrant_filings(
         dated: list[tuple[pd.Timestamp, object]] = []
         seen: dict[str, str] = {}
         for segment in entry.segments:
-            for f in _filings(Company, segment.cik, forms):
+            for f in _filings(edgar.Company, segment.cik, forms):
                 filed = _keep(f)
                 if filed is None or not segment.covers(filed):
                     continue
@@ -541,7 +484,7 @@ def resolve_registrant_filings(
     by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
     contributed: dict[str, int] = {}
     union_ciks = tuple(dict.fromkeys((*entry.all_ciks(), *identity_ciks)))
-    for label, company in [("ticker", Company(ticker))] + [(cik, _company_or_none(Company, cik, ticker)) for cik in union_ciks]:
+    for label, company in [("ticker", edgar.Company(ticker))] + [(cik, _company_or_none(edgar.Company, cik, ticker)) for cik in union_ciks]:
         if company is None:
             continue
         listing = company.get_filings(form=forms)
@@ -573,27 +516,16 @@ def resolve_registrant_filings(
 def issuer_ciks(
     ticker: str,
     roster_cik: str,
-    registrants: dict[str, Registrant] | None = None,
-    identity: Any | None = None,
+    registrants: dict[str, Registrant],
+    identity: Identity | None = None,
 ) -> frozenset[str]:
     """Every CIK that legitimately identifies THIS ticker as the SUBJECT of a schedule.
 
-    ⚠ THE ISSUER/FILER GUARD ON 13D/13G WAS A SINGLE-CIK TEST, AND THE REGISTER BROKE IT.
-    `build_ticker_13g_edgar` (and its 13D twin) keeps a filing only when the issuer CIK read off
-    the schedule equals `pad_cik(cik)` -- the ROSTER's CIK. Before the register that pairing was
-    accidentally consistent: one CIK was listed and the same one was compared. Widening the
-    listing to every segment without widening the comparison means a genuine pre-boundary
-    schedule -- filed ABOUT the predecessor, carrying the predecessor's issuer CIK -- is
-    rejected as "the ticker is a FILER here".
-
-    Measured 2026-09-10: `sec-13d` ran 16/16 ok and stored **+0** rows after resolving MDT 28,
-    BLK 50, VTRS 16+6 and ICE 10 predecessor filings. That +0 read like "nothing to add"; it was
-    the guard discarding every one. Across all 16 register tickers `sec_13g` and `sec_13d` hold
-    **zero** rows on any predecessor CIK, and each ticker's window starts at its boundary --
-    APA 2021-04-09 against a 2021-03-01 cutover, GOOGL 2016-01-28 against 2015-10-02.
+    The roster CIK, every register segment CIK and every identity-lineage CIK on the ticker's
+    entity: the 13D/13G issuer guard must accept a pre-boundary schedule filed about a
+    predecessor, which carries the predecessor's issuer CIK.
     """
     ciks = {pad_cik(roster_cik)} if roster_cik else set()
-    registrants = load_registrants() if registrants is None else registrants
     entry = registrants.get(ticker)
     if entry is not None:
         ciks.update(entry.all_ciks())
@@ -682,8 +614,6 @@ def resolve_schedule_subject_filings(
     SEC's owner-inclusive Atom search reaches filings submitted under a reporting person's CIK.
     Every page must load and parse; otherwise this raises so the run manifest cannot advance.
     """
-    from edgar import Filing
-    from edgar.httprequests import download_text
 
     start_date = pd.Timestamp(since).normalize() if since is not None else None
     end_date = pd.Timestamp(through or pd.Timestamp.today()).normalize()
@@ -763,7 +693,7 @@ def resolve_schedule_subject_filings(
             )
             try:
                 payload = call_with_retries(
-                    lambda url=url: download_text(url),
+                    lambda url=url: edgar.httprequests.download_text(url),
                     label=f"{ticker} {family} offset {start}",
                 )
                 if payload is None:
@@ -800,7 +730,7 @@ def resolve_schedule_subject_filings(
                 if file_number is None:
                     owner_rows_excluded += 1
                     continue
-                window_candidates[accession] = Filing(
+                window_candidates[accession] = edgar.Filing(
                     cik=int(cik),
                     company=ticker,
                     form=form,
@@ -839,25 +769,13 @@ def resolve_schedule_subject_filings(
     return filtered
 
 
-def drop_rows_outside_segment(
-    df: pd.DataFrame, *, cik_col: str, ticker_col: str, filed_col: str, registrants: dict[str, Registrant] | None = None
-) -> pd.DataFrame:
+def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str, filed_col: str, registrants: dict[str, Registrant]) -> pd.DataFrame:
     """Drop bulk-dataset rows whose `filed` date lies outside the segment that CIK owns.
 
-    THE SECOND HALF OF TIER C, AND WITHOUT IT THE FIRST HALF IS A REGRESSION. Adding every
-    predecessor CIK to `cik_to_ticker` makes a predecessor's rows resolve to the ticker --
-    which is right for an EVENT table and wrong for a CONSOLIDATING one. Apache Corp filed
-    its own 10-K/10-Q as a subsidiary until 2024-11-07, so its post-2021 notes and pension
-    facts would land under APA and blend a subsidiary's disclosures into the parent's, which
-    is exactly what the dated split exists to prevent.
-
-    So a row is kept only when the segment covering its `filed` date is the segment whose CIK
-    filed it. Tickers with no register entry are untouched, which is ~449 of 491.
-
-    Vectorised on purpose: `notes_num` and `notes_text` are read a period at a time and a
-    per-row Python loop over 77 periods is minutes of pure overhead.
+    For CONSOLIDATING bulk tables: a predecessor CIK resolves to the ticker through
+    `cik_to_ticker`, so a row is kept only when the segment covering its `filed` date is the
+    segment whose CIK filed it. Tickers with no register entry are untouched. Vectorised.
     """
-    registrants = load_registrants() if registrants is None else registrants
     if df.empty or not registrants:
         return df
     covered = df[ticker_col].isin(registrants)
@@ -865,7 +783,7 @@ def drop_rows_outside_segment(
         return df
 
     filed = pd.to_datetime(df[filed_col], errors="coerce")
-    cik = df[cik_col].astype(str).str.zfill(10)
+    cik = pad_cik_series(df[cik_col])
     owner = pd.Series(pd.NA, index=df.index, dtype="object")
     for ticker, reg in registrants.items():
         rows = covered & df[ticker_col].eq(ticker)
@@ -912,12 +830,6 @@ def _symbol_company_or_none(company_cls: Any, symbol: str, ticker: str) -> Any |
 def _filings(company_cls, cik: str, forms: list[str]):
     company = _company_or_none(company_cls, cik, "")
     return [] if company is None else company.get_filings(form=forms)
-
-
-def _normalise_cik(value: Any) -> str:
-    """CIKs are 10-digit zero-padded everywhere in this repo (see the 13F loader), and a
-    config written as an int or a bare string must join against that without a surprise."""
-    return str(value).strip().zfill(10)
 
 
 def _stamp(ticker: str, i: int, value: Any) -> pd.Timestamp | None:

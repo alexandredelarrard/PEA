@@ -21,11 +21,11 @@ import pandas as pd
 
 from src.constants.constants import DEF14A_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
-from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.edgar_driver import EdgarScope, new_filings, run_edgar_fetch
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Table, Tables
+from src.utils.string import pad_cik
 
 _MAIN_COLS = [
     "ticker",
@@ -103,9 +103,7 @@ def build_ticker_def14a_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
     """One ECD row per tagged filing. A filing with no `ecd:` facts yields nothing.
 
@@ -120,9 +118,7 @@ def build_ticker_def14a_edgar(
         DEF14A_FORMS,
         since,
         done_accessions,
-        identity=identity,
-        symbol_tenure=symbol_tenure,
-        roster_cik=roster_cik,
+        scope,
     ):
         facts = ecd_facts(f)
         if not has_ecd_block(facts):
@@ -142,7 +138,7 @@ def build_ticker_def14a_edgar(
             # filer's own CIK stored, a reorganisation shows up immediately as two CIKs either
             # side of a date instead of hiding behind a uniformly-stamped column.
             ticker=ticker,
-            cik=str(getattr(f, "cik", cik) or cik).zfill(10),
+            cik=pad_cik(getattr(f, "cik", cik) or cik),
             accession_number=f.accession_number,
             form=str(f.form),
             filing_date=pd.Timestamp(f.filing_date).normalize(),

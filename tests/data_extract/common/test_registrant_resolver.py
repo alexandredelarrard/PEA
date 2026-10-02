@@ -22,6 +22,7 @@ import types
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import (
     FORM_POLICY,
     AmbiguousRegistrantScopeError,
@@ -66,47 +67,31 @@ _XOM = {
 }
 
 
-class _Identity:
-    def __init__(self, ticker: str, entity_by_cik: dict[str, str]) -> None:
-        self._ticker = ticker
-        self._entity_by_cik = {str(cik).zfill(10): entity for cik, entity in entity_by_cik.items()}
-
-    def universe_entity(self, ticker: str) -> str | None:
-        return self._entity_by_cik.get(next(iter(self._entity_by_cik))) if ticker == self._ticker else None
-
-    def entity_of(self, cik: str) -> str | None:
-        return self._entity_by_cik.get(str(cik).zfill(10))
-
-    def ciks_for(self, entity: str) -> frozenset[str]:
-        return frozenset(cik for cik, candidate in self._entity_by_cik.items() if candidate == entity)
-
-
-def _tenure(*pairs: tuple[str, str]) -> pd.DataFrame:
-    return pd.DataFrame(pairs, columns=["symbol", "issuer_cik"])
+def _identity(ticker: str, roster_cik: str, entity_by_cik: dict[str, str], *tenure: tuple[str, str]) -> Identity:
+    """A real `Identity`: one roster ticker, the given lineage, and open tenure rows `(symbol, cik)`."""
+    return build_identity(
+        lineage=pd.DataFrame([{"cik": cik, "entity_id": entity, "source": "fixture"} for cik, entity in entity_by_cik.items()]),
+        tenure=pd.DataFrame(
+            [
+                {"symbol": symbol, "issuer_cik": cik, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 1, "source": "form345"}
+                for symbol, cik in tenure
+            ]
+        ),
+        roster=pd.DataFrame([{"ticker": ticker, "cik": roster_cik}]),
+    )
 
 
 def test_identity_scope_fingerprint_is_order_stable_and_ticker_scoped():
-    identity = _Identity("ZBH", {"0001136869": "zimmer"})
+    lineage = {"0001136869": "zimmer"}
     first = identity_scope_fingerprint(
-        "ZBH",
-        "0001136869",
-        identity,
-        _tenure(("ZMH", "0001136869"), ("ZBH", "0001136869")),
-        {},
+        _identity("ZBH", "0001136869", lineage, ("ZMH", "0001136869"), ("ZBH", "0001136869")).filing_scope("ZBH"), None
     )
     reordered = identity_scope_fingerprint(
-        "ZBH",
-        "0001136869",
-        identity,
-        _tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
-        {},
+        _identity("ZBH", "0001136869", lineage, ("ZBH", "0001136869"), ("ZMH", "0001136869")).filing_scope("ZBH"), None
     )
     changed = identity_scope_fingerprint(
-        "ZBH",
-        "0001136869",
-        identity,
-        _tenure(("ZBH", "0001136869"), ("ZMH", "0001136869"), ("OLDZ", "0001136869")),
-        {},
+        _identity("ZBH", "0001136869", lineage, ("ZBH", "0001136869"), ("ZMH", "0001136869"), ("OLDZ", "0001136869")).filing_scope("ZBH"),
+        None,
     )
 
     assert first == reordered
@@ -203,7 +188,7 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
             "ZMH": [_filing("old", "2005-01-01"), shared],
         },
     )
-    identity = _Identity("ZBH", {"0001136869": "E-ZBH"})
+    identity = _identity("ZBH", "0001136869", {"0001136869": "E-ZBH"}, ("ZBH", "0001136869"), ("ZMH", "0001136869"))
 
     out = resolve_registrant_filings(
         "ZBH",
@@ -212,8 +197,6 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
         done_accessions=frozenset(),
         registrants={},
         identity=identity,
-        symbol_tenure=_tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
-        roster_cik="0001136869",
     )
 
     assert [f.accession_number for f in out] == ["old", "shared", "new"]
@@ -225,8 +208,6 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
         done_accessions=frozenset({"shared"}),
         registrants={},
         identity=identity,
-        symbol_tenure=_tenure(("ZBH", "0001136869"), ("ZMH", "0001136869")),
-        roster_cik="0001136869",
         stats=stats,
     )
     assert stats == {"skipped_existing": 1}
@@ -236,7 +217,7 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
 
 def test_identity_discovered_cik_transition_requires_a_complete_curated_chain(monkeypatch):
     _patch(monkeypatch, {"ZBH": []})
-    identity = _Identity("ZBH", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"})
+    identity = _identity("ZBH", "0001136869", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"}, ("ZBH", "0001136869"))
 
     with pytest.raises(AmbiguousRegistrantScopeError, match="0000058766"):
         resolve_registrant_filings(
@@ -246,8 +227,6 @@ def test_identity_discovered_cik_transition_requires_a_complete_curated_chain(mo
             done_accessions=frozenset(),
             registrants={},
             identity=identity,
-            symbol_tenure=_tenure(("ZBH", "0001136869")),
-            roster_cik="0001136869",
         )
 
     print("\n=== SANITY CHECK: multi-CIK discovery fails closed ===")
@@ -259,7 +238,7 @@ def test_identity_discovered_cik_transition_is_additive_for_union_events(monkeyp
         monkeypatch,
         {"ZBH": [_filing("current", "2025-01-01")], 58766: [_filing("predecessor", "2005-01-01")]},
     )
-    identity = _Identity("ZBH", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"})
+    identity = _identity("ZBH", "0001136869", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"}, ("ZBH", "0001136869"))
 
     out = resolve_registrant_filings(
         "ZBH",
@@ -268,8 +247,6 @@ def test_identity_discovered_cik_transition_is_additive_for_union_events(monkeyp
         done_accessions=frozenset(),
         registrants={},
         identity=identity,
-        symbol_tenure=_tenure(("ZBH", "0001136869")),
-        roster_cik="0001136869",
     )
 
     assert [f.accession_number for f in out] == ["predecessor", "current"]
@@ -285,7 +262,7 @@ def test_complete_curated_chain_remains_authoritative_when_identity_discovers_it
             2115436: [_filing("successor", "2026-07-01")],
         },
     )
-    identity = _Identity("XOM", {"0000034088": "E-XOM", "0002115436": "E-XOM"})
+    identity = _identity("XOM", "0002115436", {"0000034088": "E-XOM", "0002115436": "E-XOM"}, ("XOM", "0000034088"), ("XOM", "0002115436"))
 
     out = resolve_registrant_filings(
         "XOM",
@@ -294,8 +271,6 @@ def test_complete_curated_chain_remains_authoritative_when_identity_discovers_it
         done_accessions=frozenset(),
         registrants=_XOM,
         identity=identity,
-        symbol_tenure=_tenure(("XOM", "0000034088"), ("XOM", "0002115436")),
-        roster_cik="0002115436",
     )
 
     assert [f.accession_number for f in out] == ["pre", "successor"]

@@ -16,11 +16,11 @@ import pandas as pd
 from src.constants.constants import SEC_13G_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
+    EdgarScope,
     new_schedule_filings,
     num_or_null,
     run_edgar_fetch,
 )
-from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.registrant import issuer_ciks
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
@@ -240,9 +240,7 @@ def build_ticker_13g_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
     """`ticker`'s new Schedule 13G filings as `sec_13g` rows.
 
@@ -252,7 +250,7 @@ def build_ticker_13g_edgar(
     against other companies; kept, every field would describe a different company. An
     unresolvable CIK on either side means "unknown" and must NOT reject -- hence the falsiness
     checks rather than an equality test alone."""
-    ticker_ciks = issuer_ciks(ticker, roster_cik or cik, identity=identity)
+    ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
     rows: list[dict] = []
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13G_FORMS, since, done_accessions):
         try:

@@ -36,13 +36,13 @@ import pandas as pd
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
+    EdgarScope,
     filed_by,
     period_of_report,
     run_edgar_fetch,
 )
-from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -951,30 +951,15 @@ def build_ticker_fundamentals(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
+    scope: EdgarScope,
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
-    registrants: dict[str, Registrant] | None = None,
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
 ) -> dict[Table, pd.DataFrame]:
-    """One ticker's facts, walking EVERY registrant in its chain.
+    """One ticker's facts, walking every registrant segment in its chain (a DATED split:
+    `FUNDAMENTALS_FORMS` is SPLIT in `registrant.FORM_POLICY`).
 
-    `Company(ticker)` sees only the current registrant, so without the register APA loses
-    2011-02 to 2021-05 and GOOGL 2011-2015 -- silently, with no error and no gap.
-
-    The walk is DATED, never a union, and `FUNDAMENTALS_FORMS` is declared SPLIT in
-    `registrant.FORM_POLICY` for that reason: Apache Corp kept filing its own 10-K/10-Q
-    through 2024-11-07 as a subsidiary, so a union would duplicate ~15 filings AND blend two
-    legal entities' consolidated statements into one series. This is the leg the whole
-    "never a union" rule was written to protect.
-
-    N SEGMENTS, NOT TWO. The register is a chain -- PSKY is CBS -> Viacom -> ViacomCBS ->
-    Paramount Global -> Paramount Skydance -- and the previous two-CIK call gave such a
-    ticker one hop and left every earlier boundary truncated.
-
-    The `cik` recorded on each row is the registrant that actually FILED it, not the
-    ticker's current one, so a row's provenance survives the boundary.
+    Each row's `cik` is the registrant that filed it. Raises when eligible filings yield no
+    usable XBRL on a first walk, or when the segment walks overlap (dedup lost accessions).
     """
     discovery: dict[str, int] = {}
     filings = resolve_registrant_filings(
@@ -982,10 +967,8 @@ def build_ticker_fundamentals(
         FUNDAMENTALS_FORMS,
         since=since,
         done_accessions=done_accessions,
-        registrants=registrants,
-        identity=identity,
-        symbol_tenure=symbol_tenure,
-        roster_cik=roster_cik,
+        registrants=scope.registrants,
+        identity=scope.identity,
         stats=discovery,
     )
     rows: list[dict] = []
@@ -1049,7 +1032,7 @@ def build_ticker_fundamentals(
     # duplicate accession would double a period's facts and every downstream sum with them.
     before = df["accession_number"].nunique()
     df = df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")
-    entry = (registrants if registrants is not None else load_registrants()).get(ticker)
+    entry = scope.registrants.get(ticker)
     if entry is not None and df["accession_number"].nunique() != before:
         raise ValueError(
             f"{ticker}: the {' -> '.join(entry.all_ciks())} chain "
@@ -1085,7 +1068,7 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
         tickers,
         years_history,
         tables=(Tables.fundamentals_facts,),
-        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics, registrants=registrants),
+        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
         desc="fundamentals (linkbase)",
         full=full,
         cik_map=cik_map,

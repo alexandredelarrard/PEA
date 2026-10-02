@@ -61,6 +61,7 @@ from src.data_extract.utils.common.entity_lineage import (
     load_d19_allowlist,
 )
 from src.data_store.schema import Tables
+from src.utils.string import normalise_ticker, pad_cik
 
 logger = logging.getLogger(__name__)
 
@@ -143,19 +144,6 @@ class SymbolResolution:
 _CACHE: weakref.WeakKeyDictionary[Context, Identity] = weakref.WeakKeyDictionary()
 
 
-def normalise_cik(value) -> str:
-    """The 10-digit zero-padded spelling `sp500_tickers` and `entity_lineage` both use.
-
-    The bulk zips write `320193`, the roster writes `320193.0` after a float round-trip and
-    the register writes `0000320193`. Three spellings of one CIK would be three entities, so
-    every entry point normalises before it looks anything up.
-    """
-    text = str(value).strip()
-    if text.endswith(".0"):
-        text = text[:-2]
-    return text.zfill(10) if text.isdigit() else text
-
-
 def normalise_market_symbol(value: object) -> str:
     """Use the roster's hyphen spelling for market share-class separators."""
     return str(value).strip().upper().replace(".", "-").replace("/", "-")
@@ -173,6 +161,23 @@ def _as_timestamp(value) -> pd.Timestamp | None:
     if isinstance(value, date | datetime | pd.Timestamp) or not pd.isna(value):
         return pd.Timestamp(value)
     return None
+
+
+@dataclass(frozen=True)
+class FilingScope:
+    """One universe ticker's identity-discovered filing scope.
+
+    `ciks` is every CIK on the ticker's entity (stored lineage, roster CIK and tenure issuers);
+    `symbols` the ticker plus every tenure symbol on the entity; `aliases` the other symbols
+    filed under the roster CIK itself. All three are sorted.
+    """
+
+    ticker: str
+    entity: str
+    roster_cik: str
+    ciks: tuple[str, ...]
+    symbols: tuple[str, ...]
+    aliases: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -200,12 +205,16 @@ class Identity:
     redundant_symbols: frozenset[str]
     #: Raw symbol -> observed issuer CIKs, retained for filing-scope discovery.
     ciks_by_symbol: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: entity_id -> its stored CIKs (the inverse of `entity_by_cik`).
+    ciks_by_entity: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: entity_id -> sorted (normalised symbol, padded CIK) pairs from `ciks_by_symbol`.
+    scope_pairs_by_entity: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ axis A #
 
     def entity_of(self, cik) -> str:
         """The entity a CIK belongs to. A CIK with no stored row IS its own entity."""
-        key = normalise_cik(cik)
+        key = pad_cik(cik)
         return self.entity_by_cik.get(key, f"E{key}")
 
     def ciks_for(self, entity_id: str) -> frozenset[str]:
@@ -214,7 +223,7 @@ class Identity:
         Empty is not "unknown": a singleton entity has no row by design, and its one CIK is
         recoverable from the id itself (`entity_id_for` is `"E" + min(cik)`).
         """
-        return frozenset(c for c, e in self.entity_by_cik.items() if e == entity_id)
+        return self.ciks_by_entity.get(entity_id, frozenset())
 
     def universe_entity(self, ticker: str) -> str:
         """The entity of a universe ticker, via its roster CIK (D19).
@@ -223,13 +232,28 @@ class Identity:
         ABOUT to be kept or quarantined, and a None would make "not in the universe" and
         "roster row is broken" indistinguishable -- the exact confusion `cik_to_ticker` has.
         """
-        key = str(ticker).strip().upper()
+        key = normalise_ticker(ticker)
         if key not in self.roster_cik:
             raise UnknownUniverseTickerError(
                 f"identity: {key!r} is not a universe ticker in sp500_tickers (or its roster "
                 f"row carries no CIK). {len(self.roster_cik)} ticker(s) are resolvable."
             )
         return self.entity_of(self.roster_cik[key])
+
+    def filing_scope(self, ticker: str) -> FilingScope:
+        """The ticker's identity-discovered CIKs, symbols and same-CIK aliases."""
+        key = normalise_ticker(ticker)
+        entity = self.universe_entity(key)
+        roster_cik = self.roster_cik[key]
+        pairs = self.scope_pairs_by_entity.get(entity, ())
+        return FilingScope(
+            ticker=key,
+            entity=entity,
+            roster_cik=roster_cik,
+            ciks=tuple(sorted(self.ciks_for(entity) | {roster_cik} | {cik for _, cik in pairs})),
+            symbols=tuple(sorted({key} | {symbol for symbol, _ in pairs})),
+            aliases=tuple(sorted({symbol for symbol, cik in pairs if cik == roster_cik and symbol and symbol != key})),
+        )
 
     def entity_ticker(self, cik) -> str | None:
         """Today's universe ticker for a CIK, or None when its entity holds none.
@@ -337,7 +361,7 @@ class Identity:
 
     def candidate_symbols(self, universe: frozenset[str]) -> frozenset[str]:
         """Current symbols plus historical symbols owned by the requested universe."""
-        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
+        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
         historical = {
             symbol
             for symbol, rows in self.tenure_by_symbol.items()
@@ -354,7 +378,7 @@ class Identity:
         """Resolve one historical symbol/date to the caller's canonical universe ticker."""
         source_symbol = normalise_market_symbol(symbol)
         stamp = _as_timestamp(as_of)
-        requested = frozenset(str(ticker).strip().upper() for ticker in universe)
+        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
         rows = self.tenure_by_symbol.get(source_symbol)
         is_roster_proxy = rows is None and source_symbol in self.roster_proxy_by_symbol
         if is_roster_proxy:
@@ -547,7 +571,7 @@ def build_identity(
         raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
 
     # --- axis A ------------------------------------------------------------- #
-    ciks = lineage["cik"].map(normalise_cik)
+    ciks = lineage["cik"].map(pad_cik)
     entities = lineage["entity_id"].astype(str)
     per_cik = pd.DataFrame({"cik": ciks, "entity_id": entities}).drop_duplicates()
     clashes = per_cik[per_cik.duplicated("cik", keep=False)]
@@ -565,7 +589,7 @@ def build_identity(
     for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"], strict=False):
         if pd.isna(cik) or not str(cik).strip():
             continue  # `universe_entity` raises for it, naming the ticker
-        roster_cik[ticker.strip().upper()] = normalise_cik(cik)
+        roster_cik[normalise_ticker(ticker)] = pad_cik(cik)
 
     # --- ⚠ the one raise asserted before any map is trusted ------------------ #
     by_entity: dict[str, list[str]] = {}
@@ -576,7 +600,7 @@ def build_identity(
         detail = []
         for entity, tickers in sorted(collisions.items()):
             joined = lineage[entities == entity]
-            rows = "; ".join(f"{normalise_cik(r.cik)} via {r.source}" for r in joined.itertuples())
+            rows = "; ".join(f"{pad_cik(r.cik)} via {r.source}" for r in joined.itertuples())
             detail.append(f"{entity} holds " + ", ".join(f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
         raise TwoUniverseTickersOneEntityError(
             "identity: " + " | ".join(detail) + ". The reverse map is a dict, so one of these "
@@ -590,8 +614,10 @@ def build_identity(
     # --- axis B -------------------------------------------------------------- #
     tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
     manual_tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
+    ciks_by_symbol: dict[str, set[str]] = {}
     sources = tenure["source"].astype(str) if "source" in tenure.columns else pd.Series("form345", index=tenure.index)
-    for symbol, cik, start, end, n, source in zip(
+    for raw_symbol, symbol, cik, start, end, n, source in zip(
+        tenure["symbol"],
         tenure["symbol"].astype(str),
         tenure["issuer_cik"],
         tenure["valid_from"],
@@ -600,10 +626,12 @@ def build_identity(
         sources,
         strict=False,
     ):
+        key = pad_cik(cik)
+        if not pd.isna(raw_symbol):
+            ciks_by_symbol.setdefault(symbol, set()).add(key)
         stamp = _as_timestamp(start)
         if stamp is None:
             continue  # a tenure with no start cannot answer a dated test
-        key = normalise_cik(cik)
         row = (entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n))
         normalized_symbol = normalise_market_symbol(symbol)
         tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
@@ -626,6 +654,14 @@ def build_identity(
         if proxy_rows:
             roster_proxy_by_symbol[ticker] = proxy_rows
 
+    ciks_by_entity: dict[str, set[str]] = {}
+    for cik, entity in entity_by_cik.items():
+        ciks_by_entity.setdefault(entity, set()).add(cik)
+    scope_pairs: dict[str, set[tuple[str, str]]] = {}
+    for symbol, symbol_ciks in ciks_by_symbol.items():
+        for cik in symbol_ciks:
+            scope_pairs.setdefault(entity_by_cik.get(cik, f"E{cik}"), set()).add((normalise_ticker(symbol), cik))
+
     identity = Identity(
         entity_by_cik=entity_by_cik,
         roster_cik=roster_cik,
@@ -634,9 +670,9 @@ def build_identity(
         manual_tenure_by_symbol={s: tuple(v) for s, v in manual_tenure_by_symbol.items()},
         roster_proxy_by_symbol=roster_proxy_by_symbol,
         redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
-        ciks_by_symbol={
-            str(symbol): frozenset(normalise_cik(cik) for cik in rows["issuer_cik"]) for symbol, rows in tenure.groupby("symbol", sort=False)
-        },
+        ciks_by_symbol={symbol: frozenset(symbol_ciks) for symbol, symbol_ciks in ciks_by_symbol.items()},
+        ciks_by_entity={entity: frozenset(entity_ciks) for entity, entity_ciks in ciks_by_entity.items()},
+        scope_pairs_by_entity={entity: tuple(sorted(pairs)) for entity, pairs in scope_pairs.items()},
     )
 
     _check_d19(identity, allowlist, today)

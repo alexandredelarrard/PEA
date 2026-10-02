@@ -21,12 +21,12 @@ import pandas as pd
 from src.constants.constants import SEC_8K_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
+    EdgarScope,
     filed_by,
     new_filings,
     period_of_report,
     run_edgar_fetch,
 )
-from src.data_extract.utils.common.identity import Identity
 from src.data_store.schema import Table, Tables
 
 _COLS = [
@@ -191,9 +191,7 @@ def build_ticker_8k_edgar(
     *,
     since: pd.Timestamp | None = None,
     done_accessions: frozenset[str] = frozenset(),
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
     rows = itertools.chain.from_iterable(
         _filing_row(ticker, cik, f)
@@ -202,9 +200,7 @@ def build_ticker_8k_edgar(
             SEC_8K_FORMS,
             since,
             done_accessions,
-            identity=identity,
-            symbol_tenure=symbol_tenure,
-            roster_cik=roster_cik,
+            scope,
         )
     )
     df = pd.DataFrame(list(rows), columns=_COLS)

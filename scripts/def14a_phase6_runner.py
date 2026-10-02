@@ -192,6 +192,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     """Reuses the production builder verbatim rather than re-implementing it, so what the gate
     measures is what the pipeline will write. 2023+ only: an earlier proxy carries no `ecd:`
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
+    from src.data_extract.utils.common.edgar_driver import load_edgar_scope
     from src.data_extract.utils.common.sec_utils import load_cik_mapping
     from src.data_extract.utils.structure.fetch_def14a_edgar import build_ticker_def14a_edgar
 
@@ -212,6 +213,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     # absent from it; resolve CIKs the way the pipeline does instead of from that artifact.
     cik_df = load_cik_mapping(context, tickers)
     cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str), strict=False))
+    scope, _, _ = load_edgar_scope(context, cik_df, None, identity_aware=False)
 
     rows: list[dict] = []
     for t in tickers[: limit or len(tickers)]:
@@ -222,7 +224,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
         try:
             # returns {Table: DataFrame}, keyed by the registry object -- one entry since
             # Phase 4 slimmed this path to `sec_def14a` alone
-            df = build_ticker_def14a_edgar(t, cik, since=cutoff)[Tables.def14a_edgar]
+            df = build_ticker_def14a_edgar(t, cik, since=cutoff, scope=scope)[Tables.def14a_edgar]
         except Exception as e:
             print(f"  {t}: FAILED {type(e).__name__}: {e}")
             continue

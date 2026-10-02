@@ -236,7 +236,9 @@ def test_pension_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> No
 
 def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
-    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    context = SimpleNamespace(
+        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+    )
     tag = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
 
     def fact(path: Path) -> pd.DataFrame:
@@ -260,7 +262,7 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
         )
 
     monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
     monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)
@@ -284,7 +286,9 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
 
 def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
-    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    context = SimpleNamespace(
+        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+    )
     path = tmp_path / "2026q3.zip"
 
     class Clock:
@@ -306,7 +310,7 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
 
     monkeypatch.setattr(fin, "datetime", Clock)
     monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
     monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)

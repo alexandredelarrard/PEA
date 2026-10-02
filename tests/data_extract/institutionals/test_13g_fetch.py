@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.edgar_driver import EdgarScope
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
     _COLS,
     _NUMERIC_COLS,
@@ -222,7 +223,7 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
     own = _filing(issuer_cik="0000200406", issuer_name="JOHNSON & JOHNSON")
     other = _filing(issuer_cik="0001739410", issuer_name="Rallybio Corporation", accession="0000904454-26-000233")
     _patch_new_filings(monkeypatch, [own, other])
-    frame = build_ticker_13g_edgar("JNJ", "0000200406")[Tables.sec_13g]
+    frame = build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
     assert list(frame.columns) == _COLS
@@ -234,9 +235,9 @@ def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
     """An unknown CIK on either side means "unknown", which must not reject -- otherwise a
     header that failed to parse would silently cost the ticker its whole history."""
     _patch_new_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
-    assert len(build_ticker_13g_edgar("JNJ", "0000200406")[Tables.sec_13g]) == 1
+    assert len(build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
     _patch_new_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
-    assert len(build_ticker_13g_edgar("JNJ", "")[Tables.sec_13g]) == 1
+    assert len(build_ticker_13g_edgar("JNJ", "", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
 
 
 def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
@@ -248,7 +249,7 @@ def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
     filing.obj = fail_parse
     _patch_new_filings(monkeypatch, [filing])
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13g_edgar("JNJ", "0000200406")
+        build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13G parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 

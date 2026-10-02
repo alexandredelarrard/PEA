@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
+import src.data_extract.utils.common.edgar_driver as driver
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError
 from src.data_extract.utils.common.registrant import Combine, combine_for
@@ -60,8 +61,7 @@ def build(
         assert ticker == "AAA"
         assert "10-K405" in forms
         assert kwargs["identity"] is identity
-        assert kwargs["roster_cik"] == "0000000001"
-        assert kwargs["symbol_tenure"]["issuer_cik"].tolist() == ["0000000001"]
+        assert kwargs["registrants"] == {}
         return filings
 
     class FakeLLM:
@@ -94,9 +94,7 @@ def build(
         since=None,
         done_accessions=frozenset(),
         skip_dates=skip_dates,
-        registrants={},
-        identity=identity,
-        symbol_tenure=pd.DataFrame([{"symbol": "AAA", "issuer_cik": "0000000001"}]),
+        scope=mod.EdgarScope(identity, {}),
     )
 
 
@@ -318,9 +316,9 @@ def test_full_replay_rechecks_saved_accession_and_clears_null(monkeypatch):
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={"AAA": {"0000000001"}}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
+    monkeypatch.setattr(driver, "load_identity", lambda *args: SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(ticker=ticker)))
+    monkeypatch.setattr(driver, "load_registrants", lambda *args: {})
+    monkeypatch.setattr(driver, "identity_scope_fingerprint", lambda *args: "scope")
     monkeypatch.setattr(
         mod,
         "get_entry",
@@ -380,10 +378,10 @@ def test_new_null_amendment_preserves_skipped_supported_original(monkeypatch):
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
-    monkeypatch.setattr(mod, "changed_scope_tickers", lambda *args: set())
+    monkeypatch.setattr(driver, "load_identity", lambda *args: SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(ticker=ticker)))
+    monkeypatch.setattr(driver, "load_registrants", lambda *args: {})
+    monkeypatch.setattr(driver, "identity_scope_fingerprint", lambda *args: "scope")
+    monkeypatch.setattr(driver, "changed_scope_tickers", lambda *args: set())
     monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2024-03-01"), False))
     monkeypatch.setattr(
         mod,
@@ -436,9 +434,9 @@ def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
+    monkeypatch.setattr(driver, "load_identity", lambda *args: SimpleNamespace(filing_scope=lambda ticker: SimpleNamespace(ticker=ticker)))
+    monkeypatch.setattr(driver, "load_registrants", lambda *args: {})
+    monkeypatch.setattr(driver, "identity_scope_fingerprint", lambda *args: "scope")
     monkeypatch.setattr(mod, "get_entry", lambda *args: {})
     monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
     monkeypatch.setattr(

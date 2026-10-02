@@ -57,7 +57,7 @@ from src.data_extract.utils.common.bulk_cache import (
     ensure_zip,
     ingested_periods,
 )
-from src.data_extract.utils.common.registrant import drop_rows_outside_segment
+from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping, load_processed_universe, save_processed_universe
 from src.data_extract.utils.common.sessions import MARKET_TZ
@@ -195,7 +195,7 @@ def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | N
 # --------------------------------------------------------------------------- #
 # Pure parse (unit-tested)                                                       #
 # --------------------------------------------------------------------------- #
-def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str]) -> pd.DataFrame:
+def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> pd.DataFrame:
     """sub.tsv -> [adsh, cik, ticker, form, fy, fp, filed] for UNIVERSE filers only. Pure."""
     if sub is None or sub.empty:
         return pd.DataFrame()
@@ -214,7 +214,7 @@ def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str]) ->
     # `notes` is a CONSOLIDATING table, so a predecessor CIK resolving to the ticker is only
     # half the rule -- the row must also fall in the segment that CIK owned. Without this,
     # Apache Corp's post-2021 subsidiary notes would blend into APA's. See `FORM_POLICY`.
-    return drop_rows_outside_segment(s, cik_col="cik", ticker_col="ticker", filed_col="filed")
+    return drop_rows_outside_segment(s, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
 
 
 def _join_notes_num(num: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
@@ -352,7 +352,7 @@ def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: froze
     return pd.concat(keep, ignore_index=True) if keep else pd.DataFrame()
 
 
-def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One notes zip -> (tidy num facts, tidy text) for the universe. Reads sub.tsv
     fully (small) to resolve universe filings, then streams num/txt in chunks."""
     try:
@@ -363,7 +363,7 @@ def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str]) -> tupl
             sub = pd.read_csv(
                 z.open(names["sub.tsv"]), sep="\t", dtype=str, low_memory=False, usecols=lambda c: c in ("adsh", "cik", "form", "fy", "fp", "filed")
             )
-            sub_meta = _sub_meta(sub, cik2tkr, universe)
+            sub_meta = _sub_meta(sub, cik2tkr, universe, registrants)
             if sub_meta.empty:
                 return pd.DataFrame(), pd.DataFrame()
             adsh_set = set(sub_meta["adsh"])
@@ -403,7 +403,8 @@ def fetch_financial_notes(
     """
 
     cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap)
+    cik2tkr = cik_to_ticker(cikmap, config_dir=str(context.config_dir))
+    registrants = load_registrants(str(context.config_dir))
     cache = cache_dir(context, context.config.local.paths.financial_notes)
 
     done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
@@ -454,7 +455,7 @@ def fetch_financial_notes(
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
 
-        num, txt = _read_notes(path, cik2tkr, set(tickers))
+        num, txt = _read_notes(path, cik2tkr, set(tickers), registrants)
         if not num.empty:
             num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
             num["period"] = period

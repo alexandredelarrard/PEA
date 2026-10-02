@@ -16,6 +16,7 @@ import pytest
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
+from src.data_extract.utils.common.edgar_driver import EdgarScope
 from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -870,7 +871,7 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         lambda ticker, subject_ciks, forms, since, done: [good_filing, bad_filing],
     )
 
-    out = build_ticker_13d_edgar("AAPL", "0000320193")[Tables.sec_13d]
+    out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
     assert out.iloc[0]["issuer_name"] == "Apple Inc."
 
@@ -887,7 +888,7 @@ def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
         lambda ticker, subject_ciks, forms, since, done: [filing],
     )
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13d_edgar("AAPL", "0000320193")
+        build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13D parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 

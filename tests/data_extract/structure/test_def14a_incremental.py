@@ -47,7 +47,7 @@ def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True) -> A
     tmp_path.mkdir(parents=True, exist_ok=True)
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
     ds.save("def14a_llm", pd.DataFrame([_completed_parent_row(t, f"acc-{t}", "2024-04-01") for t in tickers]))
-    ctx: Any = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config=extract_config())
+    ctx: Any = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config_dir="configs", config=extract_config())
     if write_meta_today:
         record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
     return ctx
@@ -144,6 +144,7 @@ def _daily_context(tmp_path: Path) -> Any:
         store=DataStore(create_engine(f"sqlite:///{tmp_path / 'daily.db'}")),
         log=logging.getLogger("test.def14a.daily"),
         paths={"DATA_STORE": tmp_path},
+        config_dir="configs",
         config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
     )
 
@@ -218,7 +219,7 @@ def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, l
 
     monkeypatch.setattr(mod, "LLMExtractor", extractor)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "company_name": "Example Corp"}]))
-    monkeypatch.setattr(mod, "load_registrants", lambda: {})
+    monkeypatch.setattr(mod, "load_registrants", lambda config_dir: {})
     monkeypatch.setattr(mod, "_list_across_registrants", _list)
     monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
     monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
@@ -372,6 +373,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
         store=store,
         log=logging.getLogger("test.def14a.subject.loop"),
         paths={"DATA_STORE": tmp_path},
+        config_dir="configs",
         config=extract_config(data_extract={"years_history": 15}),
         ensure_edgar_identity=lambda: None,
     )
@@ -439,7 +441,11 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
         ),
     )
     ctx: Any = types.SimpleNamespace(
-        store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
+        store=ds,
+        log=logging.getLogger("t"),
+        paths={"DATA_STORE": tmp_path},
+        config_dir="configs",
+        config=extract_config(data_extract={"years_history": 15}),
     )
 
     listed_since, extracted = [], []
@@ -527,7 +533,11 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
         ),
     )
     ctx: Any = types.SimpleNamespace(
-        store=ds, log=logging.getLogger("t"), paths={"DATA_STORE": tmp_path}, config=extract_config(data_extract={"years_history": 15})
+        store=ds,
+        log=logging.getLogger("t"),
+        paths={"DATA_STORE": tmp_path},
+        config_dir="configs",
+        config=extract_config(data_extract={"years_history": 15}),
     )
     # A prior run 10 days ago, one ticker -- same ticker count as this run, and well
     # inside the (default 30-day) self-heal window, so `manifest_window` must return

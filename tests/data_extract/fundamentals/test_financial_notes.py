@@ -160,7 +160,7 @@ def zip_path(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_read_notes_filters_and_joins(zip_path):
     cik2tkr = {"0000320193": "AAPL"}
-    num, txt = fn._read_notes(zip_path, cik2tkr, {"AAPL"})
+    num, txt = fn._read_notes(zip_path, cik2tkr, {"AAPL"}, {})
 
     # NUM: exactly the 3 undimensioned, consolidated, pension-tag, universe rows
     assert set(num["tag"]) == {
@@ -191,7 +191,7 @@ def test_read_notes_filters_and_joins(zip_path):
 
 
 def test_read_notes_empty_when_universe_disjoint(zip_path):
-    num, txt = fn._read_notes(zip_path, {"0000320193": "AAPL"}, {"MSFT"})
+    num, txt = fn._read_notes(zip_path, {"0000320193": "AAPL"}, {"MSFT"}, {})
     assert num.empty and txt.empty
 
 
@@ -353,11 +353,12 @@ def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path
     period = "2021_08"
     repaired: list[tuple[str, date, bool]] = []
     context = SimpleNamespace(
+        config_dir="configs",
         store=SimpleNamespace(),
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
     )
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
@@ -375,12 +376,13 @@ def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path
 def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monkeypatch):
     period = "2026_08"
     context = SimpleNamespace(
+        config_dir="configs",
         store=SimpleNamespace(),
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
     )
 
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
     monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
@@ -414,6 +416,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
             return len(frame)
 
     context = SimpleNamespace(
+        config_dir="configs",
         store=Store(),
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))),
     )
@@ -447,7 +450,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     )
 
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
     monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
@@ -455,7 +458,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
-    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe: (num.copy(), txt.copy()))
+    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe, registrants: (num.copy(), txt.copy()))
     monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
     monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
 
@@ -503,10 +506,12 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
             }
         ]
     )
-    context = SimpleNamespace(store=Store(), config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused"))))
+    context = SimpleNamespace(
+        store=Store(), config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused")))
+    )
     monkeypatch.setattr(fn, "datetime", Clock)
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping: {})
+    monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
     monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
@@ -514,7 +519,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
     monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
     monkeypatch.setattr(fn, "ensure_zip", download)
-    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe: (num.copy(), pd.DataFrame()))
+    monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe, registrants: (num.copy(), pd.DataFrame()))
     monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
     monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
 

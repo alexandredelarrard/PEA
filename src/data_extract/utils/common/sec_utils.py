@@ -24,6 +24,7 @@ import requests
 from src.context import Context
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_store.schema import Table, Tables
+from src.utils.string import pad_cik_series
 
 _MIN_INTERVAL = 0.11  # ~9 req/sec, safely under SEC's 10/sec limit
 _DEFAULT_TIMEOUT = 30  # seconds; avoid a hung socket stalling a worker
@@ -121,8 +122,7 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS), where={"ticker": list(tickers)} if tickers is not None else None)
     assert df is not None
 
-    # SEC URLs need the 10-digit zero-padded CIK
-    df["cik"] = df["cik"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(10)
+    df["cik"] = pad_cik_series(df["cik"])  # SEC URLs need the 10-digit zero-padded CIK
     if "company_name" not in df.columns and "name" in df.columns:
         df["company_name"] = df["name"]
     return df

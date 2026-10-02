@@ -13,12 +13,12 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError, filed_by, period_of_report
+from src.data_extract.utils.common.edgar_driver import EdgarScope, IncompleteEdgarRunError, filed_by, load_edgar_scope, period_of_report
 from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import Registrant, identity_scope_fingerprint, load_registrants, resolve_registrant_filings
-from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_filing_outcomes, record_run
+from src.data_extract.utils.common.registrant import resolve_registrant_filings
+from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_filing_outcomes, record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -276,11 +276,12 @@ def build_ticker_employees(
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
     skip_dates: frozenset[pd.Timestamp],
-    registrants: dict[str, Registrant],
-    identity: Identity,
-    symbol_tenure: pd.DataFrame,
+    scope: EdgarScope,
 ) -> EmployeeTickerResult:
     """Read undecided annual filings and validate their LLM answers."""
+    identity = scope.identity
+    if identity is None:
+        raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
     filings = sorted(
         (
             filing
@@ -289,10 +290,8 @@ def build_ticker_employees(
                 HEADCOUNT_FORMS,
                 since=since,
                 done_accessions=done_accessions,
-                registrants=registrants,
+                registrants=scope.registrants,
                 identity=identity,
-                symbol_tenure=symbol_tenure,
-                roster_cik=cik,
             )
             if _filed(filing) not in skip_dates
         ),
@@ -379,17 +378,7 @@ def fetch_fundamentals_employees(
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     fallback_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     entry = get_entry(context, Tables.fundamentals_employees) or {}
-    identity = load_identity(context)
-    symbol_tenure = pd.DataFrame(
-        [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
-        columns=["symbol", "issuer_cik"],
-    )
-    registrants = load_registrants(str(context.config_dir))
-    scope_fingerprints = {
-        str(row.ticker): identity_scope_fingerprint(str(row.ticker), str(row.cik), identity, symbol_tenure, registrants)
-        for row in cik_map.itertuples()
-    }
-    changed_scopes = changed_scope_tickers(entry, scope_fingerprints)
+    scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=True)
     plan = _resume_plan(context, entry, tickers, len(cik_map), fallback_since, full=full)
     context.log.info(
         "fundamentals employees resume: %d accession(s) and %d stored filing date(s) skipped",
@@ -405,9 +394,7 @@ def fetch_fundamentals_employees(
             since=fallback_since if ticker in changed_scopes else plan.since,
             done_accessions=plan.done_accessions,
             skip_dates=plan.skip_dates.get(ticker, frozenset()),
-            registrants=registrants,
-            identity=identity,
-            symbol_tenure=symbol_tenure,
+            scope=scope,
         )
         if not result.frame.empty:
             context.store.save(Tables.fundamentals_employees, result.frame)

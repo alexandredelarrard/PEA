@@ -10,6 +10,7 @@ its forms and its row builder.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Protocol
 
 import pandas as pd
@@ -18,6 +19,7 @@ from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import (
+    Registrant,
     identity_scope_fingerprint,
     load_registrants,
     resolve_registrant_filings,
@@ -26,6 +28,7 @@ from src.data_extract.utils.common.registrant import (
 from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
 from src.data_store.schema import Table
+from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
@@ -34,24 +37,19 @@ class IncompleteEdgarRunError(RuntimeError):
     """A completeness-sensitive EDGAR walk had one or more failed tickers."""
 
 
-def filed_by(filing, roster_cik: str) -> str:
-    """The CIK that ACTUALLY FILED this document, falling back to the roster's only when the
-    filing exposes none.
+@dataclass(frozen=True)
+class EdgarScope:
+    """What every per-ticker EDGAR walk of one run resolves filings against: the identity layer
+    (None when the fetch is not identity-aware) and the run's registrant register."""
 
-    ⚠ THE `cik` COLUMN WAS A STAMP, NOT AN OBSERVATION, AND THAT CONCEALED THIS WHOLE DEFECT
-    CLASS. Every tier-A fetcher resolved by TICKER and then wrote the roster's CIK onto the
-    row, so `sec_8k` held 0 of 491 tickers with more than one distinct CIK and 0 rows where
-    `sec_8k.cik <> sp500_tickers.cik` -- measured 2026-09-09. XOM's 526 8-K rows going back to
-    1996 all carried CIK 2115436, an entity whose entire archive is 29 filings beginning
-    2026-07-01. The one column that would have made a registrant boundary self-announcing
-    instead reported the roster back to itself.
+    identity: Identity | None
+    registrants: dict[str, Registrant]
 
-    ⚠ THIS FIXES OBSERVABILITY, NOT RESOLUTION. You can only read a CIK off filings you
-    already have, and a wrong roster CIK yields none to read -- that is what the register is
-    for. What it buys is that the NEXT reorganisation shows up immediately as two CIKs either
-    side of a date, instead of hiding behind a uniformly stamped column for a year.
-    """
-    return str(getattr(filing, "cik", None) or roster_cik).zfill(10)
+
+def filed_by(filing: object, roster_cik: str) -> str:
+    """The padded CIK that actually filed this document, falling back to the roster CIK only
+    when the filing exposes none; a stored filer CIK makes a registrant boundary visible."""
+    return pad_cik(getattr(filing, "cik", None) or roster_cik)
 
 
 def period_of_report(filing):
@@ -110,9 +108,7 @@ class BuildFn(Protocol):
         *,
         since: pd.Timestamp | None,
         done_accessions: frozenset[str],
-        identity: Identity | None = None,
-        symbol_tenure: pd.DataFrame | None = None,
-        roster_cik: str | None = None,
+        scope: EdgarScope,
     ) -> dict[Table, pd.DataFrame]: ...
 
 
@@ -121,32 +117,17 @@ def new_filings(
     forms: list[str],
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
-    *,
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
+    scope: EdgarScope,
 ) -> list:
-    """`ticker`'s filings of `forms`, oldest first, stripped of stored accessions and of
-    anything filed before `since`.
-
-    A thin wrapper over `registrant.resolve_registrant_filings`, kept because five call sites
-    use this name. THE REASONING MOVED WITH THE IMPLEMENTATION -- why a union here and a dated
-    split for consolidating forms, and the measurements behind both -- and now lives on
-    `registrant.FORM_POLICY`, where every pipeline can see it rather than only these five.
-
-    The one behavioural change: a form with no declared policy now RAISES instead of being
-    unioned by default. That is deliberate. `Company(ticker)` resolving exactly one registrant,
-    silently, is how this defect class stayed invisible for a year, and a new form family
-    quietly inheriting the wrong rule would be the same failure wearing different clothes.
-    """
+    """`ticker`'s filings of `forms` resolved against `scope`, oldest first, stripped of stored
+    accessions and of anything filed before `since` (see `registrant.resolve_registrant_filings`)."""
     return resolve_registrant_filings(
         ticker,
         forms,
         since=since,
         done_accessions=done_accessions,
-        identity=identity,
-        symbol_tenure=symbol_tenure,
-        roster_cik=roster_cik,
+        registrants=scope.registrants,
+        identity=scope.identity,
     )
 
 
@@ -167,6 +148,26 @@ def new_schedule_filings(
     )
 
 
+def load_edgar_scope(
+    context: Context,
+    cik_map: pd.DataFrame,
+    entry: dict | None,
+    *,
+    identity_aware: bool,
+) -> tuple[EdgarScope, dict[str, str] | None, frozenset[str]]:
+    """The run's `EdgarScope` from `context.config_dir`, plus (identity-aware only) each ticker's
+    identity-scope fingerprint and the tickers whose fingerprint changed since manifest `entry`."""
+    registrants = load_registrants(str(context.config_dir))
+    if not identity_aware:
+        return EdgarScope(None, registrants), None, frozenset()
+    identity = load_identity(context)
+    fingerprints: dict[str, str] = {}
+    for ticker in cik_map["ticker"].astype(str):
+        filing_scope = identity.filing_scope(ticker)
+        fingerprints[ticker] = identity_scope_fingerprint(filing_scope, registrants.get(filing_scope.ticker))
+    return EdgarScope(identity, registrants), fingerprints, changed_scope_tickers(entry, fingerprints)
+
+
 def run_edgar_fetch(
     context: Context,
     tickers: list[str],
@@ -183,61 +184,27 @@ def run_edgar_fetch(
     require_complete: bool = False,
     identity_aware: bool = False,
 ) -> None:
-    """Fetch `tables` for `tickers` using `build(ticker, cik, since, done_accessions)
-    -> {table: frame}`.
+    """Fetch `tables` for `tickers` using `build(ticker, cik, since=, done_accessions=, scope=)
+    -> {table: frame}`; `scope` comes from `load_edgar_scope`.
 
-    `max_workers` overrides the shared pool width for fetchers that need their own
-    (fundamentals: its from-scratch backfill is the only one measured in hours).
-
-    `cik_map` is `load_cik_mapping`'s frame, accepted from a caller that already needed it
-    -- the fundamentals fetch reads the same three GICS levels off it to route regimes --
-    so the universe is read ONCE per run instead of once here and once there.
-
-    `tables[0]` is the primary: it keys the manifest window and the accession dedup
-    set. Every declared table gets a `record_run` entry even when no ticker produced
-    rows for it, so a table that is legitimately empty this run does not read as
-    "never run" and force a full rescan forever.
-
-    `completion_table`, when supplied, is saved last and only if every preceding non-empty
-    frame saved successfully. It is for explicit per-ticker coverage frontiers: a failed
-    transaction write must not be followed by a green coverage row.
-
-    `require_complete` makes both discovery/build failures and persistence failures fatal to the
-    run-level manifest. Successfully saved rows remain as resumable, idempotent progress, but a
-    partial Schedule 13D/G walk can never be recorded as complete.
+    `tables[0]` keys the manifest window and the accession dedup set; every declared table gets
+    a `record_run` entry, even with zero rows. `cik_map` lets a caller that already loaded the
+    universe pass it in. `completion_table` is saved last and only when every earlier frame
+    saved. `require_complete` makes build and save failures fatal to the run manifest (saved
+    rows stay as idempotent progress).
     """
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
-    identity: Identity | None = None
-    symbol_tenure: pd.DataFrame | None = None
-    scope_fingerprints: dict[str, str] | None = None
-    changed_scopes: frozenset[str] = frozenset()
-    if identity_aware:
-        identity = load_identity(context)
-        symbol_tenure = pd.DataFrame(
-            [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
-            columns=["symbol", "issuer_cik"],
+    entry = get_entry(context, tables[0])
+    scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=identity_aware)
+    if changed_scopes:
+        context.log.info(
+            "%s: %d ticker identity scope(s) changed -> full-window relist: %s",
+            desc,
+            len(changed_scopes),
+            ", ".join(sorted(changed_scopes)),
         )
-        registrants = load_registrants(str(context.config_dir))
-        scope_fingerprints = {
-            str(row.ticker): identity_scope_fingerprint(
-                str(row.ticker),
-                str(row.cik),
-                identity,
-                symbol_tenure,
-                registrants,
-            )
-            for row in cik_map.itertuples()
-        }
-        changed_scopes = changed_scope_tickers(get_entry(context, tables[0]), scope_fingerprints)
-        if changed_scopes:
-            context.log.info(
-                "%s: %d ticker identity scope(s) changed -> full-window relist: %s",
-                desc,
-                len(changed_scopes),
-                ", ".join(sorted(changed_scopes)),
-            )
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
     if minimum_since is not None:
         fallback_since = max(fallback_since, pd.Timestamp(minimum_since).normalize())
@@ -252,7 +219,7 @@ def run_edgar_fetch(
         # 0. Chunking is not optional here (edgartools never releases its per-filing caches,
         # and an all-52 single process reached 14.7 GB RSS), so the flag is the fix.
         since, is_full_rescan = fallback_since, True
-    elif require_complete and not (get_entry(context, tables[0]) or {}).get("coverage_complete"):
+    elif require_complete and not (entry or {}).get("coverage_complete"):
         # A legacy manifest only proves that the old discovery code finished. It cannot prove
         # issuer-side Schedule coverage because that code silently skipped large filer books.
         # The first run under the completeness contract must therefore walk the full configured
@@ -271,13 +238,7 @@ def run_edgar_fetch(
     declared = set(tables)
 
     def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
-        kwargs = {
-            "since": fallback_since if ticker in changed_scopes else since,
-            "done_accessions": done,
-        }
-        if identity_aware:
-            kwargs.update(identity=identity, symbol_tenure=symbol_tenure, roster_cik=cik)
-        frames = build(ticker, cik, **kwargs)
+        frames = build(ticker, cik, since=fallback_since if ticker in changed_scopes else since, done_accessions=done, scope=scope)
         counts: dict[Table, int] = {}
         failed_save = False
         ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]

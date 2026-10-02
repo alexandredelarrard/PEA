@@ -22,7 +22,7 @@ from src.constants.constants import (
     SEC_INSIDER_OWNER_ATOM_URL,
 )
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarScope, new_filings, run_edgar_fetch
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.institutionals.fetch_insider_transactions import (
     _filter_universe,
@@ -35,6 +35,7 @@ from src.data_extract.utils.institutionals.insider_edgar_parser import (
     parse_ownership_xml,
 )
 from src.data_store.schema import Table, Tables
+from src.utils.string import pad_cik
 
 _LIVE_COLUMNS = (
     "accession_number",
@@ -69,7 +70,7 @@ def ownership_filings(
         start = 0
         while True:
             url = SEC_INSIDER_OWNER_ATOM_URL.format(
-                cik=str(cik).zfill(10),
+                cik=pad_cik(cik),
                 form=family,
                 date_from=start_date.strftime("%Y%m%d") if start_date is not None else "",
                 date_to=end_date.strftime("%Y%m%d"),
@@ -129,9 +130,12 @@ def insider_filings(
     since: pd.Timestamp | None,
     through: pd.Timestamp,
     done_accessions: frozenset[str],
+    scope: EdgarScope,
 ) -> list[Any]:
     """Union issuer submissions with the owner-inclusive issuer search."""
-    discovered: dict[str, Any] = {str(filing.accession_number): filing for filing in new_filings(ticker, SEC_INSIDER_FORMS, since, done_accessions)}
+    discovered: dict[str, Any] = {
+        str(filing.accession_number): filing for filing in new_filings(ticker, SEC_INSIDER_FORMS, since, done_accessions, scope)
+    }
     for filing in ownership_filings(
         ticker,
         cik,
@@ -206,6 +210,7 @@ def build_ticker_insider_edgar(
     universe: Sequence[str],
     identity: Identity,
     scan_through: pd.Timestamp,
+    scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
     """Build live rows for one ticker and a coverage row even when no filing was found."""
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
@@ -218,6 +223,7 @@ def build_ticker_insider_edgar(
         since=since,
         through=scan_through,
         done_accessions=done_accessions,
+        scope=scope,
     ):
         transactions, footnotes, quarantine = _filing_frames(
             filing,
@@ -276,6 +282,7 @@ def fetch_insider_edgar(
         *,
         since: pd.Timestamp | None,
         done_accessions: frozenset[str],
+        scope: EdgarScope,
     ) -> dict[Table, pd.DataFrame]:
         return build_ticker_insider_edgar(
             ticker,
@@ -285,6 +292,7 @@ def fetch_insider_edgar(
             universe=tickers,
             identity=identity,
             scan_through=scan_through,
+            scope=scope,
         )
 
     run_edgar_fetch(

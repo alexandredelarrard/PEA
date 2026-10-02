@@ -33,9 +33,9 @@ from src.data_extract.utils.common.identity import (
     UnknownUniverseTickerError,
     build_identity,
     load_identity,
-    normalise_cik,
     resolve_symbol_rows,
 )
+from src.utils.string import pad_cik, pad_cik_series
 
 CONFIG_DIR = "./configs"
 
@@ -676,17 +676,16 @@ def test_load_identity_caches_per_context_and_not_across_them():
     print("  -> load_registrants may use @cache only because its key is a config directory.")
 
 
-def test_normalise_cik_handles_every_spelling_in_the_repo():
-    assert normalise_cik("320193") == "0000320193"
-    assert normalise_cik("320193.0") == "0000320193"
-    assert normalise_cik(" 0000320193 ") == "0000320193"
-    assert normalise_cik(320193) == "0000320193"
-    assert normalise_cik("not-a-cik") == "not-a-cik"  # passed through, never silently zero
+def test_pad_cik_handles_every_spelling_in_the_repo():
+    spellings = ["320193", "320193.0", " 0000320193 ", 320193, 320193.0]
+    assert {pad_cik(s) for s in spellings} == {"0000320193"}
+    assert pad_cik("not-a-cik") == "" and pad_cik(None) == "" and pad_cik(float("nan")) == ""  # never a fake CIK
+    vector = pad_cik_series(pd.Series([*spellings, None, float("nan"), ""], dtype=object))
+    assert list(vector) == ["0000320193"] * len(spellings) + ["", "", ""]
 
     print("\n=== SANITY CHECK: CIK normalisation ===")
-    print("  '320193' / '320193.0' / ' 0000320193 ' / int -> 0000320193")
-    print("  OK: three spellings of one CIK cannot become three entities")
-    print("  -> The zips, the roster's float round-trip and the register all disagree.")
+    print("  '320193' / '320193.0' / ' 0000320193 ' / int / float -> 0000320193, scalar and vectorised")
+    print("  OK: one spelling per CIK, and a null or non-numeric value pads to '' rather than a fake CIK")
 
 
 # --------------------------------------------------------------------------- #

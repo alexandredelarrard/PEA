@@ -40,7 +40,7 @@ from src.data_extract.utils.common.bulk_cache import (
     ensure_zip,
     quarter_periods,
 )
-from src.data_extract.utils.common.registrant import drop_rows_outside_segment
+from src.data_extract.utils.common.registrant import drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import (
     bulk_ingested_quarters,
@@ -198,7 +198,8 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
     """
 
     cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap)
+    cik2tkr = cik_to_ticker(cikmap, config_dir=str(context.config_dir))
+    registrants = load_registrants(str(context.config_dir))
     cache = cache_dir(context, context.config.local.paths.financial_statements)
 
     done_q = bulk_ingested_quarters(context.store, Tables.pension_facts)
@@ -233,7 +234,7 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
         facts = facts[facts["ticker"].isin(tickers)]
         # `pension_facts` is CONSOLIDATING: a predecessor CIK resolves to the ticker, but only
         # for the dates that registrant actually owned. See `FORM_POLICY`.
-        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker", filed_col="filed")
+        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
         if facts.empty:
             continue
         # keep the latest-filed value per (cik, tag, period-end, duration)

@@ -48,6 +48,7 @@ def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch)
         universe=["AAA"],
         identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
+        scope=module.EdgarScope(None, {}),
     )
     assert out[Tables.insider_transactions_live].empty
     assert out[Tables.insider_transactions_live_coverage].to_dict("records") == [
@@ -80,6 +81,7 @@ def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
         universe=["AAA"],
         identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
+        scope=module.EdgarScope(None, {}),
     )
     live = out[Tables.insider_transactions_live]
     assert len(live) == 1

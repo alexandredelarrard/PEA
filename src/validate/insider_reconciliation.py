@@ -18,6 +18,7 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     DEFAULT_DECAY_HALFLIFE,
     build_insider_feature_panel,
 )
+from src.data_extract.utils.common.edgar_driver import load_edgar_scope
 from src.data_extract.utils.common.identity import load_identity
 from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
@@ -116,6 +117,7 @@ def replay_completed_quarter(
     tickers = sorted(set(bulk["ticker"].dropna().astype(str)))
     cik_map = load_cik_mapping(context, tickers)
     identity = load_identity(context)
+    scope, _, _ = load_edgar_scope(context, cik_map, None, identity_aware=False)
     start = quarter.start_time.normalize()
     end = quarter.end_time.normalize()
 
@@ -130,6 +132,7 @@ def replay_completed_quarter(
                 since=start,
                 through=end,
                 done_accessions=frozenset(),
+                scope=scope,
             )
         except PROGRAMMING_ERRORS:
             raise

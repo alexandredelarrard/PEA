@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_fundamentals_sec as mod
+from src.data_extract.utils.common.edgar_driver import EdgarScope
 from src.data_extract.utils.common.registrant import Registrant, Segment
 
 
@@ -87,7 +88,7 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
     post = _filing("0001-post", "0001652044", "2016-04-21")  # Alphabet, post-boundary
     patched([pre, post], lambda t, c, f: [_row(t, c, f, period_end=str(f.filing_date))])
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))[
         mod.Tables.fundamentals_facts
     ]
 
@@ -99,7 +100,7 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
 def test_a_ticker_with_no_register_entry_still_stamps_a_cik(patched):
     f = _filing("0001-a", "0000320193", "2024-02-01")
     patched([f], lambda t, c, fl: [_row(t, c, fl)])
-    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})[
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))[
         mod.Tables.fundamentals_facts
     ]
     assert list(out["cik"]) == ["0000320193"]
@@ -127,7 +128,7 @@ def test_the_dedup_overlap_guard_cannot_fire(patched):
     b = _filing("0001-dup", "0001652044", "2016-04-21")  # same accession, both segments
     patched([a, b], lambda t, c, f: [_row(t, c, f)])  # identical PK -> dedup drops one
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))[
         mod.Tables.fundamentals_facts
     ]
     assert len(out) == 1  # a row WAS dropped
@@ -141,7 +142,7 @@ def test_the_dedup_overlap_guard_cannot_fire(patched):
 
 def test_an_empty_walk_returns_empty_frames_without_touching_the_guard(patched):
     patched([], lambda t, c, f: [])
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, registrants=_registrants())
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))
     assert out[mod.Tables.fundamentals_facts].empty
 
 
@@ -162,7 +163,7 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
         done_accessions=frozenset({"0000320193-24-000123"}),
         catalogue=cast(Any, None),
         gics_by_ticker={},
-        registrants={},
+        scope=EdgarScope(None, {}),
     )
 
     message = caplog.text.lower()
@@ -185,7 +186,7 @@ def test_cold_ticker_with_only_eligible_no_xbrl_filings_is_incomplete(monkeypatc
     print("\n=== SANITY: a cold all-no-XBRL walk is incomplete ===")
     print("  expected: no persisted coverage + 2 eligible filings without XBRL raises a ticker-level failure")
     with pytest.raises(RuntimeError, match="(?i)no usable xbrl"):
-        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
 
 
 def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog):
@@ -197,7 +198,7 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     try:
-        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
     except RuntimeError:
         pass
 
@@ -211,6 +212,6 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
 def test_facts_builder_has_no_employee_side_output(patched):
     filing = _filing("0001-a", "0000320193", "2024-02-01", form="10-K")
     patched([filing], lambda t, c, f: [_row(t, c, f)])
-    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, registrants={})
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
     assert set(out) == {mod.Tables.fundamentals_facts}
     print("\nSANITY: fundamentals facts own no employee side output.")

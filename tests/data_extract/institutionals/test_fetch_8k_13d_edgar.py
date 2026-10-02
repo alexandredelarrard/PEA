@@ -2,7 +2,7 @@
 Unit tests for the edgartools-based 8-K / SC 13D fetchers
 (fetch_8k_edgar.py / fetch_13d_edgar.py). Pure-synthetic, no network -- filings
 and their typed `.obj()` results are faked with SimpleNamespace so the row-
-building logic (`_filing_row` / `_filing_rows`, both fed a `FilingStamp`) is exercised without needing a
+building logic (`_filing_row` / `schedule_filing_rows`, both fed a `FilingStamp`) is exercised without needing a
 live `Company(ticker).get_filings(...)` call.
 """
 
@@ -21,21 +21,22 @@ from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, 
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
+    SCHEDULE_13D,
     _carve_with,
     _clean_transaction_row,
     _extract_13d_item_sections,
     _extract_transaction_rows,
-    _filing_rows,
     _normalize_item_text,
     build_ticker_13d_edgar,
 )
+from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 
 
 def _rows(filing: object) -> list[dict]:
     """Rows built through the filing stamp, exactly as the ticker walk passes them."""
-    return _filing_rows(FilingStamp.of(filing, ""))
+    return schedule_filing_rows(FilingStamp.of(filing, ""), SCHEDULE_13D)
 
 
 def test_filing_fetchers_take_years_history_as_an_argument():
@@ -865,7 +866,7 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.resolve_schedule_subject_filings",
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
         lambda ticker, subject_ciks, forms, since, done_accessions: [good_filing, bad_filing],
     )
 
@@ -882,7 +883,7 @@ def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
 
     filing.obj = fail_parse
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.resolve_schedule_subject_filings",
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
         lambda ticker, subject_ciks, forms, since, done_accessions: [filing],
     )
     with pytest.raises(RuntimeError, match="0001-broken"):

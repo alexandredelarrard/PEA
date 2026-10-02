@@ -10,14 +10,15 @@ and column names as `sec_13d` so the 13G->13D escalation join is a plain
 from __future__ import annotations
 
 import re
+from functools import partial
+from typing import Any
 
 import pandas as pd
 
 from src.constants.constants import SEC_13G_FORMS
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, num_or_null
-from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
-from src.data_store.schema import Table, Tables
-from src.utils.string import pad_cik
+from src.data_extract.utils.common.edgar_driver import EdgarFetch
+from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, build_schedule_rows
+from src.data_store.schema import Tables
 
 # Mirrors `sec_13d`'s columns minus the four Item narratives (a 13G has no
 # purpose-of-transaction item), plus `rule_designation`.
@@ -51,15 +52,6 @@ _COLS = [
     "doc_url",
 ]
 
-_NUMERIC_COLS = [
-    "sole_voting_power",
-    "shared_voting_power",
-    "sole_dispositive_power",
-    "shared_dispositive_power",
-    "aggregate_amount",
-    "percent_of_class",
-]
-
 # The XML cover page dates as MM/DD/YYYY ('03/31/2026' on the ETN filing above). Parsed with an
 # explicit format rather than letting pandas infer: `01/02/2026` is a legal cover-page date and
 # an inferred parse can read it day-first, silently moving an event by ten months.
@@ -87,7 +79,7 @@ def _norm_entity(name: str | None) -> str:
     return " ".join(text.split())
 
 
-def _header_filers(filing) -> list[tuple[str, str]]:
+def _header_filers(filing: Any) -> list[tuple[str, str]]:
     """`(cik, name)` for each filer in the SGML header, in header order. Free once `.obj()` has
     run -- both go through the same memoized `filing.sgml()`. Empty on any failure: a missing
     header must degrade the CIK backfill, never drop the filing."""
@@ -103,7 +95,7 @@ def _header_filers(filing) -> list[tuple[str, str]]:
     return out
 
 
-def _reporting_person_cik(rp, seq: int, filers: list[tuple[str, str]], n_persons: int) -> str | None:
+def _reporting_person_cik(rp: Any, seq: int, filers: list[tuple[str, str]], n_persons: int) -> str | None:
     """This reporting person's CIK, from the parsed object when it has one and from the SGML
     header's filer list when it does not (see the module docstring: the post-mandate 13G XML
     cover page has no CIK element at all).
@@ -138,9 +130,16 @@ def _reporting_person_cik(rp, seq: int, filers: list[tuple[str, str]], n_persons
     return None
 
 
-def _event_date(raw) -> pd.Timestamp | None:
+def _reporting_person_ciks(filing: Any, persons: list[Any]) -> list[str | None]:
+    """One CIK per reporting person, backfilled from the SGML header's filer list (read once)."""
+    filers = _header_filers(filing)
+    return [_reporting_person_cik(rp, seq, filers, len(persons)) for seq, rp in enumerate(persons)]
+
+
+def _event_date(obj: Any) -> pd.Timestamp | None:
     """The cover-page event date, or None. Pre-mandate it is `''` (the class default), which must
     read as unknown rather than as an epoch."""
+    raw = getattr(obj, "date_of_event", None)
     if not raw:
         return None
     parsed = pd.to_datetime(raw, format=_EVENT_DATE_FORMAT, errors="coerce")
@@ -149,105 +148,29 @@ def _event_date(raw) -> pd.Timestamp | None:
     return None if pd.isna(parsed) else pd.Timestamp(parsed)
 
 
-def _filing_rows(stamp: FilingStamp) -> list[dict]:
-    """One Schedule 13G -> one row per reporting person. Pure apart from `filing.obj()`."""
-    filing = stamp.filing
-    obj = filing.obj()
-    has_structured = bool(getattr(obj, "has_structured_data", False))
-    issuer = getattr(obj, "issuer_info", None)
-    security = getattr(obj, "security_info", None)
-
-    base = {
-        "ticker": getattr(filing, "ticker", None) or (getattr(issuer, "ticker", None) if issuer else None),
-        "cik": getattr(issuer, "cik", None) if issuer else None,
-        "issuer_name": getattr(issuer, "name", None) if issuer else None,
-        "accession_number": stamp.accession_number,
-        "form": stamp.form,
-        "filing_date": stamp.filed,
-        "date_of_event": _event_date(getattr(obj, "date_of_event", None)),
-        "is_amendment": 1.0 if bool(getattr(obj, "is_amendment", False)) else 0.0,
-        "amendment_number": num_or_null(getattr(obj, "amendment_number", None), True),
-        # '' is the pre-mandate class default for both, not a value
-        "cusip": (getattr(security, "cusip", None) if security else None) or None,
-        "has_structured_data": 1.0 if has_structured else 0.0,
-        "rule_designation": getattr(obj, "rule_designation", None) or None,
-        "primary_document": stamp.primary_document,
-        "doc_url": stamp.doc_url,
-    }
-
-    persons = getattr(obj, "reporting_persons", None) or []
-
-    # Fallback row when no reporting person parsed, exactly as 13D does. The numerics are NaN
-    # rather than None so a batch in which every filing fails this way still seeds a float
-    # column -- `ensure_table` infers an all-None object column as SQL TEXT.
-    if not persons:
-        return [
-            {
-                **base,
-                "rp_seq": 0,
-                "reporting_person_name": None,
-                "reporting_person_cik": None,
-                "reporting_person_citizenship": None,
-                "type_of_reporting_person": None,
-                "reporting_person_comment": None,
-                "is_group_member": None,
-                **{col: float("nan") for col in _NUMERIC_COLS},
-            }
-        ]
-
-    filers = _header_filers(filing)
-    rows = []
-    for seq, rp in enumerate(persons):
-        rows.append(
-            {
-                **base,
-                "rp_seq": seq,
-                "reporting_person_name": getattr(rp, "name", None) or None,
-                "reporting_person_cik": _reporting_person_cik(rp, seq, filers, len(persons)),
-                "reporting_person_citizenship": getattr(rp, "citizenship", None) or None,
-                "type_of_reporting_person": getattr(rp, "type_of_reporting_person", None) or None,
-                "reporting_person_comment": getattr(rp, "comment", None) or None,
-                "is_group_member": getattr(rp, "member_of_group", None),
-                **{col: num_or_null(getattr(rp, col, None), has_structured) for col in _NUMERIC_COLS},
-            }
-        )
-    return rows
+def _rule_designation(filing: Any, obj: Any, has_structured: bool) -> dict[str, Any]:
+    """The 13G-only filing field: the Rule 13d-1 paragraph the filer relies on."""
+    return {"rule_designation": getattr(obj, "rule_designation", None) or None}
 
 
-def build_ticker_13g_edgar(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    scope: EdgarScope,
-) -> dict[Table, pd.DataFrame]:
-    """`ticker`'s new Schedule 13G filings as `sec_13g` rows.
-
-    Issuer/filer guard: a ticker's 13G listing includes every filing where its CIK appears AT
-    ALL -- as the subject issuer, or merely as the FILER disclosing a stake in some unrelated
-    issuer. That is routine on 13G, where an S&P 500 asset manager or bank files hundreds
-    against other companies; kept, every field would describe a different company. An
-    unresolvable CIK on either side means "unknown" and must NOT reject -- hence the falsiness
-    checks rather than an equality test alone."""
-    ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
-    rows: list[dict] = []
-    for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, SEC_13G_FORMS, since=since, done_accessions=done_accessions):
-        stamp = FilingStamp.of(filing, cik)
-        try:
-            filing_rows = _filing_rows(stamp)
-        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            raise RuntimeError(f"SC 13G accession {stamp.accession_number} could not be parsed") from exc
-
-        issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
-        if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
-            continue  # ticker is a FILER here, not the issuer
-
-        for row in filing_rows:
-            row["ticker"] = ticker
-            rows.append(row)
-
-    return {Tables.sec_13g: pd.DataFrame(rows, columns=_COLS)}
+def _trust_disclosed(rp: Any, has_structured: bool) -> bool:
+    """A 13G numeric is a disclosed value exactly when the filing carried structured data."""
+    return has_structured
 
 
-SEC_13G_FETCH = EdgarFetch(desc="SC 13G (edgartools)", tables=(Tables.sec_13g,), build=build_ticker_13g_edgar)
+SCHEDULE_13G = ScheduleSpec(
+    label="SC 13G",
+    forms=tuple(SEC_13G_FORMS),
+    columns=tuple(_COLS),
+    extra_base=_rule_designation,
+    trust_numerics=_trust_disclosed,
+    reporting_person_ciks=_reporting_person_ciks,
+    event_date=_event_date,
+    blank_to_none=True,
+)
+
+SEC_13G_FETCH = EdgarFetch(
+    desc="SC 13G (edgartools)",
+    tables=(Tables.sec_13g,),
+    build=partial(build_schedule_rows, spec=SCHEDULE_13G, table=Tables.sec_13g),
+)

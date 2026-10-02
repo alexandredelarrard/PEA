@@ -34,17 +34,17 @@ Four properties the parsing depends on:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any, cast
 
 import pandas as pd
 from bs4 import BeautifulSoup
 
 from src.constants.constants import SEC_13D_FORMS
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, num_or_null
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
-from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
+from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, kept_schedule_filings
 from src.data_store.schema import Table, Tables
-from src.utils.string import pad_cik
 
 _COLS = [
     "ticker",
@@ -269,23 +269,22 @@ _ROLE_KEYWORDS = [
 _SIGNED_QUANTITY_RE = re.compile(r"(purchased|acquired|bought).{0,20}\(\s*(sold|disposed)\s*\)", re.I)
 
 
+def _cell_role(low: str, used: set[str]) -> str | None:
+    """The first still-free role a lower-cased header cell names, recorded in `used`; None when
+    it names none. A signed "Purchased (Sold)" quantity header claims the quantity role."""
+    if "quantity" not in used and _SIGNED_QUANTITY_RE.search(low):
+        used.add("quantity")
+        return "quantity_signed"
+    role = next((r for r, keywords in _ROLE_KEYWORDS if r not in used and any(k in low for k in keywords)), None)
+    if role is not None:
+        used.add(role)
+    return role
+
+
 def _header_roles(header_cells: list[str]) -> list[str | None]:
+    """One role per header cell, each role assigned at most once, left to right."""
     used: set[str] = set()
-    roles: list[str | None] = []
-    for cell in header_cells:
-        low = cell.lower()
-        role = None
-        if "quantity" not in used and _SIGNED_QUANTITY_RE.search(low):
-            role = "quantity_signed"
-            used.add("quantity")
-        else:
-            for r, keywords in _ROLE_KEYWORDS:
-                if r not in used and any(k in low for k in keywords):
-                    role = r
-                    used.add(r)
-                    break
-        roles.append(role)
-    return roles
+    return [_cell_role(cell.lower(), used) for cell in header_cells]
 
 
 def _row_values(cells: list[str], roles: list[str | None]) -> dict[str, str]:
@@ -345,7 +344,7 @@ def _clean_transaction_row(values: dict[str, str], filing_date: pd.Timestamp | N
     return out
 
 
-def _extract_transaction_rows(filing, fallback_person: str | None, filing_date: pd.Timestamp | None = None) -> list[dict]:
+def _extract_transaction_rows(filing: Any, fallback_person: str | None, filing_date: pd.Timestamp | None = None) -> list[dict]:
     """Scan every attachment's HTML tables for the Item 5(c) trading-data
     exhibit (identified by a "Trade Date" header cell, not by exhibit number --
     filers use EX-99.1, EX-99.2, etc. inconsistently) and role-map its rows.
@@ -353,66 +352,65 @@ def _extract_transaction_rows(filing, fallback_person: str | None, filing_date: 
     column (single-filer 13Ds usually omit it, since it would be redundant).
     `filing_date` anchors a bare "MM/DD" trade date with no year (see
     `_clean_transaction_row`)."""
-    rows: list[dict] = []
-    attachments = getattr(filing, "attachments", None) or []
-    for att in attachments:
-        # `is_html` is a METHOD, not a property -- `getattr(att, "is_html", False)`
-        # (no call) previously fetched the always-truthy bound method itself, so
-        # non-HTML attachments (GRAPHIC/.jpg letter images, routine on modern
-        # activist letters) were never actually skipped. `.content` on one of
-        # those returns raw bytes, which crashed the regex search below and, via
-        # the caller's blanket except, silently zeroed out the WHOLE filing's
-        # transaction rows -- the real cause of transaction coverage dying out
-        # for any filing with an image attachment (i.e. most post-2020 ones).
-        try:
-            if not att.is_html():
-                continue
-        except Exception:  # noqa: BLE001 -- best-effort only
+    return [
+        row
+        for html in _trade_cue_html(filing)
+        for table in BeautifulSoup(html, "html.parser").find_all("table")
+        for row in _table_trades(table, fallback_person, filing_date)
+    ]
+
+
+def _attachment_html(att: Any) -> str | None:
+    """An attachment's HTML text, or None when it is not HTML or cannot be read. `is_html` is a
+    METHOD: a non-HTML attachment (an image letter) returns bytes from `.content`, which must be
+    skipped rather than fail the filing's whole trade log."""
+    try:
+        if not att.is_html():
+            return None
+        html = att.content
+    except Exception:  # noqa: BLE001 -- best-effort only
+        return None
+    return html if isinstance(html, str) else None
+
+
+def _trade_cue_html(filing: Any) -> Iterator[str]:
+    """The HTML of each attachment that carries a "Trade Date" cue, in attachment order."""
+    for att in getattr(filing, "attachments", None) or []:
+        html = _attachment_html(att)
+        if html is not None and _TRADE_HEADER_CUE.search(html):
+            yield html
+
+
+def _cells(tr: Any) -> list[str]:
+    """A table row's non-empty cell texts."""
+    return [text for text in (cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])) if text]
+
+
+def _table_trades(table: Any, fallback_person: str | None, filing_date: pd.Timestamp | None) -> list[dict]:
+    """The trades of one HTML table: rows after its first "Trade Date" header row, role-mapped by
+    that header; [] when the table has no such header."""
+    table_rows = table.find_all("tr")
+    for idx, tr in enumerate(table_rows):
+        cells = _cells(tr)
+        if any(_TRADE_HEADER_CUE.search(c) for c in cells):
+            return _data_rows(table_rows[idx + 1 :], _header_roles(cells), fallback_person, filing_date)
+    return []
+
+
+def _data_rows(table_rows: list[Any], roles: list[str | None], fallback_person: str | None, filing_date: pd.Timestamp | None) -> list[dict]:
+    """Cleaned trades from the rows under a header; a row without a trade date and a direction
+    (a footnote line) is skipped."""
+    trades: list[dict] = []
+    for tr in table_rows:
+        values = _row_values(_cells(tr), roles)
+        if "trade_date" not in values or "transaction_type" not in values:
             continue
-        try:
-            html = att.content
-        except Exception:  # noqa: BLE001 -- best-effort only
-            continue
-        if not isinstance(html, str) or not _TRADE_HEADER_CUE.search(html):
-            continue
-        soup = BeautifulSoup(html, "html.parser")
-        for table in soup.find_all("table"):
-            table_rows = table.find_all("tr")
-            header_idx = None
-            roles: list[str | None] = []
-            for i, tr in enumerate(table_rows):
-                cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-                cells = [c for c in cells if c]
-                if any(_TRADE_HEADER_CUE.search(c) for c in cells):
-                    header_idx = i
-                    roles = _header_roles(cells)
-                    break
-            if header_idx is None:
-                continue
-            for tr in table_rows[header_idx + 1 :]:
-                cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-                cells = [c for c in cells if c]
-                if not cells:
-                    continue
-                values = _row_values(cells, roles)
-                if "trade_date" not in values or "transaction_type" not in values:
-                    continue  # not a data row (e.g. a footnote line)
-                values.setdefault("reporting_person_name", cast(Any, fallback_person))
-                rows.append(_clean_transaction_row(values, filing_date))
-    return rows
+        values.setdefault("reporting_person_name", cast(Any, fallback_person))
+        trades.append(_clean_transaction_row(values, filing_date))
+    return trades
 
 
-_RP_NUMERIC_ATTRS = (
-    "sole_voting_power",
-    "shared_voting_power",
-    "sole_dispositive_power",
-    "shared_dispositive_power",
-    "aggregate_amount",
-    "percent_of_class",
-)
-
-
-def _is_placeholder_numerics(rp) -> bool:
+def _is_placeholder_numerics(rp: Any) -> bool:
     """A reporting person whose SIX numerics are all 0 while `commentContent` is set has not
     disclosed a zero position -- it has deferred the numbers to the Item 5 narrative ("Rows 7,
     8, 9, 10, 11, and 13: See Item 5"). Writing the literal 0 would make the table claim a 0%
@@ -421,125 +419,78 @@ def _is_placeholder_numerics(rp) -> bool:
     with no comment, and a commented row with real numbers keeps them."""
     if not (getattr(rp, "comment", None) or "").strip():
         return False
-    values = [getattr(rp, attr, None) for attr in _RP_NUMERIC_ATTRS]
+    values = [getattr(rp, attr, None) for attr in SCHEDULE_NUMERIC_COLS]
     present = [v for v in values if v is not None]
     return bool(present) and all(v == 0 for v in present)
 
 
-def _filing_rows(stamp: FilingStamp) -> list[dict]:
-    """Extract structured 13D filing rows (one row per reporting person)."""
-    filing = stamp.filing
-    obj = filing.obj()
-    has_structured = bool(getattr(obj, "has_structured_data", False))
-    issuer = getattr(obj, "issuer_info", None)
-    security = getattr(obj, "security_info", None)
+def _item_texts(filing: Any, obj: Any, has_structured: bool) -> dict[str, Any]:
+    """Item 3/4/5/6 narrative: the structured XML parse when the filing has one, else the bodies
+    carved out of `filing.text()` (a text that cannot be read yields no items)."""
     items = getattr(obj, "items", None)
-
-    # Date normalization
-    raw_event_date = getattr(obj, "date_of_event", None) or getattr(obj, "event_date", None) or None
-    event_date = pd.Timestamp(raw_event_date) if raw_event_date else None
-
-    # Ticker fallback logic
-    ticker = getattr(filing, "ticker", None) or (getattr(issuer, "ticker", None) if issuer else None)
-
-    # Item 3/4/5/6 narrative: trust the structured XML parse when present, else fall
-    # back to a text-section carve (see module docstring -- has_structured is
-    # essentially always False for real filings today, so this fallback is the
-    # path that actually fires in practice).
     if has_structured and items:
-        item3_text = getattr(items, "item3_source_of_funds", None)
-        item4_text = getattr(items, "item4_purpose_of_transaction", None)
         item5_parts = [
             getattr(items, "item5_number_of_shares", None),
             getattr(items, "item5_percentage_of_class", None),
             getattr(items, "item5_transactions", None),
             getattr(items, "item5_shareholders", None),
         ]
-        item5_text = " | ".join(p for p in item5_parts if p) or None
-        item6_text = getattr(items, "item6_contracts", None)
-    else:
-        try:
-            raw_text = filing.text()
-        except Exception:  # noqa: BLE001 -- best-effort only
-            raw_text = None
-        sections = _extract_13d_item_sections(raw_text) if raw_text else {}
-        item3_text = sections.get("item3_source_of_funds")
-        item4_text = sections.get("item4_purpose_of_transaction")
-        item5_text = sections.get("item5_interest_in_securities")
-        item6_text = sections.get("item6_contracts_understandings")
+        return {
+            "item3_source_of_funds": getattr(items, "item3_source_of_funds", None),
+            "item4_purpose_of_transaction": getattr(items, "item4_purpose_of_transaction", None),
+            "item5_interest_in_securities": " | ".join(p for p in item5_parts if p) or None,
+            "item6_contracts_understandings": getattr(items, "item6_contracts", None),
+        }
+    try:
+        raw_text = filing.text()
+    except Exception:  # noqa: BLE001 -- best-effort only
+        raw_text = None
+    sections = _extract_13d_item_sections(raw_text) if raw_text else {}
+    return {field: sections.get(field) for field in _ITEM_TEXT_FIELD.values()}
 
-    base = {
-        "ticker": ticker,
-        "cik": getattr(issuer, "cik", None) if issuer else None,
-        "issuer_name": getattr(issuer, "name", None) if issuer else None,
-        "accession_number": stamp.accession_number,
-        "form": stamp.form,
-        "filing_date": stamp.filed,
-        "date_of_event": event_date,
-        "is_amendment": 1.0 if bool(getattr(obj, "is_amendment", False)) else 0.0,
-        "amendment_number": num_or_null(getattr(obj, "amendment_number", None), True),
-        "cusip": getattr(security, "cusip", None) if security else None,
-        "has_structured_data": 1.0 if has_structured else 0.0,
-        # Narrative & Item extraction
-        "item3_source_of_funds": item3_text,
-        "item4_purpose_of_transaction": item4_text,
-        "item5_interest_in_securities": item5_text,
-        "item6_contracts_understandings": item6_text,
-        "primary_document": stamp.primary_document,
-        "doc_url": stamp.doc_url,
-    }
 
-    persons = getattr(obj, "reporting_persons", None) or []
+def _trust_numerics(rp: Any, has_structured: bool) -> bool:
+    """A 13D numeric is disclosed only in a structured filing whose reporting person did not defer
+    its numbers to the Item 5 narrative (see `_is_placeholder_numerics`)."""
+    return has_structured and not _is_placeholder_numerics(rp)
 
-    # Fallback row if no reporting persons are parsed. The six numeric fields are NaN,
-    # not None, for the reason `num_or_null` documents: an all-None column would be
-    # created as TEXT by `ensure_table` the first time this row seeds a cold table.
-    if not persons:
-        return [
-            {
-                **base,
-                "rp_seq": 0,
-                "reporting_person_name": None,
-                "reporting_person_cik": None,
-                "reporting_person_citizenship": None,
-                "type_of_reporting_person": None,
-                "reporting_person_comment": None,
-                "is_group_member": None,
-                "sole_voting_power": float("nan"),
-                "shared_voting_power": float("nan"),
-                "sole_dispositive_power": float("nan"),
-                "shared_dispositive_power": float("nan"),
-                "aggregate_amount": float("nan"),
-                "percent_of_class": float("nan"),
-            }
-        ]
 
-    rows = []
-    for seq, rp in enumerate(persons):
-        # `has_structured` alone stopped discriminating at the mandate: it was False for
-        # every pre-2025 filing and so nulled the class defaults by accident, but it is True
-        # for every filing since, so the placeholder test is what now carries the guard.
-        trust_numerics = has_structured and not _is_placeholder_numerics(rp)
-        rows.append(
-            {
-                **base,
-                "rp_seq": seq,
-                "reporting_person_name": getattr(rp, "name", None),
-                "reporting_person_cik": None if getattr(rp, "no_cik", False) else getattr(rp, "cik", None),
-                "reporting_person_citizenship": getattr(rp, "citizenship", None) or None,
-                "type_of_reporting_person": getattr(rp, "type_of_reporting_person", None) or None,
-                "reporting_person_comment": getattr(rp, "comment", None) or None,
-                "is_group_member": getattr(rp, "member_of_group", None),
-                "sole_voting_power": num_or_null(getattr(rp, "sole_voting_power", None), trust_numerics),
-                "shared_voting_power": num_or_null(getattr(rp, "shared_voting_power", None), trust_numerics),
-                "sole_dispositive_power": num_or_null(getattr(rp, "sole_dispositive_power", None), trust_numerics),
-                "shared_dispositive_power": num_or_null(getattr(rp, "shared_dispositive_power", None), trust_numerics),
-                "aggregate_amount": num_or_null(getattr(rp, "aggregate_amount", None), trust_numerics),
-                "percent_of_class": num_or_null(getattr(rp, "percent_of_class", None), trust_numerics),
-            }
-        )
+def _reporting_person_ciks(filing: Any, persons: list[Any]) -> list[str | None]:
+    """Each reporting person's own parsed CIK, None when it asserts `no_cik`; no header backfill."""
+    return [None if getattr(rp, "no_cik", False) else getattr(rp, "cik", None) for rp in persons]
 
-    return rows
+
+def _event_date(obj: Any) -> pd.Timestamp | None:
+    """`date_of_event`, else `event_date`, as a Timestamp; None when both are blank."""
+    raw = getattr(obj, "date_of_event", None) or getattr(obj, "event_date", None) or None
+    return pd.Timestamp(raw) if raw else None
+
+
+def _filing_transactions(ticker: str, cik: str, stamp: FilingStamp, filing_rows: list[dict]) -> list[dict]:
+    """The filing's Item 5(c) trades stamped with ticker, issuer CIK, accession, filing date and
+    `trade_seq`. A sole named reporting person fills an exhibit that has no Name column."""
+    names = [r.get("reporting_person_name") for r in filing_rows if r.get("reporting_person_name")]
+    fallback_person = names[0] if len(names) == 1 else None
+    try:
+        trades = _extract_transaction_rows(stamp.filing, fallback_person, stamp.filed)
+    except Exception as exc:  # noqa: BLE001 -- filing parser boundary
+        raise RuntimeError(f"{SCHEDULE_13D.label} accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
+    issuer_cik = filing_rows[0].get("cik") if filing_rows else cik
+    for seq, trade in enumerate(trades):
+        trade.update(ticker=ticker, cik=issuer_cik, accession_number=stamp.accession_number, filing_date=stamp.filed, trade_seq=seq)
+    return trades
+
+
+SCHEDULE_13D = ScheduleSpec(
+    label="SC 13D",
+    forms=tuple(SEC_13D_FORMS),
+    columns=tuple(_COLS),
+    extra_base=_item_texts,
+    trust_numerics=_trust_numerics,
+    reporting_person_ciks=_reporting_person_ciks,
+    event_date=_event_date,
+    blank_to_none=False,
+)
 
 
 def build_ticker_13d_edgar(
@@ -550,47 +501,15 @@ def build_ticker_13d_edgar(
     done_accessions: frozenset[str] = frozenset(),
     scope: EdgarScope,
 ) -> dict[Table, pd.DataFrame]:
-    """One row per reporting person plus the filing's Item 5(c) trade log. A filing whose
-    `.obj()` parse fails is skipped entirely -- unlike 8-K's item codes, a 13D without its
-    parsed content is not independently useful. The trade log is still attempted, since the
-    two parses read different parts of the filing.
-
-    Issuer/filer guard: a ticker's 13D listing includes every filing where its CIK appears
-    AT ALL -- as the targeted issuer, or merely as a FILER disclosing a stake in some
-    unrelated issuer (routine for banks whose desks cross 5% in odd closed-end funds). Only
-    filings whose issuer CIK matches the ticker's own are kept; otherwise every field would
-    describe a different company. An unresolvable CIK on either side means "unknown", which
-    must NOT reject -- hence the falsiness checks rather than an equality test alone."""
-    ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
+    """`ticker`'s new issuer-side 13D filings: one `sec_13d` row per reporting person plus each
+    filing's Item 5(c) trades in `sec_13d_transactions`. A filing whose `.obj()` parse or trade
+    exhibit fails raises, failing the ticker."""
     rows: list[dict] = []
     txn_rows: list[dict] = []
-    for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, SEC_13D_FORMS, since=since, done_accessions=done_accessions):
-        stamp = FilingStamp.of(filing, cik)
-        try:
-            filing_rows = _filing_rows(stamp)
-        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            raise RuntimeError(f"SC 13D accession {stamp.accession_number} could not be parsed") from exc
-
-        issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
-        if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
-            continue  # ticker is a FILER here, not the issuer
-
-        person_names = [r.get("reporting_person_name") for r in filing_rows if r.get("reporting_person_name")]
-        for r in filing_rows:
-            r["ticker"] = ticker
-            rows.append(r)
-
-        try:
-            fallback_person = person_names[0] if len(person_names) == 1 else None
-            exhibit_rows = _extract_transaction_rows(filing, fallback_person, stamp.filed)
-        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            raise RuntimeError(f"SC 13D accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
-
-        cik_val = filing_rows[0].get("cik") if filing_rows else cik
-        for seq, tr in enumerate(exhibit_rows):
-            tr.update(ticker=ticker, cik=cik_val, accession_number=stamp.accession_number, filing_date=stamp.filed, trade_seq=seq)
-            txn_rows.append(tr)
-
+    walk = kept_schedule_filings(ticker, cik, since=since, done_accessions=done_accessions, scope=scope, spec=SCHEDULE_13D)
+    for stamp, filing_rows in walk:
+        rows.extend(filing_rows)
+        txn_rows.extend(_filing_transactions(ticker, cik, stamp, filing_rows))
     return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
 
 

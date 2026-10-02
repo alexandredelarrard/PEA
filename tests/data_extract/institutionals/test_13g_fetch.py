@@ -19,18 +19,19 @@ import pytest
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
     _COLS,
-    _NUMERIC_COLS,
-    _filing_rows,
+    SCHEDULE_13G,
+    SEC_13G_FETCH,
     _norm_entity,
     _reporting_person_cik,
-    build_ticker_13g_edgar,
 )
+from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS as _NUMERIC_COLS
+from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
 
 
 def _rows(filing: object) -> list[dict]:
     """Rows built through the filing stamp, exactly as the ticker walk passes them."""
-    return _filing_rows(FilingStamp.of(filing, ""))
+    return schedule_filing_rows(FilingStamp.of(filing, ""), SCHEDULE_13G)
 
 
 def _rp(name="FMR LLC", cik="", *, no_cik=False, pct=0.0, agg=0, sole=0, shared=0, torp="", citizenship="", member=None, comment=None):
@@ -218,7 +219,7 @@ def test_empty_reporting_persons_yields_one_nan_fallback_row():
 # --------------------------------------------------------------------------- #
 def _patch_schedule_filings(monkeypatch, filings):
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13g_edgar.resolve_schedule_subject_filings",
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
         lambda ticker, subject_ciks, forms, since, done_accessions: filings,
     )
 
@@ -229,7 +230,7 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
     own = _filing(issuer_cik="0000200406", issuer_name="JOHNSON & JOHNSON")
     other = _filing(issuer_cik="0001739410", issuer_name="Rallybio Corporation", accession="0000904454-26-000233")
     _patch_schedule_filings(monkeypatch, [own, other])
-    frame = build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]
+    frame = SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
     assert list(frame.columns) == _COLS
@@ -241,9 +242,9 @@ def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
     """An unknown CIK on either side means "unknown", which must not reject -- otherwise a
     header that failed to parse would silently cost the ticker its whole history."""
     _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
-    assert len(build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
+    assert len(SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
     _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
-    assert len(build_ticker_13g_edgar("JNJ", "", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
+    assert len(SEC_13G_FETCH.build("JNJ", "", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
 
 
 def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
@@ -255,7 +256,7 @@ def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
     filing.obj = fail_parse
     _patch_schedule_filings(monkeypatch, [filing])
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13g_edgar("JNJ", "0000200406", scope=EdgarScope(None, {}))
+        SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13G parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 

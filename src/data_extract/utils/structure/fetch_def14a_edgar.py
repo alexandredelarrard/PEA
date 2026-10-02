@@ -13,26 +13,6 @@ deleted: edgartools' proxy HTML parser returns values that are silently WRONG
 rather than absent (a missed "(in thousands)" header, a hardcoded 0.5 standing
 in for a "*" percent, three value-inventing pay-ratio repairs), and the defects
 are ticker-persistent, so they do not average out.
-
-REGULATORY SCOPE, which is why a row is not written for every filing
---------------------------------------------------------------------
-Item 402(v) applies to fiscal years ending on or after 2022-12-16. A proxy
-covering an earlier year carries no `ecd:` facts at all, so it gets NO ROW --
-`has_xbrl` was dropped with the HTML block because a table that only holds
-tagged filings makes it degenerate. The inventory of "which proxies exist" is
-`def14a_llm`'s job, and it covers all of them.
-
-THE DIMENSION FILTER
---------------------
-`ProxyStatement`'s accessors filter on `concept ==` only and take `.iloc[0]`, so
-on a co-PEO year document order decides which executive survives -- BA's 2025
-proxy silently drops one of Ortberg / Calhoun. `def14a_ecd.py` reads the facts
-frame directly and resolves the dimensions; see its module docstring for the two
-incompatible tagging styles filers use and why the axis filter is conditional.
-
-`peo_actually_paid_comp` is NEGATIVE on real filings (NKE 2025: -10,924,243) --
-Compensation Actually Paid subtracts prior-year unvested fair value. There is no
-sign flip and no `abs()` anywhere on this path.
 """
 
 from __future__ import annotations

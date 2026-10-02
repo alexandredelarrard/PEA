@@ -80,6 +80,41 @@ Required work:
 - rebuild and validate `ic_inst_ownership_pct`; and
 - remove the guard only if the corrected series is economically bounded and has no unexplained interior holes.
 
+## EDGAR extraction follow-ups
+
+Deferred from the shared-driver refactor of `src/data_extract`. Stored-value changes need explicit approval plus a DB cleanup; each item names the condition that should reopen it.
+
+### Stored-value divergences (approval required)
+
+- **P1 — Recycled-symbol aliases pull another company's filings.** `resolve_registrant_filings` in [registrant.py](../src/data_extract/utils/common/registrant.py) turns every identity alias of an unregistered ticker into `Company(alias)`, which resolves through EDGAR's *current* ticker map. Measured in `sec_8k`: ALB holds 582 accessions from AllianceBernstein (CIK 825313), ALGN 72 from Allegro MicroSystems (866291), DASH 129 from Fabrinet (1408710), TFC 490 from Beacon Financial (1108134); `sec_def14a` ITW/BAC are clean. This blocks moving the DEF 14A LLM lister in [def14a/fetch.py](../src/data_extract/utils/structure/def14a/fetch.py) onto `resolve_registrant_filings` (one listing check found +31 Northern Trust proxies on ITW and +32 fund proxies on BAC). Trigger: before any further consumer adopts the resolver, or before 8-K event features are trusted for these tickers; fix = dated alias resolution plus deletion of the foreign accessions.
+- **P1 — `earnings_call_sections` live columns differ from the schema.** The live table has `ticker, quarter, paragraph, as_of, transcript_id, speaker, content`, while [schema.py](../src/data_store/schema.py) declares PK `(ticker, quarter, tag)` and the code reads `tag`/`text`. `ingest_earnings_calls` would raise `KeyError` on the live DB, and the missing-quarter step ([utils_missing_quarters.py](../src/data_extract/utils/behavioral/utils_missing_quarters.py)) silently sees an empty stored set. Trigger: before the next transcript ingest or earnings-call gap run; needs an approved schema/DB migration.
+- **P2 — Schedule 13D blanks and reporting-person CIK.** `sec_13d.cusip` stores `''` on 3,685 of 4,791 rows where `sec_13g` stores NULL for the same default; 572 of 1,106 structured 13D rows lack `reporting_person_cik` because 13D has no header-CIK backfill (13G has one). Both live in the per-form `ScheduleSpec` in [schedule_rows.py](../src/data_extract/utils/institutionals/schedule_rows.py). Trigger: when a 13D feature reads `cusip` or filer CIK, or at the next 13D rebuild.
+- **P2 — Insider live versus bulk encodings.** In [insider_common.py](../src/data_extract/utils/institutionals/insider_common.py): `value_usd` priority is reversed (bulk shares × price first, live stated total first; 6 disagreeing rows in 2026q1); role flags are 0/1 in bulk but NULL when the live checkbox is absent (about 1,700 live rows have NULL `is_director` where bulk has 0); a live row with no ticker stores `''`; and the numeric parsers differ (bulk pandas `to_numeric`, live Python `float` after stripping `,`/`$`, which disagree in the last digit on 5,678 of 40,000 random long decimals). Trigger: before the next parity-approved bulk promotion, or when an insider feature reads `value_usd` or role flags across the bulk/live boundary.
+- **P3 — Text cleaning for 8-K and filing text.** `sec_8k` item text and `sec_filing_text` get no cp1252 normalisation (13D does) and skip the NUL strip. Trigger: when a text consumer meets mojibake or NUL bytes, or at the next full 8-K/filing-text rebuild.
+
+### Fetch correctness and robustness
+
+- **P1 — Live insider listing truncates silently on an Atom 503.** `ownership_filings` in [fetch_insider_edgar.py](../src/data_extract/utils/institutionals/fetch_insider_edgar.py) swallows an SEC 503 mid-pagination and returns a truncated list (observed: JPM Form 4 at offset 5100), so the run reports success with missing filings. Trigger: before the next insider live backfill; the page failure should fail the ticker.
+- **P2 — `sec13f_hr` batch duplicate-key risk.** A save batch in [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py) is de-duplicated on the book key `(cik, period, cusip)`; the `sec13f_hr` slice is cut after the CUSIP-to-ticker merge and is not re-checked on its own key `(cik, period, ticker, cusip)`, and Postgres rejects an upsert that touches one key twice. Trigger: any change to the CUSIP map shape or batch de-duplication, or a 13F batch upsert failure.
+- **P2 — Insider stored-row sweep and mixed-CIK accessions.** The sweep in [fetch_insider_transactions.py](../src/data_extract/utils/institutionals/fetch_insider_transactions.py) deletes a whole accession that contains a rejected issuer CIK but quarantines only the rejected rows, so a kept row in a mixed-CIK accession is lost (0 such accessions live). Trigger: when the sweep first reports a mixed-CIK accession.
+- **P2 — edgartools Windows cache rename race.** Threads building `Company` for the same CIK can hit a `PermissionError` on the edgartools cache rename. Trigger: when a threaded EDGAR walk logs that error, or before raising worker counts.
+- **P2 — Employees changed-scope rewind window.** A ticker whose identity scope changed rewinds only to `fallback_since` in [fundamentals_employees.py](../src/data_extract/utils/fundamentals/fundamentals_employees.py); pending filings older than that are not retried that run. Trigger: after an identity change for a ticker with employee history older than the configured window.
+- **P3 — `ensure_zip` limiter and close.** `ensure_zip` in [bulk_cache.py](../src/data_extract/utils/common/bulk_cache.py) and the notes scrape bypass the SEC rate limiter, do not close a streamed response on a non-200, and a mid-download exception aborts the loop. Trigger: if a bulk download is throttled or leaks connections.
+
+### Performance and code health
+
+- **P3 — Memoised per-run EDGAR listing.** Each fetcher calls `Company(ticker).get_filings` per ticker (five or more listings per ticker per run). Memoise per run once a memory budget is set; resident memory is the risk. Trigger: when listing time dominates a nightly run.
+- **P3 — Parallel RegSHO and earnings-surprise downloads.** RegSHO day files (about 3,900 on a cold start) and per-ticker earnings surprises download sequentially. Trigger: a cold start or full refresh of either source.
+- **P3 — `xbrl_linkbase._resolve_once` is 220 lines.** [xbrl_linkbase.py](../src/data_extract/utils/fundamentals/xbrl_linkbase.py) sits outside the EDGAR walk. Trigger: the next functional change to linkbase resolution.
+- **P3 — `isin` on Arrow string columns.** pandas `isin` on Arrow-backed string columns is about 15× slower than on object columns (for example `filter_footnotes`). Trigger: when a bulk insider quarter's filter step regresses or the frame dtype backend changes.
+- **P3 — Unused `pytrends` dependency.** Nothing imports it; remove it from `pyproject.toml` (line 29) and `airflow/requirements-airflow.txt` (line 16) with a `poetry lock`. Trigger: next dependency update.
+- **P3 — Stale comments in risk-zone files.** [schema.py](../src/data_store/schema.py) (about line 888) names the deleted `_filter_universe`, and [context.py](../src/context.py) (about line 125) names `kpi_catalogue.resolve_config_dir`, now in `config_paths`. Trigger: the next approved edit to either file.
+
+### Test suite
+
+- **P2 — `tests/dags/test_dag_matches_part_registry.py` fails.** `test_dag_chain_is_derived_from_the_registry` fails independently of `src/data_extract`. Trigger: before relying on the DAG/part-registry contract.
+- **P2 — `src/modelling/trend` is missing.** `src/strategies/step_trend.py` and `tests/modelling/test_trend_asset.py` import it, so modelling, portfolio, and strategies tests cannot be collected (`ModuleNotFoundError`, plus `KeyError 'src.strategies'` down the same import chain). Trigger: before any modelling, strategy, or portfolio change.
+
 ## Documentation retirement
 
 After this migration is reviewed:

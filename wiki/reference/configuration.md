@@ -42,7 +42,8 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 
 - `registrant_cutover.json`: dated legal-filer chains;
 - `entity_lineage_manual.json`: CIK-to-economic-entity adjudication;
-- `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals.
+- `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals;
+- `superinvestor_overrides.json`: Dataroma manager-code to CIK overrides and the codes recorded as unresolvable, each with its reason, read by `load_superinvestor_overrides` in [fetch_superinvestors.py](../../src/data_extract/utils/institutionals/fetch_superinvestors.py) and cached per resolved config directory.
 
 Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register.
 
@@ -57,7 +58,8 @@ Key distinctions:
 - `sharadar_years_history` is separate because entitlement and response size differ;
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
-- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`.
+- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction pins one thread per ticker in code;
+- regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/structure/fetch_def14a_edgar.py).
 
 ## Data availability and freshness
 

@@ -137,3 +137,11 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Coverage: routine employee extraction skips filing dates already stored in `fundamentals_employees` even when the accession manifest is empty; `--full` remains the explicit replay
 - Pages: [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
 - Evidence: the local table had 11,257 rows while its manifest had zero accession outcomes; a read-only plan skipped 31 AAPL and 30 CSCO stored dates, and 14 focused tests passed.
+
+## 2026-10-02: refresh — shared EDGAR extraction driver
+
+- Profile: internal/standard
+- source_commit: abd4b53 (branch `harness/edgar-extract-refactor`)
+- Coverage: per-ticker EDGAR fetchers declared as `EdgarFetch` and walked by `run_edgar_fetch`; `FilingStamp`; `Identity.filing_scope`; shared `sec_atom.py`, `item_carve.py`, `read_zip_tables` / `pending_periods`; one 13F walk feeding `sec13f_hr` and `sec13f_manager_holdings` plus the per-CIK manager catch-up; one 13D/13G row builder; one insider contract for bulk and live; one Form 3/4/5 pass for both identity tables; superinvestor overrides moved to `configs/sec/`; `gpt.threads` sizes DEF 14A and vote workers; deleted Wikipedia pageview and Google Trends fetchers removed from the docs
+- Pages: [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [System overview](./architecture/system-overview.md), [Run the pipeline](./guides/run-the-pipeline.md), [Configuration](./reference/configuration.md), [TODO](./TODO.md)
+- Table contracts unchanged; [Live database](./reference/live-database.md) not edited.

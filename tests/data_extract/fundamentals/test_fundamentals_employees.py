@@ -159,20 +159,81 @@ def test_incremental_reads_stored_dates_when_manifest_lacks_outcomes(monkeypatch
     )
 
 
-def test_source_guard_rejects_bounds_and_unsupported_claims():
+def supported(count: int | None, text: str, quote: str | None = None) -> int | None:
+    """The guard on `text`, quoting all of it unless a narrower quote is given."""
+    return mod.supported_employee_count(answer(count, quote or text), text)
+
+
+def test_source_guard_resolves_bounds_units_full_time_and_ranges():
     exact = "As of December 31, 2023, we employed approximately 74,042 employees."
-    bound = "We had over 300,000 employees."
-    split = "We had 2,476 full-time employees and 37 part-time employees."
-    assert mod.supported_employee_count(answer(74042, exact), exact) == 74042
-    assert mod.supported_employee_count(answer(300000, bound), bound) is None
-    assert mod.supported_employee_count(answer(300000, "300,000 employees"), bound) is None
-    assert mod.supported_employee_count(answer(2476, split), split) == 2513
-    assert mod.supported_employee_count(answer(99999, exact), exact) is None
-    assert mod.supported_employee_count(answer(74042, "fabricated quote"), exact) is None
+    assert supported(74042, exact) == 74042
+    # Open bounds move half a unit of the stated precision; a quote trimmed of "over" still reads it.
+    assert supported(13000, "At December 31, 2016, we had over 13,000 employees.") == 13_500
+    assert supported(300000, "We had over 300,000 employees.") == 305_000
+    assert supported(300000, "We had over 300,000 employees.", quote="300,000 employees") == 305_000
+    assert supported(6250, "The Company had over 6,250 full-time employees.") == 6_255
+    assert supported(2200000, "We employed nearly 2.2 million associates.") == 2_150_000
+    assert supported(95000, "Medtronic has 95,000+ full-time employees") == 95_500
+    assert supported(19800, "With approximately 19,800 employees in more than 30 countries") == 19_800
+    # Full-time only, whether the model returned the full-time count or the full + part-time sum.
+    dltr = "We employed approximately 11,040 full-time and 19,115 part-time associates on January 29, 2005."
+    assert supported(11040, dltr) == supported(30155, dltr) == 11_040
+    assert supported(19115, dltr) is None
+    assert supported(2513, "We had 2,476 full-time employees and 37 part-time employees.") == 2_476
+    assert supported(230800, "We employed approximately 230,800 full-time and part-time employees.") == 230_800
+    # Units, components and tables in thousands.
+    assert (
+        supported(61000, "The number of regular employees was 61 thousand, 62 thousand, and 62 thousand at years ended 2024, 2023, and 2022.")
+        == 61_000
+    )
+    assert supported(826, "As of December 31, 2024, we had 714 non-union employees and 112 union employees.") == 826
+    assert supported(97900, "Number of regular employees at year-end (thousands) 97.9") == 97_900
+    # A range is not a count, and neither is an unsupported number, a fabricated quote or an image.
+    assert supported(50000, "We employ between 50,000 and 100,000 people.") is None
+    assert supported(100000, "We employ between 50,000 and 100,000 people.") is None
+    assert supported(50000, "We employ 50 to 100 thousand people.") is None
+    assert supported(99999, exact) is None
+    assert supported(2023, exact) is None
+    assert supported(74042, exact, quote="fabricated quote") is None
     assert mod.supported_employee_count(answer(None, None, status="image_only"), exact) is None
     print(
-        "\nSANITY: exact text supports a count; full and shortened bounds, unsupported quote and image-only evidence abstain; an explicit split sums."
+        "\nSANITY: over 13,000 -> 13,500, nearly 2.2 million -> 2,150,000, full + part-time -> full-time only, "
+        "61 thousand -> 61,000, components sum; ranges, unsupported counts and quotes give None."
     )
+
+
+def test_source_guard_locates_quotes_through_filing_text_noise():
+    assert (
+        supported(
+            53368, "Employees We employed 53,368 persons at December 31, 2018 . Environmental", "We employed 53,368 persons at December 31, 2018."
+        )
+        == 53_368
+    )
+    assert (
+        supported(
+            5700,
+            "EMPLOYEES\nA s of February 7, 2014, we had approximately 5,700 employees.",
+            "As of February 7, 2014, we had approximately 5,700 employees.",
+        )
+        == 5_700
+    )
+    msft = "the Company employed approximately 47,600 people on a full-\ntime basis, 33,000 in the United States"
+    assert supported(47600, msft, "the Company employed approximately 47,600 people on a full-time basis") == 47_600
+    mcd = "The Company’s number of employees worldwide was approximately 440,000 as of year-end 2012 ."
+    assert supported(440000, mcd, "The Company�s number of employees worldwide was approximately 440,000 as of year-end 2012.") == 440_000
+    afl = (
+        "Aflac Japan had 3,860 employees and Aflac U.S. had 4,089 employees. We consider our relations excellent. Other operations had 293 employees."
+    )
+    assert (
+        supported(8242, afl, "Aflac Japan had 3,860 employees and Aflac U.S. had 4,089 employees. ... Other operations had 293 employees.") == 8_242
+    )
+    assert (
+        supported(
+            39000, "ADM is a global company of approximately 39,000 employees.", "The Company is a global company of approximately 39,000 employees."
+        )
+        is None
+    )
+    print("\nSANITY: line-break hyphens, split letters, spaced full stops, bad apostrophes and `...` joins locate; a paraphrase does not.")
 
 
 def test_source_guard_recovers_punctuation_and_anchored_table_quote():
@@ -422,9 +483,10 @@ def test_new_null_amendment_preserves_skipped_supported_original(monkeypatch):
     print("\nSANITY: a new image-only amendment cannot erase the saved same-day original skipped by the routine frontier.")
 
 
-def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
-    # The guard may reject a paid answer; it must remain retryable and cannot certify coverage.
+def test_ambiguous_result_is_final_and_completes_the_run(monkeypatch):
+    # 1030 ambiguous filings were re-sent to the LLM every night and kept the run red forever.
     saved_outcomes = []
+    runs = []
     context = SimpleNamespace(
         store=SimpleNamespace(save=lambda *args: None, delete=lambda *args, **kwargs: None, load=lambda *args, **kwargs: None),
         config=SimpleNamespace(
@@ -451,10 +513,10 @@ def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
         ),
     )
     monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: saved_outcomes.extend(args[-1]))
-    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: pytest.fail("ambiguous result advanced the frontier"))
-    with pytest.raises(IncompleteEdgarRunError, match="ambiguous"):
-        mod.fetch_fundamentals_employees(context, ["AAA"], 15)
+    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
+    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
     assert saved_outcomes[0]["status"] == "ambiguous"
+    assert runs[0]["coverage_complete"] is True
     monkeypatch.setattr(
         mod,
         "get_entry",
@@ -462,23 +524,43 @@ def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
             "coverage_complete": True,
             "last_run_date": "2025-01-01",
             "filing_outcomes": list(saved_outcomes),
+            "identity_scope_fingerprints": {"AAA": "scope"},
         },
     )
-    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: pytest.fail("pending filing skipped by recent frontier"))
+    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2025-01-01"), False))
+    seen = {}
+    monkeypatch.setattr(
+        mod,
+        "build_ticker_employees",
+        lambda *args, **kwargs: seen.update(kwargs) or mod.EmployeeTickerResult(pd.DataFrame(columns=mod.FRAME_COLUMNS), [], frozenset()),
+    )
+    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
+    assert "uncertain" in seen["done_accessions"]
+    assert seen["since"] == pd.Timestamp("2025-01-01")
+    assert len(runs) == 2
+    print("\nSANITY: an ambiguous filing is recorded once, completes the run, and is never sent to the LLM again.")
 
-    def retry_build(*args, **kwargs):
-        assert kwargs["since"] <= pd.Timestamp("2001-12-21")
-        assert "uncertain" not in kwargs["done_accessions"]
-        return mod.EmployeeTickerResult(
-            pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            list(saved_outcomes),
-            frozenset(),
-        )
 
-    monkeypatch.setattr(mod, "build_ticker_employees", retry_build)
-    with pytest.raises(IncompleteEdgarRunError, match="ambiguous"):
+def test_failed_ticker_still_blocks_the_frontier(monkeypatch):
+    context = SimpleNamespace(
+        store=SimpleNamespace(save=lambda *args: None, delete=lambda *args, **kwargs: None, load=lambda *args, **kwargs: None),
+        config=SimpleNamespace(data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1)),
+        config_dir="configs",
+        ensure_edgar_identity=lambda: None,
+        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+    )
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
+    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
+    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
+    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
+    monkeypatch.setattr(mod, "get_entry", lambda *args: {})
+    monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
+    monkeypatch.setattr(mod, "build_ticker_employees", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("EDGAR down")))
+    monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: None)
+    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: pytest.fail("a failed ticker advanced the frontier"))
+    with pytest.raises(IncompleteEdgarRunError, match="1 ticker"):
         mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    print("\nSANITY: a historical ambiguous accession remains retryable on the next run despite an old recent frontier.")
+    print("\nSANITY: a ticker that could not be read still keeps the run incomplete.")
 
 
 def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):

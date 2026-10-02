@@ -6,6 +6,7 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Literal, cast
 
 import pandas as pd
@@ -27,19 +28,28 @@ from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 HEADCOUNT_FORMS = ("10-K", "10-K/A", "10-K405")
-TERMINAL_STATUSES = frozenset({"saved", "no_headcount", "superseded"})
 FRAME_COLUMNS = ["ticker", "as_of", "employees"]
 _GAP = "[... filing gap ...]"
+_FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 
-# Locate filing context and check LLM evidence; none of these extracts a fallback count.
 _CONTEXT_RE = re.compile(
     r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
     r"personnel|staff|colleagues?|full[- ]time|part[- ]time)\b",
     re.I,
 )
-_BOUND_RE = re.compile(r"\b(?:over|nearly|more than|less than|at least|at most|up to|fewer than|greater than)\s+[\d,]+", re.I)
-_SPLIT_RE = re.compile(r"([\d,]+)\s+(full|part)[- ]time employees\s+and\s+([\d,]+)\s+(full|part)[- ]time employees", re.I)
-_NUMBER_RE = re.compile(r"\b\d[\d,]*\b")
+_ELLIPSIS_RE = re.compile(r"\s*(?:\.\s*\.\s*\.|…)\s*")
+_QUANTITY_RE = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million)\b)?", re.I)
+_SCALES = {"thousand": 1_000, "million": 1_000_000}
+_IN_THOUSANDS_RE = re.compile(r"\(\s*(?:in\s+)?thousands\s*\)|\bin thousands\b", re.I)
+_LOWER_BOUND_RE = re.compile(r"\b(?:over|more than|greater than|at least|in excess of|exceeding)\s*$", re.I)
+_UPPER_BOUND_RE = re.compile(r"\b(?:nearly|almost|under|less than|fewer than|up to|at most)\s*$", re.I)
+_RANGE_BEFORE_RE = re.compile(
+    r"(?:\bbetween\s*|\bbetween\s+[\d,.]+\s*(?:thousand|million)?\s+and\s*|\d\s*(?:thousand\s*|million\s*)?(?:-|–|to)\s*)$", re.I
+)
+_RANGE_AFTER_RE = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
+_PART_TIME_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?part[\s-]*time", re.I)
+_FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
+_MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
 
 
 class EmployeeAnswer(BaseModel):
@@ -108,52 +118,118 @@ def employee_excerpt(text: str, limit: int) -> str:
     return f"\n\n{_GAP}\n\n".join(text[start:end] for start, end in merged)[:limit]
 
 
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+([,;:])", r"\1", " ".join(text.split()).casefold())
+@dataclass(frozen=True)
+class _Quantity:
+    """One number the source states inside a located quote."""
+
+    value: int
+    bound: int  # +1 for "over N", -1 for "nearly N", 0 for an exact or approximate N
+    part_time: bool
+    in_range: bool
+    is_date: bool
 
 
-def _anchored_table_spans(quote: str, source: str) -> list[tuple[int, int]]:
-    """Spans for a `heading ... total` quote whose heading and total sit close together in the source."""
-    if quote.count(" ... ") != 1:
-        return []
-    heading, total = quote.split(" ... ")
-    if len(heading) < 40 or "employ" not in heading or not total.startswith("total ") or len(total) < 20:
-        return []
-    spans = []
-    for start in re.finditer(re.escape(heading), source):
-        end = source.find(total, start.end())
-        gap = source[start.end() : end] if end >= 0 else ""
-        if (
-            0 <= end - start.end() <= 2_000
-            and _GAP not in gap
-            and not re.search(r"\bas of\b", gap)
-            and len(re.findall(r"\bnumber of employees\b", gap)) <= 1
-        ):
-            spans.append((start.start(), end + len(total)))
+def _compact(text: str) -> tuple[str, list[int]]:
+    """Letters and digits only, casefolded, with each kept character's index in `text`.
+
+    Filing text breaks words and numbers in ways a quote does not reproduce (`part-\\ntime`,
+    `2018 .`, `A s of`, mis-decoded apostrophes); comparing letters and digits ignores all of them.
+    """
+    kept = [(char, i) for i, char in enumerate(text.casefold()) if char.isalnum()]
+    return "".join(char for char, _ in kept), [i for _, i in kept]
+
+
+def _chain(fragments: list[str], compact: str, index: list[int], source: str, start: int) -> list[tuple[int, int]] | None:
+    """Spans of every fragment from `start` on, each close after the previous with no date or gap between."""
+    spans = [(index[start], index[start + len(fragments[0]) - 1] + 1)]
+    position = start + len(fragments[0])
+    for fragment in fragments[1:]:
+        found = compact.find(fragment, position)
+        if found < 0:
+            return None
+        gap = source[spans[-1][1] : index[found]].casefold()
+        if len(gap) > _FRAGMENT_GAP or _GAP in gap or re.search(r"\bas of\b", gap) or gap.count("number of employees") > 1:
+            return None
+        spans.append((index[found], index[found + len(fragment) - 1] + 1))
+        position = found + len(fragment)
     return spans
 
 
+def _locate(quote: str, source: str) -> list[tuple[int, int]] | None:
+    """Source spans of the quote's `...`-joined fragments, or None when the source does not contain it."""
+    fragments = [fragment for fragment in (_compact(part)[0] for part in _ELLIPSIS_RE.split(quote)) if fragment]
+    if not fragments:
+        return None
+    compact, index = _compact(source)
+    start = compact.find(fragments[0])
+    while start >= 0:
+        if spans := _chain(fragments, compact, index, source, start):
+            return spans
+        start = compact.find(fragments[0], start + 1)
+    return None
+
+
+def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
+    """Every number inside the spans, read with the source words just before and after it."""
+    quantities = []
+    for start, end in spans:
+        in_thousands = bool(_IN_THOUSANDS_RE.search(source[max(0, start - 80) : end]))
+        for match in _QUANTITY_RE.finditer(source, start, end):
+            before = " ".join(source[max(0, match.start() - 40) : match.start()].split())
+            after = " ".join(source[match.end() : match.end() + 60].split())
+            digits, fraction, scale = match.groups()
+            is_date = (not scale and not fraction and "," not in digits and 1900 <= int(digits) <= 2100) or bool(_MONTH_RE.search(before))
+            multiplier = _SCALES[scale.casefold()] if scale else 1_000 if in_thousands and not is_date else 1
+            quantities.append(
+                _Quantity(
+                    value=round(float(digits.replace(",", "") + (fraction or "")) * multiplier),
+                    bound=1 if _LOWER_BOUND_RE.search(before) or after.startswith("+") else -1 if _UPPER_BOUND_RE.search(before) else 0,
+                    part_time=bool(_PART_TIME_RE.match(after)) and not _FULL_AND_PART_RE.search(after[:40]),
+                    in_range=bool(_RANGE_BEFORE_RE.search(before) or _RANGE_AFTER_RE.match(after)),
+                    is_date=is_date,
+                )
+            )
+    return quantities
+
+
+def _claimed(quantities: list[_Quantity], count: int) -> list[_Quantity] | None:
+    """The stated number equal to the model's count, else the fewest stated components summing to it."""
+    pool = [quantity for quantity in quantities if not quantity.is_date]
+    for size in range(1, min(len(pool), 4) + 1):
+        for combination in combinations(pool, size):
+            if sum(quantity.value for quantity in combination) == count:
+                return list(combination)
+    return None
+
+
+def _resolve_bound(quantity: _Quantity) -> int:
+    """`over N` -> N + half a unit and `nearly N` -> N - half a unit, the unit being N's last
+    significant digit at no coarser than two significant digits: over 13,000 -> 13,500,
+    over 300,000 -> 305,000, over 6,250 -> 6,255, nearly 2.2 million -> 2,150,000."""
+    text = str(quantity.value)
+    unit = 10 ** min(len(text) - len(text.rstrip("0")), max(len(text) - 2, 0))
+    return quantity.value + quantity.bound * (unit // 2)
+
+
 def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | None:
-    """Accept a source-backed claim; allow table ellipses only between real anchors."""
-    if answer.status != "found" or answer.count is None or answer.count <= 0 or not answer.quote:
+    """The source-backed headcount for the model's claim, or None when the source does not support it.
+
+    The quote must be in the source and the model's count must be a number it states, or the sum of
+    stated components. Part-time components are dropped (full-time only), open bounds resolve by
+    `_resolve_bound`, and a stated range such as `50,000 to 100,000` is unclear, so None.
+    """
+    if answer.count is None or answer.count <= 0 or not answer.quote or _GAP in answer.quote:
         return None
-    quote, source = _normalise(answer.quote), _normalise(source_text)
-    if _GAP in quote or _BOUND_RE.search(quote):
+    spans = _locate(answer.quote, source_text)
+    claimed = _claimed(_quantities(source_text, spans), answer.count) if spans else None
+    if not claimed or any(quantity.in_range for quantity in claimed):
         return None
-    spans = [(match.start(), match.end()) for match in re.finditer(re.escape(quote), source)] or _anchored_table_spans(quote, source)
-    # A model can trim "over" off an otherwise literal source quote.
-    if not spans or any(_BOUND_RE.search(source[max(0, start - 32) : end]) for start, end in spans):
-        return None
-    split = _SPLIT_RE.search(quote)
-    if split and split.group(2).casefold() != split.group(4).casefold():
-        first = int(split.group(1).replace(",", ""))
-        second = int(split.group(3).replace(",", ""))
-        return first + second if answer.count in {first, second, first + second} else None
-    numbers = {int(token.replace(",", "")) for token in _NUMBER_RE.findall(quote)}
-    return answer.count if answer.count in numbers else None
+    full_time = [quantity for quantity in claimed if not quantity.part_time]
+    return sum(map(_resolve_bound, full_time)) if full_time else None
 
 
 def _decide(answer: EmployeeAnswer, source_text: str) -> tuple[str, int | None]:
+    """Every status is final: an `ambiguous` filing is not sent to the LLM again."""
     count = supported_employee_count(answer, source_text)
     if count is not None:
         return "saved", count
@@ -227,6 +303,7 @@ def _outcome(ticker: str, cik: str, result: LlmResult, answer: EmployeeAnswer, s
         "measurement_period": answer.measurement_period,
         "qualifier": answer.qualifier,
         "source_quote": answer.quote,
+        "llm_count": answer.count,
         "model": model_name,
         "source_status": answer.status,
         "reason": answer.reason,
@@ -315,13 +392,15 @@ def _resume_plan(
     *,
     full: bool,
 ) -> _ResumePlan:
-    """Replay all only on `--full`; routine runs retry unresolved filings and skip stored dates."""
+    """Replay all only on `--full`; routine runs skip decided accessions and stored dates.
+
+    Every outcome is final, `ambiguous` included, so a decided filing is never sent to the LLM
+    again; only a saved count whose table row has since disappeared is read again.
+    """
     requested = set(tickers)
     relevant = [outcome for outcome in entry.get("filing_outcomes", []) if str(outcome.get("ticker")) in requested]
-    pending = [outcome for outcome in relevant if outcome.get("status") not in TERMINAL_STATUSES]
-    pending_dates = [pd.Timestamp(outcome["filing_date"]).normalize() for outcome in pending if outcome.get("filing_date")]
-    if full or pending or not entry.get("coverage_complete"):
-        since, is_full_rescan = min([fallback_since, *pending_dates]), True
+    if full or not entry.get("coverage_complete"):
+        since, is_full_rescan = fallback_since, True
     else:
         since, is_full_rescan = manifest_window(
             context,
@@ -344,7 +423,6 @@ def _resume_plan(
         for row in stored.itertuples(index=False):
             saved_dates[str(row.ticker)].add(pd.Timestamp(row.as_of).normalize())
     known_saved: dict[str, set[pd.Timestamp]] = {ticker: set() for ticker in requested}
-    pending_by_ticker: dict[str, set[pd.Timestamp]] = {ticker: set() for ticker in requested}
     done: set[str] = set()
     for outcome in relevant:
         ticker = str(outcome["ticker"])
@@ -352,16 +430,14 @@ def _resume_plan(
         filed = pd.Timestamp(outcome["filing_date"]).normalize() if outcome.get("filing_date") else None
         if status == "saved" and filed is not None:
             known_saved[ticker].add(filed)
-        if status not in TERMINAL_STATUSES and filed is not None:
-            pending_by_ticker[ticker].add(filed)
-        if status == "no_headcount" or (status in {"saved", "superseded"} and filed in saved_dates[ticker]):
+        if status in {"no_headcount", "ambiguous"} or (status in {"saved", "superseded"} and filed in saved_dates[ticker]):
             done.add(str(outcome["accession_number"]))
     return _ResumePlan(
         since,
         is_full_rescan,
         frozenset(done),
         {ticker: frozenset(dates) for ticker, dates in saved_dates.items()},
-        {ticker: frozenset(dates - known_saved[ticker] - pending_by_ticker[ticker]) for ticker, dates in saved_dates.items()},
+        {ticker: frozenset(dates - known_saved[ticker]) for ticker, dates in saved_dates.items()},
     )
 
 
@@ -445,20 +521,19 @@ def fetch_fundamentals_employees(
     successful = [result for result in results if result is not None]
     record_filing_outcomes(context, Tables.fundamentals_employees, [outcome for result in successful for outcome in result.outcomes])
     failed = len(results) - len(successful)
-    ambiguous = sum(any(outcome["status"] == "ambiguous" for outcome in result.outcomes) for result in successful)
+    ambiguous = sum(outcome["status"] == "ambiguous" for result in successful for outcome in result.outcomes)
     rows_written = sum(len(result.frame) for result in successful)
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) read, %d failed, %d ambiguous -> %d rows written",
+        "fundamentals employees: %d/%d ticker(s) read, %d failed, %d ambiguous filing(s) kept null -> %d rows written",
         len(successful),
         len(cik_map),
         failed,
         ambiguous,
         rows_written,
     )
-    if failed or ambiguous:
+    if failed:
         raise IncompleteEdgarRunError(
-            f"fundamentals employees: {failed} ticker(s) failed and {ambiguous} ambiguous; "
-            "accession outcomes were saved, but no complete frontier was advanced"
+            f"fundamentals employees: {failed} ticker(s) failed; accession outcomes were saved, but no complete frontier was advanced"
         )
     record_run(
         context,

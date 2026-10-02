@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import period_of_report
+from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
@@ -139,16 +139,16 @@ def _holdings_frame(cik, filing_date, period, infotable: pd.DataFrame) -> pd.Dat
     return out.dropna(subset=["period"])
 
 
-def _read_filing(filing) -> pd.DataFrame:
+def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
     """Fetch and parse one 13F-HR. Empty on any failure: one unparseable filing must not
     abort a batch of thousands. `lookback_days` is what gets it retried on a later run."""
     try:
-        infotable = filing.obj().infotable
+        infotable = stamp.filing.obj().infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
-        return _holdings_frame(filing.cik, filing.filing_date, period_of_report(filing), infotable)
+        return _holdings_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"13F {filing.accession_number}: {type(e).__name__}: {e}")
+        logger.warning(f"13F {stamp.accession_number}: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
 
@@ -234,7 +234,7 @@ def fetch_13f(
 
     saved, suspect, batch, looked_up, cmap = 0, 0, [], set(), None
     for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
-        rows = _read_filing(filing)
+        rows = _read_filing(FilingStamp.of(filing, ""))
         if not rows.empty:
             batch.append(rows)
         if batch and (len(batch) >= save_every or i == total):

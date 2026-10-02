@@ -10,12 +10,14 @@ its forms and its row builder.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from functools import cached_property
+from typing import Any, Protocol
 
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.edgar_fillings import archive_url
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import (
@@ -46,35 +48,58 @@ class EdgarScope:
     registrants: dict[str, Registrant]
 
 
-def filed_by(filing: object, roster_cik: str) -> str:
-    """The padded CIK that actually filed this document, falling back to the roster CIK only
-    when the filing exposes none; a stored filer CIK makes a registrant boundary visible."""
-    return pad_cik(getattr(filing, "cik", None) or roster_cik)
+@dataclass(frozen=True)
+class FilingStamp:
+    """The filing-level values every EDGAR fetcher stamps on its rows, read once per filing.
 
-
-def period_of_report(filing):
-    """The filing's `period_of_report`, or None when EDGAR's own metadata cannot yield it.
-
-    ⚠ `getattr(filing, "period_of_report", None)` DOES NOT GUARD THIS. edgartools implements it
-    as a `@property` that falls back to `filing.homepage.period_of_report` ->
-    `attachments.get_filing_dates()`, and on some older submissions that returns None, so the
-    unpack `_, _, period = ...` raises `TypeError` from INSIDE the property. `getattr`'s default
-    only ever answers `AttributeError`, so the exception passes straight through it.
-
-    That mattered the moment the register started walking predecessor archives. `TypeError` is
-    in `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises on purpose -- our bug should fail the
-    run, not be logged per ticker -- so ONE unparseable 2004 filing aborted a whole 16-ticker
-    8-K walk after BKR (237 predecessor filings) and VTRS (292) had already resolved. The
-    classification was right and the read was wrong: this is a property of the FILING, not of
-    our code, so it belongs behind a guard rather than behind a widened exception policy.
-
-    `period_of_report` is optional metadata on an 8-K and every consumer already tolerates NaT,
-    so returning None is the honest answer and losing the whole walk was not.
+    `cik` is the padded CIK that actually filed the document, falling back to the roster CIK only
+    when the filing exposes none. `filed` is the raw filing-date Timestamp (callers normalise when
+    their table stores a date). `period_of_report` and `doc_url` are read lazily, at most once.
     """
-    try:
-        return filing.period_of_report
-    except Exception:  # noqa: BLE001 -- EDGAR metadata defect
-        return None
+
+    accession_number: str
+    form: str
+    cik: str
+    filed: pd.Timestamp
+    is_amendment: bool
+    primary_document: str | None
+    filing: Any = field(repr=False, compare=False)
+
+    @classmethod
+    def of(cls, filing: Any, roster_cik: str) -> FilingStamp:
+        return cls(
+            accession_number=filing.accession_number,
+            form=filing.form,
+            cik=pad_cik(getattr(filing, "cik", None) or roster_cik),
+            filed=pd.Timestamp(filing.filing_date),
+            is_amendment=str(filing.form).upper().endswith("/A"),
+            primary_document=getattr(filing, "primary_document", None),
+            filing=filing,
+        )
+
+    @cached_property
+    def period_of_report(self) -> Any:
+        """The filing's raw `period_of_report`, or None when EDGAR's metadata cannot yield it.
+
+        edgartools implements it as a property that can raise `TypeError` from inside itself on
+        old submissions (`getattr`'s default does not catch that). `TypeError` is in
+        `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises, so the read is guarded here: the
+        value is optional metadata and every consumer tolerates a null.
+        """
+        try:
+            return self.filing.period_of_report
+        except Exception:  # noqa: BLE001 -- EDGAR metadata defect
+            return None
+
+    @cached_property
+    def doc_url(self) -> str | None:
+        """The primary document's URL: the attachment's own `url` (`str()` of `filing.document`
+        renders a table, not a URL), else the archives path, else None."""
+        document = getattr(self.filing, "document", None)
+        url = getattr(document, "url", None) if document is not None else None
+        if not url and self.accession_number and self.primary_document and self.cik:
+            url = archive_url(self.cik, str(self.accession_number), self.primary_document)
+        return str(url) if url else None
 
 
 def num_or_null(value, trust_value: bool) -> float:

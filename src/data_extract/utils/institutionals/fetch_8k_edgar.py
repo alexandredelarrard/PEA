@@ -22,9 +22,8 @@ from src.constants.constants import SEC_8K_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarScope,
-    filed_by,
+    FilingStamp,
     new_filings,
-    period_of_report,
     run_edgar_fetch,
 )
 from src.data_store.schema import Table, Tables
@@ -152,21 +151,21 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
     except Exception:  # noqa: BLE001 -- best-effort only
         pass
 
+    stamp = FilingStamp.of(filing, cik)
     base = {
         "ticker": ticker,
-        # The CIK that FILED this 8-K, not the roster's -- see `edgar_driver.filed_by`. The
-        # union walks every registrant in the chain, so this is the column that makes a
-        # boundary visible instead of stamping all 526 of XOM's rows with one holdco.
-        "cik": filed_by(filing, cik),
-        "accession_number": filing.accession_number,
-        "form": filing.form,
-        "filing_date": pd.Timestamp(filing.filing_date),
-        "period_of_report": period_of_report(filing),
+        # The CIK that FILED this 8-K, not the roster's: the union walks every registrant in
+        # the chain, so this column makes a registrant boundary visible.
+        "cik": stamp.cik,
+        "accession_number": stamp.accession_number,
+        "form": stamp.form,
+        "filing_date": stamp.filed,
+        "period_of_report": stamp.period_of_report,
         "n_items": len(item_list),
-        "is_amendment": 1.0 if str(filing.form).upper().endswith("/A") else 0.0,
+        "is_amendment": float(stamp.is_amendment),
         "has_earnings": has_earnings,
         "has_press_release": has_press_release,
-        "primary_document": getattr(filing, "primary_document", None),
+        "primary_document": stamp.primary_document,
     }
 
     rows = []

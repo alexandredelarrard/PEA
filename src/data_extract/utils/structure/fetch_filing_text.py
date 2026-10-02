@@ -22,7 +22,7 @@ import re
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, filed_by, new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, new_filings, run_edgar_fetch
 from src.data_store.schema import Table, Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
@@ -200,18 +200,19 @@ def build_ticker_filing_text(
         done_accessions,
         scope,
     ):
-        filed = pd.Timestamp(f.filing_date).normalize()
+        stamp = FilingStamp.of(f, cik)
+        filed = stamp.filed.normalize()
         for section, body in _filing_sections(f).items():
             rows.append(
                 {
-                    # The CIK that FILED it -- see `edgar_driver.filed_by`. `FILING_TEXT_FORMS`
-                    # is SPLIT, so each row's registrant is unambiguous and worth recording.
+                    # The CIK that FILED it: `FILING_TEXT_FORMS` is SPLIT, so each row's
+                    # registrant is unambiguous and worth recording.
                     "ticker": ticker,
-                    "cik": filed_by(f, cik),
-                    "accession_number": f.accession_number,
-                    "form": str(f.form),
+                    "cik": stamp.cik,
+                    "accession_number": stamp.accession_number,
+                    "form": str(stamp.form),
                     "filed": filed,
-                    "period_of_report": f.period_of_report,
+                    "period_of_report": stamp.period_of_report,
                     "section": section,
                     "text": body,
                     "n_words": len(body.split()),

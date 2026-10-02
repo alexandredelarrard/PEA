@@ -43,6 +43,7 @@ from src.constants.constants import SEC_13D_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarScope,
+    FilingStamp,
     new_schedule_filings,
     num_or_null,
     run_edgar_fetch,
@@ -446,8 +447,9 @@ def _is_placeholder_numerics(rp) -> bool:
     return bool(present) and all(v == 0 for v in present)
 
 
-def _filing_rows(filing) -> list[dict]:
+def _filing_rows(stamp: FilingStamp) -> list[dict]:
     """Extract structured 13D filing rows (one row per reporting person)."""
+    filing = stamp.filing
     obj = filing.obj()
     has_structured = bool(getattr(obj, "has_structured_data", False))
     issuer = getattr(obj, "issuer_info", None)
@@ -460,19 +462,6 @@ def _filing_rows(filing) -> list[dict]:
 
     # Ticker fallback logic
     ticker = getattr(filing, "ticker", None) or (getattr(issuer, "ticker", None) if issuer else None)
-
-    # `filing.document` renders as a rich TABLE, so str() on it stored an ASCII box
-    # ("+-----+ | 1 p24-2469sc13d.htm ... |") in every row instead of a URL. Take the
-    # attachment's own `url`, and fall back to composing the archives path.
-    doc_attr = getattr(filing, "document", None)
-    doc_url = getattr(doc_attr, "url", None) if doc_attr is not None else None
-    if not doc_url:
-        accession = str(getattr(filing, "accession_number", "") or "")
-        primary = getattr(filing, "primary_document", None)
-        cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
-        if accession and primary and cik_raw:
-            doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{accession.replace('-', '')}/{primary}"
-    doc_url = str(doc_url) if doc_url else None
 
     # Item 3/4/5/6 narrative: trust the structured XML parse when present, else fall
     # back to a text-section carve (see module docstring -- has_structured is
@@ -504,9 +493,9 @@ def _filing_rows(filing) -> list[dict]:
         "ticker": ticker,
         "cik": getattr(issuer, "cik", None) if issuer else None,
         "issuer_name": getattr(issuer, "name", None) if issuer else None,
-        "accession_number": getattr(filing, "accession_number", None),
-        "form": getattr(filing, "form", None),
-        "filing_date": (pd.Timestamp(filing.filing_date) if getattr(filing, "filing_date", None) else None),
+        "accession_number": stamp.accession_number,
+        "form": stamp.form,
+        "filing_date": stamp.filed,
         "date_of_event": event_date,
         "is_amendment": 1.0 if bool(getattr(obj, "is_amendment", False)) else 0.0,
         "amendment_number": num_or_null(getattr(obj, "amendment_number", None), True),
@@ -517,8 +506,8 @@ def _filing_rows(filing) -> list[dict]:
         "item4_purpose_of_transaction": item4_text,
         "item5_interest_in_securities": item5_text,
         "item6_contracts_understandings": item6_text,
-        "primary_document": getattr(filing, "primary_document", None),
-        "doc_url": doc_url,
+        "primary_document": stamp.primary_document,
+        "doc_url": stamp.doc_url,
     }
 
     persons = getattr(obj, "reporting_persons", None) or []
@@ -597,11 +586,11 @@ def build_ticker_13d_edgar(
     rows: list[dict] = []
     txn_rows: list[dict] = []
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13D_FORMS, since, done_accessions):
+        stamp = FilingStamp.of(filing, cik)
         try:
-            filing_rows = _filing_rows(filing)
+            filing_rows = _filing_rows(stamp)
         except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            accession = getattr(filing, "accession_number", "unknown")
-            raise RuntimeError(f"SC 13D accession {accession} could not be parsed") from exc
+            raise RuntimeError(f"SC 13D accession {stamp.accession_number} could not be parsed") from exc
 
         issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
@@ -612,18 +601,15 @@ def build_ticker_13d_edgar(
             r["ticker"] = ticker
             rows.append(r)
 
-        filing_date: pd.Timestamp | None = None
         try:
             fallback_person = person_names[0] if len(person_names) == 1 else None
-            filing_date = cast(pd.Timestamp | None, filing_rows[0].get("filing_date")) if filing_rows else pd.Timestamp(cast(Any, filing.filing_date))
-            exhibit_rows = _extract_transaction_rows(filing, fallback_person, filing_date)
+            exhibit_rows = _extract_transaction_rows(filing, fallback_person, stamp.filed)
         except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            accession = getattr(filing, "accession_number", "unknown")
-            raise RuntimeError(f"SC 13D accession {accession} transaction exhibit could not be parsed") from exc
+            raise RuntimeError(f"SC 13D accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
 
         cik_val = filing_rows[0].get("cik") if filing_rows else cik
         for seq, tr in enumerate(exhibit_rows):
-            tr.update(ticker=ticker, cik=cik_val, accession_number=filing.accession_number, filing_date=filing_date, trade_seq=seq)
+            tr.update(ticker=ticker, cik=cik_val, accession_number=stamp.accession_number, filing_date=stamp.filed, trade_seq=seq)
             txn_rows.append(tr)
 
     return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}

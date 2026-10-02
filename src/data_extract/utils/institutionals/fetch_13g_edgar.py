@@ -17,6 +17,7 @@ from src.constants.constants import SEC_13G_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarScope,
+    FilingStamp,
     new_schedule_filings,
     num_or_null,
     run_edgar_fetch,
@@ -155,23 +156,9 @@ def _event_date(raw) -> pd.Timestamp | None:
     return None if pd.isna(parsed) else pd.Timestamp(parsed)
 
 
-def _doc_url(filing) -> str | None:
-    """The primary document's URL. `filing.document` renders as a rich TABLE, so str() on it
-    stores an ASCII box instead of a URL -- take the attachment's own `url` and fall back to
-    composing the archives path (the same defect and fix as `fetch_13d_edgar`)."""
-    doc_attr = getattr(filing, "document", None)
-    url = getattr(doc_attr, "url", None) if doc_attr is not None else None
-    if not url:
-        accession = str(getattr(filing, "accession_number", "") or "")
-        primary = getattr(filing, "primary_document", None)
-        cik_raw = str(getattr(filing, "cik", "") or "").lstrip("0")
-        if accession and primary and cik_raw:
-            url = f"https://www.sec.gov/Archives/edgar/data/{cik_raw}/{accession.replace('-', '')}/{primary}"
-    return str(url) if url else None
-
-
-def _filing_rows(filing) -> list[dict]:
+def _filing_rows(stamp: FilingStamp) -> list[dict]:
     """One Schedule 13G -> one row per reporting person. Pure apart from `filing.obj()`."""
+    filing = stamp.filing
     obj = filing.obj()
     has_structured = bool(getattr(obj, "has_structured_data", False))
     issuer = getattr(obj, "issuer_info", None)
@@ -181,9 +168,9 @@ def _filing_rows(filing) -> list[dict]:
         "ticker": getattr(filing, "ticker", None) or (getattr(issuer, "ticker", None) if issuer else None),
         "cik": getattr(issuer, "cik", None) if issuer else None,
         "issuer_name": getattr(issuer, "name", None) if issuer else None,
-        "accession_number": getattr(filing, "accession_number", None),
-        "form": getattr(filing, "form", None),
-        "filing_date": (pd.Timestamp(filing.filing_date) if getattr(filing, "filing_date", None) else None),
+        "accession_number": stamp.accession_number,
+        "form": stamp.form,
+        "filing_date": stamp.filed,
         "date_of_event": _event_date(getattr(obj, "date_of_event", None)),
         "is_amendment": 1.0 if bool(getattr(obj, "is_amendment", False)) else 0.0,
         "amendment_number": num_or_null(getattr(obj, "amendment_number", None), True),
@@ -191,8 +178,8 @@ def _filing_rows(filing) -> list[dict]:
         "cusip": (getattr(security, "cusip", None) if security else None) or None,
         "has_structured_data": 1.0 if has_structured else 0.0,
         "rule_designation": getattr(obj, "rule_designation", None) or None,
-        "primary_document": getattr(filing, "primary_document", None),
-        "doc_url": _doc_url(filing),
+        "primary_document": stamp.primary_document,
+        "doc_url": stamp.doc_url,
     }
 
     persons = getattr(obj, "reporting_persons", None) or []
@@ -253,11 +240,11 @@ def build_ticker_13g_edgar(
     ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
     rows: list[dict] = []
     for filing in new_schedule_filings(ticker, ticker_ciks, SEC_13G_FORMS, since, done_accessions):
+        stamp = FilingStamp.of(filing, cik)
         try:
-            filing_rows = _filing_rows(filing)
+            filing_rows = _filing_rows(stamp)
         except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            accession = getattr(filing, "accession_number", "unknown")
-            raise RuntimeError(f"SC 13G accession {accession} could not be parsed") from exc
+            raise RuntimeError(f"SC 13G accession {stamp.accession_number} could not be parsed") from exc
 
         issuer_cik = pad_cik(filing_rows[0].get("cik")) if filing_rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:

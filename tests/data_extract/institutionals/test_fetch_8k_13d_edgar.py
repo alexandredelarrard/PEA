@@ -16,7 +16,7 @@ import pytest
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarScope
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -31,6 +31,11 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
 )
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+
+
+def _rows(filing: object) -> list[dict]:
+    """Rows built through the filing stamp, exactly as the ticker walk passes them."""
+    return _filing_rows(FilingStamp.of(filing, ""))
 
 
 def test_filing_fetchers_take_years_history_as_an_argument():
@@ -259,12 +264,12 @@ def test_13d_doc_url_is_a_url_not_a_rendered_table():
         def __str__(self) -> str:
             return "+------+\n| 1 sc13d.htm |\n+------+"
 
-    row = _filing_rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
+    row = _rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
     assert row["doc_url"] == ("https://www.sec.gov/Archives/edgar/data/1326380/000124000002/sc13d.htm")
     assert "+--" not in row["doc_url"]
 
     # when the attachment exposes a real url, use it verbatim
-    row = _filing_rows(_fake_13d_filing(obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
+    row = _rows(_fake_13d_filing(obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
     assert row["doc_url"] == "https://www.sec.gov/Archives/x/y.htm"
 
 
@@ -299,7 +304,7 @@ def test_13d_reporting_persons_get_one_row_each_with_rp_seq():
         reporting_persons=[_reporting_person("RC Ventures LLC"), _reporting_person("Cohen Ryan", cik="0001")],
     )
     filing = _fake_13d_filing(obj=obj)
-    rows = _filing_rows(filing)
+    rows = _rows(filing)
     assert len(rows) == 2
     assert [r["rp_seq"] for r in rows] == [0, 1]
     assert {r["reporting_person_name"] for r in rows} == {"RC Ventures LLC", "Cohen Ryan"}
@@ -328,7 +333,7 @@ def test_13d_numeric_ownership_fields_null_when_not_structured():
         reporting_persons=[_reporting_person("RC Ventures LLC", percent_of_class=0.0, aggregate_amount=0)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["has_structured_data"] == 0.0
     assert pd.isna(row["percent_of_class"])
     assert pd.isna(row["aggregate_amount"])
@@ -353,7 +358,7 @@ def test_13d_numeric_ownership_fields_trusted_when_structured():
         reporting_persons=[_reporting_person("Icahn Carl C", percent_of_class=9.9, aggregate_amount=12345678)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["percent_of_class"] == 9.9
     assert row["aggregate_amount"] == 12345678.0
     assert row["item4_purpose_of_transaction"] == "Acquire control of the issuer."
@@ -375,7 +380,7 @@ def test_13d_reporting_person_without_cik_is_not_dropped():
         reporting_persons=[_reporting_person("Doe Jane", cik="9999999999", no_cik=True)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["reporting_person_name"] == "Doe Jane"
     assert row["reporting_person_cik"] is None
 
@@ -583,7 +588,7 @@ def test_placeholder_numerics_with_a_comment_are_nulled_not_written_as_zero():
     rp = _reporting_person(
         "The Leonard A. Lauder 2013 Revocable Trust", comment="Rows 7, 8, 9, 10, 11, and 13:  See Item 5 of this Schedule 13D amendment."
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert all(pd.isna(row[c]) for c in _NUMERIC_COLS)
     assert all(isinstance(row[c], float) for c in _NUMERIC_COLS)  # NaN, never None
     assert row["reporting_person_comment"].startswith("Rows 7, 8, 9")
@@ -594,7 +599,7 @@ def test_genuine_full_disposal_keeps_its_zeros():
     really has sold out reports the same six zeros but attaches NO comment. Nulling those
     would erase a real, material disclosure (the activist exited)."""
     rp = _reporting_person("Icahn Carl C", comment=None)
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert all(row[c] == 0 for c in _NUMERIC_COLS)
     assert row["reporting_person_comment"] is None
 
@@ -612,7 +617,7 @@ def test_real_numerics_survive_alongside_a_comment():
         percent_of_class=41.5,
         comment="Excludes shares held in a rabbi trust.",
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert row["percent_of_class"] == 41.5
     assert row["aggregate_amount"] == 7952386
     assert row["reporting_person_comment"] == "Excludes shares held in a rabbi trust."
@@ -636,7 +641,7 @@ def test_a_percentage_that_rounds_to_zero_is_a_real_disclosure_not_a_placeholder
         percent_of_class=0.0,
         comment="Row 13: This percentage is based on a total of 54,730,851,778,811 Shares.",
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert row["aggregate_amount"] == 18632216  # the real holding survives
     assert row["shared_voting_power"] == 18632216
     assert row["percent_of_class"] == 0.0  # ...and so does its true 0.0%
@@ -915,7 +920,7 @@ def test_13d_item3_and_item6_use_correct_structured_attribute_names():
         reporting_persons=[_reporting_person("Icahn Carl C")],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["item3_source_of_funds"] == "Working capital."
     assert row["item6_contracts_understandings"] == "A letter agreement dated 2024-01-01."
 
@@ -936,7 +941,7 @@ def test_13d_is_group_member_uses_correct_reporting_person_attribute():
         reporting_persons=[_reporting_person("RC Ventures LLC", member_of_group="a")],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["is_group_member"] == "a"
 
 

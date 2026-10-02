@@ -21,11 +21,10 @@ import pandas as pd
 
 from src.constants.constants import DEF14A_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, new_filings, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, new_filings, run_edgar_fetch
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Table, Tables
-from src.utils.string import pad_cik
 
 _MAIN_COLS = [
     "ticker",
@@ -125,26 +124,17 @@ def build_ticker_def14a_edgar(
             continue  # pre-402(v) fiscal year -- correct behaviour, no row
         assert facts is not None
         row = ecd_row(facts)
+        stamp = FilingStamp.of(f, cik)
         row.update(
-            # ⚠ THE CIK COMES OFF THE FILING, NOT OFF THE ROSTER. `new_filings` resolves by
-            # TICKER, so stamping the roster's `cik` recorded a value that need not be the one
-            # that filed: measured 2026-09-09, 521 XOM `sec_8k` rows carried CIK 2115436
-            # (ExxonMobil Holdings Corp, 29 filings, first on 2026-07-01) against filings going
-            # back to 1996 that were actually the predecessor's, CIK 34088.
-            #
-            # This does NOT fix resolution -- you can only read a CIK off filings you already
-            # have, and a wrong roster CIK yields none to read (that is what the cutover
-            # register in `def14a/fetch.py` is for). What it fixes is OBSERVABILITY: with the
-            # filer's own CIK stored, a reorganisation shows up immediately as two CIKs either
-            # side of a date instead of hiding behind a uniformly-stamped column.
             ticker=ticker,
-            cik=pad_cik(getattr(f, "cik", cik) or cik),
-            accession_number=f.accession_number,
-            form=str(f.form),
-            filing_date=pd.Timestamp(f.filing_date).normalize(),
-            # From the filing index, like every sibling fetcher. `ProxyStatement.fiscal_year_end`
-            # was the previous source and never once resolved -- 0 of 329 stored rows had it.
-            period_of_report=f.period_of_report,
+            # The filer's own CIK, not the roster's: a registrant reorganisation then shows up as
+            # two CIKs either side of a date instead of hiding behind one stamped value.
+            cik=stamp.cik,
+            accession_number=stamp.accession_number,
+            form=str(stamp.form),
+            filing_date=stamp.filed.normalize(),
+            # From the filing index, like every sibling fetcher (guarded: the raw property can raise).
+            period_of_report=stamp.period_of_report,
             company_name=_company_name(facts, f),
         )
         rows.append(repair_main_row(row))

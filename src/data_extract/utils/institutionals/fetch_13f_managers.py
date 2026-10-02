@@ -40,7 +40,7 @@ from edgar import Company
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import period_of_report
+from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, _classify_holdings, _pick
@@ -117,16 +117,16 @@ def _manager_holdings_frame(cik: str, filing_date, period, infotable: pd.DataFra
     return out.dropna(subset=["period"])[_COLS]
 
 
-def _read_filing(filing) -> pd.DataFrame:
+def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
     """Fetch and parse one 13F-HR. Empty on any failure: one unparseable filing must not abort a
     manager's whole history."""
     try:
-        infotable = filing.obj().infotable
+        infotable = stamp.filing.obj().infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
-        return _manager_holdings_frame(filing.cik, filing.filing_date, period_of_report(filing), infotable)
+        return _manager_holdings_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"13F-manager {filing.accession_number}: {type(e).__name__}: {e}")
+        logger.warning(f"13F-manager {stamp.accession_number}: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
 
@@ -162,16 +162,11 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         dated = sorted(((pd.Timestamp(f.filing_date), f) for f in filings), key=lambda p: p[0])
         frames = []
         for _, filing in dated:
-            try:
-                raw_period = filing.period_of_report
-                if raw_period is None:
-                    continue
-                period = pd.Timestamp(raw_period)
-            except Exception:  # noqa: BLE001
+            stamp = FilingStamp.of(filing, cik)
+            period = pd.to_datetime(stamp.period_of_report, errors="coerce")
+            if period is None or pd.isna(period) or period < since:
                 continue
-            if pd.isna(period) or period < since:
-                continue
-            rows = _read_filing(filing)
+            rows = _read_filing(stamp)
             if not rows.empty:
                 frames.append(rows)
         if not frames:

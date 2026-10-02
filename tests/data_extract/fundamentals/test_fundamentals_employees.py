@@ -72,7 +72,7 @@ def build(
             self.tasks.append(task)
 
         def run(self):
-            return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["filing"].accession_number]) for task in self.tasks]
+            return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
 
     identity = SimpleNamespace(owns=lambda ticker, cik: ticker == "AAA" and str(cik).zfill(10) == "0000000001")
     monkeypatch.setattr(mod, "resolve_registrant_filings", listing)

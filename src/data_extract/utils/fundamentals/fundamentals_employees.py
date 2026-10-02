@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, IncompleteEdgarRunError, filed_by, load_edgar_scope, period_of_report
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, IncompleteEdgarRunError, load_edgar_scope
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
@@ -161,32 +161,25 @@ def _decide(answer: EmployeeAnswer, source_text: str) -> tuple[str, int | None]:
     return "ambiguous", None
 
 
-def _filed(filing: Filing) -> pd.Timestamp:
-    return pd.Timestamp(filing.filing_date).normalize()
-
-
-def _filing_key(filing: Filing) -> tuple[pd.Timestamp, int, str]:
+def _filing_key(stamp: FilingStamp) -> tuple[pd.Timestamp, int, str]:
     """Filing date, then original before amendment, so a same-day 10-K/A supersedes its original."""
-    return (_filed(filing), 1 if str(filing.form).upper() == "10-K/A" else 0, str(filing.accession_number))
+    return (stamp.filed.normalize(), int(stamp.is_amendment), str(stamp.accession_number))
 
 
-def _task_filing(result: LlmResult) -> Filing:
-    return cast(Filing, result.task.meta["filing"])
-
-
-def _employee_task(sequence: int, ticker: str, filing: Filing, identity: Identity, max_chars: int) -> LlmTask:
+def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, identity: Identity, max_chars: int) -> LlmTask:
     """Check the filer belongs to the issuer lineage and package its excerpt as one LLM task."""
+    filing = stamp.filing
     actual_cik = getattr(filing, "cik", None)
     if not actual_cik or not identity.owns(ticker, actual_cik):
-        raise ValueError(f"{ticker} {filing.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
-    report = period_of_report(filing)
+        raise ValueError(f"{ticker} {stamp.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
+    report = stamp.period_of_report
     report_date = pd.Timestamp(report).normalize() if report is not None else None
     text = filing_body_text(filing)
     if not text.strip():
-        raise ValueError(f"{ticker} {filing.accession_number}: filing text unavailable")
+        raise ValueError(f"{ticker} {stamp.accession_number}: filing text unavailable")
     prefix = (
         f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
-        f"SEC filing date: {_filed(filing).date()}\nAccession: {filing.accession_number}\n"
+        f"SEC filing date: {stamp.filed.date()}\nAccession: {stamp.accession_number}\n"
         "The following is an excerpt, not necessarily the complete 10-K:\n\n"
     )
     if max_chars <= len(prefix):
@@ -196,32 +189,33 @@ def _employee_task(sequence: int, ticker: str, filing: Filing, identity: Identit
         seq=sequence,
         payload=prefix + source_text,
         schema=EmployeeAnswer,
-        meta={"filing": filing, "report_date": report_date, "source_text": source_text},
+        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text},
     )
 
 
-def _extract_answers(context: Context, config: DictConfig, ticker: str, filings: list[Filing], identity: Identity) -> list[LlmResult]:
+def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[LlmResult]:
     """One LLM answer per filing, in filing order; any failed call fails the ticker."""
     extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
-    for sequence, filing in enumerate(filings):
-        extractor.submit(_employee_task(sequence, ticker, filing, identity, max_chars))
+    for sequence, stamp in enumerate(stamps):
+        extractor.submit(_employee_task(sequence, ticker, stamp, identity, max_chars))
     results = extractor.run()
-    if len(results) != len(filings) or any(not result.ok for result in results):
-        errors = [f"{_task_filing(result).accession_number}: {result.error}" for result in results if not result.ok]
+    if len(results) != len(stamps) or any(not result.ok for result in results):
+        errors = [f"{cast(FilingStamp, result.task.meta['stamp']).accession_number}: {result.error}" for result in results if not result.ok]
         raise RuntimeError(f"{ticker}: employee LLM extraction incomplete: {errors}")
     return results
 
 
-def _outcome(ticker: str, cik: str, result: LlmResult, answer: EmployeeAnswer, status: str, model_name: str) -> dict:
-    filing = _task_filing(result)
+def _outcome(ticker: str, result: LlmResult, answer: EmployeeAnswer, status: str, model_name: str) -> dict:
+    """One filing's decision record; `cik` is the filer's own CIK from the task's stamp."""
+    stamp = cast(FilingStamp, result.task.meta["stamp"])
     report_date = cast("pd.Timestamp | None", result.task.meta["report_date"])
     return {
         "ticker": ticker,
-        "accession_number": str(filing.accession_number),
-        "cik": filed_by(filing, cik),
-        "form": str(filing.form),
-        "filing_date": _filed(filing).strftime("%Y-%m-%d"),
+        "accession_number": str(stamp.accession_number),
+        "cik": stamp.cik,
+        "form": str(stamp.form),
+        "filing_date": stamp.filed.strftime("%Y-%m-%d"),
         "report_date": report_date.strftime("%Y-%m-%d") if report_date is not None else None,
         "measurement_period": answer.measurement_period,
         "qualifier": answer.qualifier,
@@ -234,7 +228,7 @@ def _outcome(ticker: str, cik: str, result: LlmResult, answer: EmployeeAnswer, s
     }
 
 
-def _decide_ticker(context: Context, ticker: str, cik: str, results: list[LlmResult], model_name: str) -> EmployeeTickerResult:
+def _decide_ticker(context: Context, ticker: str, results: list[LlmResult], model_name: str) -> EmployeeTickerResult:
     """Guard every answer; keep the last supported count per filing date and mark earlier ones superseded."""
     outcomes: list[dict] = []
     chosen: dict[pd.Timestamp, tuple[int, int]] = {}  # filing date -> (count, outcome index)
@@ -244,8 +238,8 @@ def _decide_ticker(context: Context, ticker: str, cik: str, results: list[LlmRes
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         status, count = _decide(answer, str(result.task.meta["source_text"]))
-        outcome = _outcome(ticker, cik, result, answer, status, model_name)
-        filed = _filed(_task_filing(result))
+        outcome = _outcome(ticker, result, answer, status, model_name)
+        filed = cast(FilingStamp, result.task.meta["stamp"]).filed.normalize()
         all_dates.add(filed)
         if count is not None:
             if filed in chosen:
@@ -282,26 +276,23 @@ def build_ticker_employees(
     identity = scope.identity
     if identity is None:
         raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
-    filings = sorted(
-        (
-            filing
-            for filing in resolve_registrant_filings(
-                ticker,
-                HEADCOUNT_FORMS,
-                since=since,
-                done_accessions=done_accessions,
-                registrants=scope.registrants,
-                identity=identity,
-            )
-            if _filed(filing) not in skip_dates
-        ),
+    listed = resolve_registrant_filings(
+        ticker,
+        HEADCOUNT_FORMS,
+        since=since,
+        done_accessions=done_accessions,
+        registrants=scope.registrants,
+        identity=identity,
+    )
+    stamps = sorted(
+        (stamp for stamp in (FilingStamp.of(filing, cik) for filing in listed) if stamp.filed.normalize() not in skip_dates),
         key=_filing_key,
     )
-    if not filings:
+    if not stamps:
         return EmployeeTickerResult(pd.DataFrame(columns=FRAME_COLUMNS), [], frozenset())
     config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
-    results = _extract_answers(context, config, ticker, filings, identity)
-    return _decide_ticker(context, ticker, cik, results, str(config.gpt.llm_model.open_ai_cheap))
+    results = _extract_answers(context, config, ticker, stamps, identity)
+    return _decide_ticker(context, ticker, results, str(config.gpt.llm_model.open_ai_cheap))
 
 
 def _resume_plan(

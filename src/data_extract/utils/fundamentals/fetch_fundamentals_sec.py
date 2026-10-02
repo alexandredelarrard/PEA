@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import partial
 from typing import Any, cast
 
@@ -37,8 +37,7 @@ from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarScope,
-    filed_by,
-    period_of_report,
+    FilingStamp,
     run_edgar_fetch,
 )
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
@@ -652,50 +651,23 @@ def _adjustment_json(resolution: Resolution, period: dict | None = None) -> str 
     return json.dumps(blob) if blob else None
 
 
-def _period_end(period: dict | None, stamp: _FilingStamp) -> pd.Timestamp:
+def _period_end(period: dict | None, reported: pd.Timestamp, filed: pd.Timestamp) -> pd.Timestamp:
     """The row's `period_end`, guaranteed non-NULL because it is part of the PK.
 
-    Falls back through the filing's `period_of_report` to its filing date. Both fallbacks are
-    only ever reached by a row that carries no value -- a reason-coded absence, or the handful
-    of duration facts (10 in 109,267) whose window is unreadable -- so a fallback can never
-    displace a real measurement.
+    Falls back through the filing's `period_of_report` (`reported`) to its filing date. Both
+    fallbacks are only reached by a row that carries no value (a reason-coded absence, or a
+    duration fact whose window is unreadable), so a fallback never displaces a measurement.
     """
     if period is not None and pd.notna(period.get("period_end")):
         return pd.Timestamp(period["period_end"])
-    return stamp.reported if pd.notna(stamp.reported) else stamp.filed
-
-
-@dataclass(frozen=True)
-class _FilingStamp:
-    """The five filing-level values every row of a filing repeats.
-
-    Read once per filing rather than once per row, and there are hundreds of rows a filing.
-    `period_of_report` is the one that mattered: it is a plain edgartools `@property` that
-    goes back through `Filing.sgml()`, so asking each row for it re-derived the whole
-    submission header.
-    """
-
-    accession_number: str
-    form: str
-    filed: pd.Timestamp
-    reported: pd.Timestamp
-    is_amendment: bool
-
-    @classmethod
-    def of(cls, filing) -> _FilingStamp:
-        return cls(
-            accession_number=filing.accession_number,
-            form=filing.form,
-            filed=pd.Timestamp(filing.filing_date),
-            reported=pd.to_datetime(cast(Any, period_of_report(filing)), errors="coerce"),
-            is_amendment=str(filing.form).upper().endswith("/A"),
-        )
+    return reported if pd.notna(reported) else filed
 
 
 def _row(
     ticker: str,
     cik: str,
-    stamp: _FilingStamp,
+    stamp: FilingStamp,
+    reported: pd.Timestamp,
     regime: str | None,
     field: str,
     resolution: Resolution,
@@ -705,7 +677,8 @@ def _row(
 ) -> dict:
     """One `fundamentals_facts` row.
 
-    `dc_code` overrides the resolution's own, for the one case where they differ: a period
+    `reported` is the filing's `period_of_report` as a Timestamp (NaT when absent), parsed once
+    per filing. `dc_code` overrides the resolution's own, for the one case where they differ: a period
     the strict intersection refused on a field that resolved perfectly well elsewhere in the
     same filing. The resolution has no code (it resolved); the PERIOD does.
     """
@@ -721,7 +694,7 @@ def _row(
         "form": stamp.form,
         "filing_date": stamp.filed,
         "is_amendment": stamp.is_amendment,
-        "period_of_report": stamp.reported,
+        "period_of_report": reported,
         "regime": regime,
         "period_start": period["period_start"] if period else pd.NaT,
         # `period_end` is a PK column, so it cannot be NULL -- and a REASON-CODED row has no
@@ -729,7 +702,7 @@ def _row(
         # which is the honest reading ("this field was absent as of the period this filing
         # covers") and cannot collide: a field with any usable period emits no such row, and
         # the key already contains `field`.
-        "period_end": _period_end(period, stamp),
+        "period_end": _period_end(period, reported, stamp.filed),
         "period_days": period["period_days"] if period else None,
         "value": period["value"] if period else None,
         "unit": period.get("unit") if period else None,
@@ -825,7 +798,8 @@ def rows_from_xbrl(
     # $2,393.7M capex line. Filing-level like the two above, so resolution stays
     # period-agnostic. See `xbrl_linkbase.sibling_leg`.
     magnitudes = scope.peak_magnitudes(facts)
-    stamp = _FilingStamp.of(filing)
+    stamp = FilingStamp.of(filing, cik)
+    reported = pd.to_datetime(cast(Any, stamp.period_of_report), errors="coerce")
     # ONE `calculation_linkbase()` read, two views of it -- see `statement_arcs`.
     arcs = calculation_arcs(xbrl)
     graph = ArcGraph(statement_arcs(xbrl, arcs))
@@ -879,27 +853,29 @@ def rows_from_xbrl(
         filing_windows = _filing_annual_windows(values)
         for name, periods in list(values.items()):
             kept = _drop_note_only_quarter(periods, form=form, filing_windows=filing_windows)
-            if periods and not kept:
-                retry = _retry_without(
-                    name,
-                    resolutions[name],
-                    catalogue,
-                    graph,
-                    available,
-                    regime,
-                    facts,
-                    durations,
-                    zero_only,
-                    magnitudes,
-                    ticker,
-                    prefer_structure,
-                    form,
-                    filing_windows,
-                )
-                if retry is not None:
-                    resolutions[name], values[name], refused[name] = retry
-                    continue
-                note_refused.add(name)
+            if not periods or kept:
+                values[name] = kept
+                continue
+            retry = _retry_without(
+                name,
+                resolutions[name],
+                catalogue,
+                graph,
+                available,
+                regime,
+                facts,
+                durations,
+                zero_only,
+                magnitudes,
+                ticker,
+                prefer_structure,
+                form,
+                filing_windows,
+            )
+            if retry is not None:
+                resolutions[name], values[name], refused[name] = retry
+                continue
+            note_refused.add(name)
             values[name] = kept
     for name, resolution in list(resolutions.items()):
         if resolution.method == FIELD_SUM:
@@ -929,9 +905,9 @@ def rows_from_xbrl(
             # of the class visible instead of silent.
             if resolution.resolved:
                 resolution = replace(resolution, method=UNRESOLVED, dc_code=(AMBIGUOUS_DURATION if name in note_refused else NO_USABLE_PERIOD))
-            rows.append(_row(ticker, cik, stamp, regime, name, resolution, None))
+            rows.append(_row(ticker, cik, stamp, reported, regime, name, resolution, None))
             continue
-        rows.extend(_row(ticker, cik, stamp, regime, name, resolution, period) for period in periods.values())
+        rows.extend(_row(ticker, cik, stamp, reported, regime, name, resolution, period) for period in periods.values())
     # The periods route 3b refused, each as a value-less row carrying its own code. Emitted
     # for EVERY field, including the ones that resolved -- that is the whole of B.6.6.
     for name, periods in refused.items():
@@ -940,7 +916,8 @@ def rows_from_xbrl(
         # and the dedup in `build_ticker_fundamentals` would silently keep the value-less one.
         assert not (set(periods) & set(values.get(name, {}))), f"{ticker} {filing.accession_number} {name}: a refused period is also resolved"
         rows.extend(
-            _row(ticker, cik, stamp, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL) for period in periods.values()
+            _row(ticker, cik, stamp, reported, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL)
+            for period in periods.values()
         )
     return rows
 
@@ -978,13 +955,12 @@ def build_ticker_fundamentals(
     no_xbrl: list[str] = []
     for filing in filings:
         # The CIK that FILED this document. The SPLIT walk lists per segment, so the
-        # filing already carries its own registrant's CIK; `filed_by` just falls back
-        # to the roster's when a filing exposes none.
-        filing_cik = filed_by(filing, cik)
+        # filing already carries its own registrant's CIK; the stamp falls back to the
+        # roster's only when a filing exposes none.
         rows.extend(
             filing_rows(
                 ticker,
-                filing_cik,
+                FilingStamp.of(filing, cik).cik,
                 filing,
                 catalogue,
                 gics_by_ticker.get(ticker),

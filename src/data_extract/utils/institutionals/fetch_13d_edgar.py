@@ -41,6 +41,7 @@ from bs4 import BeautifulSoup
 
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, num_or_null
+from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
 from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
@@ -92,25 +93,20 @@ _TRANSACTION_COLS = [
 ]
 
 # --- Item narrative fallback -------------------------------------------------- #
-# 13D items don't have MD&A-style alternate titles (unlike 10-K/10-Q), so one caption
-# keyword per item is the anchor; the same separator tolerance as
-# fetch_filing_text.py's `_SEP` handles the "Item 4.", "Item 4:", "Item  4 -"
-# formatting variance seen across filers/eras.
-#
+# 13D items have no MD&A-style alternate titles, so one caption keyword per item is the anchor.
 # TWO anchor sets exist because each reads filings the other cannot -- see
 # `_extract_13d_item_sections` for the union rule that combines them. `_ITEM_ANCHORS`
 # matches a caption ANYWHERE, which is the only thing that reads a filing rendered
 # without newlines; the line-anchored set below is what recovers the headings whose
 # captions the anywhere-matcher misses.
-_SEP = r"[\.\:\)\s–—-]{0,8}"
 _ITEM_ANCHORS: dict[int, re.Pattern] = {
-    1: re.compile(rf"item{_SEP}1\b{_SEP}security\s+and\s+issuer", re.I),
-    2: re.compile(rf"item{_SEP}2\b{_SEP}identity\s+and\s+background", re.I),
-    3: re.compile(rf"item{_SEP}3\b{_SEP}source\s+and\s+amount", re.I),
-    4: re.compile(rf"item{_SEP}4\b{_SEP}purpose\s+of\s+transaction", re.I),
-    5: re.compile(rf"item{_SEP}5\b{_SEP}interest\s+in\s+securities", re.I),
-    6: re.compile(rf"item{_SEP}6\b{_SEP}contracts", re.I),
-    7: re.compile(rf"item{_SEP}7\b{_SEP}material\s+to\s+be\s+filed", re.I),
+    1: item_heading(1, r"security\s+and\s+issuer"),
+    2: item_heading(2, r"identity\s+and\s+background"),
+    3: item_heading(3, r"source\s+and\s+amount"),
+    4: item_heading(4, r"purpose\s+of\s+transaction"),
+    5: item_heading(5, r"interest\s+in\s+securities"),
+    6: item_heading(6, r"contracts"),
+    7: item_heading(7, r"material\s+to\s+be\s+filed"),
 }
 #: Caption keyword per item, widened where filers measurably diverge from the SEC's own
 #: wording -- "Purpose of THE Transaction" alone accounted for most Item 4 misses.
@@ -128,12 +124,10 @@ _ITEM_CAPTIONS: dict[int, str] = {
 #: unusable, which in turn lets the caption become OPTIONAL: when the line ends right after
 #: "Item N.", it is a captionless heading, not a cross-reference. The caption, when present,
 #: is consumed to end of line so a body never starts mid-caption ("or Other Consideration...").
-_ITEM_ANCHORS_LINE: dict[int, re.Pattern] = {
-    n: re.compile(rf"^[ \t]*item{_SEP}{n}\b[\.\:\)]?[ \t]*(?:{cap}[^\n]*|$)", re.I | re.M) for n, cap in _ITEM_CAPTIONS.items()
-}
+_ITEM_ANCHORS_LINE: dict[int, re.Pattern] = {n: item_heading(n, cap, line_anchored=True) for n, cap in _ITEM_CAPTIONS.items()}
 #: Any captioned heading, anywhere -- used ONLY to detect that a carved body swallowed a
 #: later item, never to carve.
-_ITEM_HEADING_ANYWHERE: dict[int, re.Pattern] = {n: re.compile(rf"item{_SEP}{n}{_SEP}(?:{cap})", re.I) for n, cap in _ITEM_CAPTIONS.items()}
+_ITEM_HEADING_ANYWHERE: dict[int, re.Pattern] = {n: re.compile(rf"item{ITEM_SEP}{n}{ITEM_SEP}(?:{cap})", re.I) for n, cap in _ITEM_CAPTIONS.items()}
 _SIGNATURE_RE = re.compile(r"^\s*signature", re.I | re.M)
 _ITEM_TEXT_FIELD = {
     3: "item3_source_of_funds",
@@ -199,24 +193,16 @@ def _normalize_item_text(body: str) -> str:
 
 
 def _carve_with(text: str, anchors: dict[int, re.Pattern]) -> dict[str, str]:
-    """Carve Item 3/4/5/6 bodies using ONE anchor set. Each body runs from its own
+    """Carve Item 3/4/5/6 bodies using ONE anchor set. Each body runs from its own first
     heading to whichever comes first: a later item's heading (any of {item_no+1}..7)
     or the SIGNATURE block. A missing match is normal, not an error -- amendments
     routinely restate only SOME items, leaving the others (correctly) absent."""
     out: dict[str, str] = {}
     for item_no, field in _ITEM_TEXT_FIELD.items():
-        m = anchors[item_no].search(text)
-        if not m:
+        spans = carve_spans(text, anchors[item_no], [anchors[later] for later in range(item_no + 1, 8)], stop_re=_SIGNATURE_RE)
+        if not spans:
             continue
-        start = m.end()
-        end = len(text)
-        for later_no in range(item_no + 1, 8):
-            m2 = anchors[later_no].search(text, start)
-            if m2 and m2.start() < end:
-                end = m2.start()
-        m3 = _SIGNATURE_RE.search(text, start)
-        if m3 and m3.start() < end:
-            end = m3.start()
+        start, end = spans[0]
         body = _normalize_item_text(text[start:end])
         if len(body) >= _ITEM_TEXT_MIN_CHARS:
             out[field] = body

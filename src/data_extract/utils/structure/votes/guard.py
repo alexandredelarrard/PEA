@@ -29,6 +29,8 @@ _VOTE_FIELDS = ("votes_for", "votes_against", "votes_abstain", "votes_broker_non
 #: An Item 5.07 narrative with no comma-grouped number anywhere therefore has no table to
 #: read, and asking the model to read one is how "John Doe / 250,000,000" gets invented.
 _GROUPED_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+#: The column labels of a vote tally table.
+_VOTE_TABLE_LABEL_RE = re.compile(r"(?i)\b(?:against|withheld|abstain(?:ed)?|broker\s+non[- ]votes?)\b")
 
 #: Floor on `item_text` length. It catches the emptiest stubs and NOT MUCH MORE, and the
 #: reason is measured: a truncation stub is not reliably shorter than a real filing. The
@@ -64,6 +66,12 @@ def has_vote_numbers(text: str | None) -> bool:
     TDG 2011/2014/2017/2019) contain none.
     """
     return bool(text) and bool(_GROUPED_NUMBER_RE.search(text))
+
+
+def has_vote_table(text: str) -> bool:
+    """True when `text` reads as a vote tally table: at least two comma-grouped share counts and
+    a vote column label (against / withheld / abstain / broker non-votes)."""
+    return len(_GROUPED_NUMBER_RE.findall(text)) >= 2 and bool(_VOTE_TABLE_LABEL_RE.search(text))
 
 
 def mentions_preliminary(text: str | None) -> bool:

@@ -21,6 +21,7 @@ import re
 from functools import partial
 
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_store.schema import Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
@@ -35,16 +36,15 @@ _COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report
 # The apostrophe in "management's" is matched with \W (any non-word), NOT a literal quote: EDGAR HTML
 # uses several encodings for it (U+2019, Win-1252 0x92, mojibake), so a fixed quote class misses some
 # filers -> 0 MD&A. MD&A lives in DIFFERENT items per form: 10-K Item 7, 10-Q Item 2. ---
-_SEP = r"[\.\:\)\s–—-]{0,8}"
 # Risk Factors — 10-K Item 1A (Part I). Ends at the next Part I item: Item 1B (Unresolved Staff
 # Comments), Item 1C (Cybersecurity — mandatory since Dec-2023; filers that OMIT 1B end here), or
 # Item 2 (Properties). Without 1C/the title, a filer lacking Item 1B had NO end -> the span over-ran
 # to end-of-document (the PTC bug).
-_RISK_START = re.compile(rf"item{_SEP}1a\b{_SEP}risk\s+factors", re.I)
-_RISK_END = re.compile(rf"item{_SEP}1b\b|item{_SEP}1c\b|unresolved\s+staff\s+comments|item{_SEP}2\b{_SEP}propert", re.I)
+_RISK_START = item_heading("1a", r"risk\s+factors")
+_RISK_END = re.compile(rf"item{ITEM_SEP}1b\b|item{ITEM_SEP}1c\b|unresolved\s+staff\s+comments|item{ITEM_SEP}2\b{ITEM_SEP}propert", re.I)
 # MD&A start — 10-K "Item 7 + management", 10-Q "Item 2 + management" (stops before the apostrophe).
-_MDA_START_10K = re.compile(rf"item{_SEP}7\b{_SEP}management", re.I)
-_MDA_START_10Q = re.compile(rf"item{_SEP}2\b{_SEP}management", re.I)
+_MDA_START_10K = item_heading(7, "management")
+_MDA_START_10Q = item_heading(2, "management")
 # FALLBACK start (both forms): the standalone MD&A TITLE, for filers that print it WITHOUT the item
 # prefix. Allows an optional inserted word — combined multi-registrant filers (e.g. Entergy) title it
 # "Management's FINANCIAL Discussion and Analysis".
@@ -53,51 +53,28 @@ _MDA_START_ALT = re.compile(r"management\W{0,3}(?:s\W{1,3})?(?:financial\W{1,3})
 # Qualitative Disclosures") over the financial-statements item, so an intro cross-ref to the latter
 # can't truncate the body. Fallbacks: 10-K Item 8 (Financial Statements); 10-Q Item 4 (Controls) /
 # Part II.
-_MDA_END_10K_PRI = re.compile(rf"item{_SEP}7a\b|quantitative\s+and\s+qualitative", re.I)
-_MDA_END_10K_FALL = re.compile(rf"item{_SEP}8\b{_SEP}financial\s+statements", re.I)
-_MDA_END_10Q_PRI = re.compile(rf"item{_SEP}3\b{_SEP}quantitative|quantitative\s+and\s+qualitative", re.I)
-_MDA_END_10Q_FALL = re.compile(rf"item{_SEP}4\b{_SEP}controls|part{_SEP}ii\b", re.I)
+_MDA_END_10K_PRI = re.compile(rf"item{ITEM_SEP}7a\b|quantitative\s+and\s+qualitative", re.I)
+_MDA_END_10K_FALL = item_heading(8, r"financial\s+statements")
+_MDA_END_10Q_PRI = re.compile(rf"item{ITEM_SEP}3\b{ITEM_SEP}quantitative|quantitative\s+and\s+qualitative", re.I)
+_MDA_END_10Q_FALL = re.compile(rf"item{ITEM_SEP}4\b{ITEM_SEP}controls|part{ITEM_SEP}ii\b", re.I)
 # cross-reference cues right before an item marker -> a POINTER, not a real heading. START uses a
 # STRICT set (only unambiguous pointers) — broad prepositions like "under"/"with" legitimately
 # precede a real heading ("risks described under Item 1A. Risk Factors <body>"), so skipping on them
 # drops real sections (the PTC bug). END uses a BROADER set so an intro cross-ref ("read in
 # conjunction WITH Item 8, Financial Statements") can't truncate the body to a stub.
-_XREF_START = re.compile(r"\b(see|refer|conjunction|pursuant|incorporat)\b\W{0,4}$", re.I)
-_XREF_END = re.compile(r"\b(see|refer|conjunction|pursuant|incorporat|with|under|within)\b\W{0,4}$", re.I)
-
-
-def _first_end(text: str, s: int, end_re: re.Pattern) -> int | None:
-    """First end-marker start at/after `s` that is NOT a cross-reference (skip pointers), else
-    None. Scanning FROM `s` rather than from 0 keeps this linear: a 10-K prints the MD&A title
-    in its TOC and page headers, so a full rescan per candidate start was quadratic."""
-    for m in end_re.finditer(text, s):
-        x = m.start()
-        if x > s and not _XREF_END.search(text[max(0, x - 25) : x]):
-            return x
-    return None
+_CROSS_REFS = CrossRefCues(
+    start=re.compile(r"\b(see|refer|conjunction|pursuant|incorporat)\b\W{0,4}$", re.I),
+    end=re.compile(r"\b(see|refer|conjunction|pursuant|incorporat|with|under|within)\b\W{0,4}$", re.I),
+)
 
 
 def _best_span(text: str, start_re: re.Pattern, min_chars: int, end_primary: re.Pattern, end_fallback: re.Pattern | None = None) -> str | None:
-    """The LONGEST body between a real start HEADING and the next real end HEADING. The start skips
-    cross-references; the end prefers `end_primary` (the true next section) and only uses
-    `end_fallback` when no primary end follows the start. None if no span reaches `min_chars`.
-
-    Every pattern here is compiled `re.I`, so matching runs on `text` directly. The previous
-    lower-cased copy was both a full duplicate of a multi-MB string per filing and an offset
-    hazard -- `str.lower()` is not length-preserving in Unicode, so its offsets could mis-slice
-    `text` for any filing containing e.g. U+0130."""
+    """The LONGEST body between a real start HEADING and the next real end HEADING (cross-references
+    skipped at both ends; `end_fallback` only when no primary end follows the start), compared on
+    whitespace-stripped bounds. None if no span reaches `min_chars`."""
     best_s = best_e = 0
-    for m in start_re.finditer(text):
-        if _XREF_START.search(text[max(0, m.start() - 25) : m.start()]):
-            continue  # a pointer to the section, not the heading
-        s = m.end()
-        e = _first_end(text, s, end_primary)
-        if e is None and end_fallback is not None:
-            e = _first_end(text, s, end_fallback)
-        if e is None:
-            e = len(text)
-        # Compare STRIPPED bounds, so the winner is the same span the old
-        # `max(len(text[s:e].strip()))` picked -- but without materialising every candidate.
+    fallback = (end_fallback,) if end_fallback is not None else ()
+    for s, e in carve_spans(text, start_re, (end_primary,), fallback_end_res=fallback, cross_refs=_CROSS_REFS):
         while s < e and text[s].isspace():
             s += 1
         while e > s and text[e - 1].isspace():

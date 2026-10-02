@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, partial
 from typing import Any, Protocol
 
 import pandas as pd
@@ -208,6 +208,138 @@ def load_edgar_scope(
     return EdgarScope(identity, registrants), fingerprints, changed_scope_tickers(entry, fingerprints)
 
 
+@dataclass(frozen=True)
+class RunWindow:
+    """One run's listing window: `since` for unchanged tickers, `fallback_since` (the whole configured
+    history) for a ticker whose identity scope changed, and whether the run counts as a full rescan."""
+
+    since: pd.Timestamp
+    fallback_since: pd.Timestamp
+    is_full_rescan: bool
+
+
+def _resolve_window(
+    context: Context,
+    fetch: EdgarFetch,
+    cik_map: pd.DataFrame,
+    entry: dict | None,
+    years_history: int,
+    full: bool,
+) -> RunWindow:
+    """`fetch`'s window from manifest `entry`: the whole `years_history` window (floored at
+    `fetch.minimum_since`) under `full` or a not-yet-complete manifest, else `manifest_window`."""
+    fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
+    if fetch.minimum_since is not None:
+        fallback_since = max(fallback_since, pd.Timestamp(fetch.minimum_since).normalize())
+    # `-F/--full` serves chunked backfills, whose universe-size change the manifest cannot see.
+    if full:
+        return RunWindow(fallback_since, fallback_since, True)
+    # A legacy manifest cannot prove complete coverage, so the first complete-contract run walks the full history.
+    if fetch.require_complete and not (entry or {}).get("coverage_complete"):
+        return RunWindow(fallback_since, fallback_since, True)
+    since, is_full_rescan = manifest_window(
+        context,
+        fetch.tables[0],
+        len(cik_map),
+        fallback_since=fallback_since,
+        full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
+        tickers=cik_map["ticker"],
+    )
+    return RunWindow(since, fallback_since, is_full_rescan)
+
+
+def _build_ticker(
+    fetch: EdgarFetch,
+    scope: EdgarScope,
+    window: RunWindow,
+    changed: frozenset[str],
+    done: frozenset[str],
+    ticker: str,
+    cik: str,
+) -> dict[Table, pd.DataFrame]:
+    """`fetch.build`'s frames for one ticker; a ticker in `changed` relists from `window.fallback_since`."""
+    since = window.fallback_since if ticker in changed else window.since
+    return fetch.build(ticker, cik, since=since, done_accessions=done, scope=scope)
+
+
+def _save_frames(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, pd.DataFrame]) -> tuple[dict[Table, int], bool]:
+    """Upsert one ticker's non-empty `frames`, `fetch.completion_table` last. Returns `(rows saved per
+    table, failed_save)`: an undeclared table or a failed save sets `failed_save` without stopping
+    the other tables, and then the completion table is not saved."""
+    completion_table = fetch.completion_table
+    ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
+    if completion_table is not None and completion_table in frames:
+        ordered_frames.append((completion_table, frames[completion_table]))
+    counts: dict[Table, int] = {}
+    failed_save = False
+    for table, df in ordered_frames:
+        if df is None or df.empty:
+            continue
+        if table == completion_table and failed_save:
+            context.log.warning("%s: %s coverage not advanced because an earlier save failed", fetch.desc, ticker)
+            continue
+        if table not in fetch.tables:
+            context.log.warning("%s: %s built undeclared table '%s'", fetch.desc, ticker, table)
+            failed_save = True
+            continue
+        try:
+            context.store.save(table, df)
+        except Exception as e:  # noqa: BLE001 -- a failed save is per table; the others still save
+            context.log.warning("%s: %s save to '%s' failed (%s)", fetch.desc, ticker, table, e)
+            failed_save = True
+            continue
+        counts[table] = len(df)
+    return counts, failed_save
+
+
+def _walk_ticker(
+    context: Context,
+    fetch: EdgarFetch,
+    scope: EdgarScope,
+    window: RunWindow,
+    changed: frozenset[str],
+    done: frozenset[str],
+    ticker: str,
+    cik: str,
+) -> dict[Table, int] | None:
+    """The pool worker: build then save one ticker. None (a failed ticker) when a save failed
+    under `fetch.require_complete`, else the rows saved per table."""
+    frames = _build_ticker(fetch, scope, window, changed, done, ticker, cik)
+    counts, failed_save = _save_frames(context, fetch, ticker, frames)
+    return None if fetch.require_complete and failed_save else counts
+
+
+def _tally(results: list[dict[Table, int] | None], tables: tuple[Table, ...]) -> tuple[dict[Table, int], int]:
+    """`(rows saved per table, failed ticker count)`; a None result is a failed ticker."""
+    totals = {table: 0 for table in tables}
+    for result in results:
+        for table, n in (result or {}).items():
+            totals[table] += n
+    return totals, sum(1 for result in results if result is None)
+
+
+def _record_tables(
+    context: Context,
+    fetch: EdgarFetch,
+    cik_map: pd.DataFrame,
+    totals: dict[Table, int],
+    window: RunWindow,
+    fingerprints: dict[str, str] | None,
+) -> None:
+    """One `record_run` entry per table of `fetch`, zero-row tables included."""
+    for table in fetch.tables:
+        record_run(
+            context,
+            table,
+            len(cik_map),
+            totals[table],
+            is_full_rescan=window.is_full_rescan,
+            coverage_complete=fetch.require_complete,
+            identity_scope_fingerprints=fingerprints,
+            tickers=cik_map["ticker"],
+        )
+
+
 def run_edgar_fetch(
     context: Context,
     tickers: list[str],
@@ -218,120 +350,26 @@ def run_edgar_fetch(
     cik_map: pd.DataFrame | None = None,
     max_workers: int | None = None,
 ) -> None:
-    """Run `fetch` for `tickers`: every ticker's `fetch.build` frames are upserted and each of
-    `fetch.tables` gets a `record_run` entry, even with zero rows (see `EdgarFetch`).
-
-    `full` takes the whole `years_history` window without consulting the manifest. `cik_map`
-    lets a caller that already loaded the universe pass it in. Under `fetch.require_complete`
-    build and save failures are fatal to the run manifest (saved rows stay as idempotent
-    progress).
-    """
-    tables, desc, completion_table, require_complete = fetch.tables, fetch.desc, fetch.completion_table, fetch.require_complete
+    """Run `fetch` for `tickers` (or a preloaded `cik_map`): upsert every ticker's frames and record
+    each of `fetch.tables`, even with zero rows. `full` takes the whole `years_history` window;
+    under `fetch.require_complete` a failed ticker raises before any manifest entry advances."""
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
-    entry = get_entry(context, tables[0])
-    scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=fetch.identity_aware)
-    if changed_scopes:
-        context.log.info(
-            "%s: %d ticker identity scope(s) changed -> full-window relist: %s",
-            desc,
-            len(changed_scopes),
-            ", ".join(sorted(changed_scopes)),
-        )
-    fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
-    if fetch.minimum_since is not None:
-        fallback_since = max(fallback_since, pd.Timestamp(fetch.minimum_since).normalize())
-    if full:
-        # `-F/--full`: take the whole years-history window and do not consult the manifest.
-        #
-        # Needed for a CHUNKED from-scratch backfill, which the manifest cannot express. Its
-        # incremental test is "did the ticker universe change size since the last run?", so
-        # running `-t A,B,C,D,E,F` twice in a row -- two different chunks, six tickers each --
-        # looks like a repeat of the same run and the second chunk gets `since = last run`,
-        # i.e. nothing. Measured the hard way: chunk 1 wrote 31,540 rows and chunks 2-9 wrote
-        # 0. Chunking is not optional here (edgartools never releases its per-filing caches,
-        # and an all-52 single process reached 14.7 GB RSS), so the flag is the fix.
-        since, is_full_rescan = fallback_since, True
-    elif require_complete and not (entry or {}).get("coverage_complete"):
-        # A legacy manifest only proves that the old discovery code finished. It cannot prove
-        # issuer-side Schedule coverage because that code silently skipped large filer books.
-        # The first run under the completeness contract must therefore walk the full configured
-        # history before it is allowed to mint a trustworthy frontier.
-        since, is_full_rescan = fallback_since, True
-    else:
-        since, is_full_rescan = manifest_window(
-            context,
-            tables[0],
-            len(cik_map),
-            fallback_since=fallback_since,
-            full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
-            tickers=cik_map["ticker"],
-        )
-    done = existing_filings(context, tables[0])
-    declared = set(tables)
-
-    def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
-        frames = fetch.build(ticker, cik, since=fallback_since if ticker in changed_scopes else since, done_accessions=done, scope=scope)
-        counts: dict[Table, int] = {}
-        failed_save = False
-        ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
-        if completion_table is not None and completion_table in frames:
-            ordered_frames.append((completion_table, frames[completion_table]))
-        for table, df in ordered_frames:
-            if df is None or df.empty:
-                continue
-            if table == completion_table and failed_save:
-                context.log.warning(
-                    "%s: %s coverage not advanced because an earlier save failed",
-                    desc,
-                    ticker,
-                )
-                continue
-            if table not in declared:
-                context.log.warning("%s: %s built undeclared table '%s'", desc, ticker, table)
-                failed_save = True
-                continue
-            # A failed save is per table: it marks `failed_save` and the other tables still save.
-            try:
-                context.store.save(table, df)
-            except Exception as e:  # noqa: BLE001
-                context.log.warning("%s: %s save to '%s' failed (%s)", desc, ticker, table, e)
-                failed_save = True
-                continue
-            counts[table] = len(df)
-        if require_complete and failed_save:
-            return None
-        return counts
-
-    results = run_per_ticker(cik_map, _worker, desc=desc, log=context.log, max_workers=max_workers)
-    failed = sum(1 for r in results if r is None)
-    totals = {table: 0 for table in tables}
-    for result in results:
-        for table, n in (result or {}).items():
-            totals[table] += n
-
-    context.log.info(
-        "%s: %d/%d ticker(s) ok, %d failed -> %s",
-        desc,
-        len(results) - failed,
-        len(cik_map),
-        failed,
-        ", ".join(f"+{n} '{t}'" for t, n in totals.items()),
-    )
-    if require_complete and failed:
+    entry = get_entry(context, fetch.tables[0])
+    scope, fingerprints, changed = load_edgar_scope(context, cik_map, entry, identity_aware=fetch.identity_aware)
+    if changed:
+        context.log.info("%s: %d ticker identity scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
+    window = _resolve_window(context, fetch, cik_map, entry, years_history, full)
+    done = existing_filings(context, fetch.tables[0])
+    worker = partial(_walk_ticker, context, fetch, scope, window, changed, done)
+    results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
+    totals, failed = _tally(results, fetch.tables)
+    summary = ", ".join(f"+{n} '{t}'" for t, n in totals.items())
+    context.log.info("%s: %d/%d ticker(s) ok, %d failed -> %s", fetch.desc, len(results) - failed, len(cik_map), failed, summary)
+    if fetch.require_complete and failed:
         raise IncompleteEdgarRunError(
-            f"{desc}: {failed}/{len(cik_map)} ticker(s) failed; rows already saved remain "
+            f"{fetch.desc}: {failed}/{len(cik_map)} ticker(s) failed; rows already saved remain "
             "idempotent, but no run manifest was advanced because coverage is incomplete"
         )
-    for table in tables:
-        record_run(
-            context,
-            table,
-            len(cik_map),
-            totals[table],
-            is_full_rescan=is_full_rescan,
-            coverage_complete=require_complete,
-            identity_scope_fingerprints=scope_fingerprints,
-            tickers=cik_map["ticker"],
-        )
+    _record_tables(context, fetch, cik_map, totals, window, fingerprints)

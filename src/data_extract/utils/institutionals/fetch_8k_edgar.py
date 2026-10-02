@@ -18,6 +18,7 @@ from typing import Any
 
 from src.constants.constants import SEC_8K_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Tables
 
 _COLS = [
@@ -83,18 +84,12 @@ _HIGH_SIGNAL_ITEMS = {
     "9.01": "financial_statements_and_exhibits",
 }
 
-_GROUPED_VOTE_NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
-_VOTE_TABLE_LABEL_RE = re.compile(r"(?i)\b(?:against|withheld|abstain(?:ed)?|broker\s+non[- ]votes?)\b")
 _RESULTS_FOLLOW_RE = re.compile(
     r"(?is)\b(?:results?|votes?)\b.{0,160}\b(?:below|following|as follows|set forth)\b"
     r"|\b(?:below|following)\b.{0,160}\b(?:results?|votes?)\b"
 )
 _ITEM_507_HEADING_RE = re.compile(r"(?im)^\s*Item\s+5\.07\b[^\n]*")
 _NEXT_8K_SECTION_RE = re.compile(r"(?im)^\s*(?:Item\s+(?!5\.07\b)\d\.\d{2}\b[^\n]*|SIGNATURES?)\s*$")
-
-
-def _has_vote_table(text: str) -> bool:
-    return len(_GROUPED_VOTE_NUMBER_RE.findall(text)) >= 2 and bool(_VOTE_TABLE_LABEL_RE.search(text))
 
 
 def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
@@ -106,7 +101,7 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     when the stub announces following results and the carved section contains both vote
     labels and multiple grouped tallies.
     """
-    if not _RESULTS_FOLLOW_RE.search(item_text) or _has_vote_table(item_text):
+    if not _RESULTS_FOLLOW_RE.search(item_text) or has_vote_table(item_text):
         return item_text
     try:
         primary_text = str(filing.text() or "")
@@ -115,7 +110,7 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     for heading in _ITEM_507_HEADING_RE.finditer(primary_text):
         following = _NEXT_8K_SECTION_RE.search(primary_text, heading.end())
         candidate = primary_text[heading.start() : following.start() if following else len(primary_text)].strip()
-        if len(candidate) > len(item_text) and _has_vote_table(candidate):
+        if len(candidate) > len(item_text) and has_vote_table(candidate):
             return candidate
     return item_text
 

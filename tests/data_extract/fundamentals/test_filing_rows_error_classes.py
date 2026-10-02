@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS
+from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import fetch_fundamentals_sec as fetcher
 
 _ACCESSION = "0000320193-24-000123"

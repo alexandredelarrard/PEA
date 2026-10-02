@@ -461,6 +461,7 @@ def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
         lambda *args: {
             "coverage_complete": True,
             "last_run_date": "2025-01-01",
+            "identity_scope_fingerprints": {"AAA": "scope"},
             "filing_outcomes": list(saved_outcomes),
         },
     )

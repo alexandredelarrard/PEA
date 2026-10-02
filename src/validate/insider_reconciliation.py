@@ -18,9 +18,8 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     DEFAULT_DECAY_HALFLIFE,
     build_insider_feature_panel,
 )
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, run_per_ticker
+from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.institutionals.fetch_insider_edgar import (
     _filing_frames,
@@ -180,6 +179,7 @@ def replay_completed_quarter(
             cik_map,
             worker,
             desc=f"insider parity {quarter}",
+            log=context.log,
             max_workers=max_workers,
         ),
     )

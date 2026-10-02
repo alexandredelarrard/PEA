@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, cast
@@ -14,7 +13,7 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS, IncompleteEdgarRunError, filed_by, period_of_report
+from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError, filed_by, period_of_report
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
@@ -398,48 +397,30 @@ def fetch_fundamentals_employees(
         sum(map(len, plan.skip_dates.values())),
     )
 
-    # `store.ensure_table` is check-then-create with no lock: serialize writes until the table exists.
-    create_lock = threading.Lock()
-    created = False
-
-    def _save(frame: pd.DataFrame) -> None:
-        nonlocal created
-        if created:
-            context.store.save(Tables.fundamentals_employees, frame)
-            return
-        with create_lock:
-            context.store.save(Tables.fundamentals_employees, frame)
-            created = True
-
-    def _worker(ticker: str, cik: str) -> EmployeeTickerResult | None:
-        try:
-            result = build_ticker_employees(
-                context,
-                ticker,
-                cik,
-                since=fallback_since if ticker in changed_scopes else plan.since,
-                done_accessions=plan.done_accessions,
-                skip_dates=plan.skip_dates.get(ticker, frozenset()),
-                registrants=registrants,
-                identity=identity,
-                symbol_tenure=symbol_tenure,
-            )
-            if not result.frame.empty:
-                _save(result.frame)
-            # A now-null date is cleared unless a skipped (already decided) filing saved it.
-            for filed in result.unavailable_dates - plan.saved_dates.get(ticker, frozenset()):
-                context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
-            return result
-        except PROGRAMMING_ERRORS:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- one ticker cannot hide incomplete coverage
-            context.log.warning("fundamentals employees: %s failed (%s)", ticker, exc)
-            return None
+    def _worker(ticker: str, cik: str) -> EmployeeTickerResult:
+        result = build_ticker_employees(
+            context,
+            ticker,
+            cik,
+            since=fallback_since if ticker in changed_scopes else plan.since,
+            done_accessions=plan.done_accessions,
+            skip_dates=plan.skip_dates.get(ticker, frozenset()),
+            registrants=registrants,
+            identity=identity,
+            symbol_tenure=symbol_tenure,
+        )
+        if not result.frame.empty:
+            context.store.save(Tables.fundamentals_employees, result.frame)
+        # A now-null date is cleared unless a skipped (already decided) filing saved it.
+        for filed in result.unavailable_dates - plan.saved_dates.get(ticker, frozenset()):
+            context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
+        return result
 
     results = run_per_ticker(
         cik_map,
         _worker,
         desc="fundamentals employees",
+        log=context.log,
         max_workers=int(context.config.data_extract.fundamentals_workers),
     )
     successful = [result for result in results if result is not None]

@@ -10,73 +10,79 @@ exponential backoff.
 from __future__ import annotations
 
 import logging
+import re
 import time
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
+_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+_RETRYABLE_CODE = re.compile(r"\b(429|50[234])\b")
+_RETRYABLE_PHRASES = (
+    "too many requests",
+    "toomanyrequests",
+    "rate limit",
+    "ratelimit",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "readtimeout",
+    "connecttimeout",
+    "pooltimeout",
+    "read operation timed out",
+    "connection timed out",
+)
+
 
 def is_rate_limited(exc: BaseException) -> bool:
-    """True for a throttle or transient upstream/transport failure worth retrying."""
-    s = f"{type(exc).__name__} {exc}".lower()
-    return (
-        "429" in s
-        or "too many requests" in s
-        or "toomanyrequests" in s
-        or "rate limit" in s
-        or "ratelimit" in s
-        or "502" in s
-        or "503" in s
-        or "504" in s
-        or "bad gateway" in s
-        or "service unavailable" in s
-        or "gateway timeout" in s
-        or "readtimeout" in s
-        or "connecttimeout" in s
-        or "pooltimeout" in s
-        or "read operation timed out" in s
-        or "connection timed out" in s
-    )
+    """True for a throttle or transient upstream/transport failure worth retrying.
+
+    An HTTP response's integer status code decides when present; otherwise the exception
+    text is matched on whole status codes and known throttle/timeout phrases."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status in _RETRYABLE_STATUS
+    text = f"{type(exc).__name__} {exc}".lower()
+    return bool(_RETRYABLE_CODE.search(text)) or any(phrase in text for phrase in _RETRYABLE_PHRASES)
 
 
-def _on_retry(cb) -> None:
-    """Run an optional between-retries hook (e.g. rotate IP + re-prime the session) without letting
-    a hook failure abort the retry loop."""
-    if cb is None:
+def _wait_before_retry(attempt: int, retries: int, base_wait: float, label: str, reason: str, on_retry: Callable[[], None] | None) -> None:
+    """Sleep `base_wait * 2**attempt`, then run the optional `on_retry` hook; a hook failure is logged, not raised."""
+    wait = base_wait * (2**attempt)
+    rotation = " + rotating IP" if on_retry is not None else ""
+    logger.warning(f"[{label}] {reason}; attempt {attempt + 1}/{retries} -> waiting {wait:.0f}s{rotation} before retry")
+    time.sleep(wait)
+    if on_retry is None:
         return
     try:
-        cb()
+        on_retry()
     except Exception as e:  # noqa: BLE001
         logger.debug("on_retry hook failed (continuing): %s", e)
 
 
-def call_with_retries(fn, *, retries: int = 3, base_wait: float = 30.0, label: str = "", retry_empty=None, on_retry=None):
-    """Call `fn()`; on a retryable HTTP error, wait exponentially and retry up
-    to `retries` times before giving up. Non-retryable exceptions propagate
-    immediately. If `retry_empty` is given (a predicate on the result), an "empty"
-    result is also retried (empties are often a soft throttle). `on_retry` (if given) runs
-    BEFORE each retry — e.g. to MOVE to the next authorized proxy and re-prime the session so the
-    retry goes out on a fresh IP.
-
-    `retries=3` => up to 4 attempts total; waits base_wait, 2x, 4x, ...
-    """
+def call_with_retries[T](
+    fn: Callable[[], T],
+    *,
+    retries: int = 3,
+    base_wait: float = 30.0,
+    label: str = "",
+    retry_empty: Callable[[T], bool] | None = None,
+    on_retry: Callable[[], None] | None = None,
+) -> T:
+    """Call `fn()`, retrying a retryable error (and, with `retry_empty`, an "empty" result) up to
+    `retries` times with exponential waits `base_wait`, 2x, 4x, ... Non-retryable exceptions
+    propagate immediately. `on_retry` runs before each retry, e.g. to move to the next proxy."""
     attempt = 0
     while True:
         try:
             result = fn()
         except Exception as e:  # noqa: BLE001
-            if is_rate_limited(e) and attempt < retries:
-                wait = base_wait * (2**attempt)
-                logger.warning(f"[{label}] transient source error; attempt {attempt + 1}/{retries} -> waiting {wait:.0f}s + rotating IP before retry")
-                time.sleep(wait)
-                attempt += 1
-                _on_retry(on_retry)
-                continue
-            raise
-        if retry_empty is not None and attempt < retries and retry_empty(result):
-            wait = base_wait * (2**attempt)
-            logger.warning(f"[{label}] empty response; attempt {attempt + 1}/{retries} -> waiting {wait:.0f}s + rotating IP before retry")
-            time.sleep(wait)
+            if not (is_rate_limited(e) and attempt < retries):
+                raise
+            _wait_before_retry(attempt, retries, base_wait, label, "transient source error", on_retry)
             attempt += 1
-            _on_retry(on_retry)
             continue
-        return result
+        if retry_empty is None or attempt >= retries or not retry_empty(result):
+            return result
+        _wait_before_retry(attempt, retries, base_wait, label, "empty response", on_retry)
+        attempt += 1

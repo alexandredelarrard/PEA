@@ -7,8 +7,6 @@ fetchers all delegate to. Offline -- a real `DataStore` on SQLite plus a stub
 
 from __future__ import annotations
 
-import threading
-import time
 import types
 from typing import Any
 
@@ -246,9 +244,8 @@ def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
 # --------------------------------------------------------------------------- #
 def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, sqlite_store, monkeypatch):
     # One ticker on purpose: `sqlite_store` shares ONE connection across the pool's threads,
-    # so concurrent writes to it are not a reliable assertion. Concurrency is covered by
-    # `test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists`, which instruments
-    # `save` instead of racing it.
+    # so concurrent writes to it are not a reliable assertion. The cold-table CREATE race is
+    # covered at the store level by `tests/data_store/test_ensure_table_lock.py`.
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
 
     def build(ticker, cik, *, since, done_accessions):
@@ -266,48 +263,6 @@ def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, s
 
     print("\n=== SANITY CHECK: driver multi-table save + manifest ===")
     print("  main + child rows saved; all 3 declared tables recorded, including the one no ticker produced rows for (rows_added=0). Validated.")
-
-
-def test_run_edgar_fetch_serializes_writes_until_a_cold_table_exists(tmp_path, sqlite_store, monkeypatch):
-    """`store.ensure_table` is a check-then-create with no locking, so several workers can
-    each see a cold table missing and race the CREATE -- the state of every
-    rebuild-from-scratch. The driver must serialize the first write per table; once the
-    table exists, saves run concurrently again."""
-    tickers = [f"TK{i}" for i in range(12)]
-    ctx = _ctx(tmp_path, sqlite_store, tickers)
-
-    probe_lock = threading.Lock()
-    state = {"in_flight": 0, "peak_cold": 0, "peak_warm": 0, "calls": 0}
-
-    def instrumented_save(table, df, pk=None):
-        with probe_lock:
-            state["in_flight"] += 1
-            state["calls"] += 1
-            key = "peak_cold" if state["calls"] <= 1 else "peak_warm"
-            state[key] = max(state[key], state["in_flight"])
-        time.sleep(0.01)  # widen the window a real CREATE would occupy
-        with probe_lock:
-            state["in_flight"] -= 1
-        return len(df)
-
-    monkeypatch.setattr(sqlite_store, "save", instrumented_save)
-
-    def build(ticker, cik, *, since, done_accessions):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
-
-    run_edgar_fetch(ctx, tickers, 15, tables=(_T_MAIN,), build=build, desc="test")
-
-    assert ctx.warnings == []
-    assert state["calls"] == len(tickers)
-    assert state["peak_cold"] == 1  # the creating write never overlaps another
-    assert state["peak_warm"] > 1  # afterwards the lock is out of the way
-
-    print("\n=== SANITY CHECK: cold-table write serialization ===")
-    print(
-        f"  {state['calls']} writes on 8 threads: the first (table-creating) write ran "
-        f"alone (peak concurrency {state['peak_cold']}), later writes overlapped freely "
-        f"(peak {state['peak_warm']}). Validated."
-    )
 
 
 def test_run_edgar_fetch_isolates_a_failing_ticker(tmp_path, sqlite_store, monkeypatch):

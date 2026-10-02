@@ -34,7 +34,6 @@ amendment upserts over the original. Version history is not preserved (README ou
 from __future__ import annotations
 
 import logging
-import threading
 
 import pandas as pd
 from edgar import Company
@@ -157,27 +156,8 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     logger.info("13F managers: %d roster CIK(s), periods from %s", len(ciks), since.date())
 
-    # `ensure_table` is a check-then-create with no lock, so on a COLD table several workers can
-    # each see it missing and race the CREATE; the losers raise and lose their manager's rows.
-    # Serialize writes until the table is known to exist -- afterwards `save` is a plain
-    # concurrent upsert. Same pattern as `edgar_driver.run_edgar_fetch`.
-    create_lock = threading.Lock()
-    created: set[str] = set()
-
-    def _save(df: pd.DataFrame) -> int:
-        if Tables.sec13f_manager_holdings.name in created:
-            return context.store.save(Tables.sec13f_manager_holdings, df)
-        with create_lock:
-            n = context.store.save(Tables.sec13f_manager_holdings, df)
-            created.add(Tables.sec13f_manager_holdings.name)
-            return n
-
     def _worker(name: str, cik: str) -> tuple[str, int, int]:
-        try:
-            filings = Company(cik).get_filings(form=SEC_13F_FORMS) or []
-        except Exception as e:  # noqa: BLE001 -- one manager
-            context.log.warning("13F managers: %s (%s) listing failed (%s)", name, cik, e)
-            return cik, 0, 0
+        filings = Company(cik).get_filings(form=SEC_13F_FORMS) or []
         # oldest first, so an amendment filed later upserts OVER the original it restates
         dated = sorted(((pd.Timestamp(f.filing_date), f) for f in filings), key=lambda p: p[0])
         frames = []
@@ -200,15 +180,12 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         # last filed wins per (cik, period, cusip) -- concat order is already oldest-first
         book = book.drop_duplicates(subset=["cik", "period", "cusip"], keep="last")
         suspect = _suspect_prices(book)
-        try:
-            saved = _save(book)
-        except Exception as e:  # noqa: BLE001
-            context.log.warning("13F managers: %s (%s) save failed (%s)", name, cik, e)
-            return cik, 0, 0
-        return cik, saved, suspect
+        return cik, context.store.save(Tables.sec13f_manager_holdings, book), suspect
 
-    scope = pd.DataFrame({"ticker": [names.get(c, c) for c in ciks], "cik": ciks})
-    results = run_per_ticker(scope, _worker, desc="13F manager books")
+    scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
+    guarded = run_per_ticker(scope, _worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
+    # A failed manager (listing or save) counts as zero rows, so it lands in the empty-book check below.
+    results = [result or (cik, 0, 0) for cik, result in zip(ciks, guarded, strict=True)]
     saved = sum(n for _, n, _ in results)
     suspect = sum(s for _, _, s in results)
 

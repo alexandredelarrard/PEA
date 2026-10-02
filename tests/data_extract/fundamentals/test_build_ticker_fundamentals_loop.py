@@ -4,7 +4,7 @@
 Phase 9b replaced the two-CIK `cutover` object with the N-segment register but left three call
 sites referring to the old name. Two were in this function -- `cutover.cik_for(...)` on every
 filing, and `cutover.predecessor_cik` in the dedup guard -- and one was latent in the DEF 14A
-lister. `NameError` is in `PROGRAMMING_ERRORS`, which `_worker` re-raises by design, so
+lister. `NameError` is in `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises by design, so
 `fundamentals-facts` aborted the whole 16-ticker run on its first filing, twice, before anyone
 noticed. Nothing caught it because no test ever entered this loop.
 

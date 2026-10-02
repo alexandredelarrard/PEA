@@ -10,7 +10,6 @@ its forms and its row builder.
 from __future__ import annotations
 
 import logging
-import threading
 from typing import Protocol
 
 import pandas as pd
@@ -29,19 +28,6 @@ from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_m
 from src.data_store.schema import Table
 
 logger = logging.getLogger(__name__)
-
-
-#: Exception classes that mean THIS pipeline is broken, not the filing. They are re-raised
-#: wherever a per-ticker or per-filing handler would otherwise swallow them, because a
-#: programming error and a malformed filing are indistinguishable once both are logged as a
-#: warning -- and the walk that started 2026-08-27 00:06 proved the cost: a one-word
-#: `NameError` in `xbrl_linkbase.statement_arcs` cost NEM, MO and AIZ every fact they had
-#: while the run reported success for 10 hours.
-#:
-#: `KeyError` is on the list deliberately: on these paths it means a frame's column contract
-#: broke, which is ours. The narrow `except` around a LIBRARY parse (`filing.xbrl()`) keeps
-#: swallowing everything, since malformed XBRL is exactly what it exists to absorb.
-PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError, KeyError, ImportError)
 
 
 class IncompleteEdgarRunError(RuntimeError):
@@ -78,7 +64,7 @@ def period_of_report(filing):
     only ever answers `AttributeError`, so the exception passes straight through it.
 
     That mattered the moment the register started walking predecessor archives. `TypeError` is
-    in `PROGRAMMING_ERRORS`, which `_worker` re-raises on purpose -- our bug should fail the
+    in `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises on purpose -- our bug should fail the
     run, not be logged per ticker -- so ONE unparseable 2004 filing aborted a whole 16-ticker
     8-K walk after BKR (237 predecessor filings) and VTRS (292) had already resolved. The
     classification was right and the read was wrong: this is a property of the FILING, not of
@@ -284,39 +270,14 @@ def run_edgar_fetch(
     done = existing_filings(context, tables[0])
     declared = set(tables)
 
-    # `store.ensure_table` is a check-then-create with no locking, so on a cold table
-    # several workers can each see it missing and race the CREATE; the losers raise and
-    # would lose their ticker's rows. Serialize writes to a table until it is known to
-    # exist -- afterwards `save` is a plain concurrent upsert.
-    create_lock = threading.Lock()
-    created: set[str] = set()
-
-    def _save(table: Table, df: pd.DataFrame) -> None:
-        if table.name in created:
-            context.store.save(table, df)
-            return
-        with create_lock:
-            context.store.save(table, df)
-            created.add(table.name)
-
     def _worker(ticker: str, cik: str) -> dict[Table, int] | None:
-        try:
-            kwargs = {
-                "since": fallback_since if ticker in changed_scopes else since,
-                "done_accessions": done,
-            }
-            if identity_aware:
-                kwargs.update(identity=identity, symbol_tenure=symbol_tenure, roster_cik=cik)
-            frames = build(ticker, cik, **kwargs)
-        except PROGRAMMING_ERRORS:
-            # Our bug, not this ticker's data: let it escape the pool and fail the run.
-            # `run_per_ticker` re-raises whatever escapes a worker, which is the point --
-            # every remaining ticker would hit the same defect, and each already-saved
-            # ticker's rows are upserted and keep.
-            raise
-        except Exception as e:  # noqa: BLE001 -- one ticker
-            context.log.warning("%s: %s failed (%s)", desc, ticker, e)
-            return None
+        kwargs = {
+            "since": fallback_since if ticker in changed_scopes else since,
+            "done_accessions": done,
+        }
+        if identity_aware:
+            kwargs.update(identity=identity, symbol_tenure=symbol_tenure, roster_cik=cik)
+        frames = build(ticker, cik, **kwargs)
         counts: dict[Table, int] = {}
         failed_save = False
         ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
@@ -336,10 +297,9 @@ def run_edgar_fetch(
                 context.log.warning("%s: %s built undeclared table '%s'", desc, ticker, table)
                 failed_save = True
                 continue
-            # Saving INSIDE the try: `run_per_ticker` re-raises whatever escapes a
-            # worker, so an uncaught DB error here would abort the whole pool.
+            # A failed save is per table: it marks `failed_save` and the other tables still save.
             try:
-                _save(table, df)
+                context.store.save(table, df)
             except Exception as e:  # noqa: BLE001
                 context.log.warning("%s: %s save to '%s' failed (%s)", desc, ticker, table, e)
                 failed_save = True
@@ -349,7 +309,7 @@ def run_edgar_fetch(
             return None
         return counts
 
-    results = run_per_ticker(cik_map, _worker, desc=desc, **({} if max_workers is None else {"max_workers": max_workers}))
+    results = run_per_ticker(cik_map, _worker, desc=desc, log=context.log, max_workers=max_workers)
     failed = sum(1 for r in results if r is None)
     totals = {table: 0 for table in tables}
     for result in results:

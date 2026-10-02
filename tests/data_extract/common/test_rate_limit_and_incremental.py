@@ -13,6 +13,7 @@ from __future__ import annotations
 import types
 
 import pandas as pd
+import requests
 
 from src.data_extract.utils.common.rate_limit import call_with_retries, is_rate_limited
 
@@ -53,6 +54,35 @@ def test_retry_waits_then_succeeds_and_reraises_other():
         "timeout errors detected; non-transient error re-raised immediately (1 call). "
         "Validated."
     )
+
+
+def _http_error(status: int, url: str) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    response.reason = "Not Found" if status == 404 else "Service Unavailable"
+    response.url = url
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        return exc
+    raise AssertionError(f"status {status} did not raise")
+
+
+def test_is_rate_limited_reads_the_status_code_not_digits_inside_identifiers():
+    not_found = _http_error(404, "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000050302&type=4")
+    unavailable = _http_error(503, "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193")
+    timeout = requests.exceptions.ReadTimeout("HTTPSConnectionPool: Read timed out.")
+    accession = ValueError("no XML in 0000950103-24-000001 primary document")
+
+    assert not is_rate_limited(not_found), str(not_found)
+    assert is_rate_limited(unavailable)
+    assert is_rate_limited(timeout)
+    assert not is_rate_limited(accession)
+
+    print("\n=== SANITY CHECK: rate-limit matcher ===")
+    print(f"  404 on CIK=0000050302 -> {is_rate_limited(not_found)}; 503 -> {is_rate_limited(unavailable)}; ")
+    print(f"  ReadTimeout -> {is_rate_limited(timeout)}; accession 0000950103-24-000001 -> {is_rate_limited(accession)}.")
+    print("  -> Only a real throttle/5xx/timeout is retried; a 404 whose URL contains '503' fails at once.")
 
 
 def test_earnings_download_one_retries_rate_limit(monkeypatch):

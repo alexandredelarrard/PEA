@@ -42,13 +42,9 @@ class LLMExtractor(GptExtracter):
     Results come back in SUBMISSION order regardless of completion order, because the
     caller zips them against its own filing list.
 
-    **Workers never write.** They receive a task and a provider, and never a `Context`.
-    Two properties depend on that, both earned the hard way:
-
-    1. `store.ensure_table` is a check-then-create with no lock, so concurrent writers
-       against a COLD table can each see "absent", each create, and silently lose rows.
-    2. An interrupted run must lose no paid tokens: one save per ticker after that
-       ticker's filings are all parsed means a Ctrl-C costs at most one ticker's calls.
+    **Workers never write.** They receive a task and a provider, and never a `Context`, so an
+    interrupted run loses no paid tokens: one save per ticker after that ticker's filings are
+    all parsed means a Ctrl-C costs at most one ticker's calls.
     """
 
     def __init__(

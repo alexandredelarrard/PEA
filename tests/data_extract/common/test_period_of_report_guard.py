@@ -4,7 +4,7 @@ This is a regression test for the defect the register EXPOSED rather than caused
 `resolve_registrant_filings` started walking predecessor archives, the 8-K walk reached
 2004-era submissions whose EDGAR homepage metadata does not parse, and edgartools' own
 `Filing.period_of_report` property raised `TypeError` from inside itself. `TypeError` is in
-`PROGRAMMING_ERRORS`, which `edgar_driver._worker` re-raises deliberately, so one unparseable
+`PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises deliberately, so one unparseable
 filing aborted a 16-ticker run after BKR (237 recovered predecessor filings) and VTRS (292)
 had already resolved.
 """
@@ -17,7 +17,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS, period_of_report
+from src.data_extract.utils.common.edgar_driver import period_of_report
+from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 
 
 class _Raising:
@@ -40,7 +41,7 @@ def test_the_raising_property_is_a_programming_error_and_would_abort_the_run():
     with pytest.raises(PROGRAMMING_ERRORS):
         _ = _Raising().period_of_report
     print("\n=== SANITY: the premise ===")
-    print("  filing.period_of_report raises TypeError, which _worker re-raises by design.")
+    print("  filing.period_of_report raises TypeError, which run_per_ticker re-raises by design.")
 
 
 def test_getattr_with_a_default_does_not_guard_it():

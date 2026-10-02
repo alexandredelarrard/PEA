@@ -13,6 +13,7 @@ import csv
 import datetime as dt
 import io
 import logging
+import threading
 from collections.abc import Iterator, Sequence
 from typing import Any, cast
 
@@ -36,6 +37,7 @@ from src.data_store.schema import (
 )
 
 _CHUNK = 10_000
+_CREATE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -48,16 +50,18 @@ def _reflect(engine: Engine, name: str) -> Table:
 
 
 def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
-    """Create the table (with its registry PK) if it does not exist yet, using the
-    DataFrame's dtypes for column types. Needed for tables with no DDL in sql/schema.sql
-    yet (e.g. def14a_llm) so the first fetcher write succeeds -- and for every unmanaged
-    `cube_part_*` table, whose DDL only ever comes from the frame being written."""
+    """Create the table (registry PK, column types from `df`'s dtypes) if it does not exist.
+
+    The CREATE runs under a process-wide lock with a re-check inside it, so concurrent writers
+    to a cold table create it exactly once."""
     if table_exists(engine, name):
         return
-    spec = resolve(name)
-    with engine.begin() as conn:
-        for stmt in ddl.table_ddl_from_frame(spec, df).split(";"):
-            if stmt.strip():
+    statements = [stmt for stmt in ddl.table_ddl_from_frame(resolve(name), df).split(";") if stmt.strip()]
+    with _CREATE_LOCK:
+        if table_exists(engine, name):
+            return
+        with engine.begin() as conn:
+            for stmt in statements:
                 conn.execute(text(stmt))
 
 

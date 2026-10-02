@@ -12,10 +12,7 @@ The four Sharadar fetchers, all resumable from the DB:
 
 SINGLE-THREADED, deliberately. Sharadar documents no rate limit anywhere (their whole doc set
 has zero hits for rate limit / throttle / 429 / concurrent), so there is no measured budget to
-spend; and `store.ensure_table` is a check-then-create with no lock, so threaded writers on a
-COLD table race the CREATE and the losers silently lose rows. If parallelism is ever added,
-the first write per table must be serialised with a `threading.Lock` + a `created` set exactly
-as `data_extract/utils/common/edgar_driver.py` already does.
+spend.
 
 RESUME (D13) is per TICKER, not per (ticker, dimension), and that is safe rather than merely
 convenient: `date` is the FILING date, and Sharadar publishes the ARY row for a fiscal year on

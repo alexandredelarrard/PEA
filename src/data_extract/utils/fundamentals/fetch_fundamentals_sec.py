@@ -20,10 +20,7 @@ Division of labour:
 
 Resume, never rescan: the shared `run_edgar_fetch` driver reads the stored accession set and
 the extraction manifest's window, so a nightly run touches only genuinely new filings
-(~5-8 universe-wide on a quiet night, ~20-80 at earnings peak). It also serializes the first
-write to a cold table behind a lock -- `store.ensure_table` is a check-then-create with no
-locking, and on a cold table concurrent workers otherwise race the CREATE and silently lose
-whole tickers' rows.
+(~5-8 universe-wide on a quiet night, ~20-80 at earnings peak).
 """
 
 from __future__ import annotations
@@ -39,12 +36,12 @@ import pandas as pd
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
-    PROGRAMMING_ERRORS,
     filed_by,
     period_of_report,
     run_edgar_fetch,
 )
 from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope

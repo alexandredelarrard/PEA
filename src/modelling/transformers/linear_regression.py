@@ -14,6 +14,7 @@ Features are standardised with the TRAIN mean / std; a missing value is imputed 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,7 @@ from src.modelling.utils.cv import time_decay_weights
 
 _log = logging.getLogger(__name__)
 LINEAR_FAMILIES = ("elasticnet", "ridge")
+_FITTED_ARRAYS = ("coef_", "mean_", "std_")
 
 
 def _standardize(features: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -165,3 +167,20 @@ class LinearRegression(BaseModel):
     def importance(self) -> pd.Series:
         """|coefficient| per feature (features are standardised, so comparable)."""
         return pd.Series(dict(zip(self.features, np.abs(self.coef_), strict=False)), dtype=float)
+
+    # Fitted arrays travel as plain Python floats (exact float64 round trip), not numpy objects:
+    # a numpy pickle is tied to the numpy version that wrote it.
+    def __getstate__(self) -> dict[str, Any]:
+        state = super().__getstate__()
+        for name in _FITTED_ARRAYS:
+            state[name] = np.asarray(state[name], dtype=float).tolist()
+        state["intercept_"] = float(state["intercept_"])
+        state["model"] = None if self.model is None else "fitted"
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
+        for name in _FITTED_ARRAYS:
+            setattr(self, name, np.asarray(getattr(self, name), dtype=float))
+        if self.model is not None:
+            self.model = (self.coef_, self.intercept_, self.mean_, self.std_)

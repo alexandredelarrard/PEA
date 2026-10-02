@@ -31,8 +31,10 @@ training and prediction are separate DAG tasks on different cadences.
 from __future__ import annotations
 
 import gc
+import platform
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from importlib.metadata import version
 
 import numpy as np
 import pandas as pd
@@ -390,6 +392,7 @@ class StepLongShort(Step):
             ),
             "full_history": bool(full_history),
             "train_ic_ir": {int(h): (float(cvs[h].ic["ic_ir"]) if np.isfinite(cvs[h].ic["ic_ir"]) else 0.0) for h in models},
+            "library_versions": {"python": platform.python_version(), "lightgbm": version("lightgbm"), "numpy": version("numpy")},
         }
         write_metadata(directory, meta)
         self._log.info("Saved %d horizons x %d members + metadata.json to %s", len(models), len(self.families), directory)

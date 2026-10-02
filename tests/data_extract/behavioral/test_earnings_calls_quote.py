@@ -31,7 +31,7 @@ from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE,
 
 def _ctx(tickers, tmp_path) -> Any:
     store = FakeStore({"sp500_tickers": pd.DataFrame({"ticker": list(tickers)})})
-    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # `run_manifest.manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     return types.SimpleNamespace(
         store=store,

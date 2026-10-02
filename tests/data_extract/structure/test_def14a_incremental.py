@@ -26,6 +26,7 @@ from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date, _subje
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from tests.data_extract.fake_context import extract_config
 
@@ -243,7 +244,7 @@ def test_provider_failure_is_retried_through_real_daily_manifest_gates(tmp_path,
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
     assert not context.store.exists(Tables.def14a_llm), "day-D provider failure must not create a parent"
 
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday)
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
 
     assert listed_since[-1] == yesterday - pd.Timedelta(days=1)
@@ -267,7 +268,7 @@ def test_legacy_empty_parent_is_repaired_through_real_daily_manifest_gates(tmp_p
         Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
         yesterday,
     )
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday)
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
 
     listed_since: list[pd.Timestamp | None] = []
     tasked: list[str] = []
@@ -299,7 +300,7 @@ def test_valid_parent_is_relisted_but_not_reextracted_next_day(tmp_path, monkeyp
     accession = "daily-valid-parent"
     yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
     _save_parent(context, accession, Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8)), yesterday)
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=1, is_full_rescan=True, run_date=yesterday)
+    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=1, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
 
     listed_since: list[pd.Timestamp | None] = []
     tasked: list[str] = []
@@ -543,7 +544,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
     # inside the (default 30-day) self-heal window, so `manifest_window` must return
     # the narrow cutoff, not the full-rescan fallback.
     last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True, run_date=last_run)
+    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True, run_date=last_run, tickers=["ZZ"])
 
     listed_since = []
 
@@ -623,3 +624,59 @@ def test_flatten_surfaces_the_auditor_block():
     print("  auditor_name='Ernst & Young LLP', since=1934, fees=12,000,000 split 9.0M/1.0M/1.5M/0.5M, prior=11,000,000; absent -> null.")
     print("  n_technology_directors / pct_technology_directors / technology_committee are")
     print("  absent from the flatten -- they were an opinion, not an extraction. Validated.")
+
+
+def _stub_proxy_listing(monkeypatch, mod, listed: dict[str, Any]) -> None:
+    """Record each ticker's listing `since` (None = the whole `years_history` window); no proxy is listed."""
+
+    def _list(context, ticker, cik, company, years, since, cutovers):
+        del context, cik, company, years, cutovers
+        listed[ticker] = since
+        return pd.DataFrame()
+
+    monkeypatch.setattr(mod, "_list_across_registrants", _list)
+    monkeypatch.setattr(mod, "load_registrants", lambda config_dir: {})
+
+
+def test_same_size_universe_swap_lists_the_new_ticker_over_the_full_window(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
+    record_run(context, Tables.def14a_llm, ticker_count=2, rows_added=0, is_full_rescan=True, run_date=last_run, tickers=["AA", "BB"])
+    listed: dict[str, Any] = {}
+    _stub_proxy_listing(monkeypatch, mod, listed)
+    monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "company_name": ["A", "C"]}))
+
+    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
+
+    assert listed["CC"] is None, listed
+    print("\n=== SANITY: DEF 14A same-size universe swap ===")
+    print(f"  AA/BB -> AA/CC: CC listed with since={listed['CC']} (the whole 15y window), not the last run date {last_run.date()}. Validated.")
+
+
+def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    context.config = extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}, gpt={"threads": 7})
+    built: list[int] = []
+
+    class _RecordingExtractor(LLMExtractor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self.threads)
+
+        def run_extraction(self, tasks, flatten=None, group_key=None):
+            return []
+
+    _stub_proxy_listing(monkeypatch, mod, {})
+    monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "company_name": ["Z"]}))
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    assert built == [7]
+    print("\n=== SANITY: DEF 14A LLM workers ===")
+    print(f"  no `workers` passed -> the extractor ran {built[0]}-wide, i.e. config.gpt.threads (7 in this test config). Validated.")

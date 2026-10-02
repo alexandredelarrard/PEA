@@ -299,7 +299,6 @@ def _resume_plan(
     context: Context,
     entry: dict,
     tickers: list[str],
-    n_tickers: int,
     fallback_since: pd.Timestamp,
     *,
     full: bool,
@@ -315,7 +314,7 @@ def _resume_plan(
         since, is_full_rescan = manifest_window(
             context,
             Tables.fundamentals_employees,
-            n_tickers,
+            tickers,
             fallback_since=fallback_since,
             full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
         )
@@ -370,7 +369,7 @@ def fetch_fundamentals_employees(
     fallback_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     entry = get_entry(context, Tables.fundamentals_employees) or {}
     scope, scope_fingerprints, changed_scopes = load_edgar_scope(context, cik_map, entry, identity_aware=True)
-    plan = _resume_plan(context, entry, tickers, len(cik_map), fallback_since, full=full)
+    plan = _resume_plan(context, entry, tickers, fallback_since, full=full)
     context.log.info(
         "fundamentals employees resume: %d accession(s) and %d stored filing date(s) skipped",
         len(plan.done_accessions),
@@ -427,4 +426,5 @@ def fetch_fundamentals_employees(
         is_full_rescan=plan.is_full_rescan,
         coverage_complete=True,
         identity_scope_fingerprints=scope_fingerprints,
+        tickers=tickers,
     )

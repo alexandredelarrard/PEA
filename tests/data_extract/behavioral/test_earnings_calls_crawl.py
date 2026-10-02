@@ -32,7 +32,7 @@ def _page(items) -> str:
 
 def _fake_ctx(tickers, tmp_path) -> Any:
     store = types.SimpleNamespace(load=lambda table, columns=None: pd.DataFrame({"ticker": list(tickers)}))
-    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # `run_manifest.manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     return types.SimpleNamespace(
         store=store,

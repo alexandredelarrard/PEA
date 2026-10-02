@@ -53,7 +53,7 @@ def _ctx(tmp_path, existing_keys) -> Any:
         ]
     )
     store = FakeStore({"earnings_call_sections": existing} if existing_keys else {})
-    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # `run_manifest.manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     return types.SimpleNamespace(
         store=store,

@@ -240,10 +240,9 @@ def _resolve_window(
     since, is_full_rescan = manifest_window(
         context,
         fetch.tables[0],
-        len(cik_map),
+        cik_map["ticker"].astype(str).tolist(),
         fallback_since=fallback_since,
         full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
-        tickers=cik_map["ticker"],
     )
     return RunWindow(since, fallback_since, is_full_rescan)
 

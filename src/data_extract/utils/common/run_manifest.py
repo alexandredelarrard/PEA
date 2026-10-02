@@ -10,7 +10,7 @@ uses across the fetchers the five `step_extract_*` sub-steps call:
      from DB state (per-ticker max date, or bulk-period/accession dedup), which
      stays authoritative and is NOT replaced by this file. `fetch_13f` belongs
      here despite being an EDGAR filing-lister: it is all-filers, so
-     `manifest_window`'s `ticker_count` trigger means nothing to it, and a full
+     `manifest_window`'s ticker-membership trigger means nothing to it, and a full
      rescan would be ~528k filings (~16h). It resumes from the table's
      max(filing_date) minus its own bounded `lookback_days` instead.
   2. WINDOW CONTROL (the EDGAR filing-listing fetchers only: 13D, 8-K, DEF 14A
@@ -34,7 +34,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+import os
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -47,12 +48,13 @@ from src.data_store.schema import Table, name_of
 logger = logging.getLogger(__name__)
 
 
-def _manifest_path(context: Context) -> Path:
+def manifest_path(context: Context) -> Path:
+    """The manifest JSON file under the data store directory."""
     return Path(context.paths["DATA_STORE"]) / Path(context.config.local.filename.extraction)
 
 
 def _load_manifest(context: Context) -> dict:
-    path = _manifest_path(context)
+    path = manifest_path(context)
     if not path.exists():
         return {}
     try:
@@ -60,6 +62,15 @@ def _load_manifest(context: Context) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("extraction_manifest.json unreadable at %s -- starting fresh", path)
         return {}
+
+
+def _save_manifest(context: Context, manifest: dict) -> None:
+    """Write `manifest` atomically: a temp file in the same directory, then `os.replace`, so a crash
+    mid-write leaves the previous manifest intact instead of a truncated file."""
+    path = manifest_path(context)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def get_entry(context: Context, table: Table | str) -> dict | None:
@@ -108,29 +119,28 @@ def record_filing_outcomes(
     )
     entry["updated_at"] = datetime.now(UTC).isoformat()
     manifest[name] = entry
-    _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _save_manifest(context, manifest)
 
 
 def manifest_window(
     context: Context,
     table: Table | str,
-    ticker_count: int,
+    tickers: Sequence[str],
+    *,
     fallback_since: pd.Timestamp,
     full_rescan_days: int,
-    tickers: Iterable[str] | None = None,
 ) -> tuple[pd.Timestamp, bool]:
     """The `since` cutoff an EDGAR filing-lister should use, and whether this run
     counts as a full rescan (pass straight through to `record_run`).
 
     Falls back to `fallback_since` (the fetcher's usual years-history window) --
-    marking `is_full_rescan=True` -- when there is no recorded run yet, the
-    ticker universe membership changed since that run, or the last full rescan is
-    `>= full_rescan_days` old. Otherwise returns the entry's `last_run_date`
-    (inclusive) with `is_full_rescan=False`."""
+    marking `is_full_rescan=True` -- when there is no recorded run yet, the set of
+    `tickers` differs from the one `record_run` stored (a same-size swap included),
+    or the last full rescan is `>= full_rescan_days` old. Otherwise returns the
+    entry's `last_run_date` (inclusive) with `is_full_rescan=False`."""
 
     entry = get_entry(context, table)
-    expected = sorted({str(ticker) for ticker in tickers}) if tickers is not None else None
-    if not entry or entry.get("ticker_count") != ticker_count or (expected is not None and entry.get("tickers") != expected):
+    if not entry or entry.get("tickers") != sorted({str(ticker) for ticker in tickers}):
         return fallback_since, True
 
     last_full = entry.get("last_full_rescan_date")
@@ -195,7 +205,7 @@ def record_run(
         ]
         entry["updated_at"] = datetime.now(UTC).isoformat()
         manifest[name] = entry
-        _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        _save_manifest(context, manifest)
         return
 
     last_full_rescan_date = run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date")) else prior["last_full_rescan_date"]
@@ -215,4 +225,4 @@ def record_run(
     if tickers is not None:
         entry["tickers"] = sorted({str(ticker) for ticker in tickers})
     manifest[name] = entry
-    _manifest_path(context).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _save_manifest(context, manifest)

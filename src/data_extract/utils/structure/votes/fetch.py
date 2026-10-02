@@ -107,13 +107,6 @@ _ITEM = "5.07"
 #: read would pull every item code's narrative to select 3.4% of them.
 _SOURCE_COLS = ("ticker", "cik", "accession_number", "form", "filing_date", "period_of_report", "is_amendment", "item_text")
 
-#: Concurrent LLM calls, for the same measured reason as the DEF 14A path: the work is pure
-#: network wait on an API that accepts parallel requests, and a serial universe run is not
-#: finishable. An Item 5.07 narrative is far smaller than a proxy (the longest in the
-#: 333-filing baseline is 17,032 chars), so the per-call latency is lower -- but there are
-#: 6,657 of them. `config.gpt.threads` is the live knob; this is the no-config fallback.
-_LLM_WORKERS = 12
-
 
 def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
     """One answer -> the `sec_8k_votes` rows that survive the fabrication guard.
@@ -150,7 +143,7 @@ def fetch_8k_votes_llm(
     model: str | None = None,
     max_chars: int | None = None,
     cache: bool | None = None,
-    workers: int = _LLM_WORKERS,
+    workers: int | None = None,
 ) -> None:
     """Build/refresh `sec_8k_votes` from the stored Item 5.07 narratives, ticker by ticker.
 
@@ -163,8 +156,8 @@ def fetch_8k_votes_llm(
     longest Item 5.07 narrative in the 333-filing baseline is 17,032 chars, so 40k
     truncates nothing while keeping a runaway `item_text` from turning into a runaway bill.
 
-    `model` / `cache` default to `config.gpt`; pass an explicit keyword to pin one for
-    research without touching config.
+    `model` / `cache` default to `config.gpt`, and `workers` (concurrent LLM calls) to
+    `config.gpt.threads`; pass an explicit keyword to pin one for research without touching config.
     """
     config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars, cache=cache)
     if not context.store.exists(Tables.sec_8k):

@@ -27,6 +27,9 @@ from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Tables
 
+#: Item 402(v) (Pay versus Performance) covers fiscal years ending on or after this date, so no proxy filed earlier carries ECD facts.
+_PVP_EFFECTIVE = pd.Timestamp("2022-12-16")
+
 _MAIN_COLS = [
     "ticker",
     "cik",
@@ -124,4 +127,5 @@ DEF14A_EDGAR_FETCH = EdgarFetch(
     desc="DEF 14A (ECD XBRL)",
     tables=(Tables.def14a_edgar,),
     build=partial(build_filing_rows, forms=DEF14A_FORMS, table=Tables.def14a_edgar, columns=_MAIN_COLS, row_fn=_filing_row, numeric=_NUMERIC_COLS),
+    minimum_since=_PVP_EFFECTIVE,
 )

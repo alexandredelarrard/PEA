@@ -14,7 +14,9 @@ import src.data_extract.utils.common.edgar_driver as driver
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError
 from src.data_extract.utils.common.registrant import Combine, combine_for
+from src.data_extract.utils.common.run_manifest import record_run
 from src.gpt_extract.utils.schemas_gpt import LlmResult
+from tests.data_extract.fake_context import extract_config
 
 
 class Filing:
@@ -131,7 +133,7 @@ def test_incremental_reads_stored_dates_when_manifest_lacks_outcomes(monkeypatch
         ),
     )
     monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2026-09-30"), False))
-    plan = mod._resume_plan(context, {"coverage_complete": True}, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
+    plan = mod._resume_plan(context, {"coverage_complete": True}, ["AAA"], pd.Timestamp("2000-01-01"), full=False)
     assert calls == [
         (
             mod.Tables.fundamentals_employees,
@@ -149,12 +151,34 @@ def test_incremental_reads_stored_dates_when_manifest_lacks_outcomes(monkeypatch
         "coverage_complete": True,
         "filing_outcomes": [{"ticker": "AAA", "accession_number": "stored", "status": "saved", "model": "regex", "filing_date": "2024-03-01"}],
     }
-    plan = mod._resume_plan(context, old_model, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
+    plan = mod._resume_plan(context, old_model, ["AAA"], pd.Timestamp("2000-01-01"), full=False)
     assert plan.done_accessions == frozenset({"stored"})
     assert plan.skip_dates["AAA"] == frozenset()
     print(
         "\nSANITY: stored dates skip without a manifest; a prior accession skips across model changes while a new same-day amendment stays eligible."
     )
+
+
+def test_same_size_universe_swap_gives_the_new_ticker_the_full_window(tmp_path) -> None:
+    context = SimpleNamespace(
+        paths={"DATA_STORE": tmp_path},
+        store=SimpleNamespace(load=lambda table, **kwargs: None),
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
+    )
+    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=5)
+    record_run(
+        context, mod.Tables.fundamentals_employees, 2, 0, is_full_rescan=True, run_date=last_run, coverage_complete=True, tickers=["AAA", "BBB"]
+    )
+    entry = {"coverage_complete": True}
+    fallback = pd.Timestamp("2000-01-01")
+
+    swapped = mod._resume_plan(context, entry, ["AAA", "CCC"], fallback, full=False)
+    same = mod._resume_plan(context, entry, ["BBB", "AAA"], fallback, full=False)
+
+    assert (swapped.since, swapped.is_full_rescan) == (fallback, True)
+    assert (same.since, same.is_full_rescan) == (last_run, False)
+    print("\n=== SANITY: employees resume window keyed on the ticker list ===")
+    print(f"  AAA/BBB -> AAA/CCC: since={swapped.since.date()} (full); same set: since={same.since.date()} (narrow). Validated.")
 
 
 def test_source_guard_rejects_bounds_and_unsupported_claims():

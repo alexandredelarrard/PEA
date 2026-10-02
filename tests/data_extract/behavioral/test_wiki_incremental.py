@@ -29,7 +29,7 @@ def test_wiki_incremental_reads_last_date_per_ticker(tmp_path, monkeypatch):
     existing = pd.DataFrame({"date": [aaa_last, bbb_last], "ticker": ["AAA", "BBB"], "pageviews": [100.0, 200.0]})
 
     store = FakeStore({"sp500_tickers": names, "wiki_pageviews": existing})
-    # `run_manifest._manifest_path` reads `config.local.filename.extraction`
+    # `run_manifest.manifest_path` reads `config.local.filename.extraction`
     # (value from configs/paths.yml), so the double has to carry it.
     ctx: Any = types.SimpleNamespace(
         store=store,

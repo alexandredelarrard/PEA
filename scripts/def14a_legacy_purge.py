@@ -55,7 +55,7 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.run_manifest import _manifest_path
+from src.data_extract.utils.common.run_manifest import manifest_path
 from src.data_store.schema import Tables
 
 #: The 12 columns the refactored flatten added. A row carrying ANY of them was written by the
@@ -170,7 +170,7 @@ def clear_manifest_entry(context, out_dir: Path) -> None:
     branch -- the same state a first-ever run sees. The file is copied into the snapshot
     directory first; it is the only part of this operation that touches `data/`.
     """
-    path = _manifest_path(context)
+    path = manifest_path(context)
     if not path.exists():
         print("  manifest absent -- nothing to clear (already means 'full rescan')")
         return

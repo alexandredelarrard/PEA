@@ -23,7 +23,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope
+from src.data_extract.utils.common import edgar_driver
+from src.data_extract.utils.common.edgar_driver import EdgarScope, run_edgar_fetch
+from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.structure import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a.ecd import (
     _CATEGORY_AXIS,
     _PEO_MEMBER,
@@ -35,6 +38,7 @@ from src.data_extract.utils.structure.def14a.ecd import (
 )
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_store.schema import Tables
+from tests.data_extract.fake_context import extract_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -275,6 +279,34 @@ def test_company_name_falls_back_to_the_filing_index(monkeypatch):
     assert df["company_name"].iloc[0] == "THE BOEING COMPANY"
     print("\n=== SANITY: company_name fallback ===")
     print(f"  dei tag removed from the frame -> company_name={df['company_name'].iloc[0]!r} from the filing index.")
+
+
+def test_ecd_run_never_parses_a_proxy_filed_before_item_402v(tmp_path, sqlite_store, monkeypatch):
+    """A cold `run_edgar_fetch` lists the whole `years_history` window, floored at the 402(v) start."""
+    sqlite_store.save(
+        Tables.sp500_tickers, pd.DataFrame({col: ["12927" if col == "cik" else f"{col}-BA"] for col in CIK_MAPPING_COLS} | {"ticker": ["BA"]})
+    )
+    context = SimpleNamespace(
+        store=sqlite_store,
+        paths={"DATA_STORE": tmp_path},
+        log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
+        ensure_edgar_identity=lambda: None,
+        config_dir=tmp_path,
+    )
+    scope = SimpleNamespace(ticker="BA", roster_cik="0000012927", ciks=("0000012927",), symbols=("BA",), aliases=())
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
+    monkeypatch.setattr(edgar_driver, "load_registrants", lambda _config_dir: {})
+    filings = [_fake_filing(accession="0001-2021", filing_date="2021-03-10"), _fake_filing(accession="0001-2024", filing_date="2024-03-08")]
+    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
+    parsed: list[str] = []
+    monkeypatch.setattr(fetch_def14a_edgar, "ecd_facts", lambda filing: parsed.append(filing.accession_number))
+
+    run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH)
+
+    assert parsed == ["0001-2024"]
+    print("\n=== SANITY: ECD listing floor ===")
+    print(f"  31y window offered a 2021 and a 2024 proxy -> parsed {parsed}; the pre-2022-12-16 proxy is never read. Validated.")
 
 
 def test_the_retired_html_columns_are_gone():

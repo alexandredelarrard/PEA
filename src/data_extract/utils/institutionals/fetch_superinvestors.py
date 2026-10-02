@@ -30,7 +30,10 @@ import json
 import logging
 import re
 import warnings
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -41,6 +44,7 @@ from urllib3.exceptions import InsecureRequestWarning
 
 from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
+from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -101,83 +105,44 @@ RESOLUTION_EDGAR = "edgar"
 RESOLUTION_OVERRIDE = "override"
 RESOLUTION_UNRESOLVED = "unresolved"
 
-# Dataroma code -> 13F-manager CIK, for the names EDGAR company search gets wrong or
-# cannot see. Most failures are mutual-fund SHARE CLASSES whose 13F filer is the ADVISER,
-# not the fund, so `_fund_part` hands EDGAR a fund name that never filed a 13F-HR:
-# re-querying on the adviser name resolves them. Naive auto-resolution gets only 12 of the
-# 23 managers Dataroma has dropped since 2013 (52%), and misses 16 more that are on the
-# roster today.
-#
-# ⚠ AMBIGUITY IS SETTLED BY 13F ROW COUNT IN `sec13f_hr`, never by name alone. `lmvtx` had
-# 2 candidates (14,379 rows vs 809), `oakvx` 3 (1,233 vs 1 vs 1), `FPACX`/`FPPTX` 3 (2,271
-# vs 0 vs 0) and `pzfvx` 2 (2,789 vs 0). A name match that filed nothing is not the manager
-# -- the retired JSON picked First Pacific Advisors INC (0 rows) over the LLC that actually
-# files, so FPA contributed nothing to the elite features.
-SUPERINVESTOR_CIK_OVERRIDES: dict[str, str] = {
-    "BRK": "0001067983",  # Berkshire Hathaway  (Warren Buffett)
-    "HA": "0000827280",
-    "VAN": "0000858172",
-    "RC": "0001570775",
-    "DAC": "0000200217",
-    "PI": "0001549574",
-    "MPF": "0000932223",
-    "DAV": "0000200305",
-    "T": "0001002778",
-    "OA": "0000885665",
-    # --- managers dropped from the roster since 2013 (verified against sec13f_hr) --- #
-    "HRSVX": "0000937394",  # Heartland Advisors                1,600 rows / 51q
-    "TVAFX": "0001145020",  # Thornburg Investment Mgmt         2,820 rows / 51q
-    "YAFFX": "0000905567",  # Yacktman Asset Management         1,826 rows / 51q
-    "cfimx": "0001036325",  # Davis Selected Advisers           3,149 rows / 51q
-    "lmvtx": "0001348883",  # ClearBridge / Legg Mason Capital 14,379 rows / 51q
-    "oakvx": "0001085256",  # RS Investment Management          1,233 rows / 13q (ends 2016-06)
-    "DJCO": "0000783412",  # Daily Journal Corp                  147 rows / 49q
-    "t2": "0001327388",  # T2 Partners Management, LP
-    "FEVAX": "0001325447",  # First Eagle -- on today's roster too: a DEDUP, not a new manager
-    # --- share classes whose ADVISER is the filer (all 13 snapshots, still on the roster) --- #
-    "ARFFX": "0000936753",  # Ariel Focus Fund        -> Ariel Investments LLC        2,285 rows
-    "CAAPX": "0000936753",  # Ariel Appreciation Fund -> Ariel Investments LLC   (same adviser)
-    "FPACX": "0001377581",  # FPA Crescent Fund       -> First Pacific Advisors LLC   2,271 rows
-    "FPPTX": "0001377581",  # FPA Queens Road         -> First Pacific Advisors LLC (same adviser)
-    "LLPFX": "0000807985",  # Longleaf Partners       -> Southeastern Asset Mgmt        363 rows
-    "MPGFX": "0001070134",  # Mairs & Power Growth    -> Mairs & Power Inc            5,912 rows
-    "MVALX": "0001483859",  # Meridian Contrarian     -> ArrowMark Colorado Holdings  3,159 rows
-    "TWEBX": "0000732905",  # Tweedy Browne Value     -> Tweedy, Browne Co LLC        1,211 rows
-    "WVALX": "0000883965",  # Weitz Large Cap Equity  -> Weitz Investment Mgmt        1,283 rows
-    "hcmax": "0001314620",  # Hillman Value Fund      -> Hillman Capital Management     953 rows
-    "oaklx": "0000813917",  # Oakmark Select          -> Harris Associates L P        3,692 rows
-    "pzfvx": "0001027796",  # Hancock Classic Value   -> Pzena Investment Mgmt        2,789 rows
-    # --- operating companies / advisers EDGAR only matches on a shorter name --- #
-    "CAS": "0001697591",  # CAS Investment Partners, LLC                              46 rows
-    "FFH": "0000915191",  # Fairfax Financial Holdings Ltd/CAN                        512 rows
-    "MAVFX": "0001016287",  # Matrix Asset Advisors Inc/NY                            2,728 rows
-    "SA": "0001115373",  # Semper Augustus Investments Group LLC                     881 rows
-    "oa": "0000885665",  # Leon Cooperman - Omega Advisors. The LOWER-case twin of "OA":
-    # Dataroma now serves the code as `oa` and the name as the bare
-    # person ("Leon Cooperman"), whose `_fund_part` is not a filer.
-}
+# Hand resolutions (code -> CIK overrides and the recorded-unresolvable codes with their
+# reasons) live in configs/sec/superinvestor_overrides.json.
+OVERRIDES_CONFIG_SUBDIR = "sec"
+OVERRIDES_CONFIG_FILENAME = "superinvestor_overrides.json"
 
-# The managers that are genuinely unresolvable, each with the reason. A row is still
-# written (cik NULL, resolution='unresolved') so they stay visible and auditable: dropping
-# them would shrink the eligible pool silently, which is the survivorship bug this table
-# exists to remove, reintroduced through the back door. Any code that fails to resolve and
-# is NOT listed here raises -- an unresolved manager must never pass quietly.
-#
-# Both entries are unresolvable for the SAME measured reason, and it is not a lookup failure:
-# `SEC_EDGAR_COMPANY_SEARCH_URL` filters on `type=13F-HR`, so a company that never filed one
-# returns an empty feed (HTTP 200, zero `<company-info>` blocks). Neither entity has a 13F
-# filer identity at all, so no CIK would let them contribute to a 13F feature.
-SUPERINVESTOR_UNRESOLVABLE: dict[str, str] = {
-    "CMAFX": "Century Management / CM Advisers -- empty 13F-HR feed under 'Century "
-    "Management Advisers', 'Century Management' and 'CM Advisers': never filed a "
-    "13F-HR. On the roster 2013-2017.",
-    "LUK": "Leucadia National, which became Jefferies Financial Group -- empty 13F-HR feed "
-    "under both names: never filed a 13F-HR. On the roster 2013-2023.",
-}
+
+@dataclass(frozen=True)
+class SuperinvestorOverrides:
+    """`cik_by_code` wins over any stored or EDGAR resolution; `unresolvable` names the codes
+    allowed to stay NULL, each with its reason."""
+
+    cik_by_code: dict[str, str]
+    unresolvable: dict[str, str]
 
 
 class SuperinvestorResolutionError(RuntimeError):
     """A roster manager resolved to no CIK and is not a recorded exception."""
+
+
+def load_superinvestor_overrides(config_dir: str | None = None) -> SuperinvestorOverrides:
+    """The superinvestor hand resolutions, cached per config DIRECTORY rather than per
+    spelling of it -- see `resolve_config_dir`."""
+    return _overrides_at(resolve_config_dir(config_dir))
+
+
+@cache
+def _overrides_at(config_dir: str) -> SuperinvestorOverrides:
+    """`load_superinvestor_overrides`, keyed on a resolved absolute path. Raises when a CIK is
+    blank or a code is both overridden and recorded unresolvable."""
+    path = Path(config_dir) / OVERRIDES_CONFIG_SUBDIR / OVERRIDES_CONFIG_FILENAME
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    cik_by_code = {code: pad_cik(entry["cik"]) for code, entry in blob["cik_overrides"].items()}
+    unresolvable = {code: str(reason) for code, reason in blob["unresolvable"].items()}
+    blank = sorted(code for code, cik in cik_by_code.items() if not cik)
+    both = sorted(set(cik_by_code) & set(unresolvable))
+    if blank or both:
+        raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}")
+    return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable)
 
 
 # --------------------------------------------------------------------------- #
@@ -287,21 +252,22 @@ def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver) 
     return rows
 
 
-def assert_fully_resolved(rows: list[dict]) -> list[str]:
-    """RAISE unless every unresolved code is a recorded exception; return those codes.
+def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> list[str]:
+    """RAISE unless every unresolved code is in `unresolvable`; return those codes.
 
     The gate D22 asks for: 100% resolution, or every exception named with its reason. An
     unresolved manager silently falls out of the eligible pool, so this fails loudly."""
     unresolved = sorted({r["dataroma_code"] for r in rows if r["resolution"] == RESOLUTION_UNRESOLVED})
-    unexpected = [c for c in unresolved if c not in SUPERINVESTOR_UNRESOLVABLE]
+    unexpected = [c for c in unresolved if c not in unresolvable]
     if unexpected:
         names = {r["dataroma_code"]: r["manager_name"] for r in rows}
         raise SuperinvestorResolutionError(
             f"{len(unexpected)} roster manager(s) resolved to no CIK and are not recorded "
             "exceptions: "
             + ", ".join(f'"{c}" ({names[c]})' for c in unexpected)
-            + ". Add the code -> CIK to SUPERINVESTOR_CIK_OVERRIDES, or record it in "
-            "SUPERINVESTOR_UNRESOLVABLE with the reason it cannot be resolved."
+            + f". Add the code -> CIK under `cik_overrides` in {OVERRIDES_CONFIG_SUBDIR}/"
+            f"{OVERRIDES_CONFIG_FILENAME}, or record it under `unresolvable` with the reason "
+            "it cannot be resolved."
         )
     return unresolved
 
@@ -328,7 +294,21 @@ def _http_get(url: str) -> requests.Response:
 # --------------------------------------------------------------------------- #
 # Resolution                                                                    #
 # --------------------------------------------------------------------------- #
-def _make_resolver(get_fn, name_history: dict[str, list[str]] | None = None, known: dict[str, tuple[str, str]] | None = None):
+def _edgar_resolution(candidates: list[str], get_fn) -> tuple[str | None, str]:
+    """The first candidate name EDGAR resolves, as `(cik, RESOLUTION_EDGAR)`; unresolved otherwise."""
+    for candidate in candidates:
+        cik, _filer = _edgar_cik_for_name(candidate, get_fn=get_fn)
+        if cik:
+            return cik, RESOLUTION_EDGAR
+    return None, RESOLUTION_UNRESOLVED
+
+
+def _make_resolver(
+    get_fn,
+    cik_overrides: Mapping[str, str],
+    name_history: dict[str, list[str]] | None = None,
+    known: dict[str, tuple[str, str]] | None = None,
+):
     """`(code, name) -> (cik | None, resolution)`, memoised PER CODE.
 
     Memoised because the seed replays 879 manager-rows over 104 distinct codes: resolving
@@ -336,7 +316,7 @@ def _make_resolver(get_fn, name_history: dict[str, list[str]] | None = None, kno
     the name -- is the manager's identity across snapshots.
 
     Three sources, in precedence order, so a resolution never silently regresses:
-      1. `SUPERINVESTOR_CIK_OVERRIDES` -- a hand mapping always wins, which is what lets an
+      1. `cik_overrides` -- a hand mapping always wins, which is what lets an
          operator CORRECT a CIK the table already holds.
       2. `known` -- `{code: (cik, resolution)}` already stored for that code. Resolution is
          STICKY: Dataroma rewrites its display names constantly (52 of 104 codes were
@@ -344,24 +324,19 @@ def _make_resolver(get_fn, name_history: dict[str, list[str]] | None = None, kno
          we have already identified back into an unresolved one.
       3. EDGAR, on the name in hand and then on the earlier names in `name_history`
          (NEWEST FIRST)."""
-    cache: dict[str, tuple[str | None, str]] = {}
+    resolved_by_code: dict[str, tuple[str | None, str]] = {}
 
     def resolve(code: str, name: str) -> tuple[str | None, str]:
-        if code in cache:
-            return cache[code]
-        if code in SUPERINVESTOR_CIK_OVERRIDES:
-            out = (pad_cik(SUPERINVESTOR_CIK_OVERRIDES[code]), RESOLUTION_OVERRIDE)
+        if code in resolved_by_code:
+            return resolved_by_code[code]
+        if code in cik_overrides:
+            out = (cik_overrides[code], RESOLUTION_OVERRIDE)
         elif known and code in known:
             out = known[code]
         else:
-            out = (None, RESOLUTION_UNRESOLVED)
-            candidates = [name] + [n for n in (name_history or {}).get(code, []) if n != name]
-            for candidate in candidates:
-                cik, _filer = _edgar_cik_for_name(candidate, get_fn=get_fn)
-                if cik:
-                    out = (cik, RESOLUTION_EDGAR)
-                    break
-        cache[code] = out
+            earlier_names = [n for n in (name_history or {}).get(code, []) if n != name]
+            out = _edgar_resolution([name, *earlier_names], get_fn)
+        resolved_by_code[code] = out
         return out
 
     return resolve
@@ -387,15 +362,15 @@ def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], d
     return known, names
 
 
-def _write(context: Context, rows: list[dict]) -> pd.DataFrame:
+def _write(context: Context, rows: list[dict], unresolvable: Mapping[str, str]) -> pd.DataFrame:
     """Upsert the rows and report the resolution split. Returns the written frame."""
     df = pd.DataFrame(rows)
-    unresolved = assert_fully_resolved(rows)
+    unresolved = assert_fully_resolved(rows, unresolvable)
     if unresolved:
         logger.warning(
             "Superinvestor roster: %d recorded-unresolvable manager(s) kept with a NULL cik -- %s",
             len(unresolved),
-            "; ".join(f"{c}: {SUPERINVESTOR_UNRESOLVABLE[c]}" for c in unresolved),
+            "; ".join(f"{c}: {unresolvable[c]}" for c in unresolved),
         )
     context.store.save(Tables.superinvestor_roster, df)
     logger.info(
@@ -436,12 +411,13 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
     )
 
     known, _ = _stored_resolutions(context)
-    resolver = _make_resolver(get_fn, name_history, known)
+    overrides = load_superinvestor_overrides(str(context.config_dir))
+    resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known)
     rows: list[dict] = []
     for year in sorted(history):
         roster = [{"code": c, "name": n} for c, n in history[year].items()]
         rows += snapshot_rows(roster, date(int(year), 1, 1), _WAYBACK_URL.format(year=year), resolver)
-    return _write(context, rows)
+    return _write(context, rows, overrides.unresolvable)
 
 
 def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
@@ -456,5 +432,7 @@ def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
     known, past_names = _stored_resolutions(context)
-    rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, _make_resolver(get_fn, past_names, known))
-    return _write(context, rows)
+    overrides = load_superinvestor_overrides(str(context.config_dir))
+    resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
+    rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver)
+    return _write(context, rows, overrides.unresolvable)

@@ -5,8 +5,7 @@ Where a config directory resolves to, for every `@cache`d loader in `data_extrac
 
 Lives in `common/` because the registrant register is a cross-cutting concern -- tiers A, B
 and C all read it -- and `common/` is the lowest layer, so a loader there cannot reach up
-into `fundamentals/` for a path helper without inverting the dependency. `kpi_catalogue`
-re-exports the name so its dozen existing importers are unaffected.
+into `fundamentals/` for a path helper without inverting the dependency.
 """
 
 from __future__ import annotations

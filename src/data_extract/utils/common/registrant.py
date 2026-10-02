@@ -132,14 +132,6 @@ class Registrant:
     kind: str
     segments: tuple[Segment, ...]
 
-    def segment_for(self, date) -> Segment:
-        """The registrant that owned `date`. Total by construction -- the chain is contiguous
-        and open at both ends -- so a miss is a loader bug, not a data condition."""
-        for segment in self.segments:
-            if segment.covers(date):
-                return segment
-        raise ValueError(f"registrant[{self.ticker}]: no segment covers {date} -- the chain is not contiguous, which the loader should have caught")
-
     def all_ciks(self) -> tuple[str, ...]:
         """Every CIK in the chain, oldest first. This is the UNION set for event forms."""
         return tuple(s.cik for s in self.segments)

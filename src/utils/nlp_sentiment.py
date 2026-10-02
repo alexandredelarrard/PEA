@@ -55,7 +55,7 @@ def ml_stack_available() -> bool:
 # The default HuggingFace downloader uses OpenSSL, which on OpenSSL 3.x REJECTS some
 # corporate MITM-proxy CAs ("Basic Constraints of CA cert not marked critical"), so the
 # model can't be fetched behind the proxy. curl_cffi impersonates a real Chrome TLS
-# handshake (BoringSSL) — the repo's proven proxy workaround (see Google Trends) — and
+# handshake (BoringSSL) — the repo's proven proxy workaround — and
 # mirrors the model files locally so transformers can then load them OFFLINE.
 _MODEL_META_FILES = ("config.json", "vocab.txt", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
 _MODEL_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")

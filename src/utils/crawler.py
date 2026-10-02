@@ -1,8 +1,8 @@
 """
 crawler.py  (src/utils/crawler.py)
 ----------------------------------
-A clean, fast, low-footprint HTTP crawler for rate-limited public endpoints (Google Trends, Motley
-Fool, Wikimedia, ...). Same ETHOS as `polite_http`: cooperate with rate limits and keep a minimal
+A clean, fast, low-footprint HTTP crawler for rate-limited public endpoints (Motley Fool,
+Wikimedia, ...). Same ETHOS as `polite_http`: cooperate with rate limits and keep a minimal
 fingerprint. For IP rotation it uses ONLY proxies YOU supply and are authorized to use
 (`PEA_SCRAPE_PROXIES`); it does NOT fetch, scrape or bundle anonymous / residential proxy pools and
 does NOT solve CAPTCHAs — that is ban-evasion, not crawling hygiene (and it's brittle).

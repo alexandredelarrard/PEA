@@ -28,10 +28,19 @@ from src.data_extract.utils.common.registrant import (
     REGISTRANT_CONFIG_FILENAME,
     REGISTRANT_CONFIG_SUBDIR,
     RENAME_KIND,
+    Registrant,
+    Segment,
     load_registrants,
 )
 
 CONFIG_DIR = "./configs"
+
+
+def _segment_for(reg: Registrant, date: object) -> Segment:
+    """The one segment of `reg` covering `date`; fails the test when zero or several do."""
+    covering = [segment for segment in reg.segments if segment.covers(date)]
+    assert len(covering) == 1, f"{reg.ticker}: {len(covering)} segments cover {date}"
+    return covering[0]
 
 
 def _write(tmp_path: Path, blob: dict) -> str:
@@ -129,7 +138,7 @@ def test_a_single_segment_is_rejected(tmp_path):
 
 def test_the_open_ends_must_stay_open(tmp_path):
     """The oldest segment omits `valid_from` and the newest omits `valid_to`, so every date
-    in history lands in exactly one segment and `segment_for` is total. Closing an end would
+    in history lands in exactly one segment and `_segment_for` is total. Closing an end would
     make some dates belong to no registrant at all."""
     closed_old = {"X": _entry(_seg("1", valid_from="1990-01-01", valid_to="2020-01-01"), _seg("2", valid_from="2020-01-01"))}
     with pytest.raises(ValueError, match="must omit `valid_from`"):
@@ -158,18 +167,18 @@ def test_one_cik_cannot_be_claimed_by_two_tickers(tmp_path):
 # The schema's behaviour                                                       #
 # --------------------------------------------------------------------------- #
 def test_the_boundary_is_strictly_before_and_on_or_after(tmp_path):
-    """`segment_for` is the whole contract in one line: the boundary date belongs to the
+    """`_segment_for` is the whole contract in one line: the boundary date belongs to the
     SUCCESSOR. That is what makes two adjacent segments disjoint by construction rather than
     by de-duplication, and it is the same convention the dated split has always used."""
     blob = {"X": _entry(_seg("1", valid_to="2020-01-01"), _seg("2", valid_from="2020-01-01"))}
     reg = load_registrants(_write(tmp_path, blob))["X"]
     boundary = pd.Timestamp("2020-01-01")
-    assert reg.segment_for(boundary - pd.Timedelta(days=1)).cik == "0000000001"
-    assert reg.segment_for(boundary).cik == "0000000002"
-    assert reg.segment_for(boundary - pd.Timedelta(seconds=1)).cik == "0000000001"
+    assert _segment_for(reg, boundary - pd.Timedelta(days=1)).cik == "0000000001"
+    assert _segment_for(reg, boundary).cik == "0000000002"
+    assert _segment_for(reg, boundary - pd.Timedelta(seconds=1)).cik == "0000000001"
     print("\n=== SANITY CHECK: the boundary date belongs to the successor ===")
-    print(f"  2019-12-31 -> {reg.segment_for(boundary - pd.Timedelta(days=1)).cik}")
-    print(f"  2020-01-01 -> {reg.segment_for(boundary).cik}")
+    print(f"  2019-12-31 -> {_segment_for(reg, boundary - pd.Timedelta(days=1)).cik}")
+    print(f"  2020-01-01 -> {_segment_for(reg, boundary).cik}")
     print("  OK: strictly-before / on-or-after, to the second.")
 
 
@@ -189,9 +198,9 @@ def test_a_five_segment_chain_round_trips(tmp_path):
     reg = load_registrants(_write(tmp_path, blob))["CHAIN"]
     assert reg.all_ciks() == ("0000000001", "0000000002", "0000000003", "0000000004", "0000000005")
     assert len(reg.boundaries) == 4
-    assert reg.segment_for("1995-06-01").cik == "0000000001"
-    assert reg.segment_for("2010-06-01").cik == "0000000003"
-    assert reg.segment_for("2026-01-01").cik == "0000000005"
+    assert _segment_for(reg, "1995-06-01").cik == "0000000001"
+    assert _segment_for(reg, "2010-06-01").cik == "0000000003"
+    assert _segment_for(reg, "2026-01-01").cik == "0000000005"
     print("\n=== SANITY CHECK: a 5-segment chain ===")
     print(f"  ciks {reg.all_ciks()}")
     print(f"  boundaries {[str(b.date()) for b in reg.boundaries]}")
@@ -199,7 +208,7 @@ def test_a_five_segment_chain_round_trips(tmp_path):
 
 
 def test_every_date_lands_in_exactly_one_segment(tmp_path):
-    """`segment_for` is total AND unambiguous -- the property contiguity plus open ends buys,
+    """`_segment_for` is total AND unambiguous -- the property contiguity plus open ends buys,
     asserted directly rather than inferred from the two rules that produce it."""
     blob = {
         "CHAIN": _entry(

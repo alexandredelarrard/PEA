@@ -597,7 +597,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
@@ -696,7 +696,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])

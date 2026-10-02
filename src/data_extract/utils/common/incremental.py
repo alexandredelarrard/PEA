@@ -4,15 +4,12 @@ incremental.py  (src/data_extract/utils/common/incremental.py)
 Resume helpers shared by the per-entity fetchers -- the "what do we already have?"
 read that every incremental fetcher does before it spends a request.
 
-`load_existing` replaces five byte-identical private copies, which differed only in
-the table name;
-
 `stored_values` answers "which keys are already stored" (accessions, bulk periods) across one or
 more tables with `SELECT DISTINCT`; `matches_stored` tells a full re-derivation that its frame
 equals the stored table, so the replace can be skipped.
 
 `resume_since` generalizes the per-ticker `groupby(...)[date_col].max()` idiom that
-several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already
+several fetchers (dividends, earnings surprises, filing text) already
 duplicate ad hoc: the oldest per-ticker last-extracted date across a batch, so a
 caller can re-fetch every ticker forward from ONE shared date and let the upsert
 no-op whichever tickers were already current. It resolves that date with a single
@@ -39,22 +36,7 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Table
 
-__all__ = ["load_existing", "matches_stored", "resume_since", "stored_values"]
-
-
-def load_existing(context: Context, table: Table | str, date_col: str | None = "date") -> pd.DataFrame | None:
-    """A fetcher's already-stored rows, or None when there is nothing to resume from.
-
-    None (not an empty frame) is the contract the callers rely on to branch between
-    "full history" and "incremental". `date_col` is normalised to midnight so date
-    comparisons against freshly fetched rows are exact; pass `date_col=None` for a
-    table keyed by something else (employees_history is keyed by filing date)."""
-    df = context.store.load(table, optional=True)
-    if df is None:
-        return None
-    if date_col is not None and date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col]).dt.normalize()
-    return df
+__all__ = ["matches_stored", "resume_since", "stored_values"]
 
 
 def stored_values(context: Context, tables: Table | str | Sequence[Table | str], column: str) -> frozenset[str]:

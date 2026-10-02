@@ -7,7 +7,7 @@ On a managed / corporate network, outbound HTTPS is intercepted by a proxy that
 re-signs traffic with a corporate root CA. That CA lives in the OS trust store
 (installed by IT) but Python's HTTP libs default to the `certifi` bundle, which
 does NOT contain it -> `curl: (60) SSL certificate problem: unable to get local
-issuer certificate` from curl_cffi (yfinance / Google Trends), and the equivalent
+issuer certificate` from curl_cffi (yfinance), and the equivalent
 from requests (SEC / FRED / Wikipedia / Dataroma) and httpx (OpenAI).
 
 `configure_corporate_ca()` builds a COMBINED bundle = certifi + the OS trust store

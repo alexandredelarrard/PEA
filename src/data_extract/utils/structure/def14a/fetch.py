@@ -419,7 +419,7 @@ def fetch_def14a_llm(
 
     total_new, total_semantic_empty = 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
-        ticker, cik, company = str(r["ticker"]), str(r["cik"]), str(r.get("company_name", ""))
+        ticker, cik, company = str(r["ticker"]), str(r["cik"]), str(r.get("name", ""))
         try:
             filings = _list_across_registrants(context, ticker, cik, company, years, list_since, cutovers)
         except Exception as e:

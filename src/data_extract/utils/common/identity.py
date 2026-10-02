@@ -550,7 +550,6 @@ def build_identity(
     roster: pd.DataFrame,
     d19_allowlist: Mapping[str, str] | None = None,
     redundant_symbols: frozenset[str] | None = None,
-    today=None,
 ) -> Identity:
     """Validate both tables and return the frozen resolver. Pure -- no DB, no config reads.
 
@@ -578,7 +577,7 @@ def build_identity(
         ciks_by_entity=ciks_by_entity,
         scope_pairs_by_entity=scope_pairs_by_entity,
     )
-    _check_d19(identity, allowlist, today)
+    _check_d19(identity, allowlist)
     _log_identity(identity)
     return identity
 
@@ -735,7 +734,7 @@ def _log_identity(identity: Identity) -> None:
     )
 
 
-def _check_d19(identity: Identity, allowlist: Mapping[str, str], today=None) -> None:
+def _check_d19(identity: Identity, allowlist: Mapping[str, str]) -> None:
     """D19: the roster CIK must name the same entity `symbol_tenure` does.
 
     Two independent sources for one fact, so a disagreement is information. The allow-list is

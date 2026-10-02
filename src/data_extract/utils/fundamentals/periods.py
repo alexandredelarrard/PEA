@@ -54,7 +54,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec, resolve_config_dir
+from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, FieldSpec
 from src.utils.config import read_config
 
 

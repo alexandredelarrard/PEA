@@ -219,7 +219,7 @@ def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, l
         return filing.copy()
 
     monkeypatch.setattr(mod, "LLMExtractor", extractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "company_name": "Example Corp"}]))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "name": "Example Corp"}]))
     monkeypatch.setattr(mod, "load_registrants", lambda config_dir: {})
     monkeypatch.setattr(mod, "_list_across_registrants", _list)
     monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
@@ -407,7 +407,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
     monkeypatch.setattr(mod, "_is_up_to_date", lambda *_: False)
     monkeypatch.setattr(
-        mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "company_name": "Paramount Skydance Corp"}])
+        mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
     )
     monkeypatch.setattr(mod, "_list_across_registrants", lambda *_: filing)
     monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
@@ -494,7 +494,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
     mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
@@ -564,7 +564,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
     mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
@@ -647,7 +647,7 @@ def test_same_size_universe_swap_lists_the_new_ticker_over_the_full_window(tmp_p
     listed: dict[str, Any] = {}
     _stub_proxy_listing(monkeypatch, mod, listed)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "company_name": ["A", "C"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
 
@@ -673,7 +673,7 @@ def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
 
     _stub_proxy_listing(monkeypatch, mod, {})
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "company_name": ["Z"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
 

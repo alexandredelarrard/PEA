@@ -185,9 +185,9 @@ def test_no_prompt_literals_remain_in_data_extract():
     """The mechanical check for 'prompts live in `.md`'.
 
     Scoped to MODULE-LEVEL constants bound directly to a string, which is exactly the shape
-    the retired `_DEF14A_PROMPT` / `_VOTES_PROMPT` had. Field descriptions, CLI help and
-    `form_registry` notes are keyword arguments and a compiled regex is a `Call`, so none of
-    them is caught -- those are contracts and documentation, not prose for a model.
+    the retired `_DEF14A_PROMPT` / `_VOTES_PROMPT` had. Field descriptions and CLI help are
+    keyword arguments and a compiled regex is a `Call`, so none of them is caught -- those are
+    contracts and documentation, not prose for a model.
     """
     import ast
 

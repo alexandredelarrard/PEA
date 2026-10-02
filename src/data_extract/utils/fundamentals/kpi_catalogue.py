@@ -56,9 +56,6 @@ from src.data_extract.utils.common.config_paths import resolve_config_dir
 # `DEFAULT_CONFIG_DIR` re-exported (not re-declared): `field_map.py`, `gap_check.py`,
 # `merge_history.py` and `periods.py` all import it from this module rather than from
 # `constants` directly -- one declaration in `constants.py`, one import path here.
-# `resolve_config_dir` is re-exported for the same reason, but it now LIVES in
-# `common/config_paths.py`: the registrant register is read by tiers A, B and C, and a
-# loader in `common/` cannot import from `fundamentals/` without inverting the layering.
 
 #: Keys whose leading underscore marks them as documentation, not data. The JSONs carry
 #: their own rationale inline (a `_README` block, `_authority` notes) so the contract and

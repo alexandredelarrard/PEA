@@ -283,7 +283,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         return n_ok, len(results) - n_ok
 
     for _, r in cik_map.iterrows():
-        ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+        ticker, cik, company = r["ticker"], r["cik"], r.get("name", "")
         want = set(work.loc[work["ticker"] == ticker, "accession_number"])
         if not want:
             continue

@@ -80,12 +80,12 @@ from src.constants.constants import (
     SHARADAR_ZERO_FILLED_FIELDS,
     SHARADAR_ZERO_RULES_FILENAME,
 )
+from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     DEFAULT_CONFIG_DIR,
     HISTORY_STATEMENT_ORDER,
     Catalogue,
     load_catalogue,
-    resolve_config_dir,
 )
 
 log = logging.getLogger(__name__)

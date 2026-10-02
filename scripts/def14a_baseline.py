@@ -161,7 +161,7 @@ def cache_filings(context, tickers: list[str], years: int, out_dir: Path) -> pd.
     for _, r in cik_map.iterrows():
         ticker, cik = r["ticker"], r["cik"]
         try:
-            filings = list_filings(context, cik, DEF14A_FORMS, years, r.get("company_name", ""))
+            filings = list_filings(context, cik, DEF14A_FORMS, years, r.get("name", ""))
         except Exception as e:  # a dead CIK must not stop the snapshot
             print(f"  ! {ticker}: filing list failed ({e})")
             continue

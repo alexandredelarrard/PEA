@@ -9,7 +9,7 @@ only when empty) — and hands it to each sub-step:
   2. institutionals  — 13F, superinvestors, insiders, 13D, 8-K, short interest, FTD
   3. fundamentals    — fundamentals (Sharadar then SEC), earnings surprises
   4. structure       — DEF 14A governance, filing text, shareholder votes
-  5. behavioral      — Wikipedia pageviews (+Google Trends, news)
+  5. behavioral      — earnings-call transcripts
 
 ⚠ institutionals runs BEFORE structure: structure's `fetch_8k_votes_llm` parses the `sec_8k`
 Item 5.07 narratives that institutionals stores, so the other order leaves the vote parser

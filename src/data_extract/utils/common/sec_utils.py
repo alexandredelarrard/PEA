@@ -60,8 +60,7 @@ CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector", "industr
 
 def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.DataFrame:
     """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers, filtered
-    server-side to `tickers` when given. `company_name` is aliased from `name` for
-    callers that log it.
+    server-side to `tickers` when given.
 
     Single source of truth is `sp500_tickers` (built by fetch_prices), which already
     carries `cik` alongside `name` / `sector` / `industry_group` / `sub_industry`.
@@ -73,8 +72,6 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
     assert df is not None
 
     df["cik"] = pad_cik_series(df["cik"])  # SEC URLs need the 10-digit zero-padded CIK
-    if "company_name" not in df.columns and "name" in df.columns:
-        df["company_name"] = df["name"]
     return df
 
 

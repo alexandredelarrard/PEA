@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import zipfile
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -43,6 +42,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 
@@ -259,21 +259,15 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
     Aggregating inside the loop rather than concatenating 4.3M raw rows keeps the whole
     derivation inside a few hundred MB.
     """
-    try:
-        archive = zipfile.ZipFile(path)
-    except zipfile.BadZipFile:
-        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is absent from the derivation", path.name)
+    tables = read_zip_tables(path, {SUBMISSION_MEMBER: ZipRead(usecols=_WANTED_COLUMNS, upper=True)}, on_corrupt="skip", log=logger)
+    if tables is None:
         drops["corrupt_zip"] += 1
         return None
-    with archive:
-        names = {n.upper(): n for n in archive.namelist()}
-        if SUBMISSION_MEMBER not in names:
-            logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name, SUBMISSION_MEMBER)
-            drops["no_submission_member"] += 1
-            return None
-        with archive.open(names[SUBMISSION_MEMBER]) as handle:
-            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in _WANTED_COLUMNS)
-    raw.columns = [str(c).upper() for c in raw.columns]
+    if not tables:
+        logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name, SUBMISSION_MEMBER)
+        drops["no_submission_member"] += 1
+        return None
+    raw = tables[SUBMISSION_MEMBER]
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
         logger.warning("symbol_tenure: %s lacks %s -> SKIPPED", path.name, sorted(missing))

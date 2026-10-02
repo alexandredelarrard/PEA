@@ -7,6 +7,9 @@ read that every incremental fetcher does before it spends a request.
 `load_existing` replaces five byte-identical private copies, which differed only in
 the table name;
 
+`stored_values` answers "which keys are already stored" (accessions, bulk periods) across one or
+more tables with `SELECT DISTINCT`.
+
 `resume_since` generalizes the per-ticker `groupby(...)[date_col].max()` idiom that
 several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already
 duplicate ad hoc: the oldest per-ticker last-extracted date across a batch, so a
@@ -28,12 +31,14 @@ meta), so merging them would invent an abstraction that does not exist.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Table
 
-__all__ = ["load_existing", "resume_since"]
+__all__ = ["load_existing", "resume_since", "stored_values"]
 
 
 def load_existing(context: Context, table: Table | str, date_col: str | None = "date") -> pd.DataFrame | None:
@@ -49,6 +54,19 @@ def load_existing(context: Context, table: Table | str, date_col: str | None = "
     if date_col is not None and date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col]).dt.normalize()
     return df
+
+
+def stored_values(context: Context, tables: Table | str | Sequence[Table | str], column: str) -> frozenset[str]:
+    """Distinct non-null `column` values already stored across `tables`, as strings.
+
+    A table that is absent or lacks `column` contributes nothing, so a first run starts empty.
+    """
+    names = [tables] if isinstance(tables, Table | str) else tables
+    values: set[str] = set()
+    for table in names:
+        if column in context.store.columns(table):
+            values.update(str(value) for value in context.store.distinct(table, column))
+    return frozenset(values)
 
 
 def resume_since(

@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import logging
-import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +52,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
@@ -72,6 +72,8 @@ MANUAL_CONFIG_FILENAME = "entity_lineage_manual.json"
 
 #: The Form 345 zip member naming each filing's reporting owners.
 OWNER_MEMBER = "REPORTINGOWNER.TSV"
+_SUBMISSION_READ = {SUBMISSION_MEMBER: ZipRead(usecols=frozenset({"ACCESSION_NUMBER", "ISSUERCIK"}), upper=True)}
+_OWNER_READ = {OWNER_MEMBER: ZipRead(usecols=frozenset({"ACCESSION_NUMBER", "RPTOWNERCIK"}), upper=True)}
 
 #: Oracle 3's rule, verbatim from the research that hand-labelled 63 groups and got 55 right:
 #:   shared == 0                              -> UNRELATED, no lineage row
@@ -229,6 +231,28 @@ def load_manual_lineage(config_dir: str | None = None) -> dict[str, dict]:
 # --------------------------------------------------------------------------- #
 # Oracle 3 -- reporting-owner overlap, from the same cached zips               #
 # --------------------------------------------------------------------------- #
+def _owner_rows(path: Path, ciks: frozenset[str]) -> pd.DataFrame | None:
+    """(ISSUER, RPTOWNERCIK) rows of one Form 345 zip for filings by `ciks`; None when the zip is
+    corrupt (skipped), lacks a member, or has no such filing."""
+    subs = read_zip_tables(path, _SUBMISSION_READ, on_corrupt="skip", log=logger)
+    if not subs:
+        return None
+    sub = subs[SUBMISSION_MEMBER]
+    sub["ISSUERCIK"] = sub["ISSUERCIK"].astype("string").str.strip().str.zfill(10)
+    sub = sub[sub["ISSUERCIK"].isin(ciks)]
+    if sub.empty:
+        return None
+    issuer_of = dict(zip(sub["ACCESSION_NUMBER"].astype(str), sub["ISSUERCIK"], strict=False))
+    owns = read_zip_tables(path, _OWNER_READ, on_corrupt="skip", log=logger)
+    if not owns:
+        return None
+    own = owns[OWNER_MEMBER]
+    own["ISSUER"] = own["ACCESSION_NUMBER"].astype(str).map(issuer_of)
+    own = own.dropna(subset=["ISSUER", "RPTOWNERCIK"])
+    own["RPTOWNERCIK"] = own["RPTOWNERCIK"].astype("string").str.strip().str.zfill(10)
+    return own
+
+
 def derive_owner_sets(cache: Path, ciks: frozenset[str]) -> dict[str, set[str]]:
     """`{issuer_cik: {reporting owner CIKs}}` for `ciks` only, from the cached Form 345 zips.
 
@@ -240,36 +264,12 @@ def derive_owner_sets(cache: Path, ciks: frozenset[str]) -> dict[str, set[str]]:
     zips = sorted(p for p in cache.glob("*.zip") if _quarter_of(p) is not None)
     read = 0
     for path in zips:
-        try:
-            archive = zipfile.ZipFile(path)
-        except zipfile.BadZipFile:
-            logger.warning("entity_lineage: %s is a corrupt zip -> SKIPPED", path.name)
+        own = _owner_rows(path, ciks)
+        if own is None:
             continue
-        with archive:
-            names = {n.upper(): n for n in archive.namelist()}
-            if SUBMISSION_MEMBER not in names or OWNER_MEMBER not in names:
-                continue
-            with archive.open(names[SUBMISSION_MEMBER]) as handle:
-                sub = pd.read_csv(
-                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "ISSUERCIK"}
-                )
-            sub.columns = [str(c).upper() for c in sub.columns]
-            sub["ISSUERCIK"] = sub["ISSUERCIK"].astype("string").str.strip().str.zfill(10)
-            sub = sub[sub["ISSUERCIK"].isin(ciks)]
-            if sub.empty:
-                continue
-            issuer_of = dict(zip(sub["ACCESSION_NUMBER"].astype(str), sub["ISSUERCIK"], strict=False))
-            with archive.open(names[OWNER_MEMBER]) as handle:
-                own = pd.read_csv(
-                    handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in {"ACCESSION_NUMBER", "RPTOWNERCIK"}
-                )
-            own.columns = [str(c).upper() for c in own.columns]
-            own["ISSUER"] = own["ACCESSION_NUMBER"].astype(str).map(issuer_of)
-            own = own.dropna(subset=["ISSUER", "RPTOWNERCIK"])
-            own["RPTOWNERCIK"] = own["RPTOWNERCIK"].astype("string").str.strip().str.zfill(10)
-            for issuer, grp in own.groupby("ISSUER", sort=False):
-                owners[str(issuer)].update(grp["RPTOWNERCIK"].astype(str))
-            read += len(own)
+        for issuer, grp in own.groupby("ISSUER", sort=False):
+            owners[str(issuer)].update(grp["RPTOWNERCIK"].astype(str))
+        read += len(own)
     logger.info(
         "entity_lineage: owner sets for %d CIK(s) from %d quarter(s) (%d owner rows matched); %d CIK(s) have no Form 345 owner at all",
         len(ciks),

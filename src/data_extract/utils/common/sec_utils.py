@@ -11,19 +11,15 @@ limit), while the network transfer happens outside the lock so downloads from a
 ThreadPoolExecutor overlap. This is what lets the EDGAR fetchers parallelize.
 """
 
-import json
 import threading
 import time
-from collections.abc import Collection
-from datetime import UTC, datetime
-from pathlib import Path
 
 import pandas as pd
 import requests
 
 from src.context import Context
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 
 _MIN_INTERVAL = 0.11  # ~9 req/sec, safely under SEC's 10/sec limit
@@ -53,52 +49,6 @@ def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
     resp = context.sec_session.get(url, **kwargs)
     resp.raise_for_status()
     return resp
-
-
-# --------------------------------------------------------------------------- #
-# Incremental-extraction helpers                                              #
-# --------------------------------------------------------------------------- #
-def today_iso() -> str:
-    return datetime.now(UTC).date().isoformat()
-
-
-def existing_filings(context: Context, table) -> frozenset[str]:
-    """Accession numbers already stored in a filing table -- the dedup set every
-    per-filing fetcher (13D, 8-K, DEF 14A, filing text) uses to skip a filing it has
-    already extracted. Empty when the table does not exist yet, so a first run
-    fetches full history.
-
-    Deliberately accession-only, NOT a per-ticker max-filing-date cutoff: that was
-    tried and reverted, because it never re-checks a date range already scanned --
-    a filing missed by a prior bug, or one that posts to EDGAR out of date order,
-    stays missing forever. Each run lists a ticker's whole window and relies solely
-    on this set to avoid re-work."""
-    return frozenset(str(a) for a in context.store.distinct(table, "accession_number"))
-
-
-def bulk_ingested_quarters(store, table: Table | str) -> set[str]:
-    """Distinct source-zip `quarter` tags already stored in a bulk table -> the
-    set of quarters an incremental re-run can SKIP (a past quarter's data set is
-    final once the quarter ends). Empty when the table doesn't exist yet."""
-    return {str(q) for q in store.distinct(table, "quarter")}
-
-
-def load_processed_universe(cache_dir: Path, table: Table | str) -> set[str]:
-    """The ticker universe a bulk table was last built against (sidecar JSON). Used
-    to decide whether cached zips must be re-parsed to back-fill NEW tickers.
-    Comparing to the processed set (not to the tickers that happened to file) is
-    what makes the re-parse converge instead of firing every run."""
-    p = cache_dir / f"{table}_universe.json"
-    if not p.exists():
-        return set()
-    try:
-        return set(json.loads(p.read_text(encoding="utf-8")).get("universe", []))
-    except Exception:
-        return set()
-
-
-def save_processed_universe(cache_dir: Path, table: Table | str, universe: Collection[str]) -> None:
-    (cache_dir / f"{table}_universe.json").write_text(json.dumps({"universe": sorted(universe), "saved": today_iso()}), encoding="utf-8")
 
 
 #: The `sp500_tickers` projection every SEC fetcher resolves its universe through. Module-level

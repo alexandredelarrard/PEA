@@ -16,14 +16,13 @@ uses across the fetchers the five `step_extract_*` sub-steps call:
   2. WINDOW CONTROL (the EDGAR filing-listing fetchers only: 13D, 8-K, DEF 14A
      edgar + LLM, fundamentals edgartools): these list each ticker's FULL
      `years_history` window every run and rely solely on post-hoc accession
-     dedup (see `sec_utils.existing_filings`'s docstring). `manifest_window`
+     dedup (`incremental.stored_values` on `accession_number`). `manifest_window`
      gives them a narrower `since` cutoff (the last run's date, inclusive)
      instead of the fixed multi-year window.
 
-     Bounded, not unconditional: `sec_utils.existing_filings` documents that an
-     earlier version of these fetchers tried a permanent per-ticker cutoff and
-     reverted it -- a filing missed by a bug, or one EDGAR posts out of date
-     order, would stay missing forever once the window stops looking behind it.
+     Bounded, not unconditional: with a permanent per-ticker cutoff a filing
+     missed by a bug, or one EDGAR posts out of date order, would stay missing
+     forever once the window stops looking behind it.
      `manifest_window` therefore also forces a full-window relist (self-heal)
      whenever the table's exact ticker membership changed (a new ticker needs its own full
      history) or `full_rescan_days` have elapsed since the last full relist --

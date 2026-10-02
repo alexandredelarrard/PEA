@@ -7,7 +7,7 @@ It runs the four DDL/DML statements the plan specifies, in the order the plan sp
 nothing else. It does NOT run the backfill — that is the CLI's job afterwards, so a cutover
 and a 15,000-call refetch can never be one irreversible action.
 
-Why truncate-and-rebuild rather than a migration: `existing_filings` dedups on accession, so
+Why truncate-and-rebuild rather than a migration: `stored_values` dedups on accession, so
 an incremental run after a parser change skips every filing it already has. There is no way to
 re-extract in place.
 

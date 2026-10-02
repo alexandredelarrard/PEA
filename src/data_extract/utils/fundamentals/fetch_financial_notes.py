@@ -44,8 +44,8 @@ from __future__ import annotations
 
 import logging
 import re
-import zipfile
-from datetime import date, datetime, timedelta
+from datetime import date
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -53,22 +53,31 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
+    ZipRead,
+    archive_available_at,
     cache_dir,
     ensure_zip,
-    ingested_periods,
+    is_cached,
+    mark_processed,
+    pending_periods,
+    period_end,
+    quarter_periods,
+    read_zip_tables,
+    stored_period_clock,
 )
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping, load_processed_universe, save_processed_universe
-from src.data_extract.utils.common.sessions import MARKET_TZ
-from src.data_store.schema import Tables
+from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
+from src.data_store.schema import Table, Tables
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 500_000
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
-# First archive period whose availability is observed from our download, not estimated.
-_OBSERVED_FROM_MONTH = (2026, 9)
+# Archives covering September 2026 onward carry an observed availability clock, older ones an estimate.
+_OBSERVED_FROM = date(2026, 9, 1)
+_NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 
 # Curated footnote NUMERIC pension tags (undimensioned totals). Superset of the
 # balance-sheet net-liability tags in pension_facts — adds the footnote detail
@@ -117,10 +126,10 @@ _NOTES_TEXT_TAGS = frozenset(
     }
 )
 
-_NUM_USECOLS = {"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnote", "value"}
-_TXT_USECOLS = {"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"}
-_NUM_PK = ["adsh", "tag", "ddate", "qtrs"]
-_TXT_PK = ["adsh", "tag", "ddate", "qtrs"]
+_SUB_USECOLS = frozenset({"adsh", "cik", "form", "fy", "fp", "filed"})
+_NUM_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnote", "value"})
+_TXT_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"})
+_FACT_PK = ["adsh", "tag", "ddate", "qtrs"]
 _NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
 _TXT_OUT = [
     "cik",
@@ -172,15 +181,9 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
     the last 14 months as monthly. 404s are skipped by the downloader, so
     over-generating the recent edge is harmless."""
     today = (today or pd.Timestamp.today()).normalize()
-    start_year = max(SEC_FINNOTES_FIRST_YEAR, today.year - years_history)
-    out: list[str] = []
-    for y in range(start_year, today.year + 1):
-        out += [f"{y}q{q}" for q in range(1, 5)]
-    m = today.replace(day=1)
-    for _ in range(14):
-        out.append(f"{m.year}_{m.month:02d}")
-        m = (m - pd.Timedelta(days=1)).replace(day=1)
-    return sorted(set(out))
+    quarterly = quarter_periods(years_history, SEC_FINNOTES_FIRST_YEAR, today)
+    monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(end=today, periods=14, freq="M")]
+    return sorted(set(quarterly + monthly))
 
 
 def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -258,54 +261,10 @@ def _join_notes_text(txt: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # IO: cache/download + incremental state                                        #
 # --------------------------------------------------------------------------- #
-def _archive_end_month(period: str) -> tuple[int, int]:
-    """Return the calendar month covered by a monthly or quarterly notes ZIP."""
-    return int(period[:4]), int(period[-2:]) if "_" in period else int(period[-1]) * 3
-
-
-def _historical_archive(period: str) -> bool:
-    return _archive_end_month(period) < _OBSERVED_FROM_MONTH
-
-
-def _resolve_archive_available_at(period: str, path: Path) -> date | None:
-    """Estimate historical availability; use the cached download date from September 2026 onward."""
-    if _historical_archive(period):
-        year, month = _archive_end_month(period)
-        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-        twelfth = date(year, month, 12)
-        # ponytail: Historical release dates are estimated; archived ZIP versions are needed for strict PIT proof.
-        return twelfth + timedelta(days=7 - twelfth.weekday() if twelfth.weekday() >= 5 else 0)
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TZ).date()
-    except OSError:
-        return None
-
-
-def _as_date(value: object) -> date | None:
-    parsed = pd.to_datetime(value, errors="coerce")
-    return None if pd.isna(parsed) else parsed.date()
-
-
-def _stored_period_available_at(context: Context, period: str) -> date | None:
-    """One immutable stored clock for a period, shared across both notes tables."""
-    values: set[date] = set()
-    for table in (Tables.notes_num, Tables.notes_text):
-        columns = set(context.store.columns(table))
-        if not {"period", "available_at"} <= columns:
-            continue
-        for value in context.store.distinct(table, "available_at", where={"period": period}):
-            parsed = _as_date(value)
-            if parsed is not None:
-                values.add(parsed)
-    if len(values) > 1:
-        raise ValueError(f"notes {period}: conflicting stored available_at values: {sorted(values)}")
-    return next(iter(values), None)
-
-
 def _periods_missing_available_at(context: Context) -> set[str]:
     """Stored archive periods with no availability clock in either destination."""
     missing: set[str] = set()
-    for table in (Tables.notes_num, Tables.notes_text):
+    for table in _NOTES_TABLES:
         columns = set(context.store.columns(table))
         if "period" not in columns:
             continue
@@ -317,7 +276,7 @@ def _periods_missing_available_at(context: Context) -> set[str]:
 def _repair_period_available_at(context: Context, period: str, available_at: date, *, overwrite: bool = False) -> int:
     """Patch clocks using only each table's PK plus available_at."""
     repaired = 0
-    for table in (Tables.notes_num, Tables.notes_text):
+    for table in _NOTES_TABLES:
         columns = set(context.store.columns(table))
         if "period" not in columns:
             continue
@@ -338,42 +297,62 @@ def _repair_period_available_at(context: Context, period: str, available_at: dat
     return repaired
 
 
-def _chunk_filter(z: zipfile.ZipFile, name: str, adsh_set: set[str], tags: frozenset[str], usecols: set[str]) -> pd.DataFrame:
-    """Stream a huge .tsv member in chunks, keeping only universe filings, curated
-    tags and undimensioned/consolidated rows (dimn==0, no coreg)."""
-    keep: list[pd.DataFrame] = []
-    with z.open(name) as fh:
-        for chunk in pd.read_csv(fh, sep="\t", dtype=str, low_memory=False, chunksize=_CHUNK, on_bad_lines="skip", usecols=lambda c: c in usecols):
-            dimn = pd.to_numeric(chunk.get("dimn", pd.Series(pd.NA, index=chunk.index)), errors="coerce")
-            coreg = chunk.get("coreg", pd.Series("", index=chunk.index)).astype("string").fillna("").str.strip()
-            m = chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
-            if m.any():
-                keep.append(chunk.loc[m])
-    return pd.concat(keep, ignore_index=True) if keep else pd.DataFrame()
+def _consolidated_rows(chunk: pd.DataFrame, adsh_set: set[str], tags: frozenset[str]) -> pd.Series:
+    """Rows of universe filings with a curated tag, undimensioned (dimn==0) and no co-registrant."""
+    dimn = pd.to_numeric(chunk.get("dimn", pd.Series(pd.NA, index=chunk.index)), errors="coerce")
+    coreg = chunk.get("coreg", pd.Series("", index=chunk.index)).astype("string").fillna("").str.strip()
+    return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
 
 
 def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """One notes zip -> (tidy num facts, tidy text) for the universe. Reads sub.tsv
-    fully (small) to resolve universe filings, then streams num/txt in chunks."""
-    try:
-        with zipfile.ZipFile(path) as z:
-            names = {n.lower(): n for n in z.namelist()}
-            if not {"sub.tsv", "num.tsv", "txt.tsv"} <= set(names):
-                return pd.DataFrame(), pd.DataFrame()
-            sub = pd.read_csv(
-                z.open(names["sub.tsv"]), sep="\t", dtype=str, low_memory=False, usecols=lambda c: c in ("adsh", "cik", "form", "fy", "fp", "filed")
-            )
-            sub_meta = _sub_meta(sub, cik2tkr, universe, registrants)
-            if sub_meta.empty:
-                return pd.DataFrame(), pd.DataFrame()
-            adsh_set = set(sub_meta["adsh"])
-            num = _chunk_filter(z, names["num.tsv"], adsh_set, _NOTES_NUM_TAGS, _NUM_USECOLS)
-            txt = _chunk_filter(z, names["txt.tsv"], adsh_set, _NOTES_TEXT_TAGS, _TXT_USECOLS)
-    except zipfile.BadZipFile:
-        logger.warning("notes %s: corrupt zip -> deleting so it re-downloads", path.name)
-        path.unlink(missing_ok=True)
-        return pd.DataFrame(), pd.DataFrame()
-    return _join_notes_num(num, sub_meta), _join_notes_text(txt, sub_meta)
+    """One notes zip -> (tidy num facts, tidy text) for the universe. sub.tsv resolves the universe
+    filings, then num/txt stream in chunks keeping their consolidated curated rows."""
+    empty = (pd.DataFrame(), pd.DataFrame())
+    subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete", log=logger)
+    if not subs:
+        return empty
+    sub_meta = _sub_meta(subs["sub.tsv"], cik2tkr, universe, registrants)
+    if sub_meta.empty:
+        return empty
+    adsh_set = set(sub_meta["adsh"])
+    specs = {
+        member: ZipRead(usecols=usecols, keep=partial(_consolidated_rows, adsh_set=adsh_set, tags=tags), chunksize=_CHUNK, skip_bad_lines=True)
+        for member, usecols, tags in (("num.tsv", _NUM_USECOLS, _NOTES_NUM_TAGS), ("txt.tsv", _TXT_USECOLS, _NOTES_TEXT_TAGS))
+    }
+    tables = read_zip_tables(path, specs, on_corrupt="delete", log=logger)
+    if not tables:
+        return empty
+    return _join_notes_num(tables["num.tsv"], sub_meta), _join_notes_text(tables["txt.tsv"], sub_meta)
+
+
+def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dict[str, date]:
+    """Stamp `available_at` on stored periods lacking it (every stored period when `overwrite`);
+    returns the clock written per period."""
+    periods = _periods_missing_available_at(context)
+    if overwrite:
+        periods |= stored_values(context, _NOTES_TABLES, "period")
+    clocks: dict[str, date] = {}
+    for period in sorted(periods):
+        end = period_end(period)
+        inferred = archive_available_at(end, cache / f"{period}_notes.zip", observed_from=_OBSERVED_FROM, downloaded=False)
+        available_at = inferred if end < _OBSERVED_FROM or overwrite else stored_period_clock(context, _NOTES_TABLES, period) or inferred
+        if available_at is None:
+            logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
+            continue
+        repaired = _repair_period_available_at(context, period, available_at, overwrite=overwrite)
+        clocks[period] = available_at
+        logger.info("notes %s: repaired available_at=%s on %d stored rows", period, available_at, repaired)
+    return clocks
+
+
+def _save_period(context: Context, table: Table, frame: pd.DataFrame, columns: list[str], period: str, available_at: date) -> int:
+    """Latest-filed row per fact, stamped with its archive period and clock, upserted to `table`."""
+    if frame.empty:
+        return 0
+    frame = frame.sort_values("filed").drop_duplicates(subset=_FACT_PK, keep="last")
+    frame["period"] = period
+    frame["available_at"] = available_at
+    return context.store.save(table, frame[[c for c in columns if c in frame.columns]])
 
 
 def fetch_financial_notes(
@@ -407,67 +386,34 @@ def fetch_financial_notes(
     registrants = load_registrants(str(context.config_dir))
     cache = cache_dir(context, context.config.local.paths.financial_notes)
 
-    done = ingested_periods(context, (Tables.notes_num, Tables.notes_text))
-    period_clocks: dict[str, date] = {}
-    repair_periods = _periods_missing_available_at(context)
-    if repair_availability:
-        repair_periods.update(done)
-    for period in sorted(repair_periods):
-        inferred = _resolve_archive_available_at(period, cache / f"{period}_notes.zip")
-        available_at = inferred if _historical_archive(period) or repair_availability else _stored_period_available_at(context, period) or inferred
-        if available_at is None:
-            logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
-            continue
-        repaired = _repair_period_available_at(context, period, available_at, overwrite=repair_availability)
-        period_clocks[period] = available_at
-        logger.info("notes %s: repaired available_at=%s on %d stored rows", period, available_at, repaired)
-
+    period_clocks = _repair_stored_clocks(context, cache, overwrite=repair_availability)
     if repair_availability:
         return 0  # Metadata-only mode: never download or reparse a ZIP.
 
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.notes_num)  # empty once converged
-    if new_tickers:
-        logger.info("notes: %d new/changed tickers -> re-parsing cached files", len(new_tickers))
-    if reparse:
-        logger.info("notes: --reparse -> re-reading every cached period (no re-download)")
-
-    n_num = n_txt = 0
     periods = _notes_periods(context, years_history + 1)
+    pending = set(pending_periods(context, cache, _NOTES_TABLES, periods, tickers, reparse=reparse))
+    n_num = n_txt = 0
     for period in tqdm(periods, desc="SEC financial-statement notes"):
-        available_at = period_clocks.get(period)
-        if period in done:
-            available_at = available_at or _stored_period_available_at(context, period)
-        if period in done and not new_tickers and not reparse:
+        # every stored period validates its immutable clock, including those skipped below
+        available_at = period_clocks.get(period) or stored_period_clock(context, _NOTES_TABLES, period)
+        if period not in pending:
             continue
 
         archive_path = cache / f"{period}_notes.zip"
-        was_cached = archive_path.exists() and archive_path.stat().st_size > 0
+        downloaded = not is_cached(archive_path)
         path = ensure_zip(context, archive_path, SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger)
         if path is None:
             continue
-
-        available_at = available_at or _stored_period_available_at(context, period)
-        if available_at is None:
-            available_at = (
-                datetime.now(MARKET_TZ).date() if not was_cached and not _historical_archive(period) else _resolve_archive_available_at(period, path)
-            )
+        available_at = available_at or archive_available_at(period_end(period), path, observed_from=_OBSERVED_FROM, downloaded=downloaded)
         if available_at is None:
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
 
         num, txt = _read_notes(path, cik2tkr, set(tickers), registrants)
-        if not num.empty:
-            num = num.sort_values("filed").drop_duplicates(subset=_NUM_PK, keep="last")
-            num["period"] = period
-            num["available_at"] = available_at
-            n_num += context.store.save(Tables.notes_num, num[[c for c in _NUM_OUT if c in num.columns]])
-        if not txt.empty:
-            txt = txt.sort_values("filed").drop_duplicates(subset=_TXT_PK, keep="last")
-            txt["period"] = period
-            txt["available_at"] = available_at
-            n_txt += context.store.save(Tables.notes_text, txt[[c for c in _TXT_OUT if c in txt.columns]])
+        n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
+        n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
 
-    save_processed_universe(cache, Tables.notes_num, tickers)  # so a converged re-run skips
+    mark_processed(cache, Tables.notes_num, tickers)
     logger.info("notes: upserted %d num + %d text rows (%d periods scanned)", n_num, n_txt, len(periods))
     record_run(context, Tables.notes_num, len(tickers), n_num)
     record_run(context, Tables.notes_text, len(tickers), n_txt)

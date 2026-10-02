@@ -5,7 +5,7 @@ Snapshot every DEF 14A table to parquet, then delete the LEGACY-vintage rows of 
 so the extraction re-runs on them. It does NOT run the extraction: a snapshot, a delete and a
 ~$200 paid run can never be one irreversible action.
 
-WHY the rows have to go rather than be re-fetched in place. `sec_utils.existing_filings` skips
+WHY the rows have to go rather than be re-fetched in place. `incremental.stored_values` skips
 any accession already stored, so a legacy row is invisible to every future run -- it can never
 be refreshed by re-running the fetcher, only by removing it first.
 

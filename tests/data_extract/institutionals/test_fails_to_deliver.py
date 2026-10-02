@@ -180,7 +180,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
         ),
     )
     cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.save_processed_universe(cache, ftd.Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    ftd.mark_processed(cache, ftd.Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
 
     # 1) stable universe -> the already-done period is skipped, only the new one is fetched
     saved = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity)
@@ -315,7 +315,7 @@ def test_ftd_resume_uses_only_stored_source_periods(sqlite_store, monkeypatch, t
         ),
     )
     cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.save_processed_universe(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    ftd.mark_processed(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
     monkeypatch.setattr(ftd, "ensure_zip", lambda *a, **k: pytest.fail("stored periods must not download"))
     monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)

@@ -22,6 +22,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_fillings import archive_url
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import (
     Registrant,
@@ -30,7 +31,7 @@ from src.data_extract.utils.common.registrant import (
     resolve_registrant_filings,
 )
 from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import existing_filings, load_cik_mapping
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
 
@@ -360,7 +361,7 @@ def run_edgar_fetch(
     if changed:
         context.log.info("%s: %d ticker identity scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
     window = _resolve_window(context, fetch, cik_map, entry, years_history, full)
-    done = existing_filings(context, fetch.tables[0])
+    done = stored_values(context, fetch.tables[0], "accession_number")
     worker = partial(_walk_ticker, context, fetch, scope, window, changed, done)
     results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
     totals, failed = _tally(results, fetch.tables)

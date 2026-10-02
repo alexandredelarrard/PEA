@@ -83,7 +83,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.sec_utils import existing_filings
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.votes.flatten import _prepare_frame, _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
@@ -169,7 +169,7 @@ def fetch_8k_votes_llm(
         context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
         return
 
-    seen = set(existing_filings(context, Tables.sec_8k_votes))
+    seen = stored_values(context, Tables.sec_8k_votes, "accession_number")
     todo = source[~source["accession_number"].isin(seen)]
     context.log.info(
         "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",

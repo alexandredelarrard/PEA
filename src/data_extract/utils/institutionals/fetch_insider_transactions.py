@@ -32,7 +32,6 @@ TODO: get it from sec instead of zips quarterly
 from __future__ import annotations
 
 import logging
-import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -47,13 +46,16 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
+    ZipRead,
     cache_dir,
     ensure_zip,
+    mark_processed,
+    pending_periods,
     quarter_periods,
+    read_zip_tables,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import bulk_ingested_quarters, load_processed_universe, save_processed_universe
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,15 @@ _OUT_COLS = [
 ]
 
 _FOOTNOTE_COLS = ["accession_number", "footnote_id", "footnote_text"]
+
+#: The five Form 345 members, in `_read_tables` order; only SUBMISSION is required.
+_ZIP_SPECS = {
+    "SUBMISSION.TSV": ZipRead(),
+    "REPORTINGOWNER.TSV": ZipRead(required=False),
+    "NONDERIV_TRANS.TSV": ZipRead(required=False),
+    "DERIV_TRANS.TSV": ZipRead(required=False),
+    "FOOTNOTES.TSV": ZipRead(required=False),
+}
 
 #: `AFF10B5ONE` is mixed-encoding across (and within) quarters. Measured 2026q1: '0' 42,435,
 #: 'false' 11,525, '1' 3,620, 'true' 1,162, NaN 10,517. Anything not in this map -- including
@@ -295,10 +306,6 @@ def _footnotes(notes: pd.DataFrame | None, keep_accessions: set[str]) -> pd.Data
 _VERDICT_COLS = ["reject_reason", "resolved_entity_id", "universe_entity_id", "screened_on"]
 _QUARANTINE_COLS = _OUT_COLS + _VERDICT_COLS
 
-#: Columns the stored-row sweep reads over the WHOLE table; the full rows of the rejects are
-#: re-read by accession afterwards. 2M rows x 5 narrow columns instead of 2M x 38.
-_SWEEP_COLS = ["accession_number", "security_type", "transaction_sk", "ticker", "issuer_cik"]
-
 
 def _verdicts(df: pd.DataFrame, universe, identity) -> pd.DataFrame:
     """Resolve every row CIK-first and attach the three verdict columns. Pure.
@@ -407,23 +414,14 @@ def _to_quarantine(rejected: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 
-def _read_tables(path: Path):
-    """SUBMISSION + REPORTINGOWNER + NONDERIV_TRANS + DERIV_TRANS + FOOTNOTES from a cached zip."""
-    try:
-        with zipfile.ZipFile(path) as z:
-            names = {n.upper(): n for n in z.namelist()}
-
-            def rd(key):
-                return pd.read_csv(z.open(names[key]), sep="\t", dtype=str, low_memory=False) if key in names else pd.DataFrame()
-
-            sub = rd("SUBMISSION.TSV")
-            if sub.empty:
-                return None
-            return (sub, rd("REPORTINGOWNER.TSV"), rd("NONDERIV_TRANS.TSV"), rd("DERIV_TRANS.TSV"), rd("FOOTNOTES.TSV"))
-    except zipfile.BadZipFile:
-        logger.warning("insider %s: corrupt zip -> deleting so it re-downloads", path.name)
-        path.unlink(missing_ok=True)
+def _read_tables(path: Path) -> tuple[pd.DataFrame, ...] | None:
+    """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS, FOOTNOTES) from a cached zip; an
+    absent optional member is an empty frame. None when SUBMISSION is absent or empty, or the zip is
+    corrupt (deleted for re-download)."""
+    tables = read_zip_tables(path, _ZIP_SPECS, on_corrupt="delete", log=logger)
+    if not tables or tables["SUBMISSION.TSV"].empty:
         return None
+    return tuple(tables.values())
 
 
 def _screen_stored_rows(context: Context, universe, identity: Identity, chunk: int = 2_000) -> tuple[int, int]:
@@ -499,27 +497,14 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
 
-    done_q = bulk_ingested_quarters(context.store, Tables.insider_transactions)
-    new_tickers = set(tickers) - load_processed_universe(cache, Tables.insider_transactions)  # empty once converged
-    if new_tickers:
-        logger.info("insider: %d new/changed tickers -> re-parsing cached quarters", len(new_tickers))
-    if reparse:
-        logger.info(
-            "insider: --reparse -> re-reading every quarter back to %dq1 (no re-download; %d already ingested)",
-            SEC_INSIDER_FIRST_YEAR,
-            len(done_q),
-        )
-
     # a reparse must reach every quarter the source has, not just the routine window -- see the
     # docstring. `quarter_periods` clamps to SEC_INSIDER_FIRST_YEAR either way.
     span = (pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
     quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR)
+    pending = pending_periods(context, cache, Tables.insider_transactions, quarters, tickers, reparse=reparse, column="quarter")
 
     saved = notes_saved = quarantined = 0
-    for q in tqdm(quarters, desc="insider data sets"):
-        if q in done_q and not new_tickers and not reparse:
-            continue  # complete quarter already ingested
-
+    for q in tqdm(pending, desc="insider data sets"):
         if int(q[:4]) >= SEC_INSIDER_SWAP_YEAR:
             url_insider = SEC_INSIDER_URL_NEW_TEMPLATE
         else:
@@ -547,7 +532,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     # The upsert above cannot REMOVE anything, so the stored rows are reconciled separately.
     swept, deleted = _screen_stored_rows(context, tickers, identity)
     quarantined += swept
-    save_processed_universe(cache, Tables.insider_transactions, tickers)  # so a converged re-run skips
+    mark_processed(cache, Tables.insider_transactions, tickers)
     logger.info(
         "insider_transactions: upserted %d rows (+%d footnotes) over %d quarters (%s -> %s); quarantined %d, deleted %d",
         saved,

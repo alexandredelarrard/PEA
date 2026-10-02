@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
+from src.data_extract.utils.common import bulk_cache
 
 # --------------------------------------------------------------------------- #
 # Synthetic in-memory notes zip                                                  #
@@ -256,7 +257,12 @@ def test_notes_periods_falls_back_to_generator(monkeypatch):
     ],
 )
 def test_historical_archive_available_at_is_next_month_twelfth_or_monday(period: str, expected: date, tmp_path: Path) -> None:
-    assert fn._resolve_archive_available_at(period, tmp_path / f"{period}_notes.zip") == expected
+    assert (
+        bulk_cache.archive_available_at(
+            bulk_cache.period_end(period), tmp_path / f"{period}_notes.zip", observed_from=fn._OBSERVED_FROM, downloaded=False
+        )
+        == expected
+    )
     print("\n=== SANITY CHECK: estimated historical notes availability ===")
     print(f"  {period} becomes available on {expected}; weekend twelfths move to Monday. Validated.")
 
@@ -267,8 +273,13 @@ def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> 
     downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
-    assert fn._resolve_archive_available_at("2026_09", path) == date(2026, 10, 15)
-    assert fn._resolve_archive_available_at("2026_09", tmp_path / "missing.zip") is None
+    assert bulk_cache.archive_available_at(bulk_cache.period_end("2026_09"), path, observed_from=fn._OBSERVED_FROM, downloaded=False) == date(
+        2026, 10, 15
+    )
+    assert (
+        bulk_cache.archive_available_at(bulk_cache.period_end("2026_09"), tmp_path / "missing.zip", observed_from=fn._OBSERVED_FROM, downloaded=False)
+        is None
+    )
     print("\n=== SANITY CHECK: observed future notes availability ===")
     print("  the first New York download date, even after the twelfth, is used; missing archives have no clock. Validated.")
 
@@ -360,12 +371,12 @@ def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
     monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
+    monkeypatch.setattr(fn, "stored_values", lambda context, tables, column: frozenset({period}))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(
         fn, "_repair_period_available_at", lambda context, period, available_at, *, overwrite: repaired.append((period, available_at, overwrite)) or 1
     )
-    monkeypatch.setattr(fn, "load_processed_universe", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
+    monkeypatch.setattr(fn, "pending_periods", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
 
     assert fn.fetch_financial_notes(context, ["AAPL"], repair_availability=True) == 0
     assert repaired == [(period, date(2021, 9, 13), True)]
@@ -384,15 +395,14 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
     monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: {period})
-    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "pending_periods", lambda *args, **kwargs: [])
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
     monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         fn,
-        "_stored_period_available_at",
-        lambda context, period: (_ for _ in ()).throw(ValueError("conflicting stored available_at values")),
+        "stored_period_clock",
+        lambda context, tables, period: (_ for _ in ()).throw(ValueError("conflicting stored available_at values")),
     )
 
     with pytest.raises(ValueError, match="conflicting stored available_at values"):
@@ -452,14 +462,13 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
     monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
-    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "pending_periods", lambda context, cache, tables, periods, scope, reparse: list(periods))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
-    monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
+    monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe, registrants: (num.copy(), txt.copy()))
-    monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fn, "mark_processed", lambda *args, **kwargs: None)
     monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
 
     assert fn.fetch_financial_notes(context, ["AAPL"]) == 2
@@ -484,7 +493,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     class Clock:
         @staticmethod
         def now(tz):
-            assert tz == fn.MARKET_TZ
+            assert tz == bulk_cache.MARKET_TZ
             return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
 
     def download(*args, **kwargs) -> Path:
@@ -509,18 +518,17 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     context = SimpleNamespace(
         store=Store(), config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused")))
     )
-    monkeypatch.setattr(fn, "datetime", Clock)
+    monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_cik_mapping", lambda context: pd.DataFrame())
     monkeypatch.setattr(fn, "cik_to_ticker", lambda mapping, config_dir: {})
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "ingested_periods", lambda context, tables: set())
-    monkeypatch.setattr(fn, "load_processed_universe", lambda cache, table: {"AAPL"})
+    monkeypatch.setattr(fn, "pending_periods", lambda context, cache, tables, periods, scope, reparse: list(periods))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
-    monkeypatch.setattr(fn, "_stored_period_available_at", lambda context, period: None)
+    monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "ensure_zip", download)
     monkeypatch.setattr(fn, "_read_notes", lambda path, cik2tkr, universe, registrants: (num.copy(), pd.DataFrame()))
-    monkeypatch.setattr(fn, "save_processed_universe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fn, "mark_processed", lambda *args, **kwargs: None)
     monkeypatch.setattr(fn, "record_run", lambda *args, **kwargs: None)
 
     assert fn.fetch_financial_notes(context, ["AAPL"]) == 1

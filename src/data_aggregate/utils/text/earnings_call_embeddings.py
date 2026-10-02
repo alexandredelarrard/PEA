@@ -1,16 +1,16 @@
 """
 earnings_call_embeddings.py  (src/data_aggregate/utils/earnings_call_embeddings.py)
 -----------------------------------------------------------------------------------
-OpenAI-embedding layer for earnings calls, on top of the parsed `earnings_call_sections`.
+OpenAI-embedding layer for earnings calls, on top of the raw paragraphs of `earnings_call_sections`.
 
 Two stages, mirroring the FinBERT sentiment pipeline:
 
   1. embed_earnings_calls(context)  — the EXPENSIVE, cached, incremental OpenAI pass. For every
-     not-yet-embedded (ticker, quarter) it splits each scored section into CLEANED SPEAKER TURNS
-     (see split_turns: real Motley-Fool "Name:" headers + legacy "Name -- Role" headers; Q&A
-     segmented by the operator hand-off lines; operator / IR-flow / pure-courtesy turns dropped;
-     greeting/thanks/congrats preambles stripped so only the meaty question / answer is embedded)
-     and embeds each turn's text, writing ONE ROW PER TURN to `earning_calls_embedding`:
+     not-yet-embedded (ticker, quarter) it reads the call's source paragraphs, splits them with
+     `src/utils/earnings_call_split.split_call` (speaker turns come from the source `speaker`
+     field, so no header is parsed; operator / IR-flow / pure-courtesy turns dropped; courtesy
+     preambles stripped) and embeds each `CallSplit.turns` text, writing ONE ROW PER TURN to
+     `earning_calls_embedding`:
          ticker, quarter, seq (turn order in the call), section (qa / prepared_remarks),
          tag (question / answer / prepared), exchange_idx (which Q&A pair; -1 for prepared),
          answer_idx (0 for the question, 1..k for the 1st..last answer turn; -1 for prepared),
@@ -18,7 +18,7 @@ Two stages, mirroring the FinBERT sentiment pipeline:
          text (the cleaned turn), as_of (the call date), embedding (the turn's OpenAI vector),
          model, run_at.
      Storing per turn keeps every question/answer embedding we pay for — auditable and reusable —
-     at NO extra API cost vs the old pooled design (same text is embedded either way). Incremental
+     at NO extra API cost vs a pooled design (same text is embedded either way). Incremental
      & per-call upsert, so an interrupted (billed) run never loses work and re-runs make ZERO calls.
 
   2. build_embedding_kpis(embeddings) — the CHEAP per-build derivation of point-in-time KPIs
@@ -33,8 +33,8 @@ Two stages, mirroring the FinBERT sentiment pipeline:
 from __future__ import annotations
 
 import datetime as dt
-import re
-from typing import cast
+from collections.abc import Iterator
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -43,321 +43,58 @@ from tqdm import tqdm
 from src.constants.constants import (
     EARNINGS_CALL_EMBEDDING_MODEL,
     EARNINGS_CALL_TAG_ANSWER,
-    EARNINGS_CALL_TAG_PREPARED,
     EARNINGS_CALL_TAG_QUESTION,
 )
 from src.context import Context
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 
 # `gpt_extract` is a shared service, like `src/utils/` -- the one sanctioned cross-import
 # between src/ subfolders. It owns the single OpenAI client factory and the measured
 # 28,000-char cap; the alternative was a second copy of both living here.
 from src.gpt_extract import cosine, embed_texts, openai_api_key
+from src.utils.earnings_call_split import CallSplit, split_call
 
 _QA_TAG, _PREP_TAG = "qa", "prepared_remarks"
 
-# ---- speaker headers ------------------------------------------------------- #
-# Real (2024+) Motley Fool transcripts head each turn with "Name:" (colon, NO role -- the analyst
-# is named in the operator's hand-off line instead); the older HuggingFace backbone uses
-# "Name -- Role -- Firm" (dash). Support BOTH so the splitter works on every source.
-_NAME = r"[A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){0,4}"
-# allow optional whitespace before the colon ("Kurt Kuehn :" as well as "Amy Hood:") -- some
-# transcripts (e.g. UPS/INTC 2009) space the colon, which otherwise hides the management answers.
-_SPEAKER_COLON = re.compile(rf"^({_NAME})\s*:\s*(.*)$")
-_SPEAKER_DASH = re.compile(rf"^\s*({_NAME})\s+--\s+.+$")
-# older transcripts head turns with "Name - Firm/Role:" (single dash + affiliation, then colon),
-# e.g. "Matthew Dodds - Citigroup:" / "Mike McMullen - CEO:", often with the whole (long) question on
-# the SAME line. Bound the AFFILIATION to <=60 chars (not the whole line) so a long inline question
-# is still recognised as a header while ordinary prose isn't.
-_SPEAKER_DASH_COLON = re.compile(rf"^({_NAME})\s+[-–—]\s+[^:]{{1,60}}:\s*(.*)$")
-_NAME_ONLY = re.compile(rf"^{_NAME}$")  # a bare name line (multi-line "Name / -- / Role" header)
-# some HF `content` runs a "Name:" speaker header onto the SAME line as the previous sentence
-# (no newline before it) -> put it back on its own line so the tokenizer sees it. Requires a
-# sentence end + a "Name: " with trailing space (a 1-word "Word:" mid-prose stays as text).
-_INLINE_HDR = re.compile(r"(?<=[.?!])[ \t]+(?=" + _NAME + r"\s*:\s)")
-_MIN_TURN = 25  # chars: ignore "thanks"/"good morning" fragments
+# ---- source paragraphs -> split calls ----------------------------------------- #
+# `earnings_call_sections` is one row per source paragraph; `content` is the bulk of the table,
+# so every text read names its columns and is scoped to one ticker (or one batch of tickers).
+PARAGRAPH_COLS = ["ticker", "quarter", "paragraph", "as_of", "speaker", "content"]
+_SPLIT_COLS = ["paragraph", "speaker", "content"]
 
 
-def _speaker(line: str) -> tuple[str, str] | None:
-    """(person, inline_text) if `line` is a speaker header, else None. The colon form keeps any
-    prose typed on the same line; a 1-word 'header' followed by prose ('Revenue: ...') is rejected
-    as an ordinary sentence, not a speaker."""
-    m = _SPEAKER_DASH.match(line)
-    if m and len(line) < 120:
-        return m.group(1).strip(), ""
-    m = _SPEAKER_DASH_COLON.match(line)  # "Name - Firm/Role:" (may carry a long inline Q)
-    if m:
-        name, inline = m.group(1).strip(), m.group(2).strip()
-        if len(name.split()) >= 2 or name.lower() == "operator":  # real names only (avoid prose)
-            return name, inline
-    m = _SPEAKER_COLON.match(line)
-    if m:
-        name, inline = m.group(1).strip(), m.group(2).strip()
-        if inline and len(name.split()) < 2 and name.lower() != "operator":
-            return None
-        if len(name) <= 40:
-            return name, inline
-    return None
+def call_keys(store: DataStore, paragraphs: pd.DataFrame | None = None) -> pd.DataFrame:
+    """(ticker, quarter) of every stored call. Read as DISTINCT quarters per ticker, never the
+    text and never one row per paragraph; sliced from `paragraphs` when a frame is supplied."""
+    if paragraphs is not None:
+        return paragraphs[["ticker", "quarter"]].drop_duplicates().reset_index(drop=True)
+    frames = [
+        pd.DataFrame({"ticker": ticker, "quarter": store.distinct(Tables.earnings_call_sections, "quarter", where={"ticker": ticker})})
+        for ticker in store.distinct(Tables.earnings_call_sections, "ticker")
+    ]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["ticker", "quarter"])
 
 
-# ---- operator / logistics turns (dropped; they delimit the Q&A exchanges) --- #
-_OPERATOR_NAME = re.compile(r"^operator$", re.I)
-# "questions" or "Q&A"/"Q and A" -- transcripts use both to name the Q&A opening
-_QN = r"(?:questions?|q\s*(?:&|and)\s*a)"
-_HANDOFF = re.compile(
-    r"\b(?:next|first|final|last|following)?\s*questions?\s+(?:comes?|is|will\s+come|will\s+be)\s+from\b"
-    r"|please\s+(?:go\s+ahead|proceed|stand\s+by)"
-    r"|press\s+(?:the\s+)?star|in\s+order\s+to\s+ask\s+a\s+question|poll\s+for\s+questions?"
-    r"|(?:open|opening)\s+(?:up\s+)?(?:the\s+)?(?:floor|line|lines|call|phone\s+lines)\b"
-    r"[^.]{0,25}?(?:for\s+)?" + _QN + r"|(?:we(?:'ll| will| are)|now|let's|i(?:'ll| will))\b[^.]{0,45}?"
-    r"(?:begin|open|take|start|move\s+to|go\s+to|turn\s+[^.]{0,20}?to)[^.]{0,30}?" + _QN + r"|question[-\s]and[-\s]answer\s+session",
-    re.I,
-)
-# IR-host flow logistics / call sign-off between or after questions -- NOT content, so dropped:
-# "Operator, next question please.", "we have time for one last question", "that wraps up the
-# Q&A ... thank you for joining us."
-_FLOW = re.compile(
-    r"operator[,.\s][^.]{0,30}?(?:next|last|final|one\s+more)\s+question"
-    r"|(?:next|last|final|one\s+more)\s+question[,.\s]*please"
-    r"|we\s+have\s+time\s+for\b[^.]{0,25}?questions?"
-    r"|that\s+(?:wraps?\s+up|concludes?|will\s+(?:wrap|conclude))\b[^.]{0,30}?"
-    r"(?:q\s*(?:&|and)\s*a|call|session|portion)"
-    r"|this\s+concludes\b|thank(?:s|\s+you)[^.]{0,20}?for\s+joining",
-    re.I,
-)
+def load_paragraphs(store: DataStore, tickers: str | list[str]) -> pd.DataFrame | None:
+    """The projected paragraph rows of `tickers`, ordered by call and paragraph; None if absent."""
+    return store.load(
+        Tables.earnings_call_sections,
+        PARAGRAPH_COLS,
+        where={"ticker": tickers},
+        order_by=["ticker", "quarter", "paragraph"],
+        optional=True,
+    )
 
 
-_LOGISTICS_MAX = 400  # hand-off / flow lines are short; longer turns are real content
-
-
-# the analyst NAME the operator announces at a hand-off ("...question comes from <Name>", "go to the
-# line of <Name>") -- the authoritative question-asker for the exchange. Phrase is case-insensitive;
-# the captured name stays case-sensitive so only a proper (capitalised) name is taken.
-_HANDOFF_NAME = re.compile(
-    r"(?i:(?:questions?|q\s*(?:&|and)\s*a)\s+(?:comes?|is|will\s+come|will\s+be)\s+from\s+"
-    r"(?:the\s+line\s+of\s+)?)(" + _NAME + r")"
-    r"|(?i:(?:go|turn|move)\s+(?:ahead\s+)?to\s+(?:the\s+)?line\s+of\s+)(" + _NAME + r")"
-)
-
-
-def _is_operator(person: str | None, text: str) -> bool:
-    """Operator hand-off / call-logistics turn (not content; marks a new exchange). A 'Operator'
-    speaker is always logistics; otherwise the hand-off/flow phrase must be in a SHORT turn, so a
-    long substantive remark that merely mentions 'we'll open it up for questions' isn't dropped."""
-    if person and _OPERATOR_NAME.match(person):
-        return True
-    return len(text) <= _LOGISTICS_MAX and bool(_HANDOFF.search(text) or _FLOW.search(text))
-
-
-# ---- pleasantry / non-informative cleaning --------------------------------- #
-# Tuned on 14 real 2024-2026 transcripts (AAPL / MSFT / NVDA): analysts open with "Thanks for taking
-# my question / congrats on the quarter" and close with "that's helpful / appreciate it / back in
-# the queue"; management opens each answer with "Thanks, <name>. / Hi, <name>. / Yeah, <name>.".
-_SENT = re.compile(r"[^.?!]+[.?!]*")
-_PLEASANTRY_CUE = re.compile(
-    r"^(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|morning|afternoon|thanks?|thank\s+you|"
-    r"yeah|yep|yes|sure|okay|ok|great|perfect|excellent|terrific|wonderful|got\s+it|congrats?|"
-    r"congratulations|awesome|understood|fair\s+enough)\b"
-    r"|taking\s+(?:my|the|our|your)\s+questions?|congrat\w*|appreciate\s+it|back\s+in\s+(?:the\s+)?queue"
-    r"|look\s+forward|nice\s+(?:quarter|results?)|great\s+(?:quarter|results?|answer|color|stuff)"
-    r"|(?:that'?s|thats)\s+(?:helpful|great|all|it|fair)|thanks\s+so\s+much",
-    re.I,
-)
-_NONINFO_Q = re.compile(
-    r"^(?:do\s+you\s+have\s+(?:any\s+)?(?:other\s+|more\s+)?questions?|are\s+you\s+(?:okay|ok|good)"
-    r"|any\s+(?:other|more|further)\s+questions?|no\s+(?:more|further)\s+questions?"
-    r"|(?:i'?m|we'?re)\s+all\s+set|thank\s+you)\b",
-    re.I,
-)
-# a sentence that OPENS with a greeting, and a strong courtesy token -> a longer greeting sentence
-# (e.g. "Hey guys, congrats on the good prints here, ...") is still pure preamble worth dropping.
-_GREETING_START = re.compile(
-    r"^(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|morning|afternoon|thanks?|thank\s+you|"
-    r"yeah|yep|yes|sure|okay|ok|great|perfect|excellent|terrific|wonderful|congrats?|congratulations|"
-    r"awesome)\b",
-    re.I,
-)
-_STRONG_COURTESY = re.compile(
-    r"congrat|nice\s+(?:quarter|results?|print)|great\s+(?:quarter|results?|print)|"
-    r"good\s+(?:print|quarter|results?)|well\s+done|solid\s+(?:quarter|results?|print)|"
-    r"thanks?\s+for\s+taking|thank\s+you\s+for\s+taking",
-    re.I,
-)
-
-
-def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in _SENT.findall(text) if s.strip()]
-
-
-def _is_pleasantry(sent: str) -> bool:
-    """A courtesy/greeting sentence carrying no substantive question (never drops a '?'): a short
-    (<=14w) sentence with any courtesy cue, OR a longer opener (<=22w) that both starts with a
-    greeting AND carries a strong courtesy token ('Hey guys, congrats on the good prints, ...')."""
-    if "?" in sent:
-        return False
-    n = len(sent.split())
-    if n <= 14 and _PLEASANTRY_CUE.search(sent):
-        return True
-    return n <= 22 and bool(_GREETING_START.match(sent)) and bool(_STRONG_COURTESY.search(sent))
-
-
-def _clean(text: str) -> str:
-    """Keep the MEATY part of a turn: drop leading and trailing courtesy sentences (greetings,
-    thanks, congrats, 'back in the queue', 'thanks <name>' answer lead-ins), collapse whitespace."""
-    sents = _sentences(re.sub(r"\s+", " ", text).strip())
-    while sents and _is_pleasantry(sents[0]):
-        sents.pop(0)
-    while sents and _is_pleasantry(sents[-1]):
-        sents.pop()
-    return " ".join(sents).strip()
-
-
-def _is_informative_question(text: str) -> bool:
-    """A cleaned analyst turn that is a real question (not 'do you have questions', pure thanks).
-
-    The length bar is `_MIN_TURN`, the SAME one answers and prepared turns must clear. It
-    used to be a looser 20 chars, which let 4,309 non-content turns through — "Can you
-    hear me now?", "I will turn it over.", "So I had a question.", "You know, long tail."
-    Those matter more than their count suggests: the question vector is the ANCHOR of
-    every cosine in `ec_qa_coherence`, so a meaningless question corrupts the whole
-    exchange's score rather than just adding one noisy sample.
-    """
-    t = text.strip()
-    return len(t) >= _MIN_TURN and len(t.split()) >= 4 and not _NONINFO_Q.match(t)
-
-
-def split_turns(text: str, section: str, min_len: int = _MIN_TURN, mgmt_names: set[str] | None = None) -> list[dict]:
-    """Split a section blob into CLEANED SPEAKER TURNS
-    -> [{section, tag, person, text, exchange_idx, answer_idx}].
-
-      * qa: OPERATOR hand-off lines delimit exchanges; the first NON-management speaker after a
-        hand-off is the ANALYST (a QUESTION), management speakers are ANSWERS, and the analyst
-        speaking again is a follow-up question. `mgmt_names` (lower-cased management speakers, taken
-        from the prepared remarks) is the reliable answerer signal: it stops an exec who speaks right
-        after a hand-off from being mislabelled as the analyst (their turn attaches as a trailing
-        answer of the prior exchange instead). Operator / IR-flow / pure-courtesy turns are dropped;
-        every kept turn is cleaned to its substantive core. exchange_idx = which Q&A pair; answer_idx
-        = 0 for the question and 1,2,... for the 1st..last answer turn ('first vs last' is explicit).
-      * prepared_remarks: every management turn is 'prepared' (exchange_idx = -1, answer_idx = -1);
-        the host's welcome/logistics is dropped.
-
-    Robust to a leading header-less block (seeded as the operator preamble in qa). Turns whose
-    cleaned text is shorter than `min_len` are dropped."""
-    if not text:
-        return []
-    is_qa = section == _QA_TAG
-    text = _INLINE_HDR.sub("\n", text)  # rescue "Name:" headers stuck mid-line (HF)
-    # 1) raw turns by speaker header. Three real header shapes are supported: the newest MF
-    # "Name:" (colon), the 2024-2025 MF multi-line "Name / -- / Role", and the legacy inline
-    # "Name -- Role -- Firm"; plus bare "Operator" lines. qa opens with the operator preamble.
-    person: str | None = "Operator" if is_qa else None
-    buf: list[str] = []
-    raw: list[tuple[str | None, str]] = []
-
-    def _flush() -> None:
-        if buf:
-            t = " ".join(buf).strip()
-            if t:
-                raw.append((person, t))
-
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    i, n = 0, len(lines)
-    while i < n:
-        s = lines[i]
-        if i + 2 < n and lines[i + 1] == "--" and _NAME_ONLY.match(s):  # "Name / -- / Role" header
-            _flush()
-            person, buf, i = s, [], i + 3
-            continue
-        if _OPERATOR_NAME.match(s):  # bare "Operator" line
-            _flush()
-            person, buf, i = "Operator", [], i + 1
-            continue
-        sp = _speaker(s)  # colon or inline "Name -- Role"
-        if sp:
-            _flush()
-            person, inline = sp
-            buf = [inline] if inline else []
-            i += 1
-            continue
-        buf.append(s)
-        i += 1
-    _flush()
-
-    # 2a) prepared remarks -> one 'prepared' turn per management speaker
-    if not is_qa:
-        out: list[dict] = []
-        for per, txt in raw:
-            if _is_operator(per, txt):
-                continue
-            body = _clean(txt)
-            if len(body) >= min_len:
-                out.append({"section": section, "tag": EARNINGS_CALL_TAG_PREPARED, "person": per, "text": body, "exchange_idx": -1, "answer_idx": -1})
-        return out
-
-    # 2b) qa -> exchanges of (question, mapped answers). Role per turn:
-    #   analyst (QUESTION)  if the speaker is NAMED by an operator hand-off (authoritative), else
-    #   management (ANSWER) if the speaker gave prepared remarks (mgmt_names), else
-    #   position fallback   (the speaker right after a hand-off is the asker; otherwise an answer).
-    # This stays correct when the answering exec is absent from the prepared remarks (e.g. a CFO who
-    # goes straight to Q&A) or the asker is a substitute ("on for X"). A new informative question
-    # opens a new exchange; an answer never consumes the hand-off boundary (so an exec speaking
-    # before the named analyst still lets the analyst open the exchange).
-    mn = mgmt_names or set()
-    analyst_names: set[str] = set()
-    for _per, _txt in raw:
-        for m in _HANDOFF_NAME.finditer(_txt):
-            nm = (m.group(1) or m.group(2) or "").strip().lower()
-            if nm:
-                analyst_names.add(nm)
-
-    out = []
-    ex, ans_i, cur, boundary, saw_answer = -1, 0, None, True, False
-    for per, txt in raw:
-        if _is_operator(per, txt):
-            boundary = True
-            continue
-        perl = (per or "").strip().lower()
-        role = "q" if perl in analyst_names else "a" if perl in mn else ("q" if boundary else "a")
-        body = _clean(txt)
-        if role == "q":
-            if _is_informative_question(body):
-                if boundary or saw_answer or perl != cur:  # a new question -> new exchange
-                    ex, ans_i, cur, saw_answer = ex + 1, 0, perl, False
-                out.append({"section": section, "tag": EARNINGS_CALL_TAG_QUESTION, "person": per, "text": body, "exchange_idx": ex, "answer_idx": 0})
-            boundary = False
-        elif ex >= 0 and len(body) >= min_len:  # management / specialist answer
-            ans_i += 1
-            saw_answer = True
-            out.append({"section": section, "tag": EARNINGS_CALL_TAG_ANSWER, "person": per, "text": body, "exchange_idx": ex, "answer_idx": ans_i})
-    return out
-
-
-def split_qa_exchanges(qa_text: str, min_len: int = _MIN_TURN, mgmt_names: set[str] | None = None) -> list[dict]:
-    """The cleaned LIST OF QUESTIONS with their MAPPED ANSWERS, one dict per exchange:
-    {exchange_idx, question, analyst, answers:[...], managers:[...]}. Only exchanges that have a
-    real (cleaned) question are returned. `mgmt_names` (see split_turns) sharpens Q/A classification."""
-    by_ex: dict[int, dict] = {}
-    for t in split_turns(qa_text, _QA_TAG, min_len, mgmt_names=mgmt_names):
-        e = by_ex.setdefault(t["exchange_idx"], {"exchange_idx": t["exchange_idx"], "question": None, "analyst": None, "answers": [], "managers": []})
-        if t["tag"] == EARNINGS_CALL_TAG_QUESTION:
-            e["question"] = f"{e['question']} {t['text']}".strip() if e["question"] else t["text"]
-            e["analyst"] = t["person"]
-        else:
-            e["answers"].append(t["text"])
-            e["managers"].append(t["person"])
-    return [by_ex[k] for k in sorted(by_ex) if by_ex[k]["question"]]
-
-
-def split_qa_pairs(qa_text: str, min_len: int = _MIN_TURN, mgmt_names: set[str] | None = None) -> list[tuple[str, str]]:
-    """Backward-compat helper: pair each analyst question with the concatenated management answer
-    turns of the same exchange, derived from `split_turns` so the two stay consistent. [] with no
-    structure."""
-    pairs: list[tuple[str, str]] = []
-    for e in split_qa_exchanges(qa_text, min_len, mgmt_names=mgmt_names):
-        q, a = (e["question"] or "").strip(), " ".join(e["answers"]).strip()
-        if len(q) >= min_len and len(a) >= min_len:
-            pairs.append((q, a))
-    return pairs
+def split_calls(paragraphs: pd.DataFrame) -> Iterator[tuple[str, str, object, CallSplit]]:
+    """(ticker, quarter, as_of, CallSplit) per call of a paragraph frame. The call's `as_of` is
+    its paragraphs' `as_of` (the real call date, one per call)."""
+    ordered = paragraphs.sort_values(["ticker", "quarter", "paragraph"], kind="stable")
+    for (ticker, quarter), call in ordered.groupby(["ticker", "quarter"], sort=False):
+        dates = call["as_of"].dropna()
+        as_of = dates.iloc[0] if len(dates) else None
+        yield str(ticker), str(quarter), as_of, split_call(call[_SPLIT_COLS].to_dict("records"))
 
 
 def _drop_stale_turns(store, log, counts: dict[tuple[str, str], int]) -> None:
@@ -407,43 +144,22 @@ def _embedded_calls(store, cache_model: str) -> set[tuple[str, str]]:
     return set(map(tuple, df.drop_duplicates().to_numpy()))
 
 
-def _section_calls(store) -> list[tuple[str, str]]:
-    """Every (ticker, quarter) that HAS a qa/prepared section — key columns only, never the text."""
-    df = store.load(Tables.earnings_call_sections, ["ticker", "quarter"], where={"tag": [_QA_TAG, _PREP_TAG]}, optional=True)
-    if df is None:
-        return []
-    return [tuple(x) for x in df.drop_duplicates().to_numpy()]
-
-
-def _calls_from_frame(sections: pd.DataFrame) -> list[tuple[str, str]]:
-    sec = sections[sections["tag"].isin([_QA_TAG, _PREP_TAG])]
-    return [tuple(x) for x in sec[["ticker", "quarter"]].drop_duplicates().to_numpy()]
-
-
-def _yield_call_texts(context: Context, remaining: list[tuple[str, str]], sections: pd.DataFrame | None = None):
-    """GENERATOR yielding (ticker, quarter, qa_text, prep_text, as_of) for each remaining call,
-    reading the transcript text ONE TICKER AT A TIME (bounded memory: never the whole table) with
-    ticker+tag pushed down server-side, or sliced from a provided `sections` frame."""
+def _yield_call_turns(
+    context: Context, remaining: list[tuple[str, str]], paragraphs: pd.DataFrame | None = None
+) -> Iterator[tuple[str, str, list[dict], object]]:
+    """GENERATOR yielding (ticker, quarter, turns, as_of) for each remaining call, reading the
+    paragraphs ONE TICKER AT A TIME (bounded memory: never the whole table) or slicing a provided
+    paragraph frame. `turns` is `CallSplit.turns`, whatever the split status: the embedding pass
+    has no quality gate, a call's prepared turns still anchor the next quarter's drift."""
     by_tkr: dict[str, set[str]] = {}
     for tkr, q in remaining:
         by_tkr.setdefault(tkr, set()).add(q)
     for tkr, quarters in by_tkr.items():
-        if sections is not None:
-            g = sections[(sections["ticker"] == tkr) & (sections["tag"].isin([_QA_TAG, _PREP_TAG]))]
-        else:
-            g = context.store.load(
-                Tables.earnings_call_sections,
-                ["ticker", "quarter", "tag", "text", "as_of"],
-                where={"ticker": tkr, "tag": [_QA_TAG, _PREP_TAG]},
-                optional=True,
-            )
-            if g is None:
-                continue
-        g = g[g["quarter"].isin(quarters)]
-        for q, gg in g.groupby("quarter", sort=False):
-            qa = gg.loc[gg["tag"] == _QA_TAG, "text"]
-            prep = gg.loc[gg["tag"] == _PREP_TAG, "text"]
-            yield (tkr, q, qa.iloc[0] if len(qa) else None, prep.iloc[0] if len(prep) else None, gg["as_of"].iloc[0] if len(gg) else None)
+        g = paragraphs[paragraphs["ticker"] == tkr] if paragraphs is not None else load_paragraphs(context.store, tkr)
+        if g is None:
+            continue
+        for ticker, quarter, as_of, split in split_calls(g[g["quarter"].isin(quarters)]):
+            yield ticker, quarter, split.turns, as_of
 
 
 def embed_earnings_calls(
@@ -451,23 +167,24 @@ def embed_earnings_calls(
     sections: pd.DataFrame | None = None,
     model: str = EARNINGS_CALL_EMBEDDING_MODEL,
     force: bool = False,
-    client=None,
+    client: Any | None = None,
 ) -> pd.Timestamp | None:
     """Ensure every call's speaker turns are embedded + cached in `earning_calls_embedding` (one row
     per turn). MEMORY-SAFE + incremental: first the REMAINING calls are found by comparing two
-    key-column-only reads (sections vs. already-embedded — never the vectors or the text), then each
-    remaining call's transcript is read, split, embedded and SAVED ONE CALL AT A TIME (a generator,
+    key-column-only reads (stored calls vs. already-embedded — never the vectors or the text), then each
+    remaining call's paragraphs are read, split, embedded and SAVED ONE CALL AT A TIME (a generator,
     so nothing is accumulated and flushed at the end). An interrupted (billed) run keeps every saved
-    call and a re-run makes ZERO calls. `client` injects a stub embedder for tests. Returns None —
-    downstream KPIs stream the cache back per ticker (see `embedding_kpis_streamed`)."""
+    call and a re-run makes ZERO calls. `sections` optionally supplies `earnings_call_sections`
+    paragraph rows instead of the store; `client` injects a stub embedder for tests. Returns the
+    earliest call date (re)embedded, or None."""
     store, log = context.store, context.log
     if client is None and not openai_api_key():
         log.warning("OPENAI/OPEN_AI_API_KEY not set -> earnings-call embedding skipped.")
         return None
 
-    universe = _calls_from_frame(sections) if sections is not None else _section_calls(store)
+    universe = [(str(t), str(q)) for t, q in call_keys(store, sections).itertuples(index=False, name=None)]
     if not universe:
-        log.warning("No earnings_call_sections -> embedding skipped (run fetch_earnings_calls).")
+        log.warning("No earnings_call_sections -> embedding skipped (run extract-earnings-calls).")
         return None
     done = set() if force else _embedded_calls(store, model)
     remaining = [k for k in universe if tuple(k) not in done]
@@ -478,12 +195,8 @@ def embed_earnings_calls(
     log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(remaining), model)
     n_new, counts = 0, {}
     earliest: pd.Timestamp | None = None
-    for tkr, q, qa_text, prep_text, aod in tqdm(_yield_call_texts(context, remaining, sections), "EC embeddings", total=len(remaining)):
+    for tkr, q, turns, aod in tqdm(_yield_call_turns(context, remaining, sections), "EC embeddings", total=len(remaining)):
         run_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-        prep_turns = split_turns(prep_text, _PREP_TAG) if isinstance(prep_text, str) and prep_text.strip() else []
-        mgmt = {t["person"].strip().lower() for t in prep_turns if t.get("person")}
-        qa_turns = split_turns(qa_text, _QA_TAG, mgmt_names=mgmt) if isinstance(qa_text, str) and qa_text.strip() else []
-        turns = prep_turns + qa_turns
         counts[(tkr, q)] = len(turns)
         changed = pd.to_datetime(aod, errors="coerce")
         if pd.notna(changed):

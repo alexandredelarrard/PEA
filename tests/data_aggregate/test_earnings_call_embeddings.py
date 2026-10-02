@@ -1,12 +1,13 @@
 """
 Earnings-call OpenAI-embedding layer (src/data_aggregate/utils/earnings_call_embeddings.py).
-A STUB embedder (deterministic, no network/spend) drives the full per-turn path on REAL Motley-Fool
-transcript shapes: speaker-turn splitting (colon "Name:" headers with the analyst named in the
-operator hand-off, AND legacy multi-line "Name / -- / Role" headers), NOISE CLEANING (operator /
-IR-flow / pure-courtesy turns dropped, greeting/thanks/congrats preambles stripped so only the meaty
-question / answer survives), the cached `earning_calls_embedding` table (ONE ROW PER TURN with its
-own embedding + text + tag + person + exchange_idx + answer_idx), incremental skip on re-run, and the
-coherence + quarter-to-quarter drift KPIs DERIVED from the turns.
+A STUB embedder (deterministic, no network/spend) drives the full per-turn path from stored
+`earnings_call_sections` PARAGRAPH rows: the shared split (`src/utils/earnings_call_split.py`,
+speakers from the source `speaker` field, no header parsing) supplies the turns, NOISE CLEANING
+(operator / IR-flow / pure-courtesy turns dropped, greeting/thanks/congrats preambles stripped)
+is visible in the stored text, the cached `earning_calls_embedding` table holds ONE ROW PER TURN
+(embedding + text + tag + person + exchange_idx + answer_idx), re-runs are incremental, and the
+coherence + quarter-to-quarter drift KPIs are DERIVED from the turns. On the 16 hand-labelled
+real calls the stored rows are exactly `CallSplit.turns` and every analyst turn is a question.
 """
 
 from __future__ import annotations
@@ -18,19 +19,19 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_EMBEDDING_MODEL
+from src.constants.constants import EARNINGS_CALL_EMBEDDING_MODEL, EARNINGS_CALL_TAG_QUESTION
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
     embed_earnings_calls,
     embedding_kpis_streamed,
-    split_qa_exchanges,
-    split_qa_pairs,
-    split_turns,
 )
 from src.data_store.schema import name_of, resolve
+from src.utils.earnings_call_split import split_call
+from tests.fixtures.earnings_call_rows import FIXTURE_PATHS, PARAGRAPH_COLUMNS, fixture_paragraphs, load_fixture
 
 _KW = ("revenue", "margin", "growth", "guidance", "cash", "demand", "cost", "backlog", "?")
+_TURN_KEYS = ["section", "tag", "person", "text", "exchange_idx", "answer_idx"]
 
 
 def _vec(t: str):
@@ -55,7 +56,8 @@ class StubClient:
 
 class FakeStore:
     """In-memory stand-in mirroring the `DataStore` contract (`where=` equality/IN, raise-unless-
-    `optional`, `distinct`, `delete`).
+    `optional`, `distinct` with `where`, `delete`; `order_by` is accepted and ignored -- the split
+    orders paragraphs itself).
 
     The one test store that cannot be the real SQLite `DataStore`: `earning_calls_embedding.embedding`
     is a `DOUBLE PRECISION[]` and SQLite's driver refuses to bind a Python list.
@@ -78,9 +80,11 @@ class FakeStore:
             raise LookupError(f"{name_of(table)} is empty/missing and the read was not optional")
         return (df[list(columns)] if columns else df).copy().reset_index(drop=True)
 
-    def distinct(self, table, column, **kw):
+    def distinct(self, table, column, *, where=None, **kw):
         df = self.t.get(name_of(table))
-        return [] if df is None or df.empty else df[column].dropna().unique().tolist()
+        if df is None or df.empty:
+            return []
+        return self._filter(df, where)[column].dropna().unique().tolist()
 
     def save(self, table, df, pk=None):
         name = name_of(table)
@@ -104,101 +108,72 @@ class FakeCtx:
         self.log = logging.getLogger("test")
 
 
-# Real 2024+ Motley-Fool shape: "Name:" headers, analyst named in the operator hand-off, and the
-# usual noise -- analyst greeting/congrats openers, a pure-courtesy follow-up, an IR-host flow line,
-# and a non-informative closing "question" -- all of which MUST be cleaned/dropped.
-_QA = """Operator
-The next question comes from the line of Jane Doe with Big Bank. Please proceed.
-Jane Doe:
-Thanks for taking my question, and congrats on a great quarter. Can you talk about revenue growth and the margin guidance for next year?
-John Smith:
-Thanks, Jane. Revenue growth was strong and margins expanded on solid demand and cost control.
-Sarah Lee:
-Let me add that cash generation supported continued growth and the buyback this quarter.
-Jane Doe:
-That's really helpful, I appreciate it. Thank you.
-Jonathan Ng:
-Thanks, Jane. Operator, next question, please.
-Operator:
-The next question comes from the line of Mark Roe with Capital Markets. Please proceed.
-Mark Roe:
-Good morning. What are you seeing on cash generation and demand trends into next quarter?
-Sue Kim:
-Demand stayed solid across our segments and cash flow was healthy this quarter on cost discipline.
-Mark Roe:
-Do you have any other questions for me?
-"""
-# Legacy 2024-2025 shape: multi-line "Name / -- / Role" headers + bare "Operator".
-_QA_DASH = """Operator
-[Operator instructions] Our first question comes from the line of Amy Ray with Tech Research. Please proceed.
-Amy Ray
---
-Analyst
-Thank you for taking the question and congrats. How is the cloud backlog trending on demand this year?
-Tim Fox
---
-Chief Executive Officer
-Thanks, Amy. Cloud backlog grew nicely on strong bookings, demand, and revenue growth.
-"""
+# One call as source paragraphs (speaker, content), with the usual noise: analyst greeting/congrats
+# openers, a pure-courtesy follow-up, an IR-host flow line, and a non-informative closing
+# "question" -- all of which MUST be cleaned/dropped.
 _PREP = (
     "Thanks, everyone. This quarter revenue grew nicely and margins improved as demand held up "
     "and we controlled cost. Our guidance reflects continued growth and strong cash generation."
 )
+_CALL = [
+    ("Operator", "Good day and welcome to the earnings conference call. I will now turn the call over to management."),
+    ("John Smith", _PREP),
+    ("Operator", "The next question comes from the line of Jane Doe with Big Bank. Please proceed."),
+    (
+        "Jane Doe",
+        "Thanks for taking my question, and congrats on a great quarter. Can you talk about revenue growth and the margin guidance for next year?",
+    ),
+    ("John Smith", "Thanks, Jane. Revenue growth was strong and margins expanded on solid demand and cost control."),
+    ("Sarah Lee", "Let me add that cash generation supported continued growth and the buyback this quarter."),
+    ("Jane Doe", "That's really helpful, I appreciate it. Thank you."),
+    ("Jonathan Ng", "Thanks, Jane. Operator, next question, please."),
+    ("Operator", "The next question comes from the line of Mark Roe with Capital Markets. Please proceed."),
+    ("Mark Roe", "Good morning. What are you seeing on cash generation and demand trends into next quarter?"),
+    ("Sue Kim", "Demand stayed solid across our segments and cash flow was healthy this quarter on cost discipline."),
+    ("Mark Roe", "Do you have any other questions for me?"),
+]
 
 
-def _sections():
+def _sections() -> pd.DataFrame:
+    """`earnings_call_sections` paragraph rows: 2 tickers x 2 quarters of `_CALL`; 2024Q2 adds a topic."""
     rows = []
     for tkr in ("AAA", "BBB"):
         for q, aod in (("2024Q1", "2024-05-01"), ("2024Q2", "2024-08-01")):
-            rows.append({"ticker": tkr, "quarter": q, "tag": "qa", "as_of": aod, "text": _QA})
-            rows.append(
-                {
-                    "ticker": tkr,
-                    "quarter": q,
-                    "tag": "prepared_remarks",
-                    "as_of": aod,
-                    "text": _PREP + (" We also launched a new AI platform." if q == "2024Q2" else ""),
-                }
-            )
-    return pd.DataFrame(rows)
+            for number, (speaker, content) in enumerate(_CALL, start=1):
+                if number == 2 and q == "2024Q2":
+                    content = content + " We also launched a new AI platform."
+                rows.append(
+                    {"ticker": tkr, "quarter": q, "paragraph": number, "as_of": aod, "transcript_id": 1, "speaker": speaker, "content": content}
+                )
+    return pd.DataFrame(rows, columns=PARAGRAPH_COLUMNS)
 
 
 def test_per_turn_split_clean_embed_cache_and_kpis():
-    # ---- colon format: cleaning drops noise, keeps mapped Q -> answers ------------------------
-    turns = split_turns(_QA, "qa")
+    # ---- embed -> ONE ROW PER TURN, the turns of the shared split ------------------------------
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    stub = StubClient()
+    embed_earnings_calls(ctx, client=stub)
+    emb = store.load("earning_calls_embedding")
+    assert emb is not None
+    one = emb[(emb["ticker"] == "AAA") & (emb["quarter"] == "2024Q1")].sort_values("seq")
+    turns = one[_TURN_KEYS].to_dict("records")
     tags = [t["tag"] for t in turns]
-    assert tags == ["question", "answer", "answer", "question", "answer"], tags
-    assert [t["answer_idx"] for t in turns] == [0, 1, 2, 0, 1], "0=question, 1..k=1st..last answer"
-    assert [t["person"] for t in turns] == ["Jane Doe", "John Smith", "Sarah Lee", "Mark Roe", "Sue Kim"]
-    assert turns[0]["exchange_idx"] == turns[1]["exchange_idx"] == turns[2]["exchange_idx"] == 0
-    assert turns[3]["exchange_idx"] == turns[4]["exchange_idx"] == 1
-    q0 = turns[0]["text"].lower()
-    assert "revenue growth" in q0 and "thanks" not in q0 and "congrats" not in q0, f"question preamble not stripped: {turns[0]['text']!r}"
-    assert not turns[1]["text"].lower().startswith("thanks"), f"answer lead-in 'Thanks, Jane.' not stripped: {turns[1]['text']!r}"
+    assert tags == ["prepared", "question", "answer", "answer", "question", "answer"], tags
+    assert [t["answer_idx"] for t in turns] == [-1, 0, 1, 2, 0, 1], "0=question, 1..k=1st..last answer"
+    assert [t["person"] for t in turns] == ["John Smith", "Jane Doe", "John Smith", "Sarah Lee", "Mark Roe", "Sue Kim"]
+    assert [t["exchange_idx"] for t in turns] == [-1, 0, 0, 0, 1, 1]
+    assert one["seq"].tolist() == list(range(len(turns)))
+    q0 = turns[1]["text"].lower()
+    assert "revenue growth" in q0 and "thanks" not in q0 and "congrats" not in q0, f"question preamble not stripped: {turns[1]['text']!r}"
+    assert not turns[2]["text"].lower().startswith("thanks"), f"answer lead-in 'Thanks, Jane.' not stripped: {turns[2]['text']!r}"
+    assert not turns[0]["text"].lower().startswith("thanks"), "prepared courtesy opener not stripped"
     # Jane's pure-courtesy follow-up, the IR-flow line, and Mark's "do you have questions" are gone
     assert all("appreciate it" not in t["text"].lower() for t in turns), "courtesy turn survived"
     assert all("next question" not in t["text"].lower() for t in turns), "IR-flow turn survived"
     assert all("do you have any other" not in t["text"].lower() for t in turns), "non-informative Q survived"
 
-    # ---- multi-line dash format also parses + cleans ------------------------------------------
-    td = split_turns(_QA_DASH, "qa")
-    assert [t["tag"] for t in td] == ["question", "answer"] and td[0]["person"] == "Amy Ray"
-    assert td[1]["person"] == "Tim Fox" and not td[1]["text"].lower().startswith("thanks")
-    assert "backlog" in td[0]["text"].lower() and "congrats" not in td[0]["text"].lower()
-
-    # ---- list of questions with mapped answers ------------------------------------------------
-    ex = split_qa_exchanges(_QA)
-    assert len(ex) == 2 and ex[0]["analyst"] == "Jane Doe" and ex[0]["managers"] == ["John Smith", "Sarah Lee"]
-    assert len(split_qa_pairs(_QA)) == 2  # back-compat helper intact
-
-    # ---- embed -> ONE ROW PER TURN, cached with every requested column ------------------------
-    store = FakeStore()
-    store.t["earnings_call_sections"] = _sections()
-    ctx = cast(Context, FakeCtx(store))
-    stub = StubClient()
-    embed_earnings_calls(ctx, client=stub)  # populates the cache (returns None)
-    emb = store.load("earning_calls_embedding")
-    assert emb is not None
     qa_rows, prep_rows = emb[emb["section"] == "qa"], emb[emb["section"] == "prepared_remarks"]
     assert len(qa_rows) == 20, f"5 qa turns x 4 calls, got {len(qa_rows)}"
     assert len(prep_rows) == 4, f"1 prepared turn x 4 calls, got {len(prep_rows)}"
@@ -219,6 +194,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
         "run_at",
     }.issubset(emb.columns)
     assert set(emb["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
+    assert set(one["as_of"]) == {"2024-05-01"}, "the turn as_of is the paragraphs' call date"
     calls_after_first = stub.n_calls
     embed_earnings_calls(ctx, client=stub)  # re-run: incremental
     assert stub.n_calls == calls_after_first, "re-run must make ZERO new embedding calls"
@@ -239,76 +215,48 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
     assert q1["ec_qa_qq_distance"].isna().all(), "first quarter has no prior"
     assert q2["ec_prep_qq_distance"].notna().all() and q2["ec_prep_qq_distance"].between(0, 2).all()
 
-    print("\n=== SANITY CHECK: per-turn earnings-call embeddings (cleaned) ===")
-    print(
-        f"  colon format -> tags {tags}, answer_idx {[t['answer_idx'] for t in turns]} "
-        f"(0=Q, 1..k=1st..last answer); persons {[t['person'] for t in turns]}."
-    )
+    print("\n=== SANITY CHECK: per-turn earnings-call embeddings from paragraphs (cleaned) ===")
+    print(f"  stored turns -> tags {tags}, answer_idx {[t['answer_idx'] for t in turns]}; persons {[t['person'] for t in turns]}.")
     print(
         "  cleaning: question preamble 'Thanks for taking my question, and congrats' STRIPPED; "
         "answer lead-in 'Thanks, Jane.' STRIPPED; IR-flow + courtesy + 'do you have questions' DROPPED."
     )
-    print(f"  multi-line dash format also parsed: Q={td[0]['person']} -> A={td[1]['person']}.")
+    print(f"  table: {len(qa_rows)} qa-turn rows + {len(prep_rows)} prepared rows, as_of = call date, model/run_at stamped.")
     print(
-        f"  table: {len(qa_rows)} qa-turn rows + {len(prep_rows)} prepared rows, each with its own "
-        f"embedding + text + person + tag + exchange_idx + answer_idx + as_of + model/run_at."
-    )
-    print(
-        f"  refined coherence (avg cos of Q vs EACH answer, then mean over exchanges) "
-        f"{kpi['ec_qa_coherence_mean'].mean():.3f}; QoQ prepared drift "
+        f"  coherence {kpi['ec_qa_coherence_mean'].mean():.3f}; QoQ prepared drift "
         f"2024Q2 {q2['ec_prep_qq_distance'].mean():.3f} (new AI-platform topic added)."
     )
     print(f"  incremental: re-run made 0 new OpenAI calls (still {stub.n_calls}). Validated with a stub (no spend).")
 
 
-# HuggingFace-backbone shape: verbatim `content` with "Name:" colon headers, a long CEO remark that
-# ENDS with "we'll open it up for questions", and a Q&A where an exec greets before the (substitute)
-# analyst asks -- the cases that previously dropped the CEO / inverted Q&A.
-_HF_PREP = (
-    "Operator: Good afternoon and welcome to the call. [Operator Instructions] Sir, please go "
-    "ahead. I would like to turn the call over to Mike. Mike Ceo: Thanks Ankur. "
-    + "Revenue grew on strong demand and margins expanded across every region as we executed "
-    "well this quarter. " * 5 + "With that, we'll open it up for your questions."
-)
-_HF_QA = (
-    "Operator: Your first question comes from Doug of Cowen. Please go ahead. "
-    "Mike Ceo: Hi Doug. "
-    "Ryan Sub: Hi, this is Ryan on for Doug. Can you walk through the margin outlook and the "
-    "cash flow trends you expect into next quarter? "
-    "Mike Ceo: Sure. Margins improved and cash flow was strong on solid demand and cost control. "
-    "Bob Cfo: And on cash generation, we expect continued strength across our segments next quarter."
-)
-
-
-def test_hf_style_long_remarks_and_qa_classification():
-    # a long prepared remark that MENTIONS opening for questions must NOT be dropped -> CEO is known
-    prep = split_turns(_HF_PREP, "prepared_remarks")
-    mgmt = {t["person"].strip().lower() for t in prep if t.get("person")}
-    assert "mike ceo" in mgmt, f"long CEO remark wrongly dropped; mgmt={mgmt}"
-
-    # with the CEO in mgmt, an exec greeting after the hand-off is NOT mistaken for the analyst
-    ex = split_qa_exchanges(_HF_QA, mgmt_names=mgmt)
-    assert len(ex) == 1, ex
-    assert ex[0]["analyst"] == "Ryan Sub", f"analyst should be the (substitute) analyst, got {ex[0]['analyst']}"
-    assert ex[0]["managers"] == ["Mike Ceo", "Bob Cfo"], ex[0]["managers"]
-    q = ex[0]["question"].lower()
-    assert "margin outlook" in q and "hi doug" not in q, f"question not cleaned: {ex[0]['question']!r}"
-
-    # OLD (2007-2010) transcripts head turns with "Name - Firm/Role:" -> must still parse
-    old = (
-        "Operator: Your first question comes from Matthew Dodds - Citigroup.\n"
-        "Matthew Dodds - Citigroup: Can you talk about the gross margin trend and the pricing outlook?\n"
-        "William Weldon - Chairman: Margins improved on favorable mix and cost control this quarter."
-    )
-    eo = split_qa_exchanges(old)
-    assert eo and eo[0]["analyst"] == "Matthew Dodds" and eo[0]["managers"] == ["William Weldon"], eo
-    assert "gross margin" in eo[0]["question"].lower()
-
-    print("\n=== SANITY CHECK: HuggingFace-shape content ===")
-    print(f"  colon 'Name:' headers parse; long CEO remark ending 'we'll open it up for questions' KEPT -> mgmt={sorted(mgmt)}.")
+def test_embedded_turns_are_the_split_turns_on_hand_labelled_calls():
+    """AC-007 at the embedding layer: on the 16 real fixtures the stored rows are exactly
+    `split_call(...).turns` (keys, values, order = seq), every hand-labelled analyst turn is a
+    question and no management turn is."""
+    store = FakeStore()
+    store.t["earnings_call_sections"] = pd.concat([fixture_paragraphs(p.stem) for p in FIXTURE_PATHS], ignore_index=True)
+    embed_earnings_calls(cast(Context, FakeCtx(store)), client=StubClient())
+    emb = store.t["earning_calls_embedding"]
+    analyst_turns = analyst_questions = mgmt_questions = n_turns = 0
+    for path in FIXTURE_PATHS:
+        fx = load_fixture(path.stem)
+        quarter = f"{fx['fiscal_year']}Q{fx['fiscal_quarter']}"
+        stored = emb[(emb["ticker"] == fx["symbol"]) & (emb["quarter"] == quarter)].sort_values("seq")
+        expected = split_call(fx["paragraphs"]).turns
+        assert stored[_TURN_KEYS].to_dict("records") == expected, path.stem
+        assert stored["seq"].tolist() == list(range(len(expected)))
+        analysts, mgmt = set(fx["truth"]["analysts"]), set(fx["truth"]["management"])
+        is_q = stored["tag"].eq(EARNINGS_CALL_TAG_QUESTION)
+        analyst_turns += int(stored["person"].isin(analysts).sum())
+        analyst_questions += int((stored["person"].isin(analysts) & is_q).sum())
+        mgmt_questions += int((stored["person"].isin(mgmt) & is_q).sum())
+        n_turns += len(stored)
+    assert analyst_turns > 0 and analyst_questions == analyst_turns
+    assert mgmt_questions == 0
+    print("\n=== SANITY CHECK: embedding turns = shared split turns ===")
     print(
-        f"  exec 'Hi Doug.' after the hand-off is NOT the analyst; ex0 analyst={ex[0]['analyst']!r} "
-        f"-> managers {ex[0]['managers']}; question cleaned to the meaty ask. Validated."
+        f"  {len(FIXTURE_PATHS)} real calls, {n_turns} stored turns identical to CallSplit.turns; "
+        f"{analyst_questions}/{analyst_turns} analyst turns are questions, {mgmt_questions} management questions. Validated."
     )
 
 
@@ -366,7 +314,7 @@ def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> No
     ctx = cast(Context, FakeCtx(store))
     embed_earnings_calls(ctx, client=StubClient())
     assert len(store.t["earning_calls_embedding"]) > 0
-    store.t["earnings_call_sections"]["text"] = "Thanks."
+    store.t["earnings_call_sections"]["content"] = "Thanks."
     embed_earnings_calls(ctx, client=StubClient(), force=True)
     assert store.t["earning_calls_embedding"].empty
     print("\n=== SANITY CHECK: empty force re-parse ===")
@@ -451,5 +399,5 @@ def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> N
 
 if __name__ == "__main__":
     test_per_turn_split_clean_embed_cache_and_kpis()
-    test_hf_style_long_remarks_and_qa_classification()
+    test_embedded_turns_are_the_split_turns_on_hand_labelled_calls()
     test_force_reembed_drops_stale_turns()

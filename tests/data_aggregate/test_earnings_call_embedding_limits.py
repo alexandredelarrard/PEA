@@ -1,4 +1,5 @@
-"""Embedding input limits for the earnings-call layer.
+"""Embedding input limits for the earnings-call layer (the question gate now lives in the
+shared split library `src/utils/earnings_call_split.py`, which labels the embedded turns).
 
 Two defects the 2026-07 source-table audit measured on `earning_calls_embedding`
 (1,375,495 turns / 494 tickers):
@@ -13,11 +14,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.data_aggregate.utils.text.earnings_call_embeddings import (
-    _MIN_TURN,
-    _is_informative_question,
-)
 from src.gpt_extract import EMBEDDING_MAX_CHARS, cosine, embed_texts
+from src.utils.earnings_call_split import _MIN_TURN, _is_informative_question
 
 
 class _StubClient:

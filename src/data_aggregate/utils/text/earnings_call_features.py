@@ -1,8 +1,10 @@
 """
 earnings_call_features.py  (src/data_aggregate/utils/earnings_call_features.py)
 -------------------------------------------------------------------------------
-Turn the parsed earnings-call SECTIONS (`earnings_call_sections`: prepared_remarks /
-qa, one row per ticker·quarter·tag) into point-in-time raw and issuer-history features.
+Turn the raw earnings-call paragraphs (`earnings_call_sections`, one row per ticker·quarter·
+paragraph) into point-in-time raw and issuer-history features. Each call is cut into its
+prepared_remarks / qa texts by `src/utils/earnings_call_split.split_call`; a call whose split
+status is not `ok`, or whose texts fail `assess_earnings_call_sections`, yields no features.
 
 Two stages:
 
@@ -32,6 +34,7 @@ Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward)
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import cast
 
 import numpy as np
@@ -47,12 +50,10 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis
+from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis, call_keys, load_paragraphs, split_calls
 from src.data_store.schema import Tables
-from src.utils.nlp_sentiment import get_sentiment_engine
-from src.utils.text_metrics import assess_earnings_call_sections, uncertainty_ratio, word_count
-
-_SECTION_COLS = ["ticker", "quarter", "tag", "as_of", "text"]  # never SELECT * : `text` is huge
+from src.utils.nlp_sentiment import SentimentEngine, get_sentiment_engine
+from src.utils.text_metrics import EarningsCallQuality, assess_earnings_call_sections, uncertainty_ratio, word_count
 
 # SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
 _RAW_KPI_COLS = [
@@ -72,7 +73,19 @@ _KPI_COLS = list(EARNINGS_CALL_FEATURES)
 # --------------------------------------------------------------------------- #
 # Stage 1: incremental, cached FinBERT scoring                                  #
 # --------------------------------------------------------------------------- #
-def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
+def _valid_calls(paragraphs: pd.DataFrame) -> Iterator[tuple[str, str, object, EarningsCallQuality]]:
+    """(ticker, quarter, as_of, quality) for every call of a paragraph frame whose split status is
+    `ok` and whose prepared_remarks / qa texts pass the shared quality gate; other calls are
+    skipped, exactly as malformed section rows were."""
+    for ticker, quarter, as_of, split in split_calls(paragraphs):
+        if split.status != "ok":
+            continue
+        quality = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa})
+        if quality.valid:
+            yield ticker, quarter, as_of, quality
+
+
+def _score_rows(engine: SentimentEngine, rows: pd.DataFrame) -> pd.DataFrame:
     """Score a frame of section rows (ticker, quarter, tag, as_of, text) -> per-call
     cache rows (tone probs + word count + uncertainty ratio). Pure given `engine`."""
     probs = engine.score_texts(rows["text"].tolist())
@@ -97,53 +110,47 @@ def _score_rows(engine, rows: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, sections: pd.DataFrame | None, tags: tuple[str, ...]):
-    """GENERATOR yielding (ticker, rows_to_score) ONE TICKER AT A TIME — reads the transcript text
-    per ticker (ticker+tag pushed down server-side, or sliced from a provided `sections` frame),
-    keeping only the sections still absent from the cache. Bounded memory: never the whole table."""
-    by_tkr: dict[str, set[tuple[str, str]]] = {}
+def _yield_sections_to_score(
+    context: Context, todo_keys: pd.DataFrame, paragraphs: pd.DataFrame | None, tags: tuple[str, ...]
+) -> Iterator[tuple[str, pd.DataFrame]]:
+    """GENERATOR yielding (ticker, rows_to_score) ONE TICKER AT A TIME — reads the paragraphs per
+    ticker (projected, ticker pushed down server-side, or sliced from a provided paragraph frame),
+    splits each call and keeps only the cleaned sections still absent from the cache. Bounded
+    memory: never the whole table."""
+    by_tkr: dict[str, dict[str, set[str]]] = {}
     for tkr, q, tag in todo_keys[["ticker", "quarter", "tag"]].to_numpy():
-        by_tkr.setdefault(tkr, set()).add((q, tag))
-    for tkr, pairs in by_tkr.items():
-        if sections is not None:
-            g = sections[(sections["ticker"] == tkr) & (sections["tag"].isin(tags))]
-        else:
-            g = context.store.load(Tables.earnings_call_sections, _SECTION_COLS, where={"ticker": tkr, "tag": list(tags)}, optional=True)
-            if g is None:
-                continue
-        g = g[[(q, tag) in pairs for q, tag in zip(g["quarter"], g["tag"], strict=False)]]
-        valid_calls = []
-        for _, call in g.groupby("quarter", sort=False):
-            quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
-            if not quality.valid:
-                continue
-            call = call.copy()
-            call["text"] = call["tag"].astype(str).map(quality.cleaned_sections)
-            valid_calls.append(call)
-        if valid_calls:
-            yield tkr, pd.concat(valid_calls, ignore_index=True)
+        by_tkr.setdefault(str(tkr), {}).setdefault(str(q), set()).add(str(tag))
+    for tkr, todo in by_tkr.items():
+        g = paragraphs[paragraphs["ticker"] == tkr] if paragraphs is not None else load_paragraphs(context.store, tkr)
+        if g is None:
+            continue
+        rows = [
+            {"ticker": ticker, "quarter": quarter, "tag": tag, "as_of": as_of, "text": quality.cleaned_sections[tag]}
+            for ticker, quarter, as_of, quality in _valid_calls(g[g["quarter"].astype(str).isin(todo)])
+            for tag in tags
+            if tag in todo[quarter] and tag in quality.cleaned_sections
+        ]
+        if rows:
+            yield tkr, pd.DataFrame(rows)
 
 
 def score_earnings_calls(
     context: Context, sections: pd.DataFrame | None = None, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS
 ) -> pd.Timestamp | None:
     """Ensure every high-signal section has a cached FinBERT tone score. MEMORY-SAFE + incremental:
-    the REMAINING sections are found by comparing two key-column-only reads (section keys vs. the
-    already-scored keys — never the transcript text), then each remaining ticker's text is read,
-    scored and SAVED ONE TICKER AT A TIME (a generator, nothing accumulated). An interrupted GPU run
-    keeps its progress; a re-run scores nothing. Returns None — the KPIs stream the cache back per
-    ticker (`sentiment_kpis_streamed`)."""
+    the REMAINING sections are found by comparing two key-column-only reads (stored call keys x
+    `tags` vs. the already-scored keys — never the transcript text), then each remaining ticker's
+    paragraphs are read, split, scored and SAVED ONE TICKER AT A TIME (a generator, nothing
+    accumulated). An interrupted GPU run keeps its progress; a re-run scores nothing. `sections`
+    optionally supplies `earnings_call_sections` paragraph rows instead of the store. Returns the
+    earliest call date (re)scored or pending refresh, or None."""
     store, log = context.store, context.log
-    # section keys (no text) vs. already-scored keys (no probs) -> only what's left to score
-    keys = (
-        sections[sections["tag"].isin(tags)]
-        if sections is not None
-        else store.load(Tables.earnings_call_sections, ["ticker", "quarter", "tag"], where={"tag": list(tags)}, optional=True)
-    )
-    if keys is None or keys.empty:
-        log.warning("No earnings_call_sections -> sentiment scoring skipped (run fetch_earnings_calls).")
+    # call keys (no text) x tags vs. already-scored keys (no probs) -> only what's left to score
+    calls = call_keys(store, sections)
+    if calls.empty:
+        log.warning("No earnings_call_sections -> sentiment scoring skipped (run extract-earnings-calls).")
         return None
-    sec_keys = keys[["ticker", "quarter", "tag"]].drop_duplicates()
+    sec_keys = calls.merge(pd.DataFrame({"tag": list(tags)}), how="cross")[["ticker", "quarter", "tag"]]
     pending = store.load(
         Tables.earnings_call_sentiment,
         where={"model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL},
@@ -206,17 +213,15 @@ def acknowledge_earnings_call_invalidations(context: Context) -> int:
 # Stage 2: smart KPIs + point-in-time daily alignment                           #
 # --------------------------------------------------------------------------- #
 def _validated_sentiment_cache(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd.DataFrame:
-    """Keep complete, valid calls and refresh cheap metrics from canonical source text."""
+    """Keep complete, valid calls and refresh cheap metrics from the canonical source paragraphs
+    (`sections`: `earnings_call_sections` rows, split per call)."""
     if "model" not in sentiment or sentiment.empty:
         return sentiment.iloc[0:0].copy()
     sentiment = sentiment[sentiment["model"] == EARNINGS_CALL_SENTIMENT_CACHE_MODEL].copy()
     if sections is None:
         return sentiment
     metrics = []
-    for (ticker, quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
-        quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
-        if not quality.valid:
-            continue
+    for ticker, quarter, _as_of, quality in _valid_calls(sections):
         for tag in EARNINGS_CALL_SCORED_TAGS:
             cleaned = quality.cleaned_sections[tag]
             metrics.append(
@@ -243,8 +248,9 @@ def _validated_sentiment_cache(sentiment: pd.DataFrame, sections: pd.DataFrame |
 
 def _per_call_kpis(sentiment: pd.DataFrame, sections: pd.DataFrame | None) -> pd.DataFrame:
     """Collapse the per-(ticker,quarter,tag) cache into one row per (ticker, quarter)
-    with the smart KPIs. If source sections are supplied, malformed/incomplete calls
-    are excluded and cheap word/uncertainty metrics are refreshed from cleaned text."""
+    with the smart KPIs. If source paragraphs are supplied, calls that do not split `ok`,
+    fail the quality gate or are incomplete in the cache are excluded, and cheap
+    word/uncertainty metrics are refreshed from the cleaned split text."""
 
     s = _validated_sentiment_cache(sentiment, sections)
     if s.empty:
@@ -368,21 +374,16 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) 
 
 
 def sentiment_kpis_streamed(context: Context) -> pd.DataFrame | None:
-    """Derive the per-call SENTIMENT KPIs from the cache PER TICKER (bounded memory: one ticker's
-    sentiment rows + source text at a time, never the whole sections/sentiment tables).
-    Returns the per-call KPI frame, or None if the cache is empty."""
+    """Derive the per-call SENTIMENT KPIs from the cache PER TICKER BATCH (bounded memory: 25
+    tickers' sentiment rows + projected source paragraphs at a time, never the whole
+    paragraph/sentiment tables). Returns the per-call KPI frame, or None if the cache is empty."""
     store = context.store
     parts = []
     tickers = list(store.distinct(Tables.earnings_call_sentiment, "ticker"))
     for start in range(0, len(tickers), 25):
         batch = tickers[start : start + 25]
         scored = store.load(Tables.earnings_call_sentiment, where={"ticker": batch}, optional=True)
-        sections = store.load(
-            Tables.earnings_call_sections,
-            _SECTION_COLS,
-            where={"ticker": batch, "tag": list(EARNINGS_CALL_SCORED_TAGS)},
-            optional=True,
-        )
+        sections = load_paragraphs(store, batch)
         if scored is None or sections is None:
             continue
         for ticker, s in scored.groupby("ticker", sort=False):
@@ -405,8 +406,9 @@ def build_earnings_call_feature_panel(
 ) -> pd.DataFrame:
     """Build the exact 12-column raw/issuer-history daily feature contract.
 
-    Empty if the sentiment cache is unavailable. ``per_call`` may be supplied from
-    the bounded-memory stream to skip re-deriving cached call KPIs.
+    Empty if the sentiment cache is unavailable. ``sections`` are `earnings_call_sections`
+    paragraph rows. ``per_call`` may be supplied from the bounded-memory stream to skip
+    re-deriving cached call KPIs.
     """
     if per_call is None:
         if sentiment is None or sentiment.empty or "sent_pos" not in sentiment.columns or sections is None:

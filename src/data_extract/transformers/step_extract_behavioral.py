@@ -2,7 +2,7 @@
 step_extract_behavioral.py  (src/data_extract/step_extract_behavioral.py)
 -------------------------------------------------------------------------
 Behavioral / retail-attention alt-data extraction:
-  * Wikipedia pageviews (reliable & daily)
+  * Earnings-call transcripts
   * Google Trends (opt-in; needs `pip install pytrends`, self-skips if absent)
   * News (future)
 

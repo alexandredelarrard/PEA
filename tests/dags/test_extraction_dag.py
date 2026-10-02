@@ -65,11 +65,11 @@ def test_required_sources_are_scheduled_without_retired_attention_sources():
         and isinstance(call.args[0], ast.Constant)
     }
     assert scheduled == REQUIRED_COMMANDS
-    assert "wiki-pageviews" not in scheduled and "google-trends" not in scheduled
+    assert "google-trends" not in scheduled
 
     print("\n=== SANITY CHECK: extraction DAG sources ===")
     print(f"  all {len(REQUIRED_COMMANDS) - 1} extraction commands are scheduled")
-    print("  OK: retired Wikipedia/Google sources are absent and the final gate is present")
+    print("  OK: the retired Google Trends source is absent and the final gate is present")
 
 
 def test_freshness_inventory_comes_only_from_schema():

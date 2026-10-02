@@ -2,7 +2,7 @@
 polite_http.py  (src/utils/polite_http.py)
 ------------------------------------------
 Shared, source-agnostic anti-429 HTTP toolkit for extractors that scrape rate-limited public
-endpoints (Motley Fool behind Cloudflare, Wikimedia, ...). We COOPERATE with rate limits, we
+endpoints (Motley Fool behind Cloudflare, roic.ai, ...). We COOPERATE with rate limits, we
 do NOT evade bans:
 
   * rotate a REAL browser IMPERSONATION profile per request (curl_cffi -> a coherent UA + TLS +
@@ -10,7 +10,7 @@ do NOT evade bans:
     fallback when curl_cffi is unavailable / impersonation is off.
   * honour Retry-After; exponential backoff WITH JITTER on 429 / 403 / 5xx.
   * PER-HOST run-wide slowdown: a 429 from one host ratchets only THAT host's pace, so Google's
-    throttling never slows Wikimedia and vice-versa.
+    throttling never slows Motley Fool and vice-versa.
   * optional bring-your-own proxy via env (PEA_SCRAPE_PROXY / HTTPS_PROXY). We deliberately do
     NOT ship or rotate anonymous / residential proxy pools (that is ban-evasion, not politeness).
   * TLS verification stays ON everywhere. A certificate failure is reported ONCE PER HOST at
@@ -214,7 +214,7 @@ def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3
     honouring Retry-After and ratcheting a PER-HOST slowdown on each 429. Returns the response
     on HTTP 200; None on a terminal non-200 (logged unless `log_missing=False`) or transport
     failure. `impersonate=False` uses a plain requests GET (for friendly APIs that want their
-    own descriptive User-Agent, e.g. Wikimedia)."""
+    own descriptive User-Agent, e.g. roic.ai)."""
     for attempt in range(retries + 1):
         r = _raw_get(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
         if r is None:  # transport error (all paths failed)

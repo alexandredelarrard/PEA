@@ -1,5 +1,5 @@
 """
-Shared anti-429 HTTP toolkit (src/utils/polite_http.py) used by the earnings-call, Wikipedia
+Shared anti-429 HTTP toolkit (src/utils/polite_http.py) used by the earnings-call
 (and, for the proxy resolver, Google Trends) extractors. Tests the transport-agnostic policy:
 retry + backoff honouring Retry-After, a PER-HOST run-wide slowdown ratcheted on 429 (so one
 host's throttle can't slow another), get_text/get_json, and the BYO-proxy env resolver.
@@ -50,7 +50,7 @@ def test_pace_is_per_host(monkeypatch):
     print(
         "  per-host isolation: api-a slowed to "
         f"x{ph.pace_mult('https://api-a.com/z'):.1f}, api-b still x1.0 (Google's throttle "
-        "won't slow Wikimedia). Validated."
+        "won't slow Motley Fool). Validated."
     )
 
 

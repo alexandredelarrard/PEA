@@ -107,7 +107,6 @@ services:
         # load-aware pools: cap the heavy / rate-limited task groups so only the LIGHT tasks fan out
         airflow pools set sec_bulk  2 "SEC bulk zip downloads (notes/statements/insider/13F/FTD)" || true
         airflow pools set sec_api   2 "per-ticker EDGAR API (companyfacts/employees/DEF14A)"       || true
-        airflow pools set scrape    2 "external scraping (Google Trends / transcripts)" || true
         airflow pools set aggregate 3 "cube feature-group builds (cap concurrency to bound memory)"  || true
     restart: "no"
 

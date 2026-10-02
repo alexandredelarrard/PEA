@@ -10,9 +10,9 @@ Airflow POOLS (created in airflow-init):
                           insider_transactions, financial_notes  (disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time
-  * scrape   (2 slots)  — external rate-limited scraping: earnings-call download -> ingest
   * default             — light / fast: macro, short_interest, earnings_surprises,
-                          superinvestors  (+ the one heavy yfinance pull: price_history)
+                          superinvestors, earnings calls  (+ the one heavy yfinance pull:
+                          price_history)
 
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
 the data_aggregation DAG. Fetchers and the schema-driven freshness gate each get three attempts;
@@ -108,9 +108,8 @@ sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 
-# 4) earnings calls: DOWNLOAD to disk (HF + MF HTML) -> INGEST to DB
-download_earnings_calls = fetch("download-earnings-calls", pool="scrape")
-ingest_earnings_calls = fetch("ingest-earnings-calls", pool="scrape")
+# 4) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
+extract_earnings_calls = fetch("extract-earnings-calls")
 
 # 5) final schema-driven freshness gate; a red gate retries and never permits aggregation.
 extraction_status = fetch("extraction-status", task_id="extraction_status")
@@ -148,8 +147,7 @@ all_fetchers = [
     sec_13d,
     sec_13g,
     filing_text,
-    download_earnings_calls,
-    ingest_earnings_calls,
+    extract_earnings_calls,
     superinvestors,
     thirteen_f_managers,
 ]
@@ -176,7 +174,6 @@ thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes
-download_earnings_calls >> ingest_earnings_calls  # ingest parses the downloaded files
 
 # all sources refreshed -> schema freshness hard gate -> aggregation
 all_fetchers >> extraction_status >> trigger_aggregation

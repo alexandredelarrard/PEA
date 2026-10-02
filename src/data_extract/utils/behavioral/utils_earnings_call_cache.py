@@ -23,6 +23,33 @@ def invalidate_earnings_call_derivatives(context: Context, calls: pd.DataFrame) 
     return invalidated
 
 
+def pending_refresh_markers(calls: pd.DataFrame) -> pd.DataFrame:
+    """`invalid-pending` sentiment rows for `calls` (`ticker`, `quarter`, `as_of`).
+
+    The marker survives the extraction/aggregation process boundary: the text step reads
+    the earliest pending `as_of` as the start of the cube tail it must refresh, and
+    acknowledges the marker only after the cube write succeeds.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "ticker": ticker,
+                "quarter": quarter,
+                "tag": tag,
+                "as_of": as_of,
+                "sent_pos": None,
+                "sent_neg": None,
+                "sent_neu": None,
+                "n_words": None,
+                "uncertainty_ratio": None,
+                "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+            }
+            for ticker, quarter, as_of in calls[["ticker", "quarter", "as_of"]].itertuples(index=False)
+            for tag in EARNINGS_CALL_SCORED_TAGS
+        ]
+    )
+
+
 def save_earnings_call_sections(context: Context, rows: pd.DataFrame) -> int:
     """Invalidate stale derivatives, upsert source, and flag invalid replacements.
 
@@ -57,27 +84,13 @@ def save_earnings_call_sections(context: Context, rows: pd.DataFrame) -> int:
     rows.loc[missing_date, "as_of"] = recovered_dates
     invalidate_earnings_call_derivatives(context, rows)
     saved = context.store.save(Tables.earnings_call_sections, rows)
-    markers = []
+    invalid = []
     for (ticker, quarter), call in rows.groupby(["ticker", "quarter"], sort=False):
         quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
         if quality.valid:
             continue
         as_of = pd.to_datetime(call["as_of"], errors="coerce").dropna() if "as_of" in call else pd.Series(dtype="datetime64[ns]")
-        for tag in EARNINGS_CALL_SCORED_TAGS:
-            markers.append(
-                {
-                    "ticker": ticker,
-                    "quarter": quarter,
-                    "tag": tag,
-                    "as_of": as_of.iloc[0] if not as_of.empty else None,
-                    "sent_pos": None,
-                    "sent_neg": None,
-                    "sent_neu": None,
-                    "n_words": None,
-                    "uncertainty_ratio": None,
-                    "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-                }
-            )
-    if markers:
-        context.store.save(Tables.earnings_call_sentiment, pd.DataFrame(markers))
+        invalid.append({"ticker": ticker, "quarter": quarter, "as_of": as_of.iloc[0] if not as_of.empty else None})
+    if invalid:
+        context.store.save(Tables.earnings_call_sentiment, pending_refresh_markers(pd.DataFrame(invalid)))
     return saved

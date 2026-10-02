@@ -42,8 +42,7 @@ REQUIRED_COMMANDS = {
     "sec-13d",
     "sec-13g",
     "filing-text",
-    "download-earnings-calls",
-    "ingest-earnings-calls",
+    "extract-earnings-calls",
     "extraction-status",
 }
 
@@ -118,8 +117,7 @@ def test_retries_dependencies_and_hard_gates_are_wired():
         "splits",
         "price_history",
         "dividends",
-        "download_earnings_calls",
-        "ingest_earnings_calls",
+        "extract_earnings_calls",
     }
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
@@ -148,3 +146,16 @@ def test_scheduled_edgar_walks_require_complete_ticker_coverage():
     print("\n=== SANITY CHECK: strict EDGAR walks ===")
     print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers require complete coverage")
     print("  OK: one failed ticker makes the source task retry without advancing its manifest")
+
+
+def test_earnings_calls_are_one_task_outside_the_retired_scrape_pool():
+    source = _source(DAG_FILE)
+    compose = _source(DAG_FILE.parents[2] / "docker-compose.yml")
+    assert 'extract_earnings_calls = fetch("extract-earnings-calls")' in source
+    assert "download-earnings-calls" not in source and "ingest-earnings-calls" not in source
+    assert '"scrape"' not in source
+    assert "pools set scrape" not in compose
+
+    print("\n=== SANITY CHECK: earnings-call extraction task ===")
+    print("  one extract-earnings-calls task in the default pool replaces download + ingest")
+    print("  OK: no task or airflow-init pool definition references the scrape pool")

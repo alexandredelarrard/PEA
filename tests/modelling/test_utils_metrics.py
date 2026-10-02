@@ -84,3 +84,25 @@ def test_auc_known_truth() -> None:
     assert np.isnan(auc(np.array([1, 1]), np.array([0.2, 0.3])))
     print("\n=== SANITY CHECK: rank AUC ===")
     print("  perfect -> 1, reversed -> 0, all ties -> 0.5, one class -> NaN. Validated.")
+
+
+def test_daily_ic_counts_binary_label_days_and_keeps_the_continuous_rule() -> None:
+    rng = np.random.default_rng(3)
+    rows = []
+    for d in pd.bdate_range("2020-01-01", periods=60):
+        x = rng.normal(size=40)
+        rank = pd.Series(x + rng.normal(size=40)).rank(pct=True).to_numpy()
+        rows.append(pd.DataFrame({"date": d, "pred": x, "rank": rank, "binary": (rank > 0.5).astype(float)}))
+    panel = pd.concat(rows, ignore_index=True)
+    binary = daily_ic(panel, panel["pred"], "binary", horizon=1)
+    assert binary["n_days"] == 60 and binary["mean_ic"] > 0.3, "every binary day counts and carries the signal"
+    assert len(daily_ic_series(panel, "binary")) == 60
+    # a continuous label keeps the >= 3 distinct values rule: a 2-valued day of a rank label is skipped
+    two_valued = panel.copy()
+    first = two_valued["date"] == two_valued["date"].min()
+    two_valued.loc[first, "rank"] = np.where(two_valued.loc[first, "rank"] > 0.5, 0.75, 0.25)
+    assert daily_ic(two_valued, two_valued["pred"], "rank")["n_days"] == 59
+    print("\n=== SANITY CHECK: binary-label IC ===")
+    print(
+        f"  {{0,1}} label: {binary['n_days']} days counted, mean IC {binary['mean_ic']:+.3f}; a rank label still needs 3 distinct values per day. Validated."
+    )

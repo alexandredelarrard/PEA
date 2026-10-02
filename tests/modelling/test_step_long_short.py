@@ -85,8 +85,14 @@ def _cube(n_days: int = 260, n_tickers: int = 40) -> pd.DataFrame:
     return cube
 
 
-def _setup(tmp_path: Path, sqlite_store: Any, save: bool = True, **overrides: Any) -> tuple[StepLongShort, _SpyStore, DictConfig]:
+def _setup(
+    tmp_path: Path, sqlite_store: Any, save: bool = True, binary_label: bool = False, **overrides: Any
+) -> tuple[StepLongShort, _SpyStore, DictConfig]:
     cube = _cube()
+    if binary_label:  # {0, 1} = top half of the day's rank; immature labels stay NaN
+        for h in HORIZONS:
+            tcol = target_column("rank", h)
+            cube[tcol] = (cube[tcol] > 0.5).astype(float).where(cube[tcol].notna())
     sqlite_store.replace(Tables.cube, cube)
     spy = _SpyStore(sqlite_store)
     dates = sorted(cube["date"].unique())
@@ -215,6 +221,30 @@ def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_st
         f"  newest date {pd.Timestamp(newest).date()} has NO label yet and is scored for 40 names x {len(HORIZONS)} horizons x {last['model'].nunique()} models;"
     )
     print(f"  one feature-only float64 read; blended stamped h~{blend_h}; {len(out)} long rows persisted. Validated.")
+
+
+def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path: Path, sqlite_store: Any) -> None:
+    step, _, cfg = _setup(
+        tmp_path,
+        sqlite_store,
+        save=False,
+        binary_label=True,
+        model={"ensemble": ["lgbm", "random_forest"]},
+        lgbm={"task": "classification"},
+        random_forest={"task": "classification"},
+    )
+    res = step.run_train()
+    meta = json.loads((tmp_path / "models" / "metadata.json").read_text())
+    for h in HORIZONS:
+        assert res.cv[h].folds and all(f["n_days"] > 0 for f in res.cv[h].folds), "binary-label days are counted"
+        assert np.isfinite(res.cv[h].ic["mean_ic"]) and res.cv[h].ic["mean_ic"] > 0
+        assert all(np.isfinite(m["mean_ic"]) for m in res.cv[h].member_ic.values())
+        assert meta["train_ic_ir"][str(h)] > 0, "the blend weights come from a real CV IR"
+    raw = res.models[HORIZONS[0]]["lgbm"].predict(sqlite_store.load(Tables.cube))  # `predictions` holds per-day z
+    assert raw.between(0, 1).all() and raw.std() > 0, "members output positive-class probabilities"
+    print("\n=== SANITY CHECK: classification through StepLongShort ===")
+    print(f"  CV mean IC { ({h: round(res.cv[h].ic['mean_ic'], 3) for h in HORIZONS}) }; train_ic_ir {meta['train_ic_ir']};")
+    print(f"  blend weights { ({h: round(w, 3) for h, w in res.weights.items()}) }; probabilities in [0, 1]. Validated.")
 
 
 def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any) -> None:

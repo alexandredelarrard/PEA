@@ -38,6 +38,16 @@ def member_path(directory: Path, horizon: int, family: str) -> Path:
     return Path(directory) / f"model_h{int(horizon)}_{family}.pkl"
 
 
+def clear_members(directory: Path) -> list[Path]:
+    """Delete every member pickle (`model_h<h>_<family>.pkl`) of a previous run, so a horizon or
+    family this run does not produce can never be loaded next to the new members. Returns the
+    deleted files."""
+    removed = sorted(Path(directory).glob("model_h*_*.pkl"))
+    for path in removed:
+        path.unlink()
+    return removed
+
+
 def write_metadata(directory: Path, meta: dict) -> Path:
     """Persist `metadata.json` (stamped with `artifact_format`), creating the directory."""
     directory = Path(directory)

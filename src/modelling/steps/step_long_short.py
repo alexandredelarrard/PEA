@@ -31,8 +31,10 @@ training and prediction are separate DAG tasks on different cadences.
 from __future__ import annotations
 
 import gc
+import platform
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from importlib.metadata import version
 
 import numpy as np
 import pandas as pd
@@ -44,8 +46,9 @@ from src.data_aggregate.utils.assemble.cube import horizons_in, is_meta_column, 
 from src.data_store.schema import Tables
 from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression, RandomForestModel, model_class
 from src.modelling.transformers.backtest import Backtest
+from src.modelling.transformers.base import half_life_years
 from src.modelling.transformers.monitor import Monitor
-from src.modelling.utils.artifacts import load_ensemble, member_path, models_dir, read_metadata, write_metadata
+from src.modelling.utils.artifacts import clear_members, load_ensemble, member_path, models_dir, read_metadata, write_metadata
 from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
@@ -136,8 +139,9 @@ class StepLongShort(Step):
         """Train, evaluate, persist and backtest the per-horizon ensemble (see module docstring)."""
         schema = self._resolve_schema()
         self._monitor.start_run()
-        if self._half_life() is not None:
-            self._log.info("Time-decay sample weights enabled (half_life=%.1f years)", self._half_life())
+        half_life = half_life_years(self._config)
+        if half_life is not None:
+            self._log.info("Time-decay sample weights enabled (half_life=%.1f years)", half_life)
 
         models: dict[int, dict[str, BaseModel]] = {}
         cvs: dict[int, HorizonCV] = {}
@@ -363,6 +367,9 @@ class StepLongShort(Step):
         """Pickle every member + `metadata.json` (the contract the strategies, app and
         `run_predict` read)."""
         directory = models_dir(self._context, self._config)
+        stale = clear_members(directory)
+        if stale:
+            self._log.info("Removed %d member file(s) of the previous run from %s", len(stale), directory)
         for h, members in models.items():
             for fam, model in members.items():
                 model.save(member_path(directory, h, fam))
@@ -387,6 +394,7 @@ class StepLongShort(Step):
             ),
             "full_history": bool(full_history),
             "train_ic_ir": {int(h): (float(cvs[h].ic["ic_ir"]) if np.isfinite(cvs[h].ic["ic_ir"]) else 0.0) for h in models},
+            "library_versions": {"python": platform.python_version(), "lightgbm": version("lightgbm"), "numpy": version("numpy")},
         }
         write_metadata(directory, meta)
         self._log.info("Saved %d horizons x %d members + metadata.json to %s", len(models), len(self.families), directory)
@@ -405,10 +413,6 @@ class StepLongShort(Step):
             sig.insert(0, "date", signal_date)
             self._context.store.replace(Tables.cube_signal, sig)
             self._log.info("Saved blended signal to DB table '%s'", Tables.cube_signal)
-
-    def _half_life(self) -> float | None:
-        wd = self._config.model.get("weight_decay")
-        return float(wd.half_life_years) if (wd and wd.get("enabled", False)) else None
 
     # ================================================================== #
     # Production prediction                                              #
@@ -457,9 +461,7 @@ class StepLongShort(Step):
             raise RuntimeError("No horizon produced a prediction for the latest cube date(s).")
 
         hs = [int(h) for h in models if f"z{h}" in ens_wide.columns]
-        irs = {h: max(0.0, train_ic.get(h, 0.0)) for h in hs}
-        tot = sum(irs.values())
-        w = {h: (irs[h] / tot if tot > 0 else 1.0 / len(hs)) for h in hs}
+        w = ir_horizon_weights({h: train_ic.get(h, 0.0) for h in hs})
         blend = blend_horizons(ens_wide[[f"z{h}" for h in hs]].to_numpy(), np.array([w[h] for h in hs]))
         # the blend is stamped with the IR-weighted average horizon: how far ahead it is about
         blend_h = int(round(sum(w[h] * h for h in hs))) if hs else 0

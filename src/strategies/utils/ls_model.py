@@ -44,13 +44,16 @@ class SignalBundle:
 
 
 def _load_models(context: Context, config: DictConfig) -> tuple[dict, dict[int, dict[str, Any]], str, list[int]]:
-    """metadata.json + every saved member for the configured cube horizons (missing ones skipped).
-    Raises when nothing is trained or the artifacts predate the current pickle layout."""
+    """metadata.json + every saved member of the horizons that run trained, among the configured
+    cube horizons (missing members skipped). A member file of a horizon the metadata does not list
+    belongs to an older run and is never loaded. Raises when nothing is trained or the artifacts
+    predate the current pickle layout."""
     directory = models_dir(context, config)
     meta = read_metadata(directory)
     target_type = meta.get("target_type", config.strategy_ls.get("target_type", "rank"))
     model_types = list(meta.get("model_types") or [])
-    horizons = [int(h) for h in config.build_cube.targets.horizons]
+    trained = {int(h) for h in meta.get("horizons", [])}
+    horizons = [int(h) for h in config.build_cube.targets.horizons if int(h) in trained]
     return meta, load_ensemble(directory, horizons, model_types), target_type, horizons
 
 

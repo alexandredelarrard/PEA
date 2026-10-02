@@ -16,6 +16,13 @@ import pandas as pd
 from scipy.stats import rankdata, spearmanr
 
 
+def _min_label_values(label: pd.Series) -> int:
+    """Distinct label values a day needs to count in the daily IC: 3 for a continuous (rank /
+    z-score / return) label, 2 for a binary {0, 1} classification label, whose days always have
+    exactly two. Spearman against a binary label is the rank-biserial correlation."""
+    return 2 if set(np.unique(label.dropna().to_numpy())) <= {0, 1} else 3
+
+
 def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horizon: int = 1, trading_days_per_year: int = 252) -> dict:
     """Daily cross-sectional IC (Spearman) and its annualized information ratio.
 
@@ -25,9 +32,10 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horiz
     which reduces to the classic sqrt(252) daily IR at horizon=1."""
     df = panel[["date", label_name]].copy()
     df["pred"] = preds.to_numpy()
+    min_label = _min_label_values(df[label_name])
     ics = []
     for _, g in df.groupby("date", sort=True):
-        if g["pred"].nunique() > 2 and g[label_name].nunique() > 2:
+        if g["pred"].nunique() > 2 and g[label_name].nunique() >= min_label:
             ic, _ = spearmanr(g["pred"], g[label_name])
             ic_value = cast(float, ic)
             if np.isfinite(ic_value):
@@ -44,8 +52,9 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horiz
 def daily_ic_series(oos: pd.DataFrame, label_name: str, pred_col: str = "pred") -> pd.Series:
     """Per-day cross-sectional Spearman IC over a (date, pred, label) frame, date-sorted."""
     rows = {}
+    min_label = _min_label_values(oos[label_name])
     for d, g in oos.groupby("date", sort=True):
-        if g[pred_col].nunique() > 2 and g[label_name].nunique() > 2:
+        if g[pred_col].nunique() > 2 and g[label_name].nunique() >= min_label:
             ic, _ = spearmanr(g[pred_col], g[label_name])
             ic_value = cast(float, ic)
             if np.isfinite(ic_value):

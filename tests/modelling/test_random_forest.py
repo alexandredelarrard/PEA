@@ -3,6 +3,8 @@ a real save -> load roundtrip inside a 3-member ensemble, and the fixed tree cou
 
 from __future__ import annotations
 
+import io
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -56,3 +58,37 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path
     print(
         f"  ensemble prediction identical after reload; per-member std { ({k: round(float(v.std()), 3) for k, v in after_members.items()}) }. Validated."
     )
+
+
+def test_member_pickles_hold_no_library_objects() -> None:
+    """A member pickle names only its own class and plain Python values (the booster as its LightGBM
+    text model, the linear arrays as floats), so it loads under another lightgbm / numpy version."""
+    cfg = make_config()
+    panel = signal_panel()
+    dates = np.sort(panel["date"].unique())
+    train, test = panel[panel["date"] < dates[120]], panel[panel["date"] >= dates[125]]
+    sub_tr, sub_val = temporal_valid_split(train)
+    referenced = {}
+    for fam in cfg.model.ensemble:
+        member = model_class(fam)(ctx(), cfg, fam, 60).fit(sub_tr, sub_val)
+        blob = pickle.dumps(member, protocol=pickle.HIGHEST_PROTOCOL)
+        unpickler = _ModuleRecorder(io.BytesIO(blob))
+        reloaded = unpickler.load()
+        referenced[fam] = sorted(unpickler.modules)
+        assert unpickler.modules == {type(member).__module__}, f"{fam}: pickle resolves {unpickler.modules}"
+        assert type(reloaded) is type(member) and reloaded.features == member.features
+        assert np.array_equal(reloaded.predict(test).to_numpy(), member.predict(test).to_numpy())
+    print("\n=== SANITY CHECK: portable member pickles ===")
+    print(f"  modules each pickle resolves: {referenced} (no numpy / lightgbm / pandas); predictions identical after reload. Validated.")
+
+
+class _ModuleRecorder(pickle.Unpickler):
+    """Unpickler that records every module a pickle asks to import."""
+
+    def __init__(self, file: io.BytesIO) -> None:
+        super().__init__(file)
+        self.modules: set[str] = set()
+
+    def find_class(self, module: str, name: str) -> type:
+        self.modules.add(module)
+        return super().find_class(module, name)

@@ -12,6 +12,7 @@ from omegaconf import OmegaConf
 
 from src.modelling.utils.artifacts import (
     ARTIFACT_FORMAT,
+    clear_members,
     load_ensemble,
     member_path,
     models_dir,
@@ -67,3 +68,16 @@ def test_load_ensemble_order_and_skips(tmp_path: Path) -> None:
     assert safe_filename("beta_USD/EUR 1") == "beta_USD_EUR_1"
     print("\n=== SANITY CHECK: load_ensemble ===")
     print(f"  {{h: families}} = { ({h: list(m) for h, m in got.items()}) }; no member at all -> FileNotFoundError. Validated.")
+
+
+def test_clear_members_removes_only_member_pickles(tmp_path: Path) -> None:
+    for h, fam in ((30, "lgbm"), (90, "elasticnet")):
+        save_member(_Member(f"{fam}{h}"), member_path(tmp_path, h, fam))
+    write_metadata(tmp_path, {"horizons": [30, 90]})
+    (tmp_path / "model_h30_lgbm.txt").write_text("pre-refactor booster")  # never loaded, left alone
+    removed = clear_members(tmp_path)
+    assert sorted(p.name for p in removed) == ["model_h30_lgbm.pkl", "model_h90_elasticnet.pkl"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["metadata.json", "model_h30_lgbm.txt"]
+    assert clear_members(tmp_path / "absent") == []
+    print("\n=== SANITY CHECK: clear_members ===")
+    print(f"  removed {[p.name for p in removed]}; metadata.json and non-member files kept; a missing directory is a no-op. Validated.")

@@ -242,3 +242,18 @@ class LightGBMModel(BaseModel):
     def importance(self) -> pd.Series:
         """LightGBM gain importance, in trained-feature order."""
         return pd.Series(dict(zip(self.features, self.model.feature_importance(importance_type="gain"), strict=False)), dtype=float)
+
+    # The booster travels as its LightGBM text model (the format the `.txt` artifacts used), not as
+    # a pickled `Booster` object: that pickle references lightgbm / numpy internals and breaks when
+    # the trainer (Airflow, Python 3.12) and the scorer (app / CLI) run different library versions.
+    def __getstate__(self) -> dict[str, Any]:
+        state = super().__getstate__()
+        if isinstance(self.model, lgb.Booster):
+            state["model"] = self.model.model_to_string()
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
+        if isinstance(self.model, str):
+            self.model = lgb.Booster(model_str=self.model)
+            cast(Any, self.model).feature_names = self.features

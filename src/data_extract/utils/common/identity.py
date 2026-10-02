@@ -58,10 +58,13 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.entity_lineage import (
     TwoUniverseTickersOneEntityError,
+    entity_by_cik_map,
+    entity_or_singleton,
     load_d19_allowlist,
+    roster_cik_map,
 )
 from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker, pad_cik
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,8 @@ SymbolMatchKind = Literal[
     "exact_dated_tenure",
     "roster_tenure_proxy",
 ]
+#: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
+TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
 
 
 @dataclass(frozen=True)
@@ -214,8 +219,7 @@ class Identity:
 
     def entity_of(self, cik) -> str:
         """The entity a CIK belongs to. A CIK with no stored row IS its own entity."""
-        key = pad_cik(cik)
-        return self.entity_by_cik.get(key, f"E{key}")
+        return entity_or_singleton(self.entity_by_cik, pad_cik(cik))
 
     def ciks_for(self, entity_id: str) -> frozenset[str]:
         """Every STORED CIK on an entity; empty for an entity that owns no stored row.
@@ -553,6 +557,33 @@ def build_identity(
     is asserted BEFORE the reverse map is usable, because that is the one failure that
     relabels a company's rows onto another company rather than dropping them.
     """
+    _require_tables(lineage, tenure, roster)
+    _check_one_entity_per_cik(lineage)
+    entity_by_cik = entity_by_cik_map(lineage)
+    roster_cik = roster_cik_map(roster)
+    ticker_by_entity = _ticker_by_entity(roster_cik, entity_by_cik, lineage)
+    tenure_by_symbol, manual_tenure_by_symbol, ciks_by_symbol = _tenure_maps(tenure, entity_by_cik)
+    allowlist = d19_allowlist or {}
+    ciks_by_entity, scope_pairs_by_entity = _scope_maps(entity_by_cik, ciks_by_symbol)
+    identity = Identity(
+        entity_by_cik=entity_by_cik,
+        roster_cik=roster_cik,
+        ticker_by_entity=ticker_by_entity,
+        tenure_by_symbol=tenure_by_symbol,
+        manual_tenure_by_symbol=manual_tenure_by_symbol,
+        roster_proxy_by_symbol=_roster_proxies(allowlist, roster_cik, entity_by_cik, tenure_by_symbol),
+        redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
+        ciks_by_symbol=ciks_by_symbol,
+        ciks_by_entity=ciks_by_entity,
+        scope_pairs_by_entity=scope_pairs_by_entity,
+    )
+    _check_d19(identity, allowlist, today)
+    _log_identity(identity)
+    return identity
+
+
+def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame) -> None:
+    """Raise when any of the three mandatory identity inputs is missing or empty."""
     if lineage is None or lineage.empty:
         raise IdentityError(
             "identity: `entity_lineage` is empty. That is a LOUD failure and not an empty "
@@ -570,10 +601,10 @@ def build_identity(
     if roster is None or roster.empty:
         raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
 
-    # --- axis A ------------------------------------------------------------- #
-    ciks = lineage["cik"].map(pad_cik)
-    entities = lineage["entity_id"].astype(str)
-    per_cik = pd.DataFrame({"cik": ciks, "entity_id": entities}).drop_duplicates()
+
+def _check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
+    """Raise when one CIK carries two entity_ids, which would make `entity_of` order-dependent."""
+    per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "entity_id": lineage["entity_id"].astype(str)}).drop_duplicates()
     clashes = per_cik[per_cik.duplicated("cik", keep=False)]
     if not clashes.empty:
         raise CikInTwoEntitiesError(
@@ -582,113 +613,125 @@ def build_identity(
             "primary key is `cik`, so this cannot come from the database; it is a builder "
             "bug, and it would make `entity_of` order-dependent."
         )
-    entity_by_cik = dict(zip(per_cik["cik"], per_cik["entity_id"], strict=False))
 
-    # --- the universe ------------------------------------------------------- #
-    roster_cik: dict[str, str] = {}
-    for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"], strict=False):
-        if pd.isna(cik) or not str(cik).strip():
-            continue  # `universe_entity` raises for it, naming the ticker
-        roster_cik[normalise_ticker(ticker)] = pad_cik(cik)
 
-    # --- ⚠ the one raise asserted before any map is trusted ------------------ #
+def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str, str], lineage: pd.DataFrame) -> dict[str, str]:
+    """`{entity_id: its one universe ticker}`; raises when an entity holds two universe tickers."""
     by_entity: dict[str, list[str]] = {}
     for ticker, cik in sorted(roster_cik.items()):
-        by_entity.setdefault(entity_by_cik.get(cik, f"E{cik}"), []).append(ticker)
+        by_entity.setdefault(entity_or_singleton(entity_by_cik, cik), []).append(ticker)
     collisions = {e: t for e, t in by_entity.items() if len(t) > 1}
-    if collisions:
-        detail = []
-        for entity, tickers in sorted(collisions.items()):
-            joined = lineage[entities == entity]
-            rows = "; ".join(f"{pad_cik(r.cik)} via {r.source}" for r in joined.itertuples())
-            detail.append(f"{entity} holds " + ", ".join(f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
-        raise TwoUniverseTickersOneEntityError(
-            "identity: " + " | ".join(detail) + ". The reverse map is a dict, so one of these "
-            "tickers would overwrite the other and EVERY ROW OF THE LOSER would be relabelled "
-            "-- the only failure in this design that corrupts rather than drops. A spin-off "
-            "into two index members (DowDuPont -> DD/DOW/CTVA) is TWO entities that share a "
-            "past: split them with a curated row, never a wider merge."
-        )
-    ticker_by_entity = {entity: tickers[0] for entity, tickers in by_entity.items()}
+    if not collisions:
+        return {entity: tickers[0] for entity, tickers in by_entity.items()}
+    entities = lineage["entity_id"].astype(str)
+    detail = []
+    for entity, tickers in sorted(collisions.items()):
+        joined = lineage[entities == entity]
+        rows = "; ".join(f"{pad_cik(r.cik)} via {r.source}" for r in joined.itertuples())
+        detail.append(f"{entity} holds " + ", ".join(f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
+    raise TwoUniverseTickersOneEntityError(
+        "identity: " + " | ".join(detail) + ". The reverse map is a dict, so one of these "
+        "tickers would overwrite the other and EVERY ROW OF THE LOSER would be relabelled "
+        "-- the only failure in this design that corrupts rather than drops. A spin-off "
+        "into two index members (DowDuPont -> DD/DOW/CTVA) is TWO entities that share a "
+        "past: split them with a curated row, never a wider merge."
+    )
 
-    # --- axis B -------------------------------------------------------------- #
-    tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
-    manual_tenure_by_symbol: dict[str, list[tuple[str, pd.Timestamp, pd.Timestamp | None, int]]] = {}
+
+def _tenure_maps(
+    tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]
+) -> tuple[dict[str, tuple[TenureRow, ...]], dict[str, tuple[TenureRow, ...]], dict[str, frozenset[str]]]:
+    """(tenure rows by market symbol, the manual subset, issuer CIKs by raw symbol).
+
+    A tenure with no `valid_from` cannot answer a dated test, so it feeds only the CIK map.
+    """
+    tenure_by_symbol: dict[str, list[TenureRow]] = {}
+    manual_tenure_by_symbol: dict[str, list[TenureRow]] = {}
     ciks_by_symbol: dict[str, set[str]] = {}
     sources = tenure["source"].astype(str) if "source" in tenure.columns else pd.Series("form345", index=tenure.index)
-    for raw_symbol, symbol, cik, start, end, n, source in zip(
-        tenure["symbol"],
+    starts = pd.to_datetime(tenure["valid_from"])
+    ends = pd.to_datetime(tenure["valid_to"])
+    for has_symbol, symbol, cik, start, end, n, source in zip(
+        tenure["symbol"].notna(),
         tenure["symbol"].astype(str),
-        tenure["issuer_cik"],
-        tenure["valid_from"],
-        tenure["valid_to"],
+        pad_cik_series(tenure["issuer_cik"]),
+        starts,
+        ends,
         tenure["n_filings"],
         sources,
         strict=False,
     ):
-        key = pad_cik(cik)
-        if not pd.isna(raw_symbol):
-            ciks_by_symbol.setdefault(symbol, set()).add(key)
-        stamp = _as_timestamp(start)
-        if stamp is None:
-            continue  # a tenure with no start cannot answer a dated test
-        row = (entity_by_cik.get(key, f"E{key}"), stamp, _as_timestamp(end), int(n))
+        if has_symbol:
+            ciks_by_symbol.setdefault(symbol, set()).add(cik)
+        if start is pd.NaT:
+            continue
+        row = (entity_or_singleton(entity_by_cik, cik), start, None if end is pd.NaT else end, int(n))
         normalized_symbol = normalise_market_symbol(symbol)
         tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
         if source.strip().lower() == "manual":
             manual_tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
+    return (
+        {symbol: tuple(rows) for symbol, rows in tenure_by_symbol.items()},
+        {symbol: tuple(rows) for symbol, rows in manual_tenure_by_symbol.items()},
+        {symbol: frozenset(symbol_ciks) for symbol, symbol_ciks in ciks_by_symbol.items()},
+    )
 
-    # D19 already records the exceptional cases where the roster spelling is absent from, or
-    # disagrees with, Form 345. For an absent spelling only, borrow the DATED tenure of every
-    # filing symbol observed on the roster entity. Include every entity ever seen under those
-    # proxy symbols: FOXA may borrow FOX, but FOX belonged to old 21st Century Fox before the
-    # current Fox Corp. The date must settle that boundary; a roster CIK must never rewrite it.
-    allowlist = d19_allowlist or {}
-    roster_proxy_by_symbol: dict[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]] = {}
+
+def _roster_proxies(
+    allowlist: Mapping[str, str],
+    roster_cik: Mapping[str, str],
+    entity_by_cik: Mapping[str, str],
+    tenure_by_symbol: Mapping[str, tuple[TenureRow, ...]],
+) -> dict[str, tuple[TenureRow, ...]]:
+    """D19-cleared roster spellings absent from Form 345 -> the dated tenures of every filing symbol
+    seen on the roster entity.
+
+    Every entity ever seen under those proxy symbols is kept (FOX belonged to old 21st Century Fox
+    before Fox Corp), so the date settles the boundary; a roster CIK never rewrites it.
+    """
+    roster_proxy_by_symbol: dict[str, tuple[TenureRow, ...]] = {}
     for ticker in sorted(set(allowlist) & set(roster_cik)):
         if ticker in tenure_by_symbol:
             continue
-        roster_entity = entity_by_cik.get(roster_cik[ticker], f"E{roster_cik[ticker]}")
+        roster_entity = entity_or_singleton(entity_by_cik, roster_cik[ticker])
         proxy_symbols = {symbol for symbol, rows in tenure_by_symbol.items() if any(entity == roster_entity for entity, _, _, _ in rows)}
         proxy_rows = tuple(row for symbol in sorted(proxy_symbols) for row in tenure_by_symbol[symbol])
         if proxy_rows:
             roster_proxy_by_symbol[ticker] = proxy_rows
+    return roster_proxy_by_symbol
 
+
+def _scope_maps(
+    entity_by_cik: Mapping[str, str], ciks_by_symbol: Mapping[str, frozenset[str]]
+) -> tuple[dict[str, frozenset[str]], dict[str, tuple[tuple[str, str], ...]]]:
+    """(entity -> its stored CIKs, entity -> sorted (normalised symbol, CIK) filing-scope pairs)."""
     ciks_by_entity: dict[str, set[str]] = {}
     for cik, entity in entity_by_cik.items():
         ciks_by_entity.setdefault(entity, set()).add(cik)
     scope_pairs: dict[str, set[tuple[str, str]]] = {}
     for symbol, symbol_ciks in ciks_by_symbol.items():
         for cik in symbol_ciks:
-            scope_pairs.setdefault(entity_by_cik.get(cik, f"E{cik}"), set()).add((normalise_ticker(symbol), cik))
-
-    identity = Identity(
-        entity_by_cik=entity_by_cik,
-        roster_cik=roster_cik,
-        ticker_by_entity=ticker_by_entity,
-        tenure_by_symbol={s: tuple(v) for s, v in tenure_by_symbol.items()},
-        manual_tenure_by_symbol={s: tuple(v) for s, v in manual_tenure_by_symbol.items()},
-        roster_proxy_by_symbol=roster_proxy_by_symbol,
-        redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
-        ciks_by_symbol={symbol: frozenset(symbol_ciks) for symbol, symbol_ciks in ciks_by_symbol.items()},
-        ciks_by_entity={entity: frozenset(entity_ciks) for entity, entity_ciks in ciks_by_entity.items()},
-        scope_pairs_by_entity={entity: tuple(sorted(pairs)) for entity, pairs in scope_pairs.items()},
+            scope_pairs.setdefault(entity_or_singleton(entity_by_cik, cik), set()).add((normalise_ticker(symbol), cik))
+    return (
+        {entity: frozenset(entity_ciks) for entity, entity_ciks in ciks_by_entity.items()},
+        {entity: tuple(sorted(pairs)) for entity, pairs in scope_pairs.items()},
     )
 
-    _check_d19(identity, allowlist, today)
+
+def _log_identity(identity: Identity) -> None:
+    """One line of map sizes for the resolver just built."""
     logger.info(
         "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); "
         "%d symbol(s) with tenure; %d manual symbol(s); %d D19 roster proxy symbol(s); "
         "%d redundant symbol(s)",
-        len(entity_by_cik),
-        len(set(entity_by_cik.values())),
-        len(roster_cik),
-        len(tenure_by_symbol),
-        len(manual_tenure_by_symbol),
-        len(roster_proxy_by_symbol),
+        len(identity.entity_by_cik),
+        len(set(identity.entity_by_cik.values())),
+        len(identity.roster_cik),
+        len(identity.tenure_by_symbol),
+        len(identity.manual_tenure_by_symbol),
+        len(identity.roster_proxy_by_symbol),
         len(identity.redundant_symbols),
     )
-    return identity
 
 
 def _check_d19(identity: Identity, allowlist: Mapping[str, str], today=None) -> None:

@@ -14,7 +14,7 @@ from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
+from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
@@ -65,11 +65,12 @@ class StepExtractInstitutionals(Step):
         # corporate events (8-K)
         run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_8K_FETCH)
 
-        # Refresh the two-axis identity dimension after the insider cache producer, then hand
-        # one frozen resolver to the two symbol-only tapes at the end of the step.
-        insider_cache = cache_dir(self._context, self.config.local.paths.insider_transactions)
-        build_symbol_tenure(self._context, insider_cache, self._context.config_dir)
-        build_entity_lineage(self._context, insider_cache, str(self._context.config_dir))
+        # Refresh the two-axis identity dimension after the insider cache producer (one pass over
+        # the Form 345 zips feeds both tables), then hand one frozen resolver to the two
+        # symbol-only tapes at the end of the step.
+        scan = scan_form345_cache(cache_dir(self._context, self.config.local.paths.insider_transactions))
+        tenure = build_symbol_tenure(self._context, scan, self._context.config_dir)
+        build_entity_lineage(self._context, tenure, scan.owner_pairs, str(self._context.config_dir))
         identity = load_identity(self._context, refresh=True)
 
         # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on).

@@ -56,7 +56,7 @@ from src.data_extract.utils.behavioral.fetch_earnings_calls import (
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
+from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 
 # --- fundamentals ----------------------------------------------------------- #
@@ -587,10 +587,12 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
                 param_hint="--approve-rekey",
             )
         parsed_rekeys.add((old, new))
-    build_symbol_tenure(context, cache, config_path)
+    scan = scan_form345_cache(cache)
+    tenure = build_symbol_tenure(context, scan, config_path)
     build_entity_lineage(
         context,
-        cache,
+        tenure,
+        scan.owner_pairs,
         config_path,
         approved_rekeys=frozenset(parsed_rekeys),
     )

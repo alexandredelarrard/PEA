@@ -39,6 +39,7 @@ from src.data_extract.utils.common.entity_lineage import (
     validate_manual_tenure_entities,
 )
 from src.data_extract.utils.common.registrant import load_registrants
+from src.data_extract.utils.common.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
 
 CONFIG_DIR = "./configs"
@@ -64,6 +65,11 @@ def _tenure(rows: list[tuple[str, str, str, str | None, int]]) -> pd.DataFrame:
 
 def _roster(rows: list[tuple[str, str]]) -> pd.DataFrame:
     return pd.DataFrame([{"ticker": t, "cik": c} for t, c in rows])
+
+
+def _owner_pairs(owners: dict[str, set[str]]) -> pd.DataFrame:
+    """The (issuer_cik, owner_cik) pair frame a Form 345 cache scan yields."""
+    return pd.DataFrame([(issuer, owner) for issuer, members in owners.items() for owner in sorted(members)], columns=["issuer_cik", "owner_cik_raw"])
 
 
 def test_entity_id_is_the_oldest_cik_in_the_group():
@@ -120,10 +126,10 @@ def test_the_grey_band_raises_instead_of_guessing():
     # COHR's real shape, in miniature: 3 owners shared out of 31 and 53, jaccard 0.037
     tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 700), ("AAA", "0000000222", "2013-01-05", None, 700)])
     roster = _roster([("AAA", "0000000222")])
-    owners = {"0000000111": {f"o{i}" for i in range(31)}, "0000000222": {f"o{i}" for i in range(28, 81)}}
+    owners = {"0000000111": {f"{i:010d}" for i in range(31)}, "0000000222": {f"{i:010d}" for i in range(28, 81)}}
     assert score_overlap(owners["0000000111"], owners["0000000222"])[0] == 3
     with pytest.raises(UndecidedGreyBandError) as exc:
-        derive_entity_lineage(CACHE, tenure, roster, CONFIG_DIR, owners=owners)
+        derive_entity_lineage(tenure, roster, _owner_pairs(owners), CONFIG_DIR)
     assert "AAA/0000000111" in str(exc.value)  # it names the pair, not merely a count
 
     print("\n=== SANITY CHECK: grey band ===")
@@ -201,7 +207,7 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
-    lineage_module.build_entity_lineage(context, CACHE, CONFIG_DIR)
+    lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
 
     assert "1 changed CIK assignment(s): 0000000001" in caplog.text
     assert "affected current ticker(s): AAA" in caplog.text
@@ -209,6 +215,48 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
     print("  changed CIK 0000000001 and affected current ticker AAA are named")
     print("  OK: identity reassignment is visible before symbol-only consumers run")
+
+
+def test_entity_lineage_replace_is_skipped_when_unchanged(monkeypatch, caplog):
+    """A rebuild deriving exactly the stored rows (in another order) does not replace the table."""
+    columns = ["cik", "entity_id", "source", "confidence", "evidence"]
+    stored = pd.DataFrame(
+        [
+            ("0000000002", "E0000000001", "owner_overlap", 0.4, "shared owners"),
+            ("0000000001", "E0000000001", "roster", None, "roster CIK"),
+        ],
+        columns=columns,
+    )
+    derived = stored.iloc[::-1].reset_index(drop=True)
+    roster = _roster([("AAA", "0000000001")])
+    tenure = _tenure([("AAA", "0000000001", "2020-01-01", None, 1)])
+    replaced: list[pd.DataFrame] = []
+
+    class Store:
+        def load(self, table, **kwargs):
+            del kwargs
+            return {Tables.sp500_tickers: roster, Tables.entity_lineage: stored}[table]
+
+        def replace(self, table, frame):
+            replaced.append(frame)
+            return len(frame)
+
+    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (derived, pd.DataFrame()))
+    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        lineage_module, "load_manual_symbol_tenure", lambda *args, **kwargs: pd.DataFrame({"canonical_ticker": ["AAA"], "issuer_cik": ["0000000001"]})
+    )
+    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.skip"))
+    caplog.set_level(logging.INFO)
+
+    out = lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
+
+    assert replaced == [] and out is derived
+    assert "entity_lineage: unchanged (2 row(s)); replace skipped" in caplog.text
+    print("\n=== SANITY CHECK: unchanged entity_lineage is not rewritten ===")
+    print("  derived rows == stored rows in reverse order (NULL confidence included) -> 0 replace calls")
+    print("  OK: the comparison is keyed on cik, not on row order")
 
 
 def test_manual_tenure_cik_must_resolve_to_its_canonical_entity():
@@ -326,12 +374,13 @@ def test_an_exact_rekey_approval_allows_the_guarded_lineage_replace(monkeypatch,
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.rekey"))
 
     with pytest.raises(lineage_module.EntityRekeyError):
-        lineage_module.build_entity_lineage(context, CACHE, str(tmp_path / "configs"))
+        lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), str(tmp_path / "configs"))
     assert replaced == []
 
     lineage_module.build_entity_lineage(
         context,
-        CACHE,
+        tenure,
+        _owner_pairs({}),
         str(tmp_path / "configs"),
         approved_rekeys=frozenset({("E0000000200", "E0000000100")}),
     )
@@ -406,7 +455,7 @@ def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
     if tenure is None or roster is None or tenure.empty or roster.empty:
         pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
     assert tenure is not None and roster is not None
-    return derive_entity_lineage(CACHE, tenure, roster, CONFIG_DIR)
+    return derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
 
 
 def test_no_entity_holds_two_universe_tickers(live_lineage):
@@ -569,11 +618,10 @@ def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
         "PSKY": ("0000813828", current["PSKY"]),
     }
     lineage, _ = derive_entity_lineage(
-        CACHE,
         _tenure([(ticker, cik, "2000-01-01", None, 1) for ticker, cik in current.items()]),
         _roster(list(current.items())),
+        _owner_pairs({}),
         CONFIG_DIR,
-        owners={},
     )
     entity = dict(zip(lineage["cik"], lineage["entity_id"], strict=False))
     source = dict(zip(lineage["cik"], lineage["source"], strict=False))

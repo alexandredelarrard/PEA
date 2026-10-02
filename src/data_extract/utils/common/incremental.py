@@ -8,7 +8,8 @@ read that every incremental fetcher does before it spends a request.
 the table name;
 
 `stored_values` answers "which keys are already stored" (accessions, bulk periods) across one or
-more tables with `SELECT DISTINCT`.
+more tables with `SELECT DISTINCT`; `matches_stored` tells a full re-derivation that its frame
+equals the stored table, so the replace can be skipped.
 
 `resume_since` generalizes the per-ticker `groupby(...)[date_col].max()` idiom that
 several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already
@@ -38,7 +39,7 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Table
 
-__all__ = ["load_existing", "resume_since", "stored_values"]
+__all__ = ["load_existing", "matches_stored", "resume_since", "stored_values"]
 
 
 def load_existing(context: Context, table: Table | str, date_col: str | None = "date") -> pd.DataFrame | None:
@@ -67,6 +68,27 @@ def stored_values(context: Context, tables: Table | str | Sequence[Table | str],
         if column in context.store.columns(table):
             values.update(str(value) for value in context.store.distinct(table, column))
     return frozenset(values)
+
+
+def matches_stored(existing: pd.DataFrame | None, frame: pd.DataFrame, table: Table) -> bool:
+    """True when `frame` holds exactly the stored rows of a fully derived `table`.
+
+    Both sides are compared sorted on the table's primary key, with date columns parsed (a DATE
+    column reads back as `datetime.date`) and every value as a nullable string, so a stored
+    table read back from either backend compares equal to the frame that wrote it.
+    """
+    if existing is None or len(existing) != len(frame) or set(existing.columns) != set(frame.columns):
+        return False
+    columns = list(frame.columns)
+    return _canonical_rows(existing, columns, table).equals(_canonical_rows(frame, columns, table))
+
+
+def _canonical_rows(df: pd.DataFrame, columns: list[str], table: Table) -> pd.DataFrame:
+    """`columns` of `df` as nullable strings (date columns parsed first), sorted on the table key."""
+    df_canonical = df[columns].copy()
+    for column in table.date_type_cols:
+        df_canonical[column] = pd.to_datetime(df_canonical[column], errors="coerce")
+    return df_canonical.astype("string").sort_values(list(table.pk), kind="mergesort", ignore_index=True)
 
 
 def resume_since(

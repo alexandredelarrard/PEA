@@ -51,6 +51,7 @@ from src.data_extract.utils.common.registrant import drop_rows_outside_segment, 
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
 from src.data_store.schema import Tables
+from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
     s = pd.DataFrame(
         {
             "adsh": sub["adsh"],
-            "cik": sub["cik"].astype("string").str.zfill(10),
+            "cik": pad_cik_series(sub["cik"]).astype("string"),
             "form": sub.get("form"),
             "fy": sub.get("fy"),
             "fp": sub.get("fp"),

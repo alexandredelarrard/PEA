@@ -30,6 +30,7 @@ from src.data_extract.utils.common.sec_atom import (
 )
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
+    LIVE_DATE_FORMATS,
     build_insider_frame,
     empty_footnotes,
     filter_footnotes,
@@ -203,7 +204,7 @@ def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame,
 
 def _screen_live_rows(df_str: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Type the string rows, attach filing metadata and an `edgar:` row key, then screen into (kept, quarantine)."""
-    df_built = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float")
+    df_built = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS)
     df_built = df_built.merge(df_meta.drop_duplicates("accession_number", keep="last"), on="accession_number", how="left")
     df_built["transaction_sk"] = "edgar:" + df_built["security_type"].astype(str) + ":" + df_built["source_row_sequence"].astype(str)
     return screen_insider_rows(df_built, universe, identity)

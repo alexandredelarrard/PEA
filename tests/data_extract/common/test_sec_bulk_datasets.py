@@ -21,7 +21,7 @@ from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals.insider_common import build_insider_frame, screen_insider_rows
+from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_store.store import DataStore
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
@@ -110,7 +110,12 @@ def test_insider_parse_and_universe_filter_synthetic():
             "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
         }
     )
-    out = build_insider_frame(ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()), value_rule="shares_x_price_first", numeric_rule="to_numeric")
+    out = build_insider_frame(
+        ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()),
+        value_rule="shares_x_price_first",
+        numeric_rule="to_numeric",
+        date_formats=BULK_DATE_FORMATS,
+    )
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
@@ -147,7 +152,9 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = build_insider_frame(ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric")
+    df = build_insider_frame(
+        ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
+    )
     assert not df.empty and df["transaction_sk"].notna().all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()

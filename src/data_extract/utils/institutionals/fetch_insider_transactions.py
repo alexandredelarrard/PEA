@@ -37,6 +37,7 @@ from src.data_extract.utils.common.bulk_cache import (
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals.insider_common import (
+    BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
     InsiderField,
@@ -46,15 +47,21 @@ from src.data_extract.utils.institutionals.insider_common import (
     insider_verdicts,
     quarantine_frame,
     screen_insider_rows,
+    screened_accessions,
 )
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
+#: SUBMISSION / REPORTINGOWNER columns `INSIDER_FIELDS` maps; remarks and addresses are never read.
+_MEMBER_COLUMNS = {
+    scope: frozenset({"ACCESSION_NUMBER", *(field.bulk for field in INSIDER_FIELDS if field.scope == scope and field.bulk)})
+    for scope in ("filing", "owner")
+}
 #: The five Form 345 members, in `_read_tables` order; only SUBMISSION is required.
 _ZIP_SPECS = {
-    "SUBMISSION.TSV": ZipRead(),
-    "REPORTINGOWNER.TSV": ZipRead(required=False),
+    "SUBMISSION.TSV": ZipRead(usecols=_MEMBER_COLUMNS["filing"]),
+    "REPORTINGOWNER.TSV": ZipRead(usecols=_MEMBER_COLUMNS["owner"], required=False),
     "NONDERIV_TRANS.TSV": ZipRead(required=False),
     "DERIV_TRANS.TSV": ZipRead(required=False),
     "FOOTNOTES.TSV": ZipRead(required=False),
@@ -112,12 +119,23 @@ def _footnote_strings(notes: pd.DataFrame | None) -> pd.DataFrame:
     )
 
 
+def _accession_rows(df: pd.DataFrame, accessions: set[str]) -> pd.DataFrame:
+    """Rows of one zip member whose `ACCESSION_NUMBER` is in `accessions`."""
+    if "ACCESSION_NUMBER" not in df.columns:
+        return df
+    # `isin` on the Arrow-backed str column is ~15x slower than on its object copy.
+    return df[df["ACCESSION_NUMBER"].astype(object).isin(accessions)]
+
+
 def _parse_quarter(
     tables: tuple[pd.DataFrame, ...], quarter: str, universe: Sequence[str], identity: Identity
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """One quarter's members -> (kept transactions, quarantine rows, footnotes of kept accessions)."""
+    """One quarter's members -> (kept transactions, quarantine rows, footnotes of kept accessions).
+    Members are first cut to the accessions the screen can keep or quarantine."""
     sub, own, nonderiv, deriv, notes = tables
-    df_built = build_insider_frame(extract_bulk_strings(sub, own, nonderiv, deriv), value_rule="shares_x_price_first", numeric_rule="to_numeric")
+    accessions = screened_accessions(_member_strings(sub, "filing"), universe, identity)
+    df_str = extract_bulk_strings(*(_accession_rows(df, accessions) for df in (sub, own, nonderiv, deriv)))
+    df_built = build_insider_frame(df_str, value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS)
     df_kept, df_quarantine = screen_insider_rows(df_built.assign(quarter=quarter), universe, identity)
     if df_kept.empty:
         return df_kept, df_quarantine, empty_footnotes()
@@ -140,23 +158,30 @@ def _read_tables(path: Path) -> tuple[pd.DataFrame, ...] | None:
     return tuple(tables.values())
 
 
+def _rejected_stored_accessions(context: Context, universe: Sequence[str], identity: Identity) -> list[str]:
+    """Stored accessions holding a row whose `issuer_cik` (NULL included) resolves outside the
+    universe; the reject verdict reads only the CIK, so each distinct CIK is scored once."""
+    ciks = context.store.distinct(Tables.insider_transactions, "issuer_cik", dropna=False)
+    scored = insider_verdicts(pd.DataFrame({"issuer_cik": pd.Series(ciks, dtype=object), "ticker": pd.NA}), universe, identity)
+    rejected = scored.loc[scored["reject_reason"].notna(), "issuer_cik"]
+    logger.info("insider: stored-row sweep -- %d of %d issuer CIK(s) rejected", len(rejected), len(ciks))
+    if rejected.empty:
+        return []
+    wheres = [{"issuer_cik": sorted(rejected.dropna())}] + ([{"issuer_cik": None}] if rejected.isna().any() else [])
+    return sorted(
+        {accession for where in wheres for accession in context.store.distinct(Tables.insider_transactions, "accession_number", where=where)}
+    )
+
+
 def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity, chunk: int = 2_000) -> tuple[int, int]:
-    """Re-adjudicate every stored row against today's universe; quarantine then delete the
-    rejects (the upsert cannot remove rows). Returns `(quarantined, deleted)`.
+    """Re-adjudicate stored rows against today's universe; quarantine then delete the rejects
+    (the upsert cannot remove rows). Returns `(quarantined, deleted)`.
 
     Exhaustive over the table, unlike the parse screen. One accession shares one `issuer_cik` and
     so one verdict, which lets the delete key on `accession_number` alone.
     """
-    keys = context.store.load(Tables.insider_transactions, columns=["accession_number", "ticker", "issuer_cik"], optional=True)
-    if keys is None or keys.empty:
-        return 0, 0
-    # one verdict per (accession, claimed ticker, cik), the grain it is decided at
-    deduplicated = keys.drop_duplicates().copy()
-    deduplicated["filing_date"] = pd.NaT
-    scored = insider_verdicts(deduplicated, universe, identity)
-    accessions = sorted(scored.loc[scored["reject_reason"].notna(), "accession_number"].dropna().unique())
+    accessions = _rejected_stored_accessions(context, universe, identity)
     if not accessions:
-        logger.info("insider: stored-row sweep -- 0 of %d row(s) rejected", len(keys))
         return 0, 0
 
     quarantined = deleted = 0

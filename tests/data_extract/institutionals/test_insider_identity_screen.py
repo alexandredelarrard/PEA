@@ -16,14 +16,24 @@ CIKs throughout, because a synthetic id would let a wrong entity mapping pass un
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnote_strings
-from src.data_extract.utils.institutionals.insider_common import filter_footnotes, insider_verdicts, screen_insider_rows
+from src.data_extract.utils.institutionals.insider_common import (
+    BULK_DATE_FORMATS,
+    INSIDER_COLUMNS,
+    build_insider_frame,
+    filter_footnotes,
+    insider_verdicts,
+    screen_insider_rows,
+    screened_accessions,
+)
 from src.data_store.schema import Tables
 
 # --------------------------------------------------------------------------- #
@@ -42,6 +52,9 @@ ABC = "0001140859"  # AmerisourceBergen / Cencora, COR's roster CIK
 CORESITE = "0001490892"  # CoreSite Realty -- held COR until 2021
 
 UNIVERSE = ("AVGO", "TT", "DD", "COR", "IR")
+#: The 3 golden quarters; the cache path is relative to the repo root the suite runs from.
+INSIDER_CACHE = Path("data/sec_insider_transactions")
+GOLDEN_QUARTERS = ("2024q4", "2025q3", "2026q1")
 
 
 @pytest.fixture(scope="module")
@@ -360,3 +373,93 @@ def test_the_sweep_is_idempotent_and_a_clean_table_is_a_no_op(tmp_path, identity
     assert len(remaining) == 1
     print("\n=== sweep idempotence ===")
     print(f"  first pass {first}, second pass {second}. Re-running is safe.")
+
+
+class _SpyStore:
+    """A store proxy counting the rows every `load` returns and recording its `where`."""
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+        self.loaded_rows = 0
+        self.load_wheres: list[Any] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.store, name)
+
+    def load(self, table: Any, *args: Any, **kwargs: Any) -> Any:
+        df = self.store.load(table, *args, **kwargs)
+        self.load_wheres.append(kwargs.get("where"))
+        self.loaded_rows += 0 if df is None else len(df)
+        return df
+
+
+def test_the_sweep_scores_distinct_ciks_and_loads_only_rejected_rows(tmp_path, identity):
+    """The sweep scores each distinct `issuer_cik` once and loads only the accessions of rejected
+    CIKs, with the deletions of the full-load sweep: a kept CIK stays, a rejected CIK and a NULL CIK
+    are quarantined and deleted, and a mixed accession is deleted whole while only its rejected row
+    is quarantined (the delete keys on `accession_number`)."""
+    from sqlalchemy import create_engine
+
+    from src.data_store.store import DataStore
+
+    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'distinct.db'}"))
+    single = _rows([("DD", DUPONT_EI), ("COR", CORESITE), ("IR", TRANE), ("DD", None)])
+    mixed = _rows([("DD", DUPONT_EI), ("COR", CORESITE)]).assign(accession_number="m0")
+    stored = pd.concat([single, mixed], ignore_index=True)
+    store.save(Tables.insider_transactions, stored)
+    ctx = cast(Any, type("_Ctx", (), {})())
+    ctx.store = _SpyStore(store)
+
+    quarantined, deleted = ins._screen_stored_rows(ctx, UNIVERSE, identity)
+
+    left = store.load(Tables.insider_transactions)
+    quarantine = store.load(Tables.insider_transactions_quarantine)
+    assert (quarantined, deleted) == (3, 4)
+    assert sorted(left["accession_number"]) == ["a0", "a2"]
+    assert sorted(quarantine["accession_number"]) == ["a1", "a3", "m0"]
+    assert set(quarantine["reject_reason"]) == {"entity_mismatch", "no_issuer_cik"}
+    assert all(where and set(where) == {"accession_number"} for where in ctx.store.load_wheres), "no whole-table load"
+    assert ctx.store.loaded_rows == 4, "only the rows of a1, a3 and m0 are read"
+    print("\n=== SANITY: distinct-CIK sweep ===")
+    print(
+        f"  {len(stored)} stored rows over 4 distinct CIKs (one NULL); read {ctx.store.loaded_rows} rows of the 3 rejected accessions; "
+        f"quarantined {quarantined}, deleted {deleted}, kept a0/a2 -- the full-load sweep's outcome."
+    )
+
+
+@pytest.mark.skipif(
+    not all((INSIDER_CACHE / f"{quarter}.zip").exists() for quarter in GOLDEN_QUARTERS), reason="cached insider zips absent (run from the repo root)"
+)
+def test_the_accession_prefilter_drops_only_accessions_the_row_screen_drops(identity):
+    """On the 3 golden quarters, building every filer's rows then screening gives the same kept and
+    quarantine values as `_parse_quarter`, which first cuts the members to `screened_accessions`;
+    no accession outside that set has a kept or quarantined row. A dtype may differ only on a column
+    that is entirely null (its inferred resolution follows the rows it sees), which stores the same."""
+    summary = []
+    null_only: set[str] = set()
+    for quarter in GOLDEN_QUARTERS:
+        tables = ins._read_tables(INSIDER_CACHE / f"{quarter}.zip")
+        assert tables is not None
+        sub, own, nonderiv, deriv, _ = tables
+        df_built = build_insider_frame(
+            ins.extract_bulk_strings(sub, own, nonderiv, deriv),
+            value_rule="shares_x_price_first",
+            numeric_rule="to_numeric",
+            date_formats=BULK_DATE_FORMATS,
+        )
+        full_kept, full_quarantine = screen_insider_rows(df_built.assign(quarter=quarter), UNIVERSE, identity)
+        kept, quarantine, _ = ins._parse_quarter(tables, quarter, UNIVERSE, identity)
+        accessions = screened_accessions(ins._member_strings(sub, "filing"), UNIVERSE, identity)
+
+        assert set(full_kept["accession_number"]) | set(full_quarantine["accession_number"]) <= accessions
+        full_kept = full_kept[[column for column in INSIDER_COLUMNS if column in full_kept.columns]]
+        for new, full in ((kept, full_kept), (quarantine, full_quarantine)):
+            pd.testing.assert_frame_equal(new.reset_index(drop=True), full.reset_index(drop=True), check_dtype=False)
+            retyped = [column for column in new.columns if new[column].dtype != full[column].dtype]
+            assert all(new[column].isna().all() for column in retyped), retyped
+            null_only |= set(retyped)
+        summary.append(
+            f"{quarter}: {len(df_built)} rows built -> {len(kept)} kept + {len(quarantine)} quarantined from {len(accessions)}/{len(sub)} accessions"
+        )
+    print("\n=== SANITY: accession prefilter == row screen ===")
+    print("  " + "; ".join(summary) + f". Identical values on all 3 golden quarters; dtype differs only on all-null columns {sorted(null_only)}.")

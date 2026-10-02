@@ -18,7 +18,13 @@ from src.data_extract.utils.institutionals.fetch_insider_transactions import (
     _footnote_strings,
     extract_bulk_strings,
 )
-from src.data_extract.utils.institutionals.insider_common import FOOTNOTE_COLUMNS, build_insider_frame, filter_footnotes, normalize_flag
+from src.data_extract.utils.institutionals.insider_common import (
+    BULK_DATE_FORMATS,
+    FOOTNOTE_COLUMNS,
+    build_insider_frame,
+    filter_footnotes,
+    normalize_flag,
+)
 
 #: A submission + owner row the transaction-only fixtures below are joined to.
 _SUB_ROW = {
@@ -33,7 +39,9 @@ _OWN_ROW = {"ACCESSION_NUMBER": "0001-26-000002", "RPTOWNERCIK": "1", "RPTOWNER_
 
 def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
     """The bulk path: zip members -> canonical strings -> typed frame."""
-    return build_insider_frame(extract_bulk_strings(sub, own, nonderiv, deriv), value_rule="shares_x_price_first", numeric_rule="to_numeric")
+    return build_insider_frame(
+        extract_bulk_strings(sub, own, nonderiv, deriv), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
+    )
 
 
 def _transactions(df: pd.DataFrame, security_type: str) -> pd.DataFrame:

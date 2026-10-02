@@ -8,7 +8,9 @@ import pandas as pd
 
 from src.data_extract.utils.institutionals.fetch_insider_transactions import extract_bulk_strings
 from src.data_extract.utils.institutionals.insider_common import (
+    BULK_DATE_FORMATS,
     INSIDER_FIELDS,
+    LIVE_DATE_FORMATS,
     build_insider_frame,
     coerce_numeric,
     normalize_flag,
@@ -110,8 +112,8 @@ def test_build_applies_the_two_value_rules_and_the_role_encoding():
             "relationship": ["Director,TenPercentOwner", "", None],
         }
     )
-    bulk = build_insider_frame(df_str, value_rule="shares_x_price_first", numeric_rule="to_numeric")
-    live = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float")
+    bulk = build_insider_frame(df_str, value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS)
+    live = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS)
     assert list(bulk["value_usd"]) == [200.0, 200.0, 50.0]
     assert list(live["value_usd"]) == [200.0, 999.0, 50.0]
     assert list(bulk["is_director"].iloc[:2]) == [1.0, 0.0] and list(bulk["is_ten_pct_owner"].iloc[:2]) == [1.0, 0.0]
@@ -131,8 +133,8 @@ def test_one_form4_gives_one_canonical_string_frame_on_both_paths():
     right = df_xml[shared].reset_index(drop=True).astype(object).where(df_xml[shared].notna().to_numpy(), None)
     pd.testing.assert_frame_equal(left, right)
 
-    typed_bulk = build_insider_frame(df_bulk, value_rule="shares_x_price_first", numeric_rule="to_numeric")
-    typed_xml = build_insider_frame(df_xml, value_rule="stated_total_first", numeric_rule="strip_currency_float")
+    typed_bulk = build_insider_frame(df_bulk, value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS)
+    typed_xml = build_insider_frame(df_xml, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS)
     assert typed_bulk.iloc[0]["value_usd"] == typed_xml.iloc[0]["value_usd"] == 250_500.0
     assert typed_bulk.iloc[0]["ticker"] == typed_xml.iloc[0]["ticker"] == "AAPL"
     roles = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]

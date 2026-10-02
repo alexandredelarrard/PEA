@@ -2,8 +2,8 @@
 
 Both paths extract the same canonical string frame (`INSIDER_FIELDS`), type it once with
 `build_insider_frame`, and screen it with `screen_insider_rows`. The bulk-vs-live differences
-that reach stored values are explicit arguments: `value_rule` (which `value_usd` source wins)
-and `numeric_rule` (pandas `to_numeric` vs Python `float` after stripping `,` and `$`).
+are explicit arguments: `value_rule` (which `value_usd` source wins), `numeric_rule` (pandas
+`to_numeric` vs Python `float` after stripping `,` and `$`) and `date_formats`.
 """
 
 from __future__ import annotations
@@ -65,8 +65,9 @@ QUARANTINE_COLUMNS = INSIDER_COLUMNS + VERDICT_COLUMNS
 #: Yes/no source text (`AFF10B5ONE`, `aff10b5One`, relationship checkboxes); anything else is unknown.
 FLAG_TRUE = frozenset({"1", "true", "y", "yes"})
 FLAG_FALSE = frozenset({"0", "false", "n", "no"})
-#: Date formats tried in order on the insider date fields of both paths.
-INSIDER_DATE_FORMATS = ("mixed",)
+#: Date formats tried in order: SEC bulk TSVs ship `03-FEB-2026` (ISO as fallback); live XML ships ISO dates.
+BULK_DATE_FORMATS = ("%d-%b-%Y", "ISO8601")
+LIVE_DATE_FORMATS = ("mixed",)
 #: Role flag -> regex matched in the lower-cased comma-joined relationship text.
 ROLE_PATTERNS = {"is_director": "director", "is_officer": "officer", "is_ten_pct_owner": "ten|10", "is_other": "other"}
 
@@ -150,10 +151,13 @@ def coerce_numeric(s: pd.Series, *, numeric_rule: NumericRule) -> pd.Series:
 
 
 def parse_sec_date(s: pd.Series, *, formats: Sequence[str]) -> pd.Series:
-    """Dates from SEC text: each format in turn fills the values the previous ones left NaT."""
+    """Dates from SEC text: each format in turn fills the values the previous ones left NaT; the
+    first format sets the datetime resolution."""
     out = pd.to_datetime(s, format=formats[0], errors="coerce")
     for date_format in formats[1:]:
         todo = out.isna() & s.notna()
+        if not todo.any():
+            break
         out = out.mask(todo, pd.to_datetime(s.where(todo), format=date_format, errors="coerce"))
     return out
 
@@ -192,27 +196,32 @@ def _built_columns(columns: Iterable[str]) -> list[str]:
     return kept + value + roles
 
 
-def build_insider_frame(df_str: pd.DataFrame, *, value_rule: ValueRule, numeric_rule: NumericRule) -> pd.DataFrame:
+def build_insider_frame(df_str: pd.DataFrame, *, value_rule: ValueRule, numeric_rule: NumericRule, date_formats: Sequence[str]) -> pd.DataFrame:
     """Type a canonical string frame: numbers, dates, yes/no flags, upper-cased ticker, the four
     role flags from `relationship`, and `value_usd`; the two helper columns are dropped."""
     if df_str.empty:
         return pd.DataFrame(columns=_built_columns(df_str.columns))
     fields = [field for field in INSIDER_FIELDS if field.name in df_str.columns]
-    typed = {field.name: _typed(df_str[field.name], field.kind, numeric_rule) for field in fields if field.kind not in ("text", "role")}
+    typed = {field.name: _typed(df_str[field.name], field.kind, numeric_rule, date_formats) for field in fields if field.kind not in ("text", "role")}
     df_built = df_str.assign(**typed)
     df_built = df_built.assign(value_usd=_value_usd(df_built, value_rule), **_role_flags(df_built["relationship"]))
     return df_built.drop(columns=["relationship", "total_value"])
 
 
-def _typed(s: pd.Series, kind: str, numeric_rule: NumericRule) -> pd.Series:
+def _symbol_text(s: pd.Series) -> pd.Series:
+    """A claimed trading symbol as typed: stripped and upper-cased."""
+    return s.str.strip().str.upper()
+
+
+def _typed(s: pd.Series, kind: str, numeric_rule: NumericRule, date_formats: Sequence[str]) -> pd.Series:
     """One string column typed by its field kind."""
     if kind == "number":
         return coerce_numeric(s, numeric_rule=numeric_rule)
     if kind == "date":
-        return parse_sec_date(s, formats=INSIDER_DATE_FORMATS)
+        return parse_sec_date(s, formats=date_formats)
     if kind == "flag":
         return normalize_flag(s)
-    return s.str.strip().str.upper()
+    return _symbol_text(s)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,9 +299,24 @@ def screen_insider_rows(df: pd.DataFrame, universe: Sequence[str], identity: Ide
     if df.empty:
         return df, pd.DataFrame(columns=QUARANTINE_COLUMNS)
     scored = insider_verdicts(repair_transaction_dates(df), universe, identity)
+    keep, in_scope = _screen_masks(scored, universe)
+    return scored[keep], quarantine_frame(scored[~keep & in_scope])
+
+
+def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Series, pd.Series]:
+    """(kept, quarantine-scoped) masks over `insider_verdicts` output; both read only the issuer
+    CIK and the claimed ticker."""
     keep = scored["reject_reason"].isna()
     in_scope = scored["claimed_ticker"].isin(set(universe)) | scored["ticker"].notna() | (scored["reject_reason"] == "no_issuer_cik")
-    return scored[keep], quarantine_frame(scored[~keep & in_scope])
+    return keep, in_scope
+
+
+def screened_accessions(df_filing: pd.DataFrame, universe: Sequence[str], identity: Identity) -> set[str]:
+    """Accessions of a canonical filing-level frame (`accession_number`, `issuer_cik`, raw `ticker`)
+    that `screen_insider_rows` keeps or quarantines; it drops every row of any other accession."""
+    scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
+    keep, in_scope = _screen_masks(scored, universe)
+    return set(scored.loc[keep | in_scope, "accession_number"])
 
 
 # --------------------------------------------------------------------------- #

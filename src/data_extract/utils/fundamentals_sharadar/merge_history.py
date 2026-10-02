@@ -87,6 +87,7 @@ from src.constants.constants import (
 # Top-level, not deferred. `src/data_store/schema.py` imports only `data_store.errors`, so
 # there is no package cycle to dodge here -- a local import would only hide the dependency.
 from src.context import Context
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
@@ -433,9 +434,7 @@ def build_frame(
     # `actions` goes to `build_ttm`, not to `translate`: the split de-adjustment runs AFTER
     # the four-quarter aggregation, or a window straddling a split mixes two share bases.
     ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits, report=report)
-    ttm = ttm.rename(columns=_KEY_FROM_VENDOR)
-    for column in ("as_of", "fiscal_end"):
-        ttm[column] = pd.to_datetime(ttm[column], errors="coerce").astype("datetime64[ns]")
+    ttm = pin_dtypes(ttm.rename(columns=_KEY_FROM_VENDOR), dates=("as_of", "fiscal_end"))
 
     collapsed, dropped = collapse_same_date(ttm)
     if not dropped.empty:
@@ -494,15 +493,13 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
     ⚠ `regime` is excluded BY NAME. A cast that catches it turns every regime label into NaN,
     and nothing downstream would notice: the column would simply be empty.
     """
-    out = frame.copy()
-    for column in ("as_of", "fiscal_end"):
-        out[column] = pd.to_datetime(out[column], errors="coerce").astype("datetime64[ns]")
+    out = pin_dtypes(
+        frame,
+        dates=("as_of", "fiscal_end"),
+        floats=[column for column in columns if column not in NON_VALUE_COLUMNS],
+        texts=(sec_column("regime"),),
+    )
     out["ticker"] = out["ticker"].astype(str)
-    regime = sec_column("regime")
-    out[regime] = out[regime].astype(object).where(out[regime].notna(), None)
-    for column in columns:
-        if column not in NON_VALUE_COLUMNS:
-            out[column] = pd.to_numeric(out[column], errors="coerce").astype(float)
     return out
 
 

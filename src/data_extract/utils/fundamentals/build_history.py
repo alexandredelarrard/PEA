@@ -39,6 +39,7 @@ from typing import Any, cast
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
@@ -875,41 +876,20 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guar
         rows.append(row)
         codes.extend(row_codes)
 
-    history = pd.DataFrame(rows).reindex(columns=columns)
-    # Pin the date dtypes. An all-NaT `amended_fiscal_end` (a ticker that never amended)
-    # infers `datetime64[s]` while a populated one is `[us]`, so two builds of the same
-    # ticker compare unequal on dtype alone -- which `diff_against_stored` would then have to
-    # forgive, and forgiving a dtype is one step from forgiving a value.
-    for column in ("as_of", "fiscal_end", "amended_fiscal_end"):
-        history[column] = pd.to_datetime(history[column], errors="coerce").astype("datetime64[ns]")
-    # Nullable Int64, not float: the label is Q1-Q4 and `WHERE fiscal_quarter = 3` should not
-    # be a float comparison, but a ticker whose earliest events predate its first annual
-    # filing has no fiscal calendar yet and must stay NULL rather than become 0. `sql_type`
-    # maps an integer dtype to BIGINT and `copy_load` writes `pd.NA` as an empty CSV field,
-    # so this round-trips through both the DDL and the COPY path.
+    # Pinned dtypes, all-null columns included: two builds of one ticker must compare equal on
+    # dtype for `diff_against_stored`, and `store.ensure_table` infers a cold table's column
+    # types from the first frame it is handed (an all-None object column would become TEXT).
+    history = pin_dtypes(
+        pd.DataFrame(rows).reindex(columns=columns),
+        dates=("as_of", "fiscal_end", "amended_fiscal_end"),
+        floats=[column for column in columns if column not in (*HISTORY_KEYS, HISTORY_REGIME, *HISTORY_PROVENANCE)],
+        texts=("publication_form", "amended_fields", HISTORY_REGIME),
+    )
+    # Nullable Int64: a ticker with no fiscal calendar yet keeps a NULL quarter, not 0.
     history["fiscal_quarter"] = history["fiscal_quarter"].astype("Int64")
-    # Same reasoning for the text columns: an all-None `amended_fields` infers `object` while
-    # a populated one infers `string`.
-    for column in ("publication_form", "amended_fields", HISTORY_REGIME):
-        history[column] = history[column].astype(object).where(history[column].notna(), None)
-    # And every VALUE column to float64, even when it is entirely null for this ticker. This
-    # is not cosmetic: `sql/schema.sql` is applied only when Postgres INITIALISES a volume, so
-    # on an existing one `store.save` creates the table from the FIRST frame it is handed via
-    # `ensure_table`'s dtype inference. An all-None `object` column becomes **TEXT**, and every
-    # later ticker's real number is then stored as a string -- measured on the first live run,
-    # where VRT (no `minorityInterest`, no `restrictedCash`) created both as TEXT and APA's
-    # values came back as `'1997000000.0'`. Caught by `diff_against_stored` on the second run,
-    # which is precisely the drift the append-only guard exists to make visible.
-    for column in columns:
-        if column not in (*HISTORY_KEYS, HISTORY_REGIME, *HISTORY_PROVENANCE):
-            history[column] = pd.to_numeric(history[column], errors="coerce").astype(float)
     history["is_amendment"] = history["is_amendment"].astype(bool)
     reason = pd.DataFrame(codes, columns=list(_CODE_COLUMNS)).drop_duplicates(subset=["ticker", "as_of", "field", "dc_code"])
-    # float64 even when it is entirely null -- which it is for every ticker no guard ever
-    # fires on, i.e. almost all of them. `store.ensure_table` infers the column type from the
-    # FIRST frame it is handed, and an all-None object column becomes TEXT; that is exactly
-    # how a real number once landed in Postgres as the string '1997000000.0'.
-    reason["rejected_value"] = pd.to_numeric(reason["rejected_value"], errors="coerce").astype(float)
+    reason = pin_dtypes(reason, floats=("rejected_value",))
     unknown = sorted(set(reason["dc_code"]) - rc.ALL_CODES)
     assert not unknown, f"{ticker}: reason code(s) outside the declared set: {unknown}"
     _assert_grain(ticker, history)

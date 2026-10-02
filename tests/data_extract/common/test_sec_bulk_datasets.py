@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
@@ -314,7 +315,7 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
     class Clock:
         @staticmethod
         def now(tz):
-            assert tz == bulk_cache.MARKET_TZ
+            assert tz == MARKET_TIMEZONE
             return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
 
         @staticmethod

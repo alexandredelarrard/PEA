@@ -81,6 +81,9 @@ OVERLAP_SHARED_SAME = 5
 
 SOURCE_PRIORITY = ("register", "manual", "owner_overlap", "roster")
 
+#: The `sp500_tickers` columns the identity layer reads (`roster_cik_map`).
+ROSTER_COLUMNS = ("ticker", "cik")
+
 #: The key inside `entity_lineage_manual.json` holding the D19 cross-check's exception list.
 #: Underscore-prefixed so the lineage loader skips it -- it is a different shape and a
 #: different question, but it belongs in the same curated file because it is the same kind of
@@ -536,7 +539,7 @@ def build_entity_lineage(
     An older CIK changes the natural entity ID. Such a write stays fail-closed unless every
     observed ``(old_entity_id, new_entity_id)`` pair is acknowledged exactly for this call.
     """
-    roster = context.store.load(Tables.sp500_tickers)
+    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert roster is not None
     existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
     out, blocked = derive_entity_lineage(tenure, roster, owner_pairs, config_dir)

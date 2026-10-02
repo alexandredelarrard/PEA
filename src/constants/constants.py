@@ -7,6 +7,8 @@ formats or SEC endpoints across modules, so a change happens in one place.
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 # --------------------------------------------------------------------------- #
 # Date formats                                                                #
 # --------------------------------------------------------------------------- #
@@ -19,7 +21,9 @@ FTD_ZIP_NAME_TEMPLATE = "cnsfails{period}.zip"
 FTD_HISTORICAL_LAG_DAYS = 15
 FTD_LATEST_PERIOD_MAX_AGE_DAYS = 60
 FTD_RECENT_CACHE_DAYS = 2
-FTD_MARKET_TIMEZONE = "America/New_York"
+
+# Exchange-local time of US equity sessions and of the SEC / FINRA file calendars.
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 # --------------------------------------------------------------------------- #
 # Config directory                                                            #
@@ -29,7 +33,7 @@ DEFAULT_CONFIG_DIR = "./configs"
 # --------------------------------------------------------------------------- #
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
-_HEADERS = {
+BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 

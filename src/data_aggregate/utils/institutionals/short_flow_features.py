@@ -59,7 +59,6 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -67,9 +66,9 @@ import pandas as pd
 from src.constants.constants import (
     FTD_HISTORICAL_LAG_DAYS,
     FTD_LATEST_PERIOD_MAX_AGE_DAYS,
-    FTD_MARKET_TIMEZONE,
     FTD_RECENT_CACHE_DAYS,
     FTD_ZIP_NAME_TEMPLATE,
+    MARKET_TIMEZONE,
 )
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _empty_panel
@@ -189,7 +188,7 @@ def _ftd_available_dates(
     if cache_dir is None or not periods:
         return available
 
-    ny_today = pd.Timestamp.now(tz=FTD_MARKET_TIMEZONE).date() if today is None else pd.Timestamp(today).date()
+    ny_today = pd.Timestamp.now(tz=MARKET_TIMEZONE).date() if today is None else pd.Timestamp(today).date()
     candidate_ends = period_ends if stored_periods is None else {period: _ftd_period_end(period) for period in stored_periods}
     eligible = [period for period, end in candidate_ends.items() if 0 <= (ny_today - end.date()).days <= FTD_LATEST_PERIOD_MAX_AGE_DAYS]
     if not eligible:
@@ -199,7 +198,7 @@ def _ftd_available_dates(
         return available
     cached = cache_dir / FTD_ZIP_NAME_TEMPLATE.format(period=latest)
     if cached.is_file():
-        cache_date = datetime.fromtimestamp(cached.stat().st_mtime, ZoneInfo(FTD_MARKET_TIMEZONE)).date()
+        cache_date = datetime.fromtimestamp(cached.stat().st_mtime, MARKET_TIMEZONE).date()
         if 0 <= (ny_today - cache_date).days < FTD_RECENT_CACHE_DAYS:
             available[latest] = pd.Timestamp(cache_date)
     return available

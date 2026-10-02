@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
+from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 
 # --------------------------------------------------------------------------- #
@@ -493,7 +494,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     class Clock:
         @staticmethod
         def now(tz):
-            assert tz == bulk_cache.MARKET_TZ
+            assert tz == MARKET_TIMEZONE
             return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
 
     def download(*args, **kwargs) -> Path:

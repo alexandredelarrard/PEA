@@ -39,7 +39,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import _HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
+from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.data_store.schema import Tables
@@ -315,12 +315,12 @@ def _http_get(url: str) -> requests.Response:
     OpenSSL cannot verify; the data is public and read-only, so an unverified fetch
     is acceptable here and is logged so the relaxation is never silent."""
     try:
-        r = requests.get(url, headers=_HEADERS, timeout=60)
+        r = requests.get(url, headers=BROWSER_HEADERS, timeout=60)
     except requests.exceptions.SSLError:
         logger.warning("Dataroma SSL chain incomplete -> retrying unverified (%s)", url)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", InsecureRequestWarning)
-            r = requests.get(url, headers=_HEADERS, timeout=60, verify=False)
+            r = requests.get(url, headers=BROWSER_HEADERS, timeout=60, verify=False)
     r.raise_for_status()
     return r
 

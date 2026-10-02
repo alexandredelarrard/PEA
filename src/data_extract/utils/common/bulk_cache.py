@@ -23,9 +23,9 @@ from typing import Literal
 
 import pandas as pd
 
+from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.sessions import MARKET_TZ
 from src.data_store.schema import Table, name_of
 
 __all__ = [
@@ -258,9 +258,9 @@ def archive_available_at(end: date, path: Path, *, observed_from: date, download
         release = (end.replace(day=1) + timedelta(days=32)).replace(day=_RELEASE_DAY)
         return release + timedelta(days=7 - release.weekday() if release.weekday() >= 5 else 0)
     if downloaded:
-        return datetime.now(MARKET_TZ).date()
+        return datetime.now(MARKET_TIMEZONE).date()
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TZ).date()
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TIMEZONE).date()
     except OSError:
         return None
 

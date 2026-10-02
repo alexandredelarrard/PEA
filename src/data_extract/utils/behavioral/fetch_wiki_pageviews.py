@@ -20,7 +20,7 @@ from urllib.parse import quote
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import _HEADERS, DATE_FORMAT_COMPACT
+from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.incremental import load_existing
 from src.data_extract.utils.common.run_manifest import record_run
@@ -89,7 +89,7 @@ def _wiki_search(query: str) -> str | None:
     # IP-rotating crawler with the descriptive contact UA (Wikimedia is a friendly API).
     data = _wiki_crawler().get_json(
         _SEARCH_API,
-        headers=_HEADERS,
+        headers=BROWSER_HEADERS,
         params={"action": "query", "list": "search", "srsearch": query, "srlimit": 1, "srnamespace": 0, "format": "json"},
     )
     if not data:
@@ -127,7 +127,7 @@ def _json_to_long(items: list[dict], ticker: str) -> pd.DataFrame:
 def _fetch_article(article: str, start: str, end: str) -> list[dict]:
     """Network call, isolated for mocking. Returns the 'items' list ([] on miss)."""
     url = _API.format(article=quote(article, safe=""), start=start, end=end)
-    data = _wiki_crawler().get_json(url, headers=_HEADERS)  # IP-rotating crawler, contact UA
+    data = _wiki_crawler().get_json(url, headers=BROWSER_HEADERS)  # IP-rotating crawler, contact UA
     return data.get("items", []) if data else []
 
 

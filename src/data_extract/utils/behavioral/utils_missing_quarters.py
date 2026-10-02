@@ -28,6 +28,7 @@ Names that hold no earnings call at all (NO_EARNINGS_CALL_TICKERS) are always em
 """
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -49,6 +50,9 @@ from src.utils.text_metrics import assess_earnings_call_sections
 
 # --- quarter arithmetic (a fiscal quarter as a monotone integer index YYYY*4 + (Q-1)) ---
 _QUARTER_RE = re.compile(r"^(\d{4})Q([1-4])$")
+
+#: Tickers per `earnings_call_sections` read; each read carries the scored sections' full text.
+_SECTION_READ_CHUNK = 25
 
 
 def _parse_quarter(q: str) -> tuple[int, int] | None:
@@ -102,27 +106,26 @@ def _local_quarters(cache: Path, ticker: str) -> set[str]:
     return valid
 
 
-def _db_quarters_by_ticker(
-    context: Context,
-    tickers: list[str],
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Return quality-valid and malformed DB quarters separately."""
+def stored_call_quarters(context: Context, tickers: Sequence[str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """({ticker: quality-valid quarters}, {ticker: malformed quarters}) of the calls of `tickers`
+    stored in `earnings_call_sections`, judged by the shared quality gate on the scored sections.
+
+    Reads only the key, tag and text columns of the scored tags, `_SECTION_READ_CHUNK` tickers at
+    a time; the gate needs the text itself.
+    """
     valid: dict[str, set[str]] = {}
     malformed: dict[str, set[str]] = {}
-    for start in range(0, len(tickers), 25):
-        try:
-            db = context.store.load(
-                Tables.earnings_call_sections,
-                columns=["ticker", "quarter", "tag", "text"],
-                where={"ticker": tickers[start : start + 25], "tag": list(EARNINGS_CALL_SCORED_TAGS)},
-                optional=True,
-            )
-        except KeyError:
-            return {}, {}
-        if db is None:
+    for start in range(0, len(tickers), _SECTION_READ_CHUNK):
+        df_sections = context.store.load(
+            Tables.earnings_call_sections,
+            columns=["ticker", "quarter", "tag", "text"],
+            where={"ticker": list(tickers[start : start + _SECTION_READ_CHUNK]), "tag": list(EARNINGS_CALL_SCORED_TAGS)},
+            optional=True,
+        )
+        if df_sections is None:
             continue
-        for (ticker, quarter), call in db.groupby(["ticker", "quarter"], sort=False):
-            sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
+        for (ticker, quarter), df_call in df_sections.groupby(["ticker", "quarter"], sort=False):
+            sections = dict(zip(df_call["tag"].astype(str), df_call["text"], strict=False))
             target = valid if assess_earnings_call_sections(sections).valid else malformed
             target.setdefault(str(ticker), set()).add(str(quarter))
     return valid, malformed
@@ -238,7 +241,10 @@ def missing_quarters_by_ticker(
     end_idx = _latest_expected_quarter_index(grace_days)
     floor_idx = _since_floor_index(str(since))
     hf_latest = hf_latest_quarter_by_ticker(context, tickers=universe)
-    have_db, malformed_db = _db_quarters_by_ticker(context, universe)
+    try:
+        have_db, malformed_db = stored_call_quarters(context, universe)
+    except KeyError:  # the stored table lacks the declared `tag` / `text` columns
+        have_db, malformed_db = {}, {}
     released = _released_quarter_idx_by_ticker(context)  # latest ACTUALLY-reported quarter per ticker
     out: dict[str, list[str]] = {}
     for tk in universe:

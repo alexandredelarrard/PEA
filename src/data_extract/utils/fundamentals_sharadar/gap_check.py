@@ -47,6 +47,7 @@ from src.constants.constants import (
     SHARADAR_OVERRIDE_SOURCE_SEC,
 )
 from src.context import Context
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import md_table
@@ -126,10 +127,7 @@ def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap, actions: pd.
     itself wherever the answer matters most.
     """
     frame = build_ttm(translate(vendor_arq, field_map), field_map, actions=actions)
-    frame = frame.rename(columns=_KEY_FROM_VENDOR)
-    for column in ("as_of", "fiscal_end"):
-        frame[column] = pd.to_datetime(frame[column], errors="coerce").astype("datetime64[ns]")
-    collapsed, _ = collapse_same_date(frame)
+    collapsed, _ = collapse_same_date(pin_dtypes(frame.rename(columns=_KEY_FROM_VENDOR), dates=("as_of", "fiscal_end")))
     return collapsed
 
 

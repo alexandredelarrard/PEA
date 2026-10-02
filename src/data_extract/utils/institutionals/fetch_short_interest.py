@@ -38,7 +38,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import _HEADERS, DATE_FORMAT_COMPACT
+from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import (
     Identity,
@@ -88,7 +88,7 @@ def _fetch_day(
 ) -> str | None:
     """Fetch one date, optionally reusing a run-scoped HTTP connection pool."""
     url = _URL.format(yyyymmdd=day.strftime(DATE_FORMAT_COMPACT))
-    r = session.get(url, headers=_HEADERS, timeout=30) if session is not None else requests.get(url, headers=_HEADERS, timeout=30)
+    r = session.get(url, headers=BROWSER_HEADERS, timeout=30) if session is not None else requests.get(url, headers=BROWSER_HEADERS, timeout=30)
     return r.text if r.status_code == 200 else None
 
 

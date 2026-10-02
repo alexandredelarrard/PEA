@@ -57,6 +57,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.entity_lineage import (
+    ROSTER_COLUMNS,
     TwoUniverseTickersOneEntityError,
     entity_by_cik_map,
     entity_or_singleton,
@@ -780,7 +781,7 @@ def load_identity(context: Context, config_dir: str | None = None, refresh: bool
         return cached
     lineage = context.store.load(Tables.entity_lineage, project=True)
     tenure = context.store.load(Tables.symbol_tenure, project=True)
-    roster = context.store.load(Tables.sp500_tickers)
+    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert lineage is not None and tenure is not None and roster is not None
     identity = build_identity(
         lineage=lineage,

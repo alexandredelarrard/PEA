@@ -51,6 +51,7 @@ from src.data_extract.utils.behavioral.utils_missing_quarters import (
     _quarter_index,
     missing_quarters_by_ticker,
     remaining_after,
+    stored_call_quarters,
 )
 from src.data_extract.utils.behavioral.utils_split_qa import split_prepared_qa
 from src.data_extract.utils.common.bulk_cache import cache_dir
@@ -409,24 +410,13 @@ def download_transcripts(
     return n
 
 
-def _existing_section_keys(context: Context) -> set[tuple[str, str]]:
-    """(ticker, quarter) already present in `earnings_call_sections` (from ANY source). Lets the MF
-    ingest SKIP transcripts already parsed instead of re-reading + re-parsing every cached HTML each
-    run. Empty set when the table is missing / unreadable (-> full ingest)."""
-    df = context.store.load(
-        Tables.earnings_call_sections,
-        columns=["ticker", "quarter", "tag", "text"],
-        where={"tag": list(EARNINGS_CALL_SCORED_TAGS)},
-        optional=True,
-    )
-    if df is None:
-        return set()
-    valid: set[tuple[str, str]] = set()
-    for (ticker, quarter), call in df.groupby(["ticker", "quarter"], sort=False):
-        sections = dict(zip(call["tag"].astype(str), call["text"], strict=False))
-        if assess_earnings_call_sections(sections).valid:
-            valid.add((str(ticker), str(quarter)))
-    return valid
+def _existing_section_keys(context: Context, tickers: list[str] | None) -> set[tuple[str, str]]:
+    """(ticker, quarter) of the quality-valid calls of `tickers` (None = every stored ticker)
+    already in `earnings_call_sections` from any source, so the MF ingest skips transcripts it
+    has parsed. Empty when the table is missing (-> full ingest)."""
+    scope = tickers if tickers is not None else context.store.distinct(Tables.earnings_call_sections, "ticker")
+    valid, _ = stored_call_quarters(context, scope)
+    return {(ticker, quarter) for ticker, quarters in valid.items() for quarter in quarters}
 
 
 def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, force: bool = False) -> int:
@@ -440,7 +430,7 @@ def ingest_earnings_calls(context: Context, tickers: list[str] | None = None, fo
     cache = cache_dir(context, context.config.local.paths.call_transcripts)
     index = {(r["ticker"], r["quarter"]): r for r in _load_index(_index_path(context)).values()}
     keep = set(tickers) if tickers is not None else None
-    existing = set() if force else _existing_section_keys(context)
+    existing = set() if force else _existing_section_keys(context, tickers)
 
     rows: list[dict] = []
     parsed = skipped = 0

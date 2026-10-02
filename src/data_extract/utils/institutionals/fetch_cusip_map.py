@@ -69,7 +69,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6
     api_key = os.getenv("OPENFIGI_API_KEY")
     # `optional=True` yields None on a cold table -- the first-ever build's own case, so branch
     # on `is None` (repo convention) rather than assuming a frame.
-    cached = context.store.load(Tables.cusip_ticker_map, optional=True)
+    cached = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
     cached = (
         pd.DataFrame(columns=["cusip", "ticker"])
         if cached is None

@@ -109,9 +109,9 @@ def fetch_earnings_surprises(
     refetch_window_days: int = 95,  # > one quarter; fallback only when no forward date is known
 ) -> None:
     """Build/refresh the incremental earnings-surprise history and upsert it into the
-    `earnings_surprises` DB table. Returns the full merged history."""
+    `earnings_surprises` DB table."""
 
-    existing = context.store.load(Tables.earnings_surprises, optional=True)
+    existing = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
     if existing is not None:
         existing["earnings_date"] = pd.to_datetime(existing["earnings_date"], format="%Y-%m-%d")
 

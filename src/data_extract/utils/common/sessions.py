@@ -15,16 +15,15 @@ so the clamp is defined once instead of at each call site.
 """
 
 from datetime import time
-from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+from src.constants.constants import MARKET_TIMEZONE
 
 #: US equity regular-session close, in exchange-local time. The half-days (1:00pm ET on the
 #: sessions before Independence Day / after Thanksgiving / Christmas Eve) close EARLIER, so
 #: this constant is conservative on them too -- it can only ever wait longer, never less.
 US_MARKET_CLOSE_ET = time(16, 0)
-
-MARKET_TZ = ZoneInfo("America/New_York")
 
 
 def last_completed_session(now: pd.Timestamp | None = None) -> pd.Timestamp:
@@ -39,8 +38,8 @@ def last_completed_session(now: pd.Timestamp | None = None) -> pd.Timestamp:
     `now` is injectable so the clock positions can be tested without freezing time; a naive
     `now` is read as exchange-local, since that is the only frame in which "before the close"
     is a meaningful question."""
-    et = pd.Timestamp.now(tz=MARKET_TZ) if now is None else pd.Timestamp(now)
-    et = et.tz_localize(MARKET_TZ) if et.tzinfo is None else et.tz_convert(MARKET_TZ)
+    et = pd.Timestamp.now(tz=MARKET_TIMEZONE) if now is None else pd.Timestamp(now)
+    et = et.tz_localize(MARKET_TIMEZONE) if et.tzinfo is None else et.tz_convert(MARKET_TIMEZONE)
 
     day = et.normalize().tz_localize(None)
     if et.time() < US_MARKET_CLOSE_ET:  # today's close has not printed yet

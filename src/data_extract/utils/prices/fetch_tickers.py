@@ -5,7 +5,7 @@ from typing import cast
 import pandas as pd
 import requests
 
-from src.constants.constants import _HEADERS
+from src.constants.constants import BROWSER_HEADERS
 from src.context import Context
 from src.data_extract.utils.common.gics import industry_group
 from src.data_store.schema import Tables
@@ -44,7 +44,7 @@ def get_sp500_tickers(context: Context) -> None:
     dual-class share listings."""
 
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    response = requests.get(url, headers=_HEADERS, timeout=30)
+    response = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
     response.raise_for_status()
     tables = pd.read_html(io.StringIO(response.text))
 

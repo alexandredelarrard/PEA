@@ -47,7 +47,14 @@ _RANGE_BEFORE_RE = re.compile(
     r"(?:\bbetween\s*|\bbetween\s+[\d,.]+\s*(?:thousand|million)?\s+and\s*|\d\s*(?:thousand\s*|million\s*)?(?:-|–|to)\s*)$", re.I
 )
 _RANGE_AFTER_RE = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
-_PART_TIME_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?part[\s-]*time", re.I)
+# Prose names a number's shift in lower case after it ("11,040 full-time"); a table names it in a
+# capitalised row label before the row's numbers ("Part-time Associates 97,913 41,184 13 139,110"),
+# so case keeps the next row's label from tagging the number before it. A Total row has no shift.
+_SHIFT_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?(full|part)[\s-]*time")
+_ROW_LABEL_RE = re.compile(
+    r"\b(Total|TOTAL|Full|FULL|Part|PART)(?:[\s-]*(?:time|Time|TIME))?\b"
+    r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s+|$))*$"
+)
 _FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
 _MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
 
@@ -124,7 +131,7 @@ class _Quantity:
 
     value: int
     bound: int  # +1 for "over N", -1 for "nearly N", 0 for an exact or approximate N
-    part_time: bool
+    shift: str | None  # "full" or "part" when the source labels the number full- or part-time
     in_range: bool
     is_date: bool
 
@@ -169,13 +176,22 @@ def _locate(quote: str, source: str) -> list[tuple[int, int]] | None:
     return None
 
 
+def _shift(before: str, after: str) -> str | None:
+    row = _ROW_LABEL_RE.search(before)
+    if (row and row.group(1).casefold() == "total") or _FULL_AND_PART_RE.search(after[:40]):
+        return None
+    if label := _SHIFT_AFTER_RE.match(after) or row:
+        return label.group(1).casefold()
+    return None
+
+
 def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
     """Every number inside the spans, read with the source words just before and after it."""
     quantities = []
     for start, end in spans:
         in_thousands = bool(_IN_THOUSANDS_RE.search(source[max(0, start - 80) : end]))
         for match in _QUANTITY_RE.finditer(source, start, end):
-            before = " ".join(source[max(0, match.start() - 40) : match.start()].split())
+            before = " ".join(source[max(0, match.start() - 120) : match.start()].split())
             after = " ".join(source[match.end() : match.end() + 60].split())
             digits, fraction, scale = match.groups()
             is_date = (not scale and not fraction and "," not in digits and 1900 <= int(digits) <= 2100) or bool(_MONTH_RE.search(before))
@@ -184,7 +200,7 @@ def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
                 _Quantity(
                     value=round(float(digits.replace(",", "") + (fraction or "")) * multiplier),
                     bound=1 if _LOWER_BOUND_RE.search(before) or after.startswith("+") else -1 if _UPPER_BOUND_RE.search(before) else 0,
-                    part_time=bool(_PART_TIME_RE.match(after)) and not _FULL_AND_PART_RE.search(after[:40]),
+                    shift=_shift(before, after),
                     in_range=bool(_RANGE_BEFORE_RE.search(before) or _RANGE_AFTER_RE.match(after)),
                     is_date=is_date,
                 )
@@ -215,8 +231,9 @@ def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | 
     """The source-backed headcount for the model's claim, or None when the source does not support it.
 
     The quote must be in the source and the model's count must be a number it states, or the sum of
-    stated components. Part-time components are dropped (full-time only), open bounds resolve by
-    `_resolve_bound`, and a stated range such as `50,000 to 100,000` is unclear, so None.
+    stated components. Only full-time is kept: part-time components are dropped, and a total the
+    quoted passage splits into full- and part-time rows becomes its full-time row. Open bounds resolve
+    by `_resolve_bound`, and a stated range such as `50,000 to 100,000` is unclear, so None.
     """
     if answer.count is None or answer.count <= 0 or not answer.quote or _GAP in answer.quote:
         return None
@@ -224,7 +241,12 @@ def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | 
     claimed = _claimed(_quantities(source_text, spans), answer.count) if spans else None
     if not claimed or any(quantity.in_range for quantity in claimed):
         return None
-    full_time = [quantity for quantity in claimed if not quantity.part_time]
+    if len(claimed) == 1 and claimed[0].shift is None and spans:
+        passage = _quantities(source_text, [(spans[0][0], spans[-1][1])])
+        part_values = {q.value for q in passage if q.shift == "part"}
+        if split := next((q for q in passage if q.shift != "part" and claimed[0].value - q.value in part_values), None):
+            claimed = [split]
+    full_time = [quantity for quantity in claimed if quantity.shift != "part"]
     return sum(map(_resolve_bound, full_time)) if full_time else None
 
 

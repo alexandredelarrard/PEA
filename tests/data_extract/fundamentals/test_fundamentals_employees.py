@@ -181,6 +181,14 @@ def test_source_guard_resolves_bounds_units_full_time_and_ranges():
     assert supported(19115, dltr) is None
     assert supported(2513, "We had 2,476 full-time employees and 37 part-time employees.") == 2_476
     assert supported(230800, "We employed approximately 230,800 full-time and part-time employees.") == 230_800
+    dltr_table = (
+        "As of January 30, 2021, we employed more than 199,300 associates, as follows: Store and Distribution Center Associates "
+        "Dollar Tree Family Dollar Store Support Center Associates Total Full-time Associates 27,952 29,862 2,403 60,217 "
+        "Part-time Associates 97,913 41,184 13 139,110 Total 125,865 71,046 2,416 199,327 Part-time associates work an average "
+        "of less than 30 hours per week."
+    )
+    table_quote = "As of January 30, 2021, we employed more than 199,300 associates ... Total 125,865 71,046 2,416 199,327"
+    assert supported(199327, dltr_table, table_quote) == 60_217
     # Units, components and tables in thousands.
     assert (
         supported(61000, "The number of regular employees was 61 thousand, 62 thousand, and 62 thousand at years ended 2024, 2023, and 2022.")

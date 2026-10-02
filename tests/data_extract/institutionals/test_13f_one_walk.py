@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 from src.data_extract.utils.common import parallel_fetch
@@ -84,7 +85,28 @@ def _seed_roster(store: Any, ciks: list[str]) -> None:
 
 
 def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> None:
-    monkeypatch.setattr(f13, "get_filings", lambda **kwargs: filings)
+    """`get_filings` returns the fakes in the given order behind the edgartools `Filings` surface
+    `fetch_13f` touches: a pyarrow `data` index, `len`, iteration, construction from an index."""
+    by_accession = {f.accession_number: f for f in filings}
+
+    class _FakeFilings:
+        def __init__(self, filing_index: pa.Table) -> None:
+            self.data = filing_index
+
+        def __len__(self) -> int:
+            return self.data.num_rows
+
+        def __iter__(self) -> Any:
+            return (by_accession[a] for a in self.data.column("accession_number").to_pylist())
+
+    index = pa.table(
+        {
+            "accession_number": [f.accession_number for f in filings],
+            "filing_date": [date.fromisoformat(f.filing_date) for f in filings],
+        }
+    )
+    monkeypatch.setattr(f13, "Filings", _FakeFilings)
+    monkeypatch.setattr(f13, "get_filings", lambda **kwargs: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips: CMAP)
     monkeypatch.setattr(f13, "record_run", lambda *args, **kwargs: None)
 
@@ -154,8 +176,8 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(sqlite_sto
 
 
 @pytest.mark.parametrize(("order", "save_every"), [("newest_first", 600), ("newest_first", 1), ("oldest_first", 1)])
-def test_amendment_wins_in_one_batch_and_across_batches(sqlite_store, monkeypatch, order, save_every):
-    filings = [_roster_amendment(), _other_filer(), _roster_original()]
+def test_amendment_wins_in_both_tables_whatever_the_listing_order(sqlite_store, monkeypatch, order, save_every):
+    filings = [_roster_amendment(), _other_filer(), _roster_original()]  # edgartools order: newest filing first
     if order == "oldest_first":
         filings.reverse()
     _seed_roster(sqlite_store, [ROSTER])
@@ -168,8 +190,37 @@ def test_amendment_wins_in_one_batch_and_across_batches(sqlite_store, monkeypatc
     assert book.loc["037833100", "value_usd"] == 1_200_000.0
     assert book.loc["037833100", "filing_date"] == pd.Timestamp("2026-06-01")
     assert book.loc["G0450A105", "filing_date"] == pd.Timestamp("2026-05-10")  # only the original carries it
-    print(f"\n=== SANITY: amendment wins ({order}, save_every={save_every}) ===")
-    print("  AAPL comes from the 2026-06-01 13F-HR/A; the CUSIP only the original reported survives. Validated.")
+    hr = _stored(sqlite_store, Tables.sec13f_hr)
+    roster_aapl = hr[(hr["cik"] == ROSTER) & (hr["ticker"] == "AAPL")]
+    assert len(roster_aapl) == 1 and len(hr) == 3
+    assert roster_aapl["value_usd"].iloc[0] == 1_200_000.0 and roster_aapl["filing_date"].iloc[0] == pd.Timestamp("2026-06-01")
+    print(f"\n=== SANITY: amendment wins in both tables ({order}, save_every={save_every}) ===")
+    print(f"  sec13f_hr and the manager book carry the 2026-06-01 13F-HR/A for AAPL (value {roster_aapl['value_usd'].iloc[0]:,.0f});")
+    print("  the CUSIP only the original reported survives in the book. Validated.")
+
+
+def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_store, monkeypatch):
+    filings = [_roster_amendment(), _other_filer(), _roster_original()]  # newest first
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, filings)
+    real_save, calls = f13._save_batch, []
+
+    def _save_then_crash(*args: Any, **kwargs: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise ConnectionError("store went away")
+        real_save(*args, **kwargs)
+
+    monkeypatch.setattr(f13, "_save_batch", _save_then_crash)
+
+    with pytest.raises(ConnectionError):
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=1)
+
+    watermark = pd.Timestamp(sqlite_store.max_date(Tables.sec13f_hr, "filing_date"))
+    assert watermark == pd.Timestamp("2026-05-10"), watermark
+    print("\n=== SANITY: crash mid-walk ===")
+    print(f"  2nd batch raised; stored max(filing_date) = {watermark:%Y-%m-%d} = the OLDEST filing, so the next run")
+    print("  resumes before every unsaved filing. Validated.")
 
 
 def test_empty_roster_still_writes_hr_and_warns(sqlite_store, monkeypatch, caplog):

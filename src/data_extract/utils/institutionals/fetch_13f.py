@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pandas as pd
-from edgar import get_filings
+from edgar import Filings, get_filings
 from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
@@ -217,33 +217,11 @@ def _suspect_prices(df: pd.DataFrame) -> int:
     return int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
 
 
-def _drop_superseded(context: Context, book: pd.DataFrame) -> pd.DataFrame:
-    """Drop book rows whose (cik, period, cusip) is already stored from a LATER filing, so a walk
-    that meets an original after its amendment (edgartools lists newest first) never reverts it."""
-    if book.empty:
-        return book
-    stored = context.store.load(
-        Tables.sec13f_manager_holdings,
-        columns=[*_BOOK_KEY, "filing_date"],
-        where={"cik": sorted(set(book["cik"]))},
-        since=book["period"].min(),
-        until=book["period"].max(),
-        optional=True,
-    )
-    if stored is None:
-        return book
-    stored = stored.assign(period=pd.to_datetime(stored["period"]), stored_filed=pd.to_datetime(stored["filing_date"]))
-    merged = book[_BOOK_KEY + ["filing_date"]].merge(stored[[*_BOOK_KEY, "stored_filed"]], on=_BOOK_KEY, how="left")
-    return book[~(merged["stored_filed"] > merged["filing_date"]).to_numpy()]
-
-
 def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
-    """Upsert manager-book rows, last filed wins per (cik, period, cusip) via a stable sort on
-    `filing_date`. Returns (rows saved, suspect-price rows)."""
+    """Upsert manager-book rows. Returns (rows saved, suspect-price rows)."""
     if book.empty:
         return 0, 0
-    latest = book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
-    return context.store.save(Tables.sec13f_manager_holdings, latest[_BOOK_COLS]), _suspect_prices(latest)
+    return context.store.save(Tables.sec13f_manager_holdings, book[_BOOK_COLS]), _suspect_prices(book)
 
 
 def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
@@ -258,12 +236,14 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
 
 def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster_ciks: set[str], walk: _WalkState) -> None:
     """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
-    `sec13f_manager_holdings`; counts accumulate on `walk`."""
+    `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip) via a stable sort on
+    `filing_date`. Counts accumulate on `walk`."""
+    book = book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
     hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
     if not hr.empty:
         walk.hr_suspect += _suspect_prices(hr)
         walk.hr_saved += context.store.save(Tables.sec13f_hr, hr)
-    saved, suspect = _save_book(context, _drop_superseded(context, book[book["cik"].isin(roster_ciks)]))
+    saved, suspect = _save_book(context, book[book["cik"].isin(roster_ciks)])
     walk.book_saved += saved
     walk.book_suspect += suspect
 
@@ -324,14 +304,17 @@ def fetch_13f(
     """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date` minus `lookback_days`
     (the re-read tail retries filings that failed transiently), or the `filing_window` backfill.
     Each batch upserts the universe slice to `sec13f_hr` and roster CIKs' books to
-    `sec13f_manager_holdings`; both are idempotent on their PKs. ONE EDGAR walk at a time."""
+    `sec13f_manager_holdings`; both are idempotent on their PKs. ONE EDGAR walk at a time.
+    The walk is oldest-first, so an amendment overwrites its original and a crash never leaves the
+    watermark past an unsaved filing."""
     context.ensure_edgar_identity()
     since, until = _resolve_window(context, years_history, lookback_days, filing_window)
     roster_ciks = roster_cik_union(context)
     if not roster_ciks:
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
-    filings = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
+    listing = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
+    filings = Filings(listing.data.sort_by([("filing_date", "ascending"), ("accession_number", "ascending")])) if listing else []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
     if not total:

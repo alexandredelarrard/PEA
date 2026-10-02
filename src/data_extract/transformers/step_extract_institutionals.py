@@ -1,29 +1,10 @@
 """
 step_extract_institutionals.py (src/data_extract/transformers/step_extract_institutionals.py)
 ----------------------------------------------------------------------------------------------
-WHO owns, trades and bets against each name -- every source that answers that question, in one
-step, mirroring the cube's `institutionals` part on the aggregation side:
-
-  * 13F institutional holdings (+ the OpenFIGI CUSIP->ticker map they are keyed through)
-  * the Dataroma superinvestor roster -- the elite-manager subset of those same 13F filers
-  * those managers' COMPLETE books (every security, not just the S&P 500 slice `sec13f_hr`
-    keeps), which is the only honest denominator for a portfolio weight
-  * insider transactions (Forms 3/4/5)
-  * SC 13D activist stakes and SC 13G passive 5%+ stakes -- the two halves of the
-    beneficial-ownership disclosure channel, and what an escalation between them means
-  * 8-K corporate events
-  * short interest (FINRA RegSHO) and SEC fails-to-deliver -- the SHORT side of the same
-    question, and the other half of what `cube_part_institutionals` consumes
-
-The window is resolved once here and passed INTO every fetcher rather than read from config
-inside them, matching the other extract steps.
-
-ORDER MATTERS in two places:
-  * the CUSIP map is built inside `fetch_13f`, which is why no separate call appears below;
-  * the 8-K fetch must run BEFORE `StepExtractStructure`, whose `fetch_8k_votes_llm` reads
-    the `sec_8k` Item 5.07 narratives this step stores. `StepExtractAllData` orders the two
-    steps accordingly -- running structure first leaves the vote parser reading yesterday's
-    8-Ks.
+Who owns, trades and shorts each name: 13F (one all-filer walk writing `sec13f_hr` and the roster
+managers' complete books, then a per-CIK catch-up), the superinvestor roster, insiders, 13D/13G, 8-K,
+RegSHO short volume and fails-to-deliver. The 8-K fetch must precede `StepExtractStructure`, whose
+vote parser reads `sec_8k` Item 5.07; the window is resolved here and passed into every fetcher.
 """
 
 from omegaconf import DictConfig
@@ -55,8 +36,8 @@ class StepExtractInstitutionals(Step):
     def run(self, tickers: list[str]) -> None:
         years_history = int(self.config.data_extract.years_history)
 
-        # 13F institutional holdings (edgartools by filing date + OpenFIGI cusip map). Resumes
-        # from max(filing_date) in sec13f_hr, so a routine run reads only the new filings.
+        # 13F: one walk over every 13F-HR filed since max(filing_date) in sec13f_hr (CUSIP map
+        # built inside), writing the S&P 500 slice AND the roster managers' complete books.
         fetch_13f(self._context, tickers=tickers, years_history=years_history)
 
         # Superinvestors roster: curated top managers (Dataroma) -> one dated snapshot row per
@@ -65,10 +46,9 @@ class StepExtractInstitutionals(Step):
         # has rows in `sec13f_hr`.
         upsert_roster_snapshot(self._context)
 
-        # The roster managers' COMPLETE books, at CUSIP grain and unfiltered. AFTER the snapshot
-        # above: its scope is the union of every CIK the roster has ever carried, so a manager
-        # added today must already be in the table. Takes the window but NOT `tickers` -- having
-        # no universe filter is the entire point of it.
+        # Per-CIK catch-up of the managers' books from each stored frontier. AFTER the snapshot
+        # above: a manager added today has no frontier and gets its whole window here. Takes the
+        # window but NOT `tickers` -- having no universe filter is the entire point of it.
         fetch_13f_managers(self._context, years_history=years_history)
 
         # Insider history is quarterly bulk; the daily EDGAR pass immediately after it fills

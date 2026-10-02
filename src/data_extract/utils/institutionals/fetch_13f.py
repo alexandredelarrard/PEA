@@ -1,18 +1,15 @@
 """
 fetch_13f.py (src/data_extract/utils/institutionals/fetch_13f.py)
----------------------------------------------------------
-Institutional holdings from SEC Form 13F-HR, discovered by FILING DATE through
-edgartools. Replaces the quarterly bulk TSV data sets, which SEC only publishes
-weeks after a quarter closes.
-
-Grain: one row per (manager cik, period, ticker, cusip), the holding split into
-long stock / calls / puts / debt principal / residual. Tickers are reconciled via
-CUSIP (OpenFIGI), never via unstandardized issuer names.
+-----------------------------------------------------------------
+One walk over every 13F-HR, by FILING DATE (edgartools), feeding two tables from one parse: the S&P 500
+ticker slice of each book -> `sec13f_hr`, and the complete CUSIP book of every roster manager ->
+`sec13f_manager_holdings`. Tickers come from the CUSIP map (OpenFIGI), never from issuer names.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pandas as pd
@@ -26,11 +23,12 @@ from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.utils.superinvestor_roster import roster_cik_union
 
 logger = logging.getLogger(__name__)
 
 # `quarter` is absent on purpose: it tagged the SOURCE bulk data set, not the period.
-_COLS = [
+_HR_COLS = [
     "cik",
     "period",
     "filing_date",
@@ -47,11 +45,51 @@ _COLS = [
     "other_value",
 ]
 
-# 13F `VALUE` is in $thousands or $ones depending on the schema the FILER used -- not on the
-# period, so the old pre/post-2023 date rule was wrong. edgartools infers the unit per filing
-# and hands `infotable` back in dollars; an implied price outside this band means it inferred
-# wrong, the one failure mode that would silently scale value_usd by 1000x.
+_BOOK_COLS = [
+    "cik",
+    "period",
+    "filing_date",
+    "cusip",
+    "issuer_name",
+    "title_of_class",
+    "position_type",
+    "shares",
+    "value_usd",
+    "call_shares",
+    "call_value",
+    "put_shares",
+    "put_value",
+    "debt_prn",
+    "debt_value",
+    "other_value",
+]
+
+#: `sec13f_manager_holdings`' PK; the last filing wins on it.
+_BOOK_KEY = ["cik", "period", "cusip"]
+
+# 13F `VALUE` is in $thousands or $ones depending on the schema the FILER used, not on the period.
+# edgartools infers the unit per filing and returns dollars; an implied price outside this band
+# means it inferred wrong, the one failure mode that silently scales value_usd by 1000x.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
+
+#: The five mutually exclusive holding classes, in the order `position_type` resolves ties.
+#: `common` first because a line that reads as stock is stock whatever else also matches.
+POSITION_TYPES = ("common", "call", "put", "debt", "other")
+
+#: The per-type value columns, in `POSITION_TYPES` order; `_dominant_type` picks among them.
+_VALUE_BY_TYPE = {"common": "value_usd", "call": "call_value", "put": "put_value", "debt": "debt_value", "other": "other_value"}
+
+
+@dataclass
+class _WalkState:
+    """Running state of one 13F walk: the CUSIP map built so far and rows saved per table."""
+
+    looked_up: set[str] = field(default_factory=set)
+    cmap: pd.DataFrame | None = None
+    hr_saved: int = 0
+    hr_suspect: int = 0
+    book_saved: int = 0
+    book_suspect: int = 0
 
 
 def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
@@ -61,11 +99,6 @@ def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
         if cand.lower() in lower:
             return df[lower[cand.lower()]]
     return pd.Series([pd.NA] * len(df), index=df.index)
-
-
-#: The five mutually exclusive holding classes, in the order `position_type` resolves ties.
-#: `common` first because a line that reads as stock is stock whatever else also matches.
-POSITION_TYPES = ("common", "call", "put", "debt", "other")
 
 
 def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
@@ -128,47 +161,156 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _holdings_frame(cik, filing_date, period, infotable: pd.DataFrame) -> pd.DataFrame:
-    """One filing's info table -> one row per security. Pure."""
-    typed = _classify_holdings(infotable).dropna(subset=["cusip"])
-    # a manager's several lines for the same security (split sub-accounts) become one row
-    out = typed.groupby("cusip", as_index=False).sum(numeric_only=True)
+def _dominant_type(grouped: pd.DataFrame) -> pd.Series:
+    """`position_type` of an already-grouped row: the class carrying the most absolute value.
+    The per-class value columns stay authoritative; ties (including the all-zero row) go to
+    `common`, because `idxmax` returns the first column and `_VALUE_BY_TYPE` lists it first."""
+    values = pd.DataFrame({name: grouped[col].fillna(0.0).abs() for name, col in _VALUE_BY_TYPE.items()})
+    return values.idxmax(axis=1)
+
+
+def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame) -> pd.DataFrame:
+    """One filing's info table -> one `_BOOK_COLS` row per CUSIP, no universe filter. Pure.
+    Numerics are summed over a CUSIP's lines; `issuer_name` / `title_of_class` take the first
+    non-null; `position_type` is the dominant class. Rows without a period are dropped."""
+    typed = _classify_holdings(infotable)
+    typed["issuer_name"] = _pick(infotable, "NAMEOFISSUER", "Issuer").astype("string")
+    typed["title_of_class"] = _pick(infotable, "TITLEOFCLASS", "Class").astype("string")
+    typed = typed.dropna(subset=["cusip"])
+    if typed.empty:
+        return pd.DataFrame(columns=_BOOK_COLS)
+
+    numeric = [c for c in typed.columns if c not in ("cusip", "issuer_name", "title_of_class")]
+    out = typed.groupby("cusip", as_index=False).agg({**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"})
+    out["position_type"] = _dominant_type(out)
     out["cik"] = pad_cik(cik)  # the stored form; the PK join depends on matching it
     out["period"] = pd.Timestamp(period)
     out["filing_date"] = pd.Timestamp(filing_date)
-    return out.dropna(subset=["period"])
+    return out.dropna(subset=["period"])[_BOOK_COLS]
 
 
 def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
-    """Fetch and parse one 13F-HR. Empty on any failure: one unparseable filing must not
-    abort a batch of thousands. `lookback_days` is what gets it retried on a later run."""
+    """Fetch and parse one 13F-HR into its book. Empty on any failure, logged with the accession:
+    one unparseable filing must not abort a batch."""
     try:
         infotable = stamp.filing.obj().infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
-        return _holdings_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
+        return _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"13F {stamp.accession_number}: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
 
-def _resolve_tickers(holdings: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
-    out = holdings.merge(cmap, on="cusip", how="inner")
-    return out[out["ticker"].isin(universe)]
+def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
+    """The `sec13f_hr` slice of a book: CUSIPs the map resolves to a universe ticker, `_HR_COLS`."""
+    out = book[[c for c in _HR_COLS if c != "ticker"]].merge(cmap, on="cusip", how="inner")
+    return out[out["ticker"].isin(universe)][_HR_COLS]
+
+
+def _suspect_prices(df: pd.DataFrame) -> int:
+    """Rows whose implied share price falls outside `_IMPLIED_PRICE_BAND` -- the detector for
+    edgartools inferring the wrong $thousands-vs-$ones unit on a filing."""
+    if df.empty:
+        return 0
+    implied = (df["value_usd"] / df["shares"].where(df["shares"] > 0)).dropna()
+    return int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
+
+
+def _drop_superseded(context: Context, book: pd.DataFrame) -> pd.DataFrame:
+    """Drop book rows whose (cik, period, cusip) is already stored from a LATER filing, so a walk
+    that meets an original after its amendment (edgartools lists newest first) never reverts it."""
+    if book.empty:
+        return book
+    stored = context.store.load(
+        Tables.sec13f_manager_holdings,
+        columns=[*_BOOK_KEY, "filing_date"],
+        where={"cik": sorted(set(book["cik"]))},
+        since=book["period"].min(),
+        until=book["period"].max(),
+        optional=True,
+    )
+    if stored is None:
+        return book
+    stored = stored.assign(period=pd.to_datetime(stored["period"]), stored_filed=pd.to_datetime(stored["filing_date"]))
+    merged = book[_BOOK_KEY + ["filing_date"]].merge(stored[[*_BOOK_KEY, "stored_filed"]], on=_BOOK_KEY, how="left")
+    return book[~(merged["stored_filed"] > merged["filing_date"]).to_numpy()]
+
+
+def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
+    """Upsert manager-book rows, last filed wins per (cik, period, cusip) via a stable sort on
+    `filing_date`. Returns (rows saved, suspect-price rows)."""
+    if book.empty:
+        return 0, 0
+    latest = book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
+    return context.store.save(Tables.sec13f_manager_holdings, latest[_BOOK_COLS]), _suspect_prices(latest)
+
+
+def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
+    """The CUSIP->ticker map, rebuilt only when the book carries a CUSIP not looked up yet
+    (`build_cusip_ticker_map` re-reads the whole map table)."""
+    new_cusips = set(book["cusip"]) - walk.looked_up
+    if new_cusips or walk.cmap is None:
+        walk.cmap = build_cusip_ticker_map(context, sorted(new_cusips))
+        walk.looked_up |= new_cusips
+    return walk.cmap
+
+
+def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster_ciks: set[str], walk: _WalkState) -> None:
+    """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
+    `sec13f_manager_holdings`; counts accumulate on `walk`."""
+    hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
+    if not hr.empty:
+        walk.hr_suspect += _suspect_prices(hr)
+        walk.hr_saved += context.store.save(Tables.sec13f_hr, hr)
+    saved, suspect = _save_book(context, _drop_superseded(context, book[book["cik"].isin(roster_ciks)]))
+    walk.book_saved += saved
+    walk.book_suspect += suspect
+
+
+def _resolve_window(
+    context: Context, years_history: int, lookback_days: int, filing_window: tuple[str, str] | None
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """(since, until) filing dates: the backfill window when given (watermark untouched), else
+    `max(filing_date) - lookback_days` to today, or `years_history` back on an empty table."""
+    today = cast(pd.Timestamp, pd.Timestamp.today().normalize())
+    if filing_window is not None:
+        since, until = (cast(pd.Timestamp, pd.Timestamp(d).normalize()) for d in filing_window)
+        if since > until:
+            raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
+        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
+        return since, until
+    watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
+    if watermark is None:
+        since = cast(pd.Timestamp, today - pd.DateOffset(years=years_history))
+        logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
+        return since, today
+    return watermark - pd.Timedelta(days=lookback_days), today
 
 
 def _record(context: Context, tickers: list[str] | None, saved: int, filing_window: tuple[str, str] | None) -> None:
-    """Log the run, as an incremental or as a backfill.
-
-    A windowed run must NOT read as a normal incremental: `last_run_date` is a resume cutoff
-    (`manifest_window`), and stamping it from a backfill would claim the table had been
-    brought current when the run only refilled a hole behind the head. `backfill_window`
-    routes it to the manifest's backfill list instead, leaving every watermark untouched."""
+    """Log the run in the manifest: as an incremental, or as a backfill that leaves every
+    watermark (`last_run_date`) untouched."""
     n_tickers = len(set(tickers or ()))
     if filing_window is None:
         record_run(context, Tables.sec13f_hr, n_tickers, saved)
     else:
         record_run(context, Tables.sec13f_hr, n_tickers, saved, backfill_window=filing_window)
+
+
+def _log_walk(walk: _WalkState, total: int) -> None:
+    """Suspect-price warnings and the saved-row summary for both tables."""
+    for table, saved, suspect in (
+        (Tables.sec13f_hr, walk.hr_saved, walk.hr_suspect),
+        (Tables.sec13f_manager_holdings, walk.book_saved, walk.book_suspect),
+    ):
+        if suspect:
+            logger.warning(
+                f"13F: {suspect}/{saved} rows saved to {table} imply a share price outside "
+                f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
+                f"detection before trusting value_usd"
+            )
+        logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {table}")
 
 
 def fetch_13f(
@@ -179,84 +321,32 @@ def fetch_13f(
     lookback_days: int = 7,
     filing_window: tuple[str, str] | None = None,
 ) -> None:
-    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date`, minus
-    `lookback_days`.
-
-    The watermark is the FILING date, not the reported period: managers back-file old periods
-    (seen: a 2019-06-30 period filed in 2025), which period-keyed dedup would skip for ever.
-    `lookback_days` re-reads the tail of the window because there is no accession dedup and
-    `_read_filing` swallows per-filing failures -- without it, a filing that failed
-    transiently would sit behind the advanced watermark and never be retried. A full rescan
-    is the wrong self-heal here: 15y is ~528k filings, ~16h.
-
-    ⚠ `filing_window` IS A BACKFILL, NOT A RESUME, and it deliberately bypasses the
-    watermark in both directions: it does not read it and it does not advance it. The
-    watermark is `max(filing_date)`, so a gap BEHIND it is unreachable by design --
-    `since = watermark - 7d` can never look back two months, and `lookback_days` was sized
-    for a transient per-filing failure, not for a lost season. Measured 2026-09-14:
-    `sec13f_hr` had no row filed in 2024-01/02 or 2025-06..08, which is exactly the two
-    filing seasons for periods 2023-12-31 and 2025-06-30, and both quarters read 13x and
-    29x short on the filer axis as a result (463 and 254 filers against ~6,400 and ~7,200
-    in their neighbours).
-
-    Re-reading a filing already stored is IDEMPOTENT: `sec13f_hr`'s PK is
-    `(cik, period, ticker, cusip)` and `store.save` upserts on it, so an overlapping window
-    restates rows rather than appending them. There is no accession column and no accession
-    dedup, and this is the reason a backfill does not need one.
-
-    ⚠ ONE EDGAR WALK AT A TIME. The rate limiter is per-PROCESS, so two concurrent walks run
-    at ~18 req/s against SEC's 10 and the block is silent."""
-
+    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date` minus `lookback_days`
+    (the re-read tail retries filings that failed transiently), or the `filing_window` backfill.
+    Each batch upserts the universe slice to `sec13f_hr` and roster CIKs' books to
+    `sec13f_manager_holdings`; both are idempotent on their PKs. ONE EDGAR walk at a time."""
     context.ensure_edgar_identity()
-    today = pd.Timestamp.today().normalize()
-
-    if filing_window is not None:
-        since, until = (pd.Timestamp(d).normalize() for d in filing_window)
-        if since > until:
-            raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
-        logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
-    else:
-        until = today
-        watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
-        if watermark is None:
-            since = today - pd.DateOffset(years=years_history)
-            logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
-        else:
-            since = watermark - pd.Timedelta(days=lookback_days)
+    since, until = _resolve_window(context, years_history, lookback_days, filing_window)
+    roster_ciks = roster_cik_union(context)
+    if not roster_ciks:
+        logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
     filings = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}") or []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
-
     if not total:
         _record(context, tickers, 0, filing_window)
         return
 
-    saved, suspect, batch, looked_up, cmap = 0, 0, [], set(), None
+    universe = set(cast(list[str], tickers))
+    walk, batch = _WalkState(), []
     for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
         rows = _read_filing(FilingStamp.of(filing, ""))
         if not rows.empty:
             batch.append(rows)
         if batch and (len(batch) >= save_every or i == total):
-            holdings = pd.concat(batch, ignore_index=True)
+            _save_batch(context, pd.concat(batch, ignore_index=True), universe, roster_ciks, walk)
             batch.clear()
-            new_cusips = set(holdings["cusip"]) - looked_up
-            if new_cusips or cmap is None:
-                # build_cusip_ticker_map re-reads the WHOLE map table, so only call it for a
-                # genuinely new cusip -- once per batch would reload it ~44x a quarter
-                cmap = build_cusip_ticker_map(context, sorted(new_cusips))
-                looked_up |= new_cusips
-            out = _resolve_tickers(holdings, cmap, set(tickers))
-            if not out.empty:
-                implied = (out["value_usd"] / out["shares"].where(out["shares"] > 0)).dropna()
-                suspect += int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
-                saved += context.store.save(Tables.sec13f_hr, out[_COLS])
 
-    if suspect:
-        logger.warning(
-            f"13F: {suspect}/{saved} saved rows imply a share price outside "
-            f"{_IMPLIED_PRICE_BAND} -- check edgartools' per-filing $thousands "
-            f"detection before trusting value_usd"
-        )
-    logger.info(f"13F: saved {saved} row(s) from {total} filing(s) to {Tables.sec13f_hr}")
-    _record(context, tickers, saved, filing_window)
+    _log_walk(walk, total)
+    _record(context, tickers, walk.hr_saved, filing_window)

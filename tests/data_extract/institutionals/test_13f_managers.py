@@ -1,7 +1,7 @@
 """
 test_13f_managers.py (tests/data_extract/institutionals/test_13f_managers.py)
 ------------------------------------------------------------------------------
-`fetch_13f_managers`'s parse. Two invariants carry the whole table:
+The 13F book parse (`fetch_13f._book_frame`, shared by both 13F tables). Two invariants carry it:
 
   * NO UNIVERSE FILTER. `sec13f_hr` keeps the S&P 500 slice of a manager's book, which is why a
     weight computed from it is inflated by a manager-specific 1.0x-7.6x. This table exists to be
@@ -13,8 +13,7 @@ test_13f_managers.py (tests/data_extract/institutionals/test_13f_managers.py)
 
 import pandas as pd
 
-from src.data_extract.utils.institutionals.fetch_13f import POSITION_TYPES, _classify_holdings, position_type
-from src.data_extract.utils.institutionals.fetch_13f_managers import _COLS, _dominant_type, _manager_holdings_frame
+from src.data_extract.utils.institutionals.fetch_13f import _BOOK_COLS, POSITION_TYPES, _book_frame, _classify_holdings, _dominant_type, position_type
 
 
 def _infotable(rows: list[dict]) -> pd.DataFrame:
@@ -103,10 +102,10 @@ def test_a_blank_amount_type_is_common_not_other():
 def test_no_universe_filter_is_applied():
     """G0450A105 is a non-S&P500 (indeed non-US) CUSIP. `fetch_13f` drops it; this table's whole
     purpose is that it does not."""
-    out = _manager_holdings_frame("0001067983", "2026-05-10", "2026-03-31", _MIXED)
+    out = _book_frame("0001067983", "2026-05-10", "2026-03-31", _MIXED)
     assert "G0450A105" in set(out["cusip"])
     assert len(out) == 5
-    assert list(out.columns) == _COLS
+    assert list(out.columns) == _BOOK_COLS
     assert "ticker" not in out.columns  # by design -- see the schema docstring
     print("\n=== SANITY: 13F manager book has no universe filter ===")
     print(f"  {len(out)} CUSIPs kept including the non-S&P500 G0450A105. Validated.")
@@ -137,7 +136,7 @@ def test_split_sub_account_lines_collapse_to_one_summed_row():
             },
         ]
     )
-    out = _manager_holdings_frame("0001067983", "2026-05-10", "2026-03-31", split)
+    out = _book_frame("0001067983", "2026-05-10", "2026-03-31", split)
     assert len(out) == 1
     assert out.iloc[0]["shares"] == 5_000 and out.iloc[0]["value_usd"] == 1_000_000.0
     assert out.iloc[0]["issuer_name"] == "APPLE INC"
@@ -169,7 +168,7 @@ def test_a_cusip_held_as_both_stock_and_calls_keeps_both_legs():
             },
         ]
     )
-    out = _manager_holdings_frame("0001067983", "2026-05-10", "2026-03-31", both)
+    out = _book_frame("0001067983", "2026-05-10", "2026-03-31", both)
     assert len(out) == 1
     row = out.iloc[0]
     assert row["value_usd"] == 100_000.0 and row["call_value"] == 900_000.0
@@ -185,7 +184,7 @@ def test_dominant_type_breaks_ties_towards_common():
 
 
 def test_period_and_cik_are_stored_in_their_join_forms():
-    out = _manager_holdings_frame("1067983", "2026-05-10", "2026-03-31", _MIXED)
+    out = _book_frame("1067983", "2026-05-10", "2026-03-31", _MIXED)
     assert set(out["cik"]) == {"0001067983"}  # zero-padded, as the PK expects
     assert set(out["period"]) == {pd.Timestamp("2026-03-31")}
     assert set(out["filing_date"]) == {pd.Timestamp("2026-05-10")}

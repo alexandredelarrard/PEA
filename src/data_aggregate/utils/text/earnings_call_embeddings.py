@@ -16,7 +16,9 @@ Two stages, mirroring the FinBERT sentiment pipeline:
          answer_idx (0 for the question, 1..k for the 1st..last answer turn; -1 for prepared),
          person (the speaker -- the analyst on question rows, the manager on answer rows),
          text (the cleaned turn), as_of (the call date), embedding (the turn's OpenAI vector),
-         model, run_at.
+         model (the cache tag "<OpenAI model>:<EARNINGS_CALL_EMBEDDING_CACHE_VERSION>"), run_at.
+     A call is complete only under the current cache tag, so a turn-text change (a version bump)
+     re-embeds every call through this same incremental pass.
      Storing per turn keeps every question/answer embedding we pay for — auditable and reusable —
      at NO extra API cost vs a pooled design (same text is embedded either way). Incremental
      & per-call upsert, so an interrupted (billed) run never loses work and re-runs make ZERO calls.
@@ -41,6 +43,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.constants.constants import (
+    EARNINGS_CALL_EMBEDDING_CACHE_MODEL,
+    EARNINGS_CALL_EMBEDDING_CACHE_VERSION,
     EARNINGS_CALL_EMBEDDING_MODEL,
     EARNINGS_CALL_TAG_ANSWER,
     EARNINGS_CALL_TAG_QUESTION,
@@ -186,7 +190,8 @@ def embed_earnings_calls(
     if not universe:
         log.warning("No earnings_call_sections -> embedding skipped (run extract-earnings-calls).")
         return None
-    done = set() if force else _embedded_calls(store, model)
+    cache_model = f"{model}:{EARNINGS_CALL_EMBEDDING_CACHE_VERSION}"
+    done = set() if force else _embedded_calls(store, cache_model)
     remaining = [k for k in universe if tuple(k) not in done]
     if not remaining:
         log.info("Earnings-call embedding cache already complete (%d calls).", len(universe))
@@ -217,7 +222,7 @@ def embed_earnings_calls(
                 "text": t["text"],
                 "as_of": aod,
                 "embedding": [float(x) for x in vectors[i]],
-                "model": model,
+                "model": cache_model,
                 "run_at": run_at,
             }
             for i, t in enumerate(turns)
@@ -254,7 +259,7 @@ def embedding_kpis_streamed(
         emb = store.load(Tables.earning_calls_embedding, _KPI_LOAD_COLS, where={"ticker": tickers}, optional=True)
         if emb is None:
             continue
-        emb = emb[emb["model"] == EARNINGS_CALL_EMBEDDING_MODEL]
+        emb = emb[emb["model"] == EARNINGS_CALL_EMBEDDING_CACHE_MODEL]
         if emb.empty:
             continue
         if issuer_id is not None:

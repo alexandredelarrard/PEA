@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from src.constants.constants import EARNINGS_CALL_MIN_CLEAN_WORDS, EARNINGS_CALL_SCORED_TAGS
+from src.utils.earnings_call_split import is_pleasantry, split_sentences
 
 # Curated subset of Loughran-McDonald "Uncertainty" + "Weak Modal" words (lowercased).
 LM_UNCERTAINTY: frozenset[str] = frozenset(
@@ -537,17 +538,11 @@ def cosine_similarity(a: Counter, b: Counter) -> float:
     return dot / (na * nb)
 
 
-_SENTENCE_RE = re.compile(r"[^.?!]+[.?!]*")
-_COURTESY_RE = re.compile(
-    r"^(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|morning|afternoon|thanks?|thank\s+you|"
-    r"yeah|yes|sure|okay|ok|great|congrats?|congratulations)\b|taking\s+(?:my|the|our|your)\s+questions?"
-    r"|congrat\w*|appreciate\s+it|back\s+in\s+(?:the\s+)?queue|operator\s+instructions?",
-    re.I,
-)
-
-
 def clean_earnings_call_text(text: object) -> str:
-    """Remove leading/trailing courtesy-only sentences and normalize whitespace."""
+    """Remove leading/trailing courtesy-only sentences and normalize whitespace. Sentences come from
+    the shared lossless splitter ("3.5%" and "U.S." survive byte-identical) and courtesy is the
+    shared `is_pleasantry` test, so on a `split_call` text, already cleaned sentence by sentence,
+    this is a no-op."""
     if text is None:
         raw = ""
     else:
@@ -556,10 +551,10 @@ def clean_earnings_call_text(text: object) -> str:
         except (TypeError, ValueError):
             missing = True
         raw = "" if missing else str(text)
-    sentences = [s.strip() for s in _SENTENCE_RE.findall(re.sub(r"\s+", " ", raw).strip()) if s.strip()]
-    while sentences and "?" not in sentences[0] and len(sentences[0].split()) <= 22 and _COURTESY_RE.search(sentences[0]):
+    sentences = split_sentences(raw)
+    while sentences and is_pleasantry(sentences[0]):
         sentences.pop(0)
-    while sentences and "?" not in sentences[-1] and len(sentences[-1].split()) <= 22 and _COURTESY_RE.search(sentences[-1]):
+    while sentences and is_pleasantry(sentences[-1]):
         sentences.pop()
     return " ".join(sentences).strip()
 

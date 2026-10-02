@@ -8,7 +8,7 @@
  "case": "live-on-X format: the CFO's welcome turn hands to the first question; no prepared remarks",
  "truncation": "kept 32 of 72 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
  "truth": {
-  "status": "ok",
+  "status": "no_prepared",
   "first_qa_turn": {
    "paragraph_number": 2,
    "speaker": "Alesia Haas",

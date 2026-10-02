@@ -766,11 +766,16 @@ FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
 # Bump when transcript preprocessing changes.  The sentiment cache PK does not
 # include the model, so a new label deliberately makes existing rows eligible
 # for one-time rescoring and replacement.
-EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "speaker-v1"
+EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "speaker-clean-v1"
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
 EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
 EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
 EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
+# Bump when the embedded turn texts change. The embedding cache PK (ticker, quarter, seq) does not
+# include the model, so the stored `model` tag carries this version: rows under another tag are
+# not complete and are re-embedded and replaced by the normal incremental pass.
+EARNINGS_CALL_EMBEDDING_CACHE_VERSION = "speaker-clean-v1"
+EARNINGS_CALL_EMBEDDING_CACHE_MODEL = f"{EARNINGS_CALL_EMBEDDING_MODEL}:{EARNINGS_CALL_EMBEDDING_CACHE_VERSION}"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

@@ -19,7 +19,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_EMBEDDING_MODEL, EARNINGS_CALL_TAG_QUESTION
+from src.constants.constants import EARNINGS_CALL_EMBEDDING_CACHE_MODEL, EARNINGS_CALL_EMBEDDING_MODEL, EARNINGS_CALL_TAG_QUESTION
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
@@ -193,7 +193,7 @@ def test_per_turn_split_clean_embed_cache_and_kpis():
         "model",
         "run_at",
     }.issubset(emb.columns)
-    assert set(emb["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
+    assert set(emb["model"]) == {EARNINGS_CALL_EMBEDDING_CACHE_MODEL}
     assert set(one["as_of"]) == {"2024-05-01"}, "the turn as_of is the paragraphs' call date"
     calls_after_first = stub.n_calls
     embed_earnings_calls(ctx, client=stub)  # re-run: incremental
@@ -302,10 +302,30 @@ def test_embedding_resume_requires_expected_model_and_reconciles_without_force()
 
     refreshed = store.t["earning_calls_embedding"]
     assert second.n_calls == 4
-    assert set(refreshed["model"]) == {EARNINGS_CALL_EMBEDDING_MODEL}
+    assert set(refreshed["model"]) == {EARNINGS_CALL_EMBEDDING_CACHE_MODEL}
     assert not refreshed["seq"].eq(999).any()
     print("\n=== SANITY CHECK: embedding cache provenance ===")
     print("  wrong-model calls are not considered complete; normal resume re-embeds and removes orphaned legacy turns. Validated with a stub.")
+
+
+def test_rows_under_the_unversioned_model_tag_are_stale_and_re_embedded() -> None:
+    """Rows written before the cache-version key (model == the bare OpenAI model name, e.g. the
+    live probe rows) are not complete: the normal incremental pass re-embeds and replaces them."""
+    store = FakeStore()
+    store.t["earnings_call_sections"] = _sections()
+    ctx = cast(Context, FakeCtx(store))
+    embed_earnings_calls(ctx, client=StubClient())
+    n_rows = len(store.t["earning_calls_embedding"])
+    store.t["earning_calls_embedding"]["model"] = EARNINGS_CALL_EMBEDDING_MODEL
+    rerun = StubClient()
+    embed_earnings_calls(ctx, client=rerun)
+    table = store.t["earning_calls_embedding"]
+    assert rerun.n_calls == 4, "every call stored under the unversioned tag is re-embedded"
+    assert set(table["model"]) == {EARNINGS_CALL_EMBEDDING_CACHE_MODEL} and len(table) == n_rows
+    print("\n=== SANITY CHECK: embedding cache version ===")
+    print(
+        f"  {n_rows} rows tagged {EARNINGS_CALL_EMBEDDING_MODEL!r} were re-embedded as {EARNINGS_CALL_EMBEDDING_CACHE_MODEL!r} (4 calls). Validated."
+    )
 
 
 def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> None:
@@ -376,7 +396,7 @@ def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> N
                     "tag": tag,
                     "exchange_idx": 0,
                     "embedding": vector,
-                    "model": EARNINGS_CALL_EMBEDDING_MODEL,
+                    "model": EARNINGS_CALL_EMBEDDING_CACHE_MODEL,
                 }
             )
     got = build_embedding_kpis(pd.DataFrame(rows))

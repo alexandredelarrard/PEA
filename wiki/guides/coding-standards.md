@@ -31,11 +31,20 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in the
 - Fully annotate every function and method signature.
 - Put `from __future__ import annotations` at the top of new modules.
 - Keep all imports at module scope; solve cycles rather than hiding imports inside functions.
-- Use explicit variable names. DataFrame variables may use a clear `df_...` prefix.
-- Split large routines into helpers with one purpose.
-- Reuse a helper only when the abstraction is already real; package-local helpers are preferable to speculative global utilities.
+- Variable names are lowercase (`N806`) and say what they hold: DataFrames carry a `df_` prefix (`df_prices`); scalars and collections use descriptive names (`n_filings`, `missing_tickers`).
 - Functions and methods use lower snake case (`N802`); arguments use lower snake case (`N803`); local variables inside functions use lower snake case (`N806`); exception classes end in `Error` (`N818`). Capitals are reserved for module-level constants and class names.
 - Prefer Python 3.13 syntax. Write unions as `A | B`, including runtime checks such as `isinstance(value, A | B)`. The runtime-check form is a project convention even though Ruff 0.16.9 removed `UP038`.
+
+## Function design and data flow
+
+- One function does one thing in at most 150 lines. A top-level orchestrator (a Step's `run()` or a `build_fundamentals_<x>` function) only calls the small step functions in order.
+- Nesting is at most 3 levels; 2 is the standard. Flatten deeper blocks with guard clauses, early returns, or a helper.
+- No pass-through functions: a function whose body only calls another function is removed, and callers call the target directly.
+- Functions doing the same thing are declared once. Logic repeated in two or more places, including across fetchers, is extracted to the closest shared utils module (package `utils/` for one package, `src/utils/` across packages) and called from every dependent; speculative one-use abstractions remain discouraged.
+- Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
+- Data flows in the golden-standard order: load → clean → compute features or steps → post-process → save → log, report, and sanity checks.
+
+A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
 
 ## Ruff and Pyright contract
 
@@ -54,7 +63,7 @@ Airflow DAGs are the narrow exception: they run in the separate Python 3.12 Airf
 
 ## Docstrings and comments
 
-Module and callable docstrings explain logic, inputs, outputs, and load-bearing invariants in concise English. They do not record commit history, bug chronology, or a full design report.
+Module and callable docstrings are a few lines saying what the code does: logic, inputs, outputs, and load-bearing invariants in concise English. They carry no history, no rationale chronology ("why we chose this"), and no measurements; those belong in reports or the [wiki log](../log.md).
 
 Keep comments sparse and explain why a non-obvious choice exists. When changing a behavior whose docstring carries an invariant, update that prose in the same change. Preserve deliberate duplication when the existing explanation says independent policies must remain independent.
 
@@ -65,6 +74,8 @@ Before adding a URL, field name, format, threshold, taxonomy value, model identi
 - World facts and stable literals belong in constants.
 - Tunable numerical choices belong in [configuration](../reference/configuration.md).
 - Table names and grains belong only in [schema.py](../../src/data_store/schema.py).
+- Module-level constants sit at the top of the module, directly after the imports.
+- A module global holds only a parameter, URL, or value a user may tune; a value local to one function stays a local variable, even when used twice.
 
 Do not introduce `*_TABLE` constants or duplicate registries.
 
@@ -94,6 +105,14 @@ Never:
 - treat unavailable data as zero.
 
 Cube builders keep heavy frames local to `run()`, load only their declared price fields, and let the part registry own incremental policy.
+
+### Performance
+
+Tables are large and pipelines run daily.
+
+- Pre-filter a frame to the rows that need computing before computing anything.
+- Vectorise with column operations; do not use `DataFrame.apply` or Python loops over rows on large frames.
+- Fetchers resume from DB frontiers with `max_date` / `max_date_by`, never a full read.
 
 ## Prefer the smallest correct change
 
@@ -146,6 +165,12 @@ Important data, model, or output work ends with the appropriate read-only valida
 
 - [ ] Step/Strategy boundary preserved.
 - [ ] Full annotations and top-level imports.
+- [ ] Each function does one thing in at most 150 lines and 3 nesting levels.
+- [ ] No pass-through functions.
+- [ ] Flow ordered load → clean → compute → post-process → save → log.
+- [ ] Repeated logic extracted to the closest utils module.
+- [ ] Large frames pre-filtered and vectorised; no row loops or `apply`.
+- [ ] Docstrings a few lines, without history or measurements.
 - [ ] Constants, config, and table registry used correctly.
 - [ ] Store-only tabular I/O.
 - [ ] Point-in-time and availability semantics preserved.

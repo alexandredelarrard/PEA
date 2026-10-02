@@ -259,6 +259,65 @@ def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
     print("  OK: measured 0 duplicate keys in the 238,891-call index; the rule is deterministic anyway")
 
 
+def test_fiscal_relabel_keeps_one_call_per_date_chaining_back_from_the_later_call(tmp_path: Path, sqlite_store: Any) -> None:
+    # DG (source labels of 2012-2013): four consecutive dates under a FY and a FY+1 label,
+    # resolved back from the single-label 2013-03-25 2013Q4 call.
+    dg = [
+        _call("DG", 2011, 4, "2012-03-22", 1, 2),
+        _call("DG", 2012, 4, "2012-03-22", 2, 2),
+        _call("DG", 2012, 1, "2012-06-04", 3, 2),
+        _call("DG", 2013, 1, "2012-06-04", 4, 2),
+        _call("DG", 2012, 2, "2012-08-27", 5, 2),
+        _call("DG", 2013, 2, "2012-08-27", 6, 2),
+        _call("DG", 2012, 3, "2012-12-11", 7, 2),
+        _call("DG", 2013, 3, "2012-12-11", 8, 2),
+        _call("DG", 2013, 4, "2013-03-25", 9, 2),
+    ]
+    # EEE: the next call implies the LOWER label, so the chain beats the highest ordinal;
+    # its latest date is multi-label, so it keeps the highest ordinal.
+    eee = [
+        _call("EEE", 2019, 4, "2020-03-01", 21, 2),
+        _call("EEE", 2020, 4, "2020-03-01", 22, 2),
+        _call("EEE", 2020, 1, "2020-06-01", 23, 2),
+        _call("EEE", 2020, 2, "2020-09-01", 24, 2),
+        _call("EEE", 2020, 3, "2020-09-01", 25, 2),
+    ]
+    # RJF, verbatim from the 2026-10-01 index: 2015Q2/Q3 on 2015-07-23, 2016Q1/Q2 on 2016-04-21.
+    rjf = [
+        _call("RJF", 2015, 1, "2015-04-24", 261826, 2),
+        _call("RJF", 2015, 2, "2015-07-23", 261827, 2),
+        _call("RJF", 2015, 3, "2015-07-23", 261829, 2),
+        _call("RJF", 2015, 4, "2015-10-22", 261831, 2),
+        _call("RJF", 2016, 1, "2016-04-21", 261833, 2),
+        _call("RJF", 2016, 2, "2016-04-21", 261836, 2),
+        _call("RJF", 2016, 3, "2016-07-21", 261838, 2),
+    ]
+    ctx = _ctx(tmp_path, sqlite_store)
+    source, _ = _source(_write(tmp_path / "r.parquet", [dg, eee, rjf]), "r1")
+
+    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["DG", "EEE", "RJF"], source=source)
+    calls = _sections(sqlite_store).drop_duplicates(["ticker", "quarter"])
+    kept = {(t, pd.Timestamp(d).date().isoformat()): q for t, q, d in calls[["ticker", "quarter", "as_of"]].itertuples(index=False)}
+
+    assert summary.calls_new == len(calls) == 5 + 3 + 5
+    assert not calls.duplicated(["ticker", "as_of"]).any()
+    assert [kept[("DG", d)] for d in ("2012-03-22", "2012-06-04", "2012-08-27", "2012-12-11", "2013-03-25")] == [
+        "2012Q4",
+        "2013Q1",
+        "2013Q2",
+        "2013Q3",
+        "2013Q4",
+    ]
+    assert (kept[("EEE", "2020-03-01")], kept[("EEE", "2020-09-01")]) == ("2019Q4", "2020Q3")
+    assert (kept[("RJF", "2015-07-23")], kept[("RJF", "2016-04-21")]) == ("2015Q3", "2016Q2")
+
+    print("\n=== SANITY CHECK: fiscal relabel duplicates (one call per ticker and date) ===")
+    print(f"  {len(dg) + len(eee) + len(rjf)} source rows -> {len(calls)} calls, 0 dates with two labels")
+    print(f"  DG chain back from 2013Q4: {[kept[('DG', d)] for d in ('2012-03-22', '2012-06-04', '2012-08-27', '2012-12-11')]}")
+    print(f"  EEE 2020-03-01 -> {kept[('EEE', '2020-03-01')]} (chain, not max); RJF -> {kept[('RJF', '2015-07-23')]}, {kept[('RJF', '2016-04-21')]}")
+    print("  OK: each multi-label date keeps next-later ordinal - 1, else the highest ordinal")
+
+
 def test_schema_drift_fails_loudly(tmp_path: Path, sqlite_store: Any) -> None:
     drifted = _SCHEMA.set(_SCHEMA.get_field_index("transcripts_id"), pa.field("transcripts_id", pa.string()))
     rows = [[{**c, "transcripts_id": None} for c in group] for group in _BASE]

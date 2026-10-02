@@ -26,8 +26,8 @@ reads the `transcripts` column only of the groups that hold a new or re-issued c
 
 Measured on the 2026-10-01 index (238,891 calls): (symbol, fiscal_year, fiscal_quarter) is
 unique; the dedup rule (latest `report_date`, then highest `transcripts_id`) is defensive.
-23 roster calls appear under two fiscal labels on the same `report_date` (10 retailers with a
-January year end, e.g. DG 2025Q4 and 2026Q4 on 2026-03-12); both labels are kept as published.
+23 roster dates of 10 tickers carry two fiscal labels (provider relabels, e.g. DG 2025Q4 and
+2026Q4 on 2026-03-12); `one_call_per_date` keeps one, chaining back from the next later call.
 No symbol carries a `.` (BF-B is stored as `BF-B`); `.` is still mapped to `-` on read.
 `paragraph_number` starts at 1 and is contiguous on 585/585 sampled calls, so the stored-call
 diff reads only paragraph 1 of each call.
@@ -229,7 +229,33 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], since: str | None) ->
         transcript_id=pd.array(calls["transcripts_id"], dtype="Int64"),
     )
     calls = calls.sort_values([*_KEY, "as_of", "transcript_id"], na_position="first").drop_duplicates(_KEY, keep="last")
+    calls = one_call_per_date(calls.assign(ordinal=calls["fiscal_year"].astype(int) * 4 + calls["fiscal_quarter"].astype(int)))
     return calls[[*_KEY, "as_of", "transcript_id", "row_group", "row"]].reset_index(drop=True)
+
+
+def one_call_per_date(calls: pd.DataFrame) -> pd.DataFrame:
+    """Keep one fiscal label per (ticker, as_of), resolving each ticker from its latest date back.
+
+    A multi-label date keeps the label whose `ordinal` (fiscal_year*4 + fiscal_quarter) is one
+    below the label kept for the next later date, else the highest ordinal. The provider's
+    fiscal-year relabels put 23 roster dates of 10 tickers (DG, DLTR, HD, LOW, LULU, TGT, ULTA,
+    WSM, PCAR, RJF) under two labels; both would read as two calls on one date. Every later
+    call of a ticker sits inside any `since` window that holds an earlier one, so an
+    incremental run resolves exactly as a full one."""
+    per_date = calls.groupby(["ticker", "as_of"])["ordinal"].transform("size")
+    tickers = set(calls.loc[per_date > 1, "ticker"])
+    if not tickers:
+        return calls
+    drop: list[Any] = []
+    for _, chain in calls[calls["ticker"].isin(tickers)].groupby("ticker", sort=False):
+        following: int | None = None
+        for _, day in chain.sort_values("as_of", ascending=False).groupby("as_of", sort=False):
+            ordinals = day["ordinal"]
+            matched = ordinals[ordinals == following - 1] if following is not None else ordinals.iloc[0:0]
+            kept = matched.index[0] if len(matched) else ordinals.idxmax()
+            drop += [i for i in day.index if i != kept]
+            following = int(ordinals[kept])
+    return calls.drop(index=drop)
 
 
 def diff_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.DataFrame]:

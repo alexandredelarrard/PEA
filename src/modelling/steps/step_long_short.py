@@ -45,7 +45,7 @@ from src.data_store.schema import Tables
 from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression, RandomForestModel, model_class
 from src.modelling.transformers.backtest import Backtest
 from src.modelling.transformers.monitor import Monitor
-from src.modelling.utils.artifacts import load_ensemble, member_path, models_dir, read_metadata, write_metadata
+from src.modelling.utils.artifacts import clear_members, load_ensemble, member_path, models_dir, read_metadata, write_metadata
 from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
@@ -363,6 +363,9 @@ class StepLongShort(Step):
         """Pickle every member + `metadata.json` (the contract the strategies, app and
         `run_predict` read)."""
         directory = models_dir(self._context, self._config)
+        stale = clear_members(directory)
+        if stale:
+            self._log.info("Removed %d member file(s) of the previous run from %s", len(stale), directory)
         for h, members in models.items():
             for fam, model in members.items():
                 model.save(member_path(directory, h, fam))

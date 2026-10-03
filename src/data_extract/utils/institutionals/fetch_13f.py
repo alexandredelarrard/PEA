@@ -204,6 +204,13 @@ def _suspect_prices(df: pd.DataFrame) -> int:
     return int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
 
 
+def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
+    """One row per `_BOOK_KEY`, the last filed winning: a stable sort on `filing_date`, so rows
+    passed in (filed, accession) order keep a same-day amendment after its original. Also keeps a
+    PK from repeating in one upsert, which Postgres rejects."""
+    return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
+
+
 def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
     """Upsert manager-book rows. Returns (rows saved, suspect-price rows)."""
     if book.empty:
@@ -223,9 +230,9 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
 
 def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster_ciks: set[str], walk: _WalkState) -> None:
     """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
-    `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip) via a stable sort on
-    `filing_date`. Counts accumulate on `walk`."""
-    book = book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
+    `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip). Counts accumulate on
+    `walk`."""
+    book = _latest_per_key(book)
     hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
     if not hr.empty:
         walk.hr_suspect += _suspect_prices(hr)

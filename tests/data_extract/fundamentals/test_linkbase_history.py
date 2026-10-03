@@ -41,6 +41,9 @@ from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     statement_arcs,
 )
 
+pytestmark = pytest.mark.live  # every test here reads live EDGAR filings
+
+
 CATALOGUE = load_catalogue("./configs")
 
 SINCE = pd.Timestamp("2011-01-01")

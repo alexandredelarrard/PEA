@@ -176,9 +176,10 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     return out.dropna(subset=["period"])[_BOOK_COLS]
 
 
-def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
-    """Fetch and parse one 13F-HR into its book. Empty on any failure, logged with the accession:
-    one unparseable filing must not abort a batch."""
+def _read_filing(stamp: FilingStamp) -> pd.DataFrame | None:
+    """Fetch and parse one 13F-HR into its book: empty for an empty info table, None when the
+    read failed (logged with the accession), so one unparseable filing never aborts a batch and a
+    caller can retry a failure."""
     try:
         infotable = stamp.filing.obj().infotable
         if infotable is None or infotable.empty:
@@ -186,7 +187,7 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
         return _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"13F {stamp.accession_number}: {type(e).__name__}: {e}")
-        return pd.DataFrame()
+        return None
 
 
 def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
@@ -317,7 +318,7 @@ def fetch_13f(
     walk, batch = _WalkState(), []
     for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
         rows = _read_filing(FilingStamp.of(filing, ""))
-        if not rows.empty:
+        if rows is not None and not rows.empty:
             batch.append(rows)
         if batch and (len(batch) >= save_every or i == total):
             _save_batch(context, pd.concat(batch, ignore_index=True), universe, roster_ciks, walk)

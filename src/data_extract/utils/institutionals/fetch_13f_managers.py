@@ -2,8 +2,10 @@
 fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.py)
 ------------------------------------------------------------------------------------
 Per-CIK catch-up of `sec13f_manager_holdings` (complete CUSIP books, no universe filter) for every CIK
-ever on `superinvestor_roster`: each CIK re-reads only filings filed on/after its stored `filing_date`
-frontier, with `fetch_13f`'s parser and save. `fetch_13f` writes the same rows inline during its walk.
+ever on `superinvestor_roster`, with `fetch_13f`'s parser and save. A listed filing is done when the
+stored book shows it, or a later filing of the same period, by `(period, filing_date)`; every other
+filing is read, so a failed read or an inline-written newer filing never hides older gaps.
+`fetch_13f` writes the same rows inline during its walk.
 """
 
 from __future__ import annotations
@@ -30,30 +32,56 @@ class SuperinvestorRosterEmptyError(RuntimeError):
     """`superinvestor_roster` holds no CIK; the roster is the walk's entire input, so the run stops."""
 
 
-def _filings_to_read(cik: str, floor: pd.Timestamp | None, since: pd.Timestamp) -> list[FilingStamp]:
-    """The CIK's 13F-HR filings filed on/after `floor` (all when None) whose period is on/after
-    `since`, oldest first by (filed, accession) -- edgartools lists newest first; a null or
-    unparseable period is skipped."""
+def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd.Timestamp]]:
+    """`(stamp, period)` for the CIK's 13F-HR filings whose period is on/after `since`, oldest
+    first by (filed, accession) -- edgartools lists newest first; a null or unparseable period is
+    skipped."""
     listing = Company(cik).get_filings(form=SEC_13F_FORMS) or []
     stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.accession_number))
-    if floor is not None:
-        stamps = [s for s in stamps if s.filed.normalize() >= floor]
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
-    return [s for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
+    return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
 
 
-def _catch_up_cik(label: str, cik: str, *, context: Context, frontier: dict[str, pd.Timestamp], since: pd.Timestamp) -> tuple[int, int]:
-    """Read and save one roster CIK's filings newer than its frontier, the last filed winning per
-    (cik, period, cusip). `label` is the log key `run_per_ticker` passes first. Returns (rows
-    saved, suspect-price rows)."""
-    frames = [rows for stamp in _filings_to_read(cik, frontier.get(cik), since) if not (rows := _read_filing(stamp)).empty]
+def _stored_dates(context: Context, cik: str, column: str) -> set[pd.Timestamp]:
+    """Distinct normalised `column` dates of the CIK's stored book (DATE reads back as `date`)."""
+    values = context.store.distinct(Tables.sec13f_manager_holdings, column, where={"cik": cik})
+    return {pd.Timestamp(v).normalize() for v in values}
+
+
+def _pending_filings(context: Context, cik: str, listed: list[tuple[FilingStamp, pd.Timestamp]]) -> list[tuple[FilingStamp, pd.Timestamp]]:
+    """The listed filings the stored book does not show yet: a filing is done when its period and
+    filing date are both stored, and so is every filing of that period filed on or before it (a
+    restatement overwrites its original's rows). Two scoped DISTINCT reads, no side state."""
+    periods, filed = _stored_dates(context, cik, "period"), _stored_dates(context, cik, "filing_date")
+    newest_done: dict[pd.Timestamp, pd.Timestamp] = {}
+    for stamp, period in listed:
+        if period in periods and stamp.filed.normalize() in filed:
+            newest_done[period] = stamp.filed.normalize()
+    return [(s, p) for s, p in listed if p not in newest_done or s.filed.normalize() > newest_done[p]]
+
+
+def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp) -> tuple[int, int, int]:
+    """Read and save one roster CIK's pending filings, the last filed winning per (cik, period,
+    cusip). A failed read keeps its whole period out of this save, so the period stays pending and
+    is retried next run; other periods still save. `label` is the log key `run_per_ticker` passes
+    first. Returns (rows saved, suspect-price rows, failed reads)."""
+    frames: list[pd.DataFrame] = []
+    failed_periods: list[pd.Timestamp] = []
+    for stamp, period in _pending_filings(context, cik, _listed_filings(cik, since)):
+        rows = _read_filing(stamp)
+        if rows is None:
+            failed_periods.append(period)
+        elif not rows.empty:
+            frames.append(rows)
     if not frames:
-        return 0, 0
-    return _save_book(context, _latest_per_key(pd.concat(frames, ignore_index=True)))
+        return 0, 0, len(failed_periods)
+    book = pd.concat(frames, ignore_index=True)
+    saved, suspect = _save_book(context, _latest_per_key(book[~book["period"].isin(failed_periods)]))
+    return saved, suspect, len(failed_periods)
 
 
 def _warn_empty_books(context: Context, empty: list[str], n_ciks: int) -> None:
-    """Warn on frontier-less roster CIKs that produced no rows, naming those with `sec13f_hr`
+    """Warn on book-less roster CIKs that produced no rows, naming those with `sec13f_hr`
     history: those were throttled or failed transiently and must be re-run; the rest never filed."""
     if not empty:
         return
@@ -72,8 +100,8 @@ def _warn_empty_books(context: Context, empty: list[str], n_ciks: int) -> None:
 
 
 def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
-    """Catch every roster CIK's book up from its stored `filing_date` frontier; returns rows saved.
-    `years_history` bounds by PERIOD. A failed CIK counts as zero rows. Raises
+    """Catch every roster CIK's book up with every listed filing it does not show yet; returns rows
+    saved. `years_history` bounds by PERIOD. A failed CIK counts as zero rows. Raises
     `SuperinvestorRosterEmptyError` when the roster holds no CIK."""
     context.ensure_edgar_identity()
     ciks = sorted(roster_cik_union(context))
@@ -83,18 +111,26 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
             "The roster is this walk's entire scope; there is nothing to fetch without it."
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines
-    frontier = context.store.max_date_by(Tables.sec13f_manager_holdings, "cik", "filing_date")
+    with_book = set(context.store.distinct(Tables.sec13f_manager_holdings, "cik"))
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    logger.info("13F managers: %d roster CIK(s), %d with a stored frontier, periods from %s", len(ciks), len(frontier), since.date())
+    logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
 
-    worker = partial(_catch_up_cik, context=context, frontier=frontier, since=since)
+    worker = partial(_catch_up_cik, context=context, since=since)
     scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
     guarded = run_per_ticker(scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
-    results = [result or (0, 0) for result in guarded]
-    saved = sum(n for n, _ in results)
-    suspect = sum(s for _, s in results)
+    results = [result or (0, 0, 0) for result in guarded]
+    saved = sum(n for n, _, _ in results)
+    suspect = sum(s for _, s, _ in results)
+    failed = [(c, f) for c, (_, _, f) in zip(ciks, results, strict=True) if f]
 
-    _warn_empty_books(context, [c for c, (n, _) in zip(ciks, results, strict=True) if n == 0 and c not in frontier], len(ciks))
+    _warn_empty_books(context, [c for c, (n, _, _) in zip(ciks, results, strict=True) if n == 0 and c not in with_book], len(ciks))
+    if failed:
+        logger.warning(
+            "13F managers: %d filing read(s) failed across %d CIK(s); their periods were not saved and are retried next run: %s",
+            sum(f for _, f in failed),
+            len(failed),
+            ", ".join(c for c, _ in failed),
+        )
     if suspect:
         logger.warning(
             "13F managers: %d/%d saved rows imply a share price outside %s -- check "

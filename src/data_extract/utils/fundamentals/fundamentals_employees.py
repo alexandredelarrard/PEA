@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal, cast
 
 import pandas as pd
@@ -350,6 +351,34 @@ def _resume_plan(
     )
 
 
+def _fetch_ticker_employees(
+    ticker: str,
+    cik: str,
+    *,
+    context: Context,
+    plan: _ResumePlan,
+    scope: EdgarScope,
+    fallback_since: pd.Timestamp,
+    changed_scopes: frozenset[str],
+) -> EmployeeTickerResult:
+    """Build one ticker's counts, save its rows and clear its now-unavailable dates; the per-ticker worker."""
+    result = build_ticker_employees(
+        context,
+        ticker,
+        cik,
+        since=fallback_since if ticker in changed_scopes else plan.since,
+        done_accessions=plan.done_accessions,
+        skip_dates=plan.skip_dates.get(ticker, frozenset()),
+        scope=scope,
+    )
+    if not result.frame.empty:
+        context.store.save(Tables.fundamentals_employees, result.frame)
+    # A now-null date is cleared unless a skipped (already decided) filing saved it.
+    for filed in result.unavailable_dates - plan.saved_dates.get(ticker, frozenset()):
+        context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
+    return result
+
+
 def fetch_fundamentals_employees(
     context: Context,
     tickers: list[str],
@@ -376,26 +405,17 @@ def fetch_fundamentals_employees(
         sum(map(len, plan.skip_dates.values())),
     )
 
-    def _worker(ticker: str, cik: str) -> EmployeeTickerResult:
-        result = build_ticker_employees(
-            context,
-            ticker,
-            cik,
-            since=fallback_since if ticker in changed_scopes else plan.since,
-            done_accessions=plan.done_accessions,
-            skip_dates=plan.skip_dates.get(ticker, frozenset()),
-            scope=scope,
-        )
-        if not result.frame.empty:
-            context.store.save(Tables.fundamentals_employees, result.frame)
-        # A now-null date is cleared unless a skipped (already decided) filing saved it.
-        for filed in result.unavailable_dates - plan.saved_dates.get(ticker, frozenset()):
-            context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
-        return result
-
+    worker = partial(
+        _fetch_ticker_employees,
+        context=context,
+        plan=plan,
+        scope=scope,
+        fallback_since=fallback_since,
+        changed_scopes=changed_scopes,
+    )
     results = run_per_ticker(
         cik_map,
-        _worker,
+        worker,
         desc="fundamentals employees",
         log=context.log,
         max_workers=int(context.config.data_extract.fundamentals_workers),

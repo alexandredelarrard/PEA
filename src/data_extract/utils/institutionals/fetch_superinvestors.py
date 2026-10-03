@@ -17,7 +17,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from urllib.parse import quote
 
@@ -272,21 +272,38 @@ def _make_resolver(
     Precedence: `cik_overrides`, then the stored `known` resolution (sticky across renames), then
     EDGAR on the current name and earlier `name_history` names, newest first."""
     resolved_by_code: dict[str, tuple[str | None, str]] = {}
+    return partial(
+        _resolve_code,
+        resolved_by_code=resolved_by_code,
+        get_fn=get_fn,
+        cik_overrides=cik_overrides,
+        name_history=name_history,
+        known=known,
+    )
 
-    def resolve(code: str, name: str) -> tuple[str | None, str]:
-        if code in resolved_by_code:
-            return resolved_by_code[code]
-        if code in cik_overrides:
-            out = (cik_overrides[code], RESOLUTION_OVERRIDE)
-        elif known and code in known:
-            out = known[code]
-        else:
-            earlier_names = [n for n in (name_history or {}).get(code, []) if n != name]
-            out = _edgar_resolution([name, *earlier_names], get_fn)
-        resolved_by_code[code] = out
-        return out
 
-    return resolve
+def _resolve_code(
+    code: str,
+    name: str,
+    *,
+    resolved_by_code: dict[str, tuple[str | None, str]],
+    get_fn,
+    cik_overrides: Mapping[str, str],
+    name_history: dict[str, list[str]] | None,
+    known: dict[str, tuple[str, str]] | None,
+) -> tuple[str | None, str]:
+    """`(cik | None, resolution)` for one manager code, memoised in `resolved_by_code` (precedence as `_make_resolver`)."""
+    if code in resolved_by_code:
+        return resolved_by_code[code]
+    if code in cik_overrides:
+        out = (cik_overrides[code], RESOLUTION_OVERRIDE)
+    elif known and code in known:
+        out = known[code]
+    else:
+        earlier_names = [n for n in (name_history or {}).get(code, []) if n != name]
+        out = _edgar_resolution([name, *earlier_names], get_fn)
+    resolved_by_code[code] = out
+    return out
 
 
 def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]]]:

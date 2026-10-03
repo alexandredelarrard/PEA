@@ -11,7 +11,6 @@ from typing import Any, cast
 
 import click
 import pandas as pd
-from omegaconf import DictConfig
 
 from src.constants.command_line_interface import (
     CONFIG_ARGS,
@@ -98,10 +97,6 @@ def cli() -> None:
     """DATA EXTRACTION — one command per source (scheduled by the Airflow extraction DAG)."""
 
 
-def _ctx(config_path: str) -> tuple[DictConfig, Context]:
-    return get_config_context(config_path, use_cache=False, save=False)
-
-
 def _tickers(context: Context, tickers: str | None) -> list[str]:
     """The --tickers subset if given, else the full sp500_tickers universe."""
     if tickers:
@@ -134,7 +129,7 @@ def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = 
 @cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def extraction_status(config_path: str) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     report = _extraction_status_report(context)
     click.echo(json.dumps(report, sort_keys=True))
     if not report["ok"]:
@@ -146,7 +141,7 @@ def extraction_status(config_path: str) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("--refresh", is_flag=True, default=False, help="Re-scrape the S&P 500 even if populated.")
 def seed_universe(config_path: str, refresh: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     if refresh or context.store.row_count(Tables.sp500_tickers) == 0:
         context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (refresh={refresh})")
         get_sp500_tickers(context)
@@ -172,7 +167,7 @@ def seed_universe(config_path: str, refresh: bool) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def price_history(config_path: str, tickers: str | None, full: bool) -> None:
     """`--full` re-pulls the whole window: split adjustment is retroactive and an incremental upsert never revisits restated bars."""
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_price_history(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -180,7 +175,7 @@ def price_history(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def dividends(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_dividends(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history)
 
 
@@ -190,7 +185,7 @@ def dividends(config_path: str, tickers: str | None) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def splits(config_path: str, tickers: str | None, full: bool) -> None:
     """Fills holes in `sharadar_actions`; use `--full` on a cold table, since resuming from an empty frontier misses all history."""
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_splits(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -199,7 +194,7 @@ def splits(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -208,7 +203,7 @@ def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fails_to_deliver(config_path: str, tickers: str | None, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full)
 
 
@@ -216,7 +211,7 @@ def fails_to_deliver(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def macro(config_path: str) -> None:
     """Every non-equity series: market/commodity/FX closes, FRED levels, and the derived spreads + 10Y total-return index."""
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_macro(context, years_history=context.config.data_extract.macro_years_history)
 
 
@@ -233,7 +228,7 @@ def macro(config_path: str) -> None:
 )
 def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None) -> None:
     """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None)."""
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     window = None
     if filing_window:
         parts = filing_window.split(":")
@@ -249,7 +244,7 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None)
 def thirteen_f_managers(config_path: str, years: int | None) -> None:
     """Scope is the union of every CIK ever in `superinvestor_roster`, so a departed manager keeps its history.
     An empty roster raises: run `superinvestors --seed` first on a cold database."""
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
 
 
@@ -262,7 +257,7 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     help="ONE-OFF: also replay the 13 committed web.archive.org captures (2013-2026) so the roster has a history to be point-in-time about.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     if seed:
         seed_roster_history(context)
     upsert_roster_snapshot(context)
@@ -281,7 +276,7 @@ def superinvestors(config_path: str, seed: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full, years_history=int(config.data_extract.years_history))
 
 
@@ -293,7 +288,7 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> Non
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fundamentals_employees(
         context,
         tickers=_tickers(context, tickers),
@@ -318,7 +313,7 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
     "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)",
 )
 def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_history: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history)
 
 
@@ -336,7 +331,7 @@ def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_hist
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     if rebuild:
         for ticker in names:
@@ -365,7 +360,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
     """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     StepExtractFundamentalsSharadar(context=context, config=config).run(tickers=_tickers(context, tickers), full=full, config_dir=config_path)
 
 
@@ -375,7 +370,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> 
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_tickers(context)
 
 
@@ -383,7 +378,7 @@ def sharadar_tickers(config_path: str) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_actions(config_path: str, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history))
 
 
@@ -394,7 +389,7 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_sp500(config_path: str, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_sp500(context, full=full)
 
 
@@ -413,7 +408,7 @@ def fundamentals_history_merged(config_path: str, tickers: str | None, full: boo
 
     `--full` deletes these tickers' rows before rebuilding; the default upsert cannot remove a row that no longer exists.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     build_merged_history(context, tickers=_tickers(context, tickers), full=full, config_dir=config_path)
 
 
@@ -438,7 +433,7 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, 
 
     `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
     run_gap_check(context, tickers=names, report_path=report_path, propose_overrides=propose, config_dir=config_path)
 
@@ -447,7 +442,7 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, 
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def earnings_surprises(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_earnings_surprises(context, tickers=_tickers(context, tickers))
 
 
@@ -461,7 +456,7 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
     help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
 )
 def financial_statements(config_path: str, tickers: str | None, reparse: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
@@ -481,7 +476,7 @@ def insider_transactions(
     reparse: bool,
     full: bool,
 ) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     fetch_insider_transactions(context, tickers=names, reparse=reparse)
     fetch_insider_edgar(
@@ -510,7 +505,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """Builds `symbol_tenure` then `entity_lineage` together: lineage candidates are read off tenure, so a stale
     tenure silently narrows lineage. Market-wide, so the manifest records `ticker_count=0`.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     parsed_rekeys: set[tuple[str, str]] = set()
     for value in approved_rekeys:
@@ -548,7 +543,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     help="Rewrite notes available_at metadata using the historical estimate or cached download date; do not reparse ZIPs.",
 )
 def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse, repair_availability=repair_availability)
 
 
@@ -560,7 +555,7 @@ def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair
 def def14a(config_path: str, tickers: str | None, full: bool) -> None:
     """`--full` is needed after a registrant chain grows: the incremental gates are run-wide (global `last_run_date`,
     any-rows ticker check), so a same-day rerun would skip the newly exposed history."""
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
 
 
@@ -570,7 +565,7 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     run_edgar_fetch(
         context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_8K_FETCH, full=full
     )
@@ -580,7 +575,7 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_8k_votes_llm(context, config, tickers=_tickers(context, tickers))
 
 
@@ -590,7 +585,7 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     run_edgar_fetch(
         context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13D_FETCH, full=full
     )
@@ -604,7 +599,7 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
     """Passive counterpart of `sec-13d`. Chunk a from-scratch backfill with `-t` + `-F`: the manifest's incremental
     test is "did the universe change size", which a chunked walk defeats."""
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     run_edgar_fetch(
         context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13G_FETCH, full=full
     )
@@ -615,7 +610,7 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=FILING_TEXT_FETCH)
 
 
@@ -624,7 +619,7 @@ def filing_text(config_path: str, tickers: str | None, years: int | None) -> Non
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=DEF14A_EDGAR_FETCH)
 
 
@@ -635,7 +630,7 @@ def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> No
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def download_earnings_calls(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     _download_earnings_calls(context, tickers=_tickers(context, tickers))
 
 
@@ -648,5 +643,5 @@ def download_earnings_calls(config_path: str, tickers: str | None) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option("-F", "--force", is_flag=True, default=False, help="Re-ingest all cached transcripts (ignore what's already in the DB).")
 def ingest_earnings_calls(config_path: str, tickers: str | None, force: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     _ingest_earnings_calls(context, tickers=_tickers(context, tickers), force=force)

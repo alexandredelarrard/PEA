@@ -21,6 +21,19 @@ FlattenFn = Callable[[LlmResult], Mapping[Table, pd.DataFrame]]
 GroupKeyFn = Callable[[LlmTask], str]
 
 
+def _frames_by_table(group: list[LlmResult], flatten: FlattenFn) -> dict[Table, list[pd.DataFrame]]:
+    """The non-empty frames `flatten` yields for the successful results of one group, keyed by table in first-yield order."""
+    frames: dict[Table, list[pd.DataFrame]] = {}
+    for result in group:
+        if not result.ok:
+            continue
+        for table, frame in (flatten(result) or {}).items():
+            if frame is None or len(frame) == 0:
+                continue
+            frames.setdefault(table, []).append(frame)
+    return frames
+
+
 class LLMExtractor(GptExtracter):
     """Threaded schema-filling over a list of payloads.
 
@@ -172,16 +185,8 @@ class LLMExtractor(GptExtracter):
             key = group_key(result.task) if group_key else "_all"
             groups.setdefault(key, []).append(result)
 
-        for _key, group in groups.items():
-            frames: dict[Table, list[pd.DataFrame]] = {}
-            for result in group:
-                if not result.ok:
-                    continue
-                for table, frame in (flatten(result) or {}).items():
-                    if frame is None or len(frame) == 0:
-                        continue
-                    frames.setdefault(table, []).append(frame)
-            for table, parts in frames.items():
+        for group in groups.values():
+            for table, parts in _frames_by_table(group, flatten).items():
                 self._context.store.save(table, pd.concat(parts, ignore_index=True))
 
         failed = [r for r in results if not r.ok]

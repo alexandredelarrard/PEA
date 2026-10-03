@@ -194,6 +194,19 @@ def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
     return bool(nine > 0.01 * abs(quarter) and abs(quarter) > nine)
 
 
+def _ambiguous_refusal(q) -> dict:
+    """The `AMBIGUOUS_DURATION` refusal record of one dropped quarter row."""
+    return {
+        "period_start": q.period_start,
+        "period_end": q.period_end,
+        "period_days": q.period_days,
+        "value": float(cast(Any, q.value)),
+        "known_from": q.filing_date,
+        "dc_code": AMBIGUOUS_DURATION,
+        "source_concept": getattr(q, "source_concept", None),
+    }
+
+
 def _drop_annual_masquerading_as_quarter(
     frame: pd.DataFrame,
     refusals: list[dict] | None = None,
@@ -227,20 +240,11 @@ def _drop_annual_masquerading_as_quarter(
         q_end = np.datetime64(cast(Any, q.period_end), "ns")
         near = np.abs(a_end - q_end) <= same_period
         if not near.any():
-            if _is_ambiguous_duration(q, y9_end, y9_value):
+            ambiguous = _is_ambiguous_duration(q, y9_end, y9_value)
+            if ambiguous:
                 drop.append(q.Index)
-                if refusals is not None:
-                    refusals.append(
-                        {
-                            "period_start": q.period_start,
-                            "period_end": q.period_end,
-                            "period_days": q.period_days,
-                            "value": float(cast(Any, q.value)),
-                            "known_from": q.filing_date,
-                            "dc_code": AMBIGUOUS_DURATION,
-                            "source_concept": getattr(q, "source_concept", None),
-                        }
-                    )
+            if ambiguous and refusals is not None:
+                refusals.append(_ambiguous_refusal(q))
             continue
         near_value = a_value[near]
         scale = float(np.abs(near_value).max())

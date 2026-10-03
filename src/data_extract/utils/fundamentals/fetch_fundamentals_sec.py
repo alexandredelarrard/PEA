@@ -666,7 +666,6 @@ def _period_end(period: dict | None, reported: pd.Timestamp, filed: pd.Timestamp
 
 def _row(
     ticker: str,
-    cik: str,
     stamp: FilingStamp,
     reported: pd.Timestamp,
     regime: str | None,
@@ -686,7 +685,7 @@ def _row(
     children = [[c, w] for c, w in resolution.children] if resolution.children else None
     return {
         "ticker": ticker,
-        "cik": cik,
+        "cik": stamp.cik,
         "accession_number": stamp.accession_number,
         "field": field,
         "fiscal_year": int(period["fiscal_year"]) if period and pd.notna(period.get("fiscal_year")) else stamp.filed.year,
@@ -722,8 +721,7 @@ def _row(
 
 def filing_rows(
     ticker: str,
-    cik: str,
-    filing,
+    stamp: FilingStamp,
     catalogue: Catalogue,
     gics: dict[str, str | None] | None,
     *,
@@ -745,6 +743,7 @@ def filing_rows(
       * `rows_from_xbrl` is OUR resolver. `PROGRAMMING_ERRORS` out of it is a defect in this
         repo and is re-raised; only a data failure is swallowed and counted.
     """
+    filing = stamp.filing
     try:
         xbrl = filing.xbrl()
     except Exception as exc:  # noqa: BLE001 -- the filer's XBRL, not our code
@@ -755,7 +754,7 @@ def filing_rows(
             no_xbrl.append(str(getattr(filing, "accession_number", "unknown")))
         return []
     try:
-        return rows_from_xbrl(ticker, cik, filing, xbrl, catalogue, gics)
+        return rows_from_xbrl(ticker, stamp, xbrl, catalogue, gics)
     except PROGRAMMING_ERRORS:
         raise  # our bug, not the filer's
     except Exception as exc:  # noqa: BLE001 -- one bad filing
@@ -772,7 +771,7 @@ def _note_failure(failures: list[tuple[str, str]] | None, filing, exc: Exception
 
 
 def rows_from_xbrl(
-    ticker: str, cik: str, filing, xbrl, catalogue: Catalogue, gics: dict[str, str | None] | None, *, prefer_structure: bool = True
+    ticker: str, stamp: FilingStamp, xbrl, catalogue: Catalogue, gics: dict[str, str | None] | None, *, prefer_structure: bool = True
 ) -> list[dict]:
     """`filing_rows` with the parsed XBRL handed in.
 
@@ -799,7 +798,6 @@ def rows_from_xbrl(
     # $2,393.7M capex line. Filing-level like the two above, so resolution stays
     # period-agnostic. See `xbrl_linkbase.sibling_leg`.
     magnitudes = scope.peak_magnitudes(facts)
-    stamp = FilingStamp.of(filing, cik)
     reported = pd.to_datetime(cast(Any, stamp.period_of_report), errors="coerce")
     # ONE `calculation_linkbase()` read, two views of it -- see `statement_arcs`.
     arcs = calculation_arcs(xbrl)
@@ -849,7 +847,7 @@ def rows_from_xbrl(
     #: is worth saying so, because it is the first thing a reader will reach for: that marker
     #: lands on the covering annual OF THE SAME FIELD, and having none is the whole premise.
     note_refused: set[str] = set()
-    form = str(filing.form or "").upper()
+    form = str(stamp.form or "").upper()
     if form in _ANNUAL_FORMS:
         filing_windows = _filing_annual_windows(values)
         for name, periods in list(values.items()):
@@ -906,19 +904,18 @@ def rows_from_xbrl(
             # of the class visible instead of silent.
             if resolution.resolved:
                 resolution = replace(resolution, method=UNRESOLVED, dc_code=(AMBIGUOUS_DURATION if name in note_refused else NO_USABLE_PERIOD))
-            rows.append(_row(ticker, cik, stamp, reported, regime, name, resolution, None))
+            rows.append(_row(ticker, stamp, reported, regime, name, resolution, None))
             continue
-        rows.extend(_row(ticker, cik, stamp, reported, regime, name, resolution, period) for period in periods.values())
+        rows.extend(_row(ticker, stamp, reported, regime, name, resolution, period) for period in periods.values())
     # The periods route 3b refused, each as a value-less row carrying its own code. Emitted
     # for EVERY field, including the ones that resolved -- that is the whole of B.6.6.
     for name, periods in refused.items():
         # Disjoint by construction -- `refused` is `union - intersection` and `values` is the
         # intersection -- but asserted, because a key in both would write the same PK twice
         # and the dedup in `build_ticker_fundamentals` would silently keep the value-less one.
-        assert not (set(periods) & set(values.get(name, {}))), f"{ticker} {filing.accession_number} {name}: a refused period is also resolved"
+        assert not (set(periods) & set(values.get(name, {}))), f"{ticker} {stamp.accession_number} {name}: a refused period is also resolved"
         rows.extend(
-            _row(ticker, cik, stamp, reported, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL)
-            for period in periods.values()
+            _row(ticker, stamp, reported, regime, name, resolutions[name], period, dc_code=PERIOD_INTERSECTION_PARTIAL) for period in periods.values()
         )
     return rows
 
@@ -961,8 +958,7 @@ def build_ticker_fundamentals(
         rows.extend(
             filing_rows(
                 ticker,
-                FilingStamp.of(filing, cik).cik,
-                filing,
+                FilingStamp.of(filing, cik),
                 catalogue,
                 gics_by_ticker.get(ticker),
                 failures=failures,

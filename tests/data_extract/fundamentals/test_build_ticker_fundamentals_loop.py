@@ -65,7 +65,7 @@ def patched(monkeypatch):
 
     def _install(filings, rows_per_filing):
         monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *a, **k: list(filings))
-        monkeypatch.setattr(mod, "filing_rows", lambda ticker, cik, filing, cat, gics, **kwargs: rows_per_filing(ticker, cik, filing))
+        monkeypatch.setattr(mod, "filing_rows", lambda ticker, stamp, cat, gics, **kwargs: rows_per_filing(ticker, stamp.cik, stamp.filing))
 
     return _install
 

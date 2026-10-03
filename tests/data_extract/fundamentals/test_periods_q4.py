@@ -521,6 +521,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
+    from src.data_extract.utils.common.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
@@ -534,7 +535,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             if pd.Timestamp(f.filing_date) >= pd.Timestamp("2018-01-01") and not str(f.form).upper().endswith("/A")
         ]
         for filing in filings:
-            rows.extend(filing_rows(ticker, str(company.cik), filing, CATALOGUE, gics))
+            rows.extend(filing_rows(ticker, FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
     quarters, ttm = [], []
     for _, group in facts.groupby("ticker"):
@@ -808,6 +809,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
+    from src.data_extract.utils.common.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
@@ -822,7 +824,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
         filed = pd.Timestamp(filing.filing_date)
         if filed < pd.Timestamp("2017-06-01"):
             continue
-        rows.extend(filing_rows("ORCL", str(company.cik), filing, CATALOGUE, gics))
+        rows.extend(filing_rows("ORCL", FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
     refusals: list[dict] = []
     quarters, _ttm, _instants = periods.build_periods(facts, CATALOGUE, refusals=refusals)

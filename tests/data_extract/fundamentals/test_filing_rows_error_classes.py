@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import pytest
 
+from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import fetch_fundamentals_sec as fetcher
 
@@ -26,15 +27,19 @@ _ACCESSION = "0000320193-24-000123"
 
 
 def _filing(*, xbrl_error: Exception | None = None):
-    """A filing stand-in. `filing_rows` touches only `.xbrl()` and `.accession_number`
-    before handing the parse to `rows_from_xbrl`."""
+    """A filing stand-in: the attributes `FilingStamp.of` reads, plus the `.xbrl()` that
+    `filing_rows` calls before handing the parse to `rows_from_xbrl`."""
 
     def xbrl():
         if xbrl_error is not None:
             raise xbrl_error
         return object()  # opaque: the patched resolver never reads it
 
-    return types.SimpleNamespace(accession_number=_ACCESSION, xbrl=xbrl)
+    return types.SimpleNamespace(accession_number=_ACCESSION, form="10-K", filing_date="2024-11-01", xbrl=xbrl)
+
+
+def _stamp(*, xbrl_error: Exception | None = None) -> FilingStamp:
+    return FilingStamp.of(_filing(xbrl_error=xbrl_error), "1164727")
 
 
 def test_a_programming_error_from_the_resolver_propagates(monkeypatch):
@@ -47,7 +52,7 @@ def test_a_programming_error_from_the_resolver_propagates(monkeypatch):
     failures: list[tuple[str, str]] = []
 
     with pytest.raises(NameError, match="cols"):
-        fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=cast(Any, None), gics=None, failures=failures)
+        fetcher.filing_rows("NEM", _stamp(), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert failures == [], "a repo defect is not a filing failure and must not be counted"
 
@@ -66,7 +71,7 @@ def test_a_data_error_from_the_resolver_is_counted_and_swallowed(monkeypatch):
     monkeypatch.setattr(fetcher, "rows_from_xbrl", boom)
     failures: list[tuple[str, str]] = []
 
-    rows = fetcher.filing_rows("NEM", "1164727", _filing(), catalogue=cast(Any, None), gics=None, failures=failures)
+    rows = fetcher.filing_rows("NEM", _stamp(), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert rows == []
     assert [acc for acc, _ in failures] == [_ACCESSION]
@@ -84,7 +89,7 @@ def test_an_unreadable_filing_is_always_swallowed_whatever_the_class(monkeypatch
     the other one would turn a bad filing into an aborted 490-ticker run."""
     failures: list[tuple[str, str]] = []
 
-    rows = fetcher.filing_rows("NEM", "1164727", _filing(xbrl_error=error), catalogue=cast(Any, None), gics=None, failures=failures)
+    rows = fetcher.filing_rows("NEM", _stamp(xbrl_error=error), catalogue=cast(Any, None), gics=None, failures=failures)
 
     assert rows == []
     assert len(failures) == 1

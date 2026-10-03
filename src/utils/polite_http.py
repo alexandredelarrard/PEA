@@ -167,11 +167,11 @@ def _note_ssl_failure(url_or_host: str, exc: BaseException) -> None:
     )
 
 
-def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
-    """ONE GET. curl_cffi with a ROTATED impersonation profile when `impersonate` (best for
-    Cloudflare/JA3), else a plain requests GET (friendly REST APIs). Returns a response
-    (.status_code/.text/.headers/.json) or None on a transport error. Isolated so tests can
-    monkeypatch the transport."""
+def get_once(url, *, params=None, headers=None, timeout=30, impersonate=True):
+    """ONE GET, no retry: curl_cffi with a ROTATED impersonation profile when `impersonate`
+    (best for Cloudflare/JA3), else a plain requests GET (friendly REST APIs). Returns the
+    response WHATEVER its status, None only on a transport error, for callers that classify the
+    status themselves (a routine non-retryable 403); `http_get` retries on top of it."""
     proxies: Any = resolve_proxy()
     if impersonate:
         try:
@@ -196,19 +196,6 @@ def _raw_get(url, *, params=None, headers=None, timeout=30, impersonate=True):
         return None
 
 
-def get_once(url, *, params=None, headers=None, timeout=30, impersonate=True):
-    """ONE GET, no retry, returning the response WHATEVER its status (None only on a
-    transport error) -- for callers that must CLASSIFY the status themselves.
-
-    `http_get` collapses every non-200 into None, which is right when a non-200 is a
-    failure. It is wrong when a status is a ROUTINE, EXPECTED, NON-RETRYABLE answer: the
-    Sharadar API returns 403 "Exceeds free tier" for every ticker outside the subscription,
-    and http_get would both hide that it was a 403 and burn 4 exponential-backoff retries
-    per ticker on an answer that will never change.
-    """
-    return _raw_get(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
-
-
 def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3.0, impersonate=True, log_missing=True):
     """Adaptive GET: rotated browser impersonation + retry with exponential backoff + jitter,
     honouring Retry-After and ratcheting a PER-HOST slowdown on each 429. Returns the response
@@ -216,7 +203,7 @@ def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3
     failure. `impersonate=False` uses a plain requests GET (for friendly APIs that want their
     own descriptive User-Agent)."""
     for attempt in range(retries + 1):
-        r = _raw_get(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
+        r = get_once(url, params=params, headers=headers, timeout=timeout, impersonate=impersonate)
         if r is None:  # transport error (all paths failed)
             if attempt < retries:
                 time.sleep(backoff * (2**attempt) + random.uniform(0.5, 2.0))
@@ -226,27 +213,33 @@ def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3
         code = getattr(r, "status_code", 0)
         if code == 200:
             return r
-        if code in (403, 429) or code >= 500:  # blocked / throttled / transient
-            if attempt < retries:
-                wait = max(retry_after_seconds(r) or 0.0, backoff * (2**attempt)) + random.uniform(0.5, 2.5)
-                if code == 429:
-                    note_throttle(url)  # slow THIS host for the rest of the run
-                logger.warning(
-                    "GET %s -> HTTP %d (rate-limited); wait %.1fs, host-pace x%.1f (retry %d/%d)",
-                    url,
-                    code,
-                    wait,
-                    pace_mult(url),
-                    attempt + 1,
-                    retries,
-                )
-                time.sleep(wait)
-                continue
+        retryable = code in (403, 429) or code >= 500  # blocked / throttled / transient
+        if retryable and attempt < retries:
+            _wait_before_retry(r, url, code, attempt, retries, backoff)
+            continue
+        if retryable:
             logger.warning("GET %s -> HTTP %d after %d retries; giving up. Lower the rate or set PEA_SCRAPE_PROXY.", url, code, retries)
         elif log_missing:  # 4xx that won't fix on retry (404 etc.)
             logger.warning("GET %s -> HTTP %d", url, code)
         return None
     return None
+
+
+def _wait_before_retry(r, url: str, code: int, attempt: int, retries: int, backoff: float) -> None:
+    """Sleep max(Retry-After, exponential backoff) plus jitter; a 429 also slows this host."""
+    wait = max(retry_after_seconds(r) or 0.0, backoff * (2**attempt)) + random.uniform(0.5, 2.5)
+    if code == 429:
+        note_throttle(url)  # slow THIS host for the rest of the run
+    logger.warning(
+        "GET %s -> HTTP %d (rate-limited); wait %.1fs, host-pace x%.1f (retry %d/%d)",
+        url,
+        code,
+        wait,
+        pace_mult(url),
+        attempt + 1,
+        retries,
+    )
+    time.sleep(wait)
 
 
 def get_text(url, **kw) -> str | None:

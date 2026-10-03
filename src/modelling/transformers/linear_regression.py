@@ -47,6 +47,15 @@ def _standardize(features: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
     return standardized, mean, std
 
 
+def _soft_threshold(rho: float, l1: float, denominator: float) -> float:
+    """Coordinate update S(rho, l1) / denominator; 0.0 inside the [-l1, l1] dead zone."""
+    if rho > l1:
+        return (rho - l1) / denominator
+    if rho < -l1:
+        return (rho + l1) / denominator
+    return 0.0
+
+
 def _enet_coordinate_descent(
     standardized: np.ndarray, y: np.ndarray, w: np.ndarray, lam: float, l1_ratio: float, max_iter: int, tol: float
 ) -> np.ndarray:
@@ -66,12 +75,7 @@ def _enet_coordinate_descent(
         for j in range(k):
             bj = beta[j]
             rho = float((w * standardized[:, j] * r).sum() / sw) + bj * z[j]
-            if rho > l1:
-                nj = (rho - l1) / (z[j] + l2)
-            elif rho < -l1:
-                nj = (rho + l1) / (z[j] + l2)
-            else:
-                nj = 0.0
+            nj = _soft_threshold(rho, l1, z[j] + l2)
             if nj != bj:
                 r += standardized[:, j] * (bj - nj)  # keep the residual in sync
                 beta[j] = nj

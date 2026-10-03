@@ -11,7 +11,7 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from src.modelling.transformers import LinearRegression, RandomForestModel, model_class
-from src.modelling.utils.artifacts import load_ensemble, member_path
+from src.modelling.utils.artifacts import load_ensemble, member_path, save_member
 from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
 from tests.modelling.model_fixtures import ctx, make_config, signal_panel
@@ -46,7 +46,7 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path
     assert isinstance(members["elasticnet"], LinearRegression) and "sector" not in members["elasticnet"].features
 
     for fam, m in members.items():
-        m.save(member_path(tmp_path, 60, fam))
+        save_member(m, member_path(tmp_path, 60, fam))
     reloaded = load_ensemble(tmp_path, [60], list(cfg.model.ensemble))[60]
     assert list(reloaded) == list(cfg.model.ensemble)
     before, _ = ensemble_predict(members, test)

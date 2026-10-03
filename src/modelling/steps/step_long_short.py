@@ -48,7 +48,7 @@ from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegressio
 from src.modelling.transformers.backtest import Backtest
 from src.modelling.transformers.base import half_life_years
 from src.modelling.transformers.monitor import Monitor
-from src.modelling.utils.artifacts import clear_members, load_ensemble, member_path, models_dir, read_metadata, write_metadata
+from src.modelling.utils.artifacts import clear_members, load_ensemble, member_path, models_dir, read_metadata, save_member, write_metadata
 from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
@@ -107,11 +107,8 @@ def union_all_columns(config: DictConfig) -> list[str]:
             continue
         if block.get("columns"):
             out += list(block.columns)
-        by_h = block.get("columns_by_horizon")
-        if by_h:
-            for cols in by_h.values():
-                if cols:
-                    out += list(cols)
+        for cols in (block.get("columns_by_horizon") or {}).values():
+            out += list(cols) if cols else []
     return list(dict.fromkeys(out))
 
 
@@ -372,7 +369,7 @@ class StepLongShort(Step):
             self._log.info("Removed %d member file(s) of the previous run from %s", len(stale), directory)
         for h, members in models.items():
             for fam, model in members.items():
-                model.save(member_path(directory, h, fam))
+                save_member(model, member_path(directory, h, fam))
         meta = {
             "horizons": [int(h) for h in models],
             "feature_cols": list(schema.feature_cols),

@@ -15,6 +15,7 @@ feature order. `task: classification` switches to the `binary` objective on a {0
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, cast
 
 import lightgbm as lgb
@@ -80,19 +81,25 @@ def _ic_eval_factory(val_dates: np.ndarray, val_label: np.ndarray, min_names: in
         groups = [np.where(inv == g)[0] for g in range(int(inv.max()) + 1)]
         y_ranks = [pd.Series(y[idx]).rank().to_numpy() for idx in groups]
 
-    def _feval(preds, _data):
-        preds = np.asarray(preds, dtype=float)
-        ics = []
-        for idx, yr in zip(groups, y_ranks, strict=False):
-            if len(idx) > min_names:
-                pr = pd.Series(preds[idx]).rank().to_numpy()
-                if pr.std() > 0 and yr.std() > 0:
-                    ic = float(np.corrcoef(pr, yr)[0, 1])
-                    if np.isfinite(ic):
-                        ics.append(ic)
-        return "daily_ic", (float(np.mean(ics)) if ics else 0.0), True
+    return partial(_daily_ic_eval, groups=groups, y_ranks=y_ranks, min_names=min_names)
 
-    return _feval
+
+def _rank_ic(preds: np.ndarray, y_ranks: np.ndarray) -> float | None:
+    """Spearman IC of one date's predictions against its precomputed label ranks; None when
+    either side is constant or the correlation is not finite."""
+    pr = pd.Series(preds).rank().to_numpy()
+    if not (pr.std() > 0 and y_ranks.std() > 0):
+        return None
+    ic = float(np.corrcoef(pr, y_ranks)[0, 1])
+    return ic if np.isfinite(ic) else None
+
+
+def _daily_ic_eval(preds: Any, _data: Any, *, groups: list[np.ndarray], y_ranks: list[np.ndarray], min_names: int) -> tuple[str, float, bool]:
+    """LightGBM feval: mean daily IC over dates with more than `min_names` rows (0.0 when none)."""
+    preds = np.asarray(preds, dtype=float)
+    ics = [_rank_ic(preds[idx], yr) for idx, yr in zip(groups, y_ranks, strict=False) if len(idx) > min_names]
+    finite = [ic for ic in ics if ic is not None]
+    return "daily_ic", (float(np.mean(finite)) if finite else 0.0), True
 
 
 def train_booster(
@@ -194,7 +201,7 @@ class LightGBMModel(BaseModel):
             params.update({"objective": "binary", "metric": "binary_logloss"})
         return params
 
-    def _train_kwargs(self) -> dict:
+    def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> lgb.Booster:
         c = self.lgbm_block(self._config)
         params = {
             "learning_rate": c.get("learning_rate"),
@@ -222,17 +229,7 @@ class LightGBMModel(BaseModel):
             kw["params"]["monotone_constraints"] = monotone
         if self.half_life_years is not None:
             kw["half_life_years"] = self.half_life_years
-        return kw
-
-    def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> lgb.Booster:
-        return train_booster(
-            train,
-            self.features,
-            self.label_column,
-            valid_panel=valid,
-            categorical_features=self.categoricals or None,
-            **self._train_kwargs(),
-        )
+        return train_booster(train, self.features, self.label_column, valid_panel=valid, categorical_features=self.categoricals or None, **kw)
 
     def _predict(self, panel: pd.DataFrame) -> np.ndarray:
         # the frame as-is (not a float32 array): integer category codes keep the categorical

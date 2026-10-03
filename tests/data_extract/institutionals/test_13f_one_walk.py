@@ -55,13 +55,18 @@ class _FakeFiling:
     form: str = "13F-HR"
     primary_document: str | None = None
     reads: list[str] = field(default_factory=list)
+    fail_reads: int = 0  # the first N `obj()` calls raise, like a transient SEC 429
+    accession: str | None = None  # a real accession's prefix is the filer agent's CIK
 
     @property
     def accession_number(self) -> str:
-        return f"{self.cik}-{self.filing_date}-{self.form}"
+        return self.accession or f"{self.cik}-{self.filing_date}-{self.form}"
 
     def obj(self) -> Any:
         self.reads.append(self.accession_number)
+        if self.fail_reads > 0:
+            self.fail_reads -= 1
+            raise ConnectionError("429 Too Many Requests")
         return SimpleNamespace(infotable=pd.DataFrame(self.lines))
 
 
@@ -101,6 +106,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
 
     index = pa.table(
         {
+            "form": [f.form for f in filings],
             "accession_number": [f.accession_number for f in filings],
             "filing_date": [date.fromisoformat(f.filing_date) for f in filings],
         }
@@ -236,17 +242,15 @@ def test_empty_roster_still_writes_hr_and_warns(sqlite_store, monkeypatch, caplo
     print("  sec13f_hr written (3 rows), no manager book, one warning. Validated.")
 
 
-def test_catch_up_reads_from_each_frontier_and_warns_only_for_frontierless_ciks(sqlite_store, monkeypatch, caplog):
-    with_frontier, no_frontier, failing, idle = "0000000001", "0000000002", "0000000003", "0000000004"
-    _seed_roster(sqlite_store, [with_frontier, no_frontier, failing, idle])
-    stored = [(with_frontier, "2026-05-15"), (idle, "2026-08-14")]
-    sqlite_store.save(
+def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
+    """Store one AAPL manager-book row per `(cik, period, filing_date)`."""
+    store.save(
         Tables.sec13f_manager_holdings,
         pd.DataFrame(
             [
                 {
                     "cik": cik,
-                    "period": pd.Timestamp("2026-03-31"),
+                    "period": pd.Timestamp(period),
                     "filing_date": pd.Timestamp(filed),
                     "cusip": "037833100",
                     "issuer_name": "APPLE INC",
@@ -262,35 +266,19 @@ def test_catch_up_reads_from_each_frontier_and_warns_only_for_frontierless_ciks(
                     "debt_value": 0.0,
                     "other_value": 0.0,
                 }
-                for cik, filed in stored
+                for cik, period, filed in rows
             ]
         ),
     )
-    sqlite_store.save(
-        Tables.sec13f_hr,
-        pd.DataFrame(
-            [{"cik": "3", "period": pd.Timestamp("2025-12-31"), "ticker": "AAPL", "cusip": "037833100", "filing_date": pd.Timestamp("2026-02-10")}]
-        ),
-    )
-    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
-    listings = {
-        with_frontier: [
-            _FakeFiling(with_frontier, "2026-08-14", "2026-06-30", aapl),
-            _FakeFiling(with_frontier, "2026-05-15", "2026-03-31", aapl),
-            _FakeFiling(with_frontier, "2026-02-14", "2025-12-31", aapl),
-        ],
-        no_frontier: [
-            _FakeFiling(no_frontier, "2026-05-15", "2026-03-31", aapl),
-            _FakeFiling(no_frontier, "2016-02-14", "2015-12-31", aapl),
-            _FakeFiling(no_frontier, "2009-02-14", "2008-12-31", aapl),  # period older than years_history
-            _FakeFiling(no_frontier, "2026-01-10", None, aapl),  # null period
-        ],
-        idle: [_FakeFiling(idle, "2026-08-14", "2026-06-30", [])],
-    }
+
+
+def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_FakeFiling]], down: set[str] | None = None) -> None:
+    """`Company(cik).get_filings` returns `listings[cik]`; a CIK in `down` raises on listing."""
+    down = set() if down is None else down
 
     class _FakeCompany:
         def __init__(self, cik: str) -> None:
-            if cik == failing:
+            if cik in down:
                 raise ConnectionError("listing throttled")
             self.cik = cik
 
@@ -301,20 +289,121 @@ def test_catch_up_reads_from_each_frontier_and_warns_only_for_frontierless_ciks(
     monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
+
+def _stored_periods(store: Any, cik: str) -> list[str]:
+    df = store.load(Tables.sec13f_manager_holdings, columns=["cik", "period"], where={"cik": cik}, optional=True)
+    return [] if df is None else sorted(pd.to_datetime(df["period"]).dt.strftime("%Y-%m-%d").unique())
+
+
+def _three_quarters(cik: str, fail_reads_middle: int = 0) -> list[_FakeFiling]:
+    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
+    return [  # edgartools order: newest first
+        _FakeFiling(cik, "2026-05-15", "2026-03-31", aapl),
+        _FakeFiling(cik, "2026-02-14", "2025-12-31", aapl, fail_reads=fail_reads_middle),
+        _FakeFiling(cik, "2025-11-14", "2025-09-30", aapl),
+    ]
+
+
+def test_a_failed_read_is_retried_next_run_even_when_later_filings_saved(sqlite_store, monkeypatch, caplog):
+    listing = _three_quarters(ROSTER, fail_reads_middle=1)
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_company(monkeypatch, {ROSTER: listing})
+
+    with caplog.at_level(logging.WARNING):
+        f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+    after_run1 = _stored_periods(sqlite_store, ROSTER)
+    for f in listing:
+        f.reads.clear()
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    assert after_run1 == ["2025-09-30", "2026-03-31"]  # the later filing saved despite the failure
+    assert _stored_periods(sqlite_store, ROSTER) == ["2025-09-30", "2025-12-31", "2026-03-31"]
+    assert [f.filing_date for f in listing if f.reads] == ["2026-02-14"]  # run 2 re-reads only the gap
+    assert any("read(s) failed" in r.getMessage() for r in caplog.records)  # the failure is reported, not silent
+    print("\n=== SANITY: transient read failure ===")
+    print(f"  run 1 stored {after_run1} and warned; run 2 read only the failed 2026-02-14 filing and filled 2025-12-31. Validated.")
+
+
+def test_a_new_cik_whose_newest_filing_was_written_inline_still_backfills(sqlite_store, monkeypatch):
+    new_cik = "0000000077"
+    listing = _three_quarters(new_cik)
+    _seed_roster(sqlite_store, [new_cik])
+    _patch_company(monkeypatch, {new_cik: listing}, down={new_cik})
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)  # day 1: listing throttled
+    assert _stored_periods(sqlite_store, new_cik) == []
+    _save_book_rows(sqlite_store, [(new_cik, "2026-03-31", "2026-05-15")])  # day 2: `fetch_13f` writes the newest inline
+    _patch_company(monkeypatch, {new_cik: listing})
+
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    assert _stored_periods(sqlite_store, new_cik) == ["2025-09-30", "2025-12-31", "2026-03-31"]
+    assert sorted(f.filing_date for f in listing if f.reads) == ["2025-11-14", "2026-02-14"]  # the inline filing is not re-read
+    print("\n=== SANITY: new roster CIK back-fill ===")
+    print("  day-1 listing failed, day-2 inline write of 2026-03-31; the catch-up still back-filled 2025-09-30 and 2025-12-31. Validated.")
+
+
+def test_a_stored_filing_is_never_reread_and_an_empty_info_table_is_rechecked_once_per_run(sqlite_store, monkeypatch, caplog):
+    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
+    stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl)
+    empty = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", [])
+    _seed_roster(sqlite_store, [ROSTER])
+    _save_book_rows(sqlite_store, [(ROSTER, "2026-03-31", "2026-05-15")])
+    _patch_company(monkeypatch, {ROSTER: [empty, stored]})
+
+    with caplog.at_level(logging.WARNING):
+        saved = [f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15) for _ in range(2)]
+
+    assert stored.reads == []  # the old frontier re-read the newest stored filing on every run
+    assert len(empty.reads) == 2 and saved == [0, 0]  # one cheap re-check per run, nothing saved, no loop
+    assert not any("read(s) failed" in r.getMessage() for r in caplog.records)  # empty is not a failure
+    print("\n=== SANITY: done-set cost ===")
+    print(
+        f"  stored filing reads {len(stored.reads)}; empty-info-table filing read once per run ({len(empty.reads)} over 2 runs), not a failure. Validated."
+    )
+
+
+def test_catch_up_reads_every_unstored_filing_and_warns_only_for_bookless_ciks(sqlite_store, monkeypatch, caplog):
+    with_book, no_book, failing, idle = "0000000001", "0000000002", "0000000003", "0000000004"
+    _seed_roster(sqlite_store, [with_book, no_book, failing, idle])
+    _save_book_rows(sqlite_store, [(with_book, "2026-03-31", "2026-05-15"), (idle, "2026-06-30", "2026-08-14")])
+    sqlite_store.save(
+        Tables.sec13f_hr,
+        pd.DataFrame(
+            [{"cik": "3", "period": pd.Timestamp("2025-12-31"), "ticker": "AAPL", "cusip": "037833100", "filing_date": pd.Timestamp("2026-02-10")}]
+        ),
+    )
+    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
+    listings = {
+        with_book: [
+            _FakeFiling(with_book, "2026-08-14", "2026-06-30", aapl),
+            _FakeFiling(with_book, "2026-05-15", "2026-03-31", aapl),
+            _FakeFiling(with_book, "2026-02-14", "2025-12-31", aapl),
+        ],
+        no_book: [
+            _FakeFiling(no_book, "2026-05-15", "2026-03-31", aapl),
+            _FakeFiling(no_book, "2016-02-14", "2015-12-31", aapl),
+            _FakeFiling(no_book, "2009-02-14", "2008-12-31", aapl),  # period older than years_history
+            _FakeFiling(no_book, "2026-01-10", None, aapl),  # null period
+        ],
+        idle: [_FakeFiling(idle, "2026-08-14", "2026-06-30", [])],
+    }
+    _patch_company(monkeypatch, listings, down={failing})
+
     with caplog.at_level(logging.WARNING):
         saved = f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
 
-    read = {f.filing_date for f in listings[with_frontier] if f.reads}
-    assert read == {"2026-08-14", "2026-05-15"}  # nothing filed before the 2026-05-15 frontier
-    read_nf = {f.filing_date for f in listings[no_frontier] if f.reads}
+    read = {f.filing_date for f in listings[with_book] if f.reads}
+    assert read == {"2026-08-14", "2026-02-14"}  # the stored 2026-05-15 filing is skipped, the older unstored one is not
+    read_nf = {f.filing_date for f in listings[no_book] if f.reads}
     assert read_nf == {"2026-05-15", "2016-02-14"}  # whole window, minus old and null periods
+    assert not listings[idle][0].reads
     assert saved == 4
     empty_warnings = [r.getMessage() for r in caplog.records if "produced NO rows" in r.getMessage()]
     assert len(empty_warnings) == 1
     assert "1/4 roster CIK(s)" in empty_warnings[0] and failing in empty_warnings[0] and idle not in empty_warnings[0]
     print("\n=== SANITY: 13F manager catch-up ===")
-    print(f"  frontier CIK read {sorted(read)}; frontier-less read {sorted(read_nf)}; listing failure -> 0 rows;")
-    print(f"  NO-rows warning names only the frontier-less failing CIK: {empty_warnings[0][-40:]!r}. Validated.")
+    print(f"  CIK with a book read {sorted(read)}; book-less read {sorted(read_nf)}; listing failure -> 0 rows;")
+    print(f"  NO-rows warning names only the book-less failing CIK: {empty_warnings[0][-40:]!r}. Validated.")
 
 
 def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sqlite_store, monkeypatch):
@@ -352,3 +441,30 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
     print("\n=== SANITY: catch-up keeps the amendment ===")
     print(f"  newest-first listing, original + 13F-HR/A for one CUSIP: {len(df_sent)} rows sent, one per PK;")
     print(f"  AAPL stored {df_book.loc['037833100', 'value_usd']:,.0f} filed 2026-06-01 (the 13F-HR/A). Validated.")
+
+
+def _same_day_pair() -> list[_FakeFiling]:
+    """A 13F-HR and its 13F-HR/A filed the same day by two filer agents: the original's accession
+    prefix sorts AFTER the amendment's, so an (filed, accession) order puts the original last."""
+    original = _roster_original()
+    original.accession = "0001234567-26-000001"
+    amendment = _FakeFiling(ROSTER, "2026-05-10", "2026-03-31", [_line("037833100", "APPLE INC", 1_200_000.0, 6_000)], form="13F-HR/A")
+    amendment.accession = "0000950123-26-000009"
+    return [amendment, original]
+
+
+@pytest.mark.parametrize("path", ["walk", "catch_up"])
+def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqlite_store, monkeypatch, path):
+    filings = _same_day_pair()
+    _seed_roster(sqlite_store, [ROSTER])
+    if path == "walk":
+        _patch_walk(monkeypatch, filings)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+    else:
+        _patch_company(monkeypatch, {ROSTER: filings})
+        f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
+    assert book.loc["037833100", "value_usd"] == 1_200_000.0, book
+    print(f"\n=== SANITY: same-day original vs amendment ({path}) ===")
+    print(f"  original accession sorts after the 13F-HR/A; stored AAPL value {book.loc['037833100', 'value_usd']:,.0f} = the amendment. Validated.")

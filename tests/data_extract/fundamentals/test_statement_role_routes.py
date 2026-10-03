@@ -253,6 +253,7 @@ def latest_annual(edgar_ready) -> dict:
     return out
 
 
+@pytest.mark.live
 def test_no_field_resolves_onto_a_note_only_concept(latest_annual):
     """The real-data half: every affected field resolves onto a face-statement basis, and
     neither 4b.4 regression guard is disturbed.
@@ -282,6 +283,7 @@ def test_no_field_resolves_onto_a_note_only_concept(latest_annual):
     print("  OK: no field resolved onto a concept its filer declares only in the notes.")
 
 
+@pytest.mark.live
 def test_mcd_capex_resolves_on_the_cash_flow_leaf_sum(latest_annual):
     """MCD is the motivating case, and the one no cross-vintage test can see: MCD tags the
     same narrow concept CONSISTENTLY in its earlier era, so only the route boundary betrays

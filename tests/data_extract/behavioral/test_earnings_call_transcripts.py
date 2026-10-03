@@ -440,6 +440,7 @@ def test_schema_drift_fails_loudly(tmp_path: Path, sqlite_store: Any) -> None:
     print("  OK: drift raises before any row is written")
 
 
+@pytest.mark.live
 def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) -> None:
     try:
         source = ect.resolve_hf_source()

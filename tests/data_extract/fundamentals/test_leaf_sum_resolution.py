@@ -587,6 +587,7 @@ def latest_rows(edgar_ready) -> dict:
     return out
 
 
+@pytest.mark.live
 @pytest.mark.parametrize("ticker,gics,field,expected,period", _GROUND_TRUTH, ids=[f"{t}-{f}" for t, _, f, _, _ in _GROUND_TRUTH])
 def test_the_latest_10k_reproduces_the_filers_own_figure(latest_rows, ticker, gics, field, expected, period):
     rows = latest_rows[ticker]
@@ -609,6 +610,7 @@ def test_the_latest_10k_reproduces_the_filers_own_figure(latest_rows, ticker, gi
     print(f"\n  {ticker:6s} {field:9s} FY{period} {got / 1e6:>10,.1f}M  via {method}")
 
 
+@pytest.mark.live
 def test_aapl_and_vlo_keep_the_aggregate_and_never_the_note_leaf(latest_rows):
     """§4b.4's refuted design, asserted as a standing regression guard. The note-level
     `Depreciation` is $8,000M for AAPL and $2,300M for VLO against declared aggregates of
@@ -623,6 +625,7 @@ def test_aapl_and_vlo_keep_the_aggregate_and_never_the_note_leaf(latest_rows):
     print("  OK: Neither fell to the note-level leaf sum.")
 
 
+@pytest.mark.live
 def test_dte_does_not_store_its_subsidiarys_capex(latest_rows):
     """The trap named in §4b.2. DTE tags
     `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment` at $3,686M, but only dimensioned

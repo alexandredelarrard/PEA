@@ -10,7 +10,6 @@ import logging
 from collections.abc import Sequence
 from functools import partial
 from typing import Any, cast
-from xml.etree import ElementTree
 
 import pandas as pd
 from edgar import Filing
@@ -22,11 +21,11 @@ from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_atom import (
     SEC_INSIDER_FORM_FAMILIES,
-    SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
+    AtomEntry,
+    AtomPageError,
     atom_filing,
-    atom_page_url,
-    fetch_atom_entries,
-    parse_atom_entry,
+    iter_atom_pages,
+    keep_atom_entry,
 )
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
@@ -82,26 +81,19 @@ def _family_filings(
     A failed page logs a warning and ends this family with the pages already read.
     """
     filings: dict[str, Filing] = {}
-    start = 0
-    while True:
-        url = atom_page_url(pad_cik(cik), family, start_date, end_date, start)
-        try:
-            entries = fetch_atom_entries(url, f"{ticker} {family} offset {start}", retry=False)
-        except Exception as exc:  # noqa: BLE001 -- preserve other discovery channels
-            _LOG.warning("ownership filing search failed for %s form %s at offset %d: %r", ticker, family, start, exc)
-            break
-        if not entries:
-            break
-        page, oldest = _page_filings(entries, ticker, cik, start_date, end_date, done_accessions)
-        filings.update(page)
-        if len(entries) < SEC_INSIDER_OWNER_ATOM_PAGE_SIZE or (start_date is not None and oldest < start_date):
-            break
-        start += SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+    try:
+        for _offset, entries in iter_atom_pages(pad_cik(cik), family, start_date, end_date, ticker, retry=False):
+            page, oldest = _page_filings(entries, ticker, cik, start_date, end_date, done_accessions)
+            filings.update(page)
+            if start_date is not None and oldest < start_date:
+                break
+    except AtomPageError as exc:  # preserve other discovery channels
+        _LOG.warning("ownership filing search failed for %s form %s at offset %d: %r", ticker, family, exc.offset, exc.__cause__)
     return filings
 
 
 def _page_filings(
-    entries: list[ElementTree.Element],
+    entries: list[AtomEntry | None],
     ticker: str,
     cik: str,
     start_date: pd.Timestamp | None,
@@ -112,20 +104,12 @@ def _page_filings(
     target_forms = frozenset(SEC_INSIDER_FORMS)
     filings: dict[str, Filing] = {}
     oldest = end_date
-    for raw in entries:
-        entry = parse_atom_entry(raw)
+    for entry in entries:
         if entry is None:
             continue
         oldest = min(oldest, entry.filing_date)
-        if (
-            entry.form not in target_forms
-            or entry.accession is None
-            or entry.accession in done_accessions
-            or entry.filing_date > end_date
-            or (start_date is not None and entry.filing_date < start_date)
-        ):
-            continue
-        filings[entry.accession] = atom_filing(entry, cik=cik, company=ticker)
+        if keep_atom_entry(entry, target_forms, done_accessions, start_date, end_date):
+            filings[cast(str, entry.accession)] = atom_filing(entry, cik=cik, company=ticker)
     return filings, oldest
 
 

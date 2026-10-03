@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pandas as pd
+import pyarrow.compute as pc
 from edgar import Filings, get_filings
 from tqdm import tqdm
 
@@ -176,9 +177,10 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     return out.dropna(subset=["period"])[_BOOK_COLS]
 
 
-def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
-    """Fetch and parse one 13F-HR into its book. Empty on any failure, logged with the accession:
-    one unparseable filing must not abort a batch."""
+def _read_filing(stamp: FilingStamp) -> pd.DataFrame | None:
+    """Fetch and parse one 13F-HR into its book: empty for an empty info table, None when the
+    read failed (logged with the accession), so one unparseable filing never aborts a batch and a
+    caller can retry a failure."""
     try:
         infotable = stamp.filing.obj().infotable
         if infotable is None or infotable.empty:
@@ -186,7 +188,7 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame:
         return _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"13F {stamp.accession_number}: {type(e).__name__}: {e}")
-        return pd.DataFrame()
+        return None
 
 
 def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
@@ -206,8 +208,8 @@ def _suspect_prices(df: pd.DataFrame) -> int:
 
 def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
     """One row per `_BOOK_KEY`, the last filed winning: a stable sort on `filing_date`, so rows
-    passed in (filed, accession) order keep a same-day amendment after its original. Also keeps a
-    PK from repeating in one upsert, which Postgres rejects."""
+    passed in (filed, amendment last, accession) order keep a same-day amendment after its
+    original. Also keeps a PK from repeating in one upsert, which Postgres rejects."""
     return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
 
 
@@ -262,6 +264,15 @@ def _resolve_window(
     return watermark - pd.Timedelta(days=lookback_days), today
 
 
+def _oldest_first(listing: Filings) -> Filings:
+    """The listing ordered by (filing_date, amendment last, accession): a same-day 13F-HR/A
+    follows its original whatever the filer agents' accession prefixes."""
+    data = listing.data
+    is_amendment = pc.ends_with(pc.utf8_upper(data.column("form")), "/A")
+    keys = [("filing_date", "ascending"), ("_is_amendment", "ascending"), ("accession_number", "ascending")]
+    return Filings(data.take(pc.sort_indices(data.append_column("_is_amendment", is_amendment), sort_keys=keys)))
+
+
 def _record(context: Context, tickers: list[str] | None, saved: int, filing_window: tuple[str, str] | None) -> None:
     """Log the run in the manifest: as an incremental, or as a backfill that leaves every
     watermark (`last_run_date`) untouched."""
@@ -306,7 +317,7 @@ def fetch_13f(
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
     listing = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
-    filings = Filings(listing.data.sort_by([("filing_date", "ascending"), ("accession_number", "ascending")])) if listing else []
+    filings = _oldest_first(listing) if listing else []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
     if not total:
@@ -317,7 +328,7 @@ def fetch_13f(
     walk, batch = _WalkState(), []
     for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
         rows = _read_filing(FilingStamp.of(filing, ""))
-        if not rows.empty:
+        if rows is not None and not rows.empty:
             batch.append(rows)
         if batch and (len(batch) >= save_every or i == total):
             _save_batch(context, pd.concat(batch, ignore_index=True), universe, roster_ciks, walk)

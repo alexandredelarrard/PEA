@@ -127,6 +127,7 @@ def maa_filing(edgar_ready):
         pytest.skip(f"EDGAR unreachable: {exc}")
 
 
+@pytest.mark.live
 def test_maa_operating_partnership_is_scoped_out(maa_filing):
     """MAA's FY instance carries two `dei:EntityCentralIndexKey` facts (parent and LP) but
     every `xbrli:identifier` is the PARENT's CIK -- so the identifier cannot separate them.
@@ -164,6 +165,7 @@ def test_maa_operating_partnership_is_scoped_out(maa_filing):
     print("  OK: the LP's statements are excluded by AXIS, which a member list could not do.")
 
 
+@pytest.mark.live
 def test_maa_shares_outstanding_is_the_parents(maa_filing):
     """The consequence that matters downstream: after scoping, the share count is the
     parent registrant's, not the LP's unit count."""
@@ -191,6 +193,7 @@ def test_maa_shares_outstanding_is_the_parents(maa_filing):
     print("  OK: the parent's cover-page count, on the only multi-class-summable tag.")
 
 
+@pytest.mark.live
 def test_southern_company_six_registrants_collapse_to_the_parent(edgar_ready):
     """Southern Company carries six registrant CIKs and thousands of `LegalEntityAxis`
     occurrences in ONE instance, all identifiers = parent. Four of those registrants file

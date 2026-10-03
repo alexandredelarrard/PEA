@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,12 +41,29 @@ def _load_manifest(context: Context) -> dict:
         return {}
 
 
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, backoff_s: float = 0.1) -> None:
+    """`os.replace(src, dst)`, retried on `PermissionError` (Windows refuses the rename while
+    another process holds `dst` open); the last failure raises."""
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts:
+                raise
+        time.sleep(backoff_s * attempt)
+
+
 def _save_manifest(context: Context, manifest: dict) -> None:
-    """Write `manifest` atomically (same-directory temp file, then `os.replace`), so a crash keeps the previous file."""
+    """Write `manifest` atomically (same-directory temp file, then `os.replace`), so a crash keeps
+    the previous file; the temp file never outlives the call."""
     path = manifest_path(context)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        _replace_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def get_entry(context: Context, table: Table | str) -> dict | None:

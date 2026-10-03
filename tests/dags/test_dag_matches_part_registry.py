@@ -8,7 +8,9 @@ commented out here but still registered there, so the nightly `cube_status` gate
 building. This test replaces that comment with an assertion.
 
 Airflow is not importable in the plain test venv, so the DAG module is parsed rather than
-imported: `CHAIN` is derived from `PART_COMMANDS`, which is what actually needs checking.
+imported. `CHAIN` has to be a literal: the Airflow DAG processor parses `/opt/airflow/dags`
+with no project on `sys.path`, so `from src...` there raises ModuleNotFoundError and the whole
+DAG fails to load. The drift guard is therefore this equality, checked at test time.
 """
 
 from __future__ import annotations
@@ -26,17 +28,16 @@ def _dag_source() -> str:
     return DAG_FILE.read_text(encoding="utf-8")
 
 
-def test_dag_chain_is_derived_from_the_registry():
+def test_dag_chain_matches_the_registry():
     src = _dag_source()
     tree = ast.parse(src)
 
-    # CHAIN must be assigned from PART_COMMANDS, not from a hand-written list of strings
     chain_assign = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "CHAIN" for t in n.targets)]
     assert chain_assign, "the DAG no longer defines CHAIN"
-    rendered = ast.dump(chain_assign[0].value)
-    assert "PART_COMMANDS" in rendered, (
-        "CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what "
-        f"drifted before (got {ast.unparse(chain_assign[0].value)})"
+    assert "from src" not in src and "import src" not in src, "the DAG processor cannot import `src`; keep CHAIN a literal"
+    chain = ast.literal_eval(chain_assign[0].value)
+    assert list(chain) == list(PART_COMMANDS), (
+        f"CHAIN drifted from parts.PART_COMMANDS: DAG {list(chain)} vs registry {list(PART_COMMANDS)}; update the DAG literal"
     )
     # no module-level GROUPS assignment (the historical hand-synced literal). Checked on the
     # AST, not the text, so the comment explaining the history does not trip it.
@@ -44,10 +45,10 @@ def test_dag_chain_is_derived_from_the_registry():
     assert "GROUPS" not in assigned, "the old hand-synced GROUPS literal is back"
 
     print("\n=== SANITY CHECK: DAG chain <-> part registry ===")
-    print(f"  CHAIN = {ast.unparse(chain_assign[0].value)} -> {list(PART_COMMANDS)}")
+    print(f"  CHAIN literal {list(chain)} == registry {list(PART_COMMANDS)}")
     print(
-        "  CONCLUSION: the task list cannot drift from the registry -- the `attention` "
-        "mismatch that made cube_status permanently red is structurally impossible. Validated."
+        "  CONCLUSION: the DAG's literal task list equals the registry, so the `attention` "
+        "mismatch that made cube_status permanently red would fail this test. Validated."
     )
 
 

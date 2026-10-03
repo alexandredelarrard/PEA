@@ -49,6 +49,9 @@ PIPE_PY = "/opt/pipeline/bin/python"
 AGG = f"{PIPE_PY} -m src data_aggregate"
 PEERS = f"{PIPE_PY} -m src data_peers"
 
+# The ordered cube sub-steps, `parts.PART_COMMANDS` written out: the DAG processor parses this
+# folder without the project on sys.path, so importing `src` here breaks the DAG.
+# tests/dags/test_dag_matches_part_registry.py fails if this list drifts from the registry.
 CHAIN = ["build-prices", "build-target", "build-fundamentals", "build-momentum", "build-text", "build-institutionals", "build-governance"]
 
 default_args = {

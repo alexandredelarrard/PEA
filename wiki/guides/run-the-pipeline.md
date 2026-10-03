@@ -86,8 +86,8 @@ Run `seed-universe` before stages that resolve the default ticker set.
 | Area | Commands | Notes |
 | --- | --- | --- |
 | Universe/prices | `seed-universe`, `price-history`, `dividends`, `splits`, `macro` | Price history is heavy; split adjustment is retroactive, so a full price refresh can be required after a split. |
-| Institutionals | `thirteen-f`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G and full manager books are heavy. Use the dedicated vote command only after 8-K narratives exist. |
-| Identity | `identity-tables` | Rebuilds `symbol_tenure` and `entity_lineage` together from cached ownership files and database evidence. |
+| Institutionals | `thirteen-f`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G is heavy. `thirteen-f` writes the S&P 500 slice and the roster managers' complete books in one oldest-first walk; `thirteen-f-managers` only catches each roster CIK up from its stored `sec13f_manager_holdings` frontier. Use the dedicated vote command only after 8-K narratives exist. |
+| Identity | `identity-tables` | Rebuilds `symbol_tenure` and `entity_lineage` together from one pass over the cached Form 3/4/5 zips plus database evidence; a table whose rebuilt frame matches the stored one is not rewritten. |
 | Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-employees`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts and employees are independent SEC network walks; SEC and merged history rebuilds are local once inputs exist. |
 | Structure/text | `def14a`, `def14a-edgar`, `sec-8k-votes`, `filing-text` | LLM-backed DEF 14A and vote extraction spend API calls; deterministic DEF 14A XBRL is separate. |
 | Earnings calls | `extract-earnings-calls [-F] [-t]` | Reads the defeatbeta HuggingFace parquet into `earnings_call_sections`. An unchanged source file is a no-op; `-F` compares every scoped call. |
@@ -218,7 +218,7 @@ A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/va
 | Stage | Cost | Resume |
 | --- | --- | --- |
 | `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes; an unchanged source revision is a no-op in seconds | Writes one row group per batch, so a crash loses at most one batch. |
-| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v1` cache version. |
+| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v2` cache version. |
 | OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
 
 Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment before it embeds and has no `-t` scope; `-F` rebuilds `cube_part_text` for the universe, after which the cube must be assembled again. Then validate the part:

@@ -15,7 +15,14 @@ import pytest
 
 from src.modelling.transformers import model_class
 from src.modelling.transformers.backtest import Backtest
-from src.modelling.transformers.monitor import Monitor, partial_dependence, save_shap_values, shap_importance_from_values, shap_row_values
+from src.modelling.transformers.monitor import (
+    _UNSAFE_FILENAME_CHARS,
+    Monitor,
+    partial_dependence,
+    save_shap_values,
+    shap_importance_from_values,
+    shap_row_values,
+)
 from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
 from src.modelling.utils.features import design_matrix
@@ -78,6 +85,14 @@ def test_three_member_layout_and_dod_contract(tmp_path: Path) -> None:
     print(
         f"  OOS IC {on_disk['oos_ic_mean']:+.3f} over {on_disk['oos_ic_days']} days, max cumulative-IC drawdown {depth:+.3f} over {length} days. Validated."
     )
+
+
+def test_member_and_feature_file_names_are_filesystem_safe() -> None:
+    names = {"beta_USD/EUR 1": "beta_USD_EUR_1", "a b\\c:d": "a_b_c_d", "random_forest": "random_forest", "x..y-z": "x..y-z"}
+    got = {name: _UNSAFE_FILENAME_CHARS.sub("_", name) for name in names}
+    assert got == names, got
+    print("\n=== SANITY CHECK: diagnostics file names ===")
+    print(f"  {got}: every run outside [0-9A-Za-z._-] collapses to one underscore. Validated.")
 
 
 def test_single_booster_is_flat(tmp_path: Path) -> None:

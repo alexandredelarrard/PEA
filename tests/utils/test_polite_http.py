@@ -25,7 +25,7 @@ class _Resp:
 def test_http_get_honours_retry_after_and_ratchets_host_pace(monkeypatch):
     ph._PACE.clear()
     seq = [_Resp(429, headers={"Retry-After": "2"}), _Resp(200, "OK")]
-    monkeypatch.setattr(ph, "_raw_get", lambda url, **k: seq.pop(0))
+    monkeypatch.setattr(ph, "get_once", lambda url, **k: seq.pop(0))
     waits = []
     monkeypatch.setattr(ph.time, "sleep", lambda s: waits.append(s))
 
@@ -57,13 +57,13 @@ def test_pace_is_per_host(monkeypatch):
 def test_get_text_json_and_terminal_none(monkeypatch):
     ph._PACE.clear()
     monkeypatch.setattr(ph.time, "sleep", lambda s: None)
-    monkeypatch.setattr(ph, "_raw_get", lambda url, **k: _Resp(200, "hi", js={"a": 1}))
+    monkeypatch.setattr(ph, "get_once", lambda url, **k: _Resp(200, "hi", js={"a": 1}))
     assert ph.get_text("https://x") == "hi"
     assert ph.get_json("https://x") == {"a": 1}
     # a persistent 404 -> None (not retried); a transport error -> None
-    monkeypatch.setattr(ph, "_raw_get", lambda url, **k: _Resp(404))
+    monkeypatch.setattr(ph, "get_once", lambda url, **k: _Resp(404))
     assert ph.http_get("https://x", retries=2, log_missing=False) is None
-    monkeypatch.setattr(ph, "_raw_get", lambda url, **k: None)
+    monkeypatch.setattr(ph, "get_once", lambda url, **k: None)
     assert ph.http_get("https://x", retries=1) is None
     print("  get_text/get_json OK; 404 and transport-error both -> None. Validated.")
 
@@ -82,9 +82,9 @@ def test_ssl_failure_is_explained_once_per_host(monkeypatch, caplog):
     monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(get=_ssl_boom))
 
     with caplog.at_level("WARNING", logger=ph.logger.name):
-        assert ph._raw_get("https://api.example.org/v2/x", impersonate=False) is None
-        assert ph._raw_get("https://api.example.org/v2/y", impersonate=False) is None
-        assert ph._raw_get("https://huggingface.co/z", impersonate=False) is None
+        assert ph.get_once("https://api.example.org/v2/x", impersonate=False) is None
+        assert ph.get_once("https://api.example.org/v2/y", impersonate=False) is None
+        assert ph.get_once("https://huggingface.co/z", impersonate=False) is None
 
     warns = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     api = [w for w in warns if "api.example.org" in w]
@@ -108,7 +108,7 @@ def test_non_ssl_transport_error_is_not_misreported_as_a_ca_problem(monkeypatch,
     monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(get=lambda *a, **k: (_ for _ in ()).throw(_rq.exceptions.Timeout("timed out"))))
 
     with caplog.at_level("WARNING", logger=ph.logger.name):
-        assert ph._raw_get("https://api-timeout.com/x", impersonate=False) is None
+        assert ph.get_once("https://api-timeout.com/x", impersonate=False) is None
 
     assert not [r for r in caplog.records if r.levelname == "WARNING"], "a timeout must not raise a TLS warning"
     assert "api-timeout.com" not in ph._CA_HINT_HOSTS

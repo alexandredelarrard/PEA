@@ -1,11 +1,9 @@
-"""Rate-limit retry helper + incremental-download logic.
+"""Rate-limit retry helper and the rate-limit matcher.
 
 * call_with_retries: waits & retries on 429, succeeds on a later attempt, and
   re-raises non-rate-limit errors immediately.
 * earnings _download_one: retries the rate-limited yfinance call (the fix for
   the ~fixed subset that was silently dropped every run).
-* dividends / trends: a ticker already current is skipped; only missing
-  ex-dates are re-requested.
 """
 
 from __future__ import annotations
@@ -13,6 +11,7 @@ from __future__ import annotations
 import types
 
 import pandas as pd
+import requests
 
 from src.data_extract.utils.common.rate_limit import call_with_retries, is_rate_limited
 
@@ -30,7 +29,7 @@ def test_retry_waits_then_succeeds_and_reraises_other():
     assert out == "ok" and calls["n"] == 3
 
     assert is_rate_limited(RuntimeError("429"))
-    assert is_rate_limited(Exception("TooManyRequestsError"))  # pytrends
+    assert is_rate_limited(Exception("TooManyRequestsError"))  # throttle exception class name
     assert is_rate_limited(Exception("ReadTimeout: The read operation timed out"))
     assert not is_rate_limited(ValueError("bad symbol"))
 
@@ -49,10 +48,39 @@ def test_retry_waits_then_succeeds_and_reraises_other():
 
     print("\n=== SANITY CHECK: rate-limit retry helper ===")
     print(
-        "  429 -> waited & retried, succeeded on attempt 3; pytrends and transport "
+        "  429 -> waited & retried, succeeded on attempt 3; throttle-class and transport "
         "timeout errors detected; non-transient error re-raised immediately (1 call). "
         "Validated."
     )
+
+
+def _http_error(status: int, url: str) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    response.reason = "Not Found" if status == 404 else "Service Unavailable"
+    response.url = url
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        return exc
+    raise AssertionError(f"status {status} did not raise")
+
+
+def test_is_rate_limited_reads_the_status_code_not_digits_inside_identifiers():
+    not_found = _http_error(404, "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000050302&type=4")
+    unavailable = _http_error(503, "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193")
+    timeout = requests.exceptions.ReadTimeout("HTTPSConnectionPool: Read timed out.")
+    accession = ValueError("no XML in 0000950103-24-000001 primary document")
+
+    assert not is_rate_limited(not_found), str(not_found)
+    assert is_rate_limited(unavailable)
+    assert is_rate_limited(timeout)
+    assert not is_rate_limited(accession)
+
+    print("\n=== SANITY CHECK: rate-limit matcher ===")
+    print(f"  404 on CIK=0000050302 -> {is_rate_limited(not_found)}; 503 -> {is_rate_limited(unavailable)}; ")
+    print(f"  ReadTimeout -> {is_rate_limited(timeout)}; accession 0000950103-24-000001 -> {is_rate_limited(accession)}.")
+    print("  -> Only a real throttle/5xx/timeout is retried; a 404 whose URL contains '503' fails at once.")
 
 
 def test_earnings_download_one_retries_rate_limit(monkeypatch):
@@ -81,27 +109,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
     print(f"  get_earnings_dates 429'd once then succeeded (calls={state['n']}); ticker recovered instead of being dropped. Validated.")
 
 
-def test_incremental_skip_logic():
-    """The 'skip if current' freshness rule (dividends/trends)."""
-    today = pd.Timestamp("2024-06-15")
-    last_by = {
-        "CUR": pd.Timestamp("2024-06-10"),  # 5d old -> current
-        "OLD": pd.Timestamp("2024-01-01"),
-    }  # ~165d old -> refetch
-    window = 80
-
-    def skip(t):
-        last = last_by.get(t)
-        return last is not None and (today - last).days <= window
-
-    assert skip("CUR") and not skip("OLD") and not skip("NEW")
-
-    print("\n=== SANITY CHECK: incremental skip / missing-days logic ===")
-    print("  current ticker skipped (freshness window); stale ticker refetched. Validated.")
-
-
 if __name__ == "__main__":
     test_retry_waits_then_succeeds_and_reraises_other()
     mp = types.SimpleNamespace(setattr=lambda o, n, v: setattr(o, n, v))
     test_earnings_download_one_retries_rate_limit(mp)
-    test_incremental_skip_logic()

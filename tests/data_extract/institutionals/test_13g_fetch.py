@@ -16,15 +16,22 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
     _COLS,
-    _NUMERIC_COLS,
-    _filing_rows,
+    SCHEDULE_13G,
+    SEC_13G_FETCH,
     _norm_entity,
     _reporting_person_cik,
-    build_ticker_13g_edgar,
 )
+from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS as _NUMERIC_COLS
+from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
+
+
+def _rows(filing: object) -> list[dict]:
+    """Rows built through the filing stamp, exactly as the ticker walk passes them."""
+    return schedule_filing_rows(FilingStamp.of(filing, ""), SCHEDULE_13G)
 
 
 def _rp(name="FMR LLC", cik="", *, no_cik=False, pct=0.0, agg=0, sole=0, shared=0, torp="", citizenship="", member=None, comment=None):
@@ -89,7 +96,7 @@ def _filing(
 def test_pre_mandate_zeros_become_nan_while_identity_survives():
     """A pre-mandate filing parses with `has_structured_data=False` and 0 in every numeric.
     Publishing the 0 would claim a 0% stake the filer never disclosed."""
-    rows = _filing_rows(_filing(structured=False, persons=[_rp(name="FMR LLC", cik="0000315066")]))
+    rows = _rows(_filing(structured=False, persons=[_rp(name="FMR LLC", cik="0000315066")]))
     assert len(rows) == 1
     row = rows[0]
     for col in _NUMERIC_COLS:
@@ -107,7 +114,7 @@ def test_pre_mandate_zeros_become_nan_while_identity_survives():
 
 
 def test_post_mandate_numbers_pass_through_with_rule_designation():
-    rows = _filing_rows(
+    rows = _rows(
         _filing(
             form="SCHEDULE 13G",
             filing_date="2026-04-28",
@@ -136,7 +143,7 @@ def test_post_mandate_numbers_pass_through_with_rule_designation():
 def test_event_date_is_parsed_month_first():
     """The cover page writes MM/DD/YYYY. An inferred parse can read 01/02 day-first and move
     the event by ten months, which no downstream check would catch."""
-    row = _filing_rows(_filing(structured=True, event_date="01/02/2026"))[0]
+    row = _rows(_filing(structured=True, event_date="01/02/2026"))[0]
     assert row["date_of_event"] == pd.Timestamp("2026-01-02")
 
 
@@ -146,7 +153,7 @@ def test_event_date_is_parsed_month_first():
 def test_post_mandate_cik_is_backfilled_from_the_header():
     """edgartools hard-codes `cik=''` on the 13G XML path (`# Not provided in 13G cover page`),
     so without this the escalation key is NULL exactly where the numbers are real."""
-    row = _filing_rows(
+    row = _rows(
         _filing(
             structured=True, persons=[_rp(name="Vanguard Capital Management", cik="")], filers=[("0002100119", "VANGUARD CAPITAL MANAGEMENT LLC")]
         )
@@ -157,7 +164,7 @@ def test_post_mandate_cik_is_backfilled_from_the_header():
 def test_no_cik_beats_every_fallback():
     """`no_cik` is the filer's own assertion that it HAS no CIK. Inventing one from the header
     would attribute the stake to whichever entity transmitted the filing."""
-    row = _filing_rows(
+    row = _rows(
         _filing(structured=True, persons=[_rp(name="A Natural Person", cik="", no_cik=True)], filers=[("0000999999", "SOME FILING AGENT LLC")])
     )[0]
     assert row["reporting_person_cik"] is None
@@ -167,7 +174,7 @@ def test_cik_backfill_prefers_name_match_over_position():
     """Two persons, two filers, listed in DIFFERENT orders: position would cross-assign them."""
     persons = [_rp(name="Beta Advisers", cik=""), _rp(name="Alpha Capital", cik="")]
     filers = [("0000000111", "ALPHA CAPITAL LLC"), ("0000000222", "BETA ADVISERS LP")]
-    rows = _filing_rows(_filing(structured=True, persons=persons, filers=filers))
+    rows = _rows(_filing(structured=True, persons=persons, filers=filers))
     assert [r["reporting_person_cik"] for r in rows] == ["0000000222", "0000000111"]
     assert [r["rp_seq"] for r in rows] == [0, 1]
 
@@ -191,7 +198,7 @@ def test_norm_entity_strips_legal_form_but_not_identity():
 # --------------------------------------------------------------------------- #
 def test_multiple_reporting_persons_share_the_filing_level_fields():
     persons = [_rp(name="Fund A", cik="0000000001", pct=3.0), _rp(name="Fund B", cik="0000000002", pct=2.5)]
-    rows = _filing_rows(_filing(structured=True, persons=persons, cusip="123456789"))
+    rows = _rows(_filing(structured=True, persons=persons, cusip="123456789"))
     assert [r["rp_seq"] for r in rows] == [0, 1]
     assert {r["cusip"] for r in rows} == {"123456789"}
     assert {r["accession_number"] for r in rows} == {"0000315066-24-002743"}
@@ -201,7 +208,7 @@ def test_multiple_reporting_persons_share_the_filing_level_fields():
 def test_empty_reporting_persons_yields_one_nan_fallback_row():
     """NaN, not None: an all-None column is inferred as SQL TEXT by `ensure_table` the first
     time a batch of these seeds a cold table."""
-    rows = _filing_rows(_filing(structured=True, persons=[]))
+    rows = _rows(_filing(structured=True, persons=[]))
     assert len(rows) == 1 and rows[0]["rp_seq"] == 0
     assert rows[0]["reporting_person_name"] is None
     assert all(pd.isna(rows[0][col]) for col in _NUMERIC_COLS)
@@ -210,9 +217,10 @@ def test_empty_reporting_persons_yields_one_nan_fallback_row():
 # --------------------------------------------------------------------------- #
 # The issuer/filer guard                                                        #
 # --------------------------------------------------------------------------- #
-def _patch_new_filings(monkeypatch, filings):
+def _patch_schedule_filings(monkeypatch, filings):
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13g_edgar.new_schedule_filings", lambda ticker, subject_ciks, forms, since, done: filings
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: filings,
     )
 
 
@@ -221,8 +229,8 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
     and Rapport Therapeutics. Kept, every field would describe a different company."""
     own = _filing(issuer_cik="0000200406", issuer_name="JOHNSON & JOHNSON")
     other = _filing(issuer_cik="0001739410", issuer_name="Rallybio Corporation", accession="0000904454-26-000233")
-    _patch_new_filings(monkeypatch, [own, other])
-    frame = build_ticker_13g_edgar("JNJ", "0000200406")[Tables.sec_13g]
+    _patch_schedule_filings(monkeypatch, [own, other])
+    frame = SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
     assert list(frame.columns) == _COLS
@@ -233,10 +241,10 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
 def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
     """An unknown CIK on either side means "unknown", which must not reject -- otherwise a
     header that failed to parse would silently cost the ticker its whole history."""
-    _patch_new_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
-    assert len(build_ticker_13g_edgar("JNJ", "0000200406")[Tables.sec_13g]) == 1
-    _patch_new_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
-    assert len(build_ticker_13g_edgar("JNJ", "")[Tables.sec_13g]) == 1
+    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
+    assert len(SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
+    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
+    assert len(SEC_13G_FETCH.build("JNJ", "", scope=EdgarScope(None, {}))[Tables.sec_13g]) == 1
 
 
 def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
@@ -246,9 +254,9 @@ def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
         raise ValueError("broken schedule")
 
     filing.obj = fail_parse
-    _patch_new_filings(monkeypatch, [filing])
+    _patch_schedule_filings(monkeypatch, [filing])
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13g_edgar("JNJ", "0000200406")
+        SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13G parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 

@@ -118,7 +118,7 @@ def main() -> None:
             ticker_count = int(entry.get("ticker_count") or 0)
             old_since, old_full = _old_manifest_window(entry, ticker_count, full_rescan_days)
             new_since, new_full = manifest_window(
-                context, table_name, ticker_count, fallback_since=pd.Timestamp("1900-01-01"), full_rescan_days=full_rescan_days
+                context, table_name, entry.get("tickers") or [], fallback_since=pd.Timestamp("1900-01-01"), full_rescan_days=full_rescan_days
             )
             # A fallback (`is_full_rescan=True`) makes `since` a caller-supplied constant on
             # BOTH paths, so only the flag is comparable there; a non-fallback window compares

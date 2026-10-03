@@ -7,6 +7,7 @@ from pathlib import Path
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
+EDGAR_DRIVER_FILE = "src/data_extract/utils/common/edgar_driver.py"
 STRICT_EDGAR_FILES = (
     "src/data_extract/utils/fundamentals/fetch_fundamentals_sec.py",
     "src/data_extract/utils/institutionals/fetch_8k_edgar.py",
@@ -138,13 +139,51 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     print("  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier")
 
 
+def _raises_incomplete(node: ast.AST) -> bool:
+    return any(
+        isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call) and getattr(sub.exc.func, "id", None) == "IncompleteEdgarRunError"
+        for sub in ast.walk(node)
+    )
+
+
 def test_scheduled_edgar_walks_require_complete_ticker_coverage():
     root = DAG_FILE.parents[2]
-    missing = [path for path in STRICT_EDGAR_FILES if "require_complete=True" not in _source(root / path)]
-    assert not missing, f"scheduled EDGAR walks still allow partial success: {missing}"
+    driver = ast.parse(_source(root / EDGAR_DRIVER_FILE))
+    fields = {
+        node.target.id
+        for cls in ast.walk(driver)
+        if isinstance(cls, ast.ClassDef) and cls.name == "EdgarFetch"
+        for node in cls.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "require_complete" not in fields, "EdgarFetch must not offer a partial-success mode"
+    run = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "run_edgar_fetch")
+    order = [
+        "raise"
+        if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Name) and stmt.test.id == "failed" and _raises_incomplete(stmt)
+        else "record"
+        for stmt in run.body
+        if (isinstance(stmt, ast.If) and _raises_incomplete(stmt))
+        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and getattr(stmt.value.func, "id", None) == "_record_tables")
+    ]
+    assert order == ["raise", "record"], f"a failed ticker must raise IncompleteEdgarRunError before any manifest entry is recorded: {order}"
+    record = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "_record_tables")
+    coverage = [kw.value for call in ast.walk(record) if isinstance(call, ast.Call) for kw in call.keywords if kw.arg == "coverage_complete"]
+    assert len(coverage) == 1 and isinstance(coverage[0], ast.Constant) and coverage[0].value is True
+
+    missing = [
+        path
+        for path in STRICT_EDGAR_FILES
+        if not any(
+            isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "EdgarFetch"
+            for call in ast.walk(ast.parse(_source(root / path)))
+        )
+    ]
+    assert not missing, f"scheduled EDGAR walks no longer declare an EdgarFetch spec: {missing}"
 
     print("\n=== SANITY CHECK: strict EDGAR walks ===")
-    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers require complete coverage")
+    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers run the one strict driver path: no flag, a failed")
+    print("  ticker raises IncompleteEdgarRunError before _record_tables, and recorded runs are coverage_complete=True")
     print("  OK: one failed ticker makes the source task retry without advancing its manifest")
 
 

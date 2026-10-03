@@ -1,11 +1,11 @@
 """
 fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_interest.py)
 ---------------------------------------------------------------------------------
-FINRA RegSHO CONSOLIDATED short-sale volume (`CNMSshvol` daily files, free, no auth). This is
-short-selling PRESSURE (daily short vs total volume) -- a proxy for short interest, NOT reported
-short interest. Saved long [date, ticker, short_volume, total_volume]; each day's file is
-disseminated the next morning, so the aggregation step lags it one trading day (point-in-time).
-
+FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_interest`
+[date, ticker, short_volume, total_volume]; despite the table name it is not reported short
+interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
+The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
+`full` mode therefore preserves stored dates the source no longer serves.
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
 """
 
@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import _HEADERS, DATE_FORMAT_COMPACT
+from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import (
     Identity,
@@ -65,18 +65,14 @@ def _fetch_day(
 ) -> str | None:
     """Fetch one date, optionally reusing a run-scoped HTTP connection pool."""
     url = _URL.format(yyyymmdd=day.strftime(DATE_FORMAT_COMPACT))
-    r = session.get(url, headers=_HEADERS, timeout=30) if session is not None else requests.get(url, headers=_HEADERS, timeout=30)
+    r = session.get(url, headers=BROWSER_HEADERS, timeout=30) if session is not None else requests.get(url, headers=BROWSER_HEADERS, timeout=30)
     return r.text if r.status_code == 200 else None
 
 
 def _resume_day(context: Context, years_history: int = 15, full: bool = False) -> pd.Timestamp:
-    """The first day to download: a seven-session overlap from the GLOBAL stored max,
-    or the full `years_history` window on a cold table.
-
-    Global and not per-ticker on purpose. A RegSHO day-file carries every symbol at once, so
-    one lagging ticker would drag the whole download back to its own last date and re-fetch
-    days already stored for all the others. The bounded overlap repairs a failed interior
-    day even after a later day advanced the global maximum.
+    """The first day to download: `SHORT_REFRESH_TRADING_DAYS` before the global stored max (a day
+    file carries every symbol, and the overlap repairs a failed interior day), or the full
+    `years_history` window on a cold table or `full` run.
     """
 
     today = pd.Timestamp.today().normalize()

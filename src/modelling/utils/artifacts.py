@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import pickle
-import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -100,8 +99,3 @@ def load_ensemble(directory: Path, horizons: Iterable[int], families: Iterable[s
     if not models:
         raise FileNotFoundError(f"No saved model files in {directory}.")
     return models
-
-
-def safe_filename(name: str) -> str:
-    """Filesystem-safe version of a feature or member name (e.g. 'beta_USD/EUR')."""
-    return re.sub(r"[^0-9A-Za-z._-]+", "_", name)

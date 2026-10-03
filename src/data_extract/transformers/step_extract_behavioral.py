@@ -1,11 +1,4 @@
-"""
-step_extract_behavioral.py  (src/data_extract/step_extract_behavioral.py)
--------------------------------------------------------------------------
-Behavioral / retail-attention alt-data extraction:
-  * Earnings-call transcripts (HuggingFace defeatbeta -> earnings_call_sections, raw paragraphs)
-  * Google Trends (opt-in; needs `pip install pytrends`, self-skips if absent)
-  * News (future)
-"""
+"""Behavioral alt-data extraction: earnings-call transcripts."""
 
 from omegaconf import DictConfig
 

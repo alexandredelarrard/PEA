@@ -5,7 +5,7 @@ Snapshot every DEF 14A table to parquet, then delete the LEGACY-vintage rows of 
 so the extraction re-runs on them. It does NOT run the extraction: a snapshot, a delete and a
 ~$200 paid run can never be one irreversible action.
 
-WHY the rows have to go rather than be re-fetched in place. `sec_utils.existing_filings` skips
+WHY the rows have to go rather than be re-fetched in place. `incremental.stored_values` skips
 any accession already stored, so a legacy row is invisible to every future run -- it can never
 be refreshed by re-running the fetcher, only by removing it first.
 
@@ -55,7 +55,7 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.run_manifest import _manifest_path
+from src.data_extract.utils.common.run_manifest import manifest_path
 from src.data_store.schema import Tables
 
 #: The 12 columns the refactored flatten added. A row carrying ANY of them was written by the
@@ -170,7 +170,7 @@ def clear_manifest_entry(context, out_dir: Path) -> None:
     branch -- the same state a first-ever run sees. The file is copied into the snapshot
     directory first; it is the only part of this operation that touches `data/`.
     """
-    path = _manifest_path(context)
+    path = manifest_path(context)
     if not path.exists():
         print("  manifest absent -- nothing to clear (already means 'full rescan')")
         return

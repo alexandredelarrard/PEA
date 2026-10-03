@@ -1,18 +1,9 @@
-"""
-cli.py  (src/data_extract/cli.py)
----------------------------------
-DATA-EXTRACTION command-line interface — ONE command per data SOURCE (fetcher), so the Airflow
-extraction DAG can schedule each independently and tune parallelism by load (fan out the light
-sources; throttle the heavy / rate-limited ones via pools). Invoked as:
+"""Data-extraction CLI: one command per data source, so the Airflow extraction DAG can schedule each independently.
 
     python -m src data_extract <command> [-c ./configs] [-t AAPL,MSFT]
 
-Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs
-its fetcher. Fetchers are incremental (resume from the DB), so re-running nightly only pulls new data.
-
-Commands are grouped by the STEP that owns them -- prices, institutionals (13F, superinvestors,
-insiders, 13D, 8-K, short interest, FTD), fundamentals, structure, behavioral -- mirroring
-`src/data_extract/utils/<group>/` and, for institutionals, the cube part of the same name.
+Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs its
+fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `seed-universe` must run first.
 """
 
 import json
@@ -20,7 +11,6 @@ from typing import Any, cast
 
 import click
 import pandas as pd
-from omegaconf import DictConfig
 
 from src.constants.command_line_interface import (
     CONFIG_ARGS,
@@ -48,14 +38,11 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
-
-# --- identity: which company is this ticker, and when ----------------------- #
 from src.data_extract.utils.common.bulk_cache import cache_dir
+from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure
+from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
-
-# --- fundamentals ----------------------------------------------------------- #
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
@@ -73,13 +60,11 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.institutionals.fetch_8k_edgar import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_13d_edgar import fetch_13d_edgar
-
-# --- institutionals: who owns, trades and shorts each name ------------------ #
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_13g_edgar import fetch_13g_edgar
+from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
@@ -87,16 +72,12 @@ from src.data_extract.utils.institutionals.fetch_short_interest import fetch_sho
 from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
-
-# --- prices / market / macro ------------------------------------------------ #
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
 from src.data_extract.utils.prices.fetch_splits import fetch_splits
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import fetch_def14a_edgar
-from src.data_extract.utils.structure.fetch_filing_text import fetch_filing_text
-
-# --- structure -------------------------------------------------------------- #
+from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Tables, freshness_tables
 from src.utils.cli_helper import SpecialHelpOrder
@@ -111,10 +92,6 @@ YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
     """DATA EXTRACTION — one command per source (scheduled by the Airflow extraction DAG)."""
-
-
-def _ctx(config_path: str) -> tuple[DictConfig, Context]:
-    return get_config_context(config_path, use_cache=False, save=False)
 
 
 def _tickers(context: Context, tickers: str | None) -> list[str]:
@@ -149,31 +126,25 @@ def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = 
 @cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def extraction_status(config_path: str) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     report = _extraction_status_report(context)
     click.echo(json.dumps(report, sort_keys=True))
     if not report["ok"]:
         raise click.ClickException("stale or incomplete extraction tables: " + ", ".join(cast(list[str], report["behind"])))
 
 
-# --------------------------------------------------------------------------- #
-# Universe seed — MUST run first; everything else resolves the universe from it #
-# --------------------------------------------------------------------------- #
+# --- Universe seed (must run first; everything else resolves the universe from it) ---
 @cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --refresh).", help_priority=1)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("--refresh", is_flag=True, default=False, help="Re-scrape the S&P 500 even if populated.")
 def seed_universe(config_path: str, refresh: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     if refresh or context.store.row_count(Tables.sp500_tickers) == 0:
         context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (refresh={refresh})")
         get_sp500_tickers(context)
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
-    # ⚠ A WRONG CIK IS INVISIBLE TO EVERY LATER STAGE, so it is reported HERE. `prices` keys on
-    # the ticker, so a company whose company ID is wrong still looks entirely present -- Exxon
-    # carried CIK 0002115436 (real: 34088), had 7,803 price rows, and contributed 4,092 rows to
-    # the governance cube with ZERO non-null proxy features. A feature audit thirty phases
-    # downstream is what eventually found it. Reported, never raised: a genuine recent spin-off
-    # has no filing rows either, and `shape` is what tells the two apart.
+    # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
+    # because a genuine recent spin-off has no filing rows either.
     suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
     for row in suspect:
         context.log.warning(
@@ -186,18 +157,14 @@ def seed_universe(config_path: str, refresh: bool) -> None:
         context.log.warning("%d universe CIK(s) unconfirmed by any filing table.", len(suspect))
 
 
-# --------------------------------------------------------------------------- #
-# Prices / market / macro                                                       #
-# --------------------------------------------------------------------------- #
+# --- Prices / market / macro ---
 @cli.command(help="Daily price history, OHLCV (yfinance). HEAVY.", help_priority=2)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def price_history(config_path: str, tickers: str | None, full: bool) -> None:
-    """`--full` re-pulls the whole window instead of resuming. Needed because split
-    adjustment is RETROACTIVE: an incremental upsert never revisits the bars a split
-    restated, so the table interleaves adjustment vintages inside one ticker."""
-    _, context = _ctx(config_path)
+    """`--full` re-pulls the whole window: split adjustment is retroactive and an incremental upsert never revisits restated bars."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_price_history(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -205,7 +172,7 @@ def price_history(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def dividends(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_dividends(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history)
 
 
@@ -214,9 +181,8 @@ def dividends(config_path: str, tickers: str | None) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def splits(config_path: str, tickers: str | None, full: bool) -> None:
-    """Fills the nine holes in `sharadar_actions`. Use `--full` to populate a cold table --
-    resuming from an empty frontier would miss every historical event."""
-    _, context = _ctx(config_path)
+    """Fills holes in `sharadar_actions`; use `--full` on a cold table, since resuming from an empty frontier misses all history."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_splits(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -225,7 +191,7 @@ def splits(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
@@ -234,18 +200,15 @@ def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fails_to_deliver(config_path: str, tickers: str | None, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full)
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def macro(config_path: str) -> None:
-    """One command for every non-equity series: the market/commodity/FX closes (SPY, ^VIX,
-    oil, gold, energy, FX), the FRED levels (yields, cash, credit spread, breakeven) and the
-    derived spreads + 10Y total-return index. Replaced three commands -- `market-prices`
-    (which wrote its tickers into `prices`), `macro` and `macro-assets`."""
-    _, context = _ctx(config_path)
+    """Every non-equity series: market/commodity/FX closes, FRED levels, and the derived spreads + 10Y total-return index."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_macro(context, years_history=context.config.data_extract.macro_years_history)
 
 
@@ -261,9 +224,8 @@ def macro(config_path: str) -> None:
     "unreachable by the normal 7-day lookback. ONE EDGAR WALK AT A TIME.",
 )
 def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None) -> None:
-    """⚠ `tickers` is the universe the CUSIP map is resolved against, and it was previously
-    left as None here -- `set(tickers)` then raised on the first save."""
-    _, context = _ctx(config_path)
+    """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None)."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     window = None
     if filing_window:
         parts = filing_window.split(":")
@@ -277,10 +239,9 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def thirteen_f_managers(config_path: str, years: int | None) -> None:
-    """Reads its scope from `superinvestor_roster` -- the UNION of every CIK ever on a snapshot,
-    so a manager who left the roster in 2019 keeps its 2016 book. Run `superinvestors --seed`
-    first on a cold database: an empty roster raises rather than fetching nothing quietly."""
-    config, context = _ctx(config_path)
+    """Scope is the union of every CIK ever in `superinvestor_roster`, so a departed manager keeps its history.
+    An empty roster raises: run `superinvestors --seed` first on a cold database."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
 
 
@@ -293,22 +254,15 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     help="ONE-OFF: also replay the 13 committed web.archive.org captures (2013-2026) so the roster has a history to be point-in-time about.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     if seed:
         seed_roster_history(context)
     upsert_roster_snapshot(context)
 
 
-# --------------------------------------------------------------------------- #
-# Fundamentals                                                                  #
-# --------------------------------------------------------------------------- #
-# The two layers are separate commands AND joined by one, because their costs differ by three
-# orders of magnitude: the facts walk is network-bound (~2h for 52 tickers), the history build
-# is a pure in-memory replay of what that walk already stored. A bug in the history layer must
-# not cost a re-download, which is exactly what the two rebuild flags encode (decision 27).
-#: `-F/--full` on the fundamentals commands. The manifest's incremental window keys on the
-#: TICKER COUNT, so a chunked from-scratch backfill reads as a repeat of the previous chunk and
-#: fetches nothing; this bypasses it. See `run_edgar_fetch`.
+# --- Fundamentals: SEC ---
+# Facts (network walk) and history (pure replay) are separate commands so a history-layer bug never costs a re-download.
+# `-F/--full` bypasses the manifest's ticker-count incremental window, which a chunked backfill defeats (see `run_edgar_fetch`).
 
 
 @cli.command(
@@ -319,19 +273,19 @@ def superinvestors(config_path: str, seed: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full, years_history=int(config.data_extract.years_history))
 
 
 @cli.command(
     name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees, with independent accession resume, continuity outcomes, and registrant lineage.",
+    help="SEC 10-K prose -> fundamentals_employees, skipping filing dates that already have a row (NULL decisions included), over the registrant lineage.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fundamentals_employees(
         context,
         tickers=_tickers(context, tickers),
@@ -356,7 +310,7 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
     "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)",
 )
 def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_history: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history)
 
 
@@ -374,7 +328,7 @@ def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_hist
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     if rebuild:
         for ticker in names:
@@ -391,16 +345,9 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
 
-# --------------------------------------------------------------------------- #
-# Fundamentals -- Sharadar (SF1), the OTHER producer                            #
-# --------------------------------------------------------------------------- #
-# The joined command runs the whole producer; the three single-table commands exist for a
-# TARGETED refresh when only one dimension is stale, which is a manual operation -- nothing in
-# `src/dags/` schedules them. `-F/--full` re-pulls the whole configured window instead of
-# resuming from the stored max date, and makes the merge DELETE before it rebuilds.
-#
-# History depth is `data_extract.sharadar_years_history`, NOT `years_history`: the SEC walk
-# is limited by patience, Sharadar by subscription tier (D3).
+# --- Fundamentals: Sharadar (SF1) ---
+# Single-table commands are for a manual targeted refresh; `-F/--full` re-pulls the whole window and makes the merge DELETE first.
+# History depth is `data_extract.sharadar_years_history`, not `years_history`.
 @cli.command(
     name="fundamentals-sharadar",
     help="The whole Sharadar producer in dependency order: tickers -> SF1 fundamentals -> actions -> sp500 -> the MERGED fundamentals_history.",
@@ -409,13 +356,8 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
-    """Delegates to `StepExtractFundamentalsSharadar` rather than restating the order.
-
-    The two used to be written out separately and had already diverged: this command stopped
-    before the merge, so it refreshed the vendor tables and left `fundamentals_history` a run
-    behind them -- exactly the staleness the step's own comment warns about.
-    """
-    config, context = _ctx(config_path)
+    """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     StepExtractFundamentalsSharadar(context=context, config=config).run(tickers=_tickers(context, tickers), full=full, config_dir=config_path)
 
 
@@ -425,7 +367,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> 
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_tickers(context)
 
 
@@ -433,7 +375,7 @@ def sharadar_tickers(config_path: str) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_actions(config_path: str, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history))
 
 
@@ -444,13 +386,11 @@ def sharadar_actions(config_path: str, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sharadar_sp500(config_path: str, full: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_sp500(context, full=full)
 
 
-# --------------------------------------------------------------------------- #
-# Fundamentals -- the MERGED table, and the instrument that governs it           #
-# --------------------------------------------------------------------------- #
+# --- Fundamentals: the merged table, its gap check, and the remaining SEC sources ---
 @cli.command(
     name="fundamentals-history-merged",
     help="fundamentals_sharadar + fundamentals_history_sec -> fundamentals_history, "
@@ -461,14 +401,11 @@ def sharadar_sp500(config_path: str, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_history_merged(config_path: str, tickers: str | None, full: bool) -> None:
-    """Field-block precedence (D14): Sharadar owns a declared column block for ALL history,
-    the SEC table owns 15, and no column ever switches source mid-series.
+    """Field-block precedence: each column has one declared source for all history and never switches mid-series.
 
-    `--full` DELETES these tickers' rows before rebuilding. The default upsert refreshes every
-    row it rebuilds but cannot REMOVE one that no longer exists -- a row the same-date collapse
-    now drops would otherwise survive as a fossil under an unchanged key.
+    `--full` deletes these tickers' rows before rebuilding; the default upsert cannot remove a row that no longer exists.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     build_merged_history(context, tickers=_tickers(context, tickers), full=full, config_dir=config_path)
 
 
@@ -489,14 +426,11 @@ def fundamentals_history_merged(config_path: str, tickers: str | None, full: boo
     "and an entry that already exists is never touched.",
 )
 def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, propose: bool) -> None:
-    """The merged table's instrument, and it replaces one: reason codes stay with the SEC
-    table (D24), so `unexplained_null` no longer gates `fundamentals_history`.
+    """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `fundamentals_history`.
 
-    `--tickers` defaults to EVERY stored ticker rather than the sp500 universe -- the two
-    sources overlap on a subset, and asking for the rest would report a gap on tickers one of
-    them never had. Nothing here imports `src/validate/` (D25).
+    `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
     run_gap_check(context, tickers=names, report_path=report_path, propose_overrides=propose, config_dir=config_path)
 
@@ -505,7 +439,7 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, 
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def earnings_surprises(config_path: str, tickers: str | None) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_earnings_surprises(context, tickers=_tickers(context, tickers))
 
 
@@ -519,7 +453,7 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
     help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
 )
 def financial_statements(config_path: str, tickers: str | None, reparse: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
@@ -539,7 +473,7 @@ def insider_transactions(
     reparse: bool,
     full: bool,
 ) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     fetch_insider_transactions(context, tickers=names, reparse=reparse)
     fetch_insider_edgar(
@@ -565,14 +499,10 @@ def insider_transactions(
     help="Acknowledge one exact older-CIK entity-id change reported by the safety manifest.",
 )
 def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
-    """ONE command for BOTH tables, because they are one logical dimension and a half-built
-    pair is a trap: `entity_lineage`'s candidate set is read off `symbol_tenure`, so a stale
-    tenure table silently narrows the lineage table without either looking wrong.
-
-    `ticker_count=0` in the manifest: this is a market-wide derivation over all ~27k EDGAR
-    symbols, not a per-ticker walk -- the same convention `fetch_sharadar_tickers` uses.
+    """Builds `symbol_tenure` then `entity_lineage` together: lineage candidates are read off tenure, so a stale
+    tenure silently narrows lineage. Market-wide, so the manifest records `ticker_count=0`.
     """
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     parsed_rekeys: set[tuple[str, str]] = set()
     for value in approved_rekeys:
@@ -583,10 +513,12 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
                 param_hint="--approve-rekey",
             )
         parsed_rekeys.add((old, new))
-    build_symbol_tenure(context, cache, config_path)
+    scan = scan_form345_cache(cache)
+    tenure = build_symbol_tenure(context, scan, config_path)
     build_entity_lineage(
         context,
-        cache,
+        tenure,
+        scan.owner_pairs,
         config_path,
         approved_rekeys=frozenset(parsed_rekeys),
     )
@@ -608,25 +540,19 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     help="Rewrite notes available_at metadata using the historical estimate or cached download date; do not reparse ZIPs.",
 )
 def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool) -> None:
-    _, context = _ctx(config_path)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse, repair_availability=repair_availability)
 
 
-# --------------------------------------------------------------------------- #
-# Structure (governance)                                                        #
-# --------------------------------------------------------------------------- #
+# --- Structure (governance) ---
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def def14a(config_path: str, tickers: str | None, full: bool) -> None:
-    """`--full` is needed after a registrant chain GROWS. Both incremental gates are shared
-    state keyed on the run, not on `-t`: the manifest's `last_run_date` is global and the
-    up-to-date check only asks whether the named tickers have ANY rows. So the second def14a
-    of a day returns in seconds with exit 0 and no LLM calls, however much history the new
-    segment just exposed — measured twice on AVGO, the second time 12 minutes after the run
-    that poisoned it."""
-    config, context = _ctx(config_path)
+    """`--full` is needed after a registrant chain grows: the incremental gates are run-wide (global `last_run_date`,
+    any-rows ticker check), so a same-day rerun would skip the newly exposed history."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
 
 
@@ -636,15 +562,17 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = _ctx(config_path)
-    fetch_8k_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, full=full)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_8K_FETCH, full=full
+    )
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_8k_votes_llm(context, config, tickers=_tickers(context, tickers))
 
 
@@ -654,8 +582,10 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = _ctx(config_path)
-    fetch_13d_edgar(context, tickers=_tickers(context, tickers), full=full, years_history=years or config.data_extract.years_history)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13D_FETCH, full=full
+    )
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
@@ -664,11 +594,12 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    """The passive counterpart of `sec-13d`, and ~7x its volume (~52 filings/ticker against
-    13D's ~8). Chunk it with `-t` + `-F` for a from-scratch backfill: the manifest's incremental
+    """Passive counterpart of `sec-13d`. Chunk a from-scratch backfill with `-t` + `-F`: the manifest's incremental
     test is "did the universe change size", which a chunked walk defeats."""
-    config, context = _ctx(config_path)
-    fetch_13g_edgar(context, tickers=_tickers(context, tickers), full=full, years_history=years or config.data_extract.years_history)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    run_edgar_fetch(
+        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13G_FETCH, full=full
+    )
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
@@ -676,8 +607,8 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None) -> None:
-    config, context = _ctx(config_path)
-    fetch_filing_text(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=FILING_TEXT_FETCH)
 
 
 @cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
@@ -685,13 +616,11 @@ def filing_text(config_path: str, tickers: str | None, years: int | None) -> Non
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> None:
-    config, context = _ctx(config_path)
-    fetch_def14a_edgar(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=DEF14A_EDGAR_FETCH)
 
 
-# --------------------------------------------------------------------------- #
-# Behavioral (retail attention)                                                 #
-# --------------------------------------------------------------------------- #
+# --- Behavioral (retail attention) ---
 @cli.command(
     help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
     "paragraph. Incremental: an unchanged source file is a no-op; -F compares every call."
@@ -700,5 +629,5 @@ def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> No
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def extract_earnings_calls(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = _ctx(config_path)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     _extract_earnings_calls(context, config.earnings_calls, full=full, tickers=_tickers(context, tickers))

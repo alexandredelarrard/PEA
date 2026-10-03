@@ -1,36 +1,15 @@
 """
 kpi_catalogue.py
 ----------------
-Loads and validates the three JSON files that ARE the fundamentals contract, and exposes
-typed accessors over them:
+Loads, validates and exposes typed accessors over the three JSON files that ARE the fundamentals
+contract, under `configs/fundamentals/`:
+  * `fundamentals_kpis.json`       -- per field: tier, kind, sign, unit, definition, authority, resolution.
+  * `fundamentals_regimes.json`    -- which statement template a filing is read against (role URI, then GICS).
+  * `fundamentals_exceptions.json` -- (regime/ticker, field) -> is a missing value structural or a regression.
 
-  * `configs/fundamentals/fundamentals_kpis.json`       -- one entry per field: tier, kind,
-                                    sign, unit, definition, authority, and how to resolve it.
-  * `configs/fundamentals/fundamentals_regimes.json`    -- which statement TEMPLATE a filing
-                                    is read against (role URI first, GICS as tiebreak).
-  * `configs/fundamentals/fundamentals_exceptions.json` -- (regime, field) -> is a missing
-                                    value structural, or a regression?
-
-`authority` is mandatory on every field and must cite a primary source. The literal string
-"UNVERIFIED" is the only permitted placeholder, and `tests/data_extract/test_kpi_catalogue.py`
-asserts that every occurrence is deliberate -- so no definition in this pipeline can quietly
-rest on a guess. Phase 2 shipped with 17 UNVERIFIED fields; a second research pass closed
-**all 17** against FASB's own 2025 taxonomy files (`us-gaap-doc-2025.xml`,
-`us-gaap-ref-2025.xml`, `us-gaap-2025.xsd`) and eCFR Reg S-X, so the placeholder is now unused.
-
-Three grades of citation, all machine-checkable, because "sourced" is not binary:
-  * `authority`                -- the citation. A quote or a rule/paragraph reference.
-  * `authority_caveat`         -- the field IS verified, but one sub-claim is a notch weaker,
-                                  typically an ASC paragraph whose NUMBER is primary (FASB's
-                                  reference linkbase) while its PROSE could only be read in a
-                                  secondary reproduction, `asc.fasb.org` being login-walled.
-  * `authority_inherits_from`  -- a tier-0 calculation input or a ratio has no primary source
-                                  of its OWN; it exists because another field's cited
-                                  definition requires it, so it names that field.
-
-Loaded ONCE per process (`functools.cache`): the files are small, but the facts layer asks
-for a field spec per field per filing, and re-reading + re-validating three JSONs ~30k times
-during a full rebuild is pure waste.
+Every field must carry an `authority` citing a primary source (`UNVERIFIED` is the only placeholder and
+requires an `authority_note`), optionally `authority_caveat` or `authority_inherits_from`. Validation is
+strict and runs at load; the catalogue is built once per resolved config directory.
 """
 
 from __future__ import annotations
@@ -53,16 +32,9 @@ from src.constants.constants import (
 )
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 
-# `DEFAULT_CONFIG_DIR` re-exported (not re-declared): `field_map.py`, `gap_check.py`,
-# `merge_history.py` and `periods.py` all import it from this module rather than from
-# `constants` directly -- one declaration in `constants.py`, one import path here.
-# `resolve_config_dir` is re-exported for the same reason, but it now LIVES in
-# `common/config_paths.py`: the registrant register is read by tiers A, B and C, and a
-# loader in `common/` cannot import from `fundamentals/` without inverting the layering.
+# `DEFAULT_CONFIG_DIR` is re-exported: sibling fundamentals modules import it from here.
 
-#: Keys whose leading underscore marks them as documentation, not data. The JSONs carry
-#: their own rationale inline (a `_README` block, `_authority` notes) so the contract and
-#: its justification cannot drift apart in separate files; the loader skips them.
+#: Keys with this prefix are inline documentation in the JSONs, not data; the loader skips them.
 _DOC_PREFIX = "_"
 
 #: The placeholder that means "the research could not establish a primary source".
@@ -102,28 +74,16 @@ class FieldSpec:
 
     @property
     def is_extracted(self) -> bool:
-        """Is this field resolved against XBRL CONCEPTS at all?
-
-        False for a field computed from others, and false for one the catalogue sources
-        somewhere else entirely: `employees` declares `"source": "text:10-K"` and is parsed
-        out of the 10-K narrative by `fundamentals_employees.py`, so it has no
-        `fallback_concepts` and can never resolve here. Left in, it resolved 0 times on all
-        52 swept tickers and emitted one reason-coded row per filing -- ~1,600 rows a sweep
-        asserting that a field the XBRL walk was never going to find was not found.
-        """
+        """Is this field resolved against XBRL concepts? False for computed and text-sourced fields."""
         if self.is_text_sourced:
             return False
         return self.kind in EXTRACTED_KINDS
 
     @property
     def is_text_sourced(self) -> bool:
-        """Is the value parsed out of NARRATIVE TEXT rather than XBRL?
+        """Is the value parsed from narrative text (`source` starting `text`, e.g. `employees`) rather than XBRL?
 
-        True only for `employees`, whose `source` is `"text:10-K"`. It is the discriminator
-        that keeps that field out of the wide history table (decision 35): a text parse can
-        fail in ways an XBRL walk cannot, and in the wide table one failed regex would fail
-        the whole snapshot. It goes to `fundamentals_employees` instead, and the field keeps
-        its tier and its authority in the catalogue.
+        Such fields are kept out of the wide history table and written to their own side table.
         """
         return str(self.raw.get("source", "")).startswith("text")
 
@@ -135,10 +95,8 @@ class FieldSpec:
 
     @property
     def authority_inherits_from(self) -> list[str]:
-        """Field(s) whose SOURCED authority justifies carrying this one. A calculation
-        input has no primary source of its own -- it exists because another field's cited
-        definition requires it -- so naming that field is the honest citation. Distinct
-        from UNVERIFIED, which means the definition itself is unestablished."""
+        """Field(s) whose cited authority justifies carrying this calculation input, which has no
+        primary source of its own. Distinct from UNVERIFIED (definition unestablished)."""
         return list(self.raw.get("authority_inherits_from", []))
 
     @property
@@ -161,26 +119,20 @@ class FieldSpec:
         return block.get("total_concept", self.raw.get("total_concept"))
 
     def roll_up(self, regime: str | None = None) -> list[str]:
-        """The children the linkbase result is CHECKED AGAINST -- never a substitute for
-        reading the linkbase, which is the whole point of the rebuild."""
+        """The children the linkbase result is CHECKED AGAINST -- never a substitute for reading the linkbase."""
         block = self._regime_block(regime)
         spec = block.get("roll_up", self.raw.get("roll_up")) or {}
         return list(spec.get("sum", []))
 
     @cached_property
     def _never_use_by_regime(self) -> dict[str | None, MappingProxyType]:
-        """`never_use`'s memo, one entry per regime asked for. An instance dict rather than
-        an `lru_cache` on the method: `raw` is a dict, so this frozen dataclass's generated
-        `__hash__` raises and `self` cannot be a cache key."""
+        """`never_use`'s per-regime memo (an instance dict: `raw` makes this frozen dataclass unhashable)."""
         return {}
 
     def never_use(self, regime: str | None = None) -> MappingProxyType:
-        """concept -> why it must NEVER resolve this field. These are the measured traps
-        (MAA's IPR&D-tagged capex, a bank's gross interest income), so they are part of the
-        contract and a resolver MUST consult them, not merely log them.
+        """Read-only map concept -> why it must NEVER resolve this field (field-level merged with the regime's).
 
-        Read-only and shared: the resolver asks the same (field, regime) up to 10 times per
-        filing, and a fresh merged dict per call was pure waste.
+        Part of the contract: a resolver MUST consult it, not merely log it.
         """
         cached = self._never_use_by_regime.get(regime)
         if cached is None:
@@ -195,31 +147,14 @@ class FieldSpec:
         return self.raw.get("regimes", {}).get(regime, {})
 
 
-#: `fundamentals_history_sec`'s own key columns. `sector` / `industry_group` are NOT here
-#: (decision 32): they are a slowly-changing dimension joinable from `sp500_tickers`, and
-#: carrying them inside a point-in-time table duplicates a non-vintaged roster into every
-#: row. The residual is stated rather than hidden -- `regime` stays, and it is derived from
-#: `sub_industry` off that same roster, so the look-ahead this removes from two columns is
-#: still present in one. Accepted because `regime` drives RESOLUTION and therefore cannot be
-#: joined at cube time.
-#:
-#: `fiscal_quarter` labels which quarter of the ISSUER's OWN year `fiscal_end` closes -- Q1-Q4
-#: on every row, including the ones whose values are TTM or balance-sheet instants. A TTM
-#: spans four quarters, but the row still reports as of one of them, and that is what a
-#: seasonal comparison needs: a filer's Q4 is not its Q1, and `fiscal_end`'s calendar month
-#: does not say which is which for the 52/53-week and non-December filers on the roster.
+#: `fundamentals_history_sec`'s key columns. `fiscal_quarter` labels which quarter of the issuer's own
+#: fiscal year `fiscal_end` closes, on every row including TTM and instant values. Sector / industry
+#: are not carried: they join from `sp500_tickers`.
 HISTORY_KEYS: tuple[str, ...] = ("ticker", "as_of", "fiscal_end", "fiscal_quarter")
 
-#: The 60 value columns in STATEMENT order: income statement top-down, then cash flow, then
-#: the balance sheet, then the share counts. Each ratio sits immediately after the line it is
-#: computed from, so a reader can check it in place -- `grossMargins` under `grossProfit`,
-#: `returnOnEquity` under `stockholdersEquity`.
-#:
-#: Declared, not derived. The resolution order is tier-then-name (`history_fields`), which is
-#: what the BUILD needs and reads as noise in a table: `basicShares` first and `totalRevenue`
-#: twenty-four columns later, with `costOfRevenue` in a different tier from the revenue it is
-#: subtracted from. `history_columns` asserts this list against the catalogue, so a new field
-#: in the JSON fails loudly here rather than being appended to the end of the table.
+#: The value columns in STATEMENT order (income statement, cash flow, balance sheet, share counts), each
+#: ratio right after the line it is computed from. Declared, not derived; `history_columns` asserts it
+#: against the catalogue so a new field fails loudly.
 HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
     # -- revenue: the general top line, then the regime-specific ones that replace it
     "totalRevenue",
@@ -294,38 +229,22 @@ HISTORY_STATEMENT_ORDER: tuple[str, ...] = (
     "optionOverhang",
 )
 
-#: The publication-event provenance, scalar by precedence (decision 37) so every column
-#: stays queryable: `publication_form` is the highest-precedence form filed that day
-#: (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` is an OR, `amended_fiscal_end` the
-#: latest restated period and `amended_fields` the union. Accession-level detail always
-#: remains recoverable from `fundamentals_facts`.
+#: Publication-event provenance, scalar per row: `publication_form` is the highest-precedence form filed
+#: that day (`10-K` > `10-K/A` > `10-Q` > `10-Q/A`), `is_amendment` an OR, `amended_fiscal_end` the latest
+#: restated period, `amended_fields` the union. Accession detail stays in `fundamentals_facts`.
 HISTORY_PROVENANCE: tuple[str, ...] = ("publication_form", "is_amendment", "amended_fiscal_end", "amended_fields")
 
-#: The filing's resolution regime, taken off `fundamentals_facts` where the facts layer
-#: already stamped it per filing rather than re-derived here.
+#: The filing's resolution regime, as stamped per filing on `fundamentals_facts`.
 HISTORY_REGIME = "regime"
 
-#: Declared columns computed at CUBE time, not by the history build (decision 33).
-#:
-#: Both are year-on-year ratios, and the bug is in the OFFSET, not in the numerator: at cube
-#: time `pit.py` can take a fixed 365-DAY `as_of` offset, while a history-build version can
-#: only take a 4-ROW one -- and under the publication-event grain an amendment row makes four
-#: rows ~9 months, not 12. Computing them here would fix two columns and leave
-#: `infer_yoy_periods`' row-offset in every other cube growth feature; moving them fixes all
-#: of them at once. That repair is Phase 6's (§6.1); Phase 5's job is not to ship the two
-#: columns whose definition it cannot satisfy.
+#: Declared columns computed at CUBE time, not by the history build: year-on-year ratios need a 365-day
+#: `as_of` offset, which the publication-event grain (amendment rows) cannot give as a row offset.
 CUBE_TIME_COLUMNS: frozenset[str] = frozenset({"revenueGrowth", "earningsGrowth"})
 
 
 @dataclass(frozen=True)
 class Catalogue:
-    """The three loaded files, validated.
-
-    `fields` is the only eager lookup; every derived view below is a `cached_property` or a
-    per-instance memo, computed on first use and free afterwards. They have to be: the
-    history build reads `history_fields` once per publication event and the resolver reads
-    `extracted_fields` once per filing, and each was a linear scan plus a sort.
-    """
+    """The three loaded files, validated. `fields` is eager; every derived view is memoised on first use."""
 
     fields: dict[str, FieldSpec]
     derived_columns: dict[str, str]
@@ -337,53 +256,38 @@ class Catalogue:
 
     @cached_property
     def all_column_names(self) -> frozenset[str]:
-        """Every name the CONTRACT declares: catalogue fields plus the computed columns.
-
-        The reference-resolution set, for `feeds` / `components`. Deliberately WIDER than
-        `history_columns`: `employees` is a real catalogue field that another field may
-        legitimately reference, it simply lives in its own table.
-        """
+        """Every name the contract declares (catalogue fields plus computed columns), the set `feeds` /
+        `components` references resolve against. Wider than `history_columns` (includes side-table fields)."""
         return frozenset(self.fields) | frozenset(self.derived_columns)
 
     # ------------------------------------------------- the history contract --- #
     @cached_property
     def side_table_fields(self) -> list[str]:
-        """Catalogue fields the WIDE history table does not carry, because their source is
-        not XBRL. Today: `employees` -> `fundamentals_employees` (decision 35)."""
+        """Catalogue fields the wide history table does not carry because they are text-sourced
+        (`employees` -> `fundamentals_employees`)."""
         return sorted(n for n, s in self.fields.items() if s.is_text_sourced)
 
     @cached_property
     def history_fields(self) -> list[str]:
-        """The catalogue fields `fundamentals_history_sec` carries, ordered TIER then name.
+        """The catalogue fields `fundamentals_history_sec` carries, ordered tier then name.
 
-        One column per field, BARE NAME, on the TTM basis for a `duration` field and the
-        latest instant for an `instant` one (decision 31). That matches the legacy naming
-        exactly -- `totalRevenue` always WAS the TTM -- so `build_cube.yml` and
-        `SECTOR_KPI_SCOPE` need no renaming, and the `_ttm` suffix in the KPI JSON's prose
-        names the CONCEPT, never a column.
+        One column per field under its bare name: the TTM for a `duration` field, the latest instant for an
+        `instant` one.
         """
         side = set(self.side_table_fields)
         return sorted((n for n in self.fields if n not in side), key=lambda n: (self.fields[n].tier, n))
 
     @cached_property
     def history_derived_columns(self) -> list[str]:
-        """The computed columns the history build owns -- everything declared minus the
-        cube-time ones. Subtracted defensively as well as excluded in the config, so the
-        contract cannot silently regrow by a config edit alone."""
+        """The computed columns the history build owns: all declared minus `CUBE_TIME_COLUMNS`."""
         return sorted(set(self.derived_columns) - CUBE_TIME_COLUMNS)
 
     @cached_property
     def history_columns(self) -> list[str]:
-        """The `fundamentals_history_sec` column contract, in table order: 4 keys + 52 catalogue
-        fields + 8 derived + `regime` + 4 provenance = **69**.
+        """The `fundamentals_history_sec` column contract in table order: keys, `HISTORY_STATEMENT_ORDER`,
+        `regime`, provenance (4 + 60 + 1 + 4 = 69). `build_history` builds its frame from it.
 
-        The number was "~71" twice and "68" once in the rebuild plan with no enumeration
-        behind either, while *"column count is exactly as contracted"* was a verification
-        item. This property IS the contract; `build_history` builds its frame from it and
-        asserts the length, so the two can never disagree again.
-
-        Column ORDER is `HISTORY_STATEMENT_ORDER`, not the tier-then-name order the fields
-        are RESOLVED in: reading the table should read like the statements it came from.
+        Asserts `HISTORY_STATEMENT_ORDER` matches the history fields plus derived columns exactly.
         """
         fields = [*self.history_fields, *self.history_derived_columns]
         missing = sorted(set(fields) - set(HISTORY_STATEMENT_ORDER))
@@ -395,8 +299,7 @@ class Catalogue:
 
     # ---------------------------------------------------------------- fields --- #
     def field(self, name: str) -> FieldSpec:
-        """One field's spec. Raises rather than returning None: a caller asking for a field
-        that is not in the contract is a bug, not a missing value."""
+        """One field's spec. Raises KeyError rather than returning None: a field outside the contract is a bug."""
         try:
             return self.fields[name]
         except KeyError:
@@ -404,8 +307,7 @@ class Catalogue:
 
     @cached_property
     def _by_tier(self) -> dict[int, list[str]]:
-        """Every tier's field list in one pass rather than a linear scan and a sort per
-        call. Tiers are 0-3, so the whole map costs one walk of `fields`."""
+        """Every tier's sorted field list, built in one pass over `fields`."""
         out: dict[int, list[str]] = {}
         for name in sorted(self.fields):
             out.setdefault(self.fields[name].tier, []).append(name)
@@ -429,8 +331,7 @@ class Catalogue:
 
     @cached_property
     def unverified_fields(self) -> list[str]:
-        """Fields whose `authority` is still the placeholder. Surfaced deliberately -- the
-        schema test asserts on this list so the gap is visible rather than forgotten."""
+        """Fields whose `authority` is still the placeholder; the schema test asserts on this list."""
         return sorted(n for n, s in self.fields.items() if s.authority == UNVERIFIED)
 
     # --------------------------------------------------------------- regimes --- #
@@ -439,28 +340,10 @@ class Catalogue:
         return sorted(self.regimes)
 
     def regime_for_gics(self, sector: str | None = None, industry_group: str | None = None, sub_industry: str | None = None) -> str | None:
-        """The GICS tiebreak, most-specific level first, INCLUDING the forced overrides.
+        """The GICS-implied regime, or None (never a guess) when nothing matches.
 
-        The regimes config declares its GICS membership at whichever level is the natural
-        one: `bank` and `insurer` enumerate sub-industries, `real_estate` claims a whole
-        industry group, `utility` and `energy` claim a whole sector. Reading only
-        `sub_industry` -- as this accessor originally did -- silently returned None for
-        every energy, utility and REIT ticker, which then fell through to the `industrial`
-        default and read a utility's income statement against Rule 5-03.
-
-        Order is specificity, not convenience: a forced sub-industry override beats an
-        explicit sub-industry, which beats an industry group, which beats a sector. That
-        is what lets Telecom Tower / Data Center / Timber REITs be pulled OUT of the
-        `real_estate` industry-group claim -- they file like industrials (AMT reports
-        `AssetsCurrent`, `OperatingIncomeLoss` and PP&E capex).
-
-        The overrides themselves are four verified traps: Insurance Brokers, Financial
-        Exchanges, Payments and Asset Management all sit inside financial-sector GICS blocks
-        but file ARTICLE 5 statements, so routing GICS 'Financials' wholesale to a bank or
-        insurer template would mis-read 37 live tickers.
-
-        Returns None -- never a guess -- when nothing matches, so the caller applies the
-        role-URI result or the `industrial` default.
+        Most specific wins: a forced sub-industry override (`force_regime`), then the regimes' declared
+        sub-industry, industry-group, then sector membership.
         """
         forced = self.force_regime_by_sub_industry.get(sub_industry or "")
         if forced:
@@ -475,19 +358,9 @@ class Catalogue:
         return None
 
     def regime_for_role_uris(self, role_uris: list[str]) -> str | None:
-        """The regime implied by the STATEMENT ROLES the filer actually used.
+        """The regime implied by the filer's statement role URIs (case-insensitive `role_patterns` match).
 
-        Checked before GICS because it is evidence from the filing itself: FASB's role URIs
-        name the template (`sfp-dbo` 108000 = deposit-based, `sfp-ibo` 108200 =
-        insurance-based, `sfp-sbo` 112000 = securities-based), so a filer shipping a
-        deposit-based balance sheet IS a bank however GICS classifies it. That is what
-        makes routing `Asset Management & Custody Banks` to Article 5 safe: BNY and STT
-        genuinely take deposits, and if they ship a deposit-based role this overrides the
-        GICS default rather than being overridden by it.
-
-        Returns None -- not the default -- when no role matches, which is the common case:
-        most filers use their own role URIs (`http://www.exxonmobil.com/role/...`) rather
-        than FASB's, so the GICS tiebreak carries most of the universe.
+        Evidence from the filing itself, so it outranks GICS. Returns None, not the default, when no role matches.
         """
         blob = " ".join(role_uris).lower()
         for name, spec in self.regimes.items():
@@ -497,16 +370,9 @@ class Catalogue:
         return None
 
     def regime_for(self, gics: dict[str, str | None] | None, role_uris: list[str]) -> str | None:
-        """The filing's regime: role URI first, GICS as tiebreak, `industrial` as the
-        Article 5 default -- but ONLY for a ticker that has a GICS row at all.
+        """The filing's regime: role URI first, then GICS, then the `industrial` (Article 5) default.
 
-        The distinction matters and is not cosmetic. A ticker IN the universe whose
-        sub-industry matches no regime is an ordinary Article 5 filer, and Reg S-X 5-01
-        makes Article 5 the rule with the other regimes its enumerated exceptions, so
-        defaulting is correct. A ticker with NO universe row (AVB, EA and EQR have facts
-        but no `sp500_tickers` row) is *unclassified*, and defaulting it would add
-        unclassified names to the 340-ticker industrial denominator and shift every
-        industrial rate in the expected-absence register. Skip, never default.
+        A ticker with no GICS row is unclassified and returns None (skip, never default) unless a role URI matched.
         """
         from_role = self.regime_for_role_uris(role_uris)
         if from_role:
@@ -516,8 +382,7 @@ class Catalogue:
         return self.regime_for_gics(**gics) or self.default_regime()
 
     def default_regime(self) -> str:
-        """The Article 5 general case. Reg S-X makes it the RULE and the other regimes its
-        enumerated specialised-industry exceptions, so falling back here is correct."""
+        """The regime marked `is_default` (Article 5, Reg S-X's general case). Raises ValueError if none is."""
         for name, spec in self.regimes.items():
             if spec.get("is_default"):
                 return name
@@ -527,45 +392,21 @@ class Catalogue:
     def expected_absent(self, regime: str, field: str) -> bool:
         """Is a missing (regime, field) value STRUCTURAL rather than a regression?
 
-        Defaults to False: an absence nobody has justified must stay a finding, or the
-        register becomes a way to silence coverage checks."""
+        Defaults to False: an unjustified absence must stay a finding."""
         block = self.regime_exceptions.get(regime, {}).get(field)
         return bool(block.get("expected_absent", False)) if isinstance(block, dict) else False
 
     @cached_property
     def _filer_leaves_memo(self) -> dict[tuple[str | None, str], tuple]:
-        """`filer_leaves`' memo. An instance dict for the same reason as
-        `FieldSpec._never_use_by_regime`: the dataclass is frozen but not hashable."""
+        """`filer_leaves`' memo (an instance dict, as for `FieldSpec._never_use_by_regime`)."""
         return {}
 
     def filer_leaves(self, ticker: str | None, field: str) -> tuple[tuple[tuple[str, ...], ...], frozenset[str]]:
-        """One filer's DECLARED company-extension leaves for a field, as
-        `(leaf_groups, not_leaves)`.
+        """One filer's DECLARED company-extension leaves for a field, as `(leaf_groups, not_leaves)`, memoised.
 
-        The whole of §4b.4's conclusion in one accessor: **there is no structural rule that
-        identifies a company-extension capex or D&A leaf.** Every candidate rule was
-        measured and refuted -- "a negative-weight extension child of the investing node"
-        admits `apa:EquityMethodInvestmentContribution` ($501M, an investment),
-        `nee:PurchasesOfSecuritiesInSpecialUseFunds` ($1.4-2.6bn, securities),
-        `dte:ConsolidationOfVIES` and `eog:ChangesInComponentsOfWorkingCapital...`; and the
-        inverse framing fails on the same rows. So an extension leaf is either DECLARED
-        here, per filer, with its evidence, or the filer stays reason-coded. There is no
-        third answer.
-
-        Memoised on `(ticker, field)` and returned as tuples, because route 3b asks for
-        it once per (filing, field) and the answer is a config lookup that never moves.
-
-        `leaf_groups` has exactly the shape of `roll_up.any_of` (alternatives within a
-        group, a sum across groups) and is APPENDED to it -- DTE needs both, because its
-        `PlantAndEquipmentExpenditures{Utility,NonUtility}` pair and its
-        `PaymentsToAcquirePropertyPlantAndEquipment{Utility,NonUtility}` pair are era
-        variants of each other.
-
-        `not_leaves` is the other half and is what makes the register a CLOSED statement:
-        it names the extensions in the same node that are NOT this field, so route 3b's
-        partial-leaf guard can tell "classified as excluded" from "never looked at". Listing
-        only the leaves would leave the guard refusing every filer that parks any unrelated
-        extension in the node.
+        No structural rule identifies an extension leaf, so it is declared per filer or the filer stays
+        reason-coded. `leaf_groups` has the shape of `roll_up.any_of` (alternatives within a group, summed
+        across groups) and is appended to it; `not_leaves` names the node's extensions that are NOT this field.
         """
         key = (ticker, field)
         cached = self._filer_leaves_memo.get(key)
@@ -579,30 +420,13 @@ class Catalogue:
         return cached
 
     def periodicity_shapes(self, ticker: str | None, field: str) -> list[str] | None:
-        """The period SHAPES a filer tags this field on, where that is structurally
-        limited. None where nothing is declared, which is the common case.
-
-        A separate register from `filer_leaves` because it answers a different question:
-        the value EXISTS, it simply has no discrete quarter. AFL and CSCO tag
-        `DepreciationDepletionAndAmortization` on the annual window only -- 48 and 36
-        annual facts, zero quarterly -- so `ebitda` is annual-only for them and Phase 7's
-        `coverage_quarters` gate must read that as structural, not as a regression. The
-        `by_regime` register has no key for a periodicity gap, only for an absence.
-        """
+        """The period shapes a filer tags this field on, where structurally limited (e.g. annual-only);
+        None where nothing is declared. Such a gap is structural, not a regression."""
         block = self.ticker_periodicity.get(ticker or "", {}).get(field)
         return list(block.get("shapes", [])) if isinstance(block, dict) else None
 
     def combined_into(self, regime: str | None, ticker: str | None, field: str) -> str | None:
-        """The field this one is FOLDED INTO for this filer or regime, where a register cell
-        declares one -- the destination that makes `combined_into` a usable reason code
-        rather than a shrug. A ticker cell wins over a regime cell, matching every other
-        override in this class.
-
-        No cell declares one today, so this returns None for every (regime, ticker, field)
-        in the universe. The mechanism ships anyway because the alternative is a reason code
-        with no producer, and §B.6.4 writes the cells the validator's findings demand rather
-        than a speculative sweep of them.
-        """
+        """The field this one is folded into for this filer or regime, or None. A ticker cell wins over a regime cell."""
         for register, key in ((self.ticker_exceptions, ticker), (self.regime_exceptions, regime)):
             block = register.get(key or "", {}).get(field)
             if isinstance(block, dict) and block.get("combined_into"):
@@ -610,28 +434,16 @@ class Catalogue:
         return None
 
     def regime_break_effective(self, field: str) -> pd.Timestamp | None:
-        """The date a definitional discontinuity took effect for `field`, or None.
-
-        Four fields declare one: `cash` (ASU 2016-18, restricted cash enters the total
-        retrospectively), and `totalDebt` / `ppeNet` / `operatingLeaseLiability` (ASC 842,
-        which put operating leases on the balance sheet). The value is real on both sides
-        and comparable across neither, which is a qualifier rather than an absence.
-        """
+        """The date a definitional discontinuity (`regime_break.effective`, e.g. ASC 842) took effect for
+        `field`, or None. Values on either side are real but not comparable."""
         block = self.field(field).raw.get("regime_break") or {}
         effective = block.get("effective")
         return pd.Timestamp(effective) if effective else None
 
     def measured_absent_rate(self, regime: str, field: str) -> float | None:
-        """The share of the regime's tickers with no fact for this field. None where it was
-        not measured.
+        """The share of the regime's tickers with no fact for this field, or None where not measured.
 
-        Measured once, on 2026-08-21, against `fundamentals_facts_legacy` (7.8M facts, 442
-        classifiable tickers). ⚠ That table was DROPPED on 2026-08-26, so these rates are a
-        frozen historical record: they cannot be re-derived. The current `fundamentals_facts`
-        carries no dimension metadata (no `is_dimensioned` / `axis` / `member`), so the
-        "does an undimensioned fact exist for this concept?" method that produced them is not
-        reproducible against it. Re-deriving needs a fresh multi-hour SEC walk AND a method
-        that works without dimension columns.
+        A frozen historical record from a dropped source table: it cannot be re-derived from `fundamentals_facts`.
         """
         block = self.regime_exceptions.get(regime, {}).get(field)
         return block.get("measured_absent_rate") if isinstance(block, dict) else None
@@ -671,33 +483,18 @@ def _build_field(name: str, entry: dict[str, Any]) -> FieldSpec:
 
 
 def load_catalogue(config_dir: str | None = DEFAULT_CONFIG_DIR) -> Catalogue:
-    """The validated catalogue, built once per (process, config DIRECTORY).
+    """The validated catalogue, built once per (process, resolved config directory).
 
-    ⚠ DELIBERATELY NOT `@cache`d. A `@cache` here keys on the SPELLING -- `None`,
-    `"./configs"` and the absolute path are three entries -- which is the exact duplication
-    `resolve_config_dir` + the inner `_catalogue_at` exist to remove, reintroduced one level
-    up. It is also silently WRONG, not merely wasteful: `_catalogue_at.cache_clear()` then
-    leaves the outer cache holding objects built before the clear, so
-
-        _catalogue_at.cache_clear()
-        a = load_catalogue(None)          # outer miss -> inner miss -> NEW object
-        b = load_catalogue("./configs")   # outer HIT  -> the object from BEFORE the clear
-        assert a is b                     # fails, while cache_info().misses is still 1
-
-    which is how `test_config_dir_cache` failed: the miss count looked right and the
-    identity did not. Caching belongs on `_catalogue_at`, which is keyed on the resolved
-    absolute path; this wrapper must stay a plain call so the two never disagree.
+    Deliberately NOT cached itself: caching lives only on `_catalogue_at`, keyed on the resolved path,
+    so different spellings of one directory share one object and a `cache_clear()` cannot leave stale copies.
     """
     return _catalogue_at(resolve_config_dir(config_dir))
 
 
 @cache
 def _catalogue_at(config_dir: str) -> Catalogue:
-    """`load_catalogue`, keyed on a resolved absolute path.
-
-    Validation is deliberately strict and happens HERE rather than in a test, so a
-    malformed contract fails at the first call in a nightly run instead of producing a
-    quietly wrong number thousands of filings later."""
+    """`load_catalogue`, keyed on a resolved absolute path. Raises ValueError / FileNotFoundError on a
+    malformed or missing contract, so a bad config fails at the first call."""
     root = Path(config_dir) / FUNDAMENTALS_CATALOGUE_SUBDIR
     kpis_blob = _read_json(root, FUNDAMENTALS_KPIS_FILENAME)
     regimes_blob = _read_json(root, FUNDAMENTALS_REGIMES_FILENAME)
@@ -707,8 +504,7 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     fields = {name: _build_field(name, entry) for name, entry in kpis.items()}
     derived_columns = _data_items(kpis_blob.get("_derived_columns", {}))
 
-    # An inherited authority must name a field that exists AND is itself sourced, or the
-    # chain bottoms out in nothing and the citation is decorative.
+    # An inherited authority must name a field that exists.
     for name, spec in fields.items():
         for parent in spec.authority_inherits_from:
             if parent not in fields:
@@ -727,8 +523,7 @@ def _catalogue_at(config_dir: str) -> Catalogue:
     ticker_exceptions = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker", {})).items()}
     periodicity = {ticker: _data_items(block) for ticker, block in _data_items(exceptions_blob.get("by_ticker_periodicity", {})).items()}
 
-    # A field named in the exception register but absent from the catalogue is a typo that
-    # would otherwise silently excuse nothing at all.
+    # An exception-register field missing from the catalogue is a typo that would excuse nothing.
     for regime, block in regime_exceptions.items():
         unknown = sorted(set(block) - set(fields))
         if unknown:
@@ -742,8 +537,7 @@ def _catalogue_at(config_dir: str) -> Catalogue:
                 raise ValueError(f"exceptions.{label}[{ticker}] names unknown field(s) {unknown}")
         if ticker is None:
             continue
-        # A declared leaf that is ALSO declared not-a-leaf is a contradiction the resolver
-        # would silently resolve in favour of the leaf. Fail loudly instead.
+        # A concept declared both leaf and not-leaf is a contradiction; fail loudly.
         for field, entry in block.items():
             if not isinstance(entry, dict):
                 continue
@@ -758,7 +552,7 @@ def _catalogue_at(config_dir: str) -> Catalogue:
                     "is exactly the guess this register exists to replace."
                 )
 
-    # Likewise a regime-keyed override in the KPI catalogue must name a real regime.
+    # A regime-keyed override in the KPI catalogue must name a real regime.
     known_regimes = set(regimes)
     for name, spec in fields.items():
         unknown = sorted(set(spec.raw.get("regimes", {})) - known_regimes)

@@ -1,3 +1,5 @@
+For a harness-driven refactor, use the `harness-refactor` skill; the coding rules live in wiki/guides/coding-standards.md.
+
 Refactor [part of code to refactor given by user] and all the dependencies touching it, without changing its logic of data aggregation, feature creation and sanity checks.
 
 Use the relevant Superpowers skills explicitly (extension pluggin).

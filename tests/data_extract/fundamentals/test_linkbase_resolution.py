@@ -640,6 +640,7 @@ def resolved_regimes(edgar_ready) -> dict:
     return out
 
 
+@pytest.mark.live
 def test_each_regime_resolves_to_the_concept_its_filer_declares(resolved_regimes):
     """The §3.2 table, asserted rather than asserted-by-eye.
 
@@ -663,6 +664,7 @@ def test_each_regime_resolves_to_the_concept_its_filer_declares(resolved_regimes
     print("  OK: All six resolve to the concept the FILER declares, on the right template.")
 
 
+@pytest.mark.live
 def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regimes):
     """The plan's headline Phase 3 criterion. APA carried `totalRevenue = 0` for 19 rows.
 
@@ -697,6 +699,7 @@ def test_apa_revenue_is_a_real_number_and_comes_from_an_extension(resolved_regim
     print("  OK: Non-zero, non-null, and sourced from the filer's own declared total.")
 
 
+@pytest.mark.live
 def test_shares_outstanding_uses_the_multi_class_safe_cover_page_tag(resolved_regimes):
     """`dei:EntityCommonStockSharesOutstanding` is the ONLY summable share tag for a
     multi-class issuer, and it is namespaced in the catalogue while the linkbase and the
@@ -724,6 +727,7 @@ def test_shares_outstanding_uses_the_multi_class_safe_cover_page_tag(resolved_re
     print("  OK: the cover-page dei tag wins; no filing fell back to a single share class.")
 
 
+@pytest.mark.live
 def test_route_labels_separate_priority_from_genuine_fallthrough(resolved_regimes):
     """With `tag_primary` split out, the plan's ~20% gate applies LITERALLY to
     `tag_fallback` -- no exclusions to argue about.
@@ -784,6 +788,7 @@ def axp_revenue(edgar_ready) -> dict:
     """
     from edgar import Company, set_identity
 
+    from src.data_extract.utils.common.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     identity = os.getenv("SEC_USER_AGENT")
@@ -797,13 +802,14 @@ def axp_revenue(edgar_ready) -> dict:
             filing = next(
                 f for f in company.get_filings(form="10-K") if pd.Timestamp(f.filing_date).year == year and not str(f.form).upper().endswith("/A")
             )
-            rows = filing_rows("AXP", str(company.cik), filing, CATALOGUE, _AXP_GICS)
+            rows = filing_rows("AXP", FilingStamp.of(filing, str(company.cik)), CATALOGUE, _AXP_GICS)
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"EDGAR unreachable for AXP {year}: {exc}")
         out[year] = pd.DataFrame(rows)
     return out
 
 
+@pytest.mark.live
 def test_axp_carries_one_rule_9_04_basis_across_the_asc_606_break(axp_revenue):
     """The 4c.7 acceptance: AXP's top line must be ONE Reg S-X Rule 9-04 basis for its whole
     history, not post-provision before ASC 606 and pre-provision after.

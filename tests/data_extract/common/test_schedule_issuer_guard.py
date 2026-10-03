@@ -1,6 +1,6 @@
 """The issuer/filer guard on 13D/13G must accept EVERY segment CIK, not just the roster's.
 
-Regression test for a defect the register introduced rather than exposed. `build_ticker_13g_edgar`
+Regression test for a defect the register introduced rather than exposed. the 13G build (`schedule_rows.kept_schedule_filings`)
 keeps a schedule only when the issuer CIK read off the filing matches the ticker's own. Before the
 register that was a single-CIK test against a single-CIK listing, and consistent. Widening the
 listing to every segment without widening the comparison rejects exactly the pre-boundary

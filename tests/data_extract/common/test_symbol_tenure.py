@@ -25,12 +25,12 @@ import pytest
 from src.data_extract.utils.common import symbol_tenure as tenure_module
 from src.data_extract.utils.common.symbol_tenure import (
     ManualSymbolTenureError,
-    _aggregate_zip,
     _parse_filing_dates,
     changed_tenure_symbols,
     derive_symbol_tenure,
     load_manual_symbol_tenure,
     materialize_symbol_tenure,
+    scan_form345_cache,
 )
 from src.data_store.schema import Tables
 
@@ -95,7 +95,7 @@ def test_two_quarter_cache_derives_the_expected_three_tenures(tmp_path):
             ("b2", "333", "STEADY CORP", "BBB", "2020-06-30"),
         ],
     )
-    out = derive_symbol_tenure(tmp_path)
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
 
     assert len(out) == 3
     assert set(out["symbol"]) == {"AAA", "BBB"}
@@ -145,7 +145,7 @@ def test_overlapping_tenures_survive_as_two_rows(tmp_path):
             ("y2", "555", "CORESITE REALTY CORP", "ZZZ", "02-JUN-2011"),
         ],
     )
-    out = derive_symbol_tenure(tmp_path)
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
     assert len(out) == 2 and out["issuer_cik"].nunique() == 2
 
     first, second = out.sort_values("valid_from").itertuples()
@@ -175,9 +175,11 @@ def test_every_drop_reason_is_counted(tmp_path):
             ("d4", "777", "GOOD CO", "BAD", "not-a-date"),  # unparseable date
         ],
     )
-    drops: Counter = Counter()
-    agg = _aggregate_zip(path, drops)
-    assert agg is not None
+    assert path.exists()
+    scan = scan_form345_cache(tmp_path)
+    drops: Counter = scan.drops
+    assert len(scan.tenure_parts) == 1
+    agg = scan.tenure_parts[0]
 
     assert drops["rows_read"] == 5 and drops["rows_kept"] == 1
     assert drops["empty_symbol"] == 2  # "" and "NONE"
@@ -199,7 +201,7 @@ def test_a_corrupt_zip_is_skipped_not_raised(tmp_path):
     """The research run hit a corrupt quarter; one bad zip must not lose the other 80."""
     _write_zip(tmp_path, "2020q1", [("a1", "111", "OLDCO INC", "AAA", "05-JAN-2020")])
     (tmp_path / "2020q2.zip").write_bytes(b"this is not a zip file")
-    out = derive_symbol_tenure(tmp_path)
+    out = derive_symbol_tenure(scan_form345_cache(tmp_path))
 
     assert len(out) == 1 and out.iloc[0]["symbol"] == "AAA"
     # 2020q2 is still the most recent quarter NAME, so AAA's tenure reads as closed
@@ -413,7 +415,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
         }
     )
     current = {"frame": frame}
-    monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda cache: current["frame"])
+    monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: current["frame"])
     monkeypatch.setattr(
         tenure_module,
         "load_manual_symbol_tenure",
@@ -435,7 +437,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
-    tenure_module.build_symbol_tenure(context, tmp_path, tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
     assert "cold build with 1 row(s) over 1 symbol(s)" in caplog.text
     current["frame"] = pd.concat(
         [
@@ -444,12 +446,115 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
         ],
         ignore_index=True,
     )
-    tenure_module.build_symbol_tenure(context, tmp_path, tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
     assert "1 changed symbol(s): OLD" in caplog.text
 
     print("\n=== SANITY CHECK: identity refresh visibility ===")
     print("  cold build logs scale only; routine rebuild names changed symbol OLD")
     print("  OK: a new former symbol is visible before symbol-only consumers run")
+
+
+def test_symbol_tenure_replace_is_skipped_when_unchanged(sqlite_store, monkeypatch, caplog, tmp_path):
+    """A rebuild that derives exactly the stored rows (read back through the store) writes nothing."""
+    frame = pd.DataFrame(
+        {
+            "symbol": ["BBB", "AAA"],
+            "issuer_cik": ["0000000002", "0000000001"],
+            "valid_from": pd.to_datetime(["2015-03-01", "2020-01-01"]),
+            "valid_to": pd.to_datetime(pd.Series(["2016-01-01", None], dtype="object")),
+            "n_filings": [4, 1],
+            "source": ["form345", "form345"],
+            "evidence": ["BBB INC", "AAA INC"],
+        }
+    )
+    current = {"frame": frame}
+    monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: current["frame"])
+    manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
+    monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
+    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
+    replaced: list[int] = []
+    real_replace = sqlite_store.replace
+
+    def counting_replace(table, df):
+        replaced.append(len(df))
+        return real_replace(table, df)
+
+    monkeypatch.setattr(sqlite_store, "replace", counting_replace)
+    context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.skip"))
+    caplog.set_level(logging.INFO)
+
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    assert replaced == [2]
+    assert "symbol_tenure: unchanged (2 row(s)); replace skipped" in caplog.text
+
+    current["frame"] = frame.assign(n_filings=[5, 1])
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    assert replaced == [2, 2]
+
+    print("\n=== SANITY CHECK: unchanged symbol_tenure is not rewritten ===")
+    print(f"  cold build wrote once; identical rebuild skipped the replace; a changed n_filings wrote again -> replace calls {replaced}")
+    print("  OK: the DATE round-trip and row order do not defeat the comparison")
+
+
+def _per_group_materialize(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
+    """Reference: the per-primary-key-group coalescing loop `materialize_symbol_tenure` replaced."""
+    table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
+    out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
+    priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
+    out = (
+        out.assign(_source_priority=priority)
+        .sort_values(["symbol", "valid_from", "_source_priority", "issuer_cik"], kind="mergesort")
+        .drop(columns="_source_priority")
+        .reset_index(drop=True)
+    )
+    coalesced: list[dict[str, object]] = []
+    for _, rows in out.groupby(["symbol", "issuer_cik", "valid_from"], sort=False, dropna=False):
+        winner = rows.iloc[0].copy()
+        if len(rows) > 1:
+            winner["n_filings"] = pd.to_numeric(rows["n_filings"], errors="coerce").max()
+            labelled = [f"{row.source} evidence: {row.evidence}" for row in rows.itertuples(index=False) if str(row.evidence).strip()]
+            winner["evidence"] = " | ".join(dict.fromkeys(labelled))
+        coalesced.append(cast(dict[str, object], winner.to_dict()))
+    return pd.DataFrame.from_records(coalesced, columns=table_columns)
+
+
+def test_materialize_collisions_match_the_per_group_rule():
+    """Vectorised coalescing equals the per-group loop on a crafted frame, dtypes included."""
+    columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
+    day = pd.Timestamp
+    derived = pd.DataFrame(
+        [
+            ["A", "0000000001", day("2006-02-16"), pd.NaT, 900, "form345", "AGILENT"],  # collides with manual
+            ["B", "0000000002", day("2010-01-01"), day("2012-01-01"), 7, "form345", "BCO"],  # no collision
+            ["C", "0000000003", day("2011-05-05"), pd.NaT, 3, "form345", ""],  # collides, blank evidence
+            ["C", "0000000004", day("2011-05-05"), pd.NaT, 2, "form345", "OTHER C"],  # same day, other CIK
+            ["D", "0000000005", day("2001-01-01"), day("2003-01-01"), 1, "form345", "DCO"],
+            ["E", "0000000006", day("2019-09-09"), pd.NaT, 11, "form345", "ECO"],  # collides with a manual twin
+        ],
+        columns=columns,
+    )
+    manual_rows = [
+        ["A", "A", "0000000001", day("2006-02-16"), pd.NaT, 0, "manual", "SEC listing", "lower bound"],
+        ["C", "C", "0000000003", day("2011-05-05"), day("2020-01-01"), 0, "manual", "8-K", "rename"],
+        ["E", "E", "0000000006", day("2019-09-09"), pd.NaT, 0, "manual", "S-4", "merger"],
+        ["F", "F", "0000000007", day("2022-02-02"), pd.NaT, 0, "manual", "Form 25", "listing"],
+    ]
+    manual = pd.DataFrame(manual_rows, columns=["canonical_ticker", *columns, "reason"])
+
+    expected = _per_group_materialize(derived, manual)
+    out = materialize_symbol_tenure(derived, manual)
+
+    pd.testing.assert_frame_equal(out, expected, check_dtype=True)
+    assert list(out.dtypes) == list(expected.dtypes)
+    assert len(out) == 7 and not out.duplicated(["symbol", "issuer_cik", "valid_from"]).any()
+    c_row = out[(out.symbol == "C") & (out.issuer_cik == "0000000003")].iloc[0]
+    assert c_row["source"] == "manual" and c_row["n_filings"] == 3 and c_row["evidence"] == "manual evidence: 8-K"
+
+    print("\n=== SANITY CHECK: vectorised collision coalescing ===")
+    print(f"  {len(derived)} derived + {len(manual)} manual rows, 3 primary-key collisions -> {len(out)} rows")
+    print(f"  dtypes {dict(out.dtypes.astype(str))}")
+    print("  OK: identical to the per-group loop (values, order, dtypes); a blank evidence string is not labelled")
 
 
 def test_repository_manual_tenure_covers_validated_ia3_boundaries():
@@ -495,7 +600,7 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
 def real_tenure() -> pd.DataFrame:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 4:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
-    return derive_symbol_tenure(CACHE)
+    return derive_symbol_tenure(scan_form345_cache(CACHE))
 
 
 def test_real_cache_reproduces_the_measured_reuse_cases(real_tenure):
@@ -532,7 +637,7 @@ def test_real_cache_scale_and_determinism(real_tenure):
     assert 0.05 < share < 0.15
     assert real_tenure["valid_to"].isna().sum() > 0  # some tenures are still open
     # deterministic: the same cache must give the same table, or the build is not rebuildable
-    assert real_tenure.equals(derive_symbol_tenure(CACHE))
+    assert real_tenure.equals(derive_symbol_tenure(scan_form345_cache(CACHE)))
 
     print("\n=== SANITY CHECK: real cache scale ===")
     print(f"  rows={len(real_tenure)}  symbols={len(per_symbol)}  multi-CIK symbols={multi} ({share:.1%})")

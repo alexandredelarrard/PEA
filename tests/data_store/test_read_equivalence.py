@@ -161,7 +161,7 @@ def test_max_date_matches_raw_max_on_a_filing_dated_table(store):
 # distinct                                                                     #
 # --------------------------------------------------------------------------- #
 def test_distinct_matches_sec_utils_ingested_quarters(store):
-    """`sec_utils.bulk_ingested_quarters` -- `SELECT DISTINCT quarter FROM "<table>"`
+    """`incremental.stored_values` -- `SELECT DISTINCT quarter FROM "<table>"`
     (sec_utils.py:107)."""
     _requires(store, "distinct")
     old = set(_sql(store, 'SELECT DISTINCT quarter FROM "earnings_call_sections"')["quarter"].dropna())

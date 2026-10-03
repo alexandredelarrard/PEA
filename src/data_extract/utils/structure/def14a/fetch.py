@@ -1,62 +1,16 @@
-"""
-fetch.py  (src/data_extract/utils/structure/def14a/fetch.py)
------------------------------------------------------------------
-Extract structured governance data from SEC DEF 14A proxy statements using an
-LLM with structured output (Def14AExtract schema).
+"""Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
 
-Per ticker, it fetches that ticker's DEF 14A filings from EDGAR, sends targeted
-sections to the OpenAI Responses API (constrained to the Def14AExtract Pydantic
-schema, prompt caching on), then **immediately upserts that
-ticker's rows into the `def14a_llm` Postgres table** before moving to the next
-ticker — so an interrupted run never loses the (expensive) LLM calls already made.
-
-Per-filing incremental (gap-filling): each ticker's FULL `years_history` window of DEF 14A
-filings is listed, and the LLM is (re-)run ONLY on filings whose `accession_number` is NOT already
-in the `def14a_llm` table. So any MISSING year/filing — including a hole in the middle of the
-history, not just after the latest — is filled, while every already-extracted filing is skipped
-(no repeat LLM cost). Tickers with no rows yet get the whole window; already-complete tickers make
-no LLM calls at all.
-
-Requires OPENAI_API_KEY (or OPEN_AI_API_KEY) in the .env file.
-If the key is absent the function logs a warning and returns whatever exists.
-
-Output columns (DB table `def14a_llm`), scalar summaries + raw JSON:
-    keys        ticker, as_of, period, accession_number, company_name, fiscal_year_extract
-    board       n_directors, board_size, avg_director_age, avg_board_tenure,
-                pct_independent_directors, pct_female_directors,
-                avg_other_public_boards, pct_gender_stated,
-                n_women_directors_vs_inferred
-    ceo         ceo_name_proxy, ceo_age, ceo_since_year, ceo_is_founder,
-                ceo_is_board_chair, ceo_salary, ceo_bonus, ceo_stock_awards,
-                ceo_option_awards, ceo_non_equity_incentive, ceo_all_other_comp,
-                ceo_total_comp, ceo_equity_pay_pct
-    neos        n_neos, total_neo_comp, sct_years
-    ownership   insider_ownership_pct, ceo_ownership_pct, n_five_percent_holders,
-                n_ownership_rows
-    governance  independent_chair, lead_independent_director, classified_board,
-                dual_class_shares, poison_pill, majority_voting,
-                say_on_pay_support_pct, ceo_pay_ratio, median_employee_pay
-    auditor     auditor_name, auditor_since_year, auditor_fees, audit_fees_audit,
-                audit_fees_audit_related, audit_fees_tax, audit_fees_other,
-                auditor_fees_prior
-    counts      n_director_comp_rows, n_ownership_rows
-    def14a_json (full Def14AExtract as JSON for downstream use)
-
-`n_technology_directors` / `pct_technology_directors` / `technology_committee` were REMOVED:
-they were an opinion, not an extraction (mean |delta| of 1.06 directors between consecutive
-filings of the same company, only 38.8% unchanged).
-
-FOUR CHILD TABLES are written alongside, flattened out of the same paid extract:
-    def14a_executive_comp   one row per NEO per fiscal year (Item 402(c), ~3 years/filing)
-    def14a_director_comp    one row per non-employee director (Item 402(k), single-year)
-    def14a_ownership        one row per beneficial holder (Item 403)
-    def14a_directors        one row per director -- and the substrate the cross-filing gender
-                            consensus pass groups over (see def14a_gender.py)
+Per ticker: list its DEF 14A filings over the manifest window (across its registrant chain), carve
+the relevant sections, send only accessions without stored evidence to the LLM, and upsert that
+ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`, `def14a_director_comp`,
+`def14a_ownership`, `def14a_directors`) before the next ticker. A cross-ticker gender consensus runs
+once after the loop. Skips with a warning when no OpenAI key is configured.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import pandas as pd
 from edgar import Filing
@@ -91,35 +45,18 @@ from src.data_extract.utils.structure.def14a.gender import (
 )
 from src.data_store.schema import Tables
 
-# `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
-# owns the model, the keys, the prompts (`prompt_templates/def14a_*.md`) and the thread
-# pool; the anchor carve and the flatten are this package's business.
+# `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
-#: Concurrent LLM calls. Not an optimisation -- it is what makes a universe run possible at
-#: all. MEASURED on the Phase-6 validation set: one modern proxy is a ~130k-char payload and
-#: takes **~94 seconds** on `gpt-5-mini` (a reasoning model), so 8,700 proxies serially is
-#: **~9.5 days**. The work is pure network wait on an API that accepts parallel requests,
-#: and 12 was measured to draw no 429s. `config.gpt.threads` is the live knob; this is the
-#: fallback for a caller that passes no config.
-_LLM_WORKERS = 12
-
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
-    """The filing's raw markup, retrying the `<accession>.txt` full submission when the primary
-    document 404s.
-
-    `primaryDocument` names a file that is genuinely ABSENT from the archive on 7 of 663
-    measured DEF 14A filings (all 2000-08..2001-03, all naming `"0001.txt"`). Those produce no
-    row at all without this retry, because the raise propagates out of `_payload_for` and the
-    filing never becomes a task -- a loss invisible in the "pre-2001 rows are NULL" count
-    since there is no row to be null. The `.txt` carries the real proxy (53,661-165,380 chars
-    on the four spot-checked).
-    """
+    """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
+    document cannot be fetched; re-raises when there is no distinct `.txt` URL."""
     try:
         return sec_get(context, filing["doc_url"]).text
     except Exception:
@@ -133,9 +70,7 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
 def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
     """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
 
-    Fetching and carving happen on the MAIN thread, before any task is queued: a worker
-    receives text and a schema, never a `Context`. The SEC fetch is disk-cached and rate
-    limited anyway, so the ~94s LLM call is what the pool is for.
+    Runs on the main thread before any task is queued: a worker receives text and a schema, never a `Context`.
     """
     try:
         raw_html = _fetch_filing_html(context, filing)
@@ -165,7 +100,7 @@ def _subject_is_accepted(
 ) -> bool:
     """Reject only a known subject that is outside the accepted registrant entity."""
     accession = str(filing["accession_number"])
-    filer_cik = str(filing["cik"]).zfill(10)
+    filer_cik = pad_cik(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
@@ -200,34 +135,12 @@ def _list_across_registrants(
     since: pd.Timestamp | None,
     cutovers: dict[str, Registrant],
 ) -> pd.DataFrame:
-    """That ticker's DEF 14A filings, across a registrant boundary when it has one.
+    """That ticker's DEF 14A filings by CIK, walking every segment of its registrant chain when it has one.
 
-    ⚠ THIS MODULE IS THE ONLY PIPELINE IN THE REPO THAT RESOLVES BY CIK. Every other EDGAR
-    fetcher goes through `edgar_driver.new_filings`, i.e. `Company(ticker)`. That makes
-    `sp500_tickers.cik` a single-pipeline dependency -- and it is why a wrong or superseded CIK
-    shows up as a governance-only hole while prices, fundamentals and 8-K stay clean.
-
-    XOM is the measured case (2026-09-09). EDGAR remapped the XOM ticker to ExxonMobil Holdings
-    Corp (CIK 2115436), whose first filing is an 8-K12B on 2026-07-01 and which holds no proxy
-    forms at all, so this loop listed ZERO proxies and XOM carried 0 rows in all five
-    `def14a_*` tables while its 4,092 `cube_part_governance` rows held no non-null governance
-    feature. The full proxy history is under the predecessor, CIK 34088.
-
-    ⚠ THE SPLIT IS DATED, NEVER A UNION OF CIKS, and `DEF14A_FORMS` is declared SPLIT in
-    `registrant.FORM_POLICY` for it. Two legal entities can file concurrently, and
-    concatenating both CIKs blends a subsidiary's disclosures into the parent's -- on this
-    table that means two boards and two pay tables for one company-year, which corrupts the
-    governance grain rather than merely duplicating a row. Each segment contributes only
-    filings inside `[valid_from, valid_to)`, so the sets are disjoint by construction.
-
-    N SEGMENTS, NOT TWO: the register is a chain, and a two-CIK loop gave PSKY one hop.
-
-    ⚠ THE PER-FILING CIK COMES OUT RIGHT FOR FREE, and that is the point of listing per
-    registrant rather than post-labelling. `list_filings` stamps each row with the CIK whose
-    submissions document it parsed, so a row's `cik` is the CIK that actually filed it. Compare
-    `fetch_def14a_edgar.build_ticker_def14a_edgar`, which stamps `cik=cik` from the roster onto
-    filings it resolved by TICKER -- which is how 521 XOM 8-K rows came to carry a CIK holding
-    29 filings.
+    This is the only EDGAR fetcher that resolves by CIK (`sp500_tickers.cik`), not `Company(ticker)`.
+    The chain is a dated SPLIT, never a union (`DEF14A_FORMS` is SPLIT in `registrant.FORM_POLICY`): each
+    segment contributes only filings inside `[valid_from, valid_to)`, so segments are disjoint and a
+    company-year never blends two registrants' boards. Each row's `cik` is the CIK that actually filed it.
     """
     entry = cutovers.get(ticker)
     if entry is None:
@@ -255,36 +168,28 @@ def _list_across_registrants(
     out = pd.concat(frames, ignore_index=True)
     dupes = int(out["accession_number"].duplicated().sum())
     if dupes:
-        # The dated split makes this impossible; if it fires, the register is wrong rather
-        # than the data, and silently deduping would hide that.
+        # The dated split makes this impossible, so a duplicate means the register is wrong; do not dedupe it away.
         context.log.warning("%s: %d duplicate accession(s) across the %s chain", ticker, dupes, " -> ".join(entry.all_ciks()))
     return out
 
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
-    """Up to date only when EVERY requested ticker already has rows in the DB AND
-    the shared extraction manifest (`run_manifest.py`) was refreshed today. The old
-    check compared a DATE + a stored COUNT (`universe_size`), so a same-day rerun
-    skipped tickers that were never actually extracted -- the '~15 tickers then it
-    stops' bug. Checking per-ticker coverage (tickers x date) makes a rerun pick up
-    the still-missing names; the per-ticker loop then skips already-done filings
-    via `seen` (no re-LLM)."""
+    """Up to date only when the manifest entry was refreshed today AND every requested ticker
+    already has rows in `def14a_llm` (per-ticker coverage, so a same-day rerun still picks up a
+    missing name)."""
     if not context.store.exists(Tables.def14a_llm):
         return False
     entry = get_entry(context, Tables.def14a_llm)
     if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
         return False
-    stored = context.store.load(Tables.def14a_llm, columns=["ticker"])
-    assert stored is not None
-    have = set(stored["ticker"].dropna())
+    have = set(context.store.distinct(Tables.def14a_llm, "ticker", where={"ticker": list(requested_tickers)}))
     return set(requested_tickers).issubset(have)
 
 
 def _completed_accessions(context: Context) -> set[str]:
-    """Accessions whose parent contains real extracted evidence, not merely a PK.
+    """Accessions whose parent row carries real extracted evidence, not merely a PK.
 
-    The projection deliberately excludes the JSON blob and metadata-only columns. Historical
-    empty parents stay in the table for auditability, but no longer suppress a later repair.
+    Evidence-free parents stay in the table but do not count as completed, so a later run re-extracts them.
     """
     if not context.store.exists(Tables.def14a_llm):
         return set()
@@ -303,15 +208,10 @@ def _completed_accessions(context: Context) -> set[str]:
 
 
 def _finalise_gender(context: Context) -> None:
-    """Cross-ticker gender consensus, run ONCE after the per-ticker loop.
+    """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop.
 
-    It cannot live inside the loop: a director recurs across COMPANIES as well as years, so the
-    consensus needs every ticker's rows before it can group on people. Cheap on a routine rerun
-    -- DEF 14A is a yearly filing, so an incremental day adds ~0 rows and the pass is a narrow
-    read plus a no-op write.
-
-    Both reads are projected to the three columns the consensus needs; both writes carry only
-    the columns they change (AGENTS.md: never read a large table unprojected).
+    A director recurs across companies, so the consensus needs every ticker's rows. Rewrites
+    `def14a_directors` gender columns and the parent's gender ratios only when something changed.
     """
     directors = context.store.load(
         Tables.def14a_directors, columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"], optional=True
@@ -333,13 +233,49 @@ def _finalise_gender(context: Context) -> None:
         pk=["ticker", "accession_number", "name"],
     )
 
-    # `pct_female_directors` keeps its existing precedence -- the filing's own
-    # `n_women_directors` first, this ratio as the FALLBACK -- so a consensus correction makes
-    # the fallback better rather than overriding a stated count.
+    # The filing's stated `n_women_directors` still wins; this ratio only improves the fallback.
     parent = recompute_parent_gender(resolved)
     if not parent.empty:
         context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])
         context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
+
+
+def _ticker_tasks(context: Context, ticker: str, filings: pd.DataFrame, seen: set[str], accepted_subjects: frozenset[str]) -> list[LlmTask]:
+    """One LLM task per listed proxy not in `seen` (nor listed twice), whose subject is accepted and
+    whose document carves to a payload.
+
+    Fetching and carving run on this thread, so the pool only ever receives text and a schema;
+    a filing that cannot be read never becomes a task.
+    """
+    tasks: list[LlmTask] = []
+    queued: set[str] = set()
+    for _, filing in filings.iterrows():
+        accession = str(filing["accession_number"])
+        if accession in seen or accession in queued:
+            continue
+        if accepted_subjects and not _subject_is_accepted(context, ticker, filing, accepted_subjects):
+            continue
+        queued.add(accession)
+        payload = _payload_for(context, ticker, filing)
+        if payload:
+            tasks.append(
+                LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": ticker, "filing": filing})
+            )
+    return tasks
+
+
+def _extract_ticker(context: Context, extractor: LLMExtractor, ticker: str, tasks: list[LlmTask]) -> tuple[list[str], int]:
+    """Run one ticker's tasks (the extractor saves that ticker's five frames once) and return the
+    accessions whose answer carries domain evidence plus the count of evidence-free answers, which
+    save no completion row and stay retryable."""
+    results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
+    evidenced = [r for r in results if r.ok and isinstance(r.parsed, Def14AExtract) and _has_extract_evidence(r.parsed)]
+    semantic_empty = sum(1 for r in results if r.ok) - len(evidenced)
+    if semantic_empty:
+        context.log.warning(
+            "%s: %d DEF 14A result(s) contained no domain evidence; no completion row was saved and they remain retryable", ticker, semantic_empty
+        )
+    return [str(cast(pd.Series, r.task.meta["filing"])["accession_number"]) for r in evidenced], semantic_empty
 
 
 def fetch_def14a_llm(
@@ -349,144 +285,69 @@ def fetch_def14a_llm(
     model: str | None = None,
     max_chars: int | None = None,
     cache: bool | None = None,
-    workers: int = _LLM_WORKERS,
+    workers: int | None = None,
     full: bool = False,
-) -> pd.DataFrame | None:
+) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    For each ticker only filings AFTER its latest stored `as_of` are sent to the
-    LLM (year-incremental), and the ticker's rows are upserted to Postgres
-    immediately. Skips gracefully when OPENAI_API_KEY is absent.
+    Lists each ticker's proxies across its registrant chain over the manifest window and sends
+    only accessions without stored evidence to the LLM; each ticker's rows are upserted before
+    the next starts. Skips when no OpenAI key is configured.
 
-    `model` / `max_chars` / `cache` default to `config.gpt`; pass an explicit keyword to
-    pin one for research without touching config (how a prior measurement ran
-    `gpt-4o-mini` while production had been running `gpt-5-mini` all along).
-
-    ⚠ `full` EXISTS BECAUSE A SAME-DAY SINGLE-TICKER RERUN WAS A SILENT NO-OP. Both gates
-    below are shared state keyed on the whole run, not on the tickers asked for: the manifest's
-    `last_run_date` is global, and `_is_up_to_date` only asks whether the requested tickers have
-    ANY rows. So once any def14a run has happened today, `def14a -t X` returns in seconds with
-    exit 0 and zero LLM calls -- even when X's registrant chain just grew and its whole
-    pre-boundary proxy history is missing. That is exactly what happened to AVGO twice: BLK's
-    run poisoned it on 2026-09-10 and STE's poisoned the retry on 2026-09-11, and the second
-    time was 12 minutes later, so "wait for a new calendar day" is not a workaround either.
-    `full` bypasses the up-to-date check AND pins the listing window to the whole
-    `years_history` span, because a narrow window would find nothing to backfill anyway.
+    `model` / `max_chars` / `cache` default to `config.gpt` and `workers` (concurrent LLM calls)
+    to `config.gpt.threads`; an explicit keyword pins one without touching config. `full`
+    bypasses the run-wide up-to-date gate and lists the whole `years_history` window.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
-    years = context.config.data_extract.years_history
     de = context.config.data_extract
-
     cik_map = load_cik_mapping(context, tickers)
-
-    if not full and _is_up_to_date(context, cik_map["ticker"].tolist()):
-        existing = context.store.load(Tables.def14a_llm)
-        assert existing is not None
-        context.log.info("DEF 14A LLM already up to date — every requested ticker present (%d rows) — skipping", len(existing))
-        return existing
-
-    # Accessions with real extracted evidence -> never re-LLM. A historical parent containing
-    # only its key/metadata/default booleans is deliberately absent so a later listing repairs it.
-    # a mutable copy: this fetcher is serial and adds each accession as it extracts it,
-    # so a ticker filing twice in one run is not sent to the LLM twice
-    seen = _completed_accessions(context)
-
-    # Manifest-driven listing window (see run_manifest.py): a routine run only lists
-    # filings from the last run's date onward; a ticker-count change or the
-    # `manifest_full_rescan_days` self-heal window falls back to the FULL `years`
-    # window (gap-filling, same self-heal rationale as the other 4 EDGAR fetchers).
-    # `list_filings`'s own `since` cutoff is STRICTLY AFTER the date passed, so we
-    # step back one day to keep the last run's date itself inclusive.
-    rescan_days = int(getattr(de, "manifest_full_rescan_days", 30))
-    manifest_since, is_full_rescan = manifest_window(
-        context, Tables.def14a_llm, len(cik_map), fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years), full_rescan_days=rescan_days
-    )
-    list_since = None if (full or is_full_rescan) else (manifest_since - pd.Timedelta(days=1))
-
+    requested = cik_map["ticker"].astype(str).tolist()
+    if not full and _is_up_to_date(context, requested):
+        context.log.info("DEF 14A LLM already up to date — every requested ticker present — skipping")
+        return
     try:
         extractor = LLMExtractor(context, config, action="def14a", threads=workers)
     except OSError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
-        existing = context.store.load(Tables.def14a_llm, optional=True)
-        return existing if existing is not None else pd.DataFrame(columns=["ticker", "as_of"])
+        return
 
-    # The registrant-boundary register. Curated JSON rather than an `sp500_tickers` column
-    # precisely because that table is rebuilt from Wikipedia, so a roster refresh would
-    # silently overwrite it -- see `cik_cutover`. `{}` when the file is absent.
-    cutovers = load_registrants()
+    # Accessions with real extracted evidence are never re-sent; an evidence-free parent is absent so a later listing repairs it.
+    seen = _completed_accessions(context)
+    years = int(de.years_history)
+    since, is_full_rescan = manifest_window(
+        context,
+        Tables.def14a_llm,
+        requested,
+        fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
+        full_rescan_days=int(getattr(de, "manifest_full_rescan_days", 30)),
+    )
+    # `list_filings` keeps filings STRICTLY AFTER its `since`, so the inclusive cutoff steps back one day; None lists all `years`.
+    list_since = None if (full or is_full_rescan) else since - pd.Timedelta(days=1)
+    # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.
+    cutovers = load_registrants(str(context.config_dir))
     if cutovers:
         context.log.info("DEF 14A: %d registrant cutover(s) in force: %s", len(cutovers), ", ".join(sorted(cutovers)))
 
-    total_new, tickers_touched, total_skipped, total_semantic_empty = 0, 0, 0, 0
+    total_new, total_semantic_empty = 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
-        ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
-        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
-        # `list_since=None` (full-rescan runs) lists the FULL years_history window so a MISSING
-        # filing anywhere in the history is discovered; otherwise only filings from the manifest's
-        # last run date onward are listed. The accession skip below then sends ONLY the
-        # not-yet-stored filings to the LLM (gap-filling, per ticker / per date).
+        ticker, cik, company = str(r["ticker"]), str(r["cik"]), str(r.get("name", ""))
         try:
             filings = _list_across_registrants(context, ticker, cik, company, years, list_since, cutovers)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
-
-        # Resolve the work FIRST, then extract it. Deciding what to send before sending any of
-        # it is what lets the LLM calls run concurrently, and the local `done` set covers a
-        # ticker that lists the same accession twice in one window (the old loop relied on
-        # mutating `seen` mid-iteration, which a pool cannot do safely).
-        todo: list[pd.Series] = []
-        done: set[str] = set()
-        for _, f in filings.iterrows():
-            accession = f["accession_number"]
-            if accession in seen or accession in done:
-                continue
-            if accepted_subjects and not _subject_is_accepted(context, ticker, f, accepted_subjects):
-                continue
-            done.add(accession)
-            todo.append(f)
-        skipped = len(filings) - len(todo)
-        total_skipped += skipped
-
-        # Fetch and carve on THIS thread, then hand the pool text and a schema. A filing
-        # whose HTML cannot be read never becomes a task, so it costs nothing.
-        tasks: list[LlmTask] = []
-        for f in todo:
-            payload = _payload_for(context, ticker, f)
-            if payload:
-                tasks.append(
-                    LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": ticker, "filing": f})
-                )
-
-        # One call per ticker: the pool fills every schema, then THIS thread saves the five
-        # frames once. LLM calls are paid for, so a ticker is persisted before the next
-        # starts and an interrupted run loses at most one ticker's tokens.
-        results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
-        extracted = [r for r in results if r.ok and isinstance(r.parsed, Def14AExtract) and _has_extract_evidence(r.parsed)]
-        semantic_empty = [r for r in results if r.ok and (not isinstance(r.parsed, Def14AExtract) or not _has_extract_evidence(r.parsed))]
-        if semantic_empty:
-            total_semantic_empty += len(semantic_empty)
-            context.log.warning(
-                "%s: %d DEF 14A result(s) contained no domain evidence; no completion row was saved and they remain retryable",
-                ticker,
-                len(semantic_empty),
-            )
-        for result in extracted:
-            filing = result.task.meta["filing"]
-            assert isinstance(filing, pd.Series)
-            seen.add(str(filing["accession_number"]))
-
+        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
+        tasks = _ticker_tasks(context, ticker, filings, seen, accepted_subjects)
+        extracted, semantic_empty = _extract_ticker(context, extractor, ticker, tasks)
+        seen.update(extracted)
+        total_new += len(extracted)
+        total_semantic_empty += semantic_empty
         if extracted:
-            total_new += len(extracted)
-            tickers_touched += 1
-            context.log.info("%s: +%d new DEF 14A filing(s) sent to the LLM (%d already in table)", ticker, len(extracted), skipped)
+            context.log.info("%s: +%d new DEF 14A filing(s) extracted", ticker, len(extracted))
 
-    # A cross-ticker consensus needs every ticker's rows, so this is the only thing that
-    # cannot run inside the loop. Skipped entirely when nothing new was extracted.
+    # The gender consensus groups directors across tickers, so it runs once after the loop.
     if total_new:
         _finalise_gender(context)
-
     if total_semantic_empty:
         context.log.warning("DEF 14A: %d semantic-empty result(s) left retryable", total_semantic_empty)
-
-    record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan)
+    record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan, tickers=requested)

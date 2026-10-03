@@ -1,6 +1,6 @@
 """Re-extract a NAMED SET of DEF 14A filings through the current schema, and nothing else.
 
-`fetch_def14a_llm` is year-incremental by design: `existing_filings` builds a `seen` set of
+`fetch_def14a_llm` is year-incremental by design: `stored_values` builds a `seen` set of
 accessions and no accession in it is ever sent to the LLM again. That is the right default --
 the tokens are already paid -- but it means a SCHEMA change cannot reach the archive. The rows
 extracted under the old schema stay as they were, forever, and the only lever the production
@@ -283,7 +283,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         return n_ok, len(results) - n_ok
 
     for _, r in cik_map.iterrows():
-        ticker, cik, company = r["ticker"], r["cik"], r.get("company_name", "")
+        ticker, cik, company = r["ticker"], r["cik"], r.get("name", "")
         want = set(work.loc[work["ticker"] == ticker, "accession_number"])
         if not want:
             continue

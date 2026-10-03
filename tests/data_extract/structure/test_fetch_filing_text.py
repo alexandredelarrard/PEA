@@ -13,13 +13,14 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from src.data_extract.utils.common.edgar_driver import EdgarScope
 from src.data_extract.utils.structure.fetch_filing_text import (
     FILING_SECTION_MDA,
     FILING_SECTION_RISK,
+    FILING_TEXT_FETCH,
     FILING_TEXT_MIN_CHARS,
     _filing_sections,
     _structured_sections,
-    build_ticker_filing_text,
     extract_item_sections,
 )
 from src.data_store.schema import Tables
@@ -160,14 +161,14 @@ def test_filing_sections_only_falls_back_for_the_missing_section():
 
 def test_filing_sections_survives_a_totally_unparseable_filing():
     """Both .obj() and .text() failing (a genuinely bad filing) must return an
-    empty dict rather than raising -- the caller (build_ticker_filing_text) then
+    empty dict rather than raising -- the caller (FILING_TEXT_FETCH.build) then
     simply emits zero rows for it."""
     filing = _fake_filing()  # obj=None -> raises; text=None -> raises
     assert _filing_sections(filing) == {}
 
 
 # --- Ticker-level walk (incremental dedup, since-cutoff) ---------------------- #
-def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(monkeypatch):
+def test_filing_text_build_skips_done_accessions_and_pre_since_filings(monkeypatch):
     obj = _fake_ten_k(risk_factors=_pad("risk body"), management_discussion=_pad("mda body"))
     old_filing = _fake_filing(accession="0001-old", filing_date="2020-01-01", obj=obj)
     done_filing = _fake_filing(accession="0001-done", filing_date="2024-01-01", obj=obj)
@@ -178,25 +179,26 @@ def test_build_ticker_filing_text_skips_done_accessions_and_pre_since_filings(mo
         lambda ticker: fake_company,
     )
 
-    out = build_ticker_filing_text(
+    out = FILING_TEXT_FETCH.build(
         "AAPL",
         "0000320193",
         since=pd.Timestamp("2024-01-01"),
         done_accessions=frozenset({"0001-done"}),
+        scope=EdgarScope(None, {}),
     )[Tables.filing_risk_text]
     assert set(out["accession_number"]) == {"0001-new"}
     assert set(out["section"]) == {FILING_SECTION_RISK, FILING_SECTION_MDA}
     assert (out["filed"] == pd.Timestamp("2024-06-01")).all()
 
 
-def test_build_ticker_filing_text_returns_no_rows_for_an_unparseable_filing(monkeypatch):
+def test_filing_text_build_returns_no_rows_for_an_unparseable_filing(monkeypatch):
     filing = _fake_filing(accession="0001-bad")  # obj/text both raise
     fake_company = SimpleNamespace(get_filings=lambda form: [filing])
     monkeypatch.setattr(
         "edgar.Company",
         lambda ticker: fake_company,
     )
-    out = build_ticker_filing_text("AAPL", "0000320193")[Tables.filing_risk_text]
+    out = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.filing_risk_text]
     assert out.empty
 
 
@@ -208,7 +210,7 @@ def test_sanity_check_prints_conclusion():
     print("  to the hardened regex carve over filing.text() -- the other, successfully")
     print("  structured section passes through untouched (not re-derived/overwritten).")
     print("  Both .obj() and .text() failing yields an empty dict, not a crash.")
-    print("  build_ticker_filing_text skips already-seen accessions and filings before the")
+    print("  FILING_TEXT_FETCH.build skips already-seen accessions and filings before the")
     print("  `since` cutoff (both now supplied by the shared edgar_driver), and returns its")
     print("  rows keyed by destination table. No local HTML cache involved anywhere.")
     print("  Validated.")

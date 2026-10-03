@@ -1,53 +1,81 @@
-"""
-bulk_cache.py  (src/data_extract/utils/common/bulk_cache.py)
-------------------------------------------------------------
-Shared cache-and-download scaffolding for the SEC BULK data sets.
+"""Cache, read and incremental-state helpers for the SEC bulk data sets.
 
-The fetchers pull a large periodic zip and parse it incrementally -- 13F holdings,
-insider transactions (Forms 3/4/5), the Financial Statement Data Sets, the Financial
-Statement & Notes Data Sets, and fails-to-deliver. Each had grown its OWN
-`_cache_dir` / `_ensure_zip` / `_read_zip` / `_ingested_periods` / `_quarters`, all
-structurally identical and differing only in the filename pattern, the URL, the timeout
-and the log label. Separate copies meant one place per fetcher to fix a partial-download bug, five
-hardcoded `User-Agent` strings (two still carrying the placeholder `contact@example.com`,
-which SEC blocks), and -- the bug this consolidation surfaced -- callers that keep the
-returned directory in a variable literally named `cache_dir`, shadowing the function of
-the same name and passing IT (not the Path) into `load_processed_universe` /
-`save_processed_universe`, which then raised `TypeError: unsupported operand type(s)
-for /: 'function' and 'str'`. The convention going forward: this module owns the name
-`cache_dir`; every caller stores its result in a variable named `cache`.
+Downloads stream to a `.part` file and rename on success; tab-separated zips are read through
+`read_zip_tables`; `pending_periods` / `mark_processed` decide which cached periods a run re-parses;
+`archive_available_at` / `stored_period_clock` give each archive its availability date.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import zipfile
-from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
+from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Table, name_of
 
-__all__ = ["cache_dir", "ensure_zip", "read_zip_member", "read_zip_members", "read_zip_text", "ingested_periods", "quarter_periods"]
+__all__ = [
+    "ZipRead",
+    "archive_available_at",
+    "cache_dir",
+    "ensure_zip",
+    "is_cached",
+    "mark_processed",
+    "pending_periods",
+    "period_end",
+    "quarter_periods",
+    "read_zip_tables",
+    "read_zip_text",
+    "stored_period_clock",
+]
 
 _CHUNK = 1 << 20  # 1 MiB streaming chunks
-_DEFAULT_TIMEOUT = 300  # seconds; the notes zips are ~380 MB
+_DEFAULT_TIMEOUT = 300  # seconds
+_RELEASE_DAY = 12  # estimated release: this day of the month after the period end
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ZipRead:
+    """How to read one tab-separated zip member as str columns.
+
+    `usecols` names the columns kept (compared upper-cased when `upper`, which also upper-cases the
+    frame's columns); `keep` is a row filter applied to each `chunksize`-row chunk (the two go
+    together); an absent member fails the read only when `required`.
+    """
+
+    usecols: frozenset[str] | None = None
+    keep: Callable[[pd.DataFrame], pd.Series] | None = None
+    chunksize: int | None = None
+    required: bool = True
+    upper: bool = False
+    skip_bad_lines: bool = False
+
+    def __post_init__(self) -> None:
+        if (self.keep is None) != (self.chunksize is None):
+            raise ValueError("ZipRead: keep and chunksize must be given together")
 
 
 def cache_dir(context: Context, key: str) -> Path:
-    """The (created) directory a bulk data set caches its archives in.
-
-    `key` is either a registered `context.paths` key or a plain sub-directory name under
-    DATA_STORE (every current caller uses the latter, e.g. "sec_financial_notes"). Each
-    data set keeps its own directory so the multi-hundred-MB zips never mix with the
-    companyfacts JSON cache."""
-    path = context.paths.get(key)
-    directory = Path(path) if path is not None else context.paths["DATA_STORE"] / key
+    """The (created) DATA_STORE sub-directory a bulk data set caches its archives in."""
+    directory = context.paths["DATA_STORE"] / key
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def is_cached(path: Path) -> bool:
+    """True when `path` is a non-empty cached archive."""
+    return path.exists() and path.stat().st_size > 0
 
 
 def ensure_zip(
@@ -58,19 +86,16 @@ def ensure_zip(
     label: str,
     timeout: int = _DEFAULT_TIMEOUT,
     log: logging.Logger | None = None,
-    on_download: Callable[[str, datetime], None] | None = None,
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
-    Streams to a `.part` file and renames only on success, so an interrupted download is
-    never mistaken for a cache hit. `urls` may be several candidates tried in order (the
-    fails-to-deliver archive moved between two SEC paths). Returns None when the period
-    is simply not published yet -- that is normal for the newest quarter, not an error.
+    Streams to a `.part` file and renames only on success. `urls` may be several candidates tried
+    in order. Returns None when no candidate serves the archive (normal for the newest period).
     """
-    if path.exists() and path.stat().st_size > 0:
+    if is_cached(path):
         return path
     candidates = [urls] if isinstance(urls, str) else [u for u in urls if u]
-    log = log or logging.getLogger(__name__)
+    log = log or logger
 
     for url in candidates:
         try:
@@ -81,77 +106,73 @@ def ensure_zip(
         if response.status_code != 200:
             log.warning("%s: not available at %s (HTTP %s)", label, url, response.status_code)
             continue
-        first_seen_at = datetime.now(UTC)
         tmp = path.with_suffix(".part")
         with open(tmp, "wb") as fh:
             for chunk in response.iter_content(chunk_size=_CHUNK):
                 fh.write(chunk)
         tmp.replace(path)
-        if on_download is not None:
-            on_download(url, first_seen_at)
         return path
     return None
 
 
-def _drop_corrupt(path: Path, exc: Exception, log: logging.Logger | None) -> None:
-    """A truncated / corrupt archive is DELETED so the next run re-downloads it.
-
-    Without this a bad cache entry is permanent: `ensure_zip` treats any non-empty file
-    as a cache hit, so the period silently returns None for ever. Two of the six bulk
-    fetchers had already grown this self-heal privately; all of them get it now."""
-    (log or logging.getLogger(__name__)).warning("%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
+def _on_corrupt(path: Path, exc: Exception, policy: Literal["delete", "skip"], log: logging.Logger) -> None:
+    """Log a corrupt archive; under "delete" remove it so the next run re-downloads it."""
+    if policy == "skip":
+        log.warning("%s: corrupt zip (%s) -> SKIPPED", path.name, exc)
+        return
+    log.warning("%s: corrupt zip (%s) -> deleting so it re-downloads next run", path.name, exc)
     path.unlink(missing_ok=True)
 
 
-def read_zip_member(path: Path, member: str, *, log: logging.Logger | None = None, **read_csv_kwargs) -> pd.DataFrame | None:
-    """One member of a zip read as a DataFrame (tab-separated by default -- every SEC
-    bulk set ships .tsv). None when the archive or the member is unreadable, so a single
-    corrupt period never aborts a multi-year ingest."""
-    kwargs = {"sep": "\t", "dtype": str, "low_memory": False, **read_csv_kwargs}
+def _read_member(archive: zipfile.ZipFile, name: str, spec: ZipRead) -> pd.DataFrame:
+    """One member as str columns, row-filtered chunk by chunk when the spec has `keep`."""
+    wanted = spec.usecols
+    usecols = None if wanted is None else (lambda c: (str(c).upper() if spec.upper else c) in wanted)
+    with archive.open(name) as handle:
+        read = pd.read_csv(
+            handle,
+            sep="\t",
+            dtype=str,
+            low_memory=False,
+            usecols=usecols,
+            chunksize=spec.chunksize,
+            on_bad_lines="skip" if spec.skip_bad_lines else "error",
+        )
+        if spec.keep is None:
+            frame = read
+        else:
+            kept = [chunk.loc[mask] for chunk in read if (mask := spec.keep(chunk)).any()]
+            frame = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame()
+    if spec.upper:
+        frame.columns = [str(c).upper() for c in frame.columns]
+    return frame
+
+
+def read_zip_tables(
+    path: Path, specs: Mapping[str, ZipRead], *, on_corrupt: Literal["delete", "skip"], log: logging.Logger
+) -> dict[str, pd.DataFrame] | None:
+    """Tab-separated members of one SEC bulk zip, keyed like `specs` (names match case-insensitively).
+
+    Returns None for a corrupt archive (deleted under `on_corrupt="delete"`, kept under "skip"), `{}`
+    when a required member is absent, and an empty frame for an absent optional member.
+    """
     try:
         with zipfile.ZipFile(path) as archive:
             names = {n.lower(): n for n in archive.namelist()}
-            actual = names.get(member.lower())
-            if actual is None:
-                return None
-            with archive.open(actual) as handle:
-                return pd.read_csv(handle, **kwargs)
+            if any(spec.required and member.lower() not in names for member, spec in specs.items()):
+                return {}
+            return {
+                member: _read_member(archive, names[member.lower()], spec) if member.lower() in names else pd.DataFrame()
+                for member, spec in specs.items()
+            }
     except zipfile.BadZipFile as exc:
-        _drop_corrupt(path, exc, log)
-        return None
-    except Exception as exc:  # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning("%s: unreadable member %s (%s)", path.name, member, exc)
-        return None
-
-
-def read_zip_members(path: Path, members: Sequence[str], *, log: logging.Logger | None = None, **read_csv_kwargs) -> dict[str, pd.DataFrame] | None:
-    """Several members of ONE archive, keyed by the requested name -- opened once rather
-    than once per member. All-or-nothing: None when the archive is unreadable OR any
-    requested member is absent, because a caller that joins two tsvs (13F
-    SUBMISSION + INFOTABLE) cannot do anything useful with just one of them."""
-    kwargs = {"sep": "\t", "dtype": str, "low_memory": False, **read_csv_kwargs}
-    try:
-        with zipfile.ZipFile(path) as archive:
-            names = {n.lower(): n for n in archive.namelist()}
-            if any(m.lower() not in names for m in members):
-                return None
-            out: dict[str, pd.DataFrame] = {}
-            for m in members:
-                with archive.open(names[m.lower()]) as handle:
-                    out[m] = pd.read_csv(handle, **kwargs)
-            return out
-    except zipfile.BadZipFile as exc:
-        _drop_corrupt(path, exc, log)
-        return None
-    except Exception as exc:  # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning("%s: unreadable members %s (%s)", path.name, list(members), exc)
+        _on_corrupt(path, exc, on_corrupt, log)
         return None
 
 
 def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger | None = None) -> str | None:
-    """The FIRST member of a zip as decoded text -- for the archives that hold one
-    unnamed pipe/CSV file (fails-to-deliver). Undecodable bytes are replaced rather than
-    raising: a single bad character must not drop a whole period."""
+    """The first member of a zip as decoded text; a corrupt archive is deleted so it re-downloads."""
+    log = log or logger
     try:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
@@ -160,34 +181,98 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger 
             with archive.open(names[0]) as handle:
                 return handle.read().decode(encoding, errors="replace")
     except zipfile.BadZipFile as exc:
-        _drop_corrupt(path, exc, log)
+        _on_corrupt(path, exc, "delete", log)
         return None
     except Exception as exc:  # noqa: BLE001
-        (log or logging.getLogger(__name__)).warning("%s: unreadable archive (%s)", path.name, exc)
+        log.warning("%s: unreadable archive (%s)", path.name, exc)
         return None
 
 
-def ingested_periods(context: Context, tables: str | Table | Sequence[str | Table], column: str = "period") -> set[str]:
-    """Distinct source-period tags already stored, so an incremental re-run skips them.
+def _sidecar(cache: Path, table: Table | str) -> Path:
+    return cache / f"{name_of(table)}_universe.json"
 
-    Handles the three shapes the callers needed separately before: a single table
-    (fails-to-deliver, passed as the `Table` object per the registry convention -- not
-    a str, which is why this normalizes through `name_of`), a table whose `period`
-    column may predate the feature and be absent (13F -- reflected first, so a stale
-    table degrades to "nothing ingested" rather than raising), and a UNION across two
-    sibling tables (the notes num/text pair). Empty set on the first run."""
-    store = context.store
-    names = [name_of(t) for t in ([tables] if isinstance(tables, str | Table) else tables)]
-    done: set[str] = set()
-    for table in names:
-        if column not in store.columns(table):  # absent table or pre-feature schema
+
+def _processed_scope(cache: Path, table: Table | str) -> set[str]:
+    """The scope a bulk table was last built against; empty when the sidecar is absent or unreadable."""
+    path = _sidecar(cache, table)
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")).get("universe", []))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def mark_processed(cache: Path, table: Table | str, scope: Collection[str]) -> None:
+    """Record the scope a bulk table was built against, so a converged re-run skips stored periods."""
+    payload = {"universe": sorted(scope), "saved": datetime.now(UTC).date().isoformat()}
+    _sidecar(cache, table).write_text(json.dumps(payload), encoding="utf-8")
+
+
+def pending_periods(
+    context: Context,
+    cache: Path,
+    table: Table | str | Sequence[Table | str],
+    periods: Sequence[str],
+    scope: Collection[str],
+    *,
+    reparse: bool = False,
+    column: str = "period",
+) -> list[str]:
+    """The `periods` a bulk fetcher must parse.
+
+    All of them on `reparse` or when `scope` gained members since `mark_processed`; otherwise those
+    with no row stored under `column`. Several tables union their stored periods and share the
+    sidecar of the first.
+    """
+    tables = [table] if isinstance(table, Table | str) else list(table)
+    added = set(scope) - _processed_scope(cache, tables[0])
+    if reparse or added:
+        reason = "reparse" if reparse else f"{len(added)} new scope member(s)"
+        logger.info("%s: %s -> parsing all %d period(s), cached zips are not re-downloaded", name_of(tables[0]), reason, len(periods))
+        return list(periods)
+    stored = stored_values(context, tables, column)
+    return [period for period in periods if period not in stored]
+
+
+def period_end(tag: str) -> date:
+    """Last calendar day covered by a `YYYYqN` or `YYYY_MM` archive tag."""
+    month = int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
+    return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
+
+
+def archive_available_at(end: date, path: Path, *, observed_from: date, downloaded: bool) -> date | None:
+    """When an archive covering a period ending `end` became available.
+
+    Before `observed_from` it is estimated as the 12th of the following month (a weekend rolls to
+    Monday); afterwards it is the New York date of this run's download, else of the cached file's
+    modification time (None when the file cannot be read).
+    """
+    if end < observed_from:
+        release = (end.replace(day=1) + timedelta(days=32)).replace(day=_RELEASE_DAY)
+        return release + timedelta(days=7 - release.weekday() if release.weekday() >= 5 else 0)
+    if downloaded:
+        return datetime.now(MARKET_TIMEZONE).date()
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=MARKET_TIMEZONE).date()
+    except OSError:
+        return None
+
+
+def stored_period_clock(context: Context, tables: Sequence[Table], period: str, *, column: str = "period") -> date | None:
+    """The single `available_at` already stored for `period` across `tables`; raises when they disagree."""
+    values: set[date] = set()
+    for table in tables:
+        if not {column, "available_at"} <= set(context.store.columns(table)):
             continue
-        done |= {str(v) for v in store.distinct(table, column)}
-    return done
+        raw = context.store.distinct(table, "available_at", where={column: period})
+        values.update(pd.to_datetime(pd.Series(raw, dtype=object), errors="coerce").dropna().dt.date)
+    if len(values) > 1:
+        raise ValueError(f"{'/'.join(name_of(t) for t in tables)} {period}: conflicting stored available_at values: {sorted(values)}")
+    return next(iter(values), None)
 
 
 def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
-    """`['2015q1', '2015q2', ...]` covering the requested window, never starting before
-    `first_year` (the year the data set itself begins)."""
+    """`YYYYqN` tags covering the last `years_history` years, never before `first_year`."""
     now = (today or pd.Timestamp.today()).normalize()
     return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]

@@ -1,15 +1,10 @@
 """
 fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-SEC Fails-to-Deliver (FTD): semi-monthly settlement-fail files, a signal for
-settlement stress / short-squeeze risk. Kept in its own table, separate from
-`short_interest`, so its semi-monthly publication lag doesn't corrupt that table's
-global-max-date incremental sync (see schema.py).
-
-It is a Cumulative Balance, NOT Daily New Fails:
-The number listed on date t represents
-the total net unsettled balance as of that night.
-$$\text{FTD}_t = \text{FTD}_{t-1} + \text{New Fails}_t - \text{Resolved Fails}_t$$
+SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date), its own table so
+its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
+unsettled balance on each settlement date, not new fails. Resume skips periods already processed
+under the current symbol policy; historical symbols resolve point-in-time; `full` replaces the table.
 """
 
 from __future__ import annotations
@@ -26,7 +21,8 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     cache_dir,
     ensure_zip,
-    ingested_periods,
+    mark_processed,
+    pending_periods,
     read_zip_text,
 )
 from src.data_extract.utils.common.identity import (
@@ -35,8 +31,8 @@ from src.data_extract.utils.common.identity import (
     log_symbol_resolutions,
     resolve_symbol_rows,
 )
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import load_processed_universe, save_processed_universe
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
@@ -44,15 +40,11 @@ logger = logging.getLogger(__name__)
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
 _POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
 
-# {period} names the source semi-monthly ZIP. Its tag, not the settlement day,
-# controls availability: some b ZIPs contain day-15 rows. The SAME
-# cnsfails{period}.zip files (identical pipe format) live under TWO paths:
-#   * current path       -> 2017-06b onward
-#   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
+# The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path (>= 201706b uses the current path)
-SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
+SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
+SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -110,10 +102,8 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
 
 
 def _period_urls(period: str) -> tuple[str, ...]:
-    """Download URL(s) for a semi-monthly period, path chosen by date: the FOIA
-    'legacy' path for <= 2017-06a, the current path for >= 2017-06b. The other path
-    is tried as a fallback (boundary / occasional re-issued files live on both).
-    Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
+    """Download URLs for a period: the date-appropriate path first (legacy <= 2017-06a), the other
+    as fallback. Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
     modern = SEC_FTD_URL_TEMPLATE.format(period=period)
     legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
@@ -177,21 +167,16 @@ def fetch_fails_to_deliver(
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     candidates = resolver.candidate_symbols(universe)
     policy_scope = set(candidates) | {_POLICY_MARKER}
-    processed_scope = load_processed_universe(cache, Tables.sec_fails_to_deliver)
-    changed_scope = policy_scope - processed_scope
-    stored_periods = ingested_periods(context, Tables.sec_fails_to_deliver)
-    done = set() if full else stored_periods
-    if changed_scope and not full:
-        logger.info("FTD: identity scope changed by %d symbol(s) -> re-parsing cache", len(changed_scope))
+    # A full rebuild must reproduce every stored period.
+    stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period") if full else frozenset()
 
     saved = 0
     initial_cached = _cached_periods(cache)
     periods = sorted(initial_cached | set(_periods(years_history + 1)))
+    pending = pending_periods(context, cache, Tables.sec_fails_to_deliver, periods, policy_scope, reparse=full)
     raw_frames: list[pd.DataFrame] = []
     parsed_periods: set[str] = set()
-    for period in tqdm(periods, desc="SEC fails-to-deliver"):
-        if period in done and not changed_scope:
-            continue
+    for period in tqdm(pending, desc="SEC fails-to-deliver"):
         path = ensure_zip(
             context,
             cache / FTD_ZIP_NAME_TEMPLATE.format(period=period),
@@ -232,7 +217,7 @@ def fetch_fails_to_deliver(
         saved = context.store.save(Tables.sec_fails_to_deliver, accepted)
 
     unresolved_count = len(unresolved)
-    save_processed_universe(cache, Tables.sec_fails_to_deliver, policy_scope)
+    mark_processed(cache, Tables.sec_fails_to_deliver, policy_scope)
     logger.info(f"sec_fails_to_deliver completed ({len(periods)} files scanned) +{saved}")
     logger.info(f"FTD: {unresolved_count} unresolved raw row(s) excluded")
     record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved, is_full_rescan=full)

@@ -62,8 +62,7 @@ def build(
         assert ticker == "AAA"
         assert "10-K405" in forms
         assert kwargs["identity"] is identity
-        assert kwargs["roster_cik"] == "0000000001"
-        assert kwargs["symbol_tenure"]["issuer_cik"].tolist() == ["0000000001"]
+        assert kwargs["registrants"] == {}
         return filings
 
     class FakeLLM:
@@ -74,7 +73,7 @@ def build(
             self.tasks.append(task)
 
         def run(self):
-            return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["filing"].accession_number]) for task in self.tasks]
+            return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
 
     identity = SimpleNamespace(owns=lambda ticker, cik: ticker == "AAA" and str(cik).zfill(10) == "0000000001")
     monkeypatch.setattr(mod, "resolve_registrant_filings", listing)
@@ -96,9 +95,7 @@ def build(
         since=None,
         done_dates=done_dates,
         manual=manual or {},
-        registrants={},
-        identity=identity,
-        symbol_tenure=pd.DataFrame([{"symbol": "AAA", "issuer_cik": "0000000001"}]),
+        scope=mod.EdgarScope(identity, {}),
     )
 
 
@@ -370,7 +367,6 @@ def patch_run(monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> None:
     monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
     monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
     monkeypatch.setattr(mod, "load_manual_roster", lambda *args: {})
-    monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
     monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
 
 
@@ -422,7 +418,7 @@ def test_cli_still_dispatches_explicit_full_replay(monkeypatch):
     calls = []
     context = SimpleNamespace()
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    monkeypatch.setattr(cli_mod, "_ctx", lambda path: (config, context))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(
         cli_mod,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from itertools import combinations
 from pathlib import Path
 from typing import Literal, cast
@@ -17,11 +17,11 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS, IncompleteEdgarRunError, filed_by, period_of_report
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, IncompleteEdgarRunError
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
@@ -81,7 +81,7 @@ class EmployeeTickerResult:
 
 @dataclass(frozen=True)
 class _Decision:
-    filing: Filing
+    stamp: FilingStamp
     source: str  # "manual" (the roster file) or "llm"
     status: str
     count: int | None
@@ -106,12 +106,9 @@ def load_manual_roster(config_dir: str) -> dict[str, dict]:
 
 
 def filing_body_text(filing: Filing) -> str:
-    """Primary-document text (visible HTML table cells included, no OCR), else the full submission.
+    """Primary-document text (visible HTML table cells included, no OCR), else the full submission; "" if none.
 
-    edgartools 5.51 `Filing.html()` reads `homepage.primary_html_document.empty` without a None
-    check, so a filing whose index lists no primary document raises AttributeError from inside the
-    library, and `text()` goes through `html()` too. That is a property of the filing, not of our
-    code, so it is absorbed here instead of escaping as a run-aborting programming error.
+    edgartools raises AttributeError for a filing with no primary document; that is absorbed as a filing property.
     """
     readers: tuple[tuple[str, Callable[[str], str]], ...] = (
         ("html", html_to_text),
@@ -129,7 +126,7 @@ def filing_body_text(filing: Filing) -> str:
 
 
 def employee_excerpt(text: str, limit: int) -> str:
-    """Keep filing opening text and the first workforce contexts, as in the benchmark."""
+    """The filing's opening text plus windows around the first workforce mentions, gap-marked and capped at `limit`."""
     spans = [(0, min(8_000, len(text)))]
     for match in _CONTEXT_RE.finditer(text):
         spans.append((max(0, match.start() - 550), min(len(text), match.end() + 850)))
@@ -279,32 +276,29 @@ def _decide(answer: EmployeeAnswer, source_text: str) -> tuple[str, int | None]:
     return "ambiguous", None
 
 
-def _filed(filing: Filing) -> pd.Timestamp:
-    return pd.Timestamp(filing.filing_date).normalize()
-
-
-def _filing_key(filing: Filing) -> tuple[pd.Timestamp, int, str]:
+def _filing_key(stamp: FilingStamp) -> tuple[pd.Timestamp, int, str]:
     """Filing date, then original before amendment, so a same-day 10-K/A supersedes its original."""
-    return (_filed(filing), 1 if str(filing.form).upper() == "10-K/A" else 0, str(filing.accession_number))
+    return (stamp.filed.normalize(), int(stamp.is_amendment), str(stamp.accession_number))
 
 
-def _task_filing(result: LlmResult) -> Filing:
-    return cast(Filing, result.task.meta["filing"])
+def _task_stamp(result: LlmResult) -> FilingStamp:
+    return cast(FilingStamp, result.task.meta["stamp"])
 
 
-def _employee_task(sequence: int, ticker: str, filing: Filing, identity: Identity, max_chars: int) -> LlmTask:
+def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, identity: Identity, max_chars: int) -> LlmTask:
     """Check the filer belongs to the issuer lineage and package its excerpt as one LLM task."""
+    filing = stamp.filing
     actual_cik = getattr(filing, "cik", None)
     if not actual_cik or not identity.owns(ticker, actual_cik):
-        raise ValueError(f"{ticker} {filing.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
-    report = period_of_report(filing)
+        raise ValueError(f"{ticker} {stamp.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
+    report = stamp.period_of_report
     report_date = pd.Timestamp(report).normalize() if report is not None else None
     text = filing_body_text(filing)
     if not text.strip():
-        raise ValueError(f"{ticker} {filing.accession_number}: filing text unavailable")
+        raise ValueError(f"{ticker} {stamp.accession_number}: filing text unavailable")
     prefix = (
         f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
-        f"SEC filing date: {_filed(filing).date()}\nAccession: {filing.accession_number}\n"
+        f"SEC filing date: {stamp.filed.date()}\nAccession: {stamp.accession_number}\n"
         "The following is an excerpt, not necessarily the complete 10-K:\n\n"
     )
     if max_chars <= len(prefix):
@@ -314,49 +308,49 @@ def _employee_task(sequence: int, ticker: str, filing: Filing, identity: Identit
         seq=sequence,
         payload=prefix + source_text,
         schema=EmployeeAnswer,
-        meta={"filing": filing, "report_date": report_date, "source_text": source_text},
+        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text},
     )
 
 
-def _extract_answers(context: Context, config: DictConfig, ticker: str, filings: list[Filing], identity: Identity) -> list[LlmResult]:
+def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[LlmResult]:
     """One LLM answer per filing, in filing order; any failed call fails the ticker."""
     extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
-    for sequence, filing in enumerate(filings):
-        extractor.submit(_employee_task(sequence, ticker, filing, identity, max_chars))
+    for sequence, stamp in enumerate(stamps):
+        extractor.submit(_employee_task(sequence, ticker, stamp, identity, max_chars))
     results = extractor.run()
-    if len(results) != len(filings) or any(not result.ok for result in results):
-        errors = [f"{_task_filing(result).accession_number}: {result.error}" for result in results if not result.ok]
+    if len(results) != len(stamps) or any(not result.ok for result in results):
+        errors = [f"{_task_stamp(result).accession_number}: {result.error}" for result in results if not result.ok]
         raise RuntimeError(f"{ticker}: employee LLM extraction incomplete: {errors}")
     return results
 
 
-def _llm_decisions(context: Context, ticker: str, filings: list[Filing], identity: Identity) -> list[_Decision]:
+def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[_Decision]:
     """One guarded LLM decision per filing; any failed call fails the ticker."""
     config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
     decisions = []
-    for result in _extract_answers(context, config, ticker, filings, identity):
+    for result in _extract_answers(context, config, ticker, stamps, identity):
         answer = result.parsed
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         status, count = _decide(answer, str(result.task.meta["source_text"]))
-        decisions.append(_Decision(_task_filing(result), "llm", status, count))
+        decisions.append(_Decision(_task_stamp(result), "llm", status, count))
     return decisions
 
 
-def _manual_decision(filing: Filing, entry: dict) -> _Decision:
+def _manual_decision(stamp: FilingStamp, entry: dict) -> _Decision:
     count = entry.get("employees")
     status = str(entry.get("status") or ("saved" if count is not None else "no_headcount"))
-    return _Decision(filing, "manual", status, None if count is None else int(count))
+    return _Decision(stamp, "manual", status, None if count is None else int(count))
 
 
-def _decide_ticker(context: Context, ticker: str, cik: str, decisions: list[_Decision]) -> EmployeeTickerResult:
+def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) -> EmployeeTickerResult:
     """One row per filing date: the last supported count in filing order, else NaN; earlier counts are superseded."""
     outcomes: list[dict] = []
     chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome whose count is kept
-    for decision in sorted(decisions, key=lambda decision: _filing_key(decision.filing)):
-        filing = decision.filing
-        filed = _filed(filing)
+    for decision in sorted(decisions, key=lambda decision: _filing_key(decision.stamp)):
+        stamp = decision.stamp
+        filed = stamp.filed.normalize()
         if decision.count is not None:
             if filed in chosen:
                 outcomes[chosen[filed]]["status"] = "superseded"
@@ -364,7 +358,7 @@ def _decide_ticker(context: Context, ticker: str, cik: str, decisions: list[_Dec
         outcomes.append(
             {
                 "ticker": ticker,
-                "accession_number": str(filing.accession_number),
+                "accession_number": str(stamp.accession_number),
                 "filing_date": filed,
                 "source": decision.source,
                 "status": decision.status,
@@ -374,8 +368,8 @@ def _decide_ticker(context: Context, ticker: str, cik: str, decisions: list[_Dec
         context.log.info(
             "employees decision ticker=%s accession=%s cik=%s as_of=%s source=%s status=%s count=%s",
             ticker,
-            filing.accession_number,
-            filed_by(filing, cik),
+            stamp.accession_number,
+            stamp.cik,
             filed.date(),
             decision.source,
             decision.status,
@@ -396,32 +390,28 @@ def build_ticker_employees(
     since: pd.Timestamp | None,
     done_dates: frozenset[pd.Timestamp],
     manual: dict[str, dict],
-    registrants: dict[str, Registrant],
-    identity: Identity,
-    symbol_tenure: pd.DataFrame,
+    scope: EdgarScope,
 ) -> EmployeeTickerResult:
     """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM."""
-    filings = sorted(
-        (
-            filing
-            for filing in resolve_registrant_filings(
-                ticker,
-                HEADCOUNT_FORMS,
-                since=since,
-                done_accessions=frozenset(),
-                registrants=registrants,
-                identity=identity,
-                symbol_tenure=symbol_tenure,
-                roster_cik=cik,
-            )
-            if _filed(filing) not in done_dates
-        ),
+    identity = scope.identity
+    if identity is None:
+        raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
+    listed = resolve_registrant_filings(
+        ticker,
+        HEADCOUNT_FORMS,
+        since=since,
+        done_accessions=frozenset(),
+        registrants=scope.registrants,
+        identity=identity,
+    )
+    stamps = sorted(
+        (stamp for stamp in (FilingStamp.of(filing, cik) for filing in listed) if stamp.filed.normalize() not in done_dates),
         key=_filing_key,
     )
-    by_hand = [_manual_decision(filing, manual[str(filing.accession_number)]) for filing in filings if str(filing.accession_number) in manual]
-    to_read = [filing for filing in filings if str(filing.accession_number) not in manual]
+    by_hand = [_manual_decision(stamp, manual[str(stamp.accession_number)]) for stamp in stamps if str(stamp.accession_number) in manual]
+    to_read = [stamp for stamp in stamps if str(stamp.accession_number) not in manual]
     decisions = by_hand + (_llm_decisions(context, ticker, to_read, identity) if to_read else [])
-    return _decide_ticker(context, ticker, cik, decisions)
+    return _decide_ticker(context, ticker, decisions)
 
 
 def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
@@ -431,6 +421,31 @@ def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> di
     for row in [] if stored is None else stored.itertuples(index=False):
         done.setdefault(str(row.ticker), set()).add(pd.Timestamp(cast("str", row.as_of)).normalize())
     return {ticker: frozenset(dates) for ticker, dates in done.items()}
+
+
+def _fetch_ticker_employees(
+    ticker: str,
+    cik: str,
+    *,
+    context: Context,
+    since: pd.Timestamp,
+    done: dict[str, frozenset[pd.Timestamp]],
+    manual: dict[str, dict],
+    scope: EdgarScope,
+) -> EmployeeTickerResult:
+    """Decide one ticker's undecided filings and save its rows; the per-ticker worker."""
+    result = build_ticker_employees(
+        context,
+        ticker,
+        cik,
+        since=since,
+        done_dates=done.get(ticker, frozenset()),
+        manual=manual,
+        scope=scope,
+    )
+    if not result.frame.empty:
+        context.store.save(Tables.fundamentals_employees, result.frame)
+    return result
 
 
 def fetch_fundamentals_employees(
@@ -453,12 +468,7 @@ def fetch_fundamentals_employees(
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    identity = load_identity(context)
-    symbol_tenure = pd.DataFrame(
-        [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
-        columns=["symbol", "issuer_cik"],
-    )
-    registrants = load_registrants(str(context.config_dir))
+    scope = EdgarScope(load_identity(context), load_registrants(str(context.config_dir)))
     manual = load_manual_roster(str(context.config_dir))
     done = {} if full else _done_dates(context, tickers, since)
     context.log.info(
@@ -466,46 +476,12 @@ def fetch_fundamentals_employees(
         sum(map(len, done.values())),
         len(manual),
     )
-
-    # `store.ensure_table` is check-then-create with no lock: serialize writes until the table exists.
-    create_lock = threading.Lock()
-    created = False
-
-    def _save(frame: pd.DataFrame) -> None:
-        nonlocal created
-        if created:
-            context.store.save(Tables.fundamentals_employees, frame)
-            return
-        with create_lock:
-            context.store.save(Tables.fundamentals_employees, frame)
-            created = True
-
-    def _worker(ticker: str, cik: str) -> EmployeeTickerResult | None:
-        try:
-            result = build_ticker_employees(
-                context,
-                ticker,
-                cik,
-                since=since,
-                done_dates=done.get(ticker, frozenset()),
-                manual=manual,
-                registrants=registrants,
-                identity=identity,
-                symbol_tenure=symbol_tenure,
-            )
-            if not result.frame.empty:
-                _save(result.frame)
-            return result
-        except PROGRAMMING_ERRORS:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- one ticker cannot hide incomplete coverage
-            context.log.warning("fundamentals employees: %s failed (%s)", ticker, exc)
-            return None
-
+    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, manual=manual, scope=scope)
     results = run_per_ticker(
         cik_map,
-        _worker,
+        worker,
         desc="fundamentals employees",
+        log=context.log,
         max_workers=int(context.config.data_extract.fundamentals_workers),
     )
     successful = [result for result in results if result is not None]
@@ -527,4 +503,4 @@ def fetch_fundamentals_employees(
     )
     if failed:
         raise IncompleteEdgarRunError(f"fundamentals employees: {failed} ticker(s) failed; decided filings were saved and the rest retry next run")
-    record_run(context, Tables.fundamentals_employees, len(cik_map), counted, is_full_rescan=True, coverage_complete=True)
+    record_run(context, Tables.fundamentals_employees, len(cik_map), counted, is_full_rescan=True, coverage_complete=True, tickers=tickers)

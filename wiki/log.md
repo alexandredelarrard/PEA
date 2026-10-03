@@ -154,3 +154,19 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md), [Configuration](./reference/configuration.md), [Data extraction](./modules/data-extract.md), [Cube aggregation](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md), [Data access](./guides/data-access.md), [Data platform](./architecture/data-platform.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-01-earnings-call-extraction-gaps/` (full load 33,591 calls in 18.6 min, exact parity with the source index, split `ok` 98.71 %)
 - Operational boundary: full FinBERT scoring, the remaining embeddings and the universe `build-text -F` are pending; `cube_part_text` holds 3 sample tickers; the `*_legacy` tables await the user's drop confirmation.
+
+## 2026-10-02: refresh — shared EDGAR extraction driver
+
+- Profile: internal/standard
+- source_commit: abd4b53 (branch `harness/edgar-extract-refactor`)
+- Coverage: per-ticker EDGAR fetchers declared as `EdgarFetch` and walked by `run_edgar_fetch`; `FilingStamp`; `Identity.filing_scope`; shared `sec_atom.py`, `item_carve.py`, `read_zip_tables` / `pending_periods`; one 13F walk feeding `sec13f_hr` and `sec13f_manager_holdings` plus the per-CIK manager catch-up; one 13D/13G row builder; one insider contract for bulk and live; one Form 3/4/5 pass for both identity tables; superinvestor overrides moved to `configs/sec/`; `gpt.threads` sizes DEF 14A and vote workers; deleted Wikipedia pageview and Google Trends fetchers removed from the docs
+- Pages: [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [System overview](./architecture/system-overview.md), [Run the pipeline](./guides/run-the-pipeline.md), [Configuration](./reference/configuration.md), [TODO](./TODO.md)
+- Table contracts unchanged; [Live database](./reference/live-database.md) not edited.
+
+## 2026-10-03: refresh — EDGAR extraction validation fixes
+
+- Profile: internal/standard
+- source_commit: d86de08 (branch `harness/edgar-extract-refactor`)
+- Coverage: `EdgarFetch` has no partial-success flag; `sec_atom.py` owns Atom paging and the entry filter; the 13F listing sorts amendments after same-day originals; the 13F manager catch-up decides per filing from stored (period, filing date) pairs and splits transient from deterministic read failures; review residuals and minor simplifications deferred to the TODO
+- Pages: [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-01-edgar-extract-refactor/` (`06-final.md`)

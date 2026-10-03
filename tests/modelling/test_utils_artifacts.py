@@ -17,7 +17,6 @@ from src.modelling.utils.artifacts import (
     member_path,
     models_dir,
     read_metadata,
-    safe_filename,
     save_member,
     write_metadata,
 )
@@ -65,7 +64,6 @@ def test_load_ensemble_order_and_skips(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_ensemble(tmp_path, [5], ["lgbm"])
     assert member_path(tmp_path, 30, "random_forest").name == "model_h30_random_forest.pkl"
-    assert safe_filename("beta_USD/EUR 1") == "beta_USD_EUR_1"
     print("\n=== SANITY CHECK: load_ensemble ===")
     print(f"  {{h: families}} = { ({h: list(m) for h, m in got.items()}) }; no member at all -> FileNotFoundError. Validated.")
 

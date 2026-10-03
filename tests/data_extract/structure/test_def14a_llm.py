@@ -514,6 +514,7 @@ def test_flatten_ceo_age_fallback():
     not (os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_AI_API_KEY")),
     reason="OPENAI_API_KEY not set — skipping live Apple DEF 14A extraction",
 )
+@pytest.mark.live  # live EDGAR + OpenAI
 def test_llm_extractor_real_apple():
     """Live: fetch Apple's latest DEF 14A, extract with the tailored prompt, sanity-check."""
     from src.context import get_config_context
@@ -553,6 +554,7 @@ def test_llm_extractor_real_apple():
 # fetch_def14a_llm(): schema-constrained LLM -> Postgres def14a_llm table       #
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
+@pytest.mark.live  # DELETEs and upserts rows in the live def14a_llm table
 def test_fetch_def14a_llm_to_postgres(monkeypatch):
     """End-to-end (network + LLM mocked): the fetcher (1) constrains the LLM to the
     Def14AExtract schema and (2) UPSERTS the flattened row into Postgres."""
@@ -597,7 +599,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", lambda *a, **k: filings)
         monkeypatch.setattr(mod, "sec_get", lambda url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
@@ -632,6 +634,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
 
 
 @pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set — needs the Postgres DB")
+@pytest.mark.live  # seeds, upserts and DELETEs rows in the live def14a_llm table
 def test_fetch_def14a_llm_incremental(monkeypatch):
     """Gap-filling per-filing incremental: the FULL window is listed (no `since` cutoff), and only
     filings whose accession is NOT already in the table hit the LLM — so a MISSING year (a hole
@@ -696,7 +699,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         monkeypatch.setattr(mod, "LLMExtractor", _fakeextractor)
         monkeypatch.setattr(mod, "list_filings", _fake_list_filings)
         monkeypatch.setattr(mod, "sec_get", lambda context, url, **k: _Resp())
-        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "company_name": ["Z"]}))
+        monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
         mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])

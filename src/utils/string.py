@@ -1,24 +1,16 @@
 """Small string normalisers shared across packages.
 
-`pad_cik` lives here rather than in either package that needs it: `data_extract`
-(fetch_superinvestors) writes the padded CIK, `data_aggregate` (superinvestor_features)
-joins on it, and the two had grown byte-identical private copies precisely because
-cross-importing between `src/` subfolders is not allowed. One definition means the
-write side and the read side can never pad differently.
-
-`clean_text` is here for the same reason one step removed: it is the whitespace half of
-`src/utils/names.py`'s person key, which both packages now share. Leaving it in
-`data_extract/.../def14a/validate.py` would have left `names.py` importing back into
-`data_extract` -- the very cross-import the move exists to remove -- and inlining a second
-copy of one regex substitution is how two normalisers drift apart. `validate.py` re-exports
-it, so every extraction call site is unchanged.
+`pad_cik` / `pad_cik_series` are the one CIK spelling every package writes and joins on;
+`normalise_ticker` is the one ticker spelling; `clean_text` is the whitespace half of the
+person key in `src/utils/names.py`.
 """
 
 import re
 from typing import Any
 
-#: edgartools preserves the source HTML's whitespace runs verbatim, and a non-breaking space
-#: is not `\s` to `str.strip` -- both have to go before any key is built on the value.
+import pandas as pd
+
+#: Whitespace runs edgartools preserves from the source HTML; non-breaking spaces are replaced first.
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -36,8 +28,18 @@ def clean_text(value: Any) -> str | None:
 
 
 def pad_cik(x: object) -> str:
-    """Canonical 10-digit zero-padded CIK (as stored in sp500_tickers /
-    sec13f_hr / the superinvestor roster JSON). Tolerates ints, '123',
-    '123.0' and already-padded strings; '' when there is no digit at all."""
+    """Canonical 10-digit zero-padded CIK. Tolerates ints, '123', '123.0' and already-padded strings;
+    '' when there is no digit at all."""
     s = re.sub(r"\D", "", str(x).strip().split(".")[0])
     return s.zfill(10) if s else ""
+
+
+def pad_cik_series(values: pd.Series) -> pd.Series:
+    """Vectorised `pad_cik`: the same string per element ('' for a null), object dtype, index kept."""
+    digits = values.astype("string").str.strip().str.split(".", n=1).str[0].str.replace(r"\D", "", regex=True).fillna("")
+    return digits.str.zfill(10).where(digits != "", "").astype(object)
+
+
+def normalise_ticker(value: object) -> str:
+    """Canonical ticker spelling: stripped and upper-case."""
+    return str(value).strip().upper()

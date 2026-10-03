@@ -318,17 +318,22 @@ def _qq_distance(turns: pd.DataFrame, section: str, name: str) -> pd.DataFrame:
     pooled = pooled.sort_values([identity, "as_of"])
     out = []
     for _, grp in pooled.groupby(identity, sort=False):
-        previous = None
-        for r in grp.itertuples(index=False):
-            distance = np.nan
-            if previous is not None:
-                consecutive = _quarter_number(r.quarter) - _quarter_number(previous.quarter) == 1
-                comparable = r.model == previous.model and len(r.vec) == len(previous.vec)
-                if consecutive and comparable:
-                    distance = round(1.0 - cosine(cast(np.ndarray, r.vec), cast(np.ndarray, previous.vec)), 6)
-            out.append({"ticker": r.ticker, "quarter": r.quarter, name: distance})
-            previous = r
+        calls = list(grp.itertuples(index=False))
+        for r, previous in zip(calls, [None, *calls[:-1]], strict=True):
+            out.append({"ticker": r.ticker, "quarter": r.quarter, name: _consecutive_distance(r, previous)})
     return pd.DataFrame(out)
+
+
+def _consecutive_distance(current: Any, previous: Any) -> float:
+    """1 - cosine to the previous call of the issuer when it is the immediately preceding fiscal
+    quarter with the same model and vector size; NaN otherwise."""
+    if previous is None:
+        return np.nan
+    consecutive = _quarter_number(current.quarter) - _quarter_number(previous.quarter) == 1
+    comparable = current.model == previous.model and len(current.vec) == len(previous.vec)
+    if not (consecutive and comparable):
+        return np.nan
+    return round(1.0 - cosine(cast(np.ndarray, current.vec), cast(np.ndarray, previous.vec)), 6)
 
 
 def _quarter_number(value: object) -> float:

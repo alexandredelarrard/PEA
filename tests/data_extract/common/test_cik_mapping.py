@@ -5,7 +5,7 @@ SEC-sourced `cik_mapping` table (whose company_tickers.json feed mismapped activ
 tickers like XOM to a non-filing shell) was retired.
 
 test_load_cik_mapping_reads_sp500_tickers — reads sp500_tickers, zero-pads the CIK,
-    aliases company_name from name, and preserves the GICS columns callers rely on.
+    and preserves the name and GICS columns callers rely on.
 """
 
 from __future__ import annotations
@@ -48,13 +48,12 @@ def test_load_cik_mapping_reads_sp500_tickers(sqlite_store):
     # CIK zero-padded to 10 digits for SEC URLs (even when stored short)
     assert d["AAPL"]["cik"] == "0000320193"
     assert d["XOM"]["cik"] == "0000034088"
-    # company_name aliased from name (callers do r.get("company_name")); GICS preserved
-    assert {"company_name", "sector", "industry_group", "sub_industry"} <= set(m.columns)
-    assert d["XOM"]["company_name"] == "ExxonMobil"
+    # name and GICS preserved (callers do r.get("name"))
+    assert {"name", "sector", "industry_group", "sub_industry"} <= set(m.columns)
+    assert d["XOM"]["name"] == "ExxonMobil"
     assert d["XOM"]["sector"] == "Energy"
 
     print("\n=== SANITY CHECK: load_cik_mapping from sp500_tickers ===")
     print(
-        f"  reads sp500_tickers only; CIK zero-padded (AAPL {d['AAPL']['cik']}); "
-        f"company_name aliased from name; GICS preserved. Redundant cik_mapping retired. Validated."
+        f"  reads sp500_tickers only; CIK zero-padded (AAPL {d['AAPL']['cik']}); name and GICS preserved. Redundant cik_mapping retired. Validated."
     )

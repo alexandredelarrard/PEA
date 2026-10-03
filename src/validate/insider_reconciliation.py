@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,13 +19,13 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     DEFAULT_DECAY_HALFLIFE,
     build_insider_feature_panel,
 )
-from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, run_per_ticker
+from src.data_extract.utils.common.edgar_driver import EdgarScope, load_edgar_scope
+from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.parallel_fetch import DEFAULT_WORKERS, PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.institutionals.fetch_insider_edgar import (
-    _filing_frames,
     insider_filings,
+    live_insider_frames,
 )
 from src.data_store.schema import Tables
 from src.validate.checks.insider_parity import (
@@ -104,6 +105,68 @@ def _quarter(value: str) -> pd.Period:
         raise ValueError(f"invalid quarter {value!r}; expected YYYYQn") from exc
 
 
+def _replay_ticker(
+    ticker: str,
+    cik: str,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    scope: EdgarScope,
+    target_accessions: set[str],
+    tickers: list[str],
+    identity: Identity,
+) -> dict[str, object]:
+    """One issuer's target accessions filed in `[start, end]`, parsed through EDGAR XML; errors are kept, not raised."""
+    frames: list[pd.DataFrame] = []
+    listed_accessions: list[str] = []
+    errors: list[dict[str, str]] = []
+    try:
+        filings = insider_filings(
+            ticker,
+            cik,
+            since=start,
+            through=end,
+            done_accessions=frozenset(),
+            scope=scope,
+        )
+    except PROGRAMMING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- one issuer must not erase the replay
+        return {
+            "ticker": ticker,
+            "frames": frames,
+            "listed_accessions": listed_accessions,
+            "errors": [{"accession_number": "", "error": repr(exc)}],
+        }
+
+    for filing in filings:
+        raw_filing_date = getattr(filing, "filing_date", None)
+        if raw_filing_date is None:
+            continue
+        filing_date = cast(pd.Timestamp, pd.to_datetime(raw_filing_date, errors="coerce"))
+        if pd.isna(filing_date) or not start <= filing_date.normalize() <= end:
+            continue
+        accession = str(getattr(filing, "accession_number", ""))
+        if accession not in target_accessions:
+            continue
+        listed_accessions.append(accession)
+        try:
+            transactions, _, _ = live_insider_frames([filing], universe=tickers, identity=identity)
+        except PROGRAMMING_ERRORS:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- retained in the report as evidence
+            errors.append({"accession_number": accession, "error": repr(exc)})
+            continue
+        if not transactions.empty:
+            frames.append(transactions)
+    return {
+        "ticker": ticker,
+        "frames": frames,
+        "listed_accessions": listed_accessions,
+        "errors": errors,
+    }
+
+
 def replay_completed_quarter(
     context: Context,
     quarter: pd.Period,
@@ -117,69 +180,23 @@ def replay_completed_quarter(
     tickers = sorted(set(bulk["ticker"].dropna().astype(str)))
     cik_map = load_cik_mapping(context, tickers)
     identity = load_identity(context)
-    start = quarter.start_time.normalize()
-    end = quarter.end_time.normalize()
-
-    def worker(ticker: str, cik: str) -> dict[str, object]:
-        frames: list[pd.DataFrame] = []
-        listed_accessions: list[str] = []
-        errors: list[dict[str, str]] = []
-        try:
-            filings = insider_filings(
-                ticker,
-                cik,
-                since=start,
-                through=end,
-                done_accessions=frozenset(),
-            )
-        except PROGRAMMING_ERRORS:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- one issuer must not erase the replay
-            return {
-                "ticker": ticker,
-                "frames": frames,
-                "listed_accessions": listed_accessions,
-                "errors": [{"accession_number": "", "error": repr(exc)}],
-            }
-
-        for filing in filings:
-            raw_filing_date = getattr(filing, "filing_date", None)
-            if raw_filing_date is None:
-                continue
-            filing_date = cast(pd.Timestamp, pd.to_datetime(raw_filing_date, errors="coerce"))
-            if pd.isna(filing_date) or not start <= filing_date.normalize() <= end:
-                continue
-            accession = str(getattr(filing, "accession_number", ""))
-            if accession not in target_accessions:
-                continue
-            listed_accessions.append(accession)
-            try:
-                transactions, _, _ = _filing_frames(
-                    filing,
-                    universe=tickers,
-                    identity=identity,
-                    fetched_at=pd.Timestamp.now(tz="UTC").tz_localize(None),
-                )
-            except PROGRAMMING_ERRORS:
-                raise
-            except Exception as exc:  # noqa: BLE001 -- retained in the report as evidence
-                errors.append({"accession_number": accession, "error": repr(exc)})
-                continue
-            if not transactions.empty:
-                frames.append(transactions)
-        return {
-            "ticker": ticker,
-            "frames": frames,
-            "listed_accessions": listed_accessions,
-            "errors": errors,
-        }
-
+    scope, _, _ = load_edgar_scope(context, cik_map, None, identity_aware=False)
+    worker = partial(
+        _replay_ticker,
+        start=quarter.start_time.normalize(),
+        end=quarter.end_time.normalize(),
+        scope=scope,
+        target_accessions=target_accessions,
+        tickers=tickers,
+        identity=identity,
+    )
     results = cast(
         list[dict[str, Any]],
         run_per_ticker(
             cik_map,
             worker,
             desc=f"insider parity {quarter}",
+            log=context.log,
             max_workers=max_workers,
         ),
     )

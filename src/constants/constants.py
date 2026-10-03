@@ -7,6 +7,8 @@ formats or SEC endpoints across modules, so a change happens in one place.
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 # --------------------------------------------------------------------------- #
 # Date formats                                                                #
 # --------------------------------------------------------------------------- #
@@ -19,7 +21,9 @@ FTD_ZIP_NAME_TEMPLATE = "cnsfails{period}.zip"
 FTD_HISTORICAL_LAG_DAYS = 15
 FTD_LATEST_PERIOD_MAX_AGE_DAYS = 60
 FTD_RECENT_CACHE_DAYS = 2
-FTD_MARKET_TIMEZONE = "America/New_York"
+
+# Exchange-local time of US equity sessions and of the SEC / FINRA file calendars.
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 # --------------------------------------------------------------------------- #
 # Config directory                                                            #
@@ -29,7 +33,7 @@ DEFAULT_CONFIG_DIR = "./configs"
 # --------------------------------------------------------------------------- #
 # HEADER for extract                                                          #
 # --------------------------------------------------------------------------- #
-_HEADERS = {
+BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 
@@ -129,13 +133,6 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
 # Insider ownership events. Quarterly ZIPs remain canonical history; these form names feed
 # the daily EDGAR tail until the next ZIP is published and reconciled.
 SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
-SEC_INSIDER_FORM_FAMILIES = ("3", "4", "5")
-SEC_INSIDER_OWNER_ATOM_URL = (
-    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}"
-    "&type={form}&datea={date_from}&dateb={date_to}&owner=include"
-    "&start={start}&count={count}&output=atom"
-)
-SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
 SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_FIRST_YEAR = 2006

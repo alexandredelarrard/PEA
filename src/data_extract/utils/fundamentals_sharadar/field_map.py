@@ -1,51 +1,10 @@
-"""
-field_map.py  (src/data_extract/utils/fundamentals_sharadar/field_map.py)
-------------------------------------------------------------------------------------
-SF1's 112 vendor columns -> the repo's `HISTORY_STATEMENT_ORDER` vocabulary.
+"""Pure transform from SF1 vendor columns to the repo's `HISTORY_STATEMENT_ORDER` vocabulary.
 
-A PURE TRANSFORM. Nothing here reads or writes a table: every function takes a frame and
-returns one, so the whole map is testable without a database and phase 4 owns the I/O. The
-map itself is `configs/sharadar/sharadar_field_map.json` -- data, not code -- and this module
-is deterministic given that file plus its two registers.
-
-## The order, and why it is that order
-
-    apply_zero_rules -> apply_corrections -> rename/negate -> [build_ttm]
-                                                             -> deadjust_splits
-                                                             -> apply_derived
-
-Zero rules and corrections run FIRST, on the vendor frame, BEFORE anything is summed. A cell
-Sharadar zero-filled is unknown, not zero, and a zero that survives into a TTM sum contributes
-silently -- it does not propagate as a NULL and nobody can tell afterwards which quarters were
-real. Every derived formula runs LAST, on the TTM frame, because a ratio of two TTM levels is
-not the TTM of a ratio (decision 31, the basis the SEC path already uses).
-
-⚠ `deadjust_splits` is on the TTM frame too, and that is a CORRECTION: it used to run on the
-discrete quarters, which put two split bases inside one four-quarter window and overstated
-`epsDiluted` by up to 3.5x for the three filings after every split. See its own docstring.
-
-## Three defects the zero rule cannot reach, and the register that can
-
-`sharadar_zero_rules.json` is keyed by FIELD and matches only `0.0`. Phase 2 found three
-defects that are neither:
-
-  * `capex` is POSITIVE on 13 of 1,346 stored rows (11 of them GS). The cells are positive,
-    not zero, so an unconditional sign flip would write a negative into a column the SEC
-    catalogue declares `non_negative`.
-  * `intexp` is on a NET basis for NKE -- 14 negative quarters and 0 zeros, so the null rule
-    never inspects a single NKE row.
-  * the whole share-count and per-share block is retroactively SPLIT-ADJUSTED. Those cells are
-    correct numbers on the WRONG BASIS, which no value test can see.
-
-The first two are `sharadar_corrections.json`, keyed by (field, ticker) with a closed action
-vocabulary and a mandatory `evidence` field. The third is `deadjust_splits`, which reads the
-split events out of `sharadar_actions`.
-
-## Both registers are REFUSED without an `_APPROVED` block
-
-Not a formality. A regenerated proposal is byte-identical to a reviewed decision, so without
-the check "human-approved" is a sentence in a docstring, and the one thing these files exist
-to guarantee is that a human looked at the entries.
+No table I/O: every function takes and returns a frame. The map is `configs/sharadar/sharadar_field_map.json`
+plus two human-approved registers (zero rules, per-(field, ticker) corrections); a register without its
+`_APPROVED` block is refused. Order: zero rules -> corrections -> rename/negate on the vendor frame (before
+any sum, so a zero-filled cell becomes NaN, not a silent 0 in a TTM), then on the TTM frame `deadjust_splits`
+and `apply_derived` (a ratio of TTM levels, never the TTM of a ratio).
 """
 
 from __future__ import annotations
@@ -80,28 +39,23 @@ from src.constants.constants import (
     SHARADAR_ZERO_FILLED_FIELDS,
     SHARADAR_ZERO_RULES_FILENAME,
 )
+from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.fundamentals.kpi_catalogue import (
     DEFAULT_CONFIG_DIR,
     HISTORY_STATEMENT_ORDER,
     Catalogue,
     load_catalogue,
-    resolve_config_dir,
 )
 
 log = logging.getLogger(__name__)
 
-#: The three TTM bases a mapped column can carry. `mean` exists for the weighted-average
-#: share counts: four quarterly averages SUM to four times the year's average, so summing
-#: them is not a trailing twelve, it is a four-fold overstatement.
+#: The three TTM bases a mapped column can carry; `mean` is for weighted-average share counts, which must not be summed.
 DURATION, INSTANT, MEAN = "duration", "instant", "mean"
 
-#: The vendor identifier columns every stage carries through untouched. `date` is the FILING
-#: date on the Direct channel (Nasdaq Data Link calls it `datekey`); `reportperiod` is the
-#: period end. Both are needed downstream and neither is a value.
+#: Vendor identifier columns carried through untouched; `date` is the FILING date (`datekey`), `reportperiod` the period end.
 KEY_COLUMNS: tuple[str, ...] = ("ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod")
 
-#: Applied to `0.0` only, never to a small number. Sharadar writes a LITERAL zero where it
-#: has nothing, so an approximate test would null real values that happen to round small.
+#: Zero rules match a literal `0.0` only, never an approximate small value.
 _EXACT_ZERO = 0.0
 
 
@@ -122,8 +76,7 @@ class ColumnSpec:
 
 @dataclass(frozen=True)
 class FieldMap:
-    """The loaded, validated map plus both registers. Everything the transform needs, with
-    nothing it can reach around: a caller cannot smuggle in an unapproved rule."""
+    """The loaded, validated map plus both approved registers -- everything the transform needs."""
 
     columns: dict[str, ColumnSpec]
     added: dict[str, ColumnSpec]
@@ -132,13 +85,10 @@ class FieldMap:
     zero_rules: dict[str, str]
     corrections: dict[str, dict[str, dict]]
 
-    # `cached_property` rather than `property`: these are read inside per-field loops, and
-    # rebuilding an 88-key dict on every access made `measure_gaps` do it ~120 times per run.
-    # It writes through `__dict__`, which a frozen dataclass still permits.
+    # cached: read inside per-field loops; a frozen dataclass still permits the `__dict__` write.
     @cached_property
     def outputs(self) -> dict[str, ColumnSpec]:
-        """Every column the transform emits: the 60 contract names, the 3 added ones, and
-        the Sharadar extras under their own names."""
+        """Every emitted column: contract names, added columns and the renamed Sharadar extras."""
         return {**self.columns, **self.added, **self.extras}
 
     @cached_property
@@ -151,16 +101,13 @@ class FieldMap:
 
     @cached_property
     def sec_owned(self) -> list[str]:
-        """The columns the SEC layer owns (D18). NaN here; phase 4 merges them in."""
+        """The columns the SEC layer owns; NaN here, filled by the merge."""
         return sorted(n for n, s in self.outputs.items() if s.kind == "sec")
 
 
 @dataclass
 class TranslationReport:
-    """What the transform REMOVED, counted. Every branch that can destroy a value reports
-    here rather than doing it quietly -- `negate: if_non_positive` in particular exists to
-    null cells, and a silent null is indistinguishable from a column the vendor never sent.
-    """
+    """Counts of every value the transform nulled or rescaled, plus the splits applied and rejected."""
 
     rows_in: int = 0
     zero_nulled: dict[str, int] = dataclass_field(default_factory=dict)
@@ -196,12 +143,7 @@ def _entries(raw: dict) -> dict:
 
 
 def _require_approval(raw: dict, path: Path) -> None:
-    """Refuse a register a human has not signed.
-
-    The check is the whole governance model. Without it a re-run of the machine proposer
-    produces a file indistinguishable from a reviewed decision, and every downstream claim
-    that these rules were approved becomes unfalsifiable.
-    """
+    """Raise RuntimeError unless the register carries an `_APPROVED` block with `on` and `scope`."""
     block = raw.get(SHARADAR_APPROVAL_KEY)
     if not isinstance(block, dict) or not block.get("on") or not block.get("scope"):
         raise RuntimeError(
@@ -212,8 +154,7 @@ def _require_approval(raw: dict, path: Path) -> None:
 
 
 def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
-    """The per-field zero rule, approved. Every one of the 41 documented zero-filled fields
-    must carry a rule: a field nobody ruled on would otherwise be silently kept."""
+    """The approved per-field zero rule (`null` or `keep`); raises if any zero-filled field has no rule."""
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_ZERO_RULES_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
     _require_approval(raw, path)
@@ -228,11 +169,10 @@ def load_zero_rules(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, str]:
 
 
 def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str, dict]]:
-    """The per-(field, ticker) correction register, approved.
+    """The approved per-(field, ticker) correction register.
 
-    `evidence` is required on every entry and not merely conventional: this repo has been
-    burned by fallbacks with no stated authority, and a correction whose justification is
-    "it looked wrong" cannot be re-checked when the roster widens.
+    Raises if the file is missing, unapproved, uses an action outside the closed vocabulary, or an entry lacks
+    `reason` or `evidence`.
     """
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_CORRECTIONS_FILENAME
     if not path.exists():
@@ -242,24 +182,22 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
     register = _entries(raw)
     for field, by_ticker in register.items():
         for ticker, entry in by_ticker.items():
-            where = f"{path}: {field}/{ticker}"
-            action = entry.get("action")
-            if action not in SHARADAR_CORRECTION_ACTIONS:
-                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
-            for key in ("reason", "evidence"):
-                if not str(entry.get(key, "")).strip():
-                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what was measured or which filing was read.")
+            _check_correction(f"{path}: {field}/{ticker}", entry)
     return register
 
 
-def _basis_for(name: str, source: str, catalogue: Catalogue) -> str:
-    """A direct column's TTM basis, taken from the CATALOGUE where it has an opinion.
+def _check_correction(where: str, entry: dict) -> None:
+    """Raise unless one register entry uses a known action and states its `reason` and `evidence`."""
+    action = entry.get("action")
+    if action not in SHARADAR_CORRECTION_ACTIONS:
+        raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
+    for key in ("reason", "evidence"):
+        if not str(entry.get(key, "")).strip():
+            raise RuntimeError(f"{where} has no `{key}`. Every correction states what was measured or which filing was read.")
 
-    The catalogue is the authority for the 60 contract names, so the basis cannot drift from
-    the SEC path's. It has no opinion on one case -- `freeCashflow`, which the catalogue calls
-    `derived` (it computes it) while this map takes it straight from Sharadar's `fcf`. There
-    the Sharadar flow set decides, and `fcf` is in it.
-    """
+
+def _basis_for(name: str, source: str, catalogue: Catalogue) -> str:
+    """A direct column's TTM basis: the KPI catalogue's kind where it declares one, else the Sharadar flow set."""
     spec = catalogue.fields.get(name)
     if spec is not None and spec.kind == "instant":
         return INSTANT
@@ -303,21 +241,23 @@ def _spec_from(name: str, entry: dict, *, catalogue, path: Path, basis: str | No
     return ColumnSpec(name=name, kind=kind, basis=basis)
 
 
-def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula: str | None, path: Path) -> None:
-    """The prose `formula` is for a reader; `op` + `inputs` is what runs. Asserting they
-    agree keeps the config honest -- a formula string nobody executes is a comment that drifts.
-    """
+def _expected_formula(op: str, inputs: tuple[str, ...]) -> str | None:
+    """The prose formula `op` computes over `inputs`, or None when the arity is wrong for `op`."""
     if op == "quarter":
-        expected = f"the DISCRETE quarter's {inputs[0]}" if len(inputs) == 1 else None
-    elif op == "sum":
-        expected = " + ".join(inputs)
-    elif op == "sum_optional":
-        # the formula has to SHOW which legs are optional, or the two ops read identically
-        expected = " + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]]) if len(inputs) >= 2 else None
-    elif op == "ratio":
-        expected = " / ".join(inputs) if len(inputs) == 2 else None
-    else:
-        expected = f"{inputs[0]} / {inputs[1]} - 1" if len(inputs) == 2 else None
+        return f"the DISCRETE quarter's {inputs[0]}" if len(inputs) == 1 else None
+    if op == "sum":
+        return " + ".join(inputs)
+    if op == "sum_optional":
+        # the formula must show which legs are optional, or it reads like `sum`
+        return " + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]]) if len(inputs) >= 2 else None
+    if op == "ratio":
+        return " / ".join(inputs) if len(inputs) == 2 else None
+    return f"{inputs[0]} / {inputs[1]} - 1" if len(inputs) == 2 else None
+
+
+def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula: str | None, path: Path) -> None:
+    """Raise unless the prose `formula` equals what `op` + `inputs` actually compute."""
+    expected = _expected_formula(op, inputs)
     if expected is None:
         raise RuntimeError(f"{path}: {name} op {op!r} has the wrong arity for inputs {inputs}")
     if formula != expected:
@@ -325,21 +265,16 @@ def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula
 
 
 def load_field_map(config_dir: str | None = DEFAULT_CONFIG_DIR) -> FieldMap:
-    """The validated map, built once per (process, config DIRECTORY). It was the only loader
-    in the family with no cache at all, while calling the cached `load_catalogue` inside
-    itself -- so every caller re-read and re-validated both registers."""
+    """The validated map, built once per (process, resolved config directory)."""
     return _field_map_at(resolve_config_dir(config_dir))
 
 
 @cache
 def _field_map_at(config_dir: str) -> FieldMap:
-    """Load and validate the map, both registers and the contract they must satisfy.
+    """Load and validate the map and both registers; raise RuntimeError on any contract violation.
 
-    FAILS LOUDLY, and the two failures worth naming: a `HISTORY_STATEMENT_ORDER` name with no
-    entry (the merged table would carry a column nothing fills, and the contract asserts by
-    LIST EQUALITY, so it would pass), and a `from` naming a column SF1 does not deliver
-    (`fields=` silently drops an unavailable field rather than erroring, so a typo yields a
-    missing column and no warning).
+    Rejects an unmapped or stray `HISTORY_STATEMENT_ORDER` name, a `from` SF1 does not deliver, an extra whose
+    `to` collides with a contract column or another extra, and a derived input the map does not produce.
     """
     path = Path(config_dir) / SHARADAR_CONFIG_SUBDIR / SHARADAR_FIELD_MAP_FILENAME
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -347,16 +282,7 @@ def _field_map_at(config_dir: str) -> FieldMap:
 
     columns = {n: _spec_from(n, e, catalogue=catalogue, path=path) for n, e in raw["columns"].items()}
     added = {n: _spec_from(n, e, catalogue=catalogue, path=path) for n, e in raw["added_columns"].items()}
-    # An extra is keyed by its VENDOR name and emitted under its repo one. `to` is required:
-    # D16 says "where no repo counterpart exists, keep Sharadar's own name", and that was read
-    # as "keep Sharadar's own SPELLING" -- which left `ncfx`, `prefdivis` and `accoci` sitting
-    # in a table whose other 63 columns are camelCase. The vendor spelling stays the KEY, so
-    # `sharadar_fundamentals` is still the thing this file maps FROM.
-    # `negate` is read here as well as on the contract columns: an extra can be a cash-flow
-    # OUTFLOW too. `dividendsPaid` is the case that forced it -- Sharadar stores `ncfdiv`
-    # outflow-negative, and while the key was silently dropped here the column reached the
-    # cube on the vendor's sign, inverting `payout_ratio` across 2.96 M rows and collapsing
-    # `sustainable_growth_rate` onto `returnOnEquity`.
+    # An extra is keyed by its vendor name, emitted under its camelCase `to`, and may be a negated outflow.
     extras = {
         e["to"]: ColumnSpec(name=e["to"], kind="direct", source=n, basis=e["basis"], split_basis=e.get("split_basis"), negate=e.get("negate"))
         for n, e in raw["extras"].items()
@@ -368,10 +294,7 @@ def _field_map_at(config_dir: str) -> FieldMap:
     stray = sorted(set(columns) - set(HISTORY_STATEMENT_ORDER))
     if stray:
         raise RuntimeError(f"{path} maps {stray}, which are not in HISTORY_STATEMENT_ORDER. A column beyond the 60 belongs in `added_columns`.")
-    # ⚠ Checked on the SOURCE, not on the emitted name. An extra is now keyed by its vendor
-    # column and emitted under a repo one, so testing the OUTPUT against `SHARADAR_SF1_COLUMNS`
-    # would reject every correctly renamed extra and accept a `to` that shadows a contract
-    # column -- exactly backwards on both counts.
+    # SF1 membership is checked on the vendor SOURCE, not the emitted name.
     for name, spec in extras.items():
         if spec.source not in set(SHARADAR_SF1_COLUMNS):
             raise RuntimeError(f"{path}: extra {name!r} reads {spec.source!r}, which is not an SF1 column")
@@ -406,9 +329,7 @@ def _field_map_at(config_dir: str) -> FieldMap:
 
 
 def _assert_derived_inputs_resolve(field_map: FieldMap, path: Path) -> None:
-    """Every derived input must be a column the transform actually produces, and no derived
-    column may depend on another -- the formulas are one pass over the TTM frame, and a
-    hidden dependency would evaluate against a column that is still NaN."""
+    """Raise unless every derived input is a produced, non-derived column (formulas run in one pass)."""
     outputs, derived = field_map.outputs, field_map.derived
     for name, spec in derived.items():
         for source in spec.inputs:
@@ -426,14 +347,9 @@ def _assert_derived_inputs_resolve(field_map: FieldMap, path: Path) -> None:
 # the vendor-frame cleaning stages                                             #
 # --------------------------------------------------------------------------- #
 def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """Replace `0.0` with NaN for every field ruled `"null"`.
+    """Replace `0.0` with NaN for every field ruled `"null"`, on the vendor frame before any sum.
 
-    Runs on the VENDOR frame, before any sum. A zero that survives into a TTM contributes
-    silently and is unrecoverable afterwards; a NaN propagates, which is the honest answer for
-    a cell whose value Sharadar never had.
-
-    Fails loudly on a zero-filled field present in the frame with no rule -- the register is
-    the decision record, and a field nobody ruled on must not default to "keep".
+    Raises if a zero-filled field present in the frame has no rule.
     """
     ungoverned = sorted((SHARADAR_ZERO_FILLED_FIELDS & set(frame.columns)) - set(rules))
     if ungoverned:
@@ -452,12 +368,7 @@ def apply_zero_rules(frame: pd.DataFrame, rules: dict[str, str], *, report: Tran
 
 
 def apply_corrections(frame: pd.DataFrame, corrections: dict[str, dict[str, dict]], *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """Apply the (field, ticker) register to the VENDOR frame.
-
-    Before the field map, so `fundamentals_sharadar` stays a faithful record of what the
-    vendor sent (D7) and every correction is one auditable, reversible step rather than an
-    `if ticker == "GS"` scattered through the rename.
-    """
+    """Null the cells the (field, ticker) register targets, on the vendor frame (the stored table stays as sent)."""
     out = frame.copy()
     for field, by_ticker in corrections.items():
         if field not in out.columns:
@@ -465,70 +376,43 @@ def apply_corrections(frame: pd.DataFrame, corrections: dict[str, dict[str, dict
         for ticker, entry in by_ticker.items():
             rows = out["ticker"] == ticker
             action = entry["action"]
-            if action == "null":
-                hit = rows & out[field].notna()
-            elif action == "null_if_positive":
-                hit = rows & (out[field] > 0)
-            else:
-                hit = rows & (out[field] < 0)
+            hit = _correction_hit(out[field], rows, action)
             count = int(hit.sum())
-            if count:
-                out.loc[hit, field] = np.nan
-                if report is not None:
-                    key = f"{field}/{ticker}:{action}"
-                    report.corrected[key] = report.corrected.get(key, 0) + count
+            if not count:
+                continue
+            out.loc[hit, field] = np.nan
+            if report is not None:
+                key = f"{field}/{ticker}:{action}"
+                report.corrected[key] = report.corrected.get(key, 0) + count
     return out
+
+
+def _correction_hit(column: pd.Series, rows: pd.Series, action: str) -> pd.Series:
+    """The cells of `column` inside `rows` that a correction `action` nulls."""
+    if action == "null":
+        return rows & column.notna()
+    if action == "null_if_positive":
+        return rows & (column > 0)
+    return rows & (column < 0)
 
 
 # --------------------------------------------------------------------------- #
 # the split de-adjustment                                                      #
 # --------------------------------------------------------------------------- #
-#: Calendar days within which a Sharadar and a yfinance event are the SAME event. Vendors
-#: disagree by a day or two on whether an ex-date is the record or the trading date; no
-#: ticker in the universe has ever split twice inside a week.
+#: Calendar days within which a Sharadar and a yfinance split are the same event.
 SPLIT_MATCH_DAYS = 7
-#: How exactly a ratio must reproduce a small-integer fraction to read as a split. Sits in a
-#: MEASURED gap, 30x above the rounding error and 7x below the nearest false positive:
-#:
-#:   * Sharadar publishes ratios to 5 dp, so a genuine reverse split arrives ROUNDED --
-#:     `0.33333` is 3.33e-6 from 1/3 and `0.14286` is 2.86e-6 from 1/7. At 1e-6 both were
-#:     REJECTED, which is what vetoed DD's and MSI's real reverse splits.
-#:   * The nearest false positive is BDX `1.272` (14/11) at 7.27e-4, then SJM `0.945`
-#:     (17/18) at 5.6e-4. Both stay rejected.
-#:
-#: A spinoff factor lands NEAR a simple fraction without being one, so this must not be
-#: widened further to make a cluster pass -- 1e-3 would readmit exactly what it exists to
-#: reject.
+#: Max distance from a small-integer fraction to read as a split; admits 5-dp rounding, rejects spinoff factors.
 SPLIT_INTEGER_TOL = 1e-4
-#: Relative gap above which two vendors reporting the SAME date are reporting DIFFERENT
-#: events rather than the same one rounded. GOOGL 2014 (yfinance 1.998 vs Sharadar 2.0) is
-#: 0.1% apart and must read as agreement; DD 2019 (0.4725 vs 0.33333) is 42% apart and HON
-#: 2026 (0.9535 vs 0.5) is 91% apart -- those are a price factor and a share factor for one
-#: corporate action, and only one of them belongs in a share-count list.
+#: Relative ratio gap above which two vendors on one date describe different events (price vs share factor).
 SPLIT_RATIO_CONFLICT_TOL = 0.01
-#: Largest denominator a genuine split ratio may have. Real splits are ratios of SMALL
-#: integers -- 2:1, 3:2, 4:3, 5:4, 1:5, 1:10, 1:20 -- and stock dividends are 21/20 or 11/10.
-#: Corporate-action artefacts are not: BDX's 1.025 is 41/40, SJM's 0.945 is 189/200.
+#: Largest denominator a genuine split ratio may have (2:1, 3:2, 1:20, 21/20 stock dividend, ...).
 SPLIT_MAX_DENOMINATOR = 20
 
 
 def _is_split_shaped(ratio: float) -> bool:
-    """Whether `ratio` has the shape of a share split rather than a corporate-action factor.
+    """Whether `ratio` is a fraction of small integers (a split or stock dividend), not a spinoff/merger price factor.
 
-    A share split is declared as "n new shares for every m old", so its ratio is a fraction
-    of SMALL integers: 2/1, 3/2, 4/3, 5/4, 20/1, 50/1, and the reverse cases 1/2, 1/5, 1/10,
-    1/20. Stock dividends sit at the edge of the same family (21/20 = a 5% stock dividend,
-    11/10 = 10%) and ARE genuine share-count events, so they belong in.
-
-    What does NOT reproduce such a fraction is a price-adjustment factor from a spinoff,
-    merger or exchange offer. Those are dividend-yield-like numbers that merely land near a
-    fraction: BDX 1.025 (41/40) and 1.272, CMCSA 1.067 (16/15), SJM 0.945 (189/200), WTW
-    0.3775, CCL 0.0012. They must never reach a share count -- BDX's two factors compound to
-    1.304 and pushed its whole PIT series 23% off the SEC cover page.
-
-    ⚠ This is applied to BOTH vendors, not just Sharadar. yfinance's `Stock Splits` column
-    carries spinoff factors too, which is how BDX and CMCSA broke when the union rule trusted
-    it unconditionally.
+    Applied to both vendors: yfinance's `Stock Splits` also carries spinoff factors.
     """
     if not ratio or ratio <= 0 or not np.isfinite(ratio):
         return False
@@ -537,12 +421,7 @@ def _is_split_shaped(ratio: float) -> bool:
 
 
 def _is_simple_split(ratio: float) -> bool:
-    """Whether `ratio` is an INTEGER or the reciprocal of one -- `n:1` or `1:n`.
-
-    A strict subset of `_is_split_shaped`, and used only to decide what to flag for review.
-    Nearly every real event is one of these; the exceptions are the n:m forwards (3:2, 5:4)
-    and the stock dividends (21/20, 11/10), which are genuine but rare enough that a new one
-    is worth a human look before it reaches a share count."""
+    """Whether `ratio` is split-shaped AND `n:1` or `1:n`; used only to decide what to flag for review."""
     if not _is_split_shaped(ratio):
         return False
     frac = Fraction(float(ratio)).limit_denominator(SPLIT_MAX_DENOMINATOR)
@@ -550,58 +429,13 @@ def _is_simple_split(ratio: float) -> bool:
 
 
 def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """The GENUINE share splits, as `(ticker, date, value)`, from BOTH vendors.
+    """The genuine share splits from both vendors, as `(ticker, date, value)`.
 
-    ⚠ A `split` row CO-DATED WITH A SPINOFF IS STILL A SPLIT. This function used to drop
-    those, on the argument that HON's `sharesbas` is unchanged across 2026-06-29
-    (316,826,560 -> 316,940,010). THAT ARGUMENT IS VOID: Sharadar restates `sharesbas`
-    retroactively, so it is continuous across a real split BY CONSTRUCTION and its continuity
-    proves nothing either way.
-
-    Deep history discriminates, and says the split is real. HON in 2010 reads `sharesbas`
-    390,086,318 against an actual ~780M and `price` 94.52 against an actual ~47; its 2015
-    `dps` reads 1.03 against 0.5175 and `epsdil` 3.20 against 1.60. Four fields restated 2x,
-    with `marketcap` correct ($36.9bn in 2010) precisely because the two legs cancel. All 27
-    formerly vetoed rows are split-shaped and 24 are reciprocals of small integers -- the
-    reverse-split signature (EXPE/ITT/KSU/HON 0.5, TYC/LDOS/PRSU 0.25, DD/HLT/RRD/SBRA 1/3,
-    MSI/CCEC/UNTD 1/7, T1/HSH 0.2). Vetoing them left `sharesOutstandingPit` off by an
-    integer factor on 26 tickers.
-
-    The shape test is now the only filter, as for every other candidate, and the SPINOFF'S
-    price factor is separated from the SPLIT'S share factor by `union_split_sources`'
-    conflict rule rather than by dropping the row.
-
-    ⚠ `sharadar_actions` is also INCOMPLETE, which is worse than being wrong, because it is
-    wrong PER TICKER: it misses GOOGL 2022 x20, NVDA 2021 x4, TSLA 2022 x3, AVGO 2024 x10,
-    CMG 2024 x50, ANET 2024 x4, BKNG 2026 x25, MNST 2023 and 2026 x2, and AMCR 2026 x0.2 --
-    so AAPL is de-adjusted and GOOGL is not, and the same column sits on different bases in
-    one cross-section. yfinance (`prices_splits`) has every one of those events, so the two
-    sources cross-validate:
-
-      * in BOTH                         -> keep, on the YFINANCE date. That is the ex-date
-                                           Yahoo adjusted its own prices on, so the share
-                                           factor and `close_split` step on the same day.
-                                           WTW 2016-01-05 x0.3775 is genuine and lands here
-                                           despite its odd ratio. If the two RATIOS also
-                                           disagree materially, the SPLIT-SHAPED one wins --
-                                           see `union_split_sources`.
-      * yfinance ONLY, split-shaped     -> keep. This is the nine-hole fix.
-      * yfinance ONLY, not split-shaped -> DROP. yfinance's `Stock Splits` column also
-                                           carries SPINOFF factors: BDX 2022-04-01 x1.025
-                                           and 2026-02-10 x1.272 compound to 1.304 and put
-                                           BDX's whole PIT series 23% off the SEC cover page.
-      * Sharadar ONLY, split-shaped     -> keep, and WARN. Real but uncorroborated.
-      * Sharadar ONLY, not split-shaped -> DROP. The false-positive signature: SJM
-                                           2002-05-30 x0.945 is a merger share-issuance
-                                           factor, absent from yfinance; CCL's 0.0012
-                                           compounds into a 1000x error.
-
-    `yf_splits=None` falls back to Sharadar alone, so a cold `prices_splits` degrades to the
-    previous behaviour rather than emptying the list.
+    `sharadar_actions` is incomplete per ticker, so it is cross-validated against yfinance (`prices_splits`) by
+    `union_split_sources`. A Sharadar `split` co-dated with a `spinoff` is still a split; the spinoff's price
+    factor is separated by the ratio-conflict rule, not by dropping the row. `yf_splits=None` uses Sharadar alone.
     """
-    # An EMPTY frame still needs a datetime `date`: the union subtracts two date columns, and
-    # on a bare `pd.DataFrame(columns=...)` that column is `object` and the subtraction raises
-    # TypeError -- turning "this ticker has no Sharadar rows" into a crash.
+    # the empty frame needs a datetime `date`, or the union's date subtraction raises TypeError
     empty = pd.DataFrame(
         {
             "ticker": pd.Series(dtype="object"),
@@ -627,8 +461,7 @@ def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = 
             for _, row in candidates.iterrows()
         ]
         sharadar = pd.DataFrame(kept, columns=["ticker", "date", "value", "label"]) if kept else empty
-        # `spinoff` rows no longer VETO anything -- they are read purely to name the rows
-        # this function's behaviour changed on, which is the only set worth a human's time.
+        # `spinoff` rows veto nothing; they only name co-dated splits for review
         codated = set(map(tuple, frame.loc[frame["action"] == SHARADAR_ACTION_SPINOFF, ["ticker", "date"]].to_numpy()))
 
     yf = pd.DataFrame(columns=["ticker", "date", "value"])
@@ -644,13 +477,7 @@ def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = 
 
 
 def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
-    """Name the events a co-dated `spinoff` used to veto, and flag the odd-shaped ones.
-
-    These 27 rows are the entire behavioural change of removing the veto, so they are the
-    entire review surface. Warning on every odd-shaped event instead would print ~300 lines
-    of long-standing, twice-corroborated 3:2 splits and 5% stock dividends -- which is how a
-    warning stops being read.
-    """
+    """Warn on kept splits co-dated with a spinoff, and separately on those that are not `n:1` / `1:n`."""
     if out.empty or not codated:
         return
     hit = [
@@ -677,14 +504,10 @@ def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
 
 
 def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[float, str | None]:
-    """`(ratio to keep, a warning line or None)` for one corroborated event.
+    """`(ratio to keep, warning line or None)` for one corroborated event.
 
-    Returns yfinance's ratio unchanged whenever the two vendors agree to within
-    `SPLIT_RATIO_CONFLICT_TOL`, which is the overwhelming majority and includes GOOGL 2014's
-    1.998-vs-2.0 rounding. Only a MATERIAL disagreement is resolved, and only in the one
-    direction that is defensible: exactly one of the two being split-shaped. If both are, or
-    neither is, there is no evidence to prefer Sharadar and yfinance keeps the tie -- with a
-    warning either way, because a genuine conflict is always worth a human look.
+    yfinance's ratio unless the vendors differ by more than `SPLIT_RATIO_CONFLICT_TOL` and only Sharadar's is
+    split-shaped; any material disagreement yields a warning line.
     """
     yf_value = float(yf_row["value"])
     label = f"{yf_row['ticker']} {pd.Timestamp(yf_row['date']).date()}"
@@ -711,21 +534,17 @@ def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[floa
     return yf_value, None
 
 
+def _reject_yfinance_only(row: pd.Series, report: TranslationReport | None) -> None:
+    """Record an uncorroborated, non-split-shaped yfinance event as rejected on `report`, if any."""
+    if report is not None:
+        report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
+
+
 def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """Apply the four-case corroboration rule to two already-cleaned event lists.
+    """Merge two cleaned split lists into one, sorted by `(ticker, date)`.
 
-    Split out from `split_events` so the rule is testable on a synthetic fixture with no DB
-    and no network -- it is the part that decides whether a share count is right.
-
-    ⚠ THE DATE AND THE RATIO ARE DECIDED SEPARATELY on a corroborated event. The DATE is
-    always yfinance's, because `close_split` steps on the day Yahoo adjusted its own prices
-    and the two factors only cancel if they step together. The RATIO is yfinance's only while
-    the two vendors agree: where they differ by more than `SPLIT_RATIO_CONFLICT_TOL` they are
-    describing DIFFERENT THINGS on one date -- a spinoff's price factor and a reverse split's
-    share factor -- and the SPLIT-SHAPED one is the one a share count needs. DD 2019-06-03
-    (yfinance 0.4725 vs Sharadar 0.33333) and HON 2026-06-29 (0.9535 vs 0.5) are both this
-    case, and taking yfinance's number there is what left `sharesOutstandingPit` off by 3x
-    and 2x respectively.
+    In both (within `SPLIT_MATCH_DAYS`): kept on the yfinance DATE (so it steps with `close_split`), ratio per
+    `_resolve_ratio_conflict`. One vendor only: kept iff split-shaped (Sharadar-only kept with a warning).
     """
     matched_sharadar: set[int] = set()
     events: list[dict] = []
@@ -736,8 +555,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
         near = sharadar.index[(sharadar["ticker"] == row["ticker"]) & ((sharadar["date"] - row["date"]).abs() <= pd.Timedelta(days=SPLIT_MATCH_DAYS))]
         matched_sharadar.update(near)
         value = float(row["value"])
-        # Corroboration overrides shape: an event BOTH vendors report is genuine whatever
-        # its ratio (WTW's 0.3775). Uncorroborated, the shape test is all there is.
+        # corroboration overrides shape; uncorroborated, the shape test decides
         if len(near):
             kept_both += 1
             value, note = _resolve_ratio_conflict(row, sharadar.loc[near])
@@ -746,8 +564,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
         elif _is_split_shaped(value):
             kept_yf += 1
         else:
-            if report is not None:
-                report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
+            _reject_yfinance_only(row, report)
             continue
         events.append({"ticker": row["ticker"], "date": row["date"], "value": value})
 
@@ -787,11 +604,10 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
 
 
 def forward_split_factor(tickers: pd.Series, dates: pd.Series, splits: pd.DataFrame) -> pd.Series:
-    """The product of every genuine split dated STRICTLY AFTER each row's own filing date.
+    """Product of every split dated STRICTLY AFTER each row's filing date (1.0 if none).
 
-    That product is exactly the factor Sharadar applied retroactively, so dividing a count by
-    it (or multiplying a per-share figure) recovers the as-filed basis. A row filed after all
-    of a ticker's splits gets 1.0 and is untouched.
+    This is the factor Sharadar applied retroactively: divide a count (multiply a per-share figure) by it to
+    recover the as-filed basis.
     """
     factor = pd.Series(1.0, index=dates.index)
     if splits.empty:
@@ -811,38 +627,12 @@ def deadjust_splits(
     *,
     report: TranslationReport | None = None,
 ) -> pd.DataFrame:
-    """Undo Sharadar's RETROACTIVE split adjustment on the columns that carry it.
+    """Undo Sharadar's retroactive split adjustment on every column with a declared `split_basis`.
 
-    SF1 reports a pre-split quarter on the POST-split basis across its whole share block --
-    `sharesbas`, `shareswa`, `shareswadil`, `eps`, `epsdil` and `dps` -- and `sharefactor` is
-    1.0 on every affected row, so nothing in the payload flags it. That makes those columns
-    NOT POINT-IN-TIME: anything multiplying one by an as-filed price is wrong by the split
-    factor for every date before the split.
-
-    Counts are DIVIDED and per-share figures MULTIPLIED. Verified against the SEC cover page:
-    WMT matches on 10 of 10 pre-split rows exactly, NVDA on 10 of 11 (the 11th differs only by
-    Sharadar's own 4-significant-figure rounding).
-
-    ⚠ RUNS ON THE **TTM** FRAME, after the four-quarter aggregation -- not on the discrete
-    quarters, which is where it used to run and where it was WRONG.
-
-    Sharadar stores the whole series on ONE basis (today's), so `as_filed = adjusted / F`
-    where `F` is the factor at the row's own filing date. De-adjusting each QUARTER first put
-    four numbers on two different bases into one window whenever that window straddled a
-    split, and the mean of those is on no basis at all. Measured on the 3 splits this roster
-    has: NVDA's 2024-08-28 `dilutedShares` came out 8.08bn -- the mean of three de-adjusted
-    2.49bn quarters and one 24.9bn one -- against a true 24.9bn, and `epsDiluted` read 6.56
-    against an as-filed ~2.16. AMZN was worse, at 3.48x.
-
-    Aggregating FIRST and de-adjusting the RESULT once fixes it, because every quarter in the
-    window shares the vendor's single basis, so the mean is coherent; dividing it by `F` at
-    the row's date then maps it to the basis in force at that date -- which is exactly what
-    the filer does when it restates comparatives. Where a window does NOT straddle a split
-    the two orders are algebraically identical (`mean(x)/F == mean(x/F)`), which is why only
-    9 of 59 rows moved.
-
-    It still keys on each output column's declared `split_basis`, and the TTM frame still
-    carries `ticker` and `date`, so nothing in the body had to change.
+    SF1 restates the whole share block (`sharesbas`, `shareswa`, `shareswadil`, `eps`, `epsdil`, `dps`) on
+    today's basis, so it is not point-in-time. `count` columns are divided and per-share columns multiplied by
+    `forward_split_factor` at the row's filing date. Must run on the TTM frame (every quarter in a window shares
+    one vendor basis), never on discrete quarters. With no split events, warns and returns the frame unchanged.
     """
     targets = {n: s for n, s in field_map.outputs.items() if s.split_basis}
     if not targets:
@@ -872,20 +662,11 @@ def deadjust_splits(
 # the rename                                                                   #
 # --------------------------------------------------------------------------- #
 def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """A vendor ARQ frame -> the repo-named ARQ frame, still on the DISCRETE-quarter grain.
+    """A vendor ARQ frame -> the repo-named ARQ frame, still on the discrete-quarter grain.
 
-    Zero rules, then corrections, then the direct renames with their sign guard. Derived
-    formulas are NOT evaluated here: they run on the TTM frame, which `build_ttm` produces
-    (decision 31).
-
-    ⚠ NEITHER is the split de-adjustment, and it used to be. It moved into `build_ttm`, AFTER
-    the four-quarter aggregation -- see `deadjust_splits` for the measurement that forced the
-    move. Taking `actions=` here would now be a silently ignored argument, so the parameter is
-    gone rather than deprecated.
-
-    `sec` and `null` columns are emitted as all-NaN. They are part of the contract -- which
-    asserts by LIST EQUALITY -- and phase 4 fills the 15 SEC-owned ones from
-    `fundamentals_history_sec`. The 3 `null` ones have no source anywhere and stay empty.
+    Zero rules, corrections, then direct renames with their sign guards. Derived formulas and split
+    de-adjustment run later on the TTM frame (`build_ttm`). `sec` and `null` columns are emitted all-NaN; the
+    merge fills the SEC-owned ones. Raises if a mapped vendor column is missing from the frame.
     """
     report = report if report is not None else TranslationReport()
     report.rows_in = len(frame)
@@ -901,8 +682,7 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
     cleaned = apply_zero_rules(frame, field_map.zero_rules, report=report)
     cleaned = apply_corrections(cleaned, field_map.corrections, report=report)
 
-    # Accumulated then concatenated ONCE: ~90 single-column inserts refragment the block
-    # manager on every assignment and make pandas warn about it.
+    # concatenated once: per-column inserts fragment the frame and trigger pandas warnings
     columns: dict[str, pd.Series] = {}
     for name, spec in field_map.direct.items():
         values = cleaned[spec.source].astype("float64")
@@ -919,35 +699,12 @@ def translate(frame: pd.DataFrame, field_map: FieldMap, *, report: TranslationRe
     return pd.concat([keys, pd.DataFrame(columns, index=cleaned.index)], axis=1)
 
 
-#: Direct columns whose CATALOGUE-DECLARED sign is enforced here, at map time.
-#:
-#: The corrections register's `_APPROVED` note states the doctrine this implements: a ticker
-#: entry is for a SYSTEMATIC per-filer defect, while a cell whose sign the column cannot hold
-#: is handled by a guard that NULLs it and counts it. `capex` had such a guard
-#: (`negate: if_non_positive`); `interestExpense` had none, so it was declared
-#: `sign: non_negative` and carried 748 negative cells over 129 tickers -- 1.45% of its
-#: non-null rows, measured 2026-09-15. A register entry per filer cannot cover 129 of them.
-#:
-#: A negative `intexp` is Sharadar reporting interest NET of interest income, which is the
-#: exact basis defect the register's NKE entry describes: "Negating is NOT lossless here: it
-#: would report an $8m interest expense NKE never incurred ... the honest answer is NULL."
-#: The same reasoning applies column-wide, so the cells are nulled rather than flipped.
-#:
-#: ⚠ SCOPED TO ONE COLUMN ON PURPOSE. Five further duration columns violate their declared
-#: sign on the same Q4-by-subtraction mechanism -- `sbcomp` 1,255 cells, `depamor` 234,
-#: `cor` 76, `sgna` 73, `rnd` 21 -- and enforcing all six would null 2,407 cells and move
-#: cube features. That is a wider declared numeric change and is deliberately NOT taken here;
-#: add a name to this set when it is.
+#: Direct columns whose declared `non_negative` sign is enforced at map time by nulling (not flipping) negatives.
 SIGN_ENFORCED: frozenset[str] = frozenset({"interestExpense"})
 
 
 def _null_if_negative(values: pd.Series, name: str, report: TranslationReport) -> pd.Series:
-    """NULL the cells whose sign the column's declared `non_negative` cannot hold.
-
-    Not a flip: the negative is evidence the cell is on a NET basis, so its magnitude is not
-    the gross figure the column means. Counted, because a silent null is indistinguishable
-    from a column the vendor never sent.
-    """
+    """NULL (not flip) negative cells in a `non_negative` column -- they are net-basis figures; counted and warned."""
     violations = values < 0
     count = int(violations.sum())
     if count:
@@ -963,13 +720,7 @@ def _null_if_negative(values: pd.Series, name: str, report: TranslationReport) -
 
 
 def _negate_if_non_positive(values: pd.Series, name: str, report: TranslationReport) -> pd.Series:
-    """Flip the sign where Sharadar's convention holds; NULL the cells where it does not.
-
-    `capex` is the only user. The repo declares it `sign: non_negative` and Sharadar stores it
-    negative, but the convention is NOT universal -- 13 of 1,346 stored rows are positive (11
-    of them GS, plus BA, CVX and IBM). An unconditional flip turns each of those into a
-    negative the column cannot hold, so the exceptions are nulled and COUNTED.
-    """
+    """Negate an outflow stored negative; NULL (and count) the positive cells instead of flipping them negative."""
     violations = values > 0
     count = int(violations.sum())
     out = -values
@@ -984,20 +735,10 @@ def _negate_if_non_positive(values: pd.Series, name: str, report: TranslationRep
 # the derived formulas -- LAST, on the TTM frame                               #
 # --------------------------------------------------------------------------- #
 def apply_derived(frame: pd.DataFrame, field_map: FieldMap, only: set[str] | None = None) -> pd.DataFrame:
-    """Evaluate every `derived` column on the TTM frame.
+    """Evaluate every `derived` column on the TTM frame (a ratio of TTM levels, never the TTM of a ratio).
 
-    A ratio of two TTM levels, never the TTM of a ratio: `profitMargins` is TTM net income
-    over TTM revenue (decision 31). `op` == `quarter` is skipped here -- `build_ttm` owns the
-    discrete-quarter columns, because only it holds the un-summed quarter.
-
-    A zero DENOMINATOR yields NaN, not an infinity. `x / 0` survives every plausibility check
-    downstream and then poisons a z-score.
-
-    `only` restricts the pass to a NAMED subset. Phase 4 needs it: after the merge, the
-    columns whose inputs actually changed must be recomputed (`stockholdersEquityInclNci`'s
-    NCI leg is SEC-owned and does not exist until then) while every OTHER derived column must
-    be left exactly as built -- a blanket re-run would quietly undo a registered override.
-    One evaluator, two callers, so the formulas cannot drift apart.
+    `op == "quarter"` is skipped (`build_ttm` owns it). A zero denominator yields NaN, not inf. `only` restricts
+    the pass to named columns, so the post-merge recompute leaves every other derived column as built.
     """
     computed: dict[str, pd.Series] = {}
     for name, spec in field_map.derived.items():
@@ -1010,9 +751,7 @@ def apply_derived(frame: pd.DataFrame, field_map: FieldMap, only: set[str] | Non
         if spec.op == "sum":
             computed[name] = sum(parts[1:], start=parts[0])
         elif spec.op == "sum_optional":
-            # first leg REQUIRED, the rest coalesced to 0: a widening must not be able to
-            # destroy the narrow line it widens. `.fillna(0.0)` on the tail, then re-impose
-            # the head's own NULLs, so a filing with neither leg still reads NULL.
+            # first leg required (its NULLs re-imposed), the rest coalesced to 0
             widened = sum((p.fillna(0.0) for p in parts[1:]), start=parts[0].fillna(0.0))
             computed[name] = widened.where(parts[0].notna())
         else:

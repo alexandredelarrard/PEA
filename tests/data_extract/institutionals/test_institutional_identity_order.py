@@ -29,14 +29,31 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
         "fetch_13f_managers",
         "fetch_insider_transactions",
         "fetch_insider_edgar",
-        "fetch_13d_edgar",
-        "fetch_13g_edgar",
-        "fetch_8k_edgar",
     ):
         monkeypatch.setattr(module, name, mark(name))
+    # 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
+    monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].desc))
     monkeypatch.setattr(module, "cache_dir", lambda *args: Path("cache"))
-    monkeypatch.setattr(module, "build_symbol_tenure", mark("symbol_tenure"))
-    monkeypatch.setattr(module, "build_entity_lineage", mark("entity_lineage"))
+    scan = SimpleNamespace(owner_pairs=object())
+    tenure = object()
+
+    def form345_scan(cache):
+        assert cache == Path("cache")
+        order.append("form345_scan")
+        return scan
+
+    def symbol_tenure(context, given_scan, config_dir):
+        assert given_scan is scan
+        order.append("symbol_tenure")
+        return tenure
+
+    def entity_lineage(context, given_tenure, owner_pairs, config_dir):
+        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
+        order.append("entity_lineage")
+
+    monkeypatch.setattr(module, "scan_form345_cache", form345_scan)
+    monkeypatch.setattr(module, "build_symbol_tenure", symbol_tenure)
+    monkeypatch.setattr(module, "build_entity_lineage", entity_lineage)
 
     def refresh(*args, **kwargs):
         assert kwargs == {"refresh": True}
@@ -67,8 +84,8 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
     step.run(["AAA"])
 
     assert order.index("fetch_insider_transactions") < order.index("symbol_tenure")
-    assert order[-5:] == ["symbol_tenure", "entity_lineage", "identity_refresh", "regsho", "ftd"]
+    assert order[-6:] == ["form345_scan", "symbol_tenure", "entity_lineage", "identity_refresh", "regsho", "ftd"]
 
     print("\n=== SANITY CHECK: institutional identity refresh order ===")
-    print("  insider cache -> symbol_tenure -> entity_lineage -> refresh -> RegSHO -> FTD")
+    print("  insider cache -> one Form 345 scan -> symbol_tenure -> entity_lineage (same scan + tenure frame) -> refresh -> RegSHO -> FTD")
     print("  OK: both symbol-only consumers share the same newly refreshed resolver")

@@ -19,8 +19,9 @@ import os
 import pytest
 
 from src.data_extract.utils.common import registrant
+from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.fundamentals import periods
-from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, _catalogue_at, load_catalogue, resolve_config_dir
+from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, _catalogue_at, load_catalogue
 from src.data_extract.utils.fundamentals_sharadar import field_map
 
 #: The three spellings of one directory that all reach these loaders in the live tree.

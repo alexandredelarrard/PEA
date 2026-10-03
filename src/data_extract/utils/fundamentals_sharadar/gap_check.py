@@ -1,29 +1,8 @@
-"""
-gap_check.py  (src/data_extract/utils/fundamentals_sharadar/gap_check.py)
-------------------------------------------------------------------------------------
-Where Sharadar and the SEC layer DISAGREE, on the dates where both published -- and which of
-those disagreements is a BASIS CONFLICT rather than a restatement.
+"""Measure where Sharadar and `fundamentals_history_sec` disagree on shared `(ticker, as_of)` dates.
 
-This is the merged table's instrument, and it exists because it had to replace one. Reason
-codes stay with the SEC table (D24), so `unexplained_null` stops being a universal
-zero-ceiling gate on `fundamentals_history`. Nothing else measures the merged table's
-per-column truth, so this does.
-
-## Why `is_systematic` is the column that decides
-
-A one-date gap is a restatement, a rounding difference, or a filing the other source missed.
-A gap that holds on MOST dates is a definitional fork, and only a definitional fork is worth
-an override. AXP's `totalRevenue` was 6.6-8.1% low on **all 11** shared dates -- that
-persistence is the entire signal, and it is what separates it from JPM's `totalRevenue`,
-which matched the repo EXACTLY on all 11.
-
-## The expected forks are named, not rediscovered
-
-Eight columns are DESIGNED to differ (`SHARADAR_GAP_EXPECTED_FIELDS`) -- phase 3 chose those
-bases on purpose and `sharadar_field_map.json` states why for each. They are reported as
-`is_expected` so they do not drown the signal. **Anything gapping that is not on that list is
-the real finding.**
-
+One row per `(ticker, field)`. A gap is `is_systematic` when it holds on most shared dates (a basis fork, not a
+restatement); `is_expected` marks the designed-in forks in `SHARADAR_GAP_EXPECTED_FIELDS`. Systematic and
+unexpected rows are override candidates, which `propose` writes to the register as inert `approved: null` entries.
 """
 
 from __future__ import annotations
@@ -47,6 +26,7 @@ from src.constants.constants import (
     SHARADAR_OVERRIDE_SOURCE_SEC,
 )
 from src.context import Context
+from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import md_table
@@ -58,21 +38,13 @@ log = logging.getLogger(__name__)
 
 DEFAULT_REPORT_PATH = "reports/planning/active-tasks/2026-08-26-sharadar-integration/phase-4-gap-check.md"
 
-#: The three floor classes, and how a field is assigned one. Read off the FIELD MAP's own
-#: declarations -- `op: ratio`/`ratio_minus_one` is a ratio, and a share count is one that
-#: reads a vendor SHARE-COUNT column -- rather than from a name pattern, so a new column
-#: classifies itself.
+#: Absolute-floor classes, assigned from the field map's own declarations (see `field_class`).
 MONEY, SHARES, RATIO = "money", "shares", "ratio"
 
-#: The SF1 share-count columns. This USED to be inferred from `split_basis: count`, which
-#: stopped working the day the feature columns moved onto the vendor's split-adjusted basis
-#: and dropped that declaration: `sharesOutstanding`, `basicShares` and `dilutedShares` all
-#: silently reclassified as MONEY and were judged against a dollar floor. The vendor source
-#: is the durable statement of what a column MEASURES, independent of which basis it is on.
+#: SF1 share-count columns; a field reading one is classed SHARES whatever its split basis.
 SHARE_COUNT_SOURCES = frozenset({"sharesbas", "shareswa", "shareswadil"})
 
-#: How many `(ticker, field)` rows the markdown lists in full. The count is always printed
-#: beside it, so the tail is visible without being enumerated.
+#: Rows listed per markdown table; the total count is printed beside it.
 WORST_ROWS = 30
 
 
@@ -88,17 +60,9 @@ def field_class(name: str, field_map: FieldMap) -> str:
 
 
 def inherited_from_expected(name: str, field_map: FieldMap) -> str:
-    """Which EXPECTED basis fork a derived column's gap is mechanically inherited from.
+    """The expected-fork inputs a DERIVED column reads, comma-joined ("" for direct columns).
 
-    Informational only -- it does NOT reclassify anything, and a row it names is still a
-    candidate. `returnOnEquity` is `netIncome / stockholdersEquity`, and `stockholdersEquity`
-    is a designed-in fork, so a gap there is the same decision showing up one level down.
-    Without saying so, six of the flagged rows read as six independent findings.
-
-    ⚠ It reaches DERIVED columns only. `totalDebt` gaps for exactly this reason -- both its
-    legs are expected forks -- but the map has it as a DIRECT column from `debt`, so nothing
-    here can know that. It stays a finding, which is the right default: the alternative is a
-    hand-maintained list of implied relationships that goes stale silently.
+    Informational only: it does not reclassify the row, which stays a candidate.
     """
     spec = field_map.outputs.get(name)
     if spec is None or spec.kind != "derived":
@@ -107,38 +71,23 @@ def inherited_from_expected(name: str, field_map: FieldMap) -> str:
 
 
 def comparable_fields(field_map: FieldMap) -> list[str]:
-    """Every field BOTH sources carry, in statement order.
-
-    The Sharadar-owned half of the contract intersected with the SEC table's own vocabulary.
-    The 15 SEC-owned columns are excluded because comparing them would compare the SEC layer
-    against itself; the 25 extras and the 3 `null` columns because the SEC table has no such
-    column at all.
-    """
+    """The Sharadar-owned (`direct`/`derived`) contract fields, in `HISTORY_STATEMENT_ORDER`."""
     owned = {n for n, s in field_map.outputs.items() if s.kind in ("direct", "derived")}
     return [n for n in HISTORY_STATEMENT_ORDER if n in owned]
 
 
 def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap, actions: pd.DataFrame | None) -> pd.DataFrame:
-    """The Sharadar side on the merged table's grain, WITHOUT the SEC block.
-
-    Deliberately not `merge_history.build_frame`: that one has already joined the SEC values
-    in and applied the overrides, so measuring a gap on it would compare the SEC layer with
-    itself wherever the answer matters most.
-    """
+    """The Sharadar side on the merged grain, without the SEC join or overrides (unlike `build_frame`)."""
     frame = build_ttm(translate(vendor_arq, field_map), field_map, actions=actions)
-    frame = frame.rename(columns=_KEY_FROM_VENDOR)
-    for column in ("as_of", "fiscal_end"):
-        frame[column] = pd.to_datetime(frame[column], errors="coerce").astype("datetime64[ns]")
-    collapsed, _ = collapse_same_date(frame)
+    collapsed, _ = collapse_same_date(pin_dtypes(frame.rename(columns=_KEY_FROM_VENDOR), dates=("as_of", "fiscal_end")))
     return collapsed
 
 
 def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, config_dir: str = DEFAULT_CONFIG_DIR) -> pd.DataFrame:
-    """One row per `(ticker, field)` both sources carry, over their SHARED `as_of` dates.
+    """One row per `(ticker, field)` over the two sources' shared `as_of` dates, systematic rows first.
 
-    An EXACT date join here, not the merge's backward as-of: a gap check must compare the two
-    sources' statements about the SAME publication, and an as-of carry would manufacture
-    differences out of a one-day filing-date disagreement.
+    An EXACT date join (not the merge's backward as-of), so both sides describe the same publication. Raises if
+    either source is empty for the scope or they share no `(ticker, as_of)`.
     """
     field_map = load_field_map(config_dir)
     floors = {klass: float(value) for klass, value in context.config.data_extract.sharadar_gap_floor.items()}
@@ -147,8 +96,7 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={**where, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:
         raise RuntimeError("gap check: no stored Sharadar ARQ rows to measure")
-    # market-wide table: filter to these tickers AND to the two actions `split_events` reads,
-    # or the read drags back every action of every ticker Sharadar covers
+    # market-wide table: scope to these tickers and the two actions `split_events` reads
     actions = context.store.load(
         Tables.sharadar_actions, project=True, optional=True, where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
     )
@@ -211,25 +159,16 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
 
 
 def candidates(gaps: pd.DataFrame) -> pd.DataFrame:
-    """The rows worth an override: SYSTEMATIC, and not one of the designed-in forks.
-
-    Both filters matter and for different reasons. Without `is_systematic` a single
-    restatement proposes a permanent source change; without `is_expected` the eight bases
-    phase 3 chose on purpose come back as findings every single run, and a report whose
-    findings are always the same is a report nobody reads.
-    """
+    """The override candidates: rows that are systematic and not an expected fork."""
     if gaps.empty:
         return gaps
     return gaps[gaps["is_systematic"] & ~gaps["is_expected"]].reset_index(drop=True)
 
 
 def propose(gaps: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR) -> tuple[Path, int]:
-    """Merge candidate entries into the register with `approved: null`, keeping every
-    existing entry EXACTLY as it stands.
+    """Add new candidates to the override register with `approved: null`; returns `(path, number added)`.
 
-    A proposer that could overwrite a reviewed decision would make the review worthless, so
-    an existing `(ticker, field)` is never touched -- not its reason, not its approval date,
-    not even a re-measured gap. Re-measuring is the report's job.
+    An existing `(ticker, field)` entry is never modified.
     """
     existing = load_overrides(config_dir)
     entries: dict[str, dict[str, dict]] = {}
@@ -297,7 +236,7 @@ _README: list[str] = [
 # the report                                                                   #
 # --------------------------------------------------------------------------- #
 def format_report(gaps: pd.DataFrame, *, overlap: int, fields: int) -> str:
-    """The markdown. Ordered so the only actionable section is first."""
+    """The markdown report: candidates first, then expected forks, then non-systematic gaps."""
     found = candidates(gaps)
     expected = gaps[gaps["is_systematic"] & gaps["is_expected"]] if not gaps.empty else gaps
     clean = gaps[~gaps["is_systematic"]] if not gaps.empty else gaps
@@ -352,8 +291,7 @@ def run_gap_check(
     propose_overrides: bool = False,
     config_dir: str = DEFAULT_CONFIG_DIR,
 ) -> pd.DataFrame:
-    """Measure, write the markdown, and optionally write the proposals. Returns the frame so
-    a test can assert on it without re-reading a file."""
+    """Measure gaps, write the markdown to `report_path`, optionally write proposals; returns the gap frame."""
     gaps = measure_gaps(context, tickers, config_dir=config_dir)
     if gaps.empty:
         context.log.warning("gap check: nothing comparable -- 0 rows measured")

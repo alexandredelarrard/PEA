@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_FORMS, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.data_extract.utils.common.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings  # noqa: E402
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import rows_from_xbrl  # noqa: E402
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
@@ -108,7 +109,6 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None, cutovers: dict | Non
 
     company = Company(ticker)
     cik = str(getattr(company, "cik", "")).zfill(10)
-    cutover = cutovers.get(ticker) if cutovers is not None else None
     filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=None, done_accessions=frozenset(), registrants=cutovers)
     frames: list[pd.DataFrame] = []
     for filing in filings:
@@ -118,9 +118,9 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None, cutovers: dict | Non
             continue
         if xbrl is None:
             continue
-        filing_cik = cutover.cik_for(filing.filing_date) if cutover is not None else cik
+        stamp = FilingStamp.of(filing, cik)
         for strict in (True, False):
-            rows = rows_from_xbrl(ticker, filing_cik, filing, xbrl, catalogue, gics, prefer_structure=strict)
+            rows = rows_from_xbrl(ticker, stamp, xbrl, catalogue, gics, prefer_structure=strict)
             if not rows:
                 continue
             frame = pd.DataFrame(rows)

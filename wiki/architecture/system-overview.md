@@ -35,7 +35,7 @@ flowchart TD
 
 ## Key components
 
-- [Data extraction](../modules/data-extract.md) is coordinated by `StepExtractAllData` in [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py).
+- [Data extraction](../modules/data-extract.md) is coordinated by `StepExtractAllData` in [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py). Its per-ticker EDGAR fetchers each declare one `EdgarFetch` walked by the shared `run_edgar_fetch` in [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py); bulk SEC zips go through one reader in [bulk_cache.py](../../src/data_extract/utils/common/bulk_cache.py).
 - [Peer deduction](../modules/data-peers.md) persists business-similarity and return-based peer baskets through `StepDeducePeers` in [step_deduce_peers.py](../../src/data_peers/step_deduce_peers.py).
 - [Cube aggregation](../modules/data-aggregate.md) owns eight persisted parts and the final assembly in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
 - [Modelling](../modules/modelling.md), [strategies](../modules/strategies.md), and [portfolio](../modules/portfolio.md) form distinct signal, sleeve, and allocation layers.

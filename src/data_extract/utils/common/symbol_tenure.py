@@ -1,84 +1,53 @@
-"""
-symbol_tenure.py (src/data_extract/utils/common/symbol_tenure.py)
---------------------------------------------------------------------------------------------
-AXIS B OF TICKER IDENTITY: WHICH ISSUER CIK HELD SYMBOL `X` ON DATE `d`.
+"""Ticker identity, axis B: which issuer CIK held symbol X on date d (`symbol_tenure`).
 
-A trading symbol is a LEASE, not a name. `IR` was Ingersoll-Rand Co Ltd, then Ingersoll-Rand
-plc, then Ingersoll Rand Inc; `COR` was Cortex Pharmaceuticals, then CoreSite Realty, then
-Cencora. Any pipeline that resolves a filing to a ticker by matching the filer's own typed
-`ISSUERTRADINGSYMBOL` against TODAY's universe therefore imports one company's rows under
-another company's name -- measured at 38,910 rows (1.92%) of `insider_transactions`.
-
-⚠ THE SEC PUBLISHES NO HISTORICAL TICKER->CIK DATASET. `company_tickers.json` is a current
-snapshot with no dates and `data.sec.gov/submissions` carries `formerNames` but no
-`formerTickers` (Meta's CIK 1326801 returns only `META`; the string `FB` appears nowhere).
-The fact exists only INSIDE the filings, so this table is DERIVED, not fetched -- from the
-`SUBMISSION.TSV` member of the cached Form 345 quarterly zips, which is primary source, free
-and entirely offline.
-
-⚠ TENURES OVERLAP. Two issuers legitimately file under the same symbol in the same year --
-one is still typing the symbol it lost, or the two sit on different exchanges. `valid_to` is
-the OBSERVED end of THAT CIK's own filing window, never the start of the next CIK's, so the
-table answers a MEMBERSHIP question ("did this CIK hold X at d") and never a lookup expecting
-one answer. Collapsing overlaps onto a single winner would silently rewrite history.
-
-⚠ THIS TABLE IS NOT ON THE `owns()` HOT PATH. The insider screen compares ENTITIES
-(`entity_lineage`, axis A) and never reads tenure, which is why the 2006q1 coverage floor
-costs nothing. Tenure is the DISCOVERY substrate that produces the candidate list axis A
-adjudicates, the third opinion in the roster-CIK cross-check, and the only resolver available
-to the tables that carry a symbol and a date but no CIK at all (fails-to-deliver, short
-interest).
+Derived offline from `SUBMISSION.TSV` in the cached Form 345 quarter zips, plus the evidenced
+manual config; PK (symbol, issuer_cik, valid_from), manual rows winning a PK collision. Tenures
+may overlap: `valid_to` is the observed end of that CIK's own filing window, so the table answers
+a membership question, never a single-answer lookup. Not read by `owns()`; it feeds axis-A
+candidates, the D19 cross-check and CIK-less symbol/date sources.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import zipfile
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
 
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
+from src.utils.string import normalise_ticker, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
-#: The one zip member this derivation needs. The other four (REPORTINGOWNER, NONDERIV_TRANS,
-#: DERIV_TRANS, FOOTNOTES) are ~20x larger and carry nothing about symbol tenure.
+#: SUBMISSION feeds `symbol_tenure`; joined to REPORTINGOWNER on accession it feeds the `entity_lineage` owner sets.
 SUBMISSION_MEMBER = "SUBMISSION.TSV"
+OWNER_MEMBER = "REPORTINGOWNER.TSV"
+_FORM345_READ = {
+    SUBMISSION_MEMBER: ZipRead(usecols=frozenset({"ACCESSION_NUMBER", "ISSUERCIK", "ISSUERTRADINGSYMBOL", "ISSUERNAME", "FILING_DATE"}), upper=True),
+    OWNER_MEMBER: ZipRead(usecols=frozenset({"ACCESSION_NUMBER", "RPTOWNERCIK"}), upper=True, required=False),
+}
 
-#: The `SUBMISSION.TSV` columns this derivation reads. `ISSUERNAME` is optional and feeds
-#: `evidence`; the other three are required and a zip missing any of them is skipped loudly.
-_WANTED_COLUMNS = frozenset({"ISSUERCIK", "ISSUERTRADINGSYMBOL", "ISSUERNAME", "FILING_DATE"})
+#: `ISSUERNAME` is optional and feeds `evidence`; a zip missing any of these is skipped loudly.
 _REQUIRED_COLUMNS = frozenset({"ISSUERCIK", "ISSUERTRADINGSYMBOL", "FILING_DATE"})
 
-#: `ISSUERTRADINGSYMBOL` strings that mean "no symbol". Filers type all of these, and they are
-#: NOT a long tail: dropping them removes 194 (symbol, cik) pairs over 3 pseudo-symbols, each
-#: of which would otherwise read as a heavily-reused ticker held by dozens of unrelated CIKs.
-#: `NA`, `N/A` and `NULL` never reach here as strings -- pandas' default NA handling has
-#: already turned them into NaN -- but they stay listed so the rule is readable in one place.
+#: `ISSUERTRADINGSYMBOL` strings that mean "no symbol"; dropped so they never read as a reused ticker.
 _NULL_SYMBOLS = frozenset({"", "NONE", "N/A", "NA", "-", "--", "N.A.", "NULL"})
 
-#: A double quote is never part of a ticker, so it is stripped rather than kept as the filer's
-#: string. It is not cosmetic: 53 (symbol, cik) pairs arrive quoted, every one of them under
-#: the SAME CIK as the unquoted symbol, so leaving them split SHORTENS a real tenure. `WM` is
-#: the case that matters -- Washington Mutual's 325 filings of 2006-01..2008-09 are all typed
-#: `"WM"`, so without this the table says WM was Washington Mutual's only from 2008-04, and a
-#: pre-2008 `WM` filing looks like it belongs to nobody. No other normalisation is applied:
-#: `(SPAR)`, `NYSE:DRH` and `AMEX FVE` stay as typed, visible as low-`n_filings` tenures.
+#: Stripped because a quoted symbol would split a real tenure; no other normalisation is applied.
 _SYMBOL_NOISE_CHARS = '"'
 
-#: `DD-MON-YYYY` is the shape the SEC ships in most quarters; a minority are ISO. Both are
-#: parsed, because a silent parse failure here is a silent tenure gap.
+#: Month names for the `DD-MON-YYYY` filing-date shape (ISO dates are parsed too).
 _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
 
-#: Below this many cached quarters the derivation is a PARTIAL history that looks complete.
-#: 2006q1 -> 2026q1 is 81; the guard warns rather than raises so a deliberate subset still runs.
+#: Fewer cached quarters than this warns (not raises) that the derivation is a partial history.
 MIN_EXPECTED_QUARTERS = 80
 
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
@@ -87,6 +56,23 @@ MANUAL_TENURE_VERSION = 1
 
 class ManualSymbolTenureError(ValueError):
     """The manual symbol-tenure config is unsafe or cannot be audited."""
+
+
+@dataclass(frozen=True)
+class Form345Scan:
+    """One pass over the cached Form 345 quarter zips.
+
+    `tenure_parts` holds each readable quarter's per-(symbol, issuer_cik) aggregate; `owner_pairs`
+    the distinct (issuer_cik, owner_cik_raw) reporting-owner pairs over every quarter, the owner CIK
+    as filed (padded only for the issuers a caller keeps); `drops` counts rows read, kept and
+    dropped per reason.
+    """
+
+    cache: Path
+    quarters: tuple[pd.Period, ...]
+    tenure_parts: tuple[pd.DataFrame, ...]
+    owner_pairs: pd.DataFrame
+    drops: Counter
 
 
 def _manual_date(value: object, *, field: str, location: str) -> pd.Timestamp | None:
@@ -105,11 +91,10 @@ def _manual_date(value: object, *, field: str, location: str) -> pd.Timestamp | 
 
 
 def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
-    """Load, normalize and validate the evidenced manual ticker-history input.
+    """Load, normalize and validate the evidenced manual ticker-history config; overlapping intervals raise.
 
-    The returned frame retains ``canonical_ticker`` and ``reason`` for the lineage builder's
-    cross-check. Those two audit columns are removed before materializing ``symbol_tenure``.
-    Runtime identity resolution reads only the materialized table, never this JSON.
+    Keeps the ``canonical_ticker`` and ``reason`` audit columns, which are dropped when ``symbol_tenure``
+    is materialized; runtime resolution reads only the table.
     """
     path = Path(config_dir) / MANUAL_TENURE_FILE
     if not path.exists():
@@ -126,72 +111,75 @@ def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
 
     records: list[dict[str, object]] = []
     for raw_ticker, raw_intervals in tickers.items():
-        ticker = str(raw_ticker).strip().upper()
+        ticker = normalise_ticker(raw_ticker)
         if not ticker:
             raise ManualSymbolTenureError(f"symbol_tenure: {path} contains an empty canonical ticker")
         if not isinstance(raw_intervals, list) or not raw_intervals:
             raise ManualSymbolTenureError(f"symbol_tenure: {ticker} must contain at least one interval")
-        for index, raw in enumerate(raw_intervals):
-            location = f"tickers.{ticker}[{index}]"
-            if not isinstance(raw, dict):
-                raise ManualSymbolTenureError(f"{location} must be an object")
-            symbol = str(raw.get("symbol", "")).strip().upper()
-            if not symbol:
-                raise ManualSymbolTenureError(f"{location}.symbol must be non-empty")
-            cik = raw.get("issuer_cik")
-            if not isinstance(cik, str) or len(cik) != 10 or not cik.isdigit():
-                raise ManualSymbolTenureError(f"{location}.issuer_cik must be a zero-padded 10-digit string")
-            start = _manual_date(raw.get("valid_from"), field="valid_from", location=location)
-            end = _manual_date(raw.get("valid_to"), field="valid_to", location=location)
-            if end is not None and start is not None and start >= end:
-                raise ManualSymbolTenureError(f"{location} must satisfy valid_from < valid_to")
-            evidence = raw.get("evidence")
-            if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
-                raise ManualSymbolTenureError(f"{location}.evidence must be a non-empty list of non-empty strings")
-            reason = raw.get("reason")
-            if not isinstance(reason, str) or not reason.strip():
-                raise ManualSymbolTenureError(f"{location}.reason must be non-empty")
-            records.append(
-                {
-                    "canonical_ticker": ticker,
-                    "symbol": symbol,
-                    "issuer_cik": cik,
-                    "valid_from": start,
-                    "valid_to": end,
-                    "n_filings": 0,
-                    "source": "manual",
-                    "evidence": " | ".join(item.strip() for item in evidence),
-                    "reason": reason.strip(),
-                }
-            )
+        records.extend(_parse_manual_interval(raw, ticker, f"tickers.{ticker}[{index}]") for index, raw in enumerate(raw_intervals))
 
     out = pd.DataFrame.from_records(records)
     identity_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to"]
     out = out.drop_duplicates(identity_columns, keep="first").sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
-    for symbol, rows in out.groupby("symbol", sort=False):
-        ordered = rows.sort_values(["valid_from", "valid_to", "issuer_cik"], kind="mergesort")
-        previous = None
-        for row in ordered.itertuples(index=False):
-            row_start = pd.Timestamp(cast(Any, row.valid_from))
-            row_end = pd.Timestamp(cast(Any, row.valid_to)) if pd.notna(row.valid_to) else None
-            if previous is not None:
-                previous_start = pd.Timestamp(cast(Any, previous.valid_from))
-                previous_end = pd.Timestamp(cast(Any, previous.valid_to)) if pd.notna(previous.valid_to) else pd.Timestamp.max
-                if row_start < previous_end:
-                    raise ManualSymbolTenureError(
-                        "symbol_tenure: overlapping manual intervals for "
-                        f"{symbol}: {previous.canonical_ticker}/{previous.issuer_cik} "
-                        f"[{previous_start.date()}, "
-                        f"{'open' if pd.isna(previous.valid_to) else previous_end.date()}) and "
-                        f"{row.canonical_ticker}/{row.issuer_cik} [{row_start.date()}, "
-                        f"{'open' if row_end is None else row_end.date()})"
-                    )
-            previous = row
+    _check_manual_overlaps(out)
     return out
 
 
+def _parse_manual_interval(raw: object, ticker: str, location: str) -> dict[str, object]:
+    """One validated manual interval as a `symbol_tenure` record plus its audit columns."""
+    if not isinstance(raw, dict):
+        raise ManualSymbolTenureError(f"{location} must be an object")
+    symbol = normalise_ticker(raw.get("symbol", ""))
+    if not symbol:
+        raise ManualSymbolTenureError(f"{location}.symbol must be non-empty")
+    cik = raw.get("issuer_cik")
+    if not isinstance(cik, str) or len(cik) != 10 or not cik.isdigit():
+        raise ManualSymbolTenureError(f"{location}.issuer_cik must be a zero-padded 10-digit string")
+    start = _manual_date(raw.get("valid_from"), field="valid_from", location=location)
+    end = _manual_date(raw.get("valid_to"), field="valid_to", location=location)
+    if end is not None and start is not None and start >= end:
+        raise ManualSymbolTenureError(f"{location} must satisfy valid_from < valid_to")
+    evidence = raw.get("evidence")
+    if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
+        raise ManualSymbolTenureError(f"{location}.evidence must be a non-empty list of non-empty strings")
+    reason = raw.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ManualSymbolTenureError(f"{location}.reason must be non-empty")
+    return {
+        "canonical_ticker": ticker,
+        "symbol": symbol,
+        "issuer_cik": cik,
+        "valid_from": start,
+        "valid_to": end,
+        "n_filings": 0,
+        "source": "manual",
+        "evidence": " | ".join(item.strip() for item in evidence),
+        "reason": reason.strip(),
+    }
+
+
+def _check_manual_overlaps(manual: pd.DataFrame) -> None:
+    """Raise on the first manual interval that starts before the previous one of its symbol ends."""
+    df_ordered = manual.sort_values(["symbol", "valid_from", "valid_to", "issuer_cik"], kind="mergesort", ignore_index=True)
+    df_previous = df_ordered.shift(1)
+    same_symbol = df_ordered["symbol"].eq(df_previous["symbol"])
+    overlaps = same_symbol & (df_previous["valid_to"].isna() | (df_ordered["valid_from"] < df_previous["valid_to"]))
+    if not overlaps.any():
+        return
+    first = int(overlaps.to_numpy().argmax())
+    row, previous = df_ordered.iloc[first], df_previous.iloc[first]
+    previous_end = "open" if pd.isna(previous["valid_to"]) else pd.Timestamp(previous["valid_to"]).date()
+    row_end = "open" if pd.isna(row["valid_to"]) else pd.Timestamp(row["valid_to"]).date()
+    raise ManualSymbolTenureError(
+        "symbol_tenure: overlapping manual intervals for "
+        f"{row['symbol']}: {previous['canonical_ticker']}/{previous['issuer_cik']} "
+        f"[{pd.Timestamp(previous['valid_from']).date()}, {previous_end}) and "
+        f"{row['canonical_ticker']}/{row['issuer_cik']} [{pd.Timestamp(row['valid_from']).date()}, {row_end})"
+    )
+
+
 def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
-    """Materialize both evidence classes, coalescing collisions at the table grain."""
+    """Manual plus derived rows; a PK (symbol, issuer_cik, valid_from) collision coalesces with manual first."""
     table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
     out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
     priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
@@ -202,15 +190,8 @@ def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd
         .reset_index(drop=True)
     )
     primary_key = ["symbol", "issuer_cik", "valid_from"]
-    coalesced: list[dict[str, object]] = []
-    for _, rows in out.groupby(primary_key, sort=False, dropna=False):
-        winner = rows.iloc[0].copy()
-        if len(rows) > 1:
-            winner["n_filings"] = pd.to_numeric(rows["n_filings"], errors="coerce").max()
-            labelled = [f"{row.source} evidence: {row.evidence}" for row in rows.itertuples(index=False) if str(row.evidence).strip()]
-            winner["evidence"] = " | ".join(dict.fromkeys(labelled))
-        coalesced.append(cast(dict[str, object], winner.to_dict()))
-    out = pd.DataFrame.from_records(coalesced, columns=table_columns)
+    collides = out.duplicated(primary_key, keep=False)
+    out = pd.concat([out[~collides], _coalesce_collisions(out[collides], primary_key)]).sort_index().reset_index(drop=True)
     logger.info(
         "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique table-grain row(s) over %d symbol(s)",
         len(manual),
@@ -221,21 +202,28 @@ def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd
     return out
 
 
-def _parse_filing_dates(raw: pd.Series) -> pd.Series:
-    """`FILING_DATE` -> datetime64, accepting BOTH shapes the SEC ships.
+def _coalesce_collisions(df_collisions: pd.DataFrame, primary_key: list[str]) -> pd.DataFrame:
+    """One row per colliding primary key, kept at its first position: the first row's fields, the
+    group's highest `n_filings`, and every non-blank evidence string labelled by its source."""
+    if df_collisions.empty:
+        return df_collisions
+    group = df_collisions.groupby(primary_key, sort=False, dropna=False).ngroup()
+    evidence = df_collisions["evidence"].map(str)
+    labelled = (df_collisions["source"].map(str) + " evidence: " + evidence).where(evidence.str.strip().ne(""))
+    joined = labelled.groupby(group, sort=False).agg(lambda values: " | ".join(dict.fromkeys(values.dropna())))
+    n_filings = pd.to_numeric(df_collisions["n_filings"], errors="coerce").groupby(group, sort=False).max()
+    df_winners = df_collisions[~df_collisions.duplicated(primary_key)]
+    winner_group = group.loc[df_winners.index]
+    return df_winners.assign(n_filings=n_filings.loc[winner_group].to_numpy(), evidence=joined.loc[winner_group].to_numpy())
 
-    `03-MAR-2006` and `2006-03-03` both appear across the 81 quarters. `pd.to_datetime` with
-    `format="mixed"` guesses per element and would read `01-02-2006` as a day-first or a
-    month-first date depending on its neighbours, so the `DD-MON-YYYY` shape is decoded
-    explicitly and only what it cannot claim falls through to ISO.
-    """
+
+def _parse_filing_dates(raw: pd.Series) -> pd.Series:
+    """`FILING_DATE` -> datetime64: `DD-MON-YYYY` decoded explicitly, the rest as ISO (never `format="mixed"`)."""
     text = raw.astype("string").str.strip().str.upper()
     out = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
     parts = text.str.split("-", n=2, expand=True)
     if parts.shape[1] == 3:
-        # Decoded on the SUBSET, not masked over the whole column: a row that is not this
-        # shape has no year to convert, and building the (year, month, day) frame over all
-        # rows raises `cannot convert NA to integer` on the first junk date in the quarter.
+        # Decode only the matching subset; junk rows elsewhere would make a whole-column parse raise.
         is_month_name = parts[1].isin(_MONTHS).fillna(False)
         if is_month_name.any():
             out.loc[is_month_name] = pd.to_datetime(text[is_month_name], format="%d-%b-%Y", errors="coerce")
@@ -253,44 +241,25 @@ def _quarter_of(path: Path) -> pd.Period | None:
         return None
 
 
-def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
-    """Per-(symbol, cik) first/last filing date, filing count and issuer name for ONE zip.
-
-    Aggregating inside the loop rather than concatenating 4.3M raw rows keeps the whole
-    derivation inside a few hundred MB.
-    """
-    try:
-        archive = zipfile.ZipFile(path)
-    except zipfile.BadZipFile:
-        logger.warning("symbol_tenure: %s is a corrupt zip -> SKIPPED, so its quarter is absent from the derivation", path.name)
-        drops["corrupt_zip"] += 1
-        return None
-    with archive:
-        names = {n.upper(): n for n in archive.namelist()}
-        if SUBMISSION_MEMBER not in names:
-            logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name, SUBMISSION_MEMBER)
-            drops["no_submission_member"] += 1
-            return None
-        with archive.open(names[SUBMISSION_MEMBER]) as handle:
-            raw = pd.read_csv(handle, sep="\t", dtype=str, low_memory=False, usecols=lambda c: str(c).upper() in _WANTED_COLUMNS)
-    raw.columns = [str(c).upper() for c in raw.columns]
+def _aggregate_submission(raw: pd.DataFrame, name: str, drops: Counter) -> pd.DataFrame | None:
+    """Per-(symbol, cik) first/last filing date, count and issuer name for one quarter; None when nothing usable."""
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
-        logger.warning("symbol_tenure: %s lacks %s -> SKIPPED", path.name, sorted(missing))
+        logger.warning("symbol_tenure: %s lacks %s -> SKIPPED", name, sorted(missing))
         drops["missing_columns"] += 1
         return None
 
     df = pd.DataFrame(
         {
             "symbol": (raw["ISSUERTRADINGSYMBOL"].astype("string").str.replace(_SYMBOL_NOISE_CHARS, "", regex=False).str.strip().str.upper()),
-            "issuer_cik": raw["ISSUERCIK"].astype("string").str.strip().str.zfill(10),
+            "issuer_cik": raw["ISSUERCIK"],
             "issuer_name": (raw["ISSUERNAME"].astype("string") if "ISSUERNAME" in raw.columns else pd.Series(pd.NA, index=raw.index, dtype="string")),
             "filed": _parse_filing_dates(raw["FILING_DATE"]),
         }
     )
     drops["rows_read"] += len(df)
     bad_symbol = df["symbol"].isna() | df["symbol"].isin(_NULL_SYMBOLS)
-    bad_cik = df["issuer_cik"].isna() | df["issuer_cik"].eq("0" * 10)
+    bad_cik = df["issuer_cik"].isin(("", "0" * 10))
     bad_date = df["filed"].isna()
     drops["empty_symbol"] += int(bad_symbol.sum())
     drops["empty_cik"] += int((bad_cik & ~bad_symbol).sum())
@@ -304,17 +273,19 @@ def _aggregate_zip(path: Path, drops: Counter) -> pd.DataFrame | None:
     )
 
 
-def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
-    """(symbol, issuer_cik) -> (valid_from, valid_to, n_filings) from the cached Form 345 zips.
+def _owner_pairs(submission: pd.DataFrame, owners: pd.DataFrame) -> pd.DataFrame:
+    """Distinct (issuer_cik, owner_cik_raw) pairs of one quarter, joined on the accession number."""
+    if owners.empty:
+        return pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"])
+    df_issuers = pd.DataFrame({"accession": submission["ACCESSION_NUMBER"], "issuer_cik": submission["ISSUERCIK"]})
+    df_owners = pd.DataFrame({"accession": owners["ACCESSION_NUMBER"], "owner_cik_raw": owners["RPTOWNERCIK"]}).dropna(subset=["owner_cik_raw"])
+    return df_owners.merge(df_issuers, on="accession", how="inner")[["issuer_cik", "owner_cik_raw"]].drop_duplicates(ignore_index=True)
 
-    Reads `SUBMISSION.TSV` only. Deterministic: the same cache directory always yields the
-    same frame, sorted on (symbol, valid_from, issuer_cik).
 
-    BOUNDARY SEMANTICS ARE THE REGISTER'S, EXACTLY (`registrant.Segment.covers`):
-    `valid_from <= d < valid_to`, half-open. `valid_to` is therefore `last_filed + 1 day` and
-    not `last_filed`, which would put a real filing on the excluded side of its own interval.
-    `valid_to` is NULL when `last_filed` falls inside the most recent cached quarter, because
-    no end has been OBSERVED; NULL means "still open", never "forever".
+def scan_form345_cache(cache: Path) -> Form345Scan:
+    """Read every cached Form 345 quarter zip once for both identity tables.
+
+    A corrupt zip is skipped and kept (`on_corrupt="skip"`); a zip without `SUBMISSION.TSV` is skipped loudly.
     """
     zips = sorted(p for p in cache.glob("*.zip") if _quarter_of(p) is not None)
     if not zips:
@@ -332,15 +303,44 @@ def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
             MIN_EXPECTED_QUARTERS,
         )
 
-    quarters = [q for q in (_quarter_of(p) for p in zips) if q is not None]
-    latest_quarter = max(quarters)
     drops: Counter = Counter()
-    frames = [frame for frame in (_aggregate_zip(p, drops) for p in zips) if frame is not None]
-    if not frames:
-        raise ValueError(f"symbol_tenure: every zip under {cache} was unreadable or empty")
+    tenure_parts: list[pd.DataFrame | None] = []
+    owner_parts: list[pd.DataFrame] = [_owner_pairs(pd.DataFrame(), pd.DataFrame())]
+    for path in zips:
+        tables = read_zip_tables(path, _FORM345_READ, on_corrupt="skip", log=logger)
+        if tables is None:
+            drops["corrupt_zip"] += 1
+            continue
+        if not tables:
+            logger.warning("symbol_tenure: %s has no %s -> SKIPPED", path.name, SUBMISSION_MEMBER)
+            drops["no_submission_member"] += 1
+            continue
+        submission = tables[SUBMISSION_MEMBER]
+        if "ISSUERCIK" in submission.columns:
+            submission["ISSUERCIK"] = pad_cik_series(submission["ISSUERCIK"])
+        tenure_parts.append(_aggregate_submission(submission, path.name, drops))
+        owner_parts.append(_owner_pairs(submission, tables[OWNER_MEMBER]))
 
+    return Form345Scan(
+        cache=cache,
+        quarters=tuple(q for q in (_quarter_of(p) for p in zips) if q is not None),
+        tenure_parts=tuple(part for part in tenure_parts if part is not None),
+        owner_pairs=pd.concat(owner_parts, ignore_index=True).drop_duplicates(ignore_index=True),
+        drops=drops,
+    )
+
+
+def derive_symbol_tenure(scan: Form345Scan) -> pd.DataFrame:
+    """(symbol, issuer_cik) -> (valid_from, valid_to, n_filings) from one Form 345 cache scan.
+
+    Deterministic, sorted on (symbol, valid_from, issuer_cik). Half-open: `valid_to` is `last_filed + 1 day`,
+    NULL ("no end observed") when `last_filed` falls in the latest cached quarter.
+    """
+    if not scan.tenure_parts:
+        raise ValueError(f"symbol_tenure: every zip under {scan.cache} was unreadable or empty")
+    latest_quarter = max(scan.quarters)
     agg = (
-        pd.concat(frames, ignore_index=True)
+        pd.concat(scan.tenure_parts, ignore_index=True)
         .groupby(["symbol", "issuer_cik"], as_index=False, sort=False)
         .agg(valid_from=("first_filed", "min"), last_filed=("last_filed", "max"), n_filings=("n_filings", "sum"), issuer_name=("issuer_name", "last"))
     )
@@ -363,16 +363,16 @@ def derive_symbol_tenure(cache: Path) -> pd.DataFrame:
         "symbol_tenure: %d quarter(s) %s..%s -> %d row(s) over %d symbol(s); %d symbol(s) "
         "had >1 issuer CIK; %d tenure(s) still open. Read %d submission row(s), kept %d; "
         "dropped %s",
-        len(zips),
-        min(quarters),
+        len(scan.quarters),
+        min(scan.quarters),
         latest_quarter,
         len(out),
         int(per_symbol.size),
         int((per_symbol > 1).sum()),
         int(out["valid_to"].isna().sum()),
-        drops["rows_read"],
-        drops["rows_kept"],
-        ", ".join(f"{k}={v}" for k, v in sorted(drops.items()) if k not in {"rows_read", "rows_kept"}) or "nothing",
+        scan.drops["rows_read"],
+        scan.drops["rows_kept"],
+        ", ".join(f"{k}={v}" for k, v in sorted(scan.drops.items()) if k not in {"rows_read", "rows_kept"}) or "nothing",
     )
     return out
 
@@ -401,14 +401,13 @@ def changed_tenure_symbols(
     return sorted(symbol for symbol in set(before) | set(after) if before.get(symbol) != after.get(symbol))
 
 
-def build_symbol_tenure(context: Context, cache: Path, config_dir: str | Path | None = None) -> pd.DataFrame:
-    """Derive and REPLACE `symbol_tenure`; returns the frame written.
+def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | Path | None = None) -> pd.DataFrame:
+    """Derive `symbol_tenure` and replace the table unless unchanged; returns the materialized frame.
 
-    `replace`, never `save`: the table is a full derivation of the cache, and an upsert would
-    leave rows from an earlier, narrower run behind with nothing to tell them from current ones.
+    `replace`, never `save`: a full derivation must not leave stale rows behind.
     """
     existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
-    derived = derive_symbol_tenure(cache)
+    derived = derive_symbol_tenure(scan)
     manual = load_manual_symbol_tenure(config_dir or context.config_dir)
     out = materialize_symbol_tenure(derived, manual)
     context.log.info(
@@ -419,10 +418,12 @@ def build_symbol_tenure(context: Context, cache: Path, config_dir: str | Path | 
     else:
         changed = changed_tenure_symbols(existing, out)
         context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
-    written = context.store.replace(Tables.symbol_tenure, out)
-    # `ticker_count=0`: this is a market-wide derivation over every EDGAR symbol, not a
-    # per-ticker walk -- the convention `fetch_sharadar_tickers` already uses. Always a full
-    # rescan: there is no incremental path, the whole cache is re-read every time.
+    unchanged = matches_stored(existing, out, Tables.symbol_tenure)
+    written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, out)
+    # Market-wide derivation (ticker_count 0) that re-reads the whole cache, so always a full rescan.
     record_run(context, Tables.symbol_tenure, 0, written, is_full_rescan=True)
-    logger.info("symbol_tenure: wrote %d row(s)", written)
+    if unchanged:
+        logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(out))
+    else:
+        logger.info("symbol_tenure: wrote %d row(s)", written)
     return out

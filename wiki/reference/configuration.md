@@ -43,6 +43,7 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 - `registrant_cutover.json`: dated legal-filer chains;
 - `entity_lineage_manual.json`: CIK-to-economic-entity adjudication;
 - `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals;
+- `superinvestor_overrides.json`: Dataroma manager-code to CIK overrides and the codes recorded as unresolvable, each with its reason, read by `load_superinvestor_overrides` in [fetch_superinvestors.py](../../src/data_extract/utils/institutionals/fetch_superinvestors.py) and cached per resolved config directory;
 - `employees_manual_roster.json`: per-accession employee headcount decisions (count or null) that replace the LLM for a filing with no table row.
 
 Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register.
@@ -59,7 +60,8 @@ Key distinctions:
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
 - `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `lookback_days: 45` (an incremental run re-checks calls dated within this many days of the stored frontier), `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread) and `reconcile_days: 7` (a full comparison of every scoped call at least this often). The dataset repo and file path are module constants of the extractor;
-- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`.
+- LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction pins one thread per ticker in code;
+- regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/structure/fetch_def14a_edgar.py).
 
 ## Data availability and freshness
 

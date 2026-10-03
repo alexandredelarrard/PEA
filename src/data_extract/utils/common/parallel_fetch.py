@@ -1,57 +1,53 @@
-"""
-parallel_fetch.py (src/data_extract/utils/common/parallel_fetch.py)
----------------------------------------------------------------------
-Thread-pool driver for the per-ticker EDGAR fetchers (8-K, 13D, DEF 14A,
-filing text). Each ticker's `Company(ticker).get_filings(...)` walk plus
-per-filing `.obj()` / `.text()` / attachment calls is pure network I/O bound
-by SEC's request rate, not CPU -- and `edgartools` already serializes/spaces
-*request starts* through a single shared, thread-safe rate limiter
-(`httpxthrottlecache`, ~9 req/sec globally, see edgar.httpclient), letting
-transfers overlap. A single-threaded sequential ticker walk never actually
-saturates that limit -- it only ever has ONE request in flight, so it is
-latency-bound, not rate-limit-bound. Running several tickers concurrently on
-a bounded thread pool keeps every request under SEC's cap while actually
-using it, which is what turns a ~10h from-scratch pull into ~1-2h.
+"""Bounded thread pool for the per-entity EDGAR walks.
 
-Does NOT apply to `fetch_def14a_llm.py` -- that fetcher is bound by OpenAI's
-rate limits/cost, a different domain, and is deliberately serialized
-per-ticker today for crash-safety on expensive LLM calls.
+Requests are spaced by edgartools' shared, thread-safe per-process rate limiter, which keeps one
+process under SEC's 10 req/s cap; run one EDGAR walk (process) at a time. Workers save through
+`context.store.save`, which serializes the CREATE of a cold table.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TypeVar
+from typing import Any
 
 import pandas as pd
 from tqdm import tqdm
 
-R = TypeVar("R")
+DEFAULT_WORKERS = 8  # network-bound; the shared rate limiter caps throughput
 
-DEFAULT_WORKERS = 8  # network-bound; edgartools' own client caps ~9 req/sec globally
+#: Exceptions meaning the pipeline is broken, not the source record; per-entity and per-filing
+#: handlers re-raise them instead of logging (`KeyError` = a broken frame column contract).
+PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError, KeyError, ImportError)
 
 
-def run_per_ticker[R](cik_map: pd.DataFrame, worker: Callable[[str, str], R], desc: str, max_workers: int = DEFAULT_WORKERS) -> list[R]:
-    """Call `worker(ticker, cik)` for every row of `cik_map` on a bounded thread
-    pool (I/O-bound EDGAR walk -- see module docstring), driving one shared
-    tqdm bar. Returns results in COMPLETION order, not `cik_map`'s row order --
-    every caller aggregates by summing counts / saving to the DB, so ticker
-    order does not matter.
+def run_per_ticker[R](
+    df_scope: pd.DataFrame,
+    worker: Callable[..., R],
+    desc: str,
+    *,
+    log: logging.Logger,
+    max_workers: int | None = None,
+    key_cols: Sequence[str] = ("ticker", "cik"),
+) -> list[R | None]:
+    """Call `worker(*row[key_cols])` for every row of `df_scope` on a bounded pool.
 
-    `worker` must catch its own per-ticker exceptions (matching every
-    fetcher's "one bad ticker can't abort the batch" convention): an uncaught
-    exception here still aborts the whole pool once `.result()` re-raises it.
+    Returns results in `df_scope` row order. `PROGRAMMING_ERRORS` abort the pool; any other
+    exception is logged as a warning keyed on the row's first key column and yields None."""
 
-    `edgar_driver._worker` leaves ONE class uncaught on purpose --
-    `edgar_driver.PROGRAMMING_ERRORS` -- and relies on exactly that abort: a defect in
-    this repo will hit every remaining ticker too, so failing the run beats logging 490
-    warnings and reporting success.
-    """
-    rows = list(cik_map[["ticker", "cik"]].itertuples(index=False, name=None))
-    results: list[R] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(worker, ticker, cik) for ticker, cik in rows]
+    def _guarded(key: Any, *args: Any) -> R | None:
+        try:
+            return worker(key, *args)
+        except PROGRAMMING_ERRORS:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- one entity must not abort the walk
+            log.warning("%s: %s failed (%s)", desc, key, exc)
+            return None
+
+    rows = list(df_scope[list(key_cols)].itertuples(index=False, name=None))
+    with ThreadPoolExecutor(max_workers=DEFAULT_WORKERS if max_workers is None else max_workers) as pool:
+        futures = [pool.submit(_guarded, *row) for row in rows]
         for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
-            results.append(future.result())
-    return results
+            future.result()
+    return [future.result() for future in futures]

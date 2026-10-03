@@ -2,34 +2,41 @@
 Unit tests for the edgartools-based 8-K / SC 13D fetchers
 (fetch_8k_edgar.py / fetch_13d_edgar.py). Pure-synthetic, no network -- filings
 and their typed `.obj()` results are faked with SimpleNamespace so the row-
-building logic (`_filing_row` / `_filing_rows`) is exercised without needing a
+building logic (`_filing_row` / `schedule_filing_rows`, both fed a `FilingStamp`) is exercised without needing a
 live `Company(ticker).get_filings(...)` call.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.constants.constants import SEC_13D_FORMS
+from src.constants.constants import SEC_8K_FORMS, SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.institutionals.fetch_8k_edgar import _filing_row, build_ticker_8k_edgar, fetch_8k_edgar
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, build_filing_rows, run_edgar_fetch
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
+    SCHEDULE_13D,
     _carve_with,
     _clean_transaction_row,
     _extract_13d_item_sections,
     _extract_transaction_rows,
-    _filing_rows,
     _normalize_item_text,
     build_ticker_13d_edgar,
-    fetch_13d_edgar,
 )
+from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+
+
+def _rows(filing: object) -> list[dict]:
+    """Rows built through the filing stamp, exactly as the ticker walk passes them."""
+    return schedule_filing_rows(FilingStamp.of(filing, ""), SCHEDULE_13D)
 
 
 def test_filing_fetchers_take_years_history_as_an_argument():
@@ -43,7 +50,7 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     owns. Counting only one step would let the other quietly start reading config again."""
     import inspect
 
-    for fn in (fetch_8k_edgar, fetch_13d_edgar):
+    for fn in (run_edgar_fetch,):
         params = inspect.signature(fn).parameters
         assert "years_history" in params, f"{fn.__name__} must take years_history"
         assert params["years_history"].default is inspect.Parameter.empty, (
@@ -73,28 +80,20 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     )
 
 
-def test_fetch_8k_edgar_forwards_full_history_to_shared_driver(monkeypatch):
-    calls: list[dict[str, object]] = []
-
-    monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_8k_edgar.run_edgar_fetch",
-        lambda *args, **kwargs: calls.append(kwargs),
-    )
-
-    fetch_8k_edgar(SimpleNamespace(), ["PSKY", "JCI", "EVRG"], 15, full=True)
-
-    assert calls == [
-        {
-            "tables": (Tables.sec_8k,),
-            "build": build_ticker_8k_edgar,
-            "desc": "8-K (edgartools)",
-            "full": True,
-            "require_complete": True,
-            "identity_aware": True,
-        }
-    ]
-    print("\n=== SANITY: 8-K full-history plumbing ===")
-    print("  fetch_8k_edgar(..., full=True) forwards the existing full-rescan flag to the shared EDGAR driver.")
+def test_sec_8k_fetch_declares_its_driver_settings():
+    """The 8-K fetch is one declaration: its table, description and identity
+    settings, and the generic filing-rows builder bound to the 8-K forms and row function.
+    (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
+    assert SEC_8K_FETCH.tables == (Tables.sec_8k,)
+    assert SEC_8K_FETCH.desc == "8-K (edgartools)"
+    assert SEC_8K_FETCH.identity_aware is True
+    build = cast(Any, SEC_8K_FETCH.build)
+    assert build.func is build_filing_rows
+    assert build.keywords["forms"] == SEC_8K_FORMS
+    assert build.keywords["table"] == Tables.sec_8k
+    assert build.keywords["row_fn"] is _filing_row
+    print("\n=== SANITY: 8-K fetch declaration ===")
+    print("  SEC_8K_FETCH -> sec_8k, identity_aware, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
 
 
 def _fake_8k_filing(
@@ -128,7 +127,7 @@ def test_8k_filing_row_reads_current_report_flags():
     same flags/n_items, each carrying its own item code."""
     obj = SimpleNamespace(has_earnings=True, has_press_release=False)
     filing = _fake_8k_filing(obj=obj)
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(r["has_earnings"] == 1.0 for r in rows)
     assert all(r["has_press_release"] == 0.0 for r in rows)
@@ -145,7 +144,7 @@ def test_8k_filing_row_survives_failed_obj_parse():
     NaN, not None: `store.ensure_table` types a cold table's columns from the first
     frame written to it, so an all-None flag column would be created TEXT."""
     filing = _fake_8k_filing()  # obj=None -> .obj() raises
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(pd.isna(r["has_earnings"]) for r in rows)
     assert all(pd.isna(r["has_press_release"]) for r in rows)
@@ -155,7 +154,7 @@ def test_8k_filing_row_survives_failed_obj_parse():
 
 def test_8k_amendment_flag_from_form_suffix():
     filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False))
-    rows = _filing_row("MAA", "0000320193", filing)
+    rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert all(r["is_amendment"] == 1.0 for r in rows)
 
 
@@ -184,7 +183,7 @@ This text must not leak into Item 5.07.
 """
     filing = _fake_8k_filing(items="5.07,9.01", obj=_CurrentReport(stub), text=primary)
 
-    rows = _filing_row("TRV", "0000086312", filing)
+    rows = _filing_row("TRV", FilingStamp.of(filing, "0000086312"))
     item = next(row for row in rows if row["item"] == "5.07")
 
     assert "1,234,567" in item["item_text"]
@@ -195,7 +194,7 @@ def test_8k_item_507_preserves_complete_structured_text_without_reading_primary_
     complete = "Final voting results below. Votes For 1,234,567; Votes Against 23,456; Votes Abstained 1,234."
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete))
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == complete
 
@@ -205,7 +204,7 @@ def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
     primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nNo results were included.\nSIGNATURES"
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == stub
 
@@ -214,7 +213,7 @@ def test_8k_item_507_does_not_read_primary_document_without_results_follow_signa
     stub = "The annual meeting occurred on May 1, 2026."
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub))
 
-    rows = _filing_row("AAPL", "0000320193", filing)
+    rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == stub
 
@@ -258,12 +257,12 @@ def test_13d_doc_url_is_a_url_not_a_rendered_table():
         def __str__(self) -> str:
             return "+------+\n| 1 sc13d.htm |\n+------+"
 
-    row = _filing_rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
+    row = _rows(_fake_13d_filing(obj=obj, document=_BoxedDocument()))[0]
     assert row["doc_url"] == ("https://www.sec.gov/Archives/edgar/data/1326380/000124000002/sc13d.htm")
     assert "+--" not in row["doc_url"]
 
     # when the attachment exposes a real url, use it verbatim
-    row = _filing_rows(_fake_13d_filing(obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
+    row = _rows(_fake_13d_filing(obj=obj, document=SimpleNamespace(url="https://www.sec.gov/Archives/x/y.htm")))[0]
     assert row["doc_url"] == "https://www.sec.gov/Archives/x/y.htm"
 
 
@@ -298,7 +297,7 @@ def test_13d_reporting_persons_get_one_row_each_with_rp_seq():
         reporting_persons=[_reporting_person("RC Ventures LLC"), _reporting_person("Cohen Ryan", cik="0001")],
     )
     filing = _fake_13d_filing(obj=obj)
-    rows = _filing_rows(filing)
+    rows = _rows(filing)
     assert len(rows) == 2
     assert [r["rp_seq"] for r in rows] == [0, 1]
     assert {r["reporting_person_name"] for r in rows} == {"RC Ventures LLC", "Cohen Ryan"}
@@ -327,7 +326,7 @@ def test_13d_numeric_ownership_fields_null_when_not_structured():
         reporting_persons=[_reporting_person("RC Ventures LLC", percent_of_class=0.0, aggregate_amount=0)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["has_structured_data"] == 0.0
     assert pd.isna(row["percent_of_class"])
     assert pd.isna(row["aggregate_amount"])
@@ -352,7 +351,7 @@ def test_13d_numeric_ownership_fields_trusted_when_structured():
         reporting_persons=[_reporting_person("Icahn Carl C", percent_of_class=9.9, aggregate_amount=12345678)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["percent_of_class"] == 9.9
     assert row["aggregate_amount"] == 12345678.0
     assert row["item4_purpose_of_transaction"] == "Acquire control of the issuer."
@@ -374,7 +373,7 @@ def test_13d_reporting_person_without_cik_is_not_dropped():
         reporting_persons=[_reporting_person("Doe Jane", cik="9999999999", no_cik=True)],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["reporting_person_name"] == "Doe Jane"
     assert row["reporting_person_cik"] is None
 
@@ -582,7 +581,7 @@ def test_placeholder_numerics_with_a_comment_are_nulled_not_written_as_zero():
     rp = _reporting_person(
         "The Leonard A. Lauder 2013 Revocable Trust", comment="Rows 7, 8, 9, 10, 11, and 13:  See Item 5 of this Schedule 13D amendment."
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert all(pd.isna(row[c]) for c in _NUMERIC_COLS)
     assert all(isinstance(row[c], float) for c in _NUMERIC_COLS)  # NaN, never None
     assert row["reporting_person_comment"].startswith("Rows 7, 8, 9")
@@ -593,7 +592,7 @@ def test_genuine_full_disposal_keeps_its_zeros():
     really has sold out reports the same six zeros but attaches NO comment. Nulling those
     would erase a real, material disclosure (the activist exited)."""
     rp = _reporting_person("Icahn Carl C", comment=None)
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert all(row[c] == 0 for c in _NUMERIC_COLS)
     assert row["reporting_person_comment"] is None
 
@@ -611,7 +610,7 @@ def test_real_numerics_survive_alongside_a_comment():
         percent_of_class=41.5,
         comment="Excludes shares held in a rabbi trust.",
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert row["percent_of_class"] == 41.5
     assert row["aggregate_amount"] == 7952386
     assert row["reporting_person_comment"] == "Excludes shares held in a rabbi trust."
@@ -635,7 +634,7 @@ def test_a_percentage_that_rounds_to_zero_is_a_real_disclosure_not_a_placeholder
         percent_of_class=0.0,
         comment="Row 13: This percentage is based on a total of 54,730,851,778,811 Shares.",
     )
-    row = _filing_rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
+    row = _rows(_fake_13d_filing(obj=_structured_obj(rp)))[0]
     assert row["aggregate_amount"] == 18632216  # the real holding survives
     assert row["shared_voting_power"] == 18632216
     assert row["percent_of_class"] == 0.0  # ...and so does its true 0.0%
@@ -866,11 +865,11 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
-        lambda ticker, subject_ciks, forms, since, done: [good_filing, bad_filing],
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: [good_filing, bad_filing],
     )
 
-    out = build_ticker_13d_edgar("AAPL", "0000320193")[Tables.sec_13d]
+    out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
     assert out.iloc[0]["issuer_name"] == "Apple Inc."
 
@@ -883,11 +882,11 @@ def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
 
     filing.obj = fail_parse
     monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.fetch_13d_edgar.new_schedule_filings",
-        lambda ticker, subject_ciks, forms, since, done: [filing],
+        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
+        lambda ticker, subject_ciks, forms, since, done_accessions: [filing],
     )
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13d_edgar("AAPL", "0000320193")
+        build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))
     print("\n=== SANITY CHECK: known 13D parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 
@@ -914,7 +913,7 @@ def test_13d_item3_and_item6_use_correct_structured_attribute_names():
         reporting_persons=[_reporting_person("Icahn Carl C")],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["item3_source_of_funds"] == "Working capital."
     assert row["item6_contracts_understandings"] == "A letter agreement dated 2024-01-01."
 
@@ -935,7 +934,7 @@ def test_13d_is_group_member_uses_correct_reporting_person_attribute():
         reporting_persons=[_reporting_person("RC Ventures LLC", member_of_group="a")],
     )
     filing = _fake_13d_filing(obj=obj)
-    row = _filing_rows(filing)[0]
+    row = _rows(filing)[0]
     assert row["is_group_member"] == "a"
 
 

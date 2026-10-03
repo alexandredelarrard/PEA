@@ -1,6 +1,6 @@
 """Shared config plumbing for the OFFLINE data_extract tests (tmp_path fake contexts).
 
-`run_manifest._manifest_path` resolves the checkpoint's filename through
+`run_manifest.manifest_path` resolves the checkpoint's filename through
 `context.config.local.filename.extraction` rather than a module constant, so a fake context
 carrying only `paths` raises `AttributeError` before any assertion in the test body runs --
 which reads as 17 unrelated failures across the manifest, edgar-driver and DEF 14A suites.

@@ -5,7 +5,7 @@ from typing import cast
 import pandas as pd
 import requests
 
-from src.constants.constants import _HEADERS
+from src.constants.constants import BROWSER_HEADERS
 from src.context import Context
 from src.data_extract.utils.common.gics import industry_group
 from src.data_store.schema import Tables
@@ -14,10 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 def _dedupe_share_classes(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop redundant dual-class listings (e.g. GOOG vs GOOGL, FOX vs FOXA, NWS vs
-    NWSA): both share one CIK. Keep ONE row per CIK — the LONGEST symbol, which is
-    the voting/Class-A line (GOOGL, FOXA, NWSA) rather than the non-voting Class-C
-    (GOOG, FOX, NWS). Rows without a CIK are kept as-is."""
+    """Keep ONE row per CIK across dual-class listings: the longest symbol, i.e. the voting line
+    (GOOGL over GOOG). Rows without a CIK are kept as-is."""
     if "cik" not in df.columns:
         return df
     cik = cast(pd.Series, df["cik"])
@@ -39,12 +37,11 @@ def _dedupe_share_classes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_sp500_tickers(context: Context) -> None:
-    """Scrape current S&P 500 tickers + sector info from Wikipedia. Adds the GICS
-    industry group (24-level, for sector-neutral construction) and deduplicates
-    dual-class share listings."""
+    """Scrape current S&P 500 tickers + sector info from Wikipedia into `sp500_tickers`, adding the GICS
+    industry group and deduplicating dual-class listings."""
 
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    response = requests.get(url, headers=_HEADERS, timeout=30)
+    response = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
     response.raise_for_status()
     tables = pd.read_html(io.StringIO(response.text))
 

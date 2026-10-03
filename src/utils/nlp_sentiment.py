@@ -1,29 +1,11 @@
-"""
-nlp_sentiment.py  (src/utils/nlp_sentiment.py)
-----------------------------------------------
-Local, FREE, GPU-capable finance sentiment scoring for long documents (earnings-call
-sections). Wraps a HuggingFace tone classifier (default FinBERT-tone) behind a small,
-dependency-light API so the rest of the pipeline never imports torch/transformers
-directly:
+"""Local finance-tone scoring of long documents (earnings-call sections) with a HuggingFace classifier (FinBERT-tone).
 
     engine = get_sentiment_engine(context.log)      # None if torch/transformers absent
     probs  = engine.score_texts([doc1, doc2, ...])   # -> [{'pos','neg','neu'}|None, ...]
 
-Design notes
-  * LAZY / OPTIONAL. torch + transformers are heavy optional deps. If either is
-    missing the engine builder returns None and callers skip cleanly (same pattern as
-    curl_cffi in the Google-Trends fetcher) — the pipeline must never hard-break just
-    because the ML stack isn't installed on a given machine.
-  * GPU-FIRST, FITS 6GB. The model (~440MB) loads on CUDA when available (else CPU);
-    inference runs in small batches under torch.no_grad() so a 6GB card is plenty.
-  * LONG DOCS. Earnings-call sections run to thousands of tokens; BERT caps at 512.
-    We split each doc into ≤510-token windows, score every window, and LENGTH-WEIGHT
-    average the per-window class probabilities back to one distribution per doc.
-  * LABEL-SAFE. Class order differs across models, so we map columns from the model's
-    own `config.id2label` (match on 'pos'/'neg'/'neu') rather than hardcoding indices.
-
-The pure windowing/aggregation helpers (`_window_ids`, `_length_weighted_average`) are
-unit-tested without any model download.
+torch/transformers are optional: without them the builder returns None and callers skip. Runs on CUDA when
+available. Documents are split into <=510-token windows whose class probabilities are length-weighted back to
+one distribution; columns are mapped from the model's own `config.id2label`, never hardcoded indices.
 """
 
 from __future__ import annotations
@@ -35,10 +17,7 @@ from pathlib import Path
 
 from src.constants.constants import FINBERT_TONE_MODEL
 
-# FinBERT-tone: finance-domain tone classifier (positive / neutral / negative),
-# trained on analyst reports & earnings text. ~440MB, runs locally on GPU (fits 6GB)
-# or CPU; free (HuggingFace). Sections longer than the 512-token BERT window are
-# chunked and length-weighted (see src/utils/nlp_sentiment.py).
+# BERT's token window; longer sections are chunked and length-weighted.
 FINBERT_MAX_TOKENS = 512
 
 
@@ -49,14 +28,8 @@ def ml_stack_available() -> bool:
     return bool(u.find_spec("torch")) and bool(u.find_spec("transformers"))
 
 
-# --------------------------------------------------------------------------- #
-# Corporate-proxy model mirror (curl_cffi)                                      #
-# --------------------------------------------------------------------------- #
-# The default HuggingFace downloader uses OpenSSL, which on OpenSSL 3.x REJECTS some
-# corporate MITM-proxy CAs ("Basic Constraints of CA cert not marked critical"), so the
-# model can't be fetched behind the proxy. curl_cffi impersonates a real Chrome TLS
-# handshake (BoringSSL) — the repo's proven proxy workaround (see Google Trends) — and
-# mirrors the model files locally so transformers can then load them OFFLINE.
+# --- Corporate-proxy model mirror (curl_cffi) ---
+# OpenSSL 3.x rejects some corporate MITM-proxy CAs, so model files are mirrored via curl_cffi and loaded offline.
 _MODEL_META_FILES = ("config.json", "vocab.txt", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
 _MODEL_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
 
@@ -67,11 +40,10 @@ def _local_model_dir(model_name: str) -> Path:
 
 
 def ensure_local_model(model_name: str, logger: logging.Logger) -> str:
-    """Mirror a HuggingFace model locally via curl_cffi and return the local dir (so
-    `from_pretrained` loads it offline). Corporate-proxy workaround: tries the CA
-    bundle first, then — as a last resort for this PUBLIC, read-only model artifact —
-    an UNVERIFIED fetch (logged). Returns `model_name` unchanged if curl_cffi is
-    unavailable or the download fails, so the normal HF client is still attempted."""
+    """Mirror a HuggingFace model locally via curl_cffi and return the local dir for an offline `from_pretrained`.
+
+    Tries the CA bundle first, then an unverified fetch (logged) as a last resort for this public, read-only artifact.
+    Returns `model_name` unchanged when curl_cffi is unavailable or the download fails, so the HF client still runs."""
     dest = _local_model_dir(model_name)
     if (dest / "config.json").exists() and any((dest / w).exists() for w in _MODEL_WEIGHT_FILES):
         return str(dest)  # already mirrored
@@ -118,20 +90,16 @@ def ensure_local_model(model_name: str, logger: logging.Logger) -> str:
     return str(dest)
 
 
-# --------------------------------------------------------------------------- #
-# Pure helpers (no torch) — unit-tested                                         #
-# --------------------------------------------------------------------------- #
+# --- Pure helpers (no torch) ---
 def _window_ids(ids: list[int], stride: int) -> list[list[int]]:
-    """Split a token-id list into consecutive non-overlapping windows of ≤`stride`
-    tokens. Empty input -> one empty window is NOT produced (returns [])."""
+    """Split a token-id list into consecutive non-overlapping windows of <=`stride` tokens; [] for empty input."""
     if stride <= 0:
         raise ValueError("stride must be positive")
     return [ids[i : i + stride] for i in range(0, len(ids), stride)] if ids else []
 
 
 def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequence[float]) -> list[float]:
-    """Length-weighted mean of per-window probability vectors -> one vector. Falls back
-    to a plain mean if all weights are non-positive; empty input -> []."""
+    """Length-weighted mean of per-window probability vectors; plain mean if all weights are non-positive, [] if empty."""
     rows = [list(map(float, r)) for r in prob_rows]
     if not rows:
         return []
@@ -148,12 +116,9 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
     return [v / tot for v in out]
 
 
-# --------------------------------------------------------------------------- #
-# Engine                                                                        #
-# --------------------------------------------------------------------------- #
+# --- Engine ---
 class SentimentEngine:
-    """Thin wrapper over a HuggingFace sequence-classification tone model. Built via
-    `get_sentiment_engine` (which returns None when the ML stack is unavailable)."""
+    """Thin wrapper over a HuggingFace tone classifier; build it via `get_sentiment_engine`."""
 
     def __init__(
         self, model_name: str = FINBERT_TONE_MODEL, max_tokens: int = FINBERT_MAX_TOKENS, batch_size: int = 16, logger: logging.Logger | None = None
@@ -208,10 +173,8 @@ class SentimentEngine:
         return out
 
     def score_texts(self, texts: Sequence[str | None]) -> list[dict[str, float] | None]:
-        """Score each document into a length-weighted {pos, neg, neu} distribution.
-        Blank/None docs -> None. Long docs are windowed to ≤(max_tokens-2) tokens and
-        every window scored, then length-weighted back to one distribution per doc.
-        All windows across all docs are batched together for GPU efficiency."""
+        """Score each document into a length-weighted {pos, neg, neu} distribution; blank/None docs -> None.
+        Windows of every document are scored in shared batches."""
         stride = max(1, self.max_tokens - 2)  # room for [CLS]/[SEP]
         # 1) tokenize + window each doc, remembering which windows belong to which doc
         all_windows_text: list[str] = []
@@ -248,9 +211,8 @@ _ENGINE_TRIED = False
 
 
 def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
-    """Return a cached SentimentEngine, or None if torch/transformers are unavailable
-    or the model fails to load. Loads the model on first call (downloads ~440MB to the
-    HuggingFace cache once); subsequent calls reuse the in-process instance."""
+    """The process-wide SentimentEngine, or None if torch/transformers are missing or the model fails to load.
+    A failed load is not retried in the same process."""
     global _ENGINE, _ENGINE_TRIED
     log = logger or logging.getLogger(__name__)
     if _ENGINE is not None:

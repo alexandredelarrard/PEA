@@ -15,6 +15,7 @@ import pytest
 
 from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression
 from src.modelling.transformers.linear_regression import _standardize
+from src.modelling.utils.artifacts import save_member
 from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
 from src.modelling.utils.metrics import daily_ic
@@ -127,7 +128,7 @@ def test_roundtrip_importance_and_guards(tmp_path: Path) -> None:
     panel = signal_panel(n_days=60)
     model = LinearRegression(ctx(), make_config(), "elasticnet", 60).fit(panel)
     assert model.features == ["f2", "f0", "f1"], "configured order, categoricals never used"
-    loaded = LinearRegression.load(model.save(tmp_path / "m.pkl"))
+    loaded = LinearRegression.load(save_member(model, tmp_path / "m.pkl"))
     assert np.array_equal(loaded.predict(panel).to_numpy(), model.predict(panel).to_numpy())
     imp = model.importance()
     assert list(imp.index) == model.features and np.array_equal(imp.to_numpy(), np.abs(model.coef_))

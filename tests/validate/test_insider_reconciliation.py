@@ -12,7 +12,10 @@ from src.validate import insider_reconciliation as module
 
 def test_replay_initializes_edgar_and_returns_a_typed_empty_frame(monkeypatch):
     state = {"identity_initialized": False}
-    context: Any = SimpleNamespace(ensure_edgar_identity=lambda: state.__setitem__("identity_initialized", True))
+    context: Any = SimpleNamespace(
+        ensure_edgar_identity=lambda: state.__setitem__("identity_initialized", True),
+        log=SimpleNamespace(warning=lambda *args: None),
+    )
     bulk = pd.DataFrame(
         {
             "accession_number": ["0000000001-26-000001"],
@@ -25,6 +28,7 @@ def test_replay_initializes_edgar_and_returns_a_typed_empty_frame(monkeypatch):
         lambda context, tickers: pd.DataFrame({"ticker": ["AAA"], "cik": ["1"]}),
     )
     monkeypatch.setattr(module, "load_identity", lambda context: object())
+    monkeypatch.setattr(module, "load_edgar_scope", lambda *args, **kwargs: (object(), None, frozenset()))
     monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         module,

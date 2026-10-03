@@ -17,9 +17,12 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.constants.constants import MARKET_TIMEZONE
+from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_store.store import DataStore
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
@@ -108,7 +111,12 @@ def test_insider_parse_and_universe_filter_synthetic():
             "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
         }
     )
-    out = ins._parse_insider(sub, own, nd, pd.DataFrame())
+    out = build_insider_frame(
+        ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()),
+        value_rule="shares_x_price_first",
+        numeric_rule="to_numeric",
+        date_formats=BULK_DATE_FORMATS,
+    )
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
@@ -134,7 +142,7 @@ def test_insider_parse_and_universe_filter_synthetic():
         ),
         roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]),
     )
-    filt, rejected = ins._filter_universe(out, ["AAPL"], identity)
+    filt, rejected = screen_insider_rows(out, ["AAPL"], identity)
     assert set(filt["ticker"]) == {"AAPL"}
     assert rejected.empty
     print("\n=== SANITY: insider parse + universe filter ===")
@@ -145,7 +153,9 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = ins._parse_insider(tables[0], tables[1], tables[2], tables[3])
+    df = build_insider_frame(
+        ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
+    )
     assert not df.empty and df["transaction_sk"].notna().all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()
@@ -160,21 +170,23 @@ def test_insider_incremental_state_converges(tmp_path):
     """Quarter-skip comes from the DB; the re-parse-on-new-ticker decision compares
     the CURRENT universe to the PROCESSED-universe sidecar (so it converges instead
     of re-parsing every run just because some names never file that quarter)."""
-    from src.data_extract.utils.common.sec_utils import bulk_ingested_quarters, load_processed_universe, save_processed_universe
+    from src.data_extract.utils.common.bulk_cache import mark_processed, pending_periods
+    from src.data_extract.utils.common.incremental import stored_values
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
     )
-    assert bulk_ingested_quarters(ds, "insider_transactions") == {"2024q1"}
+    context = SimpleNamespace(store=ds)
+    assert stored_values(context, "insider_transactions", "quarter") == {"2024q1"}
+    quarters = ["2024q1", "2024q2"]
 
-    save_processed_universe(tmp_path, "insider_transactions", {"AAPL", "MSFT"})
-    assert load_processed_universe(tmp_path, "insider_transactions") == {"AAPL", "MSFT"}
+    mark_processed(tmp_path, "insider_transactions", {"AAPL", "MSFT"})
     # unchanged universe -> nothing new -> done quarters are skipped (converged)
-    assert {"AAPL", "MSFT"} - load_processed_universe(tmp_path, "insider_transactions") == set()
-    # grown universe -> only the genuinely new name triggers a cached-zip re-parse
-    assert {"AAPL", "MSFT", "NVDA"} - load_processed_universe(tmp_path, "insider_transactions") == {"NVDA"}
+    assert pending_periods(context, tmp_path, "insider_transactions", quarters, {"AAPL", "MSFT"}, column="quarter") == ["2024q2"]
+    # grown universe -> every cached quarter is re-parsed to back-fill the new name
+    assert pending_periods(context, tmp_path, "insider_transactions", quarters, {"AAPL", "MSFT", "NVDA"}, column="quarter") == quarters
 
     print("\n=== SANITY: incremental state converges ===")
     print("  2024q1 ingested -> skipped next run; unchanged universe -> no re-parse; adding NVDA -> only NVDA flagged for back-fill. Validated.")
@@ -217,7 +229,12 @@ def test_pension_join_filters_segments_and_coreg():
     ],
 )
 def test_pension_historical_zip_available_after_quarter_end_plus_twelve_days(quarter: str, expected: date, tmp_path: Path) -> None:
-    assert fin._resolve_archive_available_at(quarter, tmp_path / f"{quarter}.zip") == expected
+    assert (
+        bulk_cache.archive_available_at(
+            bulk_cache.period_end(quarter), tmp_path / f"{quarter}.zip", observed_from=fin._OBSERVED_FROM, downloaded=False
+        )
+        == expected
+    )
     print("\n=== SANITY CHECK: estimated quarterly pension availability ===")
     print(f"  {quarter} is available on {expected}; weekend dates move to Monday. Validated.")
 
@@ -228,15 +245,22 @@ def test_pension_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> No
     downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
-    assert fin._resolve_archive_available_at("2026q3", path) == date(2026, 10, 15)
-    assert fin._resolve_archive_available_at("2026q3", tmp_path / "missing.zip") is None
+    assert bulk_cache.archive_available_at(bulk_cache.period_end("2026q3"), path, observed_from=fin._OBSERVED_FROM, downloaded=False) == date(
+        2026, 10, 15
+    )
+    assert (
+        bulk_cache.archive_available_at(bulk_cache.period_end("2026q3"), tmp_path / "missing.zip", observed_from=fin._OBSERVED_FROM, downloaded=False)
+        is None
+    )
     print("\n=== SANITY CHECK: cached future pension ZIP clock ===")
     print("  the cached file uses its New York modification date only as a fallback; a missing file has no clock. Validated.")
 
 
 def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
-    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    context = SimpleNamespace(
+        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+    )
     tag = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
 
     def fact(path: Path) -> pd.DataFrame:
@@ -260,10 +284,9 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
         )
 
     monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
-    monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)
+    monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
     monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1", "2026q2"])
     monkeypatch.setattr(fin, "ensure_zip", lambda context, path, url, **kwargs: path)
@@ -284,13 +307,15 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
 
 def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
-    context = SimpleNamespace(store=store, config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))))
+    context = SimpleNamespace(
+        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+    )
     path = tmp_path / "2026q3.zip"
 
     class Clock:
         @staticmethod
         def now(tz):
-            assert tz == fin.MARKET_TZ
+            assert tz == MARKET_TIMEZONE
             return datetime(2026, 10, 15, 17, 0, tzinfo=tz)
 
         @staticmethod
@@ -304,12 +329,11 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
             os.utime(path, (stale, stale))
         return path
 
-    monkeypatch.setattr(fin, "datetime", Clock)
+    monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fin, "load_processed_universe", lambda cache, table: {"BDX"})
-    monkeypatch.setattr(fin, "save_processed_universe", lambda *args: None)
+    monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
     monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q3"])
     monkeypatch.setattr(fin, "ensure_zip", download)

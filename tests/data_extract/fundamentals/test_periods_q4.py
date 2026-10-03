@@ -521,6 +521,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
+    from src.data_extract.utils.common.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
@@ -534,7 +535,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             if pd.Timestamp(f.filing_date) >= pd.Timestamp("2018-01-01") and not str(f.form).upper().endswith("/A")
         ]
         for filing in filings:
-            rows.extend(filing_rows(ticker, str(company.cik), filing, CATALOGUE, gics))
+            rows.extend(filing_rows(ticker, FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
     quarters, ttm = [], []
     for _, group in facts.groupby("ticker"):
@@ -544,6 +545,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return facts, pd.concat(quarters, ignore_index=True), pd.concat(ttm, ignore_index=True)
 
 
+@pytest.mark.live
 def test_apples_fiscal_2025_fourth_quarter_revenue(real_periods):
     """$102.466 bn, the edgartools-verified figure, and it must arrive by the PRIMARY
     ladder -- if it comes from `FY - (Q1+Q2+Q3)` the phase has not done its job."""
@@ -560,6 +562,7 @@ def test_apples_fiscal_2025_fourth_quarter_revenue(real_periods):
     )
 
 
+@pytest.mark.live
 def test_skyworks_ninety_seven_day_fiscal_2020_fourth_quarter(real_periods):
     """$956.8M over 97 days. The fact is tagged `fp='FY'` and nothing here reads that."""
     _, quarters, _ = real_periods
@@ -575,6 +578,7 @@ def test_skyworks_ninety_seven_day_fiscal_2020_fourth_quarter(real_periods):
     )
 
 
+@pytest.mark.live
 def test_a_derived_year_foots_to_the_number_the_filer_published(real_periods):
     """The strongest available check on the three rungs below Q4: sum the four discrete
     quarters and compare with the filer's OWN annual fact, which the engine never reads
@@ -808,6 +812,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
+    from src.data_extract.utils.common.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
@@ -822,13 +827,14 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
         filed = pd.Timestamp(filing.filing_date)
         if filed < pd.Timestamp("2017-06-01"):
             continue
-        rows.extend(filing_rows("ORCL", str(company.cik), filing, CATALOGUE, gics))
+        rows.extend(filing_rows("ORCL", FilingStamp.of(filing, str(company.cik)), CATALOGUE, gics))
     facts = pd.DataFrame(rows)
     refusals: list[dict] = []
     quarters, _ttm, _instants = periods.build_periods(facts, CATALOGUE, refusals=refusals)
     return quarters, refusals, facts
 
 
+@pytest.mark.live
 def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
     """The real-data pairing for cluster `2603621e89ab`, and the fire-rate check.
 
@@ -886,6 +892,7 @@ def test_orcls_mislabelled_years_never_become_quarters(orcl_quarters):
     print("  OK: 0 of 9 mislabelled years survive as quarters; all 5 fourth quarters derive")
 
 
+@pytest.mark.live
 def test_the_retry_recovers_the_annual_the_filer_tagged_under_the_other_element(orcl_quarters):
     """The second half of cluster `2603621e89ab`: refusing the lie is not recovering the truth.
 

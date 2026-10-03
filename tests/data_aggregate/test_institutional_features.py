@@ -36,7 +36,7 @@ from src.data_aggregate.utils.institutionals.institutional_features import (
 from src.data_aggregate.utils.institutionals.institutional_features import (
     clean_holdings as _clean_holdings,
 )
-from src.data_extract.utils.institutionals.fetch_13f import _holdings_frame
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from tests.conftest import make_frames
 
@@ -75,7 +75,7 @@ def build_institutional_feature_panel(frames, holdings, **kw):
 
 
 def _frame(infotable):
-    return _holdings_frame("111", "2022-05-10", "2022-03-31", infotable)
+    return _book_frame("111", "2022-05-10", "2022-03-31", infotable)
 
 
 def _holdings():

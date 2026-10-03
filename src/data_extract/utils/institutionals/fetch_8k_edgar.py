@@ -4,30 +4,19 @@ fetch_8k_edgar.py (src/data_extract/utils/institutionals/fetch_8k_edgar.py)
 SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
 Item codes come from the filing index; `has_earnings` / `has_press_release` and
 the per-item text come from edgartools' typed `CurrentReport` (`filing.obj()`).
-
-Parsing financial statements out of an attached earnings release is deliberately
-out of scope -- it would store unstandardized figures competing with
-`fundamentals_facts`.
+Financial statements in attached earnings releases are out of scope.
 """
 
 from __future__ import annotations
 
-import itertools
 import re
+from functools import partial
 from typing import Any
 
-import pandas as pd
-
 from src.constants.constants import SEC_8K_FORMS
-from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
-    filed_by,
-    new_filings,
-    period_of_report,
-    run_edgar_fetch,
-)
-from src.data_extract.utils.common.identity import Identity
-from src.data_store.schema import Table, Tables
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.structure.votes.guard import has_vote_table
+from src.data_store.schema import Tables
 
 _COLS = [
     "ticker",
@@ -92,8 +81,6 @@ _HIGH_SIGNAL_ITEMS = {
     "9.01": "financial_statements_and_exhibits",
 }
 
-_GROUPED_VOTE_NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
-_VOTE_TABLE_LABEL_RE = re.compile(r"(?i)\b(?:against|withheld|abstain(?:ed)?|broker\s+non[- ]votes?)\b")
 _RESULTS_FOLLOW_RE = re.compile(
     r"(?is)\b(?:results?|votes?)\b.{0,160}\b(?:below|following|as follows|set forth)\b"
     r"|\b(?:below|following)\b.{0,160}\b(?:results?|votes?)\b"
@@ -102,20 +89,11 @@ _ITEM_507_HEADING_RE = re.compile(r"(?im)^\s*Item\s+5\.07\b[^\n]*")
 _NEXT_8K_SECTION_RE = re.compile(r"(?im)^\s*(?:Item\s+(?!5\.07\b)\d\.\d{2}\b[^\n]*|SIGNATURES?)\s*$")
 
 
-def _has_vote_table(text: str) -> bool:
-    return len(_GROUPED_VOTE_NUMBER_RE.findall(text)) >= 2 and bool(_VOTE_TABLE_LABEL_RE.search(text))
-
-
 def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
-    """Replace an edgartools table-less Item 5.07 slice with its primary-doc section.
-
-    Some issuers render the prose and tables in separate HTML blocks. The typed
-    `CurrentReport` section ends after "results ... below", while `filing.text()` retains
-    the tables. Keep complete structured slices byte-for-byte and accept a fallback only
-    when the stub announces following results and the carved section contains both vote
-    labels and multiple grouped tallies.
+    """Replace a table-less Item 5.07 slice that announces results "below" with the longer
+    primary-document section, only when that section has a vote table; else keep it unchanged.
     """
-    if not _RESULTS_FOLLOW_RE.search(item_text) or _has_vote_table(item_text):
+    if not _RESULTS_FOLLOW_RE.search(item_text) or has_vote_table(item_text):
         return item_text
     try:
         primary_text = str(filing.text() or "")
@@ -124,20 +102,16 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     for heading in _ITEM_507_HEADING_RE.finditer(primary_text):
         following = _NEXT_8K_SECTION_RE.search(primary_text, heading.end())
         candidate = primary_text[heading.start() : following.start() if following else len(primary_text)].strip()
-        if len(candidate) > len(item_text) and _has_vote_table(candidate):
+        if len(candidate) > len(item_text) and has_vote_table(candidate):
             return candidate
     return item_text
 
 
-def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
-    """One 8-K -> one row per item code. `has_earnings`/`has_press_release` are
-    best-effort: a filing whose `.obj()` parse fails keeps its item rows (those come
-    straight from the filing index) with both flags NaN.
-
-    NaN rather than None: `store.ensure_table` infers column types from the first frame
-    written to a cold table, so an all-None column would be created TEXT for good."""
-    # Item codes come free off the filing index. Read them BEFORE `.obj()`: with no item codes
-    # this filing yields no rows at all, so the parse would be thrown away.
+def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
+    """One 8-K -> one row per item code. A failed `.obj()` parse keeps the item rows with both
+    flags NaN (not None, so a cold table never infers the column as TEXT)."""
+    filing = stamp.filing
+    # Item codes come off the filing index, read before `.obj()` so a code-less filing skips the parse.
     items = getattr(filing, "items", "") or ""
     item_list = [i.strip() for i in str(items).split(",") if i.strip()]
     if not item_list:
@@ -154,19 +128,17 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
 
     base = {
         "ticker": ticker,
-        # The CIK that FILED this 8-K, not the roster's -- see `edgar_driver.filed_by`. The
-        # union walks every registrant in the chain, so this is the column that makes a
-        # boundary visible instead of stamping all 526 of XOM's rows with one holdco.
-        "cik": filed_by(filing, cik),
-        "accession_number": filing.accession_number,
-        "form": filing.form,
-        "filing_date": pd.Timestamp(filing.filing_date),
-        "period_of_report": period_of_report(filing),
+        # The filing registrant's CIK (not the roster's), so a registrant boundary stays visible.
+        "cik": stamp.cik,
+        "accession_number": stamp.accession_number,
+        "form": stamp.form,
+        "filing_date": stamp.filed,
+        "period_of_report": stamp.period_of_report,
         "n_items": len(item_list),
-        "is_amendment": 1.0 if str(filing.form).upper().endswith("/A") else 0.0,
+        "is_amendment": float(stamp.is_amendment),
         "has_earnings": has_earnings,
         "has_press_release": has_press_release,
-        "primary_document": getattr(filing, "primary_document", None),
+        "primary_document": stamp.primary_document,
     }
 
     rows = []
@@ -185,43 +157,9 @@ def _filing_row(ticker: str, cik: str, filing) -> list[dict]:
     return rows
 
 
-def build_ticker_8k_edgar(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    identity: Identity | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    roster_cik: str | None = None,
-) -> dict[Table, pd.DataFrame]:
-    rows = itertools.chain.from_iterable(
-        _filing_row(ticker, cik, f)
-        for f in new_filings(
-            ticker,
-            SEC_8K_FORMS,
-            since,
-            done_accessions,
-            identity=identity,
-            symbol_tenure=symbol_tenure,
-            roster_cik=roster_cik,
-        )
-    )
-    df = pd.DataFrame(list(rows), columns=_COLS)
-    # A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02")
-    # would make the upsert touch one PK row twice, which Postgres rejects outright.
-    return {Tables.sec_8k: df.drop_duplicates(subset=list(Tables.sec_8k.pk), keep="last")}
-
-
-def fetch_8k_edgar(context: Context, tickers: list[str], years_history: int, full: bool = False) -> None:
-    run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        tables=(Tables.sec_8k,),
-        build=build_ticker_8k_edgar,
-        desc="8-K (edgartools)",
-        full=full,
-        require_complete=True,
-        identity_aware=True,
-    )
+#: `build_filing_rows` collapses a repeated item code ("5.02,5.02") into one PK row.
+SEC_8K_FETCH = EdgarFetch(
+    desc="8-K (edgartools)",
+    tables=(Tables.sec_8k,),
+    build=partial(build_filing_rows, forms=SEC_8K_FORMS, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
+)

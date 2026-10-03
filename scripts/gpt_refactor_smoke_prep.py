@@ -18,7 +18,7 @@ Why each statement:
      45 columns -> 42.
 
   2. `DELETE FROM def14a_llm WHERE ticker IN (<smoke set>)` -- the fetcher skips any accession
-     already stored (`existing_filings`), so leaving the smoke tickers' rows in place would
+     already stored (`stored_values`), so leaving the smoke tickers' rows in place would
      make the run cost zero calls and produce zero new rows. The rows are not the comparison
      set once they are overwritten anyway: `save(pk=[ticker, accession_number])` is an upsert,
      so a re-extracted accession REPLACES its old row. The parquet snapshot in step 0 is

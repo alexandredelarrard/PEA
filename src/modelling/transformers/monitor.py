@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,6 @@ from omegaconf import DictConfig  # noqa: E402
 from src.context import Context  # noqa: E402
 from src.modelling.transformers.backtest import Backtest, BacktestResult  # noqa: E402
 from src.modelling.transformers.base import BaseModel  # noqa: E402
-from src.modelling.utils.artifacts import safe_filename  # noqa: E402
 from src.modelling.utils.features import design_matrix  # noqa: E402
 from src.modelling.utils.metrics import daily_ic_series, max_drawdown  # noqa: E402
 
@@ -53,6 +53,7 @@ except ImportError:
 
 _DEPENDENCE_PANELS = 16  # features in the SHAP dependence grid (4 x 4)
 _ROLL = 21
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^0-9A-Za-z._-]+")  # replaced by "_" in feature / member file names
 
 
 # --------------------------------------------------------------------------- #
@@ -355,7 +356,7 @@ def save_member_diagnostics(
         grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample)
         if grid is None:
             continue
-        _save_pdp_plot(grid, means, feat, pdp_dir / f"pdp_{rank:02d}_{safe_filename(feat)}.png", horizon, x[:, j])
+        _save_pdp_plot(grid, means, feat, pdp_dir / f"pdp_{rank:02d}_{_UNSAFE_FILENAME_CHARS.sub('_', feat)}.png", horizon, x[:, j])
         n_pdp += 1
 
     imp_path = _save_importance_table(gain_imp, shap_imp, out_dir)
@@ -374,6 +375,19 @@ def save_member_diagnostics(
 # --------------------------------------------------------------------------- #
 # Monitor                                                                     #
 # --------------------------------------------------------------------------- #
+def _summed_importance(models: dict[int, dict[str, BaseModel]]) -> dict[str, float]:
+    """Per-feature sum over every (horizon, member) of the member's importance normalised to sum 1."""
+    imp: dict[str, float] = {}
+    for model in (member for members in models.values() for member in members.values()):
+        s = model.importance()
+        tot = s.sum()
+        if tot > 0:
+            s = s / tot
+        for f, g in s.items():
+            imp[str(f)] = imp.get(str(f), 0.0) + float(g)
+    return imp
+
+
 class Monitor:
     """Collects one training run's metrics and writes its report under a run-stamped folder.
 
@@ -469,7 +483,7 @@ class Monitor:
                 booster=m.model,
                 panel=panel,
                 feature_cols=list(m.model.feature_name()),
-                out_dir=out_dir if flat else out_dir / safe_filename(name),
+                out_dir=out_dir if flat else out_dir / _UNSAFE_FILENAME_CHARS.sub("_", name),
                 top_n=self.top_n,
                 shap_sample=self.shap_sample,
                 pdp_grid=self.pdp_grid,
@@ -478,7 +492,7 @@ class Monitor:
         for name, m in members.items():
             if name not in boosters:
                 m.importance().rename("abs_coef").sort_values(ascending=False).rename_axis("feature").to_csv(
-                    out_dir / f"coef_importance_{safe_filename(name)}.csv"
+                    out_dir / f"coef_importance_{_UNSAFE_FILENAME_CHARS.sub('_', name)}.csv"
                 )
 
         ic_s = ic if ic is not None else pd.Series(dtype=float)
@@ -559,16 +573,7 @@ class Monitor:
         normalised to sum 1 (gain and |coef| are not on one scale), then summed and normalised.
         Logs the top 15 and the peer-relative fundamentals (`f_*`) share."""
         try:
-            imp: dict[str, float] = {}
-            for members in models.values():
-                for model in members.values():
-                    s = model.importance()
-                    tot = s.sum()
-                    if tot > 0:
-                        s = s / tot
-                    for f, g in s.items():
-                        imp[str(f)] = imp.get(str(f), 0.0) + float(g)
-            imp_s = pd.Series(imp, dtype=float).sort_values(ascending=False)
+            imp_s = pd.Series(_summed_importance(models), dtype=float).sort_values(ascending=False)
             imp_s = imp_s / imp_s.sum()
             self._log.info("Top features by gain:\n%s", imp_s.head(15).round(4).to_string())
             fund_share = float(imp_s[[f for f in imp_s.index if str(f).startswith("f_")]].sum())

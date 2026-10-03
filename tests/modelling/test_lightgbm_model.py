@@ -17,6 +17,7 @@ import pytest
 from src.data_store.schema import Tables
 from src.modelling.transformers import LightGBMModel
 from src.modelling.transformers.lightgbm_model import train_booster
+from src.modelling.utils.artifacts import save_member
 from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.metrics import daily_ic
 from tests.modelling.model_fixtures import NUMERIC, ctx, make_config, signal_panel
@@ -34,7 +35,7 @@ def _fit(cfg_overrides: dict | None = None, panel: pd.DataFrame | None = None) -
 def test_fit_save_load_predict_roundtrip_and_evaluate(tmp_path: Path) -> None:
     model, _, test = _fit()
     pred = model.predict(test)
-    path = model.save(tmp_path / "model_h30_lgbm.pkl")
+    path = save_member(model, tmp_path / "model_h30_lgbm.pkl")
     loaded = LightGBMModel.load(path)
     assert np.array_equal(loaded.predict(test).to_numpy(), pred.to_numpy()), "pickled booster must predict identically"
     assert loaded.features == model.features and "_context" not in vars(loaded) and "_config" not in vars(loaded)

@@ -25,7 +25,7 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.assemble.cube import is_meta_column
 from src.data_store.schema import Table
-from src.modelling.utils.artifacts import load_member, save_member
+from src.modelling.utils.artifacts import load_member
 from src.modelling.utils.features import columns_for_horizon
 from src.modelling.utils.metrics import auc, daily_ic
 from src.modelling.utils.panel import load_frame
@@ -139,9 +139,6 @@ class BaseModel:
         raise NotImplementedError
 
     # ---- persistence ------------------------------------------------------------------- #
-    def save(self, path: Path) -> Path:
-        return save_member(self, path)
-
     @classmethod
     def load(cls, path: Path) -> Self:
         obj = load_member(path)

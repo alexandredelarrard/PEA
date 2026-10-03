@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
 
 from src.constants.constants import (
@@ -706,65 +706,92 @@ def _qa_management(turns: list[Turn], analyst_names: set[str]) -> set[str]:
     }
 
 
-def _label(
-    turns: list[Turn], section: str, mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None
-) -> tuple[list[dict], list[str]]:
-    """(labelled turns, cleaned management answer texts) of one section; see `label_turns`."""
-    if section != _QA_SECTION:
-        prepared: list[dict] = []
-        for per, txt in turns:
-            if _is_operator(per, txt):
-                continue
-            body = clean_turn_text(txt, names, prepared=True)
-            if len(body) >= _MIN_TURN:
-                prepared.append(_turn(section, EARNINGS_CALL_TAG_PREPARED, per, body, -1, -1))
-        return prepared, []
-
-    analyst_names = {n.lower() for n in (_announced(turns) if announced is None else announced)}
-    mn = (mgmt_names or set()) | _qa_management(turns, analyst_names)
-    askers: set[str] = set()
-    spoken = set(mn)
-    out: list[dict] = []
-    answers: list[str] = []
-    ex, ans_i, cur, boundary, saw_answer, open_ex = -1, 0, None, True, False, False
+def _label_prepared(turns: list[Turn], section: str, names: CallNames) -> list[dict]:
+    """Labelled prepared turns: every non-logistics turn whose cleaned text has >= `_MIN_TURN` chars."""
+    prepared: list[dict] = []
     for per, txt in turns:
         if _is_operator(per, txt):
-            boundary = True
+            continue
+        body = clean_turn_text(txt, names, prepared=True)
+        if len(body) >= _MIN_TURN:
+            prepared.append(_turn(section, EARNINGS_CALL_TAG_PREPARED, per, body, -1, -1))
+    return prepared
+
+
+@dataclass
+class _QaState:
+    """Running state of the Q&A labelling pass over one call's turns."""
+
+    analyst_names: set[str]
+    management: set[str]
+    spoken: set[str]
+    askers: set[str] = field(default_factory=set)
+    out: list[dict] = field(default_factory=list)
+    answers: list[str] = field(default_factory=list)
+    ex: int = -1
+    ans_i: int = 0
+    cur: str | None = None
+    boundary: bool = True
+    saw_answer: bool = False
+    open_ex: bool = False
+
+
+def _is_question_turn(state: _QaState, perl: str, txt: str) -> bool:
+    """Role of one Q&A turn by the precedence documented in `label_turns`."""
+    if perl in state.analyst_names:
+        return True
+    if perl in state.management:
+        return False
+    if perl in state.askers:
+        return True
+    return state.boundary or (state.saw_answer and perl not in state.spoken and _is_short_question(txt))
+
+
+def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
+    """A question turn: marks an asker, opens an exchange when informative and new."""
+    new = state.boundary or state.saw_answer or perl != state.cur
+    if _asks_something(body):
+        state.askers.add(perl)
+        state.spoken.add(perl)
+    if _is_informative_question(body):
+        if new or not state.open_ex:  # a new question -> new exchange
+            state.ex, state.ans_i, state.cur, state.saw_answer, state.open_ex = state.ex + 1, 0, perl, False, True
+        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_QUESTION, per, body, state.ex, 0))
+    elif new:  # a question too short to embed opens no exchange: its answers are orphaned
+        state.cur, state.saw_answer, state.open_ex = perl, False, False
+    state.boundary = False
+
+
+def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
+    """A management / specialist answer turn: kept as answer text, attached to an open exchange."""
+    if body:
+        state.answers.append(body)
+    if state.ex < 0 or len(body) < _MIN_TURN:
+        return
+    state.saw_answer = True
+    state.spoken.add(perl)
+    if state.open_ex and len(body.split()) >= _MIN_QA_WORDS:
+        state.ans_i += 1
+        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_ANSWER, per, body, state.ex, state.ans_i))
+
+
+def _label_qa(turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None) -> tuple[list[dict], list[str]]:
+    """(labelled Q&A turns, cleaned management answer texts) of one call; see `label_turns`."""
+    analyst_names = {n.lower() for n in (_announced(turns) if announced is None else announced)}
+    management = (mgmt_names or set()) | _qa_management(turns, analyst_names)
+    state = _QaState(analyst_names, management, set(management))
+    for per, txt in turns:
+        if _is_operator(per, txt):
+            state.boundary = True
             continue
         perl = per.strip().lower()
-        if perl in analyst_names:
-            role = "q"
-        elif perl in mn:
-            role = "a"
-        elif perl in askers:
-            role = "q"
-        elif boundary or (saw_answer and perl not in spoken and _is_short_question(txt)):
-            role = "q"
-        else:
-            role = "a"
+        question = _is_question_turn(state, perl, txt)
         body = clean_turn_text(txt, names)
-        if role == "q":
-            new = boundary or saw_answer or perl != cur
-            if _asks_something(body):
-                askers.add(perl)
-                spoken.add(perl)
-            if _is_informative_question(body):
-                if new or not open_ex:  # a new question -> new exchange
-                    ex, ans_i, cur, saw_answer, open_ex = ex + 1, 0, perl, False, True
-                out.append(_turn(section, EARNINGS_CALL_TAG_QUESTION, per, body, ex, 0))
-            elif new:  # a question too short to embed opens no exchange: its answers are orphaned
-                cur, saw_answer, open_ex = perl, False, False
-            boundary = False
-            continue
-        if body:
-            answers.append(body)
-        if ex >= 0 and len(body) >= _MIN_TURN:  # management / specialist answer
-            saw_answer = True
-            spoken.add(perl)
-            if open_ex and len(body.split()) >= _MIN_QA_WORDS:
-                ans_i += 1
-                out.append(_turn(section, EARNINGS_CALL_TAG_ANSWER, per, body, ex, ans_i))
-    return out, answers
+        if question:
+            _label_question(state, per, perl, body)
+        else:
+            _label_answer(state, per, perl, body)
+    return state.out, state.answers
 
 
 def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = None, names: CallNames | None = None) -> list[dict]:
@@ -782,7 +809,10 @@ def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = N
       Question and answer turns need >= `_MIN_QA_WORDS` cleaned words. A kept question opens a new
       exchange (indices stay contiguous); answer_idx = 0 for the question and 1, 2, ... for the
       answers. A new question too short to keep opens nothing and its answers are not attached."""
-    return _label(turns, section, mgmt_names, names if names is not None else _call_names(turns))[0]
+    names = names if names is not None else _call_names(turns)
+    if section == _QA_SECTION:
+        return _label_qa(turns, mgmt_names, names)[0]
+    return _label_prepared(turns, section, names)
 
 
 def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
@@ -798,9 +828,9 @@ def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
     head, tail = (turns, []) if k is None else (turns[:k], turns[k:])
     tail_announced = _announced(tail)
     names = _call_names(turns, _announced(head) | tail_announced)
-    prep_turns, _ = _label(head, _PREP_SECTION, None, names)
+    prep_turns = _label_prepared(head, _PREP_SECTION, names)
     mgmt = {t["person"].strip().lower() for t in prep_turns if t["person"]}
-    qa_turns, answers = _label(tail, _QA_SECTION, mgmt, names, tail_announced)
+    qa_turns, answers = _label_qa(tail, mgmt, names, tail_announced)
     prepared = "\n".join(t["text"] for t in prep_turns)
     status: SplitStatus = "no_qa" if k is None else "no_prepared" if not prepared else "ok"
     return CallSplit(prepared, "\n".join(answers), prep_turns + qa_turns, status)

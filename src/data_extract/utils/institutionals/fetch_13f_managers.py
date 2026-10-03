@@ -42,20 +42,24 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
 
 
-def _stored_dates(context: Context, cik: str, column: str) -> set[pd.Timestamp]:
-    """Distinct normalised `column` dates of the CIK's stored book (DATE reads back as `date`)."""
-    values = context.store.distinct(Tables.sec13f_manager_holdings, column, where={"cik": cik})
-    return {pd.Timestamp(v).normalize() for v in values}
+def _stored_filings(context: Context, cik: str) -> set[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Distinct normalised `(period, filing_date)` pairs of the CIK's stored book, from one
+    projected, CIK-scoped read (DATE reads back as `date`)."""
+    df_stored = context.store.load(Tables.sec13f_manager_holdings, columns=["period", "filing_date"], where={"cik": cik}, optional=True)
+    if df_stored is None:
+        return set()
+    df_pairs = df_stored.drop_duplicates()
+    return {(pd.Timestamp(p).normalize(), pd.Timestamp(f).normalize()) for p, f in zip(df_pairs["period"], df_pairs["filing_date"], strict=True)}
 
 
 def _pending_filings(context: Context, cik: str, listed: list[tuple[FilingStamp, pd.Timestamp]]) -> list[tuple[FilingStamp, pd.Timestamp]]:
-    """The listed filings the stored book does not show yet: a filing is done when its period and
-    filing date are both stored, and so is every filing of that period filed on or before it (a
-    restatement overwrites its original's rows). Two scoped DISTINCT reads, no side state."""
-    periods, filed = _stored_dates(context, cik, "period"), _stored_dates(context, cik, "filing_date")
+    """The listed filings the stored book does not show yet: a filing is done when the book holds
+    rows with its own `(period, filing_date)` pair, and so is every filing of that period filed on
+    or before it (a restatement overwrites its original's rows). No side state."""
+    stored = _stored_filings(context, cik)
     newest_done: dict[pd.Timestamp, pd.Timestamp] = {}
     for stamp, period in listed:
-        if period in periods and stamp.filed.normalize() in filed:
+        if (period, stamp.filed.normalize()) in stored:
             newest_done[period] = stamp.filed.normalize()
     return [(s, p) for s, p in listed if p not in newest_done or s.filed.normalize() > newest_done[p]]
 

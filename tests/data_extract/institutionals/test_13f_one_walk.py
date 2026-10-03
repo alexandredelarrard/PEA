@@ -468,3 +468,48 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqli
     assert book.loc["037833100", "value_usd"] == 1_200_000.0, book
     print(f"\n=== SANITY: same-day original vs amendment ({path}) ===")
     print(f"  original accession sorts after the 13F-HR/A; stored AAPL value {book.loc['037833100', 'value_usd']:,.0f} = the amendment. Validated.")
+
+
+def _book_by_period(store: Any, cik: str) -> dict[str, tuple[float, str]]:
+    """`{period: (AAPL value_usd, filing_date)}` of the CIK's stored book."""
+    df = store.load(Tables.sec13f_manager_holdings, columns=["period", "value_usd", "filing_date"], where={"cik": cik}, optional=True)
+    if df is None:
+        return {}
+    return {
+        f"{pd.Timestamp(p):%Y-%m-%d}": (float(v), f"{pd.Timestamp(d):%Y-%m-%d}")
+        for p, v, d in zip(df["period"], df["value_usd"], df["filing_date"], strict=True)
+    }
+
+
+def test_a_failed_same_day_amendment_of_a_stored_period_is_retried(sqlite_store, monkeypatch):
+    aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
+    original = _FakeFiling(ROSTER, "2025-11-14", "2025-09-30", aapl, accession="0000000001-25-000001")
+    new_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", aapl, accession="0000000001-26-000002")
+    amendment = _FakeFiling(
+        ROSTER,
+        "2026-02-14",
+        "2025-09-30",
+        [_line("037833100", "APPLE INC", 9_000.0, 90)],
+        form="13F-HR/A",
+        accession="0000000001-26-000003",
+        fail_reads=1,
+    )
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_company(monkeypatch, {ROSTER: [original]})
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)  # run 0: the P1 original is stored
+    _patch_company(monkeypatch, {ROSTER: [amendment, new_quarter, original]})
+
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)  # run 1: the P1 amendment fails, P2 saves the same day
+    after_run1 = _book_by_period(sqlite_store, ROSTER)
+    for f in (original, new_quarter, amendment):
+        f.reads.clear()
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)  # run 2
+    after_run2 = _book_by_period(sqlite_store, ROSTER)
+
+    assert after_run1 == {"2025-09-30": (1_000.0, "2025-11-14"), "2025-12-31": (1_000.0, "2026-02-14")}
+    assert amendment.reads == ["0000000001-26-000003"] and not original.reads and not new_quarter.reads  # only the failed filing is re-read
+    assert after_run2["2025-09-30"] == (9_000.0, "2026-02-14")  # the amendment supersedes the original
+    print("\n=== SANITY: same-day failed amendment (F-010) ===")
+    print(
+        f"  P1 period and the 2026-02-14 date were each stored by OTHER filings; run 2 re-read only the amendment and stored {after_run2['2025-09-30']}. Validated."
+    )

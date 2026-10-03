@@ -81,12 +81,11 @@ def test_filing_fetchers_take_years_history_as_an_argument():
 
 
 def test_sec_8k_fetch_declares_its_driver_settings():
-    """The 8-K fetch is one declaration: its table, description, completeness and identity
+    """The 8-K fetch is one declaration: its table, description and identity
     settings, and the generic filing-rows builder bound to the 8-K forms and row function.
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,)
     assert SEC_8K_FETCH.desc == "8-K (edgartools)"
-    assert SEC_8K_FETCH.require_complete is True
     assert SEC_8K_FETCH.identity_aware is True
     build = cast(Any, SEC_8K_FETCH.build)
     assert build.func is build_filing_rows
@@ -94,7 +93,7 @@ def test_sec_8k_fetch_declares_its_driver_settings():
     assert build.keywords["table"] == Tables.sec_8k
     assert build.keywords["row_fn"] is _filing_row
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print("  SEC_8K_FETCH -> sec_8k, require_complete + identity_aware, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
+    print("  SEC_8K_FETCH -> sec_8k, identity_aware, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
 
 
 def _fake_8k_filing(

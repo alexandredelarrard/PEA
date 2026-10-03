@@ -73,12 +73,9 @@ def _ctx(tmp_path, store, tickers) -> Any:
     return ctx
 
 
-def _fetch(tables, build, desc="test", *, require_complete=False, identity_aware=False, completion_table=None) -> EdgarFetch:
-    """An `EdgarFetch` with the driver's plain defaults (not completeness-sensitive, not
-    identity-aware) unless the test sets them."""
-    return EdgarFetch(
-        desc=desc, tables=tables, build=build, require_complete=require_complete, identity_aware=identity_aware, completion_table=completion_table
-    )
+def _fetch(tables, build, desc="test", *, identity_aware=False, completion_table=None) -> EdgarFetch:
+    """An `EdgarFetch` that is not identity-aware unless the test sets it."""
+    return EdgarFetch(desc=desc, tables=tables, build=build, identity_aware=identity_aware, completion_table=completion_table)
 
 
 def _rows(table, ticker, accession):
@@ -274,25 +271,7 @@ def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, s
     print("  main + child rows saved; all 3 declared tables recorded, including the one no ticker produced rows for (rows_added=0). Validated.")
 
 
-def test_run_edgar_fetch_isolates_a_failing_ticker(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        if ticker == "AAPL":
-            raise RuntimeError("edgar exploded")
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
-
-    run_edgar_fetch(ctx, ["AAPL", "MSFT"], 15, _fetch((_T_MAIN,), build))
-
-    stored = sqlite_store.load(_T_MAIN)
-    assert list(stored["ticker"]) == ["MSFT"]
-    assert get_entry(ctx, _T_MAIN)["rows_added"] == 1
-
-    print("\n=== SANITY CHECK: driver isolates a failing ticker ===")
-    print("  AAPL raised, MSFT's row still landed and the run was recorded. Validated.")
-
-
-def test_completeness_sensitive_run_does_not_record_a_partial_success(tmp_path, sqlite_store, monkeypatch):
+def test_a_failing_ticker_is_isolated_but_the_run_does_not_record_a_partial_success(tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
 
     def build(ticker, cik, *, since, done_accessions, scope):
@@ -301,17 +280,12 @@ def test_completeness_sensitive_run_does_not_record_a_partial_success(tmp_path, 
         return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
 
     with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
-        run_edgar_fetch(
-            ctx,
-            ["AAPL", "MSFT"],
-            15,
-            _fetch((_T_MAIN,), build, "schedule test", require_complete=True),
-        )
+        run_edgar_fetch(ctx, ["AAPL", "MSFT"], 15, _fetch((_T_MAIN,), build, "schedule test"))
 
-    assert sqlite_store.row_count(_T_MAIN) == 1
+    assert list(sqlite_store.load(_T_MAIN)["ticker"]) == ["MSFT"]
     assert get_entry(ctx, _T_MAIN) is None
-    print("\n=== SANITY CHECK: incomplete schedule run ===")
-    print("  one ticker failed; successful rows remain, but the manifest did not advance")
+    print("\n=== SANITY CHECK: incomplete run ===")
+    print("  AAPL raised; MSFT's row still landed (pool not aborted), but the manifest did not advance")
     print("  OK: partial discovery cannot masquerade as a complete empty history")
 
 
@@ -321,12 +295,7 @@ def test_completeness_sensitive_success_marks_a_trustworthy_frontier(tmp_path, s
     def build(ticker, cik, *, since, done_accessions, scope):
         return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
 
-    run_edgar_fetch(
-        ctx,
-        ["AAPL"],
-        15,
-        _fetch((_T_MAIN,), build, "schedule test", require_complete=True),
-    )
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, "schedule test"))
 
     entry = get_entry(ctx, _T_MAIN)
     assert entry is not None and entry.get("coverage_complete") is True
@@ -383,14 +352,15 @@ def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(tmp_p
     def build(ticker, cik, *, since, done_accessions, scope):
         return {_T_MAIN: _rows(_T_MAIN, ticker, "x"), _T_CHILD: _rows(_T_CHILD, ticker, "x")}
 
-    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_CHILD), build))
+    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
+        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_CHILD), build))
 
-    assert not sqlite_store.exists(_T_MAIN)  # the failing save is swallowed
+    assert not sqlite_store.exists(_T_MAIN)  # the failing save is caught per table
     assert sqlite_store.row_count(_T_CHILD) == 1  # the sibling table still landed
-    assert get_entry(ctx, _T_MAIN)["rows_added"] == 0
+    assert get_entry(ctx, _T_MAIN) is None and get_entry(ctx, _T_CHILD) is None
 
     print("\n=== SANITY CHECK: driver survives a save failure ===")
-    print("  save to driver_main raised; driver_child still saved and the pool completed instead of aborting. Validated.")
+    print("  save to driver_main raised; driver_child still saved, the pool completed, and no manifest entry advanced. Validated.")
 
 
 def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_store, monkeypatch):
@@ -405,12 +375,7 @@ def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_stor
         return {_T_MAIN: _rows(_T_MAIN, ticker, "x")}
 
     with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
-        run_edgar_fetch(
-            ctx,
-            ["AAPL"],
-            15,
-            _fetch((_T_MAIN,), build, "schedule test", require_complete=True),
-        )
+        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, "schedule test"))
 
     assert not sqlite_store.exists(_T_MAIN)
     assert get_entry(ctx, _T_MAIN) is None
@@ -436,12 +401,8 @@ def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, s
             _T_EMPTY: _rows(_T_EMPTY, ticker, "coverage"),
         }
 
-    run_edgar_fetch(
-        ctx,
-        ["AAPL"],
-        15,
-        _fetch((_T_MAIN, _T_EMPTY), build, completion_table=_T_EMPTY),
-    )
+    with pytest.raises(IncompleteEdgarRunError):
+        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_EMPTY), build, completion_table=_T_EMPTY))
 
     assert not sqlite_store.exists(_T_MAIN)
     assert not sqlite_store.exists(_T_EMPTY)
@@ -482,6 +443,7 @@ def test_identity_scope_change_rewinds_only_the_changed_ticker(tmp_path, sqlite_
         rows_added=0,
         is_full_rescan=True,
         run_date=prior_date,
+        coverage_complete=True,
         identity_scope_fingerprints={"AAPL": "same", "MSFT": "old"},
         tickers=["AAPL", "MSFT"],
     )
@@ -518,10 +480,12 @@ def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, mon
     def build(ticker, cik, *, since, done_accessions, scope):
         return {_T_MAIN: _rows(_T_MAIN, ticker, "x"), _T_CHILD: _rows(_T_CHILD, ticker, "x")}
 
-    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
+    with pytest.raises(IncompleteEdgarRunError):
+        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
 
     assert sqlite_store.row_count(_T_MAIN) == 1
     assert not sqlite_store.exists(_T_CHILD)  # not declared -> not written
+    assert get_entry(ctx, _T_MAIN) is None  # a misdeclared fetch never advances the manifest
 
     print("\n=== SANITY CHECK: driver ignores an undeclared table ===")
     print("  build returned driver_child but only driver_main was declared -> child not written (it would never get a manifest entry). Validated.")

@@ -130,7 +130,7 @@ class EdgarFetch:
 
     `tables[0]` keys the manifest window and the accession dedup set; every table gets a
     `record_run` entry. `build(ticker, cik, since=, done_accessions=, scope=)` returns
-    `{table: frame}`. `require_complete` makes a failed ticker fatal to the run manifest;
+    `{table: frame}`. A failed ticker is fatal to the run manifest;
     `identity_aware` resolves through the identity layer and relists a ticker whose identity
     scope changed; `minimum_since` floors the listing window; `completion_table` is saved last
     and only when every earlier frame saved.
@@ -139,7 +139,6 @@ class EdgarFetch:
     desc: str
     tables: tuple[Table, ...]
     build: BuildFn
-    require_complete: bool = True
     identity_aware: bool = True
     minimum_since: pd.Timestamp | None = None
     completion_table: Table | None = None
@@ -220,7 +219,7 @@ def _resolve_window(
     if full:
         return RunWindow(fallback_since, fallback_since, True)
     # A manifest without `coverage_complete` cannot prove coverage, so walk the full history.
-    if fetch.require_complete and not (entry or {}).get("coverage_complete"):
+    if not (entry or {}).get("coverage_complete"):
         return RunWindow(fallback_since, fallback_since, True)
     since, is_full_rescan = manifest_window(
         context,
@@ -286,11 +285,11 @@ def _walk_ticker(
     ticker: str,
     cik: str,
 ) -> dict[Table, int] | None:
-    """The pool worker: build then save one ticker. None (a failed ticker) when a save failed
-    under `fetch.require_complete`, else the rows saved per table."""
+    """The pool worker: build then save one ticker. None (a failed ticker) when a save failed,
+    else the rows saved per table."""
     frames = _build_ticker(fetch, scope, window, changed, done, ticker, cik)
     counts, failed_save = _save_frames(context, fetch, ticker, frames)
-    return None if fetch.require_complete and failed_save else counts
+    return None if failed_save else counts
 
 
 def _tally(results: list[dict[Table, int] | None], tables: tuple[Table, ...]) -> tuple[dict[Table, int], int]:
@@ -318,7 +317,7 @@ def _record_tables(
             len(cik_map),
             totals[table],
             is_full_rescan=window.is_full_rescan,
-            coverage_complete=fetch.require_complete,
+            coverage_complete=True,
             identity_scope_fingerprints=fingerprints,
             tickers=cik_map["ticker"],
         )
@@ -336,7 +335,7 @@ def run_edgar_fetch(
 ) -> None:
     """Run `fetch` for `tickers` (or a preloaded `cik_map`): upsert every ticker's frames and record
     each of `fetch.tables`, even with zero rows. `full` takes the whole `years_history` window;
-    under `fetch.require_complete` a failed ticker raises before any manifest entry advances."""
+    a failed ticker raises before any manifest entry advances."""
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
@@ -351,7 +350,7 @@ def run_edgar_fetch(
     totals, failed = _tally(results, fetch.tables)
     summary = ", ".join(f"+{n} '{t}'" for t, n in totals.items())
     context.log.info("%s: %d/%d ticker(s) ok, %d failed -> %s", fetch.desc, len(results) - failed, len(cik_map), failed, summary)
-    if fetch.require_complete and failed:
+    if failed:
         raise IncompleteEdgarRunError(
             f"{fetch.desc}: {failed}/{len(cik_map)} ticker(s) failed; rows already saved remain "
             "idempotent, but no run manifest was advanced because coverage is incomplete"

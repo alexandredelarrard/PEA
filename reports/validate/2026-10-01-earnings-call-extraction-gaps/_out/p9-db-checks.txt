@@ -1,0 +1,92 @@
+== 1. scope of the EC tables
+       t        |  rows   | calls | tickers |    min     |    max
+----------------+---------+-------+---------+------------+------------
+ sections       | 2804060 | 33591 |     487 | 2005-10-13 | 2026-10-01
+ sentiment      |     290 |   145 |      60 | 2005-11-16 | 2026-08-06
+ cube_part_text |    3780 |       |       3 | 2020-11-17 | 2026-09-04
+(3 rows)
+
+== 2. grain (expect all 0 except null_tid_calls)
+ calls | multi_asof | no_p1 | noncontig | multi_tid | null_tid_calls | multi_call_per_date
+-------+------------+-------+-----------+-----------+----------------+---------------------
+ 33591 |          0 |     0 |         0 |         0 |           2867 |                   0
+(1 row)
+
+== 3. AC-001: distinct tickers per calendar quarter of the call date (floor 485)
+   q    | count
+--------+-------
+ 2024Q1 |   474
+ 2024Q2 |   479
+ 2024Q3 |   481
+ 2024Q4 |   484
+ 2025Q1 |   483
+ 2025Q2 |   480
+ 2025Q3 |   481
+ 2025Q4 |   481
+ 2026Q1 |   475
+ 2026Q2 |   480
+ 2026Q3 |   479
+ 2026Q4 |     3
+(12 rows)
+
+== 4. roster tickers with no call (scope ceiling)
+ ticker | legacy_calls
+--------+--------------
+ BRK-B  |            0
+ ED     |            0
+ EXPD   |            0
+ FDXF   |            0
+ GEHC   |           14
+ GEV    |           10
+ HONA   |            1
+ KVUE   |            9
+ NVR    |            0
+ Q      |            4
+ SNDK   |            2
+ SOLV   |            8
+ VLTO   |           11
+(13 rows)
+
+== 5. AC-002: earnings_surprises events since 2026-06-01 with a call within +-3 days (floor 97%)
+ events | within3 |  pct  |                     misses
+--------+---------+-------+-------------------------------------------------
+    510 |     507 | 99.41 | AES 2026-08-04, PGR 2026-07-15, TECH 2026-08-12
+(1 row)
+
+== 6. AC-008 proxy: calls since 2024, new vs legacy sentiment
+ legacy_calls | new_calls | legacy_unmatched_in_scope | legacy_out_of_scope
+--------------+-----------+---------------------------+---------------------
+         5056 |      5298 |                       109 |                  79
+(1 row)
+
+== 7. F-009: provider fiscal-label jumps on retailers
+ ticker |                      string_agg
+--------+-------------------------------------------------------
+ DG     | 2025Q3@2025-12-04 2026Q4@2026-03-12 2027Q1@2026-06-02
+ DLTR   | 2025Q3@2025-12-03 2026Q4@2026-03-16 2027Q1@2026-05-28
+ HD     | 2025Q3@2025-11-18 2026Q4@2026-02-24 2027Q1@2026-05-19
+ LOW    | 2025Q3@2025-11-19 2026Q4@2026-02-25 2027Q1@2026-05-20
+ LULU   | 2025Q3@2025-12-11 2026Q4@2026-03-17 2027Q1@2026-06-04
+ TGT    | 2025Q3@2025-11-19 2026Q4@2026-03-03 2027Q1@2026-05-20
+ ULTA   | 2025Q3@2025-12-04 2026Q4@2026-03-12 2027Q1@2026-06-02
+ WSM    | 2025Q3@2025-11-19 2026Q4@2026-03-18 2027Q1@2026-05-21
+(8 rows)
+
+== 8. cache rows per model tag
+     t     |                   model                   | count  | count
+-----------+-------------------------------------------+--------+-------
+ embedding | text-embedding-3-small                    |   4082 |    64
+ embedding | text-embedding-3-small:speaker-clean-v1   | 362507 |  7475
+ sentiment | yiyanghkust/finbert-tone:speaker-clean-v1 |    156 |    78
+ sentiment | yiyanghkust/finbert-tone:speaker-v1       |    134 |    67
+(4 rows)
+
+== 9. legacy tables pending deletion
+            relname             | pg_size_pretty
+--------------------------------+----------------
+ earnings_call_sections_legacy  | 1618 MB
+ earnings_call_sentiment_legacy | 11 MB
+ earning_calls_embedding_legacy | 8658 MB
+(3 rows)
+
+exit=0

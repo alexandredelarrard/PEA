@@ -1,0 +1,154 @@
+
+===== addressed_name: 33450 removed fragments; 20 random
+  P00 EXC 2016Q4: 'Good morning, Michael.'
+  P01 DXCM 2016Q3: 'Thanks, Jeff.'
+  P02 PRU 2021Q1: 'So Suneet, it’s Andy, I’ll take your question.'
+  P03 SPG 2017Q2: 'David, I wanted to take your comment about the sector being mispriced from a public stock perspective.'
+  P04 PH 2024Q2: 'Thanks, Scott.'
+  P05 COR 2026Q1: 'Hi, Steve.'
+  P06 WYNN 2020Q1: "And, Joe, the answer to your question on the -- it's Craig here."
+  P07 MU 2015Q2: 'Thanks Mark.'
+  P08 LMT 2012Q3: 'So Jason, this is Chris.'
+  P09 VTR 2024Q2: 'Hi, Juan.'
+  P10 LII 2011Q3: 'Thanks, Steve.'
+  P11 AEE 2015Q1: "Michael, it's Marty."
+  P12 TSN 2006Q2: 'And Greg, before Russia puts this temporary ban into place, you know, there was some loose bounce off the bottom in the late quarter prices from whatever it is, 16 to 17, I don’t know how accurate these spot prices we monitor are anyway, but could Russia you k'
+  P13 HD 2008Q2: 'Craig, maybe you want to add some commentary to that.'
+  P14 MAR 2019Q3: 'Thank you, Harry.'
+  P15 REG 2015Q2: 'And Rich, I’ll add a little bit of color to that.'
+  P16 CMS 2021Q3: 'Thanks, Rejji.'
+  P17 CVX 2008Q1: 'Neil, all I can say is that we are looking at all of our options because obviously optionality is very important to us in terms of expansion of our existing pipeline.'
+  P18 AFL 2008Q2: 'Thank you, Dan.'
+  P19 HPQ 2010Q4: 'Thank you, Greg.'
+
+===== boilerplate: 18696 removed fragments; 20 random
+  P00 CPAY 2015Q2: "Quantitative reconciliations of historical non-GAAP financial information to the most directly comparable GAAP information appears in today's press release and on our website as previously described."
+  P01 CVS 2020Q1: 'As a reminder, this call is being recorded.'
+  P02 MCHP 2006Q3: 'We refer you to our press release of today as we announce our 10-K for the fiscal year ended 31st 2005, and our 8-K account reports that we have filed with the SEC that are identifying the important risk factors that may impact Microchip’s business and results'
+  P03 CBRE 2024Q1: "Before we kick off today's call, I'll remind you that today's presentation contains forward-looking statements, including, without limitation, statements concerning our economic outlook, our business plans and capital allocation strategy and our financial outl"
+  P04 BAX 2012Q3: "In addition, in today's call, non-GAAP financial measures will be used to help investors understand Baxter's ongoing business performance."
+  P05 DG 2027Q2: 'These statements are subject to risks and uncertainties that could cause actual results to differ materially from our expectations and projections.'
+  P06 SJM 2018Q4: 'Good morning and thank you for joining us on our fiscal 2018 fourth quarter earnings conference call.'
+  P07 PSKY 2016Q2: 'Also, statements on this call relating to matters which are not historical fact are forward-looking statements which involve risks and uncertainties that could cause actual results to differ.'
+  P08 HWM 2020Q1: 'Good morning, and welcome to the Howmet Aerospace first quarter 2020 results conference call.'
+  P09 LUV 2015Q4: 'As this call will include references to non-GAAP results excluding special items, please reference this morning’s press release in the Investor Relations section of southwest.com for further information regarding forward-looking statements and reconciliations '
+  P10 TDG 2019Q4: "Before we begin, we'd like to remind you that statements made during this call, which are not historical in fact, are forward-looking statements."
+  P11 HAL 2010Q3: 'I would like to remind our audience that some of today’s comments may include forward-looking statements reflecting Halliburton’s views about future events and their potential impact on performance.'
+  P12 TGT 2022Q4: 'Reconciliations of all non-GAAP measures to the most directly comparable GAAP measure are included in our financial press releases, financial presentations and SEC filings, which are posted on our Investor Relations website.'
+  P13 OKE 2017Q4: "Thank you, Avenee, and good morning everyone and welcome to ONEOK's fourth quarter 2017 and year-end earnings conference call."
+  P14 OXY 2011Q3: 'Form 10-Q filings will show if any shares were purchased, at what price and how many shares remain authorized.'
+  P15 EXR 2015Q3: 'In addition to our press release, we have furnished unaudited supplemental financial information on our website.'
+  P16 NVDA 2005Q4: 'These forward-looking statements are subject to a number of risks and uncertainties that can cause actual results to differ materially from those discussed in these forward-looking statements.'
+  P17 FCX 2022Q4: 'Welcome to the Freeport-McMoRan conference call, and happy 2023 to everyone.'
+  P18 BBY 2013Q4: 'It is important to keep in mind that any such statements remain subject to risks and uncertainties.'
+  P19 GLW 2024Q3: "I'd like to remind you that today's remarks contain forward-looking statements that fall within the meaning of the Private Securities Litigation Reform Act of 1995."
+
+===== courtesy: 133611 removed fragments; 20 random
+  P00 VZ 2014Q1: 'Thanks very much.'
+  P01 PH 2014Q2: 'Yes.'
+  P02 ADM 2026Q2: 'Good morning, and congrats on the strong results.'
+  P03 KEY 2020Q3: 'Thank you.'
+  P04 EL 2013Q1: 'Yes.'
+  P05 SPG 2023Q3: 'Sure.'
+  P06 BG 2016Q4: 'Yes.'
+  P07 PGR 2023Q4: 'Okay, perfect.'
+  P08 GPC 2025Q2: 'Got it.'
+  P09 AWK 2019Q4: 'Absolutely.'
+  P10 IRM 2008Q2: 'Thank you.'
+  P11 LDOS 2013Q4: 'Great.'
+  P12 PANW 2021Q2: 'Thank you.'
+  P13 MDLZ 2014Q1: 'Thank you very much.'
+  P14 STZ 2020Q1: 'Great, thank you very much.'
+  P15 TSN 2016Q3: 'Terrific.'
+  P16 FTV 2017Q1: 'Thank you.'
+  P17 TDG 2009Q2: 'Thanks very much.'
+  P18 VTR 2024Q2: 'Good morning.'
+  P19 CCI 2020Q3: 'Thanks.'
+
+===== handoff: 8669 removed fragments; 20 random
+  P00 DG 2018Q1: "After our prepared remarks, we'll open the call up for questions."
+  P01 CDNS 2014Q1: 'So with that, operator, we will now take any questions.'
+  P02 CHD 2017Q1: "And with that, we'll turn it back over to you, Sumat, and I can answer any questions."
+  P03 DGX 2008Q2: "We'll now take your questions."
+  P04 AVGO 2024Q1: "I'll now turn the call over to Hock."
+  P05 BMY 2025Q1: 'I will start with your tariff question.'
+  P06 DAL 2026Q2: "With that, I'll turn the call over to Ed."
+  P07 IRM 2022Q1: "After prepared remarks, we'll open up the lines for Q&A."
+  P08 BLDR 2013Q2: "I'll start by giving a recap of the second quarter and then I'll turn the call over to Chad, who will discuss our financial results in more detail."
+  P09 WMT 2008Q2: 'Let me turn it back to Tom for the update on our guidance for the third quarter for fiscal 2008.'
+  P10 CHD 2013Q4: "And with that, we'll take your questions."
+  P11 WBD 2015Q4: 'And with that, I will turn the call over to David.'
+  P12 DTE 2020Q3: 'Do you want to take that?'
+  P13 ROK 2019Q4: 'With that, let’s turn the call over to Jessica to begin Q&A.'
+  P14 COP 2018Q3: 'So let me turn the call over to Q&A.'
+  P15 MRK 2019Q4: "With that, I'd like to turn the call over to Roger."
+  P16 REGN 2017Q3: 'With that, let me turn the call over to our Chief Financial Officer, Bob Landry.'
+  P17 TRV 2014Q1: 'So with that, let me turn the microphone over to Brian.'
+  P18 LULU 2018Q3: "I'll take the question on Selfcare."
+  P19 AVGO 2021Q3: 'I will now turn the call over to Hock.'
+
+===== handoff_name: 2081 removed fragments; 20 random
+  P00 RMD 2017Q2: "I’ll take the second one first and then I’ll hand to Jim maybe to talk a little bit about AirMini and we're looking at segmenting the cash-pay market and working with our provider, customers."
+  P01 TMUS 2007Q3: 'On the Leap question, I will take the first part of it andthen hand it back over to Roger.'
+  P02 ETR 2016Q1: "I’ll take the first part of the question and then I'll turn it over to Bill, so first part of the question was, it's a $0.20 of IP2 included in the affirmation of the outlook."
+  P03 F 2007Q2: 'Well, let me talk just a little bit about that and then I’ll turn it over to Alan to talk about the bigger issue, which is how we’re doing with the union.'
+  P04 RSG 2010Q1: 'Well, you know, we’ve got some of our commodities hedged, and I’ll let Ed talk to the hedge, but as the contracts have come up with Mills, we’ve continued to renegotiate those contracts and tried to improve the floor positions that we had in those contracts.'
+  P05 KEY 2007Q2: 'Let me address the victory side of that and then let Beth talk about the retail side of that.'
+  P06 RCL 2013Q4: 'Before I turn it over to Michael, I will give a quick update on a topic I mentioned on the last call, which is the revitalization of our five Voyager class ships.'
+  P07 KEYS 2016Q4: 'I’ll make a general worldwide comment and then I’ll turn it over to Mike for a little bit more of the detailed color.'
+  P08 TGT 2009Q3: 'Following Douglas we’ll open the phone line for a question-and-answer session.'
+  P09 WEC 2018Q2: 'But I would caution you and Scott can – I’ll let Scott give you his rule of thumb.'
+  P10 STLD 2012Q4: "So now Rob, we'd like to open the call for any questions you may have of me or Dick, Russ, Gary and Theresa."
+  P11 XYL 2022Q4: "We'll give more color on the outlook and guide in a moment, but first, I'll hand it over to Sandy to dig in briefly on the quarter's results before we look ahead at 2023."
+  P12 PANW 2015Q2: 'Before I turn the call over to Mark, we’d like to inform you that we expect our third quarter fiscal year 2015 earnings conference call will be held after the market closes on Wednesday May 27.'
+  P13 RL 2018Q4: 'With that, I’ll turn it over to Jane, and I’ll join her at the end to answer your questions.'
+  P14 ALGN 2022Q2: "I'll let John take a shot at this, too."
+  P15 ETR 2020Q4: "Well, I'll start, and I'll let Drew talk about the last part of that, Ryan, but the best thing we can do is continue as we have over the last several years to continue to execute to meet our commitments to our customers, and to meet our commitments to all of y"
+  P16 YUM 2015Q1: 'Now before we move to Q&A, I’d like to provide some financial highlights of the agreements we reached with our KFC U.S. franchises which Greg briefly mentioned.'
+  P17 WMB 2009Q2: 'So we haven’t seen it in any of our areas pressuring of for any of that at this point and we don’t think the Rockies really will do that particularly with our transport capacity out there, and I’ll let Alan take the second part of that question.'
+  P18 ULTA 2021Q1: 'Before I turn the call over to Scott, I want to provide a quick comment on Ulta Beauty at Target.'
+  P19 APH 2023Q1: 'I will now turn the call over to Adam, who will provide some commentary on current market trends.'
+
+===== roster: 1830 removed fragments; 20 random
+  P00 ES 2018Q3: 'Also joining us today are John Moreira, our Treasurer and Senior VP for Finance and Regulatory; and Jay Buth, our VP and Controller.'
+  P01 DIS 2021Q3: 'Joining me remotely today are Bob Chapek, Disney’s Chief Executive Officer; and Christine McCarthy, Senior Executive Vice President and Chief Financial Officer.'
+  P02 ISRG 2012Q1: 'With me today, we have Gary Guthart, our President and CEO; Marshall Mohr, our Chief Financial Officer; and Aleks Cukic, our Vice President of Strategic Planning.'
+  P03 MU 2020Q2: 'On the call with me today are Sanjay Mehrotra, President and CEO; and Dave Zinsner, Chief Financial Officer.'
+  P04 DHI 2018Q1: 'In addition to Jessica, I am pleased to be joined on this call by Mike Murray, Executive Vice President and Chief Operating Officer; and Bill Wheat, our Executive Vice President and Chief Financial Officer.'
+  P05 PNR 2019Q1: 'And with me today is John Stauch, our President and Chief Executive Officer; and Mark Borin our Chief Financial Officer.'
+  P06 V 2020Q4: "Joining us today are Al Kelly, Visa's Chairman and Chief Executive Officer; and Vasant Prabhu, Visa's Vice Chairman and Chief Financial Officer."
+  P07 CBRE 2024Q1: "I'm joined on today's call by Bob Sulentic, our Chair and CEO; and Emma Giamartino, our Chief Financial Officer."
+  P08 ROP 2020Q4: 'Joining me on the call this morning are Neil Hunn, President and Chief Executive Officer; Rob Crisci, Executive Vice President and Chief Financial Officer; Jason Conley, Vice President and Controller; and Shannon O’Callaghan, Vice President of Finance.'
+  P09 CMCSA 2015Q1: 'Joining me on this morning’s call are Brian Roberts, Michael Angelakis, Steve Burke and Neil Smit.'
+  P10 ISRG 2020Q3: 'With me today, we have Gary Guthart, our CEO; and Marshall Mohr, our Chief Financial Officer.'
+  P11 NEE 2019Q2: 'With me this morning are Jim Robo, Chairman and Chief Executive Officer of NextEra Energy; Rebecca Kujawa, Executive Vice President and Chief Financial Officer of NextEra Energy; John Ketchum, President and Chief Executive Officer of NextEra Energy Resources; '
+  P12 TT 2018Q2: "The participants on today's call are Mike Lamach, Chairman and CEO; and Sue Carter, Senior Vice President and CFO."
+  P13 PODD 2017Q3: 'Joining me today are Patrick Sullivan, Chairman and Chief Executive Officer; Shacey Petrovic, President and Chief Operating Officer; and Michael Levitz, Senior Vice President and Chief Financial Officer.'
+  P14 CCL 2016Q4: 'Today, I am joined by our Chairman, Micky Arison; by David Bernstein, our Chief Financial Officer; and by Beth Roberts, Senior Vice President, Investor Relations.'
+  P15 VRTX 2006Q4: 'Once the call concludes, our IR team joined by Ian will be in the office to answer any additional questions you may have.'
+  P16 KEY 2012Q2: "Joining me for today's presentation is Jeff Weeden, our Chief Financial Officer."
+  P17 AAPL 2019Q4: 'Good afternoon, and thanks to all of you for joining us, especially those of you listening in on our new noise-cancelling AirPods Pro which are available beginning today.'
+  P18 ORCL 2007Q3: 'With me on this call are Oracle Chief Executive Officer, Larry Ellison; Oracle President, Charles Phillips; and Oracle President and Chief Financial Officer, Safra Catz.'
+  P19 JNJ 2009Q1: 'Joining me on the call today is Dominic Caruso, Vice President, Finance and Chief Financial Officer.'
+
+===== self_intro: 775 removed fragments; 20 random
+  P00 CRL 2017Q1: 'This is Steve Reiman on for Tycho.'
+  P01 REGN 2026Q1: 'Hey, this is Stanley Chon for Chris Raymond.'
+  P02 VMC 2009Q2: 'Good morning this is Jason Brown on for Chris.'
+  P03 ADSK 2012Q3: 'This is Fatima in for Ross MacMillan.'
+  P04 MTD 2019Q1: 'This is Julia on for Tyco.'
+  P05 PCAR 2019Q3: 'This is Erin Welcenbach on for David.'
+  P06 CF 2020Q2: 'Hi. this is Ziad on for Ben.'
+  P07 HII 2015Q3: "It's actually Finbar, here for Doug."
+  P08 KEYS 2021Q4: 'This is Joe Cardoso on for Samik.'
+  P09 LEN 2012Q4: 'This is Rob Hansen on for Nishu.'
+  P10 GEN 2012Q1: 'This is Ken filling in for John.'
+  P11 UDR 2015Q3: "It's Austin Wurschmidt here with Jordan."
+  P12 CRL 2018Q2: 'This is Jack Rogoff on for Bob.'
+  P13 LYB 2013Q1: 'This is Rob Walker in for Laurence.'
+  P14 HUM 2017Q1: "It's Dave Styblo in for Windley."
+  P15 DXCM 2014Q2: 'This is Mike Rich, calling in for Jayson.'
+  P16 WDC 2026Q2: "It's Mike Cadiz at Citi "
+  P17 GPN 2018Q4: 'Hey, guys, this is Andrew Schmidt on for Ashwin.'
+  P18 SYK 2025Q2: 'This is Eric on for Josh.'
+  P19 LOW 2016Q3: 'This is David Vargas on for Budd.'

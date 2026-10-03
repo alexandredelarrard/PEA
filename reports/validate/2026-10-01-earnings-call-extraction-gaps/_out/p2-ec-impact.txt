@@ -1,0 +1,857 @@
+...............F..F........................FF                            [100%]
+================================== FAILURES ===================================
+__________________ test_sentiment_kpis_streamed_equals_batch __________________
+
+self = <sqlalchemy.engine.base.Connection object at 0x000001C53041AE50>
+dialect = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530353620>
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C5303A3460>
+statement = <sqlalchemy.dialects.sqlite.base.SQLiteCompiler object at 0x000001C53033F110>
+parameters = [()]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530353620>
+cursor = <sqlite3.Cursor object at 0x000001C53040F940>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C5303A3460>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlite3.OperationalError: expressions prohibited in PRIMARY KEY and UNIQUE constraints
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+sqlite_store = <src.data_store.store.DataStore object at 0x000001C530352CF0>
+
+    def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
+        """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
+        computation — proving the streaming refactor preserves the retained QoQ deltas. Runs on a
+        REAL DataStore, so the per-ticker `distinct` + WHERE-scoped reads are exercised for real."""
+        sent, sec = _sentiment_frame(), _sections_frame()
+        sqlite_store.save("earnings_call_sentiment", sent)
+>       sqlite_store.save("earnings_call_sections", sec)
+
+tests\data_aggregate\test_earnings_call_features.py:136:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\data_store\store.py:583: in save
+    ensure_table(self.engine, name, df)
+src\data_store\store.py:61: in ensure_table
+    conn.execute(text(stmt))
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530353620>
+cursor = <sqlite3.Cursor object at 0x000001C53040F940>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C5303A3460>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) expressions prohibited in PRIMARY KEY and UNIQUE constraints
+E       [SQL: CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
+E           "ticker" TEXT NOT NULL,
+E           "quarter" TEXT NOT NULL,
+E           "as_of" DATE,
+E           "tag" TEXT,
+E           "text" TEXT,
+E           PRIMARY KEY ("ticker", "quarter", "paragraph")
+E       )]
+E       (Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+_________ test_malformed_refresh_marker_survives_until_cube_write_ack _________
+
+self = <sqlalchemy.engine.base.Connection object at 0x000001C53088DA90>
+dialect = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60050>
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718490>
+statement = <sqlalchemy.dialects.sqlite.base.SQLiteCompiler object at 0x000001C530B60550>
+parameters = [()]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60050>
+cursor = <sqlite3.Cursor object at 0x000001C5302D3F40>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "tag" TEXT,\n    "as_of" DATE,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718490>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlite3.OperationalError: expressions prohibited in PRIMARY KEY and UNIQUE constraints
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+sqlite_store = <src.data_store.store.DataStore object at 0x000001C530B61090>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001C530874640>
+
+    def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, monkeypatch) -> None:
+        sections = pd.DataFrame(
+            [{"ticker": "A", "quarter": "2023Q1", "tag": tag, "as_of": "2023-02-01", "text": None} for tag in ("prepared_remarks", "qa")]
+        )
+        marker = pd.DataFrame(
+            [
+                {
+                    "ticker": ticker,
+                    "quarter": "2023Q1",
+                    "tag": tag,
+                    "as_of": as_of,
+                    "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+                }
+                for ticker, as_of in (("A", "2023-02-01"), ("B", None))
+                for tag in ("prepared_remarks", "qa")
+            ]
+        )
+>       sqlite_store.save(Tables.earnings_call_sections, sections)
+
+tests\data_aggregate\test_earnings_call_features.py:216:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\data_store\store.py:583: in save
+    ensure_table(self.engine, name, df)
+src\data_store\store.py:61: in ensure_table
+    conn.execute(text(stmt))
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60050>
+cursor = <sqlite3.Cursor object at 0x000001C5302D3F40>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "tag" TEXT,\n    "as_of" DATE,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718490>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) expressions prohibited in PRIMARY KEY and UNIQUE constraints
+E       [SQL: CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
+E           "ticker" TEXT NOT NULL,
+E           "quarter" TEXT NOT NULL,
+E           "tag" TEXT,
+E           "as_of" DATE,
+E           "text" TEXT,
+E           PRIMARY KEY ("ticker", "quarter", "paragraph")
+E       )]
+E       (Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+______ test_earnings_call_validator_reports_coverage_schema_and_quality _______
+
+self = <sqlalchemy.engine.base.Connection object at 0x000001C530423070>
+dialect = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B61950>
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530719AE0>
+statement = <sqlalchemy.dialects.sqlite.base.SQLiteCompiler object at 0x000001C530B607D0>
+parameters = [()]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B61950>
+cursor = <sqlite3.Cursor object at 0x000001C530AEC740>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530719AE0>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlite3.OperationalError: expressions prohibited in PRIMARY KEY and UNIQUE constraints
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+sqlite_store = <src.data_store.store.DataStore object at 0x000001C5304A6EA0>
+
+    def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_store) -> None:
+        sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+        sqlite_store.save(
+            Tables.earnings_surprises,
+            pd.DataFrame(
+                {
+                    "ticker": ["AAA", "BBB"],
+                    "earnings_date": pd.to_datetime(["2024-05-15", "2024-05-15"]),
+                    "eps_actual": [1.0, 1.0],
+                }
+            ),
+        )
+        useful = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
+        sections = pd.DataFrame(
+            [
+                {"ticker": ticker, "quarter": "2024Q1", "as_of": "2024-05-15", "tag": tag, "text": text}
+                for ticker, text in (("AAA", useful), ("BBB", "Thanks."))
+                for tag in ("prepared_remarks", "qa")
+            ]
+        )
+>       sqlite_store.save(Tables.earnings_call_sections, sections)
+
+tests\validate\test_earnings_calls.py:36:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\data_store\store.py:583: in save
+    ensure_table(self.engine, name, df)
+src\data_store\store.py:61: in ensure_table
+    conn.execute(text(stmt))
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B61950>
+cursor = <sqlite3.Cursor object at 0x000001C530AEC740>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530719AE0>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) expressions prohibited in PRIMARY KEY and UNIQUE constraints
+E       [SQL: CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
+E           "ticker" TEXT NOT NULL,
+E           "quarter" TEXT NOT NULL,
+E           "as_of" DATE,
+E           "tag" TEXT,
+E           "text" TEXT,
+E           PRIMARY KEY ("ticker", "quarter", "paragraph")
+E       )]
+E       (Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+____ test_coverage_uses_point_in_time_lineage_and_separates_no_call_names _____
+
+self = <sqlalchemy.engine.base.Connection object at 0x000001C53089CAD0>
+dialect = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60690>
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718F30>
+statement = <sqlalchemy.dialects.sqlite.base.SQLiteCompiler object at 0x000001C530B611D0>
+parameters = [()]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60690>
+cursor = <sqlite3.Cursor object at 0x000001C5303CAA40>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718F30>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlite3.OperationalError: expressions prohibited in PRIMARY KEY and UNIQUE constraints
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+sqlite_store = <src.data_store.store.DataStore object at 0x000001C53042DEB0>
+
+    def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_store) -> None:
+        sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
+        sqlite_store.save(
+            Tables.entity_lineage,
+            pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E2"]}),
+        )
+        sqlite_store.save(
+            Tables.symbol_tenure,
+            pd.DataFrame(
+                {
+                    "symbol": ["OLD", "OLD", "NEW"],
+                    "issuer_cik": ["1", "2", "1"],
+                    "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01"],
+                    "valid_to": ["2024-04-01", None, None],
+                    "n_filings": [10, 10, 10],
+                }
+            ),
+        )
+        events = [
+            ("OLD", "2023-11-15", "2023Q4"),
+            ("NEW", "2024-02-15", "2024Q1"),
+            ("OLD", "2024-08-15", "2024Q3"),  # reused OLD now belongs to E2, not NEW/E1
+        ]
+        sqlite_store.save(
+            Tables.earnings_surprises,
+            pd.DataFrame({"ticker": [event[0] for event in events], "earnings_date": [event[1] for event in events]}),
+        )
+        useful = "Revenue growth demand margin guidance cash flow customer outlook remained strong. " * 12
+>       sqlite_store.save(
+            Tables.earnings_call_sections,
+            pd.DataFrame(
+                [
+                    {"ticker": ticker, "quarter": quarter, "as_of": date, "tag": tag, "text": useful}
+                    for ticker, date, quarter in events
+                    for tag in ("prepared_remarks", "qa")
+                ]
+            ),
+        )
+
+tests\validate\test_earnings_calls.py:89:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\data_store\store.py:583: in save
+    ensure_table(self.engine, name, df)
+src\data_store\store.py:61: in ensure_table
+    conn.execute(text(stmt))
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <sqlalchemy.dialects.sqlite.pysqlite.SQLiteDialect_pysqlite object at 0x000001C530B60690>
+cursor = <sqlite3.Cursor object at 0x000001C5303CAA40>
+statement = 'CREATE TABLE IF NOT EXISTS "earnings_call_sections" (\n    "ticker" TEXT NOT NULL,\n    "quarter" TEXT NOT NULL,\n    "as_of" DATE,\n    "tag" TEXT,\n    "text" TEXT,\n    PRIMARY KEY ("ticker", "quarter", "paragraph")\n)'
+parameters = ()
+context = <sqlalchemy.dialects.sqlite.base.SQLiteExecutionContext object at 0x000001C530718F30>
+
+    def do_execute(self, cursor, statement, parameters, context=None):
+>       cursor.execute(statement, parameters)
+E       sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) expressions prohibited in PRIMARY KEY and UNIQUE constraints
+E       [SQL: CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
+E           "ticker" TEXT NOT NULL,
+E           "quarter" TEXT NOT NULL,
+E           "as_of" DATE,
+E           "tag" TEXT,
+E           "text" TEXT,
+E           PRIMARY KEY ("ticker", "quarter", "paragraph")
+E       )]
+E       (Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\sqlalchemy\engine\default.py:952: OperationalError
+=========================== short test summary info ===========================
+FAILED tests/data_aggregate/test_earnings_call_features.py::test_sentiment_kpis_streamed_equals_batch
+FAILED tests/data_aggregate/test_earnings_call_features.py::test_malformed_refresh_marker_survives_until_cube_write_ack
+FAILED tests/validate/test_earnings_calls.py::test_earnings_call_validator_reports_coverage_schema_and_quality
+FAILED tests/validate/test_earnings_calls.py::test_coverage_uses_point_in_time_lineage_and_separates_no_call_names
+4 failed, 41 passed, 680 deselected in 18.72s

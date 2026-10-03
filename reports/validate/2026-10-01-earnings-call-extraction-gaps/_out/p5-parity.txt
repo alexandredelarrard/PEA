@@ -1,0 +1,8 @@
+[35m2026-10-02 07:29:07 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 07:29:07 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+revision=cd41c0ac6c9ef730998c1540f81c4706ca9f4b1f fingerprint=8d9d4ef5cc225863 scope_tickers=490 row_groups=544/1195
+index rows in selected groups=108800  source calls after dedup=33591  distinct source keys=33591
+stored calls (paragraph 1)=33591  distinct stored keys=33591
+only in source=0  only in DB=0  as_of mismatch on common keys=0
+source tickers=487  stored tickers=487
+CONCLUSION: PARITY HOLDS -- the stored table is exactly the deduplicated index at this revision.

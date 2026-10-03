@@ -1,0 +1,127 @@
+[35m2026-10-02 08:39:41 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 08:39:41 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+stored calls=33591 years=2005-2026 (22) sample=200 (9/year)
+[35m2026-10-02 08:41:07 - src.context - INFO - nlp_sentiment.py - SentimentEngine ready: yiyanghkust/finbert-tone on cpu (labels={0: 'neutral', 1: 'positive', 2: 'negative'})[0m
+[35m2026-10-02 08:41:07 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 08:41:27 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +4 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 08:41:27 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 08:41:31 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:04<00:33,  4.15s/it][35m2026-10-02 08:41:32 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:04<00:14,  2.12s/it][35m2026-10-02 08:41:32 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:05<00:04,  1.01it/s][35m2026-10-02 08:41:33 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:06<00:03,  1.08it/s][35m2026-10-02 08:41:34 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:06<00:02,  1.18it/s][35m2026-10-02 08:41:34 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:07<00:01,  1.45it/s][35m2026-10-02 08:41:35 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:07<00:00,  1.52it/s][35m2026-10-02 08:41:35 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:08<00:00,  1.57it/s]EC embeddings: 100%|##########| 9/9 [00:08<00:00,  1.07it/s]
+[35m2026-10-02 08:41:35 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +30 turn rows -> 'earning_calls_embedding'.[0m
+2005: n=9 finbert=2.18s/call tokens=3,774/call embed=0.94s/call
+[35m2026-10-02 08:41:36 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 08:45:38 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 08:45:38 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 08:45:39 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:02<00:20,  2.54s/it][35m2026-10-02 08:45:41 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:04<00:15,  2.27s/it][35m2026-10-02 08:45:43 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:06<00:11,  1.97s/it][35m2026-10-02 08:45:45 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:07<00:08,  1.77s/it][35m2026-10-02 08:45:46 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:09<00:06,  1.71s/it][35m2026-10-02 08:45:48 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:10<00:04,  1.61s/it][35m2026-10-02 08:45:49 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:11<00:02,  1.37s/it][35m2026-10-02 08:45:50 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:12<00:01,  1.19s/it][35m2026-10-02 08:45:51 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:13<00:00,  1.09s/it]EC embeddings: 100%|##########| 9/9 [00:13<00:00,  1.47s/it]
+[35m2026-10-02 08:45:51 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +598 turn rows -> 'earning_calls_embedding'.[0m
+2006: n=9 finbert=26.94s/call tokens=9,738/call embed=1.50s/call
+[35m2026-10-02 08:45:52 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 08:50:35 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 08:50:35 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 08:50:36 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:01<00:12,  1.54s/it][35m2026-10-02 08:50:37 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:03<00:12,  1.79s/it][35m2026-10-02 08:50:40 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:05<00:10,  1.83s/it][35m2026-10-02 08:50:41 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:07<00:10,  2.05s/it][35m2026-10-02 08:50:44 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:09<00:08,  2.00s/it][35m2026-10-02 08:50:46 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:10<00:04,  1.66s/it][35m2026-10-02 08:50:47 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:12<00:03,  1.63s/it][35m2026-10-02 08:50:48 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:13<00:01,  1.53s/it][35m2026-10-02 08:50:49 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:15<00:00,  1.74s/it]EC embeddings: 100%|##########| 9/9 [00:15<00:00,  1.75s/it]
+[35m2026-10-02 08:50:51 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +571 turn rows -> 'earning_calls_embedding'.[0m
+2007: n=9 finbert=31.51s/call tokens=11,070/call embed=1.81s/call
+[35m2026-10-02 08:50:51 - src.context - INFO - earnings_call_features.py - Scoring 20 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 08:55:25 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 08:55:25 - src.context - INFO - earnings_call_embeddings.py - Embedding 10 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/10 [00:00<?, ?it/s][35m2026-10-02 08:55:26 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  10%|#         | 1/10 [00:02<00:22,  2.53s/it][35m2026-10-02 08:55:28 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  20%|##        | 2/10 [00:04<00:17,  2.14s/it][35m2026-10-02 08:55:30 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  30%|###       | 3/10 [00:06<00:15,  2.22s/it][35m2026-10-02 08:55:32 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  40%|####      | 4/10 [00:08<00:13,  2.20s/it][35m2026-10-02 08:55:34 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  50%|#####     | 5/10 [00:10<00:10,  2.15s/it][35m2026-10-02 08:55:36 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  60%|######    | 6/10 [00:12<00:07,  1.89s/it][35m2026-10-02 08:55:38 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  70%|#######   | 7/10 [00:13<00:05,  1.76s/it][35m2026-10-02 08:55:39 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  80%|########  | 8/10 [00:14<00:03,  1.51s/it][35m2026-10-02 08:55:40 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  90%|######### | 9/10 [00:17<00:01,  1.74s/it][35m2026-10-02 08:55:43 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 10/10 [00:18<00:00,  1.77s/it]EC embeddings: 100%|##########| 10/10 [00:18<00:00,  1.89s/it]
+[35m2026-10-02 08:55:44 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +818 turn rows -> 'earning_calls_embedding'.[0m
+2008: n=10 finbert=27.36s/call tokens=13,436/call embed=1.91s/call
+[35m2026-10-02 08:55:44 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 08:59:59 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 08:59:59 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 09:00:00 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:02<00:20,  2.55s/it][35m2026-10-02 09:00:02 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:04<00:15,  2.24s/it][35m2026-10-02 09:00:04 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:06<00:13,  2.29s/it][35m2026-10-02 09:00:06 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:09<00:11,  2.26s/it][35m2026-10-02 09:00:09 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:10<00:08,  2.03s/it][35m2026-10-02 09:00:10 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:12<00:05,  1.79s/it][35m2026-10-02 09:00:11 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:13<00:03,  1.74s/it][35m2026-10-02 09:00:13 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:14<00:01,  1.54s/it][35m2026-10-02 09:00:14 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:16<00:00,  1.66s/it]EC embeddings: 100%|##########| 9/9 [00:16<00:00,  1.86s/it]
+[35m2026-10-02 09:00:16 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +718 turn rows -> 'earning_calls_embedding'.[0m
+2009: n=9 finbert=28.30s/call tokens=10,824/call embed=1.89s/call
+[35m2026-10-02 09:00:16 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 09:04:53 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 09:04:53 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 09:04:54 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:02<00:16,  2.12s/it][35m2026-10-02 09:04:56 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:04<00:15,  2.23s/it][35m2026-10-02 09:04:58 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:06<00:14,  2.36s/it][35m2026-10-02 09:05:01 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:09<00:12,  2.42s/it][35m2026-10-02 09:05:03 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:10<00:08,  2.02s/it][35m2026-10-02 09:05:04 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:12<00:06,  2.04s/it][35m2026-10-02 09:05:06 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:15<00:04,  2.08s/it][35m2026-10-02 09:05:09 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:17<00:02,  2.16s/it][35m2026-10-02 09:05:11 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+[35m2026-10-02 09:05:11 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:20<00:00,  2.42s/it]EC embeddings: 100%|##########| 9/9 [00:20<00:00,  2.26s/it]
+[35m2026-10-02 09:05:14 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +730 turn rows -> 'earning_calls_embedding'.[0m
+2010: n=9 finbert=30.75s/call tokens=10,308/call embed=2.35s/call
+[35m2026-10-02 09:05:14 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 09:10:48 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 09:10:49 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 09:10:50 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:03<00:29,  3.68s/it][35m2026-10-02 09:10:53 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:06<00:23,  3.42s/it][35m2026-10-02 09:10:56 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:09<00:18,  3.08s/it][35m2026-10-02 09:10:59 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:11<00:14,  2.81s/it][35m2026-10-02 09:11:01 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:15<00:11,  2.95s/it][35m2026-10-02 09:11:05 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:17<00:08,  2.83s/it][35m2026-10-02 09:11:07 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+[35m2026-10-02 09:11:08 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:25<00:09,  4.55s/it][35m2026-10-02 09:11:15 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:27<00:03,  3.63s/it][35m2026-10-02 09:11:17 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:31<00:00,  3.81s/it]EC embeddings: 100%|##########| 9/9 [00:31<00:00,  3.53s/it]
+[35m2026-10-02 09:11:21 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +667 turn rows -> 'earning_calls_embedding'.[0m
+2011: n=9 finbert=37.11s/call tokens=10,605/call embed=3.70s/call
+[35m2026-10-02 09:11:22 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 09:41:37 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +18 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 09:41:39 - src.context - INFO - earnings_call_embeddings.py - Embedding 9 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/9 [00:00<?, ?it/s][35m2026-10-02 09:41:41 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  11%|#1        | 1/9 [00:05<00:43,  5.39s/it][35m2026-10-02 09:41:45 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 2/9 [00:10<00:37,  5.34s/it][35m2026-10-02 09:41:50 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 3/9 [00:16<00:33,  5.61s/it][35m2026-10-02 09:41:59 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 4/9 [00:25<00:33,  6.75s/it][35m2026-10-02 09:42:04 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####5    | 5/9 [00:32<00:27,  6.99s/it][35m2026-10-02 09:42:12 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 6/9 [00:37<00:18,  6.23s/it][35m2026-10-02 09:42:16 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######7  | 7/9 [00:42<00:11,  5.85s/it][35m2026-10-02 09:42:22 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  89%|########8 | 8/9 [00:46<00:05,  5.21s/it][35m2026-10-02 09:42:25 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 9/9 [00:49<00:00,  4.66s/it]EC embeddings: 100%|##########| 9/9 [00:49<00:00,  5.52s/it]
+[35m2026-10-02 09:42:29 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +572 turn rows -> 'earning_calls_embedding'.[0m
+2012: n=9 finbert=202.05s/call tokens=10,514/call embed=5.85s/call
+[35m2026-10-02 09:42:29 - src.context - INFO - earnings_call_features.py - Scoring 18 earnings-call sections on cpu (FinBERT-tone)...[0m

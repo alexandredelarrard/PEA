@@ -1,0 +1,4 @@
+[35m2026-10-02 14:43:06 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 14:43:06 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+sample=100 valid=100 (100.0%); FinBERT tokens/valid call=8,286; windows/valid call=17.3
+PROJECTION over 33591 calls: ~33,591 valid calls, ~67,182 sections, ~579,781 windows

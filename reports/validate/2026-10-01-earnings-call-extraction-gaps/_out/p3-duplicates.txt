@@ -1,0 +1,57 @@
+{'symbol': <StringDtype(na_value=nan)>, 'fiscal_year': dtype('int32'), 'fiscal_quarter': dtype('int32'), 'report_date': <StringDtype(na_value=nan)>, 'transcripts_id': dtype('float64')}
+238891
+ALL calls 238891 keys 238891 keys with >1 row 0 extra rows 0 max mult 1
+ALL dup transcripts_id across rows 71226 null tid 70289
+ROSTER calls 33676 keys 33676 keys with >1 row 0 extra rows 0 max mult 1
+ROSTER dup transcripts_id across rows 2913 null tid 2914
+roster symbols with '.': []
+collision '-'-mapped symbols across ALL: 1
+fiscal_quarter values [np.int32(1), np.int32(2), np.int32(3), np.int32(4)]
+null report_date 0 null fy 0
+report_date min/max 2005-10-11 2026-09-30
+roster same symbol+report_date rows >1: 23
+symbols with '.' (all): 0 []
+symbols with '-' (all): ['ABR-PD', 'ABR-PE', 'ABR-PF', 'ACHR-WT', 'ACR-PC', 'ACR-PD', 'ADC-PA', 'AGM-A', 'AGM-PD', 'AGM-PE']
+roster tickers with '-': ['BF-B', 'BRK-B']
+      symbol  fiscal_year  fiscal_quarter report_date  transcripts_id
+62973     DG         2011               4  2012-03-22             NaN
+62977     DG         2012               4  2012-03-22        120685.0
+62974     DG         2012               1  2012-06-04             NaN
+62978     DG         2013               1  2012-06-04        120686.0
+62975     DG         2012               2  2012-09-05             NaN
+62979     DG         2013               2  2012-09-05        120687.0
+62976     DG         2012               3  2012-12-11             NaN
+62980     DG         2013               3  2012-12-11        120688.0
+63029     DG         2025               4  2026-03-12             NaN
+63030     DG         2026               4  2026-03-12             NaN
+65172   DLTR         2025               4  2026-03-16             NaN
+65173   DLTR         2026               4  2026-03-16             NaN
+roster tid shared by >1 call: 0
+null tid by year: {'2006': 4, '2007': 7, '2008': 16, '2009': 16, '2010': 15, '2011': 15, '2012': 31, '2013': 20, '2014': 20, '2015': 24, '2016': 24, '2017': 24, '2018': 24, '2019': 24, '2020': 24, '2021': 24, '2022': 25, '2023': 26, '2024': 29, '2025': 1610, '2026': 912}
+roster tickers absent from index: ['BRK-B', 'ED', 'EXPD', 'NVR']
+same-date multi-label groups: 23 tickers: ['DG', 'DLTR', 'HD', 'LOW', 'LULU', 'PCAR', 'RJF', 'TGT', 'ULTA', 'WSM']
+                          labels       q                  tids
+symbol report_date
+DG     2012-03-22   [2011, 2012]  [4, 4]       [nan, 120685.0]
+       2012-06-04   [2012, 2013]  [1, 1]       [nan, 120686.0]
+       2012-09-05   [2012, 2013]  [2, 2]       [nan, 120687.0]
+       2012-12-11   [2012, 2013]  [3, 3]       [nan, 120688.0]
+       2026-03-12   [2025, 2026]  [4, 4]            [nan, nan]
+DLTR   2026-03-16   [2025, 2026]  [4, 4]            [nan, nan]
+HD     2026-02-24   [2025, 2026]  [4, 4]            [nan, nan]
+LOW    2012-02-27   [2011, 2012]  [4, 4]       [nan, 199680.0]
+       2012-05-21   [2012, 2013]  [1, 1]       [nan, 199682.0]
+       2012-08-20   [2012, 2013]  [2, 2]       [nan, 199683.0]
+       2012-11-19   [2012, 2013]  [3, 3]       [nan, 199684.0]
+       2022-11-16   [2022, 2023]  [3, 3]       [nan, 199741.0]
+LULU   2026-03-17   [2025, 2026]  [4, 4]            [nan, nan]
+PCAR   2011-04-21   [2010, 2011]  [4, 1]  [241102.0, 241103.0]
+RJF    2015-07-23   [2015, 2015]  [2, 3]  [261827.0, 261829.0]
+       2016-04-21   [2016, 2016]  [1, 2]  [261833.0, 261836.0]
+TGT    2026-03-03   [2025, 2026]  [4, 4]            [nan, nan]
+ULTA   2026-03-12   [2025, 2026]  [4, 4]            [nan, nan]
+WSM    2012-03-08   [2011, 2012]  [4, 4]  [338196.0, 325669.0]
+       2012-05-22   [2012, 2013]  [1, 1]  [338197.0, 325670.0]
+       2012-08-21   [2012, 2013]  [2, 2]  [338198.0, 325671.0]
+       2012-11-14   [2012, 2013]  [3, 3]  [338199.0, 325672.0]
+       2026-03-18   [2025, 2026]  [4, 4]            [nan, nan]

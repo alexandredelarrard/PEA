@@ -1,0 +1,26 @@
+.........F.............................................................. [ 41%]
+........................................................................ [ 82%]
+s....ss...s...................                                           [100%]
+================================== FAILURES ===================================
+_________________ test_dag_chain_is_derived_from_the_registry _________________
+
+    def test_dag_chain_is_derived_from_the_registry():
+        src = _dag_source()
+        tree = ast.parse(src)
+
+        # CHAIN must be assigned from PART_COMMANDS, not from a hand-written list of strings
+        chain_assign = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "CHAIN" for t in n.targets)]
+        assert chain_assign, "the DAG no longer defines CHAIN"
+        rendered = ast.dump(chain_assign[0].value)
+>       assert "PART_COMMANDS" in rendered, (
+            "CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what "
+            f"drifted before (got {ast.unparse(chain_assign[0].value)})"
+        )
+E       AssertionError: CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what drifted before (got ['build-prices', 'build-target', 'build-fundamentals', 'build-momentum', 'build-text', 'build-institutionals', 'build-governance'])
+E       assert 'PART_COMMANDS' in "List(elts=[Constant(value='build-prices'), Constant(value='build-target'), Constant(value='build-fundamentals'), Cons...Constant(value='build-text'), Constant(value='build-institutionals'), Constant(value='build-governance')], ctx=Load())"
+
+tests\dags\test_dag_matches_part_registry.py:37: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/dags/test_dag_matches_part_registry.py::test_dag_chain_is_derived_from_the_registry
+1 failed, 169 passed, 4 skipped in 212.64s (0:03:32)
+exit=1

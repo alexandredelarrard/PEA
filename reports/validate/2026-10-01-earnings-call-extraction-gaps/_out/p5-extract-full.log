@@ -1,0 +1,6 @@
+[35m2026-10-02 07:06:28 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 07:06:28 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 07:06:36 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: revision cd41c0ac6c9e, full run over 490 tickers, 544/1195 row groups.[0m
+[35m2026-10-02 07:07:42 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: 33591 source calls in scope, 33591 new, 0 re-issued.[0m
+[35m2026-10-02 07:24:40 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: +2804060 paragraph rows in 1091.1s.[0m
+exit=0 wall_s=1119

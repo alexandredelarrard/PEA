@@ -1,0 +1,14 @@
+P7 full pytest = 3 shards (single run was killed at ~67% by the 30-min background cap; partial log p7-pytest-full-attempt1-killed.txt)
+== shard A
+FAILED tests/data_aggregate/test_betas.py::test_persisted_betas_require_a_current_own_price
+FAILED tests/data_aggregate/test_fundamental_features.py::test_real_panel_wellformed_and_bounded
+FAILED tests/data_aggregate/test_institutional_features.py::test_first_publication_shares_chg_error_does_not_regress
+FAILED tests/data_aggregate/test_panel_merge_duplicates.py::test_availability_is_applied_before_peer_statistics
+4 failed, 689 passed, 2 skipped, 12 warnings in 2081.40s (0:34:41)
+== shard B
+FAILED tests/data_extract/common/test_identity.py::test_every_flagged_group_resolves_to_its_reviewed_verdict
+FAILED tests/data_extract/prices/test_adjustment_basis.py::test_the_dividend_factor_is_monotone_and_terminates_at_one
+FAILED tests/dags/test_dag_matches_part_registry.py::test_dag_chain_is_derived_from_the_registry
+3 failed, 1054 passed, 23 skipped, 12 warnings in 1961.97s (0:32:41)
+== shard C
+276 passed, 1 skipped, 3 warnings in 1028.87s (0:17:08)

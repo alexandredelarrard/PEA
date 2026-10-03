@@ -1,0 +1,64 @@
+
+===== since 2024 =====
+[old] calls 5301; status {'ok': 5241, 'no_qa': 32, 'no_prepared': 28}; ok rate 0.9887
+  F-016: ok calls with a question-tagged person >= 1,000 words: 61 (1.16%)
+  exchanges: ok calls with 0 exchanges 8, with <= 1 10, with <= 2 25; median exchanges 16
+  AC-006 old rule (kept / all turn words): q01/q05/q50 0.561/0.665/0.778; ok calls < 0.60: 85 (1.62%)
+  AC-006 R-3 (kept / management turn words): q01/q05/q50 0.800/0.924/0.963; ok calls < 0.60: 12 (0.23%); aggregate 0.961
+[new] calls 5301; status {'ok': 5241, 'no_qa': 32, 'no_prepared': 28}; ok rate 0.9887
+  F-016: ok calls with a question-tagged person >= 1,000 words: 3 (0.06%)
+  exchanges: ok calls with 0 exchanges 16, with <= 1 19, with <= 2 37; median exchanges 15
+  AC-006 old rule (kept / all turn words): q01/q05/q50 0.613/0.674/0.781; ok calls < 0.60: 39 (0.74%)
+  AC-006 R-3 (kept / management turn words): q01/q05/q50 0.906/0.932/0.963; ok calls < 0.60: 0 (0.00%); aggregate 0.966
+  side effect: ok calls with 0 exchanges new but > 0 old: 8; new <= 1 and old >= 5: 8
+  tickers (calls) collapsed to <= 1 exchange: {'NFLX': 6, 'DIS': 1, 'MCK': 1}
+  tickers (calls) with 0 exchanges under new: {'NFLX': 9, 'AEP': 1, 'DIS': 1, 'COIN': 1, 'LEN': 1, 'MCK': 1, 'SNA': 1, 'TSLA': 1}
+
+===== all history =====
+[old] calls 33591; status {'ok': 33132, 'no_qa': 317, 'empty': 104, 'no_prepared': 38}; ok rate 0.9863
+  F-016: ok calls with a question-tagged person >= 1,000 words: 413 (1.25%)
+  exchanges: ok calls with 0 exchanges 169, with <= 1 247, with <= 2 393; median exchanges 19
+  AC-006 old rule (kept / all turn words): q01/q05/q50 0.570/0.664/0.781; ok calls < 0.60: 508 (1.53%)
+  AC-006 R-3 (kept / management turn words): q01/q05/q50 0.807/0.923/0.967; ok calls < 0.60: 89 (0.27%); aggregate 0.972
+[new] calls 33591; status {'ok': 33132, 'no_qa': 317, 'empty': 104, 'no_prepared': 38}; ok rate 0.9863
+  F-016: ok calls with a question-tagged person >= 1,000 words: 63 (0.19%)
+  exchanges: ok calls with 0 exchanges 191, with <= 1 272, with <= 2 423; median exchanges 18
+  AC-006 old rule (kept / all turn words): q01/q05/q50 0.610/0.675/0.783; ok calls < 0.60: 258 (0.78%)
+  AC-006 R-3 (kept / management turn words): q01/q05/q50 0.906/0.933/0.967; ok calls < 0.60: 3 (0.01%); aggregate 0.977
+  side effect: ok calls with 0 exchanges new but > 0 old: 25; new <= 1 and old >= 5: 23
+  tickers (calls) collapsed to <= 1 exchange: {'NFLX': 8, 'A': 1, 'AXP': 1, 'ADM': 1, 'DIS': 1, 'EL': 1, 'FIX': 1, 'CAT': 1, 'GM': 1, 'IBKR': 1, 'KR': 1, 'IFF': 1, 'MCK': 1, 'PFE': 1, 'VZ': 1, 'WAB': 1}
+  tickers (calls) with 0 exchanges under new: {'NFLX': 17, 'CHRW': 13, 'SNA': 6, 'LNT': 5, 'ERIE': 4, 'MO': 4, 'GE': 4, 'ROL': 4, 'MNST': 4, 'DUK': 3, 'CMCSA': 3, 'DOV': 3, 'CRM': 2, 'CMS': 2, 'AME': 2, 'ADM': 2, 'AEP': 2, 'MMM': 2, 'KO': 2, 'IFF': 2, 'PEP': 2, 'PPL': 2, 'RSG': 2, 'SJM': 2, 'NKE': 2, 'GS': 2, 'LRCX': 2, 'D': 2, 'COIN': 2, 'FIX': 2, 'XYL': 2, 'VZ': 2, 'COO': 1, 'CHD': 1, 'CFG': 1, 'CEG': 1, 'BKNG': 1, 'AZO': 1, 'BBY': 1, 'AWK': 1, 'APA': 1, 'ACN': 1, 'AMGN': 1, 'CPRT': 1, 'CSGP': 1, 'DAL': 1, 'ALB': 1, 'ABBV': 1, 'A': 1, 'GLW': 1, 'GEN': 1, 'FSLR': 1, 'FITB': 1, 'F': 1, 'FERG': 1, 'ETN': 1, 'EVRG': 1, 'EBAY': 1, 'EFX': 1, 'EMR': 1, 'EL': 1, 'DVN': 1, 'CVS': 1, 'DIS': 1, 'DE': 1, 'COHR': 1, 'CINF': 1, 'KMI': 1, 'KLAC': 1, 'JBL': 1, 'LHX': 1, 'KHC': 1, 'JKHY': 1, 'IBKR': 1, 'HUBB': 1, 'JCI': 1, 'GM': 1, 'GRMN': 1, 'HD': 1, 'GPC': 1, 'GNRC': 1, 'NEE': 1, 'NDSN': 1, 'MU': 1, 'MOS': 1, 'MCO': 1, 'LEN': 1, 'LII': 1, 'MCK': 1, 'L': 1, 'KR': 1, 'NVDA': 1, 'PFE': 1, 'PEG': 1, 'OKE': 1, 'NTRS': 1, 'NI': 1, 'ROST': 1, 'ROP': 1, 'PNR': 1, 'PSKY': 1, 'TPR': 1, 'TSCO': 1, 'SBUX': 1, 'TDY': 1, 'TXN': 1, 'TSLA': 1, 'WDC': 1, 'WAB': 1, 'WM': 1, 'WRB': 1, 'WY': 1, 'XEL': 1}
+
+lowest R-3 ratios since 2024 (new):
+ticker quarter  kept_words  mgmt_words  turn_words  mgmt_ratio  exchanges
+   MOS  2024Q4        5022        6822        8011    0.736148         11
+  AMAT  2026Q1         806        1070        1627    0.753271         17
+  GILD  2025Q1        6801        8108        9379    0.838801         16
+    GD  2025Q4        4868        5665        7048    0.859312         17
+  VRSN  2025Q1        2121        2456        3285    0.863599          7
+   STE  2025Q1        1990        2287        3532    0.870136         14
+   PLD  2025Q3        5514        6318        8659    0.872745         17
+   CME  2025Q4        4949        5644        6892    0.876860          9
+  RDDT  2025Q4        7952        9065       10428    0.877220         12
+   DIS  2026Q1        3664        4171        5311    0.878446         10
+  MPWR  2024Q2        2510        2856        4313    0.878852         18
+  VRSN  2024Q1        2191        2489        3298    0.880273          8
+
+largest question-tagged persons since 2024 (new):
+ticker quarter     top_q_person  top_q_words  a_words
+   VLO  2025Q1      Manav Gupta         1119     3390
+     T  2025Q4     John Hodulik         1085     2666
+   CRM  2027Q1   Patrick Stokes         1008     2370
+   HIG  2025Q1 Andrew Kligerman          960     2135
+     T  2025Q1     Peter Supino          909     4589
+    GD  2025Q4       Kim Kuryea          861     1838
+
+CONCLUSION: since 2024 (HEAD) ok rate 0.9887; R-3 ok calls below 60 % management words kept: 0 (0.00%)
+exit=0
+
+===== drift check since 2024 (ok calls) =====
+question words total old/new: 6527576 6368212
+answer-turn words total old/new: 19130569 19205759
+calls whose labelled turns changed: 198 of 5241
+calls whose question words fell by > 50%: 49
+CONCLUSION: the fix changes labelled turns on the counted calls only; see the collapsed-exchange list above for the IR-read side effect

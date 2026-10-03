@@ -1,0 +1,28 @@
+[35m2026-10-02 07:26:26 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 07:26:26 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[FAIL] earnings_calls on earnings_call_sections: 1 finding(s), worst score 9; scope 0 rows, 0 tickers
+  -> C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\validate\2026-10-01-earnings-call-extraction-gaps\_out\earnings_calls.json
+exit=1
+denominator = "current roster tickers with earnings calls; call and release dates mapped to calendar reporting quarters and point-in-time issuer identity; predecessor symbols linked through CIK lineage; future releases excluded; floored at 2006Q1"
+roster_tickers = 500
+structural_no_call_count = 1
+structural_no_call_tickers = ["BRK-B"]
+tickers_measured = 498
+coverage_100pct = 49
+coverage_70_to_lt100pct = 394
+coverage_50_to_lt70pct = 36
+coverage_lt50pct = 19
+median_coverage = 0.9024390243902439
+fixed_since_2006 = {"tickers_measured": 498, "coverage_100pct": 5, "coverage_70_to_lt100pct": 335, "coverage_50_to_lt70pct": 71, "coverage_lt50pct": 87, "median_coverage": 0.8292682926829268}
+issuer_linked_insider_filing_tenure_sensitivity = {"tickers_measured": 498, "coverage_100pct": 20, "coverage_70_to_lt100pct": 376, "coverage_50_to_lt70pct": 48, "coverage_lt50pct": 54, "median_coverage": 0.8658536585365854}
+tenure_sensitivity_note = "symbol_tenure starts at the first observed insider filing, not listing; use only as a sensitivity, not company-life coverage"
+observed_calls = 33591
+valid_calls = 33155
+malformed_calls = 436
+rejected_by_reason = {"split status no_qa": 317, "split status empty": 104, "split status no_prepared": 14, "missing required section": 1}
+split_status_counts = {"ok": 33156, "no_qa": 317, "no_prepared": 14, "empty": 104}
+split_ok_rate = 0.987050102706082
+prepared_share_quantiles = {"q05": 0.16467242281700248, "q50": 0.3627077485843581, "q95": 0.5806532352260433}
+grain = {"rows": 2804060, "calls": 33591, "duplicate_keys": 0, "null_paragraph_rows": 0, "null_as_of_rows": 0, "calls_with_multiple_as_of": 0, "calls_missing_first_paragraph": 0, "calls_non_contiguous_paragraphs": 0}
+coverage_by_calendar_quarter = [{"quarter": "2006Q1", "tickers_with_call": 78, "tickers_with_valid_call": 67, "roster_measured": 499, "share_with_call": 0.156312625250501}, {"quarter": "2006Q2", "tickers_with_call": 86, "tickers_with_valid_call": 80, "roster_measured": 499, "share_with_call": 0.17234468937875752}, {"quarter": "2006Q3", "tickers_with_call": 84, "tickers_with_valid_call": 79, "roster_measured": 499, "share_with_call": 0.1683366733466934}, {"quarter": "2006Q4", "tickers_with_call": 93, "tickers_with_valid_call": 87, "roster_measured": 499, "share_with_call": 0.18637274549098196}, {"quarter": "2007Q1", "tickers...
+as_of_vs_release_days = {"same_day": 23312, "one_day": 6157, "two_to_seven_days": 963, "beyond_seven_days": 756, "no_release": 1}

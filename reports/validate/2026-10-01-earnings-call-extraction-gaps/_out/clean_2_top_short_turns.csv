@@ -1,0 +1,121 @@
+role,text,count
+operator,"Next question, please.",120
+operator,Next question please.,49
+operator,"Thank you. Next question, please.",26
+operator,"Next question, please?",20
+operator,Next question please?,19
+operator,Thank you. Next question please.,17
+operator,:,15
+operator,Thank you.,10
+operator,"Operator, next question, please?",10
+operator,"Operator, next question please.",9
+operator,[Operator Instructions],8
+operator,Thanks. Next question please?,8
+operator,Okay. Next question please.,8
+operator,(Operator Instructions),6
+operator,There are no further questions.,6
+operator,"Thank you. Next question, please?",6
+operator,"Okay. Next question, please.",6
+operator,"Okay, next question please.",5
+operator,"Operator, next question, please.",5
+operator,Thank you. [Operator Instructions],5
+operator,"All right. Next question, please.",5
+operator,This concludes today’s conference call.,4
+operator,"You bet. Next question, please.",4
+operator,"Thanks, Frank. Next question please.",4
+operator,Thanks. Next question please.,3
+operator,"Okay. Next question, please?",3
+operator,All right. Next question please.,3
+operator,Yes.,3
+operator,Great. Next question please.,3
+operator,Okay. Next question please?,2
+prepared,Thank you.,17
+prepared,Good morning.,13
+prepared,Okay.,9
+prepared,Okay. Thank you.,6
+prepared,Thanks.,4
+prepared,Yes.,4
+prepared,:,3
+prepared,"Hi, good morning guys.",3
+prepared,Right.,3
+prepared,"Hi, good morning.",2
+prepared,"Hi, Rob.",2
+prepared,"Thank you, Doug.",2
+prepared,"Thank you, John.",2
+prepared,Hi good morning.,2
+prepared,Thank you very much.,2
+prepared,"Okay, thanks.",2
+prepared,"Hi, Rich.",2
+prepared,"Good morning, Gautam.",2
+prepared,Great.,2
+prepared,"Good morning, Ali.",2
+prepared,"Perfect. Thank you, very much.",1
+prepared,OK. Thank you.,1
+prepared,"Stephanie, would you open?",1
+prepared,"Thanks, Bruce.",1
+prepared,Just barely Tim.,1
+prepared,"Okay, how about that.",1
+prepared,Yeah that’s good.,1
+prepared,Okay. Thanks.,1
+prepared,Good. Thanks John.,1
+prepared,That's correct.,1
+question,Thank you.,1478
+question,Okay. Thank you.,568
+question,Okay.,565
+question,Great. Thank you.,430
+question,"Okay, thank you.",266
+question,Yes.,252
+question,Good morning.,230
+question,Thank you very much.,222
+question,Thanks.,206
+question,"Great, thank you.",157
+question,Got it. Thank you.,157
+question,Okay. Thank you very much.,144
+question,Right.,140
+question,"Hi, good morning.",135
+question,"Okay, thanks.",120
+question,Okay. Thanks.,116
+question,Great. Thank you very much.,115
+question,"Okay, great. Thank you.",112
+question,Hi. Good morning.,83
+question,Yeah.,80
+question,All right. Thank you.,76
+question,Great. Thanks.,74
+question,Thanks very much.,66
+question,Okay. Great. Thank you.,64
+question,Okay. Thanks very much.,60
+question,"Okay, thank you very much.",53
+question,Thanks a lot.,49
+question,"Good morning, guys.",49
+question,"Good morning, everyone.",48
+question,Got it.,46
+answer,Thank you.,1661
+answer,Good morning.,902
+answer,Yes.,891
+answer,Thanks.,414
+answer,Sure.,331
+answer,Yeah.,289
+answer,Okay.,286
+answer,No.,185
+answer,Correct.,174
+answer,You bet.,154
+answer,Right.,143
+answer,That's correct.,124
+answer,You're welcome.,121
+answer,You’re welcome.,104
+answer,Morning.,82
+answer,Hi.,67
+answer,That's right.,64
+answer,Welcome.,63
+answer,Yep.,61
+answer,Absolutely.,56
+answer,That’s correct.,56
+answer,Okay. Thank you.,55
+answer,You are welcome.,55
+answer,Thank you very much.,48
+answer,That is correct.,47
+answer,"Okay, thank you.",46
+answer,Exactly.,43
+answer,Good.,37
+answer,All right.,35
+answer,:,33

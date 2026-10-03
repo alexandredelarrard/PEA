@@ -1,0 +1,13 @@
+revision cd41c0ac6c9ef730998c1540f81c4706ca9f4b1f fingerprint 8d9d4ef5cc225863
+revision resolve 2.25s | footer+schema 2.27s | total row groups 1195
+roster 499 tickers -> full selection 549 row groups; index read with read_workers=4: 70.1s (0.128s/group wall)
+roster calls 33679, tickers 496, as_of 2005-10-13 -> 2026-10-01
+incremental selection with since=2026-08-17 (frontier-45d): 223 row groups
+total wall clock 74.9s
+--- read_workers=8 (informational) ---
+revision cd41c0ac6c9ef730998c1540f81c4706ca9f4b1f fingerprint 8d9d4ef5cc225863
+revision resolve 1.90s | footer+schema 2.43s | total row groups 1195
+roster 499 tickers -> full selection 549 row groups; index read with read_workers=8: 49.3s (0.090s/group wall)
+roster calls 33679, tickers 496, as_of 2005-10-13 -> 2026-10-01
+incremental selection with since=2026-08-17 (frontier-45d): 223 row groups
+total wall clock 54.0s

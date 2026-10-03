@@ -1,0 +1,48 @@
+calls: 585  symbols: 54
+status counts: {'ok': 581, 'no_qa': 3, 'no_prepared': 1}
+ok rate: 99.32%  (target >= 98.5%)
+assess_earnings_call_sections valid: all 99.32% | ok calls 100.00% | non-ok calls valid 0
+prepared share (ok calls) q05/q50/q95: [0.18, 0.32, 0.54]  (target q05 >= 0.15)
+qa share (ok calls) q05/q50/q95: [0.31, 0.46, 0.61]
+ok calls with prepared+qa < 60% of turn words: 1
+ok calls with prepared share < 0.15: 15 -> [('AMAT', '2026Q1'), ('HCA', '2024Q1'), ('HCA', '2024Q2'), ('HCA', '2025Q1'), ('MCHP', '2025Q4'), ('PSKY', '2024Q4'), ('PSKY', '2025Q3'), ('PSKY', '2025Q4'), ('PSKY', '2026Q1'), ('PSKY', '2026Q2'), ('TMUS', '2024Q2'), ('TMUS', '2024Q3'), ('WBD', '2024Q4'), ('WBD', '2025Q1'), ('WBD', '2025Q2')]
+
+non-ok calls:
+symbol     fq      status  pre  qa
+  COIN 2026Q2 no_prepared 0.00 0.7
+   NOW 2023Q1       no_qa 0.98 0.0
+  PSKY 2024Q1       no_qa 0.83 0.0
+  PSKY 2025Q2       no_qa 0.89 0.0
+
+ROLES (before = embeddings split_turns on rendered 'Speaker: text', after = label_turns; same Q&A start)
+  before: answer turns spoken by a question-asker of the same call (follow-up mislabels) 0/0 (nan%) | question turns by a prepared speaker 0 | questions 0 | calls with >=1 q and >=1 a 0.0% | calls with max answers per exchange > 5: 0 | question turns > 300 words 0 | persons tagged both question and answer 0
+  after: answer turns spoken by a question-asker of the same call (follow-up mislabels) 2/11594 (0.0%) | question turns by a prepared speaker 0 | questions 8702 | calls with >=1 q and >=1 a 99.3% | calls with max answers per exchange > 5: 22 | question turns > 300 words 11 | persons tagged both question and answer 2
+
+AXON under-split (b_ = before, a_ = after): exchanges / questions / max answers per exchange
+    fq  b_n_ex  b_n_q  b_max_ans  a_n_ex  a_n_q  a_max_ans
+2023Q4       0      0          0      19     19          3
+2024Q1       0      0          0      13     13          7
+2024Q2       0      0          0      14     14          5
+2024Q3       0      0          0      19     19          2
+2024Q4       0      0          0      23     23          4
+2025Q1       0      0          0      23     23          4
+2025Q2       0      0          0      22     22          7
+2025Q3       0      0          0      17     17          4
+2025Q4       0      0          0      24     24          5
+2026Q1       0      0          0      23     23          4
+2026Q2       0      0          0      14     15          6
+
+hard cases:
+symbol     fq      status  valid  pre   qa  a_n_ex  a_max_ans
+   ADP 2026Q3          ok   True 0.32 0.51      16          2
+  AXON 2026Q2          ok   True 0.30 0.53      14          6
+  COIN 2026Q2 no_prepared  False 0.00 0.70      13          3
+   IBM 2024Q1          ok   True 0.41 0.44       8          2
+   JNJ 2026Q2          ok   True 0.42 0.44       9          4
+   NOW 2026Q2          ok   True 0.35 0.47      11          3
+  PLTR 2024Q4          ok   True 0.53 0.38       2          5
+   PNW 2024Q4          ok   True 0.40 0.38      11          1
+  PSKY 2025Q2       no_qa  False 0.89 0.00       0          0
+   UDR 2026Q2          ok   True 0.23 0.54      19          3
+  WELL 2025Q4          ok   True 0.45 0.40      15          2
+   WST 2026Q2          ok   True 0.30 0.40      17          2

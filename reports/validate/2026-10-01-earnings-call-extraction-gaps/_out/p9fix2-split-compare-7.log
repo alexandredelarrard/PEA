@@ -1,0 +1,8 @@
+[35m2026-10-03 00:24:07 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-03 00:24:07 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+25/60 tickers, 1678 calls, 737s
+50/60 tickers, 3440 calls, 1571s
+75/60 tickers, 4081 calls, 1768s
+calls: 4081, exceptions: {}
+CONCLUSION: per-call comparison written; summarise with p9fix2_summary.py
+exit=0

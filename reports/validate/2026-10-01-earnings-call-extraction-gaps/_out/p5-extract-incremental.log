@@ -1,0 +1,10 @@
+# 2026-10-02 14:15:30 rtk $PY -m src data_extract extract-earnings-calls -c ./configs   (no -F)
+# HF revision at run time: cd41c0ac6c9ef730998c1540f81c4706ca9f4b1f; file fingerprint 8d9d4ef5cc22... == recorded
+[35m2026-10-02 14:16:19 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 14:16:19 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 14:16:23 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: defeatbeta/yahoo-finance-data/data/US/stock_earning_call_transcripts.parquet unchanged (8d9d4ef5cc22) -> nothing to do (3.9s).[0m
+
+real	0m53.531s
+user	0m0.061s
+sys	0m0.281s
+exit=0

@@ -1,0 +1,171 @@
+[1] sample paragraphs 250245; content starts with full speaker name 27 (0.011%); starts with speaker first-name + ':' header 2 (0.001%)
+    examples: Maureen Borkowski. Yes, at this point in time, we are fully expecting just to go to each county and present the evidence | Sonak Kolar here on for Mark Murphy. Tom, can you get a bit deeper on the new pricing strategy, particularly around deli | Tom Polen. So specifically again, to the U.S. it was referring to more of a competitive player, and this goes back actua | Arnaud Lehmann from Bank of America. So my first question, if I may come back on the U.K. If my calculations are correct | Eric Percher and Josh Raskin here from Nephron. Maybe building on the last question of what a new norm may look like. Yo
+calls 2940; status {'ok': 2880, 'no_qa': 35, 'empty': 24, 'no_prepared': 1}; FinBERT-valid 2880; classify-vs-split mismatches (turns + 1000*finbert words) = 0
+cleaned turns 243518; by role {'answer': 105388, 'question': 83412, 'operator': 39875, 'prepared': 14843}; embedded turns 164543
+
+[2] turn word-length by role (all cleaned turns, whitespace words)
+    role  n_turns    words  q01  q05  q25   q50    q75    q95    q99  pct_turns_le1  pct_turns_le3  pct_turns_le5  pct_turns_le10  pct_words_in_turns_lt5  pct_words_in_turns_lt10  pct_words_in_turns_lt20  pct_words_in_turns_lt40
+operator    39875   890610  4.0  8.0 11.0  14.0   19.0   61.0  112.0           0.08           0.82           2.01           21.74                   0.183                    4.300                   44.056                   58.460
+prepared    14843  9732405  3.0 16.0 69.0 289.0 1053.0 2151.7 3337.0           0.29           1.17           1.61            2.98                   0.005                    0.018                    0.117                    0.529
+question    83412  4235551  1.0  2.0 12.0  44.0   75.0  128.0  185.0           1.95          10.00          16.75           23.79                   0.744                    1.907                    4.014                   13.039
+  answer   105388 11097581  1.0  2.0 17.0  76.0  155.0  319.0  491.0           3.59          13.21          16.21           21.09                   0.309                    0.661                    1.489                    4.001
+top-8 short turns (<=5w) per role:
+  operator: 'Next question, please.'x120, 'Next question please.'x49, 'Thank you. Next question, please.'x26, 'Next question, please?'x20, 'Next question please?'x19, 'Thank you. Next question please.'x17, ':'x15, 'Thank you.'x10
+  prepared: 'Thank you.'x17, 'Good morning.'x13, 'Okay.'x9, 'Okay. Thank you.'x6, 'Thanks.'x4, 'Yes.'x4, ':'x3, 'Hi, good morning guys.'x3
+  question: 'Thank you.'x1478, 'Okay. Thank you.'x568, 'Okay.'x565, 'Great. Thank you.'x430, 'Okay, thank you.'x266, 'Yes.'x252, 'Good morning.'x230, 'Thank you very much.'x222
+  answer: 'Thank you.'x1661, 'Good morning.'x902, 'Yes.'x891, 'Thanks.'x414, 'Sure.'x331, 'Yeah.'x289, 'Okay.'x286, 'No.'x185
+total words per speaker per call by role
+    role  n_person_calls  q01  q05   q25   q50    q75    q95     q99  pct_le10  pct_le50
+operator            4741  7.0 12.0  45.0 174.0  252.0  388.0  620.40      3.99     27.67
+prepared           12150 13.0 21.0  95.0 473.0 1285.0 2407.0 3723.00      0.54     16.79
+question           29014  3.0 39.0  88.0 130.0  182.0  290.0  425.87      2.96      7.48
+  answer           10019  3.0 21.0 189.0 715.0 1679.0 3457.2 4805.20      2.88      9.29
+
+[3] noise inventory: % of WORDS (rows = corpus/section/role)
+ corpus          section     role    words  operator_text  logistics_sentence  courtesy_sentence  backchannel_sentence  filler_uh  filler_youknow_imean  filler_kindof_sortof  filler_like  self_intro  participant_roster  intro_joined_by  addressed_name  speaker_name_token  boilerplate  artefact  repeated_word
+  embed prepared_remarks prepared  9773394          0.000               0.531              0.271                 0.003        0.0                 0.004                 0.010        0.000       0.000               1.098            0.294           0.005               1.138        4.979     0.033          0.001
+  embed               qa   answer 10602617          0.000               0.087              0.315                 0.026        0.0                 0.252                 0.319        0.002       0.000               0.001            0.006           0.032               0.358        0.000     0.042          0.004
+  embed               qa question  4049759          0.000               0.074              0.443                 0.071        0.0                 0.221                 0.998        0.005       0.109               0.002            0.002           0.029               0.423        0.000     0.063          0.004
+finbert prepared_remarks operator     1679        100.000               0.000              0.000                 0.000        0.0                 0.000                 0.000        0.000       0.000               0.000            0.000           0.000               0.000        0.000     0.000          0.000
+finbert prepared_remarks prepared  9590451          0.000               0.608              0.697                 0.006        0.0                 0.004                 0.008        0.000       0.000               1.230            0.300           0.063               1.198        5.025     0.032          0.001
+finbert               qa   answer 11115792          0.000               0.111              0.792                 0.218        0.0                 0.252                 0.321        0.002       0.000               0.001            0.005           0.116               0.457        0.000     0.043          0.004
+finbert               qa operator   654828        100.000               0.000              0.000                 0.000        0.0                 0.000                 0.000        0.000       0.000               0.000            0.000           0.000               0.000        0.000     0.000          0.000
+finbert               qa question  4231632          0.000               0.081              3.469                 0.688        0.0                 0.213                 0.955        0.005       0.129               0.002            0.002           0.067               0.488        0.000     0.062          0.004
+finbert prepared_remarks      ALL  9592130          0.018               0.608              0.697                 0.006        0.0                 0.004                 0.008        0.000       0.000               1.230            0.300           0.063               1.198        5.024     0.032          0.001
+finbert               qa      ALL 16002252          4.092               0.098              1.468                 0.334        0.0                 0.231                 0.476        0.002       0.034               0.001            0.004           0.098               0.447        0.000     0.046          0.004
+finbert              ALL      ALL 25594382          2.565               0.289              1.179                 0.211        0.0                 0.146                 0.300        0.001       0.022               0.462            0.115           0.085               0.728        1.883     0.041          0.003
+  embed prepared_remarks      ALL  9773394          0.000               0.531              0.271                 0.003        0.0                 0.004                 0.010        0.000       0.000               1.098            0.294           0.005               1.138        4.979     0.033          0.001
+  embed               qa      ALL 14652376          0.000               0.083              0.350                 0.038        0.0                 0.243                 0.507        0.003       0.030               0.001            0.005           0.031               0.376        0.000     0.048          0.004
+  embed              ALL      ALL 24425770          0.000               0.262              0.319                 0.024        0.0                 0.148                 0.308        0.002       0.018               0.440            0.120           0.021               0.681        1.992     0.042          0.003
+
+[4] financial-content sentences (digit/%/$ or finance term)
+ corpus     role  sentences  pct_sent_fin  pct_words_in_nofin_sent
+  embed   answer   526231.0         45.60                    42.04
+  embed prepared   467348.0         71.15                    21.57
+  embed question   208363.0         49.62                    36.59
+finbert   answer   592915.0         42.24                    42.43
+finbert operator    74078.0          8.73                    80.64
+finbert prepared   463209.0         70.26                    21.57
+finbert question   281710.0         37.14                    39.18
+finbert      ALL        NaN           NaN                    35.05
+  embed      ALL        NaN           NaN                    32.95
+
+[5] per-1k-word rates by year: slope per decade (OLS) | mean 2006-10 | mean 2021-25
+  prepared  courtesy_per_1k  slope/decade +0.255 | 1.25 -> 1.64
+  prepared  lm_pos_per_1k    slope/decade +1.046 | 14.95 -> 16.28
+  prepared  lm_neg_per_1k    slope/decade -0.914 | 6.12 -> 4.68
+  question  courtesy_per_1k  slope/decade +4.967 | 8.64 -> 13.90
+  question  lm_pos_per_1k    slope/decade +2.055 | 10.02 -> 12.31
+  question  lm_neg_per_1k    slope/decade -0.599 | 3.29 -> 2.30
+  answer    courtesy_per_1k  slope/decade +0.745 | 1.58 -> 2.41
+  answer    lm_pos_per_1k    slope/decade +1.418 | 10.27 -> 12.23
+  answer    lm_neg_per_1k    slope/decade -0.515 | 2.77 -> 1.90
+
+[6] rule simulations
+                            rule  corpus          section                      role    words  pct_words_removed   turns  pct_turns_dropped
+              R1_qa_answers_only finbert prepared_remarks                  prepared  9590451              0.000     NaN                NaN
+              R1_qa_answers_only finbert               qa                  operator   654828            100.000     NaN                NaN
+              R1_qa_answers_only finbert               qa                    answer 11115792              0.000     NaN                NaN
+              R1_qa_answers_only finbert               qa                  question  4231632            100.000     NaN                NaN
+              R1_qa_answers_only finbert prepared_remarks                  operator     1679              0.000     NaN                NaN
+              R1_qa_answers_only finbert prepared_remarks                       ALL  9592130              0.000     NaN                NaN
+              R1_qa_answers_only finbert               qa                       ALL 16002252             30.536     NaN                NaN
+              R1_qa_answers_only finbert             GATE calls_now_invalid_of_2880        9              0.312     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert prepared_remarks                  prepared  9590451              0.703     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert               qa                  operator   654828              6.627     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert               qa                    answer 11115792              1.011     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert               qa                  question  4231632              4.157     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert prepared_remarks                  operator     1679             13.818     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert prepared_remarks                       ALL  9592130              0.705     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert               qa                       ALL 16002252              2.073     NaN                NaN
+R2_courtesy_backchannel_anywhere finbert             GATE calls_now_invalid_of_2880        0              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert prepared_remarks                  prepared  9590451              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert               qa                  operator   654828              0.002     NaN                NaN
+             R3a_filler_uh_um_er finbert               qa                    answer 11115792              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert               qa                  question  4231632              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert prepared_remarks                  operator     1679              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert prepared_remarks                       ALL  9592130              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert               qa                       ALL 16002252              0.000     NaN                NaN
+             R3a_filler_uh_um_er finbert             GATE calls_now_invalid_of_2880        0              0.000     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert prepared_remarks                  prepared  9590451              0.031     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert               qa                  operator   654828              0.029     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert               qa                    answer 11115792              0.376     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert               qa                  question  4231632              0.326     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert prepared_remarks                  operator     1679              0.000     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert prepared_remarks                       ALL  9592130              0.031     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert               qa                       ALL 16002252              0.349     NaN                NaN
+   R3b_filler_plus_youknow_imean finbert             GATE calls_now_invalid_of_2880        0              0.000     NaN                NaN
+         R4_boilerplate_prepared finbert prepared_remarks                  prepared  9590451              5.025     NaN                NaN
+         R4_boilerplate_prepared finbert               qa                  operator   654828              0.000     NaN                NaN
+         R4_boilerplate_prepared finbert               qa                    answer 11115792              0.000     NaN                NaN
+         R4_boilerplate_prepared finbert               qa                  question  4231632              0.000     NaN                NaN
+         R4_boilerplate_prepared finbert prepared_remarks                  operator     1679              5.063     NaN                NaN
+         R4_boilerplate_prepared finbert prepared_remarks                       ALL  9592130              5.025     NaN                NaN
+         R4_boilerplate_prepared finbert               qa                       ALL 16002252              0.000     NaN                NaN
+         R4_boilerplate_prepared finbert             GATE calls_now_invalid_of_2880        0              0.000     NaN                NaN
+     R5_selfintro_addressed_name finbert prepared_remarks                  prepared  9590451              0.063     NaN                NaN
+     R5_selfintro_addressed_name finbert               qa                  operator   654828              0.146     NaN                NaN
+     R5_selfintro_addressed_name finbert               qa                    answer 11115792              0.117     NaN                NaN
+     R5_selfintro_addressed_name finbert               qa                  question  4231632              0.196     NaN                NaN
+     R5_selfintro_addressed_name finbert prepared_remarks                  operator     1679              1.072     NaN                NaN
+     R5_selfintro_addressed_name finbert prepared_remarks                       ALL  9592130              0.063     NaN                NaN
+     R5_selfintro_addressed_name finbert               qa                       ALL 16002252              0.139     NaN                NaN
+     R5_selfintro_addressed_name finbert             GATE calls_now_invalid_of_2880        0              0.000     NaN                NaN
+     R7_financial_sentences_only finbert prepared_remarks                  prepared  9590451             21.569     NaN                NaN
+     R7_financial_sentences_only finbert               qa                  operator   654828             80.654     NaN                NaN
+     R7_financial_sentences_only finbert               qa                    answer 11115792             42.428     NaN                NaN
+     R7_financial_sentences_only finbert               qa                  question  4231632             39.179     NaN                NaN
+     R7_financial_sentences_only finbert prepared_remarks                  operator     1679             73.079     NaN                NaN
+     R7_financial_sentences_only finbert prepared_remarks                       ALL  9592130             21.578     NaN                NaN
+     R7_financial_sentences_only finbert               qa                       ALL 16002252             43.133     NaN                NaN
+     R7_financial_sentences_only finbert             GATE calls_now_invalid_of_2880        1              0.035     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert prepared_remarks                  prepared  9590451              5.757     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert               qa                  operator   654828            100.000     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert               qa                    answer 11115792              1.788     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert               qa                  question  4231632            100.000     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert prepared_remarks                  operator     1679             18.940     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert prepared_remarks                       ALL  9592130              5.759     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert               qa                       ALL 16002252             31.778     NaN                NaN
+                 R1+R2+R3b+R4+R5 finbert             GATE calls_now_invalid_of_2880        9              0.312     NaN                NaN
+R2_courtesy_backchannel_anywhere   embed prepared_remarks                  prepared  9773394              0.274 14580.0              0.082
+R2_courtesy_backchannel_anywhere   embed               qa                  question  4049759              0.528 66125.0              0.765
+R2_courtesy_backchannel_anywhere   embed               qa                    answer 10602617              0.344 83838.0              0.278
+R2_courtesy_backchannel_anywhere   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+             R3a_filler_uh_um_er   embed prepared_remarks                  prepared  9773394              0.000 14580.0              0.000
+             R3a_filler_uh_um_er   embed               qa                  question  4049759              0.000 66125.0              0.000
+             R3a_filler_uh_um_er   embed               qa                    answer 10602617              0.000 83838.0              0.000
+             R3a_filler_uh_um_er   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+   R3b_filler_plus_youknow_imean   embed prepared_remarks                  prepared  9773394              0.032 14580.0              0.000
+   R3b_filler_plus_youknow_imean   embed               qa                  question  4049759              0.339 66125.0              0.012
+   R3b_filler_plus_youknow_imean   embed               qa                    answer 10602617              0.376 83838.0              0.005
+   R3b_filler_plus_youknow_imean   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+         R4_boilerplate_prepared   embed prepared_remarks                  prepared  9773394              4.979 14580.0              0.158
+         R4_boilerplate_prepared   embed               qa                  question  4049759              0.609 66125.0              0.119
+         R4_boilerplate_prepared   embed               qa                    answer 10602617              0.355 83838.0              0.106
+         R4_boilerplate_prepared   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     1.0                NaN
+     R5_selfintro_addressed_name   embed prepared_remarks                  prepared  9773394              0.006 14580.0              0.000
+     R5_selfintro_addressed_name   embed               qa                  question  4049759              0.168 66125.0              0.104
+     R5_selfintro_addressed_name   embed               qa                    answer 10602617              0.033 83838.0              0.016
+     R5_selfintro_addressed_name   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+     R7_financial_sentences_only   embed prepared_remarks                  prepared  9773394             21.573 14580.0             16.433
+     R7_financial_sentences_only   embed               qa                  question  4049759             36.611 66125.0             20.014
+     R7_financial_sentences_only   embed               qa                    answer 10602617             42.043 83838.0             17.535
+     R7_financial_sentences_only   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+                  R6_min_turn_5w   embed prepared_remarks                  prepared  9773394              0.000 14580.0              0.062
+                  R6_min_turn_5w   embed               qa                  question  4049759              0.021 66125.0              0.325
+                  R6_min_turn_5w   embed               qa                    answer 10602617              0.011 83838.0              0.364
+                  R6_min_turn_5w   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+                 R6_min_turn_10w   embed prepared_remarks                  prepared  9773394              0.013 14580.0              1.248
+                 R6_min_turn_10w   embed               qa                  question  4049759              0.508 66125.0              4.575
+                 R6_min_turn_10w   embed               qa                    answer 10602617              0.286 83838.0              5.307
+                 R6_min_turn_10w   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+                 R6_min_turn_15w   embed prepared_remarks                  prepared  9773394              0.044 14580.0              2.936
+                 R6_min_turn_15w   embed               qa                  question  4049759              1.274 66125.0              8.473
+                 R6_min_turn_15w   embed               qa                    answer 10602617              0.631 83838.0              8.974
+                 R6_min_turn_15w   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+                 R6_min_turn_20w   embed prepared_remarks                  prepared  9773394              0.106 14580.0              5.384
+                 R6_min_turn_20w   embed               qa                  question  4049759              2.518 66125.0             12.954
+                 R6_min_turn_20w   embed               qa                    answer 10602617              1.059 83838.0             12.166
+                 R6_min_turn_20w   embed            CALLS lose_all_qa_turns_of_2863        0              0.000     0.0                NaN
+R1: valid calls with zero answer words in qa sentiment text: 9 of 2880
+artefact of clean_earnings_call_text: '\d. \d' occurrences in FinBERT inputs 95165 vs '\d.\d' in raw turns 96574

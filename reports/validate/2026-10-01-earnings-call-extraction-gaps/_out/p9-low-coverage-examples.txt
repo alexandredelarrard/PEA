@@ -1,0 +1,7 @@
+DELL 2026Q3: turn words=8045 prepared=1631 answers=1375 question_turns=3467 other=1572 | (p+a)/turn=0.374 (p+a+questions)/turn=0.805
+BMY 2026Q1: turn words=8910 prepared=1851 answers=1736 question_turns=4548 other=775 | (p+a)/turn=0.403 (p+a+questions)/turn=0.913
+DASH 2025Q1: turn words=8362 prepared=57 answers=3348 question_turns=4131 other=826 | (p+a)/turn=0.407 (p+a+questions)/turn=0.901
+BMY 2025Q4: turn words=9918 prepared=2161 answers=2447 question_turns=4173 other=1137 | (p+a)/turn=0.465 (p+a+questions)/turn=0.885
+DHI 2024Q2: turn words=9455 prepared=325 answers=4075 question_turns=4136 other=919 | (p+a)/turn=0.465 (p+a+questions)/turn=0.903
+AMAT 2026Q1: turn words=1627 prepared=66 answers=740 question_turns=222 other=599 | (p+a)/turn=0.495 (p+a+questions)/turn=0.632
+CONCLUSION: the gap below 0.60 is question text (excluded by C-1) if (p+a+questions)/turn >= 0.60

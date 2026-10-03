@@ -1,0 +1,42 @@
+[35m2026-10-02 15:34:40 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 15:34:40 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 15:34:41 - src.context - INFO - p5_e2e_build_text.py - e2e sample: 3 tickers, 78 calls, 4456 paragraphs[0m
+[35m2026-10-02 15:34:41 - src.data_aggregate.transformers.step_cube_text - INFO - step.py - starting step <src.data_aggregate.transformers.step_cube_text.StepCubeText object at 0x0000014F8C7C9940>[0m
+[35m2026-10-02 15:38:08 - src.context - INFO - nlp_sentiment.py - SentimentEngine ready: yiyanghkust/finbert-tone on cpu (labels={0: 'neutral', 1: 'positive', 2: 'negative'})[0m
+[35m2026-10-02 15:38:08 - src.context - INFO - earnings_call_features.py - Scoring 156 earnings-call sections on cpu (FinBERT-tone)...[0m
+[35m2026-10-02 16:23:14 - src.context - INFO - earnings_call_features.py - Earnings-call sentiment: +156 newly scored rows -> 'earnings_call_sentiment'.[0m
+[35m2026-10-02 16:23:23 - src.context - INFO - earnings_call_embeddings.py - Embedding 24 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/24 [00:00<?, ?it/s][35m2026-10-02 16:23:51 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   4%|4         | 1/24 [00:29<11:22, 29.66s/it][35m2026-10-02 16:23:57 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   8%|8         | 2/24 [00:36<05:53, 16.05s/it][35m2026-10-02 16:24:03 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  12%|#2        | 3/24 [00:42<03:59, 11.38s/it][35m2026-10-02 16:24:08 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  17%|#6        | 4/24 [00:46<02:55,  8.78s/it][35m2026-10-02 16:24:13 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  21%|##        | 5/24 [00:51<02:20,  7.39s/it][35m2026-10-02 16:24:18 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  25%|##5       | 6/24 [00:56<01:57,  6.54s/it][35m2026-10-02 16:24:23 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  29%|##9       | 7/24 [01:01<01:40,  5.91s/it][35m2026-10-02 16:24:28 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  33%|###3      | 8/24 [01:06<01:28,  5.55s/it][35m2026-10-02 16:24:33 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  38%|###7      | 9/24 [01:11<01:20,  5.40s/it][35m2026-10-02 16:24:38 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  42%|####1     | 10/24 [01:15<01:11,  5.09s/it][35m2026-10-02 16:24:42 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  46%|####5     | 11/24 [01:19<01:03,  4.87s/it][35m2026-10-02 16:24:46 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  50%|#####     | 12/24 [01:23<00:54,  4.58s/it][35m2026-10-02 16:24:50 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  54%|#####4    | 13/24 [01:27<00:49,  4.46s/it][35m2026-10-02 16:24:55 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  58%|#####8    | 14/24 [01:33<00:47,  4.74s/it][35m2026-10-02 16:25:00 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  62%|######2   | 15/24 [01:37<00:40,  4.53s/it][35m2026-10-02 16:25:05 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  67%|######6   | 16/24 [01:42<00:37,  4.64s/it][35m2026-10-02 16:25:09 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  71%|#######   | 17/24 [01:46<00:32,  4.60s/it][35m2026-10-02 16:25:13 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  75%|#######5  | 18/24 [01:50<00:26,  4.45s/it][35m2026-10-02 16:25:17 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  79%|#######9  | 19/24 [01:54<00:21,  4.29s/it][35m2026-10-02 16:25:21 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  83%|########3 | 20/24 [01:58<00:16,  4.17s/it][35m2026-10-02 16:25:24 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  88%|########7 | 21/24 [02:02<00:11,  3.96s/it][35m2026-10-02 16:25:29 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  92%|#########1| 22/24 [02:06<00:07,  3.99s/it][35m2026-10-02 16:25:32 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  96%|#########5| 23/24 [02:10<00:03,  3.96s/it][35m2026-10-02 16:25:37 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 24/24 [02:14<00:00,  4.04s/it]EC embeddings: 100%|##########| 24/24 [02:14<00:00,  5.60s/it]
+[35m2026-10-02 16:25:38 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +419 turn rows -> 'earning_calls_embedding'.[0m
+[35m2026-10-02 16:35:17 - src.data_aggregate.utils.common.incremental - INFO - incremental.py - cube_part_text: dropped 19629 all-NaN grid rows (83.9% of 23409)[0m
+[35m2026-10-02 16:35:18 - src.data_aggregate.utils.common.incremental - INFO - incremental.py - Persisted cube_part_text (FULL): 3780 rows x 12 cols.[0m
+[35m2026-10-02 16:35:18 - src.context - INFO - p5_e2e_build_text.py - e2e build-text (sample, FULL) done in 3637s[0m
+
+real	61m6.045s
+user	0m0.030s
+sys	0m0.203s
+exit=0

@@ -1,0 +1,96 @@
+=== 1. cache rows for the sample under speaker-clean-v1 (calls scored vs calls stored) ===
+ ticker | calls_stored | finbert_calls | finbert_sections | embedded_calls | embedded_turns
+--------+--------------+---------------+------------------+----------------+----------------
+ ABNB   |           23 |            23 |               46 |             23 |            959
+ CEG    |           31 |            31 |               62 |             31 |           1202
+ PLTR   |           24 |            24 |               48 |             24 |            419
+(3 rows)
+
+                   model                   | calls | tickers
+-------------------------------------------+-------+---------
+ yiyanghkust/finbert-tone:speaker-clean-v1 |    78 |       3
+ yiyanghkust/finbert-tone:speaker-v1       |    67 |      57
+(2 rows)
+
+=== 2a. cube_part_text columns ===
+                                                                                                                               cols                                                                                                                               | n_f_ec | n_cols
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------+--------
+ date, ticker, f_ec_tone, f_ec_tone_vs_hist, f_ec_qa_gap, f_ec_qa_gap_vs_hist, f_ec_uncertainty, f_ec_uncertainty_vs_hist, f_ec_qa_coherence_mean, f_ec_qa_coherence_mean_vs_hist, f_ec_tone_delta, f_ec_length_delta, f_ec_qa_qq_distance, f_ec_prep_qq_distance |     12 |     14
+(1 row)
+
+=== 2b. cube_part_text rows, tickers, first/last date ===
+ ticker | rows_stored | first_date | last_date
+--------+-------------+------------+------------
+ ABNB   |        1375 | 2021-02-26 | 2026-09-04
+ CEG    |         952 | 2022-05-13 | 2026-09-04
+ PLTR   |        1453 | 2020-11-17 | 2026-09-04
+(3 rows)
+
+=== 2c. non-null share per column over trading sessions strictly after each ticker's first call (denominator = PRICED cube_part_prices sessions, close_split not null -- CEG has an unpriced 1995-2021 grid, so its 15 calls of the 2008-2011 predecessor issuer are masked by availability; rows with no feature are dropped by design) ===
+ ticker | sessions | tone  | tone_h | qa_gap | qa_gap_h |  unc  | unc_h |  coh  | coh_h | tone_d | len_d | qa_qq | prep_qq
+--------+----------+-------+--------+--------+----------+-------+-------+-------+-------+--------+-------+-------+---------
+ ABNB   |     1388 | 0.991 |  0.816 |  0.991 |    0.816 | 0.991 | 0.816 | 0.991 | 0.816 |  0.952 | 0.952 | 0.952 |   0.952
+ CEG    |     1162 | 0.819 |  0.610 |  0.819 |    0.610 | 0.819 | 0.610 | 0.819 | 0.610 |  0.664 | 0.664 | 0.664 |   0.664
+ PLTR   |     1456 | 0.998 |  0.828 |  0.998 |    0.828 | 0.998 | 0.828 | 0.827 | 0.657 |  0.956 | 0.956 | 0.956 |   0.956
+(3 rows)
+
+=== 3. PIT spot check: 3 calls, sessions as_of-3 .. as_of+5 ===
+ ticker | quarter | call_date  |  session   |   flag   |  tone  | tone_d  | qa_qq
+--------+---------+------------+------------+----------+--------+---------+--------
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-04 |          | 0.4137 | -0.1228 | 0.0527
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-05 |          | 0.4137 | -0.1228 | 0.0527
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-06 | <- as_of | 0.4137 | -0.1228 | 0.0527
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-07 |          | 0.5857 |  0.1720 | 0.0684
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-08 |          | 0.5857 |  0.1720 | 0.0684
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-11 |          | 0.5857 |  0.1720 | 0.0684
+ ABNB   | 2025Q2  | 2025-08-06 | 2025-08-12 |          | 0.5857 |  0.1720 | 0.0684
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-02 |          |        |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-05 |          |        |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-06 | <- as_of |        |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-07 |          | 0.3543 |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-08 |          | 0.3543 |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-09 |          | 0.3543 |         |
+ CEG    | 2025Q1  | 2025-05-06 | 2025-05-12 |          | 0.3543 |         |
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-04 |          | 0.3543 |         |
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-05 |          | 0.3543 |         |
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-06 |          | 0.3543 |         |
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-07 | <- as_of | 0.3543 |         |
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-08 |          | 0.6549 |  0.3007 | 0.0489
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-11 |          | 0.6549 |  0.3007 | 0.0489
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-12 |          | 0.6549 |  0.3007 | 0.0489
+ CEG    | 2025Q2  | 2025-08-07 | 2025-08-13 |          | 0.6549 |  0.3007 | 0.0489
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-10-31 |          | 0.8521 |  0.1115 | 0.1252
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-03 |          | 0.8521 |  0.1115 | 0.1252
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-04 | <- as_of | 0.8521 |  0.1115 | 0.1252
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-05 |          | 0.5182 | -0.3340 | 0.0821
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-06 |          | 0.5182 | -0.3340 | 0.0821
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-07 |          | 0.5182 | -0.3340 | 0.0821
+ PLTR   | 2025Q3  | 2025-11-04 | 2025-11-10 |          | 0.5182 | -0.3340 | 0.0821
+(29 rows)
+
+=== 4. ranges (min/max, count of +-inf / NaN) ===
+             c             |     min      |     max     | bad
+---------------------------+--------------+-------------+-----
+ tone                      |   0.21121703 |   0.9013436 |   0
+ tone_vs_hist              |    -6.004559 |   2.5177636 |   0
+ qa_gap                    |    -1.181366 |    0.247879 |   0
+ qa_gap_vs_hist            |    -4.176509 |    4.774537 |   0
+ uncertainty               | 0.0026767438 | 0.010838563 |   0
+ uncertainty_vs_hist       |   -2.0668442 |   3.1516135 |   0
+ qa_coherence_mean         |     0.435523 |    0.658274 |   0
+ qa_coherence_mean_vs_hist |   -2.0983155 |    1.952728 |   0
+ tone_delta                |  -0.48404026 |  0.31129238 |   0
+ length_delta              |  -0.78570503 |   0.7320394 |   0
+ qa_qq_distance            |     0.026667 |    0.335915 |   0
+ prep_qq_distance          |     0.022841 |    0.309405 |   0
+(12 rows)
+
+
+=== NOTES (agent, 2026-10-02) ===
+- Driver: _scripts/p5_e2e_build_text.py run ABNB,PLTR,CEG = production StepCubeText.run(full=True) with sections= bound to the sample (build-text has no -t).
+  cube_part_text was REPLACED (store.replace) and now holds ONLY the 3 sample tickers (3,780 rows x 12 f_ec_*); rollback = _cache/p5_cube_part_text.dump.
+- All 78 stored calls scored (156 sections) and embedded (24 new PLTR calls, 419 turns; ABNB/CEG were already cached).
+- CEG: the 15 calls of 2008-2011 (predecessor Constellation Energy Group, CIK 0001004440) produce no rows: cube_part_prices has no close_split for CEG before 2022 (availability mask). CEG 2024Q4 (Feb 2025) call is absent from the source, so the 2024-11-04 call expires after 66 sessions (last row 2025-02-11) and 2025Q1 carries no tone_delta / distances (consecutive-quarter rule).
+- PLTR qa_coherence_mean is NULL 2023-05-09..2024-08-05 (249 sessions): those calls have 1 question turn and coherence needs >= 2 exchanges (by design).
+- Code docstring says tone_delta / length_delta are "vs the PRIOR call"; code (earnings_call_features.py:440-444) requires the prior CONSECUTIVE quarter.
+CONCLUSION: chain runs without error; exactly the 12 approved f_ec_* columns; PIT holds on 4 calls (value on as_of = previous call or NULL, new value from the next session); tone in [0.21,0.90], qa_gap in [-1.18,0.25], distances in [0.023,0.336], 0 inf/NaN.

@@ -1,0 +1,98 @@
+......
+=== SANITY CHECK: earnings-call embedding input limits ===
+  cap: 8,000 chars -> 28,000 chars (model accepts 8,191 TOKENS ~= 29k chars)
+        500 chars -> whole
+      8,001 chars -> whole
+     20,000 chars -> whole
+     74,550 chars -> cut to 28,000
+  Live cache effect: 22,730 prepared turns + 1,411 Q&A turns were being
+    truncated; 22,318 of them (98.2%) now pass whole, only 412 + 19 still cut.
+  Question gate raised 20 -> 25 chars, matching answers/prepared:
+    4,309 non-content question turns ('Can you hear me now?') no longer anchor
+    the ec_qa_coherence cosine. Answerless exchanges were already skipped.
+  Validated.
+.EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings:  75%|#######5  | 3/4 [00:00<00:00, 23.33it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 26.16it/s]
+
+=== SANITY CHECK: per-turn earnings-call embeddings from paragraphs (cleaned) ===
+  stored turns -> tags ['prepared', 'question', 'answer', 'answer', 'question', 'answer'], answer_idx [-1, 0, 1, 2, 0, 1]; persons ['John Smith', 'Jane Doe', 'John Smith', 'Sarah Lee', 'Mark Roe', 'Sue Kim'].
+  cleaning: question preamble 'Thanks for taking my question, and congrats' STRIPPED; answer lead-in 'Thanks, Jane.' STRIPPED; IR-flow + courtesy + 'do you have questions' DROPPED.
+  table: 20 qa-turn rows + 4 prepared rows, as_of = call date, model/run_at stamped.
+  coherence 0.647; QoQ prepared drift 2024Q2 0.000 (new AI-platform topic added).
+  incremental: re-run made 0 new OpenAI calls (still 4). Validated with a stub (no spend).
+.EC embeddings:   0%|          | 0/19 [00:00<?, ?it/s]EC embeddings:   5%|5         | 1/19 [00:00<00:02,  7.22it/s]EC embeddings:  11%|#         | 2/19 [00:00<00:02,  8.06it/s]EC embeddings:  21%|##1       | 4/19 [00:00<00:01,  7.60it/s]EC embeddings:  32%|###1      | 6/19 [00:00<00:01,  7.62it/s]EC embeddings:  42%|####2     | 8/19 [00:00<00:01,  8.89it/s]EC embeddings:  53%|#####2    | 10/19 [00:01<00:00,  9.85it/s]EC embeddings:  63%|######3   | 12/19 [00:01<00:00,  9.79it/s]EC embeddings:  74%|#######3  | 14/19 [00:01<00:00, 10.80it/s]EC embeddings:  84%|########4 | 16/19 [00:01<00:00, 11.53it/s]EC embeddings:  95%|#########4| 18/19 [00:01<00:00, 10.52it/s]EC embeddings: 100%|##########| 19/19 [00:01<00:00,  9.81it/s]
+
+=== SANITY CHECK: embedding turns = shared split turns ===
+  19 real calls, 466 stored turns identical to CallSplit.turns; 155/155 analyst turns are questions, 0 management questions. Validated.
+.EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 39.83it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 39.62it/s]
+EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings:  75%|#######5  | 3/4 [00:00<00:00, 25.75it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 27.98it/s]
+
+=== SANITY CHECK: force re-embed reconcile ===
+  injected 1 orphaned turn (seq=999); force re-embed dropped it -> 24 rows == fresh parse 24. Stale turns cannot linger.
+.EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 32.01it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 31.85it/s]
+EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings:  75%|#######5  | 3/4 [00:00<00:00, 29.31it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 32.90it/s]
+
+=== SANITY CHECK: embedding cache provenance ===
+  wrong-model calls are not considered complete; normal resume re-embeds and removes orphaned legacy turns. Validated with a stub.
+.EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 33.62it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 33.43it/s]
+EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings:  50%|#####     | 2/4 [00:00<00:00, 19.99it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 17.82it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 17.95it/s]
+
+=== SANITY CHECK: embedding cache version ===
+  24 rows tagged 'text-embedding-3-small' were re-embedded as 'text-embedding-3-small:speaker-clean-v2' (4 calls). Validated.
+.EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings:  50%|#####     | 2/4 [00:00<00:00, 17.52it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 22.10it/s]
+EC embeddings:   0%|          | 0/4 [00:00<?, ?it/s]EC embeddings: 100%|##########| 4/4 [00:00<00:00, 49.63it/s]
+
+=== SANITY CHECK: empty force re-parse ===
+  a call that now parses to zero turns deletes every previously cached turn. Validated.
+.
+=== SANITY CHECK: embedding comparability ===
+  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.
+.
+=== SANITY CHECK: issuer-level embedding continuity ===
+  OLD 2023Q4 -> NEW 2024Q1 produces both consecutive-quarter distances for issuer E1. Validated.
+..
+=== SANITY CHECK: sentiment KPI streaming ===
+  per-ticker streamed call metrics == whole-cache batch across 15 calls x 4 fields.
+.
+=== SANITY CHECK: current transcript quality dominates stale cache ===
+  incomplete cache and a no_qa split produce no KPI row; the stale cached word count (1) is refreshed to 192 cleaned split words. Validated.
+.
+=== SANITY CHECK: sentiment cache preprocessing version ===
+  legacy raw-text rows are rejected; both cleaned sections are rescored and replace them. Validated.
+.
+=== SANITY CHECK: malformed refresh handoff ===
+  a dated invalidation is acknowledged only after the cube write; an undated marker remains pending. Validated.
+.
+=== SANITY CHECK: re-issued call scored after an engine-less build (F-002) ===
+  engine None: refresh from 2023-02-01, 0 markers acknowledged, models ['yiyanghkust/finbert-tone:speaker-clean-v2:invalid-pending']
+  engine back: both sections scored over their markers, models ['yiyanghkust/finbert-tone:speaker-clean-v2']; the call yields a KPI row. Validated.
+.
+=== SANITY CHECK: malformed correction clears persisted output ===
+  an empty rebuilt panel deletes every stale row from call+1 onward, then acknowledges the durable marker. Validated.
+.
+=== SANITY CHECK: earnings-call features ===
+  panel 975 rows; exactly 12 raw/issuer-history EC features and no peer/cross-sectional variants.
+  leak-free: ticker A first tone signal at 2023-02-02 (call 2023-02-01 + 1 trading day); genuine zero survives for 66 sessions and session 67 is NaN.
+.
+=== SANITY CHECK: earnings-call point-in-time visibility ===
+  (as_of, first visible session) per call from stored paragraphs: {'A': ('2024-05-01', '2024-05-02'), 'B': ('2024-05-03', '2024-05-06')}; never visible on its as_of session. Validated.
+.
+=== SANITY CHECK: earnings-call full/tail equivalence ===
+  a correction behind the default tail refreshed from 2023-02-02 and matched the 3575-row full rebuild bit-for-bit; unchanged rerun was idempotent. Validated.
+.
+=== SANITY CHECK: issuer history ===
+  first four calls are NaN; fifth uses only the prior four with sample std. Validated.
+.
+=== SANITY CHECK: issuer lineage ===
+  OLD/CIK1 -> NEW/CIK2 remains one issuer history through symbol and CIK change. Validated.
+.
+=== SANITY CHECK: strict issuer identity ===
+  half-open tenures preserve OLD->NEW deltas; unknown or ambiguous mappings are excluded. Validated.
+.
+=== SANITY CHECK: missing KPI supersedes stale signal ===
+  the newer valid call preserves its observed tone but resets its absent Q&A gap to NaN. Validated.
+.
+=== SANITY CHECK: unified earnings-call contract ===
+  embedding KPIs are part of the exact 12 raw/history fields; no separate peer/xs panel remains. Validated.
+.
+30 passed, 666 deselected in 32.09s
+exit=0

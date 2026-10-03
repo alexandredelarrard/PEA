@@ -1,0 +1,45 @@
+[35m2026-10-03 00:05:24 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-03 00:05:24 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+scope 490 tickers, 490 with prices; no-price in scope: []
+quarter  in_scope  with_call  share
+ 2024Q1       488        474 0.9713
+ 2024Q2       489        479 0.9796
+ 2024Q3       489        480 0.9816
+ 2024Q4       490        484 0.9878
+ 2025Q1       490        483 0.9857
+ 2025Q2       490        480 0.9796
+ 2025Q3       490        481 0.9816
+ 2025Q4       490        481 0.9816
+ 2026Q1       490        475 0.9694
+ 2026Q2       490        480 0.9796
+ 2026Q3       490        479 0.9776
+  2024Q1 missing (14): BNY, DG, ECHO, ED, EXPD, KR, LOW, NVR, PAYX, PH, ROST, VMRK, WMB, WSM
+  2024Q2 missing (10): BNY, CTAS, ECHO, ED, EXPD, LOW, NVR, ROST, VMRK, WSM
+  2024Q3 missing (9): BNY, ECHO, ED, EXPD, MKC, NKE, NVR, PAYX, VMRK
+  2024Q4 missing (6): BNY, ECHO, ED, EXPD, NVR, VMRK
+  2025Q1 missing (7): BNY, CEG, ECHO, ED, EXPD, NVR, VMRK
+  2025Q2 missing (10): BNY, CINF, CTAS, ECHO, ED, EXPD, L, NVR, PFE, VMRK
+  2025Q3 missing (9): BNY, ECHO, ED, EXPD, L, MKC, NSC, NVR, VMRK
+  2025Q4 missing (9): AWK, BNY, ECHO, ED, EXPD, FCX, L, NVR, VMRK
+  2026Q1 missing (15): AES, BNY, CEG, CHD, CSGP, ED, ERIE, EXPD, FERG, L, NVR, SBAC, TAP, VMRK, WMB
+  2026Q2 missing (10): AES, CTAS, ECHO, ED, EXPD, FDS, FERG, GIS, L, NVR
+  2026Q3 missing (11): ACN, AES, ED, EXPD, FDX, L, MKC, NKE, NVR, TECH, VMRK
+all quarters 2010Q1..2026Q3: min share 0.5721 (2010Q4); quarters below 97%: 49 -> ['2010Q1', '2010Q2', '2010Q3', '2010Q4', '2011Q1', '2011Q2', '2011Q3', '2011Q4', '2012Q1', '2012Q2', '2012Q3', '2012Q4', '2013Q1', '2013Q2', '2013Q3', '2013Q4', '2014Q1', '2014Q2', '2014Q3', '2014Q4', '2015Q1', '2015Q2', '2015Q3', '2015Q4', '2016Q1', '2016Q2', '2016Q3', '2016Q4', '2017Q1', '2017Q2', '2017Q3', '2017Q4', '2018Q1', '2018Q2', '2018Q3', '2018Q4', '2019Q1', '2019Q2', '2019Q3', '2019Q4', '2020Q2', '2020Q4', '2021Q2', '2021Q3', '2021Q4', '2023Q2', '2023Q3', '2023Q4', '2026Q1']
+since 2024: min share 0.9694; below floor: 1
+
+excluding the 3 scoped tickers with no stored call at all (ED, EXPD, NVR): scope 487
+quarter  in_scope  with_call  share
+ 2024Q1       485        474 0.9773
+ 2024Q2       486        479 0.9856
+ 2024Q3       486        480 0.9877
+ 2024Q4       487        484 0.9938
+ 2025Q1       487        483 0.9918
+ 2025Q2       487        480 0.9856
+ 2025Q3       487        481 0.9877
+ 2025Q4       487        481 0.9877
+ 2026Q1       487        475 0.9754
+ 2026Q2       487        480 0.9856
+ 2026Q3       487        479 0.9836
+since 2024 min share 0.9754; all history below floor: 41 quarters (all <= 2023Q4: True)
+CONCLUSION: AC-001 (R-1, >= 97 % per calendar quarter since 2024Q1) -> FAIL on the 490-ticker extractor scope; PASS on the 487-ticker scope R-1 names
+exit=0

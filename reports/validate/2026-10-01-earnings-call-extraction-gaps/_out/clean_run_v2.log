@@ -1,0 +1,11 @@
+[1] sample paragraphs 250245; content starts with full speaker name 27 (0.011%); starts with speaker first-name + ':' header 2 (0.001%)
+    examples: Maureen Borkowski. Yes, at this point in time, we are fully expecting just to go to each county and present the evidence | Sonak Kolar here on for Mark Murphy. Tom, can you get a bit deeper on the new pricing strategy, particularly around deli | Tom Polen. So specifically again, to the U.S. it was referring to more of a competitive player, and this goes back actua | Arnaud Lehmann from Bank of America. So my first question, if I may come back on the U.K. If my calculations are correct | Eric Percher and Josh Raskin here from Nephron. Maybe building on the last question of what a new norm may look like. Yo
+calls 2940; status {'ok': 2880, 'no_qa': 35, 'empty': 24, 'no_prepared': 1}; FinBERT-valid 2880; classify-vs-split mismatches (turns + 1000*finbert words) = 0
+cleaned turns 243518; by role {'answer': 105388, 'question': 83412, 'operator': 39875, 'prepared': 14843}; embedded turns 164543
+
+[2] turn word-length by role (all cleaned turns, whitespace words)
+    role  n_turns    words  q01  q05  q25   q50    q75    q95    q99  pct_turns_le1  pct_turns_le3  pct_turns_le5  pct_turns_le10  pct_words_in_turns_lt5  pct_words_in_turns_lt10  pct_words_in_turns_lt20  pct_words_in_turns_lt40
+operator    39875   890610  4.0  8.0 11.0  14.0   19.0   61.0  112.0           0.08           0.82           2.01           21.74                   0.183                    4.300                   44.056                   58.460
+prepared    14843  9732405  3.0 16.0 69.0 289.0 1053.0 2151.7 3337.0           0.29           1.17           1.61            2.98                   0.005                    0.018                    0.117                    0.529
+question    83412  4235551  1.0  2.0 12.0  44.0   75.0  128.0  185.0           1.95          10.00          16.75           23.79                   0.744                    1.907                    4.014                   13.039
+  answer   105388 11097581  1.0  2.0 17.0  76.0  155.0  319.0  491.0           3.59          13.21          16.21           21.09                   0.309                    0.661                    1.489                    4.001

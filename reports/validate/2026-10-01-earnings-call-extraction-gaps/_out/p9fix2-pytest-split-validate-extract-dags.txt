@@ -1,0 +1,204 @@
+SANITY fixtures: 19 hand-labelled calls present, all 17 named hard/follow-up/Q&A-only-executive cases included
+.SANITY ADP_2026Q3: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY AMZN_2025Q3: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY AVY_2025Q4: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY AXON_2025Q4: status=ok Q&A start=turn 5 'Erik Lapinski' matches the hand label
+.SANITY AXON_2026Q2: status=ok Q&A start=turn 4 'Erik Lapinski' matches the hand label
+.SANITY BMY_2026Q1: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY COIN_2026Q2: status=no_prepared Q&A start=turn 1 'Alesia Haas' matches the hand label
+.SANITY CRH_2025Q2: status=ok Q&A start=turn 7 'Operator' matches the hand label
+.SANITY IBM_2024Q1: status=ok Q&A start=turn 6 'Olympia McNerney' matches the hand label
+.SANITY JNJ_2026Q2: status=ok Q&A start=turn 5 'Operator' matches the hand label
+.SANITY JPM_2024Q3: status=ok Q&A start=turn 2 'Operator' matches the hand label
+.SANITY NOW_2026Q2: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY PLTR_2024Q4: status=ok Q&A start=turn 5 'Ana Soro' matches the hand label
+.SANITY PNW_2024Q4: status=ok Q&A start=turn 4 'Operator' matches the hand label
+.SANITY PSKY_2025Q2: status=no_qa Q&A start=none matches the hand label
+.SANITY TXN_2025Q1: status=ok Q&A start=turn 2 'Operator' matches the hand label
+.SANITY UDR_2026Q2: status=ok Q&A start=turn 5 'Operator' matches the hand label
+.SANITY WELL_2025Q4: status=ok Q&A start=turn 7 'Operator' matches the hand label
+.SANITY WST_2026Q2: status=ok Q&A start=turn 5 'Operator' matches the hand label
+.SANITY ADP_2026Q3: 12 questions, all analyst turns are questions, no management question, 3 named tags right, max answers per question 1
+.SANITY AMZN_2025Q3: 7 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 1
+.SANITY AVY_2025Q4: 8 questions, all analyst turns are questions, no management question, 2 named tags right, max answers per question 2
+.SANITY AXON_2025Q4: 24 questions, all analyst turns are questions, no management question, 4 named tags right, max answers per question 5
+.SANITY AXON_2026Q2: 6 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 3
+.SANITY BMY_2026Q1: 11 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 3
+.SANITY COIN_2026Q2: 6 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 3
+.SANITY CRH_2025Q2: 7 questions, all analyst turns are questions, no management question, 2 named tags right, max answers per question 6
+.SANITY IBM_2024Q1: 8 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 2
+.SANITY JNJ_2026Q2: 5 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 2
+.SANITY JPM_2024Q3: 21 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 3
+.SANITY NOW_2026Q2: 4 questions, all analyst turns are questions, no management question, 2 named tags right, max answers per question 3
+.SANITY PLTR_2024Q4: 2 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 5
+.SANITY PNW_2024Q4: 8 questions, all analyst turns are questions, no management question, 2 named tags right, max answers per question 1
+.SANITY PSKY_2025Q2: 0 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 0
+.SANITY TXN_2025Q1: 7 questions, all analyst turns are questions, no management question, 1 named tags right, max answers per question 2
+.SANITY UDR_2026Q2: 5 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 3
+.SANITY WELL_2025Q4: 9 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 2
+.SANITY WST_2026Q2: 6 questions, all analyst turns are questions, no management question, 0 named tags right, max answers per question 2
+.SANITY ADP_2026Q3: 26 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY AMZN_2025Q3: 17 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY AVY_2025Q4: 22 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY AXON_2025Q4: 79 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY AXON_2026Q2: 17 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY BMY_2026Q1: 36 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY COIN_2026Q2: 15 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY CRH_2025Q2: 30 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY IBM_2024Q1: 24 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY JNJ_2026Q2: 16 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY JPM_2024Q3: 55 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY NOW_2026Q2: 16 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY PLTR_2024Q4: 14 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY PNW_2024Q4: 19 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY PSKY_2025Q2: 5 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY TXN_2025Q1: 18 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY UDR_2026Q2: 16 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY WELL_2025Q4: 25 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY WST_2026Q2: 16 turns carry exactly ['answer_idx', 'exchange_idx', 'person', 'section', 'tag', 'text'] with consistent indices
+.SANITY ADP_2026Q3: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY AMZN_2025Q3: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY AVY_2025Q4: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY AXON_2025Q4: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY AXON_2026Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY BMY_2026Q1: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY COIN_2026Q2: header-free texts, quality gate valid=False agrees with status=no_prepared
+.SANITY CRH_2025Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY IBM_2024Q1: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY JNJ_2026Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY JPM_2024Q3: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY NOW_2026Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY PLTR_2024Q4: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY PNW_2024Q4: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY PSKY_2025Q2: header-free texts, quality gate valid=False agrees with status=no_qa
+.SANITY TXN_2025Q1: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY UDR_2026Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY WELL_2025Q4: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY WST_2026Q2: header-free texts, quality gate valid=True agrees with status=ok
+.SANITY clean_paragraphs: order restored, placeholders/empties dropped, role prefix and zero-width marks stripped, same speaker merged
+.SANITY statuses: empty input -> empty, Q&A from the first turn -> no_prepared, never an exception
+.SANITY label_turns: 'Up next, we have X' is a dropped hand-off, the analyst's follow-up stays a question
+.SANITY CONCLUSION: exact Q&A start and status on 19/19 hand-labelled calls; 155/155 analyst turns tagged question; 0 management turns tagged question
+.SANITY splitter: '3.5%', 'U.S.' and '$1.2' survive byte-identical through every cleaner
+.SANITY prepared: boilerplate/roster/courtesy/hand-off removed, forward guidance and figures kept -> 'Revenue grew 3.5% in the U.S. to $1.2 billion. We expect revenue growth of 5% next year, d'...
+.SANITY qa: only the management answer reaches sentiment; self-intro, courtesy and addressed names removed from turns
+.SANITY hand-offs: pure hand-off dropped, analyst requests and topic transitions kept, hedges kept, names -> 'a colleague'
+.SANITY 10-word minimum: the 5-word question opens no exchange, its answer is not attached, indices stay 0..1
+.
+=== SANITY CHECK: dedicated earnings-call validator ===
+  exact 12-column schema measured from paragraph rows; both calls split ok (rate 1.0, prepared share q05 0.51); the valid call is 100% covered, the short one fails the gate and stays <50%; 2024Q2 has 2/2 roster tickers with a call, 1 valid; as_of matches the release day. Validated.
+.
+=== SANITY CHECK: earnings-call source grain and split quality ===
+  a null as_of (score 9), a call without paragraph 1 (score 6) and a no_qa split (ok rate 0.67 < 0.985, score 7) each file a finding; status=fail. Validated.
+.
+=== SANITY CHECK: one call per (ticker, as_of) ===
+  AAA 2023Q4 + 2024Q4 on 2024-05-15 -> ticker_dates_with_multiple_calls=1
+  BBB two calls on two dates -> not counted; finding score 8; status=fail. Validated.
+.
+=== SANITY CHECK: point-in-time coverage identity ===
+  OLD history follows E1 into NEW, reused OLD/E2 events are excluded (also from the per-quarter table), and BRK-B is structural, not a source failure. Validated.
+.
+=== SANITY CHECK: row-group pruning ===
+  4 groups; scope AAA/BF-B/CCC keeps [0, 1, 2]; since 2026-01-01 keeps [0, 1]
+  OK: symbol min/max drops the out-of-scope group, max(report_date) the stale one
+.
+=== SANITY CHECK: first defeatbeta load ===
+  5 calls, 16 paragraph rows; BF.B -> ['AAA', 'BF-B', 'CCC']
+  as_of == report_date as a date: AAA 2026Q1 -> 2026-04-21
+  OK: raw paragraphs land 1:1, repo ticker form, real call date, NULL transcript id kept
+.
+=== SANITY CHECK: incremental diff ===
+  new revision adds AAA 2026Q2: 1 new call, 6 rows, 2 groups read
+  OK: the diff against stored (ticker, quarter, transcript_id) writes only the new call
+.
+=== SANITY CHECK: re-issued transcript (AC-004) ===
+  AAA 2026Q1 id 12 -> 99, 5 -> 3 paragraphs; BF-B 2026Q2 (NULL id) date 06-05 -> 06-09
+  sentiment + embedding rows of both calls deleted; 4 pending markers from the earlier date
+  OK: old paragraphs gone, derivatives invalidated, the untouched AAA 2010Q1 cache survives
+.
+=== SANITY CHECK: call removed from the source (F-001) ===
+  reconcile over a source without AAA 2010Q1 -> 1 call removed, invalidated [{('AAA', '2010Q1')}]
+  pending marker dated ['2010-04-20']; CCC (no source call left) kept: ['2012Q1', '2012Q2']
+  OK: stored table = deduplicated source for every ticker still in the source
+.
+=== SANITY CHECK: relabel flip (F-001) ===
+  run 1 stores ['2020Q4'] on 2020-03-01; run 2 keeps 2019Q4 there -> stored ['2019Q4', '2020Q1']
+  1 superseded label removed and invalidated; 0 dates with two calls
+  OK: the reconcile restores one call per (ticker, as_of)
+.
+=== SANITY CHECK: incremental run removes nothing (F-001) ===
+  window source without AAA 2026Q1 and CCC -> removed 0, all 16 stored rows kept
+  OK: only a reconcile, which sees every source call, may delete
+.
+=== SANITY CHECK: revision no-op (AC-003) ===
+  same file hash -> no-op, 0 file opens; -F -> full compare, 0 rows
+  adding BF-B to the scope -> full reconcile, 1 new call
+  OK: an unchanged source costs two metadata requests and writes nothing
+.
+=== SANITY CHECK: duplicate (symbol, fiscal_year, fiscal_quarter) rule ===
+  3 AAA 2026Q1 rows -> kept 2026-04-21 / id 6 (latest date, then highest id)
+  OK: measured 0 duplicate keys in the 238,891-call index; the rule is deterministic anyway
+.
+=== SANITY CHECK: fiscal relabel duplicates (one call per ticker and date) ===
+  21 source rows -> 13 calls, 0 dates with two labels
+  DG chain back from 2013Q4: ['2012Q4', '2013Q1', '2013Q2', '2013Q3']
+  EEE 2020-03-01 -> 2019Q4 (chain, not max); RJF -> 2015Q3, 2016Q2
+  OK: each multi-label date keeps next-later ordinal - 1, else the highest ordinal
+.
+=== SANITY CHECK: source schema assertion ===
+  transcripts_id as string -> defeatbeta/yahoo-finance-data/data/US/stock_earning_call_transcripts.p...
+  OK: drift raises before any row is written
+.
+=== SANITY CHECK: live defeatbeta smoke (test store) ===
+  revision cd41c0ac6c9e: 4 row groups, calls {'AAPL': 84, 'MSFT': 83}, 11520 rows
+  as_of 2005-10-13 -> 2026-07-30; re-run no-op=True
+  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; same revision is a no-op
+.F
+=== SANITY CHECK: DAG shape ===
+  max_active_tasks=1; deduce_peers -> 7 steps -> assemble_cube -> cube_status -> trigger_strat_prediction
+  CONCLUSION: strictly sequential; the old `features -g <group>` fan-out and the institutional->superinvestor->fundamental memory serialization are gone. Validated.
+.
+=== SANITY CHECK: extraction DAG sources ===
+  all 26 extraction commands are scheduled
+  OK: the retired Google Trends source is absent and the final gate is present
+.
+=== SANITY CHECK: one freshness inventory ===
+  extraction-status consumes schema.freshness_tables(); no parallel registry exists
+  OK: schema.py is the sole table/cadence/date-column source of truth
+.
+=== SANITY CHECK: extraction retry + gate wiring ===
+  identity producer -> 12 direct consumers; 8-K votes inherit through item/proxy parents
+  fundamentals facts + employees are siblings; merged history waits for both
+  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier
+.
+=== SANITY CHECK: strict EDGAR walks ===
+  all 7 scheduled per-ticker EDGAR fetchers require complete coverage
+  OK: one failed ticker makes the source task retry without advancing its manifest
+.
+=== SANITY CHECK: earnings-call extraction task ===
+  one extract-earnings-calls task in the default pool replaces download + ingest
+  OK: no task or airflow-init pool definition references the scrape pool
+.
+================================== FAILURES ===================================
+_________________ test_dag_chain_is_derived_from_the_registry _________________
+
+    def test_dag_chain_is_derived_from_the_registry():
+        src = _dag_source()
+        tree = ast.parse(src)
+
+        # CHAIN must be assigned from PART_COMMANDS, not from a hand-written list of strings
+        chain_assign = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "CHAIN" for t in n.targets)]
+        assert chain_assign, "the DAG no longer defines CHAIN"
+        rendered = ast.dump(chain_assign[0].value)
+>       assert "PART_COMMANDS" in rendered, (
+            "CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what "
+            f"drifted before (got {ast.unparse(chain_assign[0].value)})"
+        )
+E       AssertionError: CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what drifted before (got ['build-prices', 'build-target', 'build-fundamentals', 'build-momentum', 'build-text', 'build-institutionals', 'build-governance'])
+E       assert 'PART_COMMANDS' in "List(elts=[Constant(value='build-prices'), Constant(value='build-target'), Constant(value='build-fundamentals'), Cons...Constant(value='build-text'), Constant(value='build-institutionals'), Constant(value='build-governance')], ctx=Load())"
+
+tests\dags\test_dag_matches_part_registry.py:37: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/dags/test_dag_matches_part_registry.py::test_dag_chain_is_derived_from_the_registry
+1 failed, 108 passed in 66.81s (0:01:06)
+exit=1

@@ -1,14 +1,16 @@
 """SEC owner-inclusive company-browse Atom feed: page URL, page fetch, entry parse, `Filing`.
 
-The feed lists filings where the queried CIK is the issuer OR a reporting person. Callers own
-their paging and failure policy; this module only builds, fetches and decodes one page.
+The feed lists filings where the queried CIK is the issuer OR a reporting person. This module
+builds, fetches, decodes and pages the feed and holds the shared keep filter; callers own their
+failure policy and early stop.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, cast
+from typing import Any, TypeIs, cast
 from urllib.parse import quote_plus
 from xml.etree import ElementTree
 
@@ -26,6 +28,14 @@ SEC_INSIDER_OWNER_ATOM_URL = (
     "&start={start}&count={count}&output=atom"
 )
 SEC_INSIDER_OWNER_ATOM_PAGE_SIZE = 100
+
+
+class AtomPageError(RuntimeError):
+    """One feed page failed to load or parse; `offset` is its `start`, the cause is chained."""
+
+    def __init__(self, offset: int) -> None:
+        super().__init__(f"SEC Atom page at offset {offset} failed")
+        self.offset = offset
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,40 @@ def parse_atom_entry(entry: ElementTree.Element) -> AtomEntry | None:
         accession=_atom_text(entry, "accession-number"),
         filing_date=filing_date.normalize(),
         file_number=_atom_text(entry, "file-number"),
+    )
+
+
+def iter_atom_pages(
+    cik: str, family: str, date_from: pd.Timestamp | None, date_to: pd.Timestamp, label: str, *, retry: bool
+) -> Iterator[tuple[int, list[AtomEntry | None]]]:
+    """`(offset, decoded entries)` per page, ending after the first short (or empty) page. Lazy: a
+    caller that stops iterating requests no further page. A failed page raises `AtomPageError`
+    chained to its cause; `label` prefixes the retry log key."""
+    start = 0
+    while True:
+        url = atom_page_url(cik, family, date_from, date_to, start)
+        try:
+            entries = fetch_atom_entries(url, f"{label} {family} offset {start}", retry=retry)
+        except Exception as exc:  # noqa: BLE001 -- each caller owns its failure policy
+            raise AtomPageError(start) from exc
+        yield start, [parse_atom_entry(raw) for raw in entries]
+        if len(entries) < SEC_INSIDER_OWNER_ATOM_PAGE_SIZE:
+            return
+        start += SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+
+
+def keep_atom_entry(
+    entry: AtomEntry | None, forms: frozenset[str], done: frozenset[str], date_from: pd.Timestamp | None, date_to: pd.Timestamp
+) -> TypeIs[AtomEntry]:
+    """True for a dated entry of one of `forms` whose accession is known and not in `done`, filed
+    within `[date_from, date_to]` (no lower bound when `date_from` is None)."""
+    return (
+        entry is not None
+        and entry.form in forms
+        and entry.accession is not None
+        and entry.accession not in done
+        and entry.filing_date <= date_to
+        and (date_from is None or entry.filing_date >= date_from)
     )
 
 

@@ -26,10 +26,11 @@ import pandas as pd
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.sec_atom import (
     SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
+    AtomEntry,
+    AtomPageError,
     atom_filing,
-    atom_page_url,
-    fetch_atom_entries,
-    parse_atom_entry,
+    iter_atom_pages,
+    keep_atom_entry,
 )
 from src.utils.string import pad_cik, pad_cik_series
 
@@ -576,41 +577,33 @@ def _collect_window(query: _ScheduleQuery, cik: str, family: str, window_start: 
     Any page failure raises `ScheduleDiscoveryIncompleteError`; after a split the children's candidates replace the pages read.
     """
     result = WindowResult()
-    start = 0
-    while True:
-        if start >= SCHEDULE_ATOM_SAFE_OFFSET:
-            return _split_window(query, cik, family, window_start, window_end, start, result)
-        url = atom_page_url(cik, family, window_start, window_end, start)
-        try:
-            entries = fetch_atom_entries(url, f"{query.ticker} {family} offset {start}", retry=True)
-        except Exception as exc:  # noqa: BLE001 -- completeness is the contract
-            raise ScheduleDiscoveryIncompleteError(
-                f"{query.ticker}: schedule search failed for subject CIK {cik}, form {family}, offset {start}: {exc!r}"
-            ) from exc
-        result.pages += 1
-        if not entries:
-            break
-        for raw in entries:
-            entry = parse_atom_entry(raw)
-            if (
-                entry is None
-                or entry.form not in query.target_forms
-                or entry.accession is None
-                or entry.accession in query.done_accessions
-                or entry.accession in result.candidates
-                or entry.filing_date > window_end
-                or entry.filing_date < window_start
-            ):
-                continue
-            # Only subject-issuer rows carry a file number; the SGML subject-CIK guard stays the final authority.
-            if entry.file_number is None:
-                result.owner_rows_excluded += 1
-                continue
-            result.candidates[entry.accession] = atom_filing(entry, cik=cik, company=query.ticker)
-        if len(entries) < SEC_INSIDER_OWNER_ATOM_PAGE_SIZE:
-            break
-        start += SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+    try:
+        for offset, entries in iter_atom_pages(cik, family, window_start, window_end, query.ticker, retry=True):
+            result.pages += 1
+            _absorb_page(query, cik, entries, window_start, window_end, result)
+            next_offset = offset + SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
+            if len(entries) == SEC_INSIDER_OWNER_ATOM_PAGE_SIZE and next_offset >= SCHEDULE_ATOM_SAFE_OFFSET:
+                return _split_window(query, cik, family, window_start, window_end, next_offset, result)
+    except AtomPageError as exc:  # completeness is the contract
+        raise ScheduleDiscoveryIncompleteError(
+            f"{query.ticker}: schedule search failed for subject CIK {cik}, form {family}, offset {exc.offset}: {exc.__cause__!r}"
+        ) from exc.__cause__
     return result
+
+
+def _absorb_page(
+    query: _ScheduleQuery, cik: str, entries: list[AtomEntry | None], window_start: pd.Timestamp, window_end: pd.Timestamp, result: WindowResult
+) -> None:
+    """Add one page's kept subject-issuer entries to `result.candidates` (first seen wins) and count
+    the owner-side rows it excludes."""
+    for entry in entries:
+        if not keep_atom_entry(entry, query.target_forms, query.done_accessions, window_start, window_end) or entry.accession in result.candidates:
+            continue
+        # Only subject-issuer rows carry a file number; the SGML subject-CIK guard stays the final authority.
+        if entry.file_number is None:
+            result.owner_rows_excluded += 1
+            continue
+        result.candidates[cast(str, entry.accession)] = atom_filing(entry, cik=cik, company=query.ticker)
 
 
 def _split_window(

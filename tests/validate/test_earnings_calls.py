@@ -151,7 +151,7 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
     sqlite_store.save(
         Tables.entity_lineage,
-        pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E2"]}),
+        pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E2"], "role": "cik_window", "symbol": "", "valid_from": "1900-01-01"}),
     )
     sqlite_store.save(
         Tables.symbol_tenure,

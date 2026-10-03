@@ -1,11 +1,11 @@
 """Which company is this row about: the `Identity` resolver over two separate axes.
 
 Axis A, `entity_lineage`: which CIKs are the same company (the curated register is folded in there,
-never parsed here). Axis B, `symbol_tenure`: who held symbol X on date d. The CIK predicate is
-`owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))` and does not read tenure; tenure
-serves the D19 cross-check and CIK-less symbol/date sources. Invariant violations raise at load,
-never per row (an unresolvable row is quarantined by the caller). An unknown CIK is its own
-singleton entity `E{cik}`.
+never parsed here; several dated rows per CIK, one entity). Axis B, `symbol_tenure`: who held symbol X
+on date d. The CIK predicate is `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))` and
+does not read tenure; tenure serves the D19 cross-check and CIK-less symbol/date sources. Invariant
+violations raise at load, never per row (an unresolvable row is quarantined by the caller). An unknown
+CIK is its own singleton entity `E{cik}`.
 """
 
 from __future__ import annotations
@@ -22,11 +22,17 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.entity_lineage import (
     ROSTER_COLUMNS,
+    IdentityError,
     TwoUniverseTickersOneEntityError,
+    UniverseEntityDisagreementError,
+    check_one_entity_per_cik,
     entity_by_cik_map,
     entity_or_singleton,
     load_d19_allowlist,
     roster_cik_map,
+)
+from src.data_extract.utils.common.entity_lineage import (
+    CikInTwoEntitiesError as CikInTwoEntitiesError,  # re-exported: raised by `check_one_entity_per_cik`
 )
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_store.schema import Tables
@@ -35,20 +41,8 @@ from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 logger = logging.getLogger(__name__)
 
 
-class IdentityError(ValueError):
-    """Base of every identity failure, so one `except` covers the whole layer."""
-
-
 class UnknownUniverseTickerError(IdentityError):
     """`universe_entity(T)` for a ticker absent from `sp500_tickers`, or holding no CIK."""
-
-
-class CikInTwoEntitiesError(IdentityError):
-    """One CIK carries two `entity_id`s; guards the builder, since the table's PK is `cik`."""
-
-
-class UniverseEntityDisagreementError(IdentityError):
-    """D19: the roster CIK and `symbol_tenure` name different entities for one ticker, with no D19 allow-list entry."""
 
 
 class AmbiguousSymbolTenureError(IdentityError):
@@ -444,7 +438,7 @@ def build_identity(
     `TwoUniverseTickersOneEntityError` is asserted before the reverse map is usable, then D19 is checked.
     """
     _require_tables(lineage, tenure, roster)
-    _check_one_entity_per_cik(lineage)
+    check_one_entity_per_cik(lineage)
     entity_by_cik = entity_by_cik_map(lineage)
     roster_cik = roster_cik_map(roster)
     ticker_by_entity = _ticker_by_entity(roster_cik, entity_by_cik, lineage)
@@ -488,19 +482,6 @@ def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.Data
         raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")
 
 
-def _check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
-    """Raise when one CIK carries two entity_ids, which would make `entity_of` order-dependent."""
-    per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "entity_id": lineage["entity_id"].astype(str)}).drop_duplicates()
-    clashes = per_cik[per_cik.duplicated("cik", keep=False)]
-    if not clashes.empty:
-        raise CikInTwoEntitiesError(
-            f"identity: {clashes['cik'].nunique()} CIK(s) carry two entity_ids in "
-            f"entity_lineage -- {clashes.sort_values('cik').to_dict('records')}. The table's "
-            "primary key is `cik`, so this cannot come from the database; it is a builder "
-            "bug, and it would make `entity_of` order-dependent."
-        )
-
-
 def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str, str], lineage: pd.DataFrame) -> dict[str, str]:
     """`{entity_id: its one universe ticker}`; raises when an entity holds two universe tickers."""
     by_entity: dict[str, list[str]] = {}
@@ -513,7 +494,9 @@ def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str,
     detail = []
     for entity, tickers in sorted(collisions.items()):
         joined = lineage[entities == entity]
-        rows = "; ".join(f"{pad_cik(r.cik)} via {r.source}" for r in joined.itertuples())
+        rows = "; ".join(
+            f"{pad_cik(r.cik)} via {getattr(r, 'oracle', None) or getattr(r, 'source', '')}" for r in joined.drop_duplicates("cik").itertuples()
+        )
         detail.append(f"{entity} holds " + ", ".join(f"{t} (roster CIK {roster_cik[t]})" for t in tickers) + f" -- joined by: {rows}")
     raise TwoUniverseTickersOneEntityError(
         "identity: " + " | ".join(detail) + ". The reverse map is a dict, so one of these "

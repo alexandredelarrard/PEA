@@ -172,37 +172,55 @@ class Tables:
         read_columns=("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence"),
     )
 
-    # Which CIKs are THE SAME ECONOMIC COMPANY -- axis A of the identity problem, and the
-    # table the `owns()` predicate actually reads. `entity_id` is `"E" + the oldest CIK in
-    # the group`: a natural key with no allocation state, so a full re-derive reproduces the
-    # same ids.
+    # WHICH CIKs AND SYMBOLS ARE ONE ECONOMIC COMPANY, AND WHEN -- the dated identity verdict and
+    # the only identity input of the fetchers (`symbol_tenure` is its evidence). `entity_id` is
+    # `"E" + the oldest CIK in the group`: a natural key with no allocation state, so a full
+    # re-derive reproduces the same ids.
     #
-    # ⚠ ONLY NON-SINGLETON GROUPS AND THE ROSTER CIKs ARE STORED. A CIK with no row IS its
-    # own entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has
-    # never seen: absence is a verdict here, not a gap. The roster CIKs are stored even when
-    # singleton so the table states a verdict for all 500 rather than relying on the default.
+    # Rows by `role`: `cik_window` (that CIK's consolidating filings belong to the entity over
+    # `[valid_from, valid_to)`), `cik_event` (event forms only: co-registrant subsidiaries, CIKs with
+    # no dated window) and `symbol` (a dated symbol interval; `symbol` is '' on the CIK rows).
+    # `status` in {curated, corroborated, single_source, noise, conflict}; `sources` names the
+    # evidence (register, manual, form345, dei, roster); `oracle` the membership oracle (register,
+    # manual, symbol_handoff, owner_overlap, roster). `confidence` holds the owner-overlap jaccard and
+    # is RECORDED, NEVER READ.
     #
-    # ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5
-    # carry an issuer CIK and no class, so a class-level id could not be assigned to an
-    # insider row at all. Only one class per CIK is ever in the universe anyway --
-    # `_dedupe_share_classes` keeps the longest symbol and `configs.yml` excludes the rest.
+    # ⚠ AN OPEN START IS STORED AS 1900-01-01 (`valid_from` is a PK column); an open end is NULL.
+    # "Current" = `role='symbol'` and `valid_to` IS NULL. One CIK belongs to one entity: the PK no
+    # longer guarantees it, the build asserts it (`CikInTwoEntitiesError`).
     #
-    # `source` is the oracle that decided, highest priority first: `register` (the 16
-    # hand-evidenced `registrant_cutover.json` chains), `manual` (the curated adjudications
-    # in `entity_lineage_manual.json`), `owner_overlap` (do the same reporting owners appear
-    # on both CIKs' Forms 3/4/5), `roster` (a singleton roster CIK). `confidence` carries the
-    # owner-overlap jaccard and is RECORDED, NEVER READ -- a contested case is decided by
-    # hand in the curated layer, not by a threshold at read time.
+    # Only universe entities and hand-adjudicated CIKs are stored. A CIK with no row IS its own
+    # entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has never seen.
+    # `scope_changed_at` (per ticker) is the build time at which that ticker's CIK rows last changed.
     #
-    # ⚠ `sharadar_permaticker` IS NOT A SOURCE HERE, AND THAT IS A MEASURED RESULT, NOT AN
-    # OVERSIGHT. Sharadar mints a NEW permaticker for a delisted predecessor (DuPont E I is
-    # `DD1`/199769 against DuPont de Nemours' 199776), so across the 621 candidate CIKs
-    # exactly ZERO permatickers are shared by two of them, and on the 8 known predecessor
-    # pairs permaticker says DIFFERENT 4 times and is absent 4 times. It is used as a
-    # CROSS-CHECK on ticker->CIK instead, where its `secfilings` URL covers 17,867/17,867
-    # rows. The table therefore carries no Sharadar-licensed content at all.
+    # ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5 carry an
+    # issuer CIK and no class.
+    #
+    # ⚠ `sharadar_permaticker` IS NOT A SOURCE HERE, AND THAT IS A MEASURED RESULT: Sharadar mints a
+    # NEW permaticker for a delisted predecessor, so it cannot join two CIKs. The table carries no
+    # Sharadar-licensed content.
     entity_lineage = Table(
-        "entity_lineage", ("cik",), KIND_REFERENCE, ticker_col=None, read_columns=("cik", "entity_id", "source", "confidence", "evidence")
+        "entity_lineage",
+        ("cik", "role", "symbol", "valid_from"),
+        KIND_REFERENCE,
+        ticker_col=None,
+        date_type_cols=("valid_from", "valid_to"),
+        read_columns=(
+            "entity_id",
+            "canonical_ticker",
+            "cik",
+            "role",
+            "symbol",
+            "valid_from",
+            "valid_to",
+            "status",
+            "sources",
+            "oracle",
+            "confidence",
+            "n_observations",
+            "evidence",
+            "scope_changed_at",
+        ),
     )
 
     # ----------------------------------------------------------------- #

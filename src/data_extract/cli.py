@@ -496,7 +496,7 @@ def insider_transactions(
     "approved_rekeys",
     multiple=True,
     metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
-    help="Acknowledge one exact older-CIK entity-id change reported by the safety manifest.",
+    help="Apply one exact older-CIK entity-id change that the build excluded and backlogged (WARNING log).",
 )
 def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """Builds `symbol_tenure` then `entity_lineage` together: lineage candidates are read off tenure, so a stale

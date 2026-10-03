@@ -89,9 +89,33 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
         Tables.entity_lineage,
         pd.DataFrame(
             [
-                {"cik": "0000000100", "entity_id": "E0000000100", "source": "register", "confidence": None, "evidence": "t"},
-                {"cik": "0000000200", "entity_id": "E0000000100", "source": "register", "confidence": None, "evidence": "t"},
-                {"cik": "0000000900", "entity_id": "E0000000900", "source": "roster", "confidence": None, "evidence": "t"},
+                {
+                    "cik": "0000000100",
+                    "entity_id": "E0000000100",
+                    "role": "cik_window",
+                    "symbol": "",
+                    "valid_from": "1900-01-01",
+                    "oracle": "register",
+                    "evidence": "t",
+                },
+                {
+                    "cik": "0000000200",
+                    "entity_id": "E0000000100",
+                    "role": "cik_window",
+                    "symbol": "",
+                    "valid_from": "2015-01-01",
+                    "oracle": "register",
+                    "evidence": "t",
+                },
+                {
+                    "cik": "0000000900",
+                    "entity_id": "E0000000900",
+                    "role": "cik_window",
+                    "symbol": "",
+                    "valid_from": "1900-01-01",
+                    "oracle": "roster",
+                    "evidence": "t",
+                },
             ]
         ),
     )

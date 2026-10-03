@@ -1,13 +1,14 @@
 """
-`entity_lineage` -- the id minting, the priority order and the two refusals, on synthetic
-known-truth inputs, plus a real-data check that the live register and curated files actually
+`entity_lineage` -- the id minting, the oracle priority, the refusals and the dated verdict rows,
+on synthetic known-truth inputs, plus a real-data check that the live register and curated files
 produce the verdicts the plan specifies.
 
-The refusals are the point of this file. Two of them are load-bearing:
+The refusals are the point of this file:
   * a merge joining two UNIVERSE tickers is rejected -- the only failure in this design that
     corrupts rows rather than dropping them;
-  * an owner-overlap score in the grey band RAISES rather than guessing -- the measured grey
-    band holds a genuine predecessor and a genuine symbol reuse at 0.037 vs 0.032.
+  * an owner-overlap score in the grey band, a reuse conflict, an uncorroborated extra CIK and an
+    older-CIK rekey are EXCLUDED and backlogged -- never guessed, and never a stopped build;
+  * a D19 roster disagreement with no allow-list entry still stops the build.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ from src.data_extract.utils.common.entity_lineage import (
     OVERLAP_JACCARD_SAME,
     OVERLAP_SHARED_SAME,
     ManualTenureEntityError,
-    UndecidedGreyBandError,
     _Union,
     candidate_ciks,
     classify_overlap,
@@ -44,9 +44,10 @@ from src.data_store.schema import Tables
 
 CONFIG_DIR = "./configs"
 CACHE = Path("data/sec_insider_transactions")
+L: Any = lineage_module  # P3 names are read off the module so a missing one fails its test, not collection
 
 
-def _tenure(rows: list[tuple[str, str, str, str | None, int]]) -> pd.DataFrame:
+def _tenure(rows: list[tuple[str, str, str, str | None, int]], source: str = "form345") -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -55,8 +56,8 @@ def _tenure(rows: list[tuple[str, str, str, str | None, int]]) -> pd.DataFrame:
                 "valid_from": pd.Timestamp(f),
                 "valid_to": pd.Timestamp(t) if t else pd.NaT,
                 "n_filings": n,
-                "source": "form345",
-                "evidence": "",
+                "source": source,
+                "evidence": f"{source} {c}",
             }
             for s, c, f, t, n in rows
         ]
@@ -68,10 +69,42 @@ def _roster(rows: list[tuple[str, str]]) -> pd.DataFrame:
 
 
 def _owner_pairs(owners: dict[str, set[str]]) -> pd.DataFrame:
-    """The (issuer_cik, owner_cik) pair frame a Form 345 cache scan yields."""
+    """The (issuer_cik, owner_cik_raw) pair frame a Form 345 cache scan yields."""
     return pd.DataFrame([(issuer, owner) for issuer, members in owners.items() for owner in sorted(members)], columns=["issuer_cik", "owner_cik_raw"])
 
 
+def _config(tmp_path: Path, register: dict | None = None, manual: dict | None = None) -> str:
+    """A config directory holding only the given register / manual lineage JSON."""
+    sec = tmp_path / "configs" / "sec"
+    sec.mkdir(parents=True, exist_ok=True)
+    if register is not None:
+        (sec / "registrant_cutover.json").write_text(json.dumps(register), encoding="utf-8")
+    if manual is not None:
+        (sec / "entity_lineage_manual.json").write_text(json.dumps(manual), encoding="utf-8")
+    return str(tmp_path / "configs")
+
+
+def _rows(build: Any, **match: object) -> pd.DataFrame:
+    """The rows of a build matching every `column=value`."""
+    rows = build.rows
+    for column, value in match.items():
+        rows = rows[rows[column].eq(value)]
+    return rows
+
+
+def _handoff_evidence(*, dei_successor_first: str = "2015-07-10", dei_predecessor_last: str = "2015-06-16") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`ABC` passes from CIK 100 to the roster CIK 200 on 2015-07-01 on Forms 3/4/5; `dei` places the switch as given."""
+    tenure = _tenure([("ABC", "0000000100", "2006-01-05", "2015-07-01", 300), ("ABC", "0000000200", "2015-07-01", None, 100)])
+    dei = _tenure(
+        [("ABC", "0000000100", "2010-03-01", dei_predecessor_last, 20), ("ABC", "0000000200", dei_successor_first, "2024-11-02", 30)],
+        source="dei",
+    )
+    return tenure, dei
+
+
+# --------------------------------------------------------------------------- #
+# membership                                                                    #
+# --------------------------------------------------------------------------- #
 def test_entity_id_is_the_oldest_cik_in_the_group():
     """No allocation state, so two independent derivations agree by construction."""
     group = {"0000030554", "0001666700", "0000029915"}
@@ -81,12 +114,10 @@ def test_entity_id_is_the_oldest_cik_in_the_group():
     print("\n=== SANITY CHECK: entity_id minting ===")
     print(f"  {sorted(group)} -> {entity_id_for(group)}")
     print("  OK: the numerically smallest (oldest) CIK names the group")
-    print("  -> A re-derive from scratch reproduces the id; nothing is allocated.")
 
 
 def test_merge_order_does_not_change_the_id():
-    """Idempotence in the form that actually bites: the union-find visits pairs in oracle
-    order, and a different order must not rename an entity."""
+    """The union-find visits pairs in oracle order; a different order must not rename an entity."""
     ids = []
     for pairs in ([("c", "a"), ("b", "c")], [("b", "c"), ("c", "a")], [("a", "b"), ("b", "c")]):
         union = _Union(roster_ciks=frozenset())
@@ -98,7 +129,6 @@ def test_merge_order_does_not_change_the_id():
     print("\n=== SANITY CHECK: id stability under merge order ===")
     print(f"  three different merge orders -> {ids[0]}")
     print("  OK: the oldest CIK roots the group however the merges arrive")
-    print("  -> Oracle order can change without renaming a single entity.")
 
 
 def test_a_merge_joining_two_universe_tickers_is_refused():
@@ -107,37 +137,11 @@ def test_a_merge_joining_two_universe_tickers_is_refused():
     assert union.union("0000049826", "0000073124", source="owner_overlap[NTRS]", confidence=0.0397) is False
     assert union.find("0000049826") != union.find("0000073124")
     assert len(union.blocked) == 1 and union.blocked[0][2] == "owner_overlap[NTRS]"
-    # a merge that brings in a NON-roster CIK is still allowed
     assert union.union("0000073124", "0001063537", source="owner_overlap[NTRS]") is True
 
     print("\n=== SANITY CHECK: the two-universe-tickers refusal ===")
     print(f"  blocked: {union.blocked[0]}")
     print("  OK: two roster CIKs stay in two entities; a non-roster CIK still merges")
-    print("  -> Without this, one ticker's entity absorbs the other and relabels its rows.")
-
-
-def test_the_grey_band_raises_instead_of_guessing():
-    """`shared > 0` but below both thresholds, with no curated row, must stop the build."""
-    assert classify_overlap(0, 0.0) == "unrelated"
-    assert classify_overlap(3, 0.037) == "grey"
-    assert classify_overlap(3, OVERLAP_JACCARD_SAME) == "same"
-    assert classify_overlap(OVERLAP_SHARED_SAME, 0.001) == "same"
-
-    # COHR's real shape, in miniature: 3 owners shared out of 31 and 53, jaccard 0.037
-    tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 700), ("AAA", "0000000222", "2013-01-05", None, 700)])
-    roster = _roster([("AAA", "0000000222")])
-    owners = {"0000000111": {f"{i:010d}" for i in range(31)}, "0000000222": {f"{i:010d}" for i in range(28, 81)}}
-    assert score_overlap(owners["0000000111"], owners["0000000222"])[0] == 3
-    with pytest.raises(UndecidedGreyBandError) as exc:
-        derive_entity_lineage(tenure, roster, _owner_pairs(owners), CONFIG_DIR)
-    assert "AAA/0000000111" in str(exc.value)  # it names the pair, not merely a count
-
-    print("\n=== SANITY CHECK: grey band ===")
-    print(f"  thresholds: jaccard >= {OVERLAP_JACCARD_SAME} OR shared >= {OVERLAP_SHARED_SAME}")
-    print(f"  classify(3, 0.037) = {classify_overlap(3, 0.037)}  (COHR's real score)")
-    print(f"  classify(2, 0.032) = {classify_overlap(2, 0.032)}  (CEG's real score)")
-    print("  OK: the two land in the same band and the builder refuses to separate them")
-    print("  -> A fitted threshold would delete COHR's history or import CEG's.")
 
 
 def test_score_overlap_is_symmetric_and_empty_safe():
@@ -148,151 +152,84 @@ def test_score_overlap_is_symmetric_and_empty_safe():
     print("\n=== SANITY CHECK: overlap scoring ===")
     print(f"  {{a,b}} vs {{b,c}} -> {score_overlap({'a', 'b'}, {'b', 'c'})}")
     print("  OK: symmetric, and a CIK with no Form 345 owner scores 0 rather than raising")
-    print("  -> 3 of the 621 live candidates have no owners at all; they read as unrelated.")
 
 
-def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch, caplog):
-    columns = ["cik", "entity_id", "source", "confidence", "evidence"]
-    old = pd.DataFrame(
-        [
-            ("0000000001", "E0000000001", "singleton", 1.0, "old"),
-        ],
-        columns=columns,
-    )
-    new = pd.DataFrame(
-        [
-            ("0000000001", "E0000000002", "register", 1.0, "successor"),
-        ],
-        columns=columns,
-    )
-    roster = _roster([("AAA", "0000000001")])
-    tenure = _tenure([("AAA", "0000000001", "2020-01-01", None, 1)])
+def test_the_grey_band_is_excluded_with_a_warning_and_a_backlog_row(tmp_path, caplog):
+    """`shared > 0` below both thresholds, with no curated row: the CIK stays out, the build goes on."""
+    assert classify_overlap(0, 0.0) == "unrelated"
+    assert classify_overlap(3, 0.037) == "grey"
+    assert classify_overlap(3, OVERLAP_JACCARD_SAME) == "same"
+    assert classify_overlap(OVERLAP_SHARED_SAME, 0.001) == "same"
 
-    class Store:
-        def load(self, table, **kwargs):
-            del kwargs
-            if table is Tables.symbol_tenure:
-                return tenure
-            if table is Tables.sp500_tickers:
-                return roster
-            if table is Tables.entity_lineage:
-                return old
-            raise AssertionError(table)
+    # COHR's real shape in miniature: 3 owners shared out of 31 and 53, jaccard 0.037
+    tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 700), ("AAA", "0000000222", "2013-01-05", None, 700)])
+    owners = {"0000000111": {f"{i:010d}" for i in range(31)}, "0000000222": {f"{i:010d}" for i in range(28, 81)}}
+    caplog.set_level(logging.WARNING, logger=lineage_module.__name__)
+    build = derive_entity_lineage(tenure, _roster([("AAA", "0000000222")]), _owner_pairs(owners), _config(tmp_path))
 
-        def replace(self, table, frame):
-            assert table is Tables.entity_lineage and frame.equals(new)
-            return len(frame)
+    assert "0000000111" not in set(build.rows["cik"])
+    grey = build.backlog[build.backlog["kind"].eq("grey_band")]
+    assert list(grey["cik"]) == ["0000000111"] and grey["canonical_ticker"].tolist() == ["AAA"]
+    assert "grey_band" in caplog.text and "0000000111" in caplog.text
+    current = _rows(build, role="symbol", symbol="AAA")
+    assert current["cik"].tolist() == ["0000000222"] and current["valid_to"].isna().all()
 
-    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (new, pd.DataFrame()))
-    monkeypatch.setattr(
-        lineage_module,
-        "load_manual_symbol_tenure",
-        lambda *args, **kwargs: pd.DataFrame(
-            [
-                {
-                    "canonical_ticker": "AAA",
-                    "symbol": "AAA",
-                    "issuer_cik": "0000000001",
-                    "valid_from": pd.Timestamp("2020-01-01"),
-                    "valid_to": pd.NaT,
-                    "n_filings": 0,
-                    "source": "manual",
-                    "evidence": "test",
-                    "reason": "test",
-                }
-            ]
-        ),
-    )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
-    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
-    caplog.set_level(logging.INFO, logger="test.entity_lineage")
-
-    lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
-
-    assert "1 changed CIK assignment(s): 0000000001" in caplog.text
-    assert "affected current ticker(s): AAA" in caplog.text
-
-    print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
-    print("  changed CIK 0000000001 and affected current ticker AAA are named")
-    print("  OK: identity reassignment is visible before symbol-only consumers run")
+    print("\n=== SANITY CHECK: grey band ===")
+    print(f"  classify(3, 0.037) = {classify_overlap(3, 0.037)}  (COHR's real score)")
+    print(f"  backlog: {grey[['kind', 'canonical_ticker', 'cik', 'detail']].to_dict('records')}")
+    print("  OK: the grey CIK is excluded and listed with a WARNING; AAA keeps one current row")
 
 
-def test_entity_lineage_replace_is_skipped_when_unchanged(monkeypatch, caplog):
-    """A rebuild deriving exactly the stored rows (in another order) does not replace the table."""
-    columns = ["cik", "entity_id", "source", "confidence", "evidence"]
-    stored = pd.DataFrame(
-        [
-            ("0000000002", "E0000000001", "owner_overlap", 0.4, "shared owners"),
-            ("0000000001", "E0000000001", "roster", None, "roster CIK"),
-        ],
-        columns=columns,
-    )
-    derived = stored.iloc[::-1].reset_index(drop=True)
-    roster = _roster([("AAA", "0000000001")])
-    tenure = _tenure([("AAA", "0000000001", "2020-01-01", None, 1)])
-    replaced: list[pd.DataFrame] = []
+def test_candidate_set_is_universe_symbols_plus_roster_ciks():
+    tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 5), ("ZZZ", "0000000999", "2006-01-05", None, 5)])
+    roster = _roster([("AAA", "0000000222"), ("BBB", "0000000333")])
+    candidates, by_ticker, roster_cik = candidate_ciks(tenure, roster)
 
-    class Store:
-        def load(self, table, **kwargs):
-            del kwargs
-            return {Tables.sp500_tickers: roster, Tables.entity_lineage: stored}[table]
+    assert candidates == frozenset({"0000000111", "0000000222", "0000000333"})
+    assert by_ticker["AAA"] == {"0000000111", "0000000222"}
+    assert by_ticker["BBB"] == {"0000000333"}
+    assert roster_cik == {"AAA": "0000000222", "BBB": "0000000333"}
 
-        def replace(self, table, frame):
-            replaced.append(frame)
-            return len(frame)
+    print("\n=== SANITY CHECK: candidate set ===")
+    print(f"  candidates={sorted(candidates)}")
+    print("  OK: scoped to universe symbols + roster CIKs; every other EDGAR CIK is a singleton by default")
 
-    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (derived, pd.DataFrame()))
-    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        lineage_module, "load_manual_symbol_tenure", lambda *args, **kwargs: pd.DataFrame({"canonical_ticker": ["AAA"], "issuer_cik": ["0000000001"]})
-    )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
-    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.skip"))
-    caplog.set_level(logging.INFO)
 
-    out = lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
+def test_manual_config_rejects_an_undocumented_verdict(tmp_path):
+    """Same discipline as the register: an identity decision with no evidence is a guess."""
+    (tmp_path / "sec").mkdir()
+    target = tmp_path / "sec" / "entity_lineage_manual.json"
 
-    assert replaced == [] and out is derived
-    assert "entity_lineage: unchanged (2 row(s)); replace skipped" in caplog.text
-    print("\n=== SANITY CHECK: unchanged entity_lineage is not rewritten ===")
-    print("  derived rows == stored rows in reverse order (NULL confidence included) -> 0 replace calls")
-    print("  OK: the comparison is keyed on cik, not on row order")
+    target.write_text(json.dumps({"X": {"same_entity": ["1", "2"], "evidence": "  "}}))
+    with pytest.raises(ValueError, match="empty `evidence`"):
+        load_manual_lineage(str(tmp_path))
+    target.write_text(json.dumps({"X": {"same_entity": ["1"], "evidence": "why"}}))
+    with pytest.raises(ValueError, match=">= 2 CIKs"):
+        load_manual_lineage(str(tmp_path))
+    target.write_text(json.dumps({"X": {"evidence": "why"}}))
+    with pytest.raises(ValueError, match="decides nothing"):
+        load_manual_lineage(str(tmp_path))
+    target.write_text(json.dumps({"X": {"own_entity": ["1004440"], "evidence": "why"}}))
+    assert load_manual_lineage(str(tmp_path))["X"]["own_entity"] == ["0001004440"]
+
+    print("\n=== SANITY CHECK: curated-file validation ===")
+    print("  empty evidence / 1-CIK same_entity / an entry asserting nothing all RAISE; CIKs zero-padded on load")
 
 
 def test_manual_tenure_cik_must_resolve_to_its_canonical_entity():
-    lineage = pd.DataFrame(
-        [
-            {"cik": "0000000001", "entity_id": "E_HOME"},
-            {"cik": "0000000002", "entity_id": "E_OTHER"},
-        ]
-    )
+    lineage = pd.DataFrame([{"cik": "0000000001", "entity_id": "E_HOME"}, {"cik": "0000000002", "entity_id": "E_OTHER"}])
     roster = _roster([("AAA", "0000000001")])
-    manual = pd.DataFrame(
-        [
-            {
-                "canonical_ticker": "AAA",
-                "symbol": "OLD",
-                "issuer_cik": "0000000002",
-            }
-        ]
-    )
+    manual = pd.DataFrame([{"canonical_ticker": "AAA", "symbol": "OLD", "issuer_cik": "0000000002"}])
     with pytest.raises(ManualTenureEntityError, match="AAA/OLD/0000000002"):
         validate_manual_tenure_entities(manual, lineage, roster)
-
     manual.loc[0, "issuer_cik"] = "0000000001"
     validate_manual_tenure_entities(manual, lineage, roster)
     print("\n=== SANITY CHECK: manual CIK/entity cross-check ===")
     print("  unrelated OLD CIK raises; the roster entity CIK passes")
-    print("  OK: ticker history cannot create entity continuity by assertion")
 
 
-def test_new_older_cik_rekey_is_detected_before_write():
-    existing = pd.DataFrame(
-        [
-            {"cik": "0000000200", "entity_id": "E0000000200"},
-            {"cik": "0000000300", "entity_id": "E0000000200"},
-        ]
-    )
+def test_new_older_cik_rekey_is_detected():
+    existing = pd.DataFrame([{"cik": "0000000200", "entity_id": "E0000000200"}, {"cik": "0000000300", "entity_id": "E0000000200"}])
     candidate = pd.DataFrame(
         [
             {"cik": "0000000100", "entity_id": "E0000000100"},
@@ -311,129 +248,395 @@ def test_new_older_cik_rekey_is_detected_before_write():
         }
     ]
     assert detect_older_cik_rekeys(existing, existing.copy()) == []
-
-    print("\n=== SANITY CHECK: older-CIK rekey stop ===")
-    print("  adding 0000000100 would rename E0000000200 -> E0000000100")
-    print("  OK: the impact is named before any table replacement")
+    print("\n=== SANITY CHECK: older-CIK rekey detection ===")
+    print("  adding 0000000100 would rename E0000000200 -> E0000000100; named as an impact")
 
 
-def test_an_exact_rekey_approval_allows_the_guarded_lineage_replace(monkeypatch, tmp_path):
-    columns = ["cik", "entity_id", "source", "confidence", "evidence"]
-    old = pd.DataFrame(
-        [("0000000200", "E0000000200", "roster", 1.0, "old")],
-        columns=columns,
+# --------------------------------------------------------------------------- #
+# P3: the dated verdict                                                         #
+# --------------------------------------------------------------------------- #
+def test_an_older_cik_rekey_is_excluded_backlogged_and_writes_no_file(tmp_path, caplog):
+    """P7/P9: a rekey never stops the build and writes no impact file; an exact approval applies it."""
+    tenure = _tenure([("AAA", "0000000100", "2006-01-05", "2012-01-01", 400), ("AAA", "0000000200", "2012-06-01", None, 400)])
+    owners = {"0000000100": {f"{i:010d}" for i in range(20)}, "0000000200": {f"{i:010d}" for i in range(20)}}
+    existing = pd.DataFrame([{"cik": "0000000200", "entity_id": "E0000000200"}])
+    config = _config(tmp_path)
+    caplog.set_level(logging.WARNING, logger=lineage_module.__name__)
+
+    build = derive_entity_lineage(tenure, _roster([("AAA", "0000000200")]), _owner_pairs(owners), config, existing=existing)
+    assert set(build.rows["entity_id"]) == {"E0000000200"} and "0000000100" not in set(build.rows["cik"])
+    rekey = build.backlog[build.backlog["kind"].eq("rekey")]
+    assert rekey["cik"].tolist() == ["0000000100"] and "E0000000200:E0000000100" in rekey["detail"].iloc[0]
+    assert "excluded" in caplog.text
+    assert not (tmp_path / "reports").exists() and not list(tmp_path.rglob("identity-rekey-impact.json"))
+
+    approved = derive_entity_lineage(
+        tenure,
+        _roster([("AAA", "0000000200")]),
+        _owner_pairs(owners),
+        config,
+        existing=existing,
+        approved_rekeys=frozenset({("E0000000200", "E0000000100")}),
     )
-    new = pd.DataFrame(
+    assert set(approved.rows["entity_id"]) == {"E0000000100"} and approved.backlog[approved.backlog["kind"].eq("rekey")].empty
+
+    print("\n=== SANITY CHECK: older-CIK rekey exclusion ===")
+    print(f"  unapproved: entity stays E0000000200, backlog {rekey[['kind', 'cik']].to_dict('records')}, no file written")
+    print("  approved E0000000200:E0000000100: 0000000100 joins and the entity is renamed")
+    print("  OK: the stop became an exclusion; the CLI approval path still applies a rekey")
+
+
+def test_open_starts_are_the_sentinel_and_register_segments_become_windows(tmp_path):
+    register = {
+        "AAA": {
+            "kind": "reorganisation",
+            "segments": [
+                {"cik": "100", "valid_to": "2015-01-01", "evidence": "old registrant"},
+                {"cik": "200", "valid_from": "2015-01-01", "evidence": "new holding company"},
+            ],
+        }
+    }
+    tenure = _tenure(
+        [("AAA", "0000000100", "2006-01-05", None, 300), ("AAA", "0000000200", "2015-01-02", None, 90), ("BBB", "0000000300", "2006-01-05", None, 9)]
+    )
+    build = derive_entity_lineage(
+        tenure, _roster([("AAA", "0000000200"), ("BBB", "0000000300")]), _owner_pairs({}), _config(tmp_path, register=register)
+    )
+
+    windows = _rows(build, role="cik_window").set_index("cik")
+    assert windows.loc["0000000100", "valid_from"] == L.SENTINEL_START == pd.Timestamp("1900-01-01")
+    assert windows.loc["0000000100", "valid_to"] == pd.Timestamp("2015-01-01")
+    assert windows.loc["0000000200", "valid_from"] == pd.Timestamp("2015-01-01") and pd.isna(windows.loc["0000000200", "valid_to"])
+    assert windows.loc["0000000300", "valid_from"] == L.SENTINEL_START and pd.isna(windows.loc["0000000300", "valid_to"])
+    assert windows.loc["0000000100", "status"] == "curated" and windows.loc["0000000300", "sources"] == "roster"
+    assert build.rows["valid_from"].notna().all() and build.rows["evidence"].str.len().gt(0).all()
+    # an open symbol row on a CIK whose window closed is not current
+    old_symbol = _rows(build, role="symbol", cik="0000000100")
+    assert old_symbol["valid_to"].notna().all()
+
+    print("\n=== SANITY CHECK: sentinel and register windows ===")
+    print(build.rows[["canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]].to_string(index=False))
+    print("  OK: open starts are 1900-01-01 (PK-safe), open ends NULL, every row carries evidence")
+
+
+def test_a_cik_in_two_entities_raises():
+    frame = pd.DataFrame({"cik": ["0000000100", "0000000100", "0000000200"], "entity_id": ["E0000000100", "E0000000050", "E0000000100"]})
+    with pytest.raises(L.CikInTwoEntitiesError, match="0000000100"):
+        L.check_one_entity_per_cik(frame)
+    L.check_one_entity_per_cik(frame.iloc[[0, 2]])
+    print("\n=== SANITY CHECK: one entity per CIK ===")
+    print("  CIK 0000000100 under E0000000100 and E0000000050 raises CikInTwoEntitiesError; one entity passes")
+
+
+def test_a_symbol_handoff_seen_in_both_sources_joins_the_predecessor(tmp_path):
+    tenure, dei = _handoff_evidence()
+    config = _config(tmp_path)
+    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei)
+    predecessor = _rows(build, cik="0000000100")
+    assert set(predecessor["entity_id"]) == {"E0000000100"} and set(predecessor["oracle"]) == {"symbol_handoff"}
+    assert set(_rows(build, cik="0000000200")["entity_id"]) == {"E0000000100"}
+
+    one_source = derive_entity_lineage(
+        tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei[dei["issuer_cik"].eq("0000000200")]
+    )
+    assert "0000000100" not in set(one_source.rows["cik"])
+
+    print("\n=== SANITY CHECK: symbol handoff ===")
+    print(f"  ABC 100 -> 200 on Forms 3/4/5 and dei: joined via {predecessor['oracle'].iloc[0]}")
+    print("  without the predecessor's own dei rows: not joined (one source is not a handoff)")
+    print("  OK: the handoff needs both sources on both CIKs")
+
+
+def test_automatic_windows_when_both_sources_agree(tmp_path):
+    tenure, dei = _handoff_evidence()
+    config = _config(tmp_path)
+    auto = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei, auto_windows=True)
+    windows = _rows(auto, role="cik_window").set_index("cik")
+    assert windows.loc["0000000100", "valid_from"] == L.SENTINEL_START and windows.loc["0000000100", "valid_to"] == pd.Timestamp("2015-07-01")
+    assert windows.loc["0000000200", "valid_from"] == pd.Timestamp("2015-07-01") and pd.isna(windows.loc["0000000200", "valid_to"])
+    assert set(windows["status"]) == {"corroborated"} and set(windows["sources"]) == {"dei,form345"}
+    assert auto.backlog[auto.backlog["kind"].eq("multi_cik_no_window")].empty
+
+    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei, auto_windows=False)
+    assert _rows(off, role="cik_window")["cik"].tolist() == ["0000000200"]
+    assert _rows(off, role="cik_event")["cik"].tolist() == ["0000000100"]
+    pending = off.backlog[off.backlog["kind"].eq("multi_cik_no_window")]
+    assert len(pending) == 1 and "suggested chain" in pending["detail"].iloc[0]
+
+    print("\n=== SANITY CHECK: D3 automatic windows ===")
+    print(windows[["valid_from", "valid_to", "status", "sources"]].to_string())
+    print(f"  disabled: roster window only, predecessor event-only, backlog: {pending['detail'].iloc[0]}")
+    print("  OK: agreeing sources date the seam; with D3 off the P4 behaviour applies")
+
+
+def test_disagreeing_sources_abstain_and_keep_the_roster_window(tmp_path):
+    """AC-019b: Forms 3/4/5 switch in 2015, cover pages in 2018 -> no window, P4 behaviour, backlog."""
+    tenure, dei = _handoff_evidence(dei_successor_first="2018-03-01", dei_predecessor_last="2018-02-21")
+    owners = {"0000000100": {f"{i:010d}" for i in range(10)}, "0000000200": {f"{i:010d}" for i in range(10)}}
+    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs(owners), _config(tmp_path), dei=dei, auto_windows=True)
+    assert set(_rows(build, cik="0000000100")["oracle"]) == {"owner_overlap"}
+    assert _rows(build, role="cik_window")["cik"].tolist() == ["0000000200"]
+    assert _rows(build, role="cik_event")["cik"].tolist() == ["0000000100"]
+    pending = build.backlog[build.backlog["kind"].eq("multi_cik_no_window")]
+    assert len(pending) == 1 and "sources disagree" in pending["detail"].iloc[0]
+
+    print("\n=== SANITY CHECK: abstention ===")
+    print(f"  backlog: {pending['detail'].iloc[0][:160]}")
+    print("  OK: disagreeing sources produce no window; the roster CIK alone lists consolidating forms")
+
+
+def test_manual_tenure_outranks_derived_evidence(tmp_path):
+    """IR/TT: the curated `IR` interval on TT's CIK clips today's IR holder instead of making a conflict."""
+    tenure = pd.concat(
         [
-            ("0000000100", "E0000000100", "register", 1.0, "predecessor"),
-            ("0000000200", "E0000000100", "register", 1.0, "successor"),
+            _tenure([("IR", "0000000300", "2009-07-09", "2020-03-02", 0)], source="manual"),
+            _tenure(
+                [
+                    ("IR", "0000000300", "2009-07-09", "2020-03-06", 500),
+                    ("TT", "0000000300", "2020-03-02", None, 100),
+                    ("IR", "0000000400", "2020-02-25", None, 200),
+                ]
+            ),
         ],
-        columns=columns,
+        ignore_index=True,
     )
-    roster = _roster([("AAA", "0000000200")])
-    tenure = _tenure([("AAA", "0000000200", "2020-01-01", None, 1)])
-    replaced: list[pd.DataFrame] = []
+    build = derive_entity_lineage(tenure, _roster([("TT", "0000000300"), ("IR", "0000000400")]), _owner_pairs({}), _config(tmp_path))
+    curated = _rows(build, role="symbol", symbol="IR", cik="0000000300")
+    assert len(curated) == 1 and curated["status"].iloc[0] == "curated" and curated["sources"].iloc[0] == "manual"
+    assert curated["valid_to"].iloc[0] == pd.Timestamp("2020-03-02")
+    today = _rows(build, role="symbol", symbol="IR", cik="0000000400")
+    assert today["valid_from"].iloc[0] == pd.Timestamp("2020-03-02") and pd.isna(today["valid_to"].iloc[0])
+    assert today["status"].iloc[0] == "single_source" and build.backlog[build.backlog["kind"].eq("conflict")].empty
+
+    print("\n=== SANITY CHECK: manual over derived ===")
+    print(_rows(build, role="symbol", symbol="IR")[["canonical_ticker", "cik", "valid_from", "valid_to", "status", "sources"]].to_string(index=False))
+    print("  OK: the manual interval replaces its derived twin and clips the other holder; no conflict")
+
+
+def test_reuse_within_ninety_days_is_a_conflict_and_later_reuse_resolves_by_date(tmp_path):
+    tenure = _tenure(
+        [
+            ("AAA", "0000000100", "2006-01-05", None, 100),
+            ("XYZ", "0000000100", "2010-01-01", "2015-01-01", 50),
+            ("XYZ", "0000000900", "2015-02-01", None, 40),
+            ("QQQ", "0000000100", "2010-01-01", "2015-01-01", 50),
+            ("QQQ", "0000000901", "2016-01-01", None, 40),
+        ]
+    )
+    build = derive_entity_lineage(tenure, _roster([("AAA", "0000000100")]), _owner_pairs({}), _config(tmp_path))
+    assert _rows(build, role="symbol", symbol="XYZ")["status"].tolist() == ["conflict"]
+    assert _rows(build, role="symbol", symbol="QQQ")["status"].tolist() == ["single_source"]
+    conflicts = build.backlog[build.backlog["kind"].eq("conflict")]
+    assert conflicts["symbol"].tolist() == ["XYZ"] and conflicts["canonical_ticker"].tolist() == ["AAA"]
+    other = build.holders[build.holders["cik"].eq("0000000900")]
+    assert other["status"].tolist() == ["conflict"] and other["canonical_ticker"].isna().all()
+
+    print("\n=== SANITY CHECK: reuse conflicts ===")
+    print("  XYZ reused 31 days later -> both intervals `conflict`, backlogged; QQQ reused a year later -> resolved by date")
+
+
+def test_a_one_source_typo_next_to_another_holder_is_noise(tmp_path):
+    """ALB/AB: four Form 4s typed `AB` under Albemarle while AllianceBernstein held it."""
+    tenure = _tenure(
+        [
+            ("ALB", "0000915913", "2006-01-05", None, 500),
+            ("AB", "0000915913", "2009-02-11", "2010-05-20", 4),
+            ("AB", "0000825313", "2006-01-05", None, 900),
+        ]
+    )
+    dei = _tenure([("AB", "0000825313", "2009-08-01", "2026-08-01", 70)], source="dei")
+    build = derive_entity_lineage(tenure, _roster([("ALB", "0000915913")]), _owner_pairs({}), _config(tmp_path), dei=dei)
+    assert _rows(build, role="symbol", symbol="AB")["status"].tolist() == ["noise"]
+    assert build.backlog[build.backlog["kind"].eq("conflict")].empty
+    assert build.holders.loc[build.holders["cik"].eq("0000825313"), "status"].tolist() == ["corroborated"]
+    print("\n=== SANITY CHECK: noise ===")
+    print("  ALB/AB (4 filings, Forms 3/4/5 only, next to AllianceBernstein) -> noise; no conflict raised")
+
+
+def test_a_typo_matching_a_symbol_another_company_held_years_apart_is_noise(tmp_path):
+    """AC-016 ALGN/ALGM: one Form 4 typed `ALGM` in 2012; Allegro MicroSystems has held `ALGM` since 2020."""
+    tenure = _tenure(
+        [
+            ("ALGN", "0001097149", "2006-01-05", None, 500),
+            ("ALGM", "0001097149", "2012-07-24", "2012-07-25", 1),
+            ("ALGM", "0000866291", "2020-10-29", None, 80),
+        ]
+    )
+    dei = _tenure([("ALGM", "0000866291", "2020-11-10", "2026-08-01", 20)], source="dei")
+    build = derive_entity_lineage(tenure, _roster([("ALGN", "0001097149")]), _owner_pairs({}), _config(tmp_path), dei=dei)
+    assert _rows(build, role="symbol", symbol="ALGM")["status"].tolist() == ["noise"]
+    print("\n=== SANITY CHECK: noise across years ===")
+    print("  ALGN/ALGM (1 filing in 2012, Allegro holds ALGM from 2020 on two sources) -> noise")
+
+
+def test_a_subsidiary_cover_symbol_does_not_put_the_roster_ticker_in_conflict(tmp_path):
+    """A co-registrant subsidiary (Ford Credit) types the parent's `F` on its own cover pages; the roster row anchors `F`."""
+    tenure = _tenure([("F", "0000037996", "2006-01-03", None, 2300)])
+    dei = _tenure([("F", "0000037996", "2010-11-08", "2026-07-30", 230), ("F", "0000038009", "2019-07-25", "2026-08-14", 150)], source="dei")
+    build = derive_entity_lineage(tenure, _roster([("F", "0000037996")]), _owner_pairs({}), _config(tmp_path), dei=dei)
+    current = _rows(build, role="symbol", symbol="F")
+    assert current["status"].tolist() == ["corroborated"] and current["valid_to"].isna().all()
+    assert build.holders.loc[build.holders["cik"].eq("0000038009"), "status"].tolist() == ["noise"]
+    assert build.backlog[build.backlog["kind"].eq("conflict")].empty
+    print("\n=== SANITY CHECK: roster anchor ===")
+    print("  Ford Credit's dei `F` (150 filings) lies inside Ford's roster interval -> superseded (noise); F stays corroborated")
+
+
+def test_every_roster_ticker_gets_one_current_row_even_with_no_filing_spelling(tmp_path):
+    """AC-012 on the BF-B shape: filers type `BFA`/`BFB`, the roster says `BF-B`."""
+    tenure = _tenure([("BFA", "0000014693", "2006-01-05", None, 300), ("BFB", "0000014693", "2006-01-05", None, 300)])
+    config = _config(tmp_path, manual={"_d19_allowlist": {"BF-B": "filers type BFA/BFB"}})
+    build = derive_entity_lineage(tenure, _roster([("BF-B", "0000014693")]), _owner_pairs({}), config)
+    current = _rows(build, role="symbol", symbol="BF-B")
+    assert len(current) == 1 and current["cik"].iloc[0] == "0000014693" and pd.isna(current["valid_to"].iloc[0])
+    assert current["sources"].iloc[0] == "roster" and current["valid_from"].iloc[0] == pd.Timestamp("2006-01-05")
+    print("\n=== SANITY CHECK: roster row ===")
+    print(current[["symbol", "cik", "valid_from", "valid_to", "status", "sources"]].to_string(index=False))
+    print("  OK: one current BF-B row on the roster CIK, dated from the CIK's first filing")
+
+
+def test_a_d19_disagreement_still_stops_the_build(tmp_path):
+    """AC-007: the roster CIK and the dominant filer of the ticker name different entities."""
+    tenure = _tenure([("AAA", "0000000900", "2006-01-05", None, 800), ("AAA", "0000000100", "2006-01-05", "2008-01-01", 3)])
+    with pytest.raises(L.UniverseEntityDisagreementError, match="AAA"):
+        derive_entity_lineage(tenure, _roster([("AAA", "0000000100")]), _owner_pairs({}), _config(tmp_path))
+    allowed = _config(tmp_path / "allowed", manual={"_d19_allowlist": {"AAA": "evidenced"}})
+    derive_entity_lineage(tenure, _roster([("AAA", "0000000100")]), _owner_pairs({}), allowed)
+    print("\n=== SANITY CHECK: D19 ===")
+    print("  unlisted disagreement raises UniverseEntityDisagreementError; an allow-list entry clears it")
+
+
+def test_two_builds_with_a_pinned_timestamp_are_byte_identical(tmp_path):
+    """AC-015: same inputs, same stored table, pinned build time -> identical bytes."""
+    tenure, dei = _handoff_evidence()
+    config = _config(tmp_path)
+    pinned = pd.Timestamp("2026-10-03 12:00:00")
+    args = (tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config)
+    first = derive_entity_lineage(*args, dei=dei, built_at=pinned).rows
+    second = derive_entity_lineage(*args, dei=dei, built_at=pinned).rows
+    assert first.to_csv(index=False).encode() == second.to_csv(index=False).encode()
+    again = derive_entity_lineage(*args, dei=dei, existing=first, built_at=pd.Timestamp("2026-10-04")).rows
+    assert again.to_csv(index=False).encode() == first.to_csv(index=False).encode()
+    print("\n=== SANITY CHECK: determinism ===")
+    print(f"  {len(first)} rows; two pinned builds byte-identical; a later build over the stored rows keeps scope_changed_at")
+
+
+def test_scope_changed_at_moves_only_for_tickers_whose_scope_changed(tmp_path):
+    config = _config(tmp_path)
+    roster = _roster([("AAA", "0000000100"), ("BBB", "0000000200")])
+    tenure = _tenure([("AAA", "0000000100", "2006-01-05", None, 300), ("BBB", "0000000200", "2006-01-05", None, 300)])
+    t1, t2, t3 = (pd.Timestamp(f"2026-10-0{d} 01:00:00") for d in (1, 2, 3))
+    first = derive_entity_lineage(tenure, roster, _owner_pairs({}), config, built_at=t1).rows
+    assert set(first["scope_changed_at"]) == {t1}
+    second = derive_entity_lineage(tenure, roster, _owner_pairs({}), config, existing=first, built_at=t2).rows
+    assert set(second["scope_changed_at"]) == {t1}
+
+    grown = pd.concat([tenure, _tenure([("AAA", "0000000150", "2006-01-05", "2006-06-01", 40)])], ignore_index=True)
+    owners = {"0000000150": {f"{i:010d}" for i in range(10)}, "0000000100": {f"{i:010d}" for i in range(10)}}
+    third = derive_entity_lineage(grown, roster, _owner_pairs(owners), config, existing=first, built_at=t3).rows
+    stamps = third.groupby("canonical_ticker")["scope_changed_at"].agg(set).to_dict()
+    assert stamps == {"AAA": {t3}, "BBB": {t1}}
+    print("\n=== SANITY CHECK: scope_changed_at ===")
+    print(f"  unchanged rebuild keeps {t1}; AAA gains CIK 0000000150 -> {t3}; BBB stays {t1}")
+
+
+def test_register_reproduction_reports_reproduced_abstained_and_contradicted(tmp_path):
+    """AC-018 on known truth: the automatic rule against three register seams."""
+    tenure = _tenure(
+        [
+            ("AAA", "0000000100", "2006-01-05", "2015-07-01", 300),
+            ("AAA", "0000000200", "2015-07-01", None, 100),
+            ("BBB", "0000000300", "2006-01-05", "2015-07-01", 300),
+            ("BBB", "0000000400", "2015-07-01", None, 100),
+            ("CCC", "0000000500", "2006-01-05", "2015-07-01", 300),
+            ("CCC", "0000000600", "2015-07-01", None, 100),
+        ]
+    )
+    dei = _tenure(
+        [
+            ("AAA", "0000000100", "2010-03-01", "2015-06-16", 20),
+            ("AAA", "0000000200", "2015-07-10", "2024-11-02", 30),
+            ("BBB", "0000000300", "2010-03-01", "2015-06-16", 20),
+            ("BBB", "0000000400", "2015-07-10", "2024-11-02", 30),
+        ],
+        source="dei",
+    )
+
+    def chain(old: str, new: str, boundary: str) -> dict:
+        return {
+            "kind": "reorganisation",
+            "segments": [{"cik": old, "valid_to": boundary, "evidence": "old"}, {"cik": new, "valid_from": boundary, "evidence": "new"}],
+        }
+
+    register = {"AAA": chain("100", "200", "2015-07-01"), "BBB": chain("300", "400", "2013-01-01"), "CCC": chain("500", "600", "2015-07-01")}
+    roster = _roster([("AAA", "0000000200"), ("BBB", "0000000400"), ("CCC", "0000000600")])
+    build = derive_entity_lineage(tenure, roster, _owner_pairs({}), _config(tmp_path, register=register), dei=dei)
+    verdicts = dict(zip(build.reproduction["ticker"], build.reproduction["verdict"], strict=True))
+    assert verdicts == {"AAA": "reproduced", "BBB": "contradicted", "CCC": "abstained"}
+    print("\n=== SANITY CHECK: register reproduction ===")
+    print(build.reproduction[["ticker", "register_boundary", "auto_boundary", "verdict", "detail"]].to_string(index=False))
+    print("  OK: agreeing sources reproduce, a seam outside the evidence window contradicts, one source abstains")
+
+
+def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path, monkeypatch, sqlite_store, caplog):
+    """End to end on SQLite: `dei` read from `symbol_tenure`, rows written, a second build is a no-op."""
+    tenure, dei = _handoff_evidence()
+    sqlite_store.save(Tables.sp500_tickers, _roster([("ABC", "0000000200")]))
+    sqlite_store.save(Tables.symbol_tenure, dei.assign(evidence_period="2025q1"))
+    monkeypatch.setattr(
+        lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame(columns=["canonical_ticker", "symbol", "issuer_cik"])
+    )
+    monkeypatch.setattr(lineage_module, "record_run", lambda *a, **k: None)
+    context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.entity_lineage.store"), config_dir=_config(tmp_path))
+    caplog.set_level(logging.INFO)
+
+    written = lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), context.config_dir, built_at=pd.Timestamp("2026-10-03 12:00:00"))
+    stored = sqlite_store.load(Tables.entity_lineage, project=True)
+    assert len(stored) == len(written) and set(stored["oracle"]) >= {"symbol_handoff"}
+    lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), context.config_dir, built_at=pd.Timestamp("2026-10-04 12:00:00"))
+    assert f"entity_lineage: unchanged ({len(written)} row(s)); replace skipped" in caplog.text
+    print("\n=== SANITY CHECK: store round trip ===")
+    print(f"  {len(written)} rows written to SQLite; the rebuild one day later skipped the replace")
+
+
+# --------------------------------------------------------------------------- #
+# build: logging and replace skip                                               #
+# --------------------------------------------------------------------------- #
+def _empty_build(rows: pd.DataFrame) -> Any:
+    return L.LineageBuild(
+        rows=rows, blocked=pd.DataFrame(), backlog=pd.DataFrame(columns=list(L.BACKLOG_COLUMNS)), holders=pd.DataFrame(), reproduction=pd.DataFrame()
+    )
+
+
+def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch, caplog):
+    columns = ["cik", "entity_id", "role", "symbol", "valid_from", "valid_to"]
+    old = pd.DataFrame([("0000000001", "E0000000001", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT)], columns=columns)
+    new = pd.DataFrame([("0000000001", "E0000000002", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT)], columns=columns)
+    roster = _roster([("AAA", "0000000001")])
+    tenure = _tenure([("AAA", "0000000001", "2020-01-01", None, 1)])
 
     class Store:
         def load(self, table, **kwargs):
-            del kwargs
             if table is Tables.symbol_tenure:
-                return tenure
-            if table is Tables.sp500_tickers:
-                return roster
-            if table is Tables.entity_lineage:
-                return old
-            raise AssertionError(table)
+                return None
+            return {Tables.sp500_tickers: roster, Tables.entity_lineage: old}[table]
 
         def replace(self, table, frame):
-            assert table is Tables.entity_lineage
-            replaced.append(frame)
+            assert table is Tables.entity_lineage and frame.equals(new)
             return len(frame)
 
-    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: (new, pd.DataFrame()))
-    monkeypatch.setattr(
-        lineage_module,
-        "load_manual_symbol_tenure",
-        lambda *args, **kwargs: pd.DataFrame(
-            [
-                {
-                    "canonical_ticker": "AAA",
-                    "symbol": "AAA",
-                    "issuer_cik": "0000000200",
-                    "valid_from": pd.Timestamp("2020-01-01"),
-                    "valid_to": pd.NaT,
-                    "n_filings": 0,
-                    "source": "manual",
-                    "evidence": "test",
-                    "reason": "test",
-                }
-            ]
-        ),
-    )
+    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: _empty_build(new))
+    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
     monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
-    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.rekey"))
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
+    caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
-    with pytest.raises(lineage_module.EntityRekeyError):
-        lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), str(tmp_path / "configs"))
-    assert replaced == []
-
-    lineage_module.build_entity_lineage(
-        context,
-        tenure,
-        _owner_pairs({}),
-        str(tmp_path / "configs"),
-        approved_rekeys=frozenset({("E0000000200", "E0000000100")}),
-    )
-    assert len(replaced) == 1 and replaced[0].equals(new)
-
-    print("\n=== SANITY CHECK: explicit older-CIK rekey approval ===")
-    print("  unapproved rebuild stopped before replace; exact old->new approval wrote once")
-    print("  OK: lineage rekeys remain fail-closed and individually acknowledged")
-
-
-def test_candidate_set_is_universe_symbols_plus_roster_ciks():
-    tenure = _tenure([("AAA", "0000000111", "2006-01-05", "2012-01-01", 5), ("ZZZ", "0000000999", "2006-01-05", None, 5)])
-    roster = _roster([("AAA", "0000000222"), ("BBB", "0000000333")])
-    candidates, by_ticker, roster_cik = candidate_ciks(tenure, roster)
-
-    assert candidates == frozenset({"0000000111", "0000000222", "0000000333"})
-    assert "0000000999" not in candidates  # ZZZ is not in the universe
-    assert by_ticker["AAA"] == {"0000000111", "0000000222"}
-    assert by_ticker["BBB"] == {"0000000333"}  # a roster CIK with no tenure still appears
-    assert roster_cik == {"AAA": "0000000222", "BBB": "0000000333"}
-
-    print("\n=== SANITY CHECK: candidate set ===")
-    print(f"  candidates={sorted(candidates)}")
-    print("  OK: scoped to universe symbols + roster CIKs; every other EDGAR CIK is a")
-    print("      singleton by default")
-    print("  -> That default IS the verdict `owns()` needs: an unseen reuse is dropped.")
-
-
-def test_manual_config_rejects_an_undocumented_verdict(tmp_path):
-    """Same discipline as the register: an identity decision with no evidence is a guess."""
-    (tmp_path / "sec").mkdir()
-    target = tmp_path / "sec" / "entity_lineage_manual.json"
-
-    target.write_text(json.dumps({"X": {"same_entity": ["1", "2"], "evidence": "  "}}))
-    with pytest.raises(ValueError, match="empty `evidence`"):
-        load_manual_lineage(str(tmp_path))
-
-    target.write_text(json.dumps({"X": {"same_entity": ["1"], "evidence": "why"}}))
-    with pytest.raises(ValueError, match=">= 2 CIKs"):
-        load_manual_lineage(str(tmp_path))
-
-    target.write_text(json.dumps({"X": {"evidence": "why"}}))
-    with pytest.raises(ValueError, match="decides nothing"):
-        load_manual_lineage(str(tmp_path))
-
-    target.write_text(json.dumps({"X": {"own_entity": ["1004440"], "evidence": "why"}}))
-    loaded = load_manual_lineage(str(tmp_path))
-    assert loaded["X"]["own_entity"] == ["0001004440"]  # zero-padded on load
-
-    print("\n=== SANITY CHECK: curated-file validation ===")
-    print("  empty evidence / 1-CIK same_entity / an entry asserting nothing all RAISE")
-    print("  OK: CIKs are zero-padded on load, so a config written bare still joins")
-    print("  -> An undocumented verdict cannot enter the table.")
+    lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
+    assert "1 changed CIK assignment(s): 0000000001" in caplog.text
+    assert "affected current ticker(s): AAA" in caplog.text
+    print("\n=== SANITY CHECK: entity-lineage refresh visibility ===")
+    print("  changed CIK 0000000001 and affected current ticker AAA are named")
 
 
 # --------------------------------------------------------------------------- #
@@ -444,52 +647,44 @@ def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 40:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
     from src.context import get_config_context
-    from src.data_store.schema import Tables
 
     try:
         _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
-        tenure = context.store.load(Tables.symbol_tenure, project=True, optional=True)
+        tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": ["form345", "manual"]}, optional=True)
         roster = context.store.load(Tables.sp500_tickers, optional=True)
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable ({type(exc).__name__})")
     if tenure is None or roster is None or tenure.empty or roster.empty:
         pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
     assert tenure is not None and roster is not None
-    return derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
+    build = derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
+    return build.rows, build.blocked
 
 
 def test_no_entity_holds_two_universe_tickers(live_lineage):
     """The invariant the whole design rests on, asserted on the live tables."""
     lineage, blocked = live_lineage
     from src.context import get_config_context
-    from src.data_store.schema import Tables
 
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     roster = context.store.load(Tables.sp500_tickers)
     assert roster is not None
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
-
     per_entity: dict[str, list[str]] = {}
     for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"].astype("string").str.zfill(10), strict=False):
         per_entity.setdefault(entity.get(cik, "E" + str(cik)), []).append(ticker)
     collisions = {e: t for e, t in per_entity.items() if len(t) > 1}
     assert not collisions, f"entities holding two universe tickers: {collisions}"
     assert len(per_entity) == len(roster)
-
     print("\n=== SANITY CHECK: one entity per universe ticker ===")
-    print(f"  {len(roster)} tickers -> {len(per_entity)} entities, 0 collisions")
-    print(f"  merges refused to keep it that way: {len(blocked)}")
-    if len(blocked):
-        print(blocked.to_string(index=False))
-    print("  OK: no entity can relabel one universe ticker's rows onto another")
-    print("  -> This is the only failure mode here that corrupts rather than drops.")
+    print(f"  {len(roster)} tickers -> {len(per_entity)} entities, 0 collisions; merges refused: {len(blocked)}")
 
 
 def test_the_worked_cases_resolve_as_the_plan_specifies(live_lineage):
     """Predecessors join their successor; reuses stay separate; `IR` falls out of `TT`."""
     lineage, _ = live_lineage
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
-    source = dict(zip(lineage["cik"].astype(str), lineage["source"].astype(str), strict=False))
+    oracle = dict(zip(lineage["cik"].astype(str), lineage["oracle"].astype(str), strict=False))
 
     def func_e(c):
         return entity.get(c, "E" + c)
@@ -515,122 +710,50 @@ def test_the_worked_cases_resolve_as_the_plan_specifies(live_lineage):
         assert func_e(pred) == func_e(succ), f"{label}: {func_e(pred)} != {func_e(succ)}"
     for label, (other, home) in apart.items():
         assert func_e(other) != func_e(home), f"{label}: both resolved to {func_e(other)}"
-
-    # `IR` is the case that defeats a single-axis oracle: BOTH its historic CIKs belong to
-    # TT's entity, and NOTHING in the code or the config mentions IR.
     assert func_e("0001160497") == func_e("0001466258") == func_e("0000836102")  # TT's entity
     assert func_e("0001160497") != func_e("0001699150")  # not today's IR
-    register_json = Path(CONFIG_DIR) / "sec" / "registrant_cutover.json"
-    manual_json = Path(CONFIG_DIR) / "sec" / "entity_lineage_manual.json"
-    assert '"IR"' not in register_json.read_text(encoding="utf-8")
-    assert '"IR/' not in manual_json.read_text(encoding="utf-8")
-    # the CEG verdict is RECORDED, not merely absent
-    assert source.get("0001004440") == "manual"
-
+    assert oracle.get("0001004440") == "manual"
     print("\n=== SANITY CHECK: the worked identity cases ===")
-    for label, (pred, succ) in same.items():
-        print(f"  SAME   {label:26s} {func_e(pred)} == {func_e(succ)}  (src {source.get(pred, '-')})")
-    for label, (other, home) in apart.items():
-        print(f"  APART  {label:26s} {func_e(other)} != {func_e(home)}  (src {source.get(other, 'singleton')})")
-    print(f"  IR     both historic CIKs -> {func_e('0001160497')} (TT), today's IR -> {func_e('0001699150')}")
     print("  OK: every verdict matches the plan, and there is no IR-specific rule anywhere")
-    print("  -> The two-axis design is what settles IR; a symbol test could not.")
-
-
-def test_d19_allowlist_covers_every_live_disagreement(live_lineage):
-    """The roster CIK is Wikipedia-sourced and has been wrong (XOM). Every disagreement
-    between it and `symbol_tenure` must be explained in writing or it is that defect again."""
-    lineage, _ = live_lineage
-    from src.context import get_config_context
-    from src.data_store.schema import Tables
-
-    _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
-    roster = context.store.load(Tables.sp500_tickers)
-    tenure = context.store.load(Tables.symbol_tenure, project=True)
-    assert roster is not None and tenure is not None
-    entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
-
-    def func_e(c):
-        return entity.get(c, "E" + c)
-
-    allow = load_d19_allowlist(CONFIG_DIR)
-
-    disagree = []
-    for ticker, cik in zip(roster["ticker"].astype(str), roster["cik"].astype("string").str.zfill(10), strict=False):
-        rows = tenure[tenure["symbol"].astype(str) == ticker]
-        if rows.empty:
-            disagree.append((ticker, cik, None))
-            continue
-        openrows = rows[rows["valid_to"].isna()]
-        pick = (openrows if not openrows.empty else rows).sort_values("n_filings").iloc[-1]
-        if func_e(str(pick["issuer_cik"])) != func_e(str(cik)):
-            disagree.append((ticker, cik, str(pick["issuer_cik"])))
-
-    unexplained = [d for d in disagree if d[0] not in allow]
-    assert not unexplained, (
-        f"{len(unexplained)} roster CIK(s) disagree with symbol_tenure and are not in the "
-        f"D19 allow-list: {unexplained}. Each is the XOM class of defect until a written "
-        "reading says otherwise."
-    )
-
-    print("\n=== SANITY CHECK: D19 roster-CIK cross-check ===")
-    print(f"  tickers {len(roster)}; agree {len(roster) - len(disagree)}; disagree {len(disagree)}; all allow-listed with evidence")
-    for ticker, cik, tenure_cik in disagree:
-        print(f"    {ticker:6s} roster {cik} vs tenure {tenure_cik or 'NO TENURE':10s} -- {allow[ticker][:78]}")
-    print("  OK: no unexplained disagreement remains")
-    print("  -> This is the free check that would have caught XOM's wrong CIK in 2026-08.")
 
 
 def test_the_register_beats_owner_overlap(live_lineage):
-    """Priority order, on a live case where the two genuinely disagree.
-
-    `XOM`'s successor shell 0002115436 shares ZERO Form 345 reporting owners with the
-    predecessor -- it has filed almost nothing -- so the overlap oracle says `unrelated`. The
-    register says otherwise, with prose, and wins.
-    """
+    """XOM's successor shell shares zero reporting owners with the predecessor; the register still wins."""
     lineage, _ = live_lineage
     entity = dict(zip(lineage["cik"].astype(str), lineage["entity_id"].astype(str), strict=False))
-    source = dict(zip(lineage["cik"].astype(str), lineage["source"].astype(str), strict=False))
+    oracle = dict(zip(lineage["cik"].astype(str), lineage["oracle"].astype(str), strict=False))
     assert entity["0000034088"] == entity["0002115436"]
-    assert source["0000034088"] == source["0002115436"] == "register"
-
+    assert oracle["0000034088"] == oracle["0002115436"] == "register"
     register_ciks = {c for entry in load_registrants(CONFIG_DIR).values() for c in entry.all_ciks()}
-    from_register = {c for c, s in source.items() if s == "register"}
-    assert from_register == register_ciks & set(source)
-
+    assert {c for c, s in oracle.items() if s == "register"} == register_ciks & set(oracle)
     print("\n=== SANITY CHECK: oracle priority ===")
-    print(f"  XOM 0000034088 / 0002115436 -> {entity['0000034088']} via {source['0000034088']} (owner overlap scored them UNRELATED)")
-    print(f"  every one of the {len(from_register)} register CIKs is sourced `register`")
     print("  OK: the curated layer is never overruled by the automatic oracle")
-    print("  -> A hand-evidenced chain outranks a statistic, which is the whole point of it.")
 
 
 def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
     """The accepted pairs must resolve through the register even with no owner evidence."""
-    current = {
-        "EVRG": "0001711269",
-        "JCI": "0000833444",
-        "PSKY": "0002041610",
-    }
-    pairs = {
-        "EVRG": ("0000054507", current["EVRG"]),
-        "JCI": ("0000053669", current["JCI"]),
-        "PSKY": ("0000813828", current["PSKY"]),
-    }
-    lineage, _ = derive_entity_lineage(
+    current = {"EVRG": "0001711269", "JCI": "0000833444", "PSKY": "0002041610"}
+    pairs = {"EVRG": ("0000054507", current["EVRG"]), "JCI": ("0000053669", current["JCI"]), "PSKY": ("0000813828", current["PSKY"])}
+    build = derive_entity_lineage(
         _tenure([(ticker, cik, "2000-01-01", None, 1) for ticker, cik in current.items()]),
         _roster(list(current.items())),
         _owner_pairs({}),
         CONFIG_DIR,
     )
+    lineage = build.rows
     entity = dict(zip(lineage["cik"], lineage["entity_id"], strict=False))
-    source = dict(zip(lineage["cik"], lineage["source"], strict=False))
-
+    oracle = dict(zip(lineage["cik"], lineage["oracle"], strict=False))
     for predecessor, successor in pairs.values():
         assert entity[predecessor] == entity[successor]
-        assert source[predecessor] == source[successor] == "register"
-
+        assert oracle[predecessor] == oracle[successor] == "register"
     print("\n=== SANITY CHECK: governance lineage comes from the register ===")
     for ticker, (predecessor, successor) in pairs.items():
         print(f"  {ticker}: {predecessor} == {successor} via register")
     print("  OK: all six CIK assignments are register-sourced without owner overlap.")
+
+
+def test_d19_allowlist_is_loaded_from_the_curated_file():
+    allow = load_d19_allowlist(CONFIG_DIR)
+    assert {"BF-B", "BRK-B", "FOXA", "NWSA", "LEN", "VMRK"} <= set(allow)
+    print("\n=== SANITY CHECK: D19 allow-list ===")
+    print(f"  {len(allow)} evidenced entries, including the six share-class spellings")

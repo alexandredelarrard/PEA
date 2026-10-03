@@ -83,40 +83,46 @@ CREATE TABLE IF NOT EXISTS "symbol_tenure" (
     PRIMARY KEY ("symbol", "issuer_cik", "valid_from", "source", "evidence_period")
 );
 
--- [reference] entity_lineage  (pk: cik)
--- WHICH CIKs ARE THE SAME ECONOMIC COMPANY -- axis A of ticker identity, and the table the
--- `owns()` predicate actually reads. `entity_id` is `"E" + the oldest CIK in the group`: a
--- natural key with no allocation state, so a full re-derive reproduces the same ids.
+-- [reference] entity_lineage  (pk: cik, role, symbol, valid_from)
+-- WHICH CIKs AND SYMBOLS ARE ONE ECONOMIC COMPANY, AND WHEN -- the dated identity verdict and the
+-- only identity input of the fetchers (`symbol_tenure` is its evidence). `entity_id` is
+-- `"E" + the oldest CIK in the group`: a natural key with no allocation state, so a full
+-- re-derive reproduces the same ids.
 --
--- ⚠ ONLY NON-SINGLETON GROUPS, THE ROSTER CIKs AND THE HAND-ADJUDICATED CIKs ARE STORED. A
--- CIK with no row IS its own entity (`E{cik}`), which is why `owns()` correctly DROPS a
--- symbol reuse it has never seen: absence is a verdict, not a gap. Roster CIKs are stored
--- even when singleton so the table states a verdict for all 500; a hand verdict of "this CIK
--- is NOT that ticker" is stored for the same reason.
+-- Rows by `role`: `cik_window` (that CIK's consolidating filings belong to the entity over
+-- `[valid_from, valid_to)`), `cik_event` (event forms only) and `symbol` (a dated symbol
+-- interval; `symbol` is '' on the CIK rows). `status` in {curated, corroborated, single_source,
+-- noise, conflict}; `sources` names the evidence (register, manual, form345, dei, roster);
+-- `oracle` the membership oracle (register, manual, symbol_handoff, owner_overlap, roster).
+-- `confidence` holds the owner-overlap jaccard and is RECORDED, NEVER READ.
 --
--- ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5 carry
--- an issuer CIK and no class. Harmless, because only one class per CIK is ever investable.
+-- ⚠ AN OPEN START IS STORED AS 1900-01-01 (`valid_from` is a PK column); an open end is NULL.
+-- "Current" = role 'symbol' with a NULL `valid_to`. One CIK belongs to one entity: the PK no
+-- longer guarantees it, the build asserts it.
 --
--- `source` is the deciding oracle, highest priority first: `register` (the hand-evidenced
--- chains in configs/sec/registrant_cutover.json), `manual`
--- (configs/sec/entity_lineage_manual.json), `owner_overlap` (do the same reporting owners
--- appear on both CIKs' Forms 3/4/5), `roster` (a singleton roster CIK). `confidence` holds the
--- owner-overlap jaccard and is RECORDED, NEVER READ -- contested cases are decided by hand,
--- not by a threshold at read time.
+-- Only universe entities and hand-adjudicated CIKs are stored. A CIK with no row IS its own
+-- entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has never seen.
+-- `scope_changed_at` (per ticker) is the build time at which that ticker's CIK rows last changed.
 --
--- Measured 2026-09-11: 621 candidate CIKs -> 556 rows over 505 entities (500 of them one per
--- universe ticker); 38 register, 16 manual, 24 owner_overlap, 478 roster.
---
--- Index on `entity_id` is HAND-ADDED: the generator only emits ticker_col / date_col indexes
--- and would drop it on a regeneration. `ciks_for(entity_id)` is a real read pattern.
+-- Index on `entity_id` is HAND-ADDED and NON-UNIQUE (several rows per entity): the generator
+-- only emits ticker_col / date_col indexes and would drop it on a regeneration.
 
 CREATE TABLE IF NOT EXISTS "entity_lineage" (
-    "cik" TEXT NOT NULL,
     "entity_id" TEXT,
-    "source" TEXT,
+    "canonical_ticker" TEXT,
+    "cik" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "symbol" TEXT NOT NULL,
+    "valid_from" DATE NOT NULL,
+    "valid_to" DATE,
+    "status" TEXT,
+    "sources" TEXT,
+    "oracle" TEXT,
     "confidence" DOUBLE PRECISION,
+    "n_observations" BIGINT,
     "evidence" TEXT,
-    PRIMARY KEY ("cik")
+    "scope_changed_at" TIMESTAMP,
+    PRIMARY KEY ("cik", "role", "symbol", "valid_from")
 );
 CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("entity_id");
 

@@ -45,3 +45,9 @@ data_availability:
       ic_insider_discretionary_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
       ic_insider_planned_sell_mcap_60d: "2023-04-01"  # Requires is_10b5_1.
       ic_shortvol_high_x_weak_price: "2019-02-14"  # RegSHO plus z252 minimum history.
+
+# defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).
+earnings_calls:
+  lookback_days: 45  # incremental runs re-check calls dated within this many days of the stored frontier
+  read_workers: 4  # parallel HuggingFace row-group reads; writes stay on one thread
+  reconcile_days: 7  # a full compare of every scoped call at least this often

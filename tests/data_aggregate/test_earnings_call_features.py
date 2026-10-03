@@ -1,7 +1,8 @@
 """
 Earnings-call sentiment/text FEATURES (src/data_aggregate/utils/earnings_call_features.py).
 
-Validates the pure feature layer on synthetic cache rows (no model/GPU):
+Validates the pure feature layer on synthetic cache rows and synthetic `earnings_call_sections`
+paragraph rows split by `src/utils/earnings_call_split.py` (no model/GPU):
   * the smart per-call KPI arithmetic (length-weighted tone, Q&A gap, uncertainty,
     tone delta vs prior call, disclosure-length delta),
   * the exact raw and issuer-history feature contract,
@@ -39,8 +40,12 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     score_earnings_calls,
     sentiment_kpis_streamed,
 )
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import pending_refresh_markers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.earnings_call_split import split_call
+from src.utils.text_metrics import assess_earnings_call_sections
+from tests.fixtures.earnings_call_rows import synthetic_call
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
 
@@ -85,21 +90,23 @@ def _sentiment_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+_QUESTION = "Can you talk about revenue growth and the margin guidance for next year?"
+_USEFUL = "revenue growth customer demand margin guidance cash flow outlook " * 12
+
+
 def _sections_frame() -> pd.DataFrame:
-    """Quality-valid prepared and Q&A text for every fixture call."""
+    """`earnings_call_sections` paragraph rows of a split-`ok`, quality-valid call per fixture call."""
     txt = {
         ("A", "2023Q1"): "cloud platform enterprise customers subscription revenue expansion",
         ("A", "2023Q2"): "cloud platform enterprise customers subscription revenue expansion margins",
         ("A", "2023Q3"): "litigation restructuring charges layoffs writedown goodwill impairment",
     }
-    rows = []
-    useful = "revenue growth customer demand margin guidance cash flow outlook " * 12
-    for tkr in ["A", "B", "C", "D", "E"]:
-        for q in _QDATE:
-            prepared = (txt.get((tkr, q), useful) + " ") * 12
-            rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "prepared_remarks", "text": prepared})
-            rows.append({"ticker": tkr, "quarter": q, "as_of": _QDATE[q], "tag": "qa", "text": useful})
-    return pd.DataFrame(rows)
+    calls = [
+        synthetic_call(tkr, q, _QDATE[q], prepared=((txt.get((tkr, q), _USEFUL) + " ") * 12).strip(), question=_QUESTION, answer=_USEFUL.strip())
+        for tkr in ["A", "B", "C", "D", "E"]
+        for q in _QDATE
+    ]
+    return pd.concat(calls, ignore_index=True)
 
 
 def test_per_call_kpi_arithmetic():
@@ -161,14 +168,20 @@ def test_malformed_or_incomplete_cached_call_is_missing() -> None:
     assert _per_call_kpis(incomplete, valid_sections).empty
 
     malformed = valid_sections.copy()
-    malformed.loc[malformed["tag"] == "qa", "text"] = np.nan
+    malformed.loc[malformed["paragraph"] >= 3, "content"] = None  # Q&A paragraphs blank -> no_qa
+    assert split_call(malformed.to_dict("records")).status == "no_qa"
     assert _per_call_kpis(sentiment, malformed).empty
 
     refreshed = _per_call_kpis(sentiment.assign(n_words=1), valid_sections)
-    expected_words = int(valid_sections["text"].str.split().str.len().sum())
+    split = split_call(valid_sections.to_dict("records"))
+    expected_words = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa}).combined_word_count
+    assert expected_words > 100
     assert int(refreshed["total_words"].iloc[0]) == expected_words
     print("\n=== SANITY CHECK: current transcript quality dominates stale cache ===")
-    print("  incomplete/malformed calls produce no KPI row; stale cached word counts are refreshed. Validated.")
+    print(
+        f"  incomplete cache and a no_qa split produce no KPI row; the stale cached word count (1) is refreshed "
+        f"to {expected_words} cleaned split words. Validated."
+    )
 
 
 def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, monkeypatch) -> None:
@@ -197,9 +210,7 @@ def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, 
 
 
 def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, monkeypatch) -> None:
-    sections = pd.DataFrame(
-        [{"ticker": "A", "quarter": "2023Q1", "tag": tag, "as_of": "2023-02-01", "text": None} for tag in ("prepared_remarks", "qa")]
-    )
+    sections = synthetic_call("A", "2023Q1", "2023-02-01", prepared="x", question="y", answer="z").assign(content=None)
     marker = pd.DataFrame(
         [
             {
@@ -233,6 +244,43 @@ def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, mo
     assert score_earnings_calls(context) is None
     print("\n=== SANITY CHECK: malformed refresh handoff ===")
     print("  a dated invalidation is acknowledged only after the cube write; an undated marker remains pending. Validated.")
+
+
+def test_reissued_valid_call_marker_survives_an_engine_less_build(sqlite_store, monkeypatch) -> None:
+    """A re-issued call that splits `ok` keeps its pending marker until it is actually scored."""
+    sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    marker = pending_refresh_markers(pd.DataFrame({"ticker": ["A"], "quarter": ["2023Q1"], "as_of": [pd.Timestamp("2023-02-01")]}))
+    sqlite_store.save(Tables.earnings_call_sections, sections)
+    sqlite_store.save(Tables.earnings_call_sentiment, marker)
+    context = cast(Context, _Ctx(sqlite_store))
+
+    class _Engine:
+        device = "test"
+
+        @staticmethod
+        def score_texts(texts):
+            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: None)
+    offline = score_earnings_calls(context)
+    acknowledged_offline = acknowledge_earnings_call_invalidations(context)
+    after_offline = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    online = score_earnings_calls(context)
+    acknowledged_online = acknowledge_earnings_call_invalidations(context)
+    after_online = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    assert offline == pd.Timestamp("2023-02-01") and acknowledged_offline == 0
+    assert set(after_offline["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert online == pd.Timestamp("2023-02-01") and acknowledged_online == 0
+    assert set(after_online["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL} and len(after_online) == 2
+    assert len(_per_call_kpis(after_online, sections)) == 1
+    print("\n=== SANITY CHECK: re-issued call scored after an engine-less build (F-002) ===")
+    print(f"  engine None: refresh from {offline.date()}, {acknowledged_offline} markers acknowledged, models {sorted(set(after_offline['model']))}")
+    print(
+        f"  engine back: both sections scored over their markers, models {sorted(set(after_online['model']))}; the call yields a KPI row. Validated."
+    )
 
 
 def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_store, monkeypatch) -> None:
@@ -341,6 +389,48 @@ def test_panel_columns_lifetime_and_missingness():
         "(call 2023-02-01 + 1 trading day); genuine zero survives for 66 sessions and "
         "session 67 is NaN."
     )
+
+
+def test_call_is_invisible_on_its_as_of_session_and_visible_on_the_next(sqlite_store, monkeypatch) -> None:
+    """End to end from stored paragraphs: score -> stream -> daily panel. A call dated D (the real
+    call date, `as_of` of its paragraphs) never reaches session D and first appears on the next
+    trading session -- the day after for a Wednesday call, the Monday for a Friday call."""
+    calls = {"A": "2024-05-01", "B": "2024-05-03"}  # Wednesday, Friday
+    paragraphs = pd.concat(
+        [
+            synthetic_call(tkr, "2024Q1", as_of, prepared=(_USEFUL * 2).strip(), question=_QUESTION, answer=_USEFUL.strip())
+            for tkr, as_of in calls.items()
+        ],
+        ignore_index=True,
+    )
+    sqlite_store.save(Tables.earnings_call_sections, paragraphs)
+
+    class _Engine:
+        device = "test"
+
+        @staticmethod
+        def score_texts(texts):
+            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    context = cast(Context, _Ctx(sqlite_store))
+    assert score_earnings_calls(context) == pd.Timestamp("2024-05-01")
+    per_call = sentiment_kpis_streamed(context)
+    assert per_call is not None and len(per_call) == 2
+    calendar = pd.bdate_range("2024-04-01", "2024-09-30")
+    panel = build_earnings_call_feature_panel(None, calendar, per_call=per_call)
+    panel["date"] = pd.to_datetime(panel["date"])
+    first_seen = {}
+    for tkr, as_of in calls.items():
+        live = panel[panel["ticker"].eq(tkr) & panel["f_ec_tone"].notna()]
+        call_date = pd.Timestamp(as_of)
+        assert not live["date"].le(call_date).any(), f"{tkr}: visible on or before its as_of session"
+        next_session = calendar[calendar.searchsorted(call_date, side="right")]
+        assert live["date"].min() == next_session
+        first_seen[tkr] = (as_of, str(next_session.date()))
+    assert first_seen["B"][1] == "2024-05-06"
+    print("\n=== SANITY CHECK: earnings-call point-in-time visibility ===")
+    print(f"  (as_of, first visible session) per call from stored paragraphs: {first_seen}; never visible on its as_of session. Validated.")
 
 
 def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:

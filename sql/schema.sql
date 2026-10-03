@@ -1467,16 +1467,19 @@ CREATE TABLE IF NOT EXISTS "sec_filing_text" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec_filing_text_filed ON "sec_filing_text" ("filed");
 
--- [extract] earnings_call_sections  (pk: ticker, quarter, tag)
+-- [extract] earnings_call_sections  (pk: ticker, quarter, paragraph)
+-- Raw defeatbeta transcript paragraphs, one row per source paragraph. The prepared-remarks /
+-- Q&A split happens in data_aggregate (src/utils/earnings_call_split.py), not here.
 
 CREATE TABLE IF NOT EXISTS "earnings_call_sections" (
     "ticker" TEXT NOT NULL,
     "quarter" TEXT NOT NULL,
-    "tag" TEXT NOT NULL,
-    "as_of" DATE,
-    "url" TEXT,
-    "text" TEXT,
-    PRIMARY KEY ("ticker", "quarter", "tag")
+    "paragraph" BIGINT NOT NULL,
+    "as_of" DATE NOT NULL,
+    "transcript_id" BIGINT,
+    "speaker" TEXT,
+    "content" TEXT,
+    PRIMARY KEY ("ticker", "quarter", "paragraph")
 );
 CREATE INDEX IF NOT EXISTS ix_earnings_call_sections_as_of ON "earnings_call_sections" ("as_of");
 

@@ -1,0 +1,79 @@
+{
+ "symbol": "PNW",
+ "fiscal_year": 2024,
+ "fiscal_quarter": 4,
+ "report_date": "2025-02-25",
+ "transcripts_id": null,
+ "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+ "case": "AI Insights placeholder; operator first speaks at the Q&A",
+ "truncation": "kept 36 of 48 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
+ "truth": {
+  "status": "ok",
+  "first_qa_turn": {
+   "paragraph_number": 6,
+   "speaker": "Operator",
+   "starts_with": "Certainly. Everyone at this time will be conducting"
+  },
+  "analysts": [
+   "Julien Dumoulin-Smith",
+   "Michael Lonegan",
+   "Travis Miller"
+  ],
+  "management": [
+   "Amanda Ho",
+   "Jeffrey Guldner",
+   "Ted Geisler",
+   "Andrew Cooper"
+  ],
+  "tags": [
+   {
+    "person": "Michael Lonegan",
+    "contains": "goal for an evergreen",
+    "tag": "question"
+   },
+   {
+    "person": "Ted Geisler",
+    "contains": "settlements can lead",
+    "tag": "answer"
+   }
+  ]
+ },
+ "paragraphs": [
+  {"paragraph_number": 1, "speaker": "AI Insights", "content": ""},
+  {"paragraph_number": 2, "speaker": "Amanda Ho", "content": "A replay of this call will be available shortly on our website for the next thirty days. It will also be available by telephone through March 4, 2025. I will now turn the call over to Jeff."},
+  {"paragraph_number": 3, "speaker": "Jeffrey Guldner", "content": "Great. Thanks, Amanda. Thank you all for joining us today. I went back on 2024. And just say I'm extremely proud of our company and all of our accomplishments. I'm gonna provide several updates today and share the successes we were able to achieve despite challenges that we faced. And we met or exceeded nearly every target we set for ourselves including delivering strong service reliability to our customers. We [...] part of this journey. With that, I'm gonna turn it over to Ted to talk about our future and what we can look forward to."},
+  {"paragraph_number": 4, "speaker": "Ted Geisler", "content": "Thank you, Jeff. And first, I'd like to take this opportunity to recognize everything you have done to create a strong foundation for our company's success with your collaborative leadership approach over the past five years. Under your leadership, our team has achieved performance improvement across all aspects of our business, including improving our customers' experience and the company's long-term financial health. We're truly grateful for your years of service [...] time today. I'll now turn it over to Andrew, who will discuss our fourth quarter and full year 2024 earnings and our forward-looking financial expectations."},
+  {"paragraph_number": 5, "speaker": "Andrew Cooper", "content": "Thanks, Ted and Jeff, and thanks again to everyone for joining us today. Earlier this morning, we released our fourth quarter and full year 2024 financial results. I'll share those results and highlight key drivers, and we'll review our full year 2025 financial guidance which was provided in Q3 2024. We lost six cents per share during the fourth quarter of 2024 compared to a flat result in Q4 of [...] financial health and creating value into the future. This concludes our prepared remarks. I will now turn the call over to the operator for questions."},
+  {"paragraph_number": 6, "speaker": "Operator", "content": "Certainly. Everyone at this time will be conducting a question and answer session. Star one on your phone at this time. Star one on your phone. Your first question is coming from Julien Dumoulin-Smith from Jefferies. Your line is live."},
+  {"paragraph_number": 7, "speaker": "Julien Dumoulin-Smith", "content": "Hey. Good morning, team. Thank you guys very much for the time. I appreciate it. And first off, Jeff, Ted, congrats. It's been a pleasure and welcome indeed. So I will just leave with that here."},
+  {"paragraph_number": 8, "speaker": "Jeffrey Guldner", "content": "K. Thanks. Thanks, Julien. Pass our regards on to Jamieson as well."},
+  {"paragraph_number": 9, "speaker": "Julien Dumoulin-Smith", "content": "Absolutely. Indeed. So maybe just to kick things off here, I mean, obviously, making good progress on the core business. With respect to, you know, the ACC, it's clarified that it supports settlements in general. And, frankly, now we're looking at a formula rate potentially. How do you think about, you know, a test case here being able to be settled? Right? Do you need to fully litigate in order to see and implement formula rates at this point?"},
+  {"paragraph_number": 10, "speaker": "Ted Geisler", "content": "Yeah, Julien. Appreciate the question. You know, we always believe that settlements can lead to good outcomes both for our customers, regulators, stakeholders, and corporate company. We got a long track record of constructed settlements in the past. That said, we're not assuming that this case will be settled nor does it need to be settled in order to achieve a constructive outcome. So I think our go-in default position [...] be that you get some partial areas that you're able to resolve ahead of time. So but, yeah, first time in the formula for sure."},
+  {"paragraph_number": 11, "speaker": "Julien Dumoulin-Smith", "content": "Excellent. And maybe a little bit more of a longer-term question as you think about it. Obviously, you guys give a CapEx forecast through 2027 only and versus some of your peers. And, obviously, given the longer-dated nature some of the demand growth, some of the CapEx is a little bit longer dated than we've seen historically. Clearly, I'm cognizant of the logo coming at the high end range. Obviously, [...] needle a little bit on that just given the trends we're seeing from some of your peers. And given the robust growth dynamics you're seeing."},
+  {"paragraph_number": 12, "speaker": "Andrew Cooper", "content": "Hi, Julien. It's Andrew. No. It's a great question. And, you know, we provide the three years you know, because that's the period in which we, you know, forecast in the shorter term. But you think about the types of projects that we're that we're looking at right now, they're longer data generation projects. They're the high voltage transmission, those longer lead time projects. And so those will extend over [...] get through the other side of this formula rate opportunity, we'll be looking at from a capital allocation and overall size of the capital envelope."},
+  {"paragraph_number": 13, "speaker": "Julien Dumoulin-Smith", "content": "Wonderful. Excellent, guys. Thank you very much. All the best. Congrats, guys."},
+  {"paragraph_number": 14, "speaker": "Jeffrey Guldner", "content": "Thanks, Julien."},
+  {"paragraph_number": 15, "speaker": "Julien Dumoulin-Smith", "content": "Thanks, Julien."},
+  {"paragraph_number": 16, "speaker": "Operator", "content": "Thank you. Your next question is coming from Michael Lonegan from Evercore. Your line is live."},
+  {"paragraph_number": 17, "speaker": "Michael Lonegan", "content": "Hi. Good morning. Thanks for taking my questions, and congrats Jeff and Ted."},
+  {"paragraph_number": 18, "speaker": "Jeffrey Guldner", "content": "Yep. Thanks, Mike."},
+  {"paragraph_number": 19, "speaker": "Ted Geisler", "content": "Thank you."},
+  {"paragraph_number": 20, "speaker": "Michael Lonegan", "content": "Yeah. Of course. In the past, you've talked about a goal for an evergreen 5% to 7% EPS growth rate. You know, obviously, formula rates will help improve cost recovery. You know, sales growth continues to be robust near the top end of expectations. You know, CapEx opportunities, significant backload of high load customers, large. Just wondering if you see you know, an opportunity to increase your growth rate to [...] to 7% or above that range at some point or does your focus remain on a continuation of 5% to 7% with a smoother profile?"},
+  {"paragraph_number": 21, "speaker": "Ted Geisler", "content": "Yep. Michael, I think that the first and foremost is the continuation of the 5% to 7% with a smoother profile. That is our number one goal right now is to, you know, work through this next rate case proceeding to try to find ways to reduce regulatory lag. We've also leaned into CapEx that has more contemporaneous recovery, like the generation projects including the 800 megawatts we won in [...] line looks like. But number one is getting through the formula rate opportunity and the chance to have a smoother path of earnings going forward."},
+  {"paragraph_number": 22, "speaker": "Michael Lonegan", "content": "Got it. Thank you. And then you know, secondly, I was wondering if you could share your thoughts and, you know, talk about the levels of support from legislators for House Bill 2201 proposed in Arizona. You know, that would address wildfire mitigation plans and proposed limitations on liabilities as it pertains to class action lawsuits, damage claims, and other items. I'm just wondering what your thoughts and confidence level you know, is in favorable legislation being passed."},
+  {"paragraph_number": 23, "speaker": "Ted Geisler", "content": "You know, Michael, appreciate the question. It's still pretty early in the process. It's a house bill and it's still in the house. We'll continue to monitor. Of course, we support it. As well as many other organizations throughout the state. Firefighter association, many of the unions, other utilities, really all those that have been paying attention to wildfire risk throughout our country and the west in particular realize that [...] progress and we'll continue to monitor it along the way, but probably too early to be able to anticipate any final conclusion at this point."},
+  {"paragraph_number": 24, "speaker": "Michael Lonegan", "content": "Great. Thank you very much."},
+  {"paragraph_number": 25, "speaker": "Jeffrey Guldner", "content": "Yep. Thanks, Mike."},
+  {"paragraph_number": 26, "speaker": "Operator", "content": "Thank you. Once again, everyone, if you have any questions or comments, your next question is coming from Travis Miller from Morningstar. Your line is live."},
+  {"paragraph_number": 27, "speaker": "Travis Miller", "content": "Morning. Thank you. I echo the congratulations to both of you."},
+  {"paragraph_number": 28, "speaker": "Jeffrey Guldner", "content": "Yeah. Thanks. Thanks, Travis."},
+  {"paragraph_number": 29, "speaker": "Travis Miller", "content": "Jeff, the last five years. The real quick clarification on the midyear 2025 rate case. As the formula rates go, how does that go together? Right? Would it be then the next rate case that you would implement formula rates because obviously this would be the historical. So how is that kinda timing gonna work if the commission does support formula rates as part of the filing?"},
+  {"paragraph_number": 30, "speaker": "Ted Geisler", "content": "Yeah, Travis. Appreciate the question. The way we would anticipate it working is this next case would really look like a traditional rate case based on a historic test year with post-test year plan. So if you assume mid-2025 filing, let's anticipate a conclusion of a case perhaps by the end of 2026. And then if that included design for a formula rate plan on a go-forward basis. Consistent with [...] of that in this next case as a part of the filing and align with the commission on details around how that formula would work."},
+  {"paragraph_number": 31, "speaker": "Travis Miller", "content": "Okay. That makes sense. Yeah. Thanks. And then one quick other one on that ROE. What are your thoughts on that? I don't think it was in the policy segment, but you can correct me if I'm wrong there. We would envision the change over year."},
+  {"paragraph_number": 32, "speaker": "Ted Geisler", "content": "Yeah. Travis, we wouldn't envision that the ROE would really be a factor any different than it is today around a formula rate. So we would take the opportunity in case to be able to demonstrate what an appropriate ROE would be for us to be able to attract capital commensurate with our peers, and then look to work with the commission on how that would be maintained in a [...] rate construct. So it wasn't detailed out in the policy statement, and we'll just look to work through all those details in this upcoming case."},
+  {"paragraph_number": 33, "speaker": "Travis Miller", "content": "Okay. Great. Now let's hop on. And one higher level, again, back to the formula rates. Any chance that if this is successful that you would shift around CapEx, or is there some opportunity to shift around CapEx between transmission transmission already obviously has that network level, but between distribution and generation, perhaps shifting that CapEx if you end up getting that formula rate plan authorization."},
+  {"paragraph_number": 34, "speaker": "Andrew Cooper", "content": "Yes. Travis, it's Andrew. Yeah. That's a great question. I think we will definitely be looking at capital allocation should we be working through a formula rate. If you think about, you know, some of the projects that we're spending more heavily on today. They're in the generation space, and they're in the transmission space because of the more contemporary recovery. And in the case of transmission, a formula rate [...] it's supported by our credit metrics and our financing plan with the more predictable and contemporaneous recovery that we'd see should formula rates be adopted."},
+  {"paragraph_number": 35, "speaker": "Travis Miller", "content": "Okay. Great. That's very helpful. Thank you."},
+  {"paragraph_number": 36, "speaker": "Andrew Cooper", "content": "Thank you."}
+ ]
+}

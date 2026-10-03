@@ -1,0 +1,31 @@
+{
+ "symbol": "PSKY",
+ "fiscal_year": 2025,
+ "fiscal_quarter": 2,
+ "report_date": "2025-07-31",
+ "transcripts_id": null,
+ "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+ "case": "call without a Q&A session",
+ "truncation": "kept 7 of 7 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
+ "truth": {
+  "status": "no_qa",
+  "first_qa_turn": null,
+  "analysts": [],
+  "management": [
+   "Jaime Morris",
+   "Shari Redstone",
+   "Chris McCarthy",
+   "Andrew Warren"
+  ],
+  "tags": []
+ },
+ "paragraphs": [
+  {"paragraph_number": 1, "speaker": "Operator", "content": "Good afternoon. My name is Victoria, and I'll be the conference operator today. At this time, I would like to welcome everyone to Paramount Global's Second Quarter 2025 Earnings Conference Call. [Operator Instructions] At this time, I would now like to turn the call over to Jamie Morris, Paramount Global's EVP, Investor Relations. You may now begin your conference call."},
+  {"paragraph_number": 2, "speaker": "Jaime Morris", "content": "Good afternoon, everyone, and thank you for joining our Q2 2025 earnings call. Before we begin, I would like to remind everyone that in addition to our earnings release, we have trending schedules containing supplemental information available on our website. In addition, certain statements made on this call are forward-looking statements that involve risks and uncertainties. These risks and uncertainties are discussed in more detail in our filings with the [...] Chris McCarthy, our Co-CEO; on behalf of his fellow Co-CEOs; and Andy Warren, our Interim CFO. Now let me turn the call over to Shari."},
+  {"paragraph_number": 3, "speaker": "Shari Redstone", "content": "Thank you, Jaime. Given this is the final earnings call under our current corporate structure, I wanted to take the opportunity to express my thanks to our shareholders for their investment in our business and to the others across the investment community who have followed us for many years. I believe I can take it on face that many on this call understand the enormous importance of this business to [...] the past several decades. We will always be chairing on Paramount and the talented people who have made it what it is today. Thank you."},
+  {"paragraph_number": 4, "speaker": "Chris McCarthy", "content": "Thank you, Shari, and good afternoon, everyone. When George, Brian and I became co-CEOs, our goal was to transform Paramount into a streaming first company. And today, we are substantially better positioned to thrive in the streaming future. You only have to look to this quarter to see the shift, where D2C revenue growth outpaced linear declines. This was powered by an exceptional performance at Paramount+. We delivered industry-leading TV [...] strong and continued progress in executing as a streaming-first company. Now let me turn it over to Andy to provide more detail on the financials."},
+  {"paragraph_number": 5, "speaker": "Andrew Warren", "content": "Thank you, Chris, and good afternoon, everyone. Let's dive right into the second quarter numbers. Paramount generated total company revenue of $6.8 billion and adjusted OIBDA of $824 million reflecting continued year-over-year improvement in our direct-to-consumer segment .Free cash flow improved to $114 million, including approximately $70 million in payments for restructuring and cost reduction initiatives. Now let's discuss our operating segment results, starting with direct-to-consumer. Paramount+ finished the quarter [...] remain focused on operating execution as we prepare for the deal to close. Now let's turn the call back over to Chris for closing comments."},
+  {"paragraph_number": 6, "speaker": "Chris McCarthy", "content": "As this will be our last earnings call before we close the Skydance Transaction, allow me to take a moment on behalf of my co-CEO, Brian and George, to thank the people responsible for our successful shift into a streaming first company. To our teams, our partners, the Board and to Shari. Thank you for your support and efforts. We talk a lot about hit TV series and blockbuster films. [...] what you do, and you have a great team here to help you. With that, thank you for joining us, and have a good night."},
+  {"paragraph_number": 7, "speaker": "Operator", "content": "That concludes today's call. Thank you for your participation, and enjoy the rest of your day."}
+ ]
+}

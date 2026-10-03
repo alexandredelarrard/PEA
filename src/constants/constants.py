@@ -704,36 +704,19 @@ SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
 )
 
 # --------------------------------------------------------------------------- #
-# Earnings-call transcripts (The Motley Fool — free, full text, no API key)    #
-# and local FinBERT-tone sentiment scoring of the parsed sections.             #
+# Earnings-call transcripts (HuggingFace defeatbeta dataset, raw paragraphs)   #
+# and local FinBERT-tone sentiment scoring of the split sections.              #
 # --------------------------------------------------------------------------- #
-FOOL_BASE = "https://www.fool.com"
-
-# Motley Fool politeness: base inter-request pause (seconds) for the quote-page discovery
-# AND the transcript HTML download. Deliberately slow — fool.com sits behind Cloudflare and
-# throttles (429) after a short burst; the per-host slowdown in polite_http then ratchets
-# this up further. Reporting-lag grace (days): the just-ended calendar quarter is not required
-# until this many days after quarter-end, so a not-yet-reported quarter never forces a request.
-EARNINGS_CALL_REQUEST_PAUSE = 2
-EARNINGS_CALL_REPORT_GRACE_DAYS = 50
 # Map an earnings REPORT date (from earnings_surprises) back into the fiscal quarter it reports:
 # a report lands ~4-8 weeks after quarter-end, so shifting the report date back this many days puts
-# it inside the reported quarter (Feb report -> prior Q4, late-Apr report -> Q1). Used to demand
-# only quarters a ticker has ACTUALLY released, instead of a blanket calendar guess.
+# it inside the reported quarter (Feb report -> prior Q4, late-Apr report -> Q1). The validator uses
+# it to expect only quarters a ticker has ACTUALLY released, instead of a blanket calendar guess.
 EARNINGS_REPORT_TO_QUARTER_LAG_DAYS = 45
-# Tickers that hold NO earnings call, so a transcript can never be downloaded -> skipped entirely by
-# the earnings-call gap logic (no wasted request, not flagged as "missing"). Berkshire Hathaway is
+# Tickers that hold NO earnings call, so no transcript can exist -> excluded from the extraction
+# scope and reported apart from the coverage gap (not flagged as "missing"). Berkshire Hathaway is
 # the classic case (Buffett publishes a letter + holds the annual meeting, but no quarterly call).
 # Extend as other no-call names surface.
 NO_EARNINGS_CALL_TICKERS: frozenset[str] = frozenset({"BRK-B", "BRK-A"})
-
-# Roic AI earnings-call transcripts API — the PRIMARY recent-gap source (after the HF backbone,
-# before Motley Fool): a clean JSON API covering ~2y of history on the FREE tier (5 req/min). Auth
-# is the `apikey` QUERY param (not a header). `list` returns the available (year, quarter, date) per
-# ticker; `transcript` returns {symbol, year, quarter, date, content} for one fiscal quarter.
-ROIC_EARNINGS_LIST_URL = "https://api.roic.ai/v2/company/earnings-calls/list/{ticker}"
-ROIC_EARNINGS_TRANSCRIPT_URL = "https://api.roic.ai/v2/company/earnings-calls/transcript/{ticker}"
-ROIC_REQUEST_PAUSE = 12.5  # free tier = 5 req/min -> >= 12s between calls
 
 # per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
 EARNINGS_CALL_TAG_QUESTION = "question"  # a sell-side analyst turn (asks)
@@ -766,11 +749,16 @@ FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
 # Bump when transcript preprocessing changes.  The sentiment cache PK does not
 # include the model, so a new label deliberately makes existing rows eligible
 # for one-time rescoring and replacement.
-EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "clean-v1"
+EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "speaker-clean-v2"
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
 EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
 EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
 EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
+# Bump when the embedded turn texts change. The embedding cache PK (ticker, quarter, seq) does not
+# include the model, so the stored `model` tag carries this version: rows under another tag are
+# not complete and are re-embedded and replaced by the normal incremental pass.
+EARNINGS_CALL_EMBEDDING_CACHE_VERSION = "speaker-clean-v2"
+EARNINGS_CALL_EMBEDDING_CACHE_MODEL = f"{EARNINGS_CALL_EMBEDDING_MODEL}:{EARNINGS_CALL_EMBEDDING_CACHE_VERSION}"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

@@ -4,8 +4,8 @@
   re-raises non-rate-limit errors immediately.
 * earnings _download_one: retries the rate-limited yfinance call (the fix for
   the ~fixed subset that was silently dropped every run).
-* dividends / wiki / trends: a ticker already current is skipped; only missing
-  ex-dates/days are re-requested.
+* dividends / trends: a ticker already current is skipped; only missing
+  ex-dates are re-requested.
 """
 
 from __future__ import annotations
@@ -82,8 +82,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
 
 
 def test_incremental_skip_logic():
-    """The 'skip if current' freshness rule (dividends/trends) and the wiki
-    day-level window [cached_max+1 .. yesterday]."""
+    """The 'skip if current' freshness rule (dividends/trends)."""
     today = pd.Timestamp("2024-06-15")
     last_by = {
         "CUR": pd.Timestamp("2024-06-10"),  # 5d old -> current
@@ -97,12 +96,8 @@ def test_incremental_skip_logic():
 
     assert skip("CUR") and not skip("OLD") and not skip("NEW")
 
-    # wiki day-level: only request [cached_max+1 .. yesterday]; skip if caught up
-    end = today - pd.Timedelta(days=1)
-    assert (last_by["OLD"] + pd.Timedelta(days=1)) <= end  # has missing days
-    assert (end + pd.Timedelta(days=1)) > end  # current -> skipped
     print("\n=== SANITY CHECK: incremental skip / missing-days logic ===")
-    print("  current ticker skipped (freshness window); stale ticker refetched; wiki requests only [cached_max+1 .. yesterday]. Validated.")
+    print("  current ticker skipped (freshness window); stale ticker refetched. Validated.")
 
 
 if __name__ == "__main__":

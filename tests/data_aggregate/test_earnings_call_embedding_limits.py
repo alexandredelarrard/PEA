@@ -1,4 +1,5 @@
-"""Embedding input limits for the earnings-call layer.
+"""Embedding input limits for the earnings-call layer (the question gate now lives in the
+shared split library `src/utils/earnings_call_split.py`, which labels the embedded turns).
 
 Two defects the 2026-07 source-table audit measured on `earning_calls_embedding`
 (1,375,495 turns / 494 tickers):
@@ -13,11 +14,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.data_aggregate.utils.text.earnings_call_embeddings import (
-    _MIN_TURN,
-    _is_informative_question,
-)
 from src.gpt_extract import EMBEDDING_MAX_CHARS, cosine, embed_texts
+from src.utils.earnings_call_split import _MIN_TURN, _is_informative_question
 
 
 class _StubClient:
@@ -66,12 +64,13 @@ def test_batching_and_order_are_preserved_with_the_larger_cap():
 
 
 def test_question_gate_matches_the_answer_gate():
-    """The four real 20-24 char turns from the live cache must now be rejected, while a
-    genuine short question is kept."""
+    """The four real 20-24 char turns from the live cache must now be rejected, as must a question
+    under the 10-word minimum, while a genuine question is kept."""
     for junk in ("Can you hear me now?", "I will turn it over.", "So I had a question.", "You know, long tail."):
         assert len(junk) < _MIN_TURN
         assert not _is_informative_question(junk), junk
-    assert _is_informative_question("What drove the gross margin expansion this quarter?")
+    assert not _is_informative_question("What drove the gross margin expansion this quarter?")  # 8 words < 10
+    assert _is_informative_question("What drove the gross margin expansion this quarter, and is it sustainable?")
 
 
 def test_cosine_is_degenerate_safe():

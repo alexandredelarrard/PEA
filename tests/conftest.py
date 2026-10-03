@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]  # .../stock_pick_strat
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Every LIVE test (Roic, SEC, Motley Fool, yfinance) needs the combined corporate CA bundle
+# Every LIVE test (SEC, HuggingFace, Sharadar, yfinance) needs the combined corporate CA bundle
 # that main.py builds at startup; without it requests/curl_cffi raise
 # CERTIFICATE_VERIFY_FAILED behind the TLS proxy and the test looks like a source-not-covering
 # failure. Done at import time, before any fetcher module imports curl_cffi (which freezes its

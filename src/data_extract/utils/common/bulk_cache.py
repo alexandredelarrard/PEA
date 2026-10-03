@@ -1,17 +1,14 @@
 """
 bulk_cache.py  (src/data_extract/utils/common/bulk_cache.py)
 ------------------------------------------------------------
-Shared cache-and-download scaffolding for the SEC BULK data sets, and for the earnings-
-call transcript cache (behavioral), which turned out to need the identical `cache_dir`
-shape even though it isn't a periodic SEC zip.
+Shared cache-and-download scaffolding for the SEC BULK data sets.
 
-Six fetchers pull a large periodic zip (or, for earnings calls, a scraped-HTML tree) and
-parse it incrementally -- 13F holdings, insider transactions (Forms 3/4/5), the
-Financial Statement Data Sets, the Financial Statement & Notes Data Sets,
-fails-to-deliver, and Motley Fool transcripts. Each had grown its OWN
+The fetchers pull a large periodic zip and parse it incrementally -- 13F holdings,
+insider transactions (Forms 3/4/5), the Financial Statement Data Sets, the Financial
+Statement & Notes Data Sets, and fails-to-deliver. Each had grown its OWN
 `_cache_dir` / `_ensure_zip` / `_read_zip` / `_ingested_periods` / `_quarters`, all
 structurally identical and differing only in the filename pattern, the URL, the timeout
-and the log label. Six copies meant six places to fix a partial-download bug, five
+and the log label. Separate copies meant one place per fetcher to fix a partial-download bug, five
 hardcoded `User-Agent` strings (two still carrying the placeholder `contact@example.com`,
 which SEC blocks), and -- the bug this consolidation surfaced -- callers that keep the
 returned directory in a variable literally named `cache_dir`, shadowing the function of

@@ -1,0 +1,61 @@
+{
+ "symbol": "AMZN",
+ "fiscal_year": 2025,
+ "fiscal_quarter": 3,
+ "report_date": "2025-10-30",
+ "transcripts_id": null,
+ "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+ "case": "ordinary call",
+ "truncation": "kept 26 of 26 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
+ "truth": {
+  "status": "ok",
+  "first_qa_turn": {
+   "paragraph_number": 5,
+   "speaker": "Operator",
+   "starts_with": "[Operator Instructions] And our first question comes from the line of Justin Post"
+  },
+  "analysts": [
+   "Justin Post",
+   "Brian Nowak",
+   "Douglas Anmuth",
+   "Mark Stephen Mahaney",
+   "Eric Sheridan",
+   "John Blackledge",
+   "Colin Sebastian"
+  ],
+  "management": [
+   "Dave Fildes",
+   "Andrew Jassy",
+   "Brian Olsavsky"
+  ],
+  "tags": []
+ },
+ "paragraphs": [
+  {"paragraph_number": 1, "speaker": "Operator", "content": "Thank you for standing by. Good day, everyone, and welcome to the Amazon.com Third Quarter 2025 Financial Results Teleconference. [Operator Instructions] Today's call is being recorded. And for opening remarks, I will be turning the call over to the Vice President of Investor Relations, Mr. Dave Fildes. Thank you, sir. Please go ahead."},
+  {"paragraph_number": 2, "speaker": "Dave Fildes", "content": "Hello, and welcome to our Q3 2025 financial results conference call. Joining us today to answer your questions is Andy Jassy, our CEO; and Brian Olsavsky, our CFO. As you listen to today's conference call, we encourage you to have our press release in front of you, which includes our financial results as well as metrics and commentary on the quarter. Please note, unless otherwise stated. All comparisons in this [...] for our goods and services, and therefore, our actual results could differ materially from our guidance. And now I'll turn the call over to Andy."},
+  {"paragraph_number": 3, "speaker": "Andrew Jassy", "content": "Thanks, Dave. We saw strong growth across our business in Q3, and we're reporting $180.2 billion in revenue, up 12% year-over-year, excluding the impact from foreign exchange rates. Operating income was $17.4 billion, but would have been over $21 billion, if not for 2 special Q3 expenses, $2.5 billion for an FTC settlement and $1.8 billion for estimated severance costs. Trailing 12-month free cash flow was $14.8 billion. I'll start [...] around the world who are gearing up to deliver for customers once again. With that, I'll turn it over to Brian for a financial update."},
+  {"paragraph_number": 4, "speaker": "Brian Olsavsky", "content": "Thanks, Andy. Starting with our top line financial results. Worldwide revenue was $180.2 billion, a 12% increase year-over-year, excluding a 90 basis point favorable impact of foreign exchange. In Q3, we reported worldwide operating income of $17.4 billion. This operating income includes 2 special charges, which reduced operating income by $4.3 billion. The first charge of $2.5 billion is related to a legal settlement with the Federal Trade Commission, which [...] to elevating the customer experience is the only reliable way to drive sustainable value for our shareholders. With that, let's move on to your questions."},
+  {"paragraph_number": 5, "speaker": "Operator", "content": "[Operator Instructions] And our first question comes from the line of Justin Post with Bank of America."},
+  {"paragraph_number": 6, "speaker": "Justin Post", "content": "I'll ask on AWS. Can you just kind of go through how you're feeling about your capacity levels and how capacity constrained you are right now? And then in your prepared remarks, you mentioned Trainium3 demand and maybe broadening out your customer base. Can you talk about the demand you're seeing outside of your major customers for Trainium?"},
+  {"paragraph_number": 7, "speaker": "Andrew Jassy", "content": "Yes. On the capacity side, we brought in quite a bit of capacity, as I mentioned in my opening comments, 3.8 gigawatts of capacity in the last year with another gigawatt plus coming in the fourth quarter and we expect to double our overall capacity by the end of 2027. So we're bringing in quite a bit of capacity today, overall in the industry, maybe the bottleneck is power. I [...] coming in the beginning of '26, we have a lot of customers, both very large, and I'll call it, medium-sized who're quite interested in Trainium3."},
+  {"paragraph_number": 8, "speaker": "Operator", "content": "And the next question comes from the line of Brian Nowak with Morgan Stanley."},
+  {"paragraph_number": 9, "speaker": "Brian Nowak", "content": "Congrats on the quarter, guys. So maybe 2. One, Andy, sort of a philosophical chip question. There's a lot of questions in the market about Trainium and sort of its positioning versus other third-party chips. So how do you think about the key hurdles of Trainium3 need to overcome to really make Trainium adoption broader, to your point on the last question and continue to drive Trainium as opposed to satisfying what could be broader demand with third-party chips in the near term?"},
+  {"paragraph_number": 10, "speaker": "Andrew Jassy", "content": "Yes. Well, first of all, we're always going to have multiple chip options for our customers. It's been true in every major technology building block or component that we've had in AWS. Really in the history of AWS, it's never just one player that over a long period of time has the entire market segment and then can satisfy everybody's needs on every dimension. And so we have a very [...] Anthropic's doing on Trainium2, it builds increasing credibility for Trainium. And I think customers are very bullish about it. I'm bullish about it as well."},
+  {"paragraph_number": 11, "speaker": "Operator", "content": "And our next question comes from the line of Doug Anmuth with JPMorgan."},
+  {"paragraph_number": 12, "speaker": "Douglas Anmuth", "content": "I'll stick with basically the same topic, Andy. But can you just talk a little bit about the architecture of Project Rainier and how it's differentiated and what that means for customers and for AWS? And do you expect Rainier to expand beyond Anthropic? And how do you replicate Rainier with Trainium3 chips?"},
+  {"paragraph_number": 13, "speaker": "Andrew Jassy", "content": "Yes. I think what is compelling for entropic around Project Rainier is really is the Trainium2 chip, which we built a very -- first of all, we built a very large cluster that they can use in a very expansive way. And it's not simple to be able to build a cluster that has 500,000 plus chips going to 1 million. That's an infrastructure feet that's hard to do at [...] customers who are interested in employing large clusters of Trainium chips that we're going to hopefully give them a chance to do so with Trainium3."},
+  {"paragraph_number": 14, "speaker": "Operator", "content": "The next question comes from the line of Mark Mahaney with Evercore ISI."},
+  {"paragraph_number": 15, "speaker": "Mark Stephen Mahaney", "content": "I want to ask about 2 topics, groceries and then how to think about head count in the future. And on groceries, I want to -- the perishables, I think last quarter, you talked about 70% or something of users had never purchased from perishables from Amazon before. Just talk about whether you -- I think you used the term, Game Changer, before. Does this mean that maybe we don't [...] flattish for the foreseeable future? Just talk about the pros and cons or the wins and losses in terms of that head count going forward?"},
+  {"paragraph_number": 16, "speaker": "Andrew Jassy", "content": "Yes. So I'll start with grocery, Mark. We have a very large grocery business. If you look at our entire grocery business, if I don't even count Whole Foods Market and Fresh, in the last 12 months to over $100 billion of gross merchandising sales, which would make us a top 3 grocery in the U.S. A good chunk of it is a lot of the items that you'd find [...] now, where it's important to be lean, it's important to be flat, and it's important to move fast, and that's what we're going to do."},
+  {"paragraph_number": 17, "speaker": "Operator", "content": "And the next question comes from the line of Eric Sheridan with Goldman Sachs."},
+  {"paragraph_number": 18, "speaker": "Eric Sheridan", "content": "Wanted to know, Andy, if you could reflect on the opportunity that's continuing to present itself in terms of rolling out more robotics and automation and the broader theme of physical AI across your operations? And how should we be thinking about that as a driver of potential efficiencies, but also as a driver of the ability to possibly reinvest back in the business over the long term?"},
+  {"paragraph_number": 19, "speaker": "Andrew Jassy", "content": "Robotics is a very substantial area of investment for us. We have over 1 million robots in our fulfillment network at this point. And I would say that while that's significant, we have a lot of invention in flight. So I expect that we'll have more over a period of time. Robotics are very important for us and for our customers and for our teammates because they improve safety, they [...] on the safety, the productivity, the speed and ultimately some of the cost pieces, which will allow us to continue to improve the customer experience."},
+  {"paragraph_number": 20, "speaker": "Operator", "content": "And the next question comes from the line of John Blackledge with TD Cowen."},
+  {"paragraph_number": 21, "speaker": "John Blackledge", "content": "How does Amazon think about agentic commerce going forward? And how do you think Amazon will serve customers using agents to purchase goods on Amazon in the future?"},
+  {"paragraph_number": 22, "speaker": "Andrew Jassy", "content": "I'm very excited about -- and as a business, we're very excited about in the long term the prospect of agentic commerce. And it has a chance to be good for customers has a chance to be really good for e-commerce. And I think if you're -- if you know what you want to buy, there are a few experiences that are better than coming to Amazon. But if you [...] to have the broadest selection, great value and continues to deliver for you very quickly and reliably. And I think that bodes well for us."},
+  {"paragraph_number": 23, "speaker": "Operator", "content": "And our final question comes from the line of Colin Sebastian with Baird."},
+  {"paragraph_number": 24, "speaker": "Colin Sebastian", "content": "I guess first on AWS, following up there. How much of this acceleration is driven by core infrastructure versus AI workload monetization? And I think part of it is trying to understand how important newer services like AgentCore are becoming and bringing enterprises to AWS to build agents? And then I guess, secondly, regarding the acceleration in advertising, if you could potentially disaggregate the core advertising contribution versus DSP and Prime video. That would be helpful as well."},
+  {"paragraph_number": 25, "speaker": "Andrew Jassy", "content": "I'll start on the AWS side, we are seeing -- we're really pleased with the results from this quarter, 20% year-over-year on a annualized run rate of $132 billion is unusual. And we have momentum. You can see it. And we see the growth in both our AI area, where we see it in inference. We see it in training. We see it in the use of our Trainium custom [...] very optimistic about what we're doing there. We've continued work to do, obviously, but I don't think we're close to being able to grow there."},
+  {"paragraph_number": 26, "speaker": "Operator", "content": "Thanks for joining us on the call today and for your questions. A replay will be available on our Investor Relations website for at least 3 months. We appreciate your interest in Amazon and look forward to speaking with you again next quarter."}
+ ]
+}

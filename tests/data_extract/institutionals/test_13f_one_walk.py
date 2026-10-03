@@ -56,10 +56,11 @@ class _FakeFiling:
     primary_document: str | None = None
     reads: list[str] = field(default_factory=list)
     fail_reads: int = 0  # the first N `obj()` calls raise, like a transient SEC 429
+    accession: str | None = None  # a real accession's prefix is the filer agent's CIK
 
     @property
     def accession_number(self) -> str:
-        return f"{self.cik}-{self.filing_date}-{self.form}"
+        return self.accession or f"{self.cik}-{self.filing_date}-{self.form}"
 
     def obj(self) -> Any:
         self.reads.append(self.accession_number)
@@ -105,6 +106,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
 
     index = pa.table(
         {
+            "form": [f.form for f in filings],
             "accession_number": [f.accession_number for f in filings],
             "filing_date": [date.fromisoformat(f.filing_date) for f in filings],
         }
@@ -439,3 +441,30 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
     print("\n=== SANITY: catch-up keeps the amendment ===")
     print(f"  newest-first listing, original + 13F-HR/A for one CUSIP: {len(df_sent)} rows sent, one per PK;")
     print(f"  AAPL stored {df_book.loc['037833100', 'value_usd']:,.0f} filed 2026-06-01 (the 13F-HR/A). Validated.")
+
+
+def _same_day_pair() -> list[_FakeFiling]:
+    """A 13F-HR and its 13F-HR/A filed the same day by two filer agents: the original's accession
+    prefix sorts AFTER the amendment's, so an (filed, accession) order puts the original last."""
+    original = _roster_original()
+    original.accession = "0001234567-26-000001"
+    amendment = _FakeFiling(ROSTER, "2026-05-10", "2026-03-31", [_line("037833100", "APPLE INC", 1_200_000.0, 6_000)], form="13F-HR/A")
+    amendment.accession = "0000950123-26-000009"
+    return [amendment, original]
+
+
+@pytest.mark.parametrize("path", ["walk", "catch_up"])
+def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqlite_store, monkeypatch, path):
+    filings = _same_day_pair()
+    _seed_roster(sqlite_store, [ROSTER])
+    if path == "walk":
+        _patch_walk(monkeypatch, filings)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+    else:
+        _patch_company(monkeypatch, {ROSTER: filings})
+        f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
+    assert book.loc["037833100", "value_usd"] == 1_200_000.0, book
+    print(f"\n=== SANITY: same-day original vs amendment ({path}) ===")
+    print(f"  original accession sorts after the 13F-HR/A; stored AAPL value {book.loc['037833100', 'value_usd']:,.0f} = the amendment. Validated.")

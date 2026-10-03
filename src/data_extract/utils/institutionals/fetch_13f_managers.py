@@ -34,10 +34,10 @@ class SuperinvestorRosterEmptyError(RuntimeError):
 
 def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd.Timestamp]]:
     """`(stamp, period)` for the CIK's 13F-HR filings whose period is on/after `since`, oldest
-    first by (filed, accession) -- edgartools lists newest first; a null or unparseable period is
-    skipped."""
+    first by (filed, amendment last, accession) -- edgartools lists newest first; a null or
+    unparseable period is skipped."""
     listing = Company(cik).get_filings(form=SEC_13F_FORMS) or []
-    stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.accession_number))
+    stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.is_amendment, s.accession_number))
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
 

@@ -1,0 +1,67 @@
+## AC-004/005/007/008 test names
+tests/data_extract/behavioral/test_earnings_call_transcripts.py:166:def test_reissued_call_replaces_paragraphs_and_invalidates_derivatives(tmp_path: Path, sqlite_store: Any) -> None:
+tests/data_extract/behavioral/test_earnings_call_transcripts.py:218:def test_unchanged_revision_is_a_noop_and_full_forces_a_compare(tmp_path: Path, sqlite_store: Any) -> None:
+tests/utils/test_speaker_turn_split.py:29:def test_fixture_set_is_complete() -> None:
+tests/utils/test_speaker_turn_split.py:98:def test_turns_follow_the_embedding_contract(path: Path) -> None:
+tests/utils/test_speaker_turn_split.py:177:def test_fixture_suite_conclusion() -> None:
+tests/utils/test_speaker_turn_split.py:263:def test_qa_text_is_management_answers_only_and_turns_are_cleaned() -> None:
+tests/data_aggregate/test_earnings_call_features.py:305:def test_panel_columns_lifetime_and_missingness():
+tests/data_aggregate/test_earnings_call_features.py:356:def test_call_is_invisible_on_its_as_of_session_and_visible_on_the_next(sqlite_store, monkeypatch) -> None:
+tests/data_aggregate/test_earnings_call_features.py:398:def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
+## AC-007 header-regex grep
+tests/data_aggregate/test_earnings_call_embeddings.py:232:def test_embedded_turns_are_the_split_turns_on_hand_labelled_calls():
+tests/data_aggregate/test_earnings_call_embeddings.py:422:    test_embedded_turns_are_the_split_turns_on_hand_labelled_calls()
+Binary file tests/data_aggregate/__pycache__/test_earnings_call_embeddings.cpython-313-pytest-9.1.1.pyc matches
+## AC-009 retired-source grep (src tests configs docker-compose.yml airflow)
+src/constants/constants.py:359:# needs to interpret SF1 without fooling itself.                                #
+src/data_extract/cli.py:48:from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
+src/data_extract/transformers/step_extract_behavioral.py:13:from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import extract_earnings_calls
+Binary file src/data_extract/transformers/__pycache__/step_extract_behavioral.cpython-313.pyc matches
+src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py:2:fetch_earnings_call_transcripts.py  (src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py)
+src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py:5:(`data/US/stock_earning_call_transcripts.parquet`, ~2.27 GB, rebuilt about daily) into
+src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py:71:DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
+Binary file src/data_extract/utils/behavioral/__pycache__/fetch_earnings_call_transcripts.cpython-313.pyc matches
+src/data_extract/utils/common/incremental.py:11:several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already
+Binary file src/data_extract/utils/common/__pycache__/incremental.cpython-313.pyc matches
+src/data_extract/utils/fundamentals_sharadar/diagnostics.py:191:                "missing_quarters": ", ".join(quarter_label(q) for q in missing) or "-",
+Binary file src/data_extract/utils/fundamentals_sharadar/__pycache__/diagnostics.cpython-313.pyc matches
+Binary file src/data_extract/__pycache__/cli.cpython-313.pyc matches
+src/data_store/store.py:380:        useful bounds are not always temporal -- `fetch_hf_transcripts` reads a `quarter`
+Binary file src/data_store/__pycache__/store.cpython-313.pyc matches
+tests/data_extract/behavioral/test_earnings_call_transcripts.py:2:defeatbeta earnings-call extractor (src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py).
+tests/data_extract/behavioral/test_earnings_call_transcripts.py:23:from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
+tests/data_extract/behavioral/test_earnings_call_transcripts.py:74:        log=logging.getLogger("test_earnings_call_transcripts"),
+Binary file tests/data_extract/behavioral/__pycache__/test_earnings_call_transcripts.cpython-313-pytest-9.1.1.pyc matches
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:144:        print(f"    {row.ticker:6s} {row.n_missing} missing -> {row.missing_quarters}")
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:383:            f"{at['last_quarter']}, {at['n_missing']} gap(s) -> {at['missing_quarters']}"
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:385:        found = tuple(q.strip() for q in str(at["missing_quarters"]).split(",") if q.strip() and q.strip() != "-")
+Binary file tests/data_extract/sharadar/__pycache__/test_sharadar_diagnostics.cpython-313-pytest-9.1.1.pyc matches
+tests/fixtures/earnings_calls/ADP_2026Q3.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/AMZN_2025Q3.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/AVY_2025Q4.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/AXON_2025Q4.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/AXON_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/COIN_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/CRH_2025Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/IBM_2024Q1.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/JNJ_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/NOW_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/PLTR_2024Q4.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/PNW_2024Q4.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/PSKY_2025Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/UDR_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/WELL_2025Q4.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+tests/fixtures/earnings_calls/WST_2026Q2.json:7: "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+## roic hits not ratio:
+Binary file src/constants/__pycache__/constants.cpython-313.pyc matches
+Binary file src/data_aggregate/utils/common/__pycache__/capital.cpython-313.pyc matches
+src/data_aggregate/utils/fundamentals/feature_views.py:86:        "intangibles_roic_drag",
+src/data_aggregate/utils/fundamentals/feature_views.py:121:        "roic_ex_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:122:        "roic_incl_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:188:        "intangibles_roic_drag",
+src/data_aggregate/utils/fundamentals/feature_views.py:212:        "roic_ex_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:213:        "roic_incl_intangibles",
+src/data_aggregate/utils/fundamentals/fundamental_features.py:626:    with `goodwill_roic_drag` identically zero across 3.04 M rows.
+src/data_aggregate/utils/fundamentals/fundamental_features.py:645:        roic_incl = ratio(nopat, ic, positive_den=True) if ic is not None else pd.DataFrame()
+## protected roster scraper untouched
+(empty = untouched)

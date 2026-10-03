@@ -1,0 +1,10 @@
+[35m2026-10-02 07:25:20 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 07:25:20 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 07:25:22 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: defeatbeta/yahoo-finance-data/data/US/stock_earning_call_transcripts.parquet unchanged (8d9d4ef5cc22) -> nothing to do (1.7s).[0m
+[35m2026-10-02 07:25:57 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 07:25:57 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 07:25:59 - src.context - INFO - fetch_earnings_call_transcripts.py - Earnings calls: defeatbeta/yahoo-finance-data/data/US/stock_earning_call_transcripts.parquet unchanged (8d9d4ef5cc22) -> nothing to do (1.3s).[0m
+
+real	0m23.593s
+user	0m0.062s
+sys	0m0.077s

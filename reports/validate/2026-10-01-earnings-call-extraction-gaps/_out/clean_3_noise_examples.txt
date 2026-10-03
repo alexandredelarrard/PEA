@@ -1,0 +1,563 @@
+
+===== operator_text: 35961 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/qa/operator A 2006Q3: 'Colby, at this time if you could open the call to questions?'
+  EX finbert/qa/operator A 2006Q3: '(Operator Instructions) Your next question comes from the line of Richard Eastman with Robert Baird. Please proceed.'
+  EX finbert/qa/operator AAPL 2006Q2: 'Thanks, Bill. Could we have the next question, please?'
+  EX finbert/prepared_remarks/operator AXON 2012Q3: 'Good morning, everyone, and thanks for joining today. Before we get started, I’m going to hand over to Dan Behrendt to read the Safe Harbor statement.'
+  EX finbert/prepared_remarks/operator TGT 2022Q4: "Well, Mike, I want to thank you for joining us on stage here today. We're really excited about the opportunities that are in front of us. You've heard a few exa"
+  P00 finbert/operator: 'Your next question comes from the line of Matthew DiFrisco from Lazard. Your line is now open.'
+  P01 finbert/operator: "Our next question comes from the line of Paul Newsome with Sandler O'Neill & Partners."
+  P02 finbert/operator: 'This concludes the QUALCOMM fourth quarter conference call.'
+  P03 finbert/operator: 'Next, we go to Ebrahim Poonawala with Bank of America. Please go ahead.'
+  P04 finbert/operator: "We'll take our next question from Howard Chen with Credit Suisse."
+  P05 finbert/operator: 'Thank you. Next question, please?'
+  P06 finbert/operator: 'Thank you, Mr. [indiscernible]. Our next question is from the line of Jason Bednar with Piper Sandler. Please proceed.'
+  P07 finbert/operator: 'Your next question today comes from the line of Alex Scott with Goldman Sachs. Your line is now open.'
+  P08 finbert/operator: 'You may go ahead.'
+  P09 finbert/operator: 'Our next question will come from Craig Maurer of CLSA. Your line is open.'
+  P10 finbert/operator: "And that'll come from Romit Shah with Nomura Instinet."
+  P11 finbert/operator: 'Our first question comes from Judy Wong of Goldman Sachs.'
+  P12 finbert/operator: 'Our next question is a follow upfrom Scott Graham with Bear Stearns. Please go ahead.'
+  P13 finbert/operator: 'Thanks, David, appreciate the questions. Operator, next question, please.'
+  P14 finbert/operator: 'Our next question comes from Bill Herbert with Simons.'
+  P15 finbert/operator: 'Thank you. And our next question comes from the line of Scott Devitt from Stifel.'
+  P16 finbert/operator: 'Thank you. And our next question comes from Brian Nowak of Morgan Stanley. Your line is now open.'
+  P17 finbert/operator: 'Thank you. I’m not showing any further questions at this time. I would now like to turn the call back over to George Kurtz for closing remarks.'
+  P18 finbert/operator: 'The next question is from Ross Muken with Evercore ISI.'
+  P19 finbert/operator: 'The next question will come from the line of Harry Curtis, Nomura Securities.'
+
+===== logistics_sentence: 10979 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/qa/answer A 2007Q3: 'Before we go to the next question, let me correct something I said a little earlier as far as share count.'
+  EX embed/prepared_remarks/prepared ABT 2025Q1: "Following their comments, we'll take your questions."
+  EX finbert/prepared_remarks/prepared ACGL 2011Q4: 'With these comments, we are pleased to take your questions.'
+  EX finbert/qa/answer ACN 2012Q2: 'Thanks again for joining us today.'
+  EX finbert/prepared_remarks/prepared ACN 2013Q3: 'David will then provide our business outlook for the fourth quarter and full fiscal year 2013 and then we will take your questions before Pierre provides a wrap up at the end of the call.'
+  EX finbert/prepared_remarks/prepared ACN 2014Q2: 'And then we will take your questions before Pierre provides a wrap-up at the end of the call.'
+  EX finbert/qa/answer ACN 2016Q2: 'And thanks again for joining us on today’s call.'
+  EX embed/prepared_remarks/prepared ACN 2020Q2: 'Thank you, operator and thanks everyone for joining us today on our second quarter fiscal 2020 earnings announcement.'
+  EX embed/qa/answer ADBE 2018Q4: 'And again, wanted to thank you all for joining us today.'
+  EX embed/prepared_remarks/prepared ADM 2014Q4: 'With that, operator, please open the line for questions.'
+  EX embed/qa/answer ALGN 2021Q2: 'Well, listen, thank you everyone for joining us today.'
+  EX embed/qa/answer AMT 2009Q4: "And maybe, we'll move to the next question."
+  EX embed/qa/question CLX 2009Q3: "And then my next question is Burt's Bees."
+  EX finbert/qa/question DHI 2014Q1: "This concludes our prepared remarks and now, we'll host any questions you may have."
+  EX embed/qa/question DHI 2014Q1: "This concludes our prepared remarks and now, we'll host any questions you may have."
+  EX finbert/qa/question DTE 2014Q1: 'Next question is as far as trading, I know you’re assuming zero for this year.'
+  EX finbert/qa/question F 2007Q2: 'Please proceed sir.'
+  EX embed/qa/question IBKR 2009Q4: 'My next question was I’ve heard different quotes for the equities markets that naked sponsored access might be 20%, might be 30% of order flow.'
+  P00 finbert/prepared: "At this time, operator, we'd like to open the call to questions."
+  P01 embed/prepared: 'We will be happy to take your questions at this time.'
+  P02 embed/prepared: 'With that, we will turn it over to the operator for the Q&A portion of the call.'
+  P03 embed/prepared: 'And thanks everyone for joining us today on our second quarter fiscal 2014 earnings announcement.'
+  P04 finbert/answer: 'Thank you for joining us and your support in MGM and as always, we’re around to take any follow-up questions.'
+  P05 finbert/prepared: "After the speaker's remarks, there will be a question and answer session."
+  P06 embed/prepared: "With that, let's start the Q&A session."
+  P07 embed/prepared: 'Now I’ll turn it over to Kathy to begin our Q&A.'
+  P08 embed/answer: 'Next question.'
+  P09 embed/prepared: 'I will then have some additional comments and we will open the lines for Q&A.'
+  P10 finbert/prepared: 'With that, we will open up the lines for your questions.'
+  P11 finbert/prepared: 'This concludes our review of the Q3 2010 results.'
+  P12 embed/prepared: 'We will then open the call for questions.'
+  P13 finbert/prepared: "Thank you, and with that, I'll turn it over to Tom for the Q&A portion of the call."
+  P14 embed/prepared: 'With that, we will now open the line for questions.'
+  P15 finbert/prepared: 'Thanks Amanda and thank you all for joining us today. 2023 has started off in line with the financial guidance that we provided on the fourth quarter call in February.'
+  P16 finbert/prepared: 'And now I will open up the call for Q&A.'
+  P17 embed/prepared: 'I would now like to open the call for questions.'
+  P18 embed/prepared: 'So, with those comments from David and myself, I will turn it back to you Alex for questions.'
+  P19 finbert/answer: 'The next question is, well, why not just do puts, and we looked at that.'
+
+===== courtesy_sentence: 90997 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared A 2006Q3: 'Thanks for being on the call today.'
+  EX embed/prepared_remarks/prepared A 2006Q3: 'Thanks for being on the call today.'
+  EX finbert/prepared_remarks/prepared A 2007Q3: 'Adrian Dillon: Thank you, Bill.'
+  EX finbert/qa/question AAPL 2006Q2: 'All right, thank you.'
+  EX finbert/qa/answer AAPL 2006Q2: 'Bill Fearnley - FTN Midwest Securities : Okay, thanks.'
+  EX finbert/qa/question AAPL 2019Q4: 'Thank you.'
+  EX finbert/qa/question AAPL 2019Q4: 'Thank you for that.'
+  EX embed/qa/question AAPL 2023Q4: 'I appreciate the question.'
+  EX finbert/prepared_remarks/prepared ABT 2024Q1: 'Thanks, Mike.'
+  EX finbert/qa/answer ABT 2025Q4: 'Appreciate it.'
+  EX finbert/qa/answer ACGL 2007Q4: 'I appreciate that.'
+  EX embed/prepared_remarks/prepared ACN 2007Q2: 'Bill Green: Thank you, Pam.'
+  EX embed/prepared_remarks/prepared ACN 2016Q2: 'And thanks all of you for joining us on today’s call.'
+  EX embed/qa/question ADM 2013Q2: 'I appreciate it.'
+  EX embed/qa/question AEE 2026Q2: 'Thank you.'
+  EX embed/qa/answer AKAM 2023Q3: "However, we've made a lot of progress, and the team is doing a great job."
+  EX embed/qa/answer AKAM 2025Q3: 'Good question.'
+  EX embed/qa/answer ALL 2013Q3: 'Thanks for your question.'
+  P00 finbert/prepared: 'Thank you, good morning.'
+  P01 finbert/answer: 'Good morning.'
+  P02 embed/prepared: 'And good morning, good afternoon to everybody.'
+  P03 finbert/prepared: 'Thank you, Bill, and good morning, everyone.'
+  P04 embed/question: 'If you can give us some color there, thanks.'
+  P05 embed/question: 'Thank you for taking our question.'
+  P06 finbert/question: 'Thank you.'
+  P07 embed/question: 'I will jump out the line and thank you.'
+  P08 finbert/answer: 'Hi, Matt.'
+  P09 embed/question: 'I appreciate all the color and visibility you guys have been giving.'
+  P10 finbert/answer: 'Thanks for the question.'
+  P11 embed/prepared: 'And with that, it’s my pleasure to turn the floor over to, Mike.'
+  P12 embed/question: 'I appreciate all the color and continued best of luck.'
+  P13 finbert/question: 'Thank you.'
+  P14 finbert/prepared: "Thank you, and now I'll introduce Pete Bensen, our CFO."
+  P15 finbert/question: 'Thank you.'
+  P16 finbert/question: 'Thank you.'
+  P17 finbert/question: 'Hey, good morning, team.'
+  P18 finbert/prepared: 'Good morning.'
+  P19 embed/question: 'Paul Cheng – Barclays Capital Thank you.'
+
+===== backchannel_sentence: 47968 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/qa/answer A 2006Q1: 'Sure.'
+  EX finbert/qa/answer AAPL 2006Q2: 'Okay.'
+  EX finbert/qa/answer AAPL 2006Q2: 'Okay.'
+  EX finbert/qa/question AAPL 2019Q4: 'Yes.'
+  EX finbert/qa/question ABT 2024Q1: 'Understood.'
+  EX finbert/qa/question ABT 2025Q1: 'Understood.'
+  EX embed/qa/answer ADSK 2022Q3: 'Okay?'
+  EX embed/qa/answer ADSK 2023Q3: 'Alright.'
+  EX embed/qa/answer ADSK 2024Q3: 'Okay?'
+  EX embed/qa/question ALGN 2023Q4: 'All right.'
+  EX finbert/prepared_remarks/prepared AMGN 2006Q1: 'Okay.'
+  EX finbert/prepared_remarks/prepared AMGN 2011Q3: 'All right.'
+  EX embed/qa/question APP 2025Q3: 'All right.'
+  EX finbert/prepared_remarks/prepared AXON 2006Q4: 'Okay.'
+  EX embed/qa/question AXON 2022Q1: 'All right.'
+  EX embed/prepared_remarks/prepared AXON 2023Q1: 'Alright.'
+  EX embed/prepared_remarks/prepared CSGP 2018Q4: 'All right.'
+  EX embed/prepared_remarks/prepared CSX 2022Q3: 'All right.'
+  P00 finbert/question: 'Okay.'
+  P01 finbert/question: 'All right.'
+  P02 finbert/answer: 'Yeah.'
+  P03 finbert/question: 'Okay, perfect.'
+  P04 finbert/question: 'Okay.'
+  P05 finbert/answer: 'Correct.'
+  P06 finbert/question: 'Okay.'
+  P07 finbert/question: 'Got it.'
+  P08 finbert/answer: 'Right?'
+  P09 finbert/question: 'Okay.'
+  P10 finbert/question: 'Okay, got it.'
+  P11 finbert/question: 'Got it.'
+  P12 finbert/question: 'Okay, great.'
+  P13 finbert/answer: 'Yes.'
+  P14 finbert/answer: 'Sure.'
+  P15 finbert/question: 'Right.'
+  P16 finbert/question: 'Okay.'
+  P17 finbert/answer: 'Yep.'
+  P18 finbert/question: 'Yes.'
+  P19 finbert/question: 'Okay.'
+
+===== filler_uh: 58 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/qa/answer OMC 2006Q4: ' are not picking up any one line item and saying “ah". It is an overall mosaic of reaching our objecti'
+  EX embed/qa/answer OMC 2006Q4: ' are not picking up any one line item and saying “ah". It is an overall mosaic of reaching our objecti'
+  P00 finbert/answer: 'Hmm.'
+  P01 embed/answer: 'g to educate the board on private credit. I said, hmm, this is interesting. This is a category, and aga'
+  P02 embed/answer: 'Ah. I thought you might have had that in mind. We’re'
+  P03 embed/answer: "hink that's where you start to step back and say, hmm, this is something a little more than we've got t"
+  P04 finbert/answer: 'Um, Chris, I’d say it’s more the latter. You can cer'
+  P05 finbert/question: "Hmm. Helpful. Thank you. There's been a lot of questi"
+  P06 finbert/answer: 'Uh, well that is a “yes” and “no” problem. You are c'
+  P07 finbert/answer: "Ah. Well, (01:02:02) Well, that's why I asked the pr"
+  P08 embed/answer: 'Ah, thank you – I thought I was going to have to beg'
+  P09 embed/question: 'Uh, that’s great. And then, just again going back to'
+  P10 finbert/answer: ' But from a underlying volume standpoint, we saw, um, more normal seasonality. And as we play out the '
+  P11 embed/prepared: 'Amit Daryanani - RBC Capital Markets Maynard Um - Wells Fargo Securities Aaron Rakers - Stifel Ni'
+  P12 embed/prepared: 'ecurities LLC Steven Fox - Cross Research Maynard Um - Wells Fargo Securities Rod Hall - JP Morgan Jay'
+  P13 finbert/answer: 'm season, Europe, not so much. We expect that to, uh, play out more normally as it moves from Q3 to Q4'
+  P14 finbert/question: 'llythe target keeps moving because it seems like, ah, you know, the cost pressurescontinue to spiral i'
+  P15 finbert/answer: 'Ah, thanks, Larry.'
+  P16 finbert/prepared: ' Goldman Sachs Mark Moskowitz – JP Morgan Maynard Um – UBS Keith Bachman – BMO Capital Markets Chris W'
+  P17 embed/answer: 'Ah yeah. Let me at Christine we didn’t have no evide'
+  P18 embed/question: 'r video sub base with broadband subs and since we’er whatever a month and a week past the quarter and '
+  P19 finbert/prepared: 'Young – Citi Mike Walkley – Piper Jaffray Maynard Um – UBS Mark McKechnie – AmTech Tim Luke – Barclays'
+
+===== filler_youknow_imean: 36687 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/qa/answer A 2006Q3: 'I’m not quite sure that I understand the question. I mean, the top six handset manufacturers in the world s'
+  EX finbert/qa/answer AAPL 2019Q4: "Well, you know, Shannon, we've gone through different cycles. In"
+  EX embed/qa/answer AAPL 2019Q4: 'Katy, of course. As you said, I mean at the midpoint of the range, we are essentially '
+  EX embed/qa/question AAPL 2023Q4: 'you expect? And then, second, Luca, on the margins, I mean, is it fair to say that the mix in Q1 from a prod'
+  EX embed/qa/answer ABT 2013Q1: 'You know what, I am going to let Brian or Tom answer your '
+  EX finbert/qa/answer ABT 2022Q1: 'ne here was very similar, as I said in my comments. I mean it started off a little bit slower than we had an'
+  EX finbert/qa/answer ABT 2022Q1: "t are focused on driving gross margin improvements. I mean, a lot's going to depend, I think, as we think ou"
+  EX finbert/qa/question ACGL 2007Q4: ' year-end, if you excluded the benefit of Flatiron. I mean the reinsurance protection you get from Flatiron '
+  EX finbert/qa/question ACGL 2018Q4: 'That’s great. If you take out, I mean, that large amount of reserve releases, the repor'
+  EX embed/qa/question ACN 2020Q2: 'Then maybe my follow-up is on the talent side. I mean your 500,000 people are the most critical asset o'
+  EX embed/qa/question ADBE 2006Q4: "ve to the first public beta that you're doing here. I mean, beyond I guess maybe the obvious point ahead, so"
+  EX finbert/qa/question ADM 2014Q4: "Okay. And then one question on sorghum. I mean we've seen Chinese sorghum demand tick up pretty "
+  EX finbert/prepared_remarks/prepared ADP 2006Q3: 'straightforward and so clean. But if you step back, I mean, the reality is we had a really good quarter. We '
+  EX finbert/prepared_remarks/prepared AMAT 2006Q3: 'than 21 years with the company. I have to say that; you know I have really thoroughly enjoyed my opportunity t'
+  EX embed/prepared_remarks/prepared APH 2007Q3: " don't see any major impact coming from that delay. I mean the delay of six months to the ten-year program b"
+  EX embed/prepared_remarks/prepared CHD 2013Q4: "yesterday. I can't believe what happened yesterday. I mean, we watch that stock price probably every 2 hours"
+  EX embed/prepared_remarks/prepared CHD 2013Q4: "ince 2008, there's been some very wonderful growth. I mean, 31%, 32% compounded annual growth rate, you don'"
+  EX finbert/prepared_remarks/prepared DGX 2016Q2: 'es from this engagement before the end of the year. You know, hospitals continue to talk to us about how we ca'
+  P00 embed/answer: "e impact is from capital from one year to the next. I mean, it's so much is dependent upon the particular ho"
+  P01 finbert/answer: 'dry gas basins, not the liquids-rich or oil basins. You know, a large number of our customers have got a basic'
+  P02 embed/answer: "let me see if I can give you a little bit of color. You know, I think that 3. 275, again, I'll just make sure "
+  P03 finbert/answer: 'Sure. I mean our R&D itself was up $40 million, almost $40 mil'
+  P04 finbert/answer: "You know what, Jim, there's hardly anybody left in the Hay"
+  P05 finbert/answer: 'rcent plus free cash flow per share accretion. And, you know, here you are a year later, showing that free cas'
+  P06 embed/answer: "redit a little bit. I don't I don't know that. But, you know, we're we already do it. So I you know, if it was"
+  P07 finbert/answer: 'ing free cash flow guidance. You know what I could, you know I think what most people tend to do is model in l'
+  P08 finbert/answer: " this before. We think about the shape of the year, you know, overall, we're guiding sort of that low single-d"
+  P09 finbert/answer: 'ets us up for the combination, be able to go after, you know, AI-based workflows and efficiency in the back of'
+  P10 finbert/answer: "aging for us. Because that's obviously the largest, you know, at over 50% of the segment. That's our largest o"
+  P11 embed/answer: 'er to leave the guidance range kind of where it is. I mean, the big factor, frankly, is going to be in the b'
+  P12 finbert/answer: "ng the operators. That's been our typical approach. You know, once we get that right, then we're looking for t"
+  P13 embed/answer: "urther, what is the comfortable position out there, you know, I don't think we quoted anything specific, but w"
+  P14 finbert/answer: ". That's a better question. So the answer is, yeah. I mean, July is an odd month both because there's all th"
+  P15 embed/answer: 'epeat. So that has the effect of kind of dampening, you know, residential growth rates for the full year. That'
+  P16 embed/answer: ' waste and – about special waste and C&D. You know, I mean, look, the reality is that you had a lot of pent '
+  P17 finbert/question: "Okay, and in Continental Europe, I mean, again, I mean, it is surprising, as you've laid out total emplo"
+  P18 embed/question: 'Because I noticed, I mean, the unbilled receivables were up like about doub'
+  P19 finbert/question: "econd half, if I'm doing my math right. Do you see, I mean, when you talk to your producer customers, if you"
+
+===== filler_kindof_sortof: 76040 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared A 2006Q1: 'secular growth of our top-line, our preference to kind of performance is that, we would expect to see from '
+  EX finbert/qa/answer A 2006Q1: 'trong growth throughout the year. Wireline is, is sort of been a positive of our top customers we have, hav'
+  EX embed/qa/question AAPL 2020Q4: "but carrier subsidies would be attainment. So I'm kind of curious, how should we think about the different,"
+  EX embed/qa/question AAPL 2020Q4: 't as either they try to protect from switchers or kind of promote the 5G networks will see a higher prevale'
+  EX embed/qa/answer AAPL 2021Q4: 'udience to sell their software to. And so, that’s sort of number one on our list. Everything else is a dist'
+  EX finbert/qa/answer AAPL 2023Q4: " is in the best interest of our users. And that's kind of what we've done in the past and how we've -- how "
+  EX embed/qa/answer AAPL 2023Q4: "tive of the underlying business performance. It's sort of the net of it."
+  EX embed/qa/question ABT 2013Q1: "that at this point or is that something that we'd sort of have to wait and see how that plays out over the "
+  EX finbert/qa/answer ABT 2022Q1: 'o be able to benefit from this pretty significant kind of market expansion opportunity that we had with inc'
+  EX embed/qa/answer ABT 2022Q1: 'r testing business that will look more like a flu kind of respiratory kind of endemic state. And I think th'
+  EX finbert/qa/question ACGL 2007Q4: 'ing more, buying less and if you talk about it on sort of the sub-segment lines of business in sight of the'
+  EX finbert/qa/question ACGL 2011Q4: 'ss as the market continues to firm and as well as kind of these one-off deals, I mean there still seems to '
+  EX finbert/qa/question ACGL 2019Q4: 'e a market that this feels similar to when we can kind of think about pricing improvement? Or does it feel '
+  EX embed/prepared_remarks/prepared AMGN 2006Q3: 'ions. Page 33, I thought it would be good to just kind of summarize how 2006 is shaping up, kind of, from t'
+  EX finbert/prepared_remarks/prepared AXON 2012Q3: 'at’s also driven from – we’re taking advantage of sort of the low interest rate environment. So we have don'
+  EX embed/prepared_remarks/prepared AZO 2012Q2: " new cars, as today's new cars are tomorrow's our kind of vehicles. We do expect new car sales to increase "
+  EX finbert/prepared_remarks/prepared CHD 2013Q4: "acceptance on that. So give us a couple months to kind of understand all those facts. We don't have that ri"
+  EX embed/prepared_remarks/prepared CHD 2013Q4: 'tor. Steve and I looked at each other and we just sort of said, "Well, that\'s a novel idea. " I don\'t think'
+  P00 finbert/answer: 'ave our commodities outlook. So I think if you do kind of run the math together you would see that we think'
+  P01 finbert/question: 'do you see this as an answer for CVS to challenge kind of the inclusion of online into retail?'
+  P02 embed/answer: 'he capital is been employed in that initiative is kind of part of low level 3% to 5% of our total capital s'
+  P03 embed/answer: 'ediately and deposit will -- deposit pricing will kind of come down over time. So I would expect that in th'
+  P04 embed/question: 'that anecdotally are highlighting very strong man kind of entering at least calendar 2027. Just trying to b'
+  P05 finbert/question: 'working similar as to desktop i. e. search versus kind of affiliate and other in mobile? Thanks.'
+  P06 finbert/question: "zation in terms of commercial where we've already kind of seen some of that today, maybe more broadly in so"
+  P07 embed/question: 'r. And I wonder if that impacts you or if it just kind of stays outside the wall.'
+  P08 embed/question: 'k us through the process by which hospitals could kind of re-engage in the process? In other words, if they'
+  P09 embed/answer: 'ly you have, we know we have Europe, has a summer kind of shutdown, comes back into September. We want to b'
+  P10 embed/question: " the longer-term range, whether there's anything, sort of higher investment or what have you that's sort of"
+  P11 finbert/answer: ' be paid to others. So, we would expect our true, sort of, publishing product on an internal footing to gen'
+  P12 embed/question: ' that recent, but the Adapt SV and then the Tango kind of at the low and high end of the markets, just any '
+  P13 finbert/question: "c. So, I guess, I'll ask a question on related to kind of the current defense environment. Are we seeing th"
+  P14 finbert/answer: 'Christmas, and that varies, but we’ll see that as sort of a week, week and a half, maybe even up to two in '
+  P15 finbert/question: "margin. So I was just wondering if that's how you kind of preempt it rather than just the full economy."
+  P16 embed/answer: "I think it's kind of pretty simple. You have a buyer and a seller, the"
+  P17 embed/answer: 'creases in GSIB and some other factors. So, we’re kind of going to operate in that type of range throughout'
+  P18 embed/answer: 'se kinds of decisions, and each of them has their kind of kiss-or-kill approach to all of these projects. A'
+  P19 embed/question: ' Maybe can you discuss kind of the puts and takes kind of between there like mix, pricing, new products? An'
+
+===== filler_like: 757 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/qa/answer ABT 2025Q1: 'id a few years ago. So, you know, we saw this as a, like, a really interesting asset that was in there that'
+  EX finbert/qa/question ADM 2014Q1: 'reak out like maybe, between canola or the soybean, like, the general contribution from each of them? I mea'
+  EX finbert/qa/question AJG 2025Q4: 'hat we kind of be back into the thinking of, right, like, 4% plus organic and kind of, you know, that 50 ba'
+  EX finbert/qa/question ALL 2015Q2: ' do you still expect for the full year we see some, like, passive growth in the auto PIF?'
+  EX finbert/qa/answer CMS 2024Q4: 'message here. But just going back to those numbers, like, from a again, Canada, Mexico, China, and certainl'
+  EX embed/qa/answer CMS 2024Q4: 'message here. But just going back to those numbers, like, from a again, Canada, Mexico, China, and certainl'
+  EX embed/qa/answer CMS 2025Q1: "is just we think about different scenarios. That's, like, point one. Rejji emphasized the CE way. There's s"
+  EX embed/qa/question COR 2026Q1: 'ogy are you owning in going to the future? Is this, like, is this, like, a 10% piece that will remain kinda'
+  EX embed/qa/question DECK 2019Q4: '…how much demand within your guidance, like, I mean, how much demand do you think you left on '
+  EX embed/qa/question DELL 2026Q1: " we expect this booking in the backlog is good for, like, the entire fiscal year. And I'm asking this becau"
+  EX embed/prepared_remarks/prepared HD 2020Q2: '’ve also seen strong growth with interior projects, like, hard surface flooring, interior lighting and pain'
+  EX finbert/qa/answer JPM 2025Q2: ' for accepting a little bit less good outcomes and, like, higher rates scenarios, at least narrowly through'
+  EX finbert/qa/answer JPM 2025Q2: 'though, I I like the way you framed it in terms of, like, having the capacity And I think the way to think '
+  P00 embed/answer: 'lization that in many cases, what sponsors want is, like, a quick execution of a unitranche structure where'
+  P01 embed/answer: 'arious vendors, you know? And where might there be, like, financing opportunities? So, you know, cross-bord'
+  P02 embed/answer: 't that was an extension. Like, when we look at our, like, all the stats that we track, it almost when you l'
+  P03 finbert/question: 'nda just help us flavor you know, kinda understand, like, just where the biggest drivers of fee revenue gro'
+  P04 finbert/answer: 'question, Michael on SaaS and managed services. So, like, if we talk about, you know, FY ‘22 to FY ‘23, you'
+  P05 embed/question: ' lose. Okay? I never believed, like, a big dollars, like, invest Okay? And it translates to the bigger game'
+  P06 finbert/answer: 'P&L, because we continue to invest aggressively in, like, rolling out homeowners, motorcycle, renters. I th'
+  P07 finbert/answer: 'ir budget, so even our smallest clients would have, like, $100 million revenue. An individual executive mig'
+  P08 embed/answer: ' see solid performance there. And if you look into, like, and we do this. We look into, like, permits and h'
+  P09 embed/question: 'So would you -- and, I think we all know, like, for the most part commercial real estate loans ar'
+  P10 embed/question: 'memories and that came in all shifted to DDR5. And, like, again, and we clearly see the volumes now. Just a'
+  P11 embed/question: "'t back past up turns. Is there any running market, like, if you think back to or just history? Does this c"
+  P12 finbert/question: 'So would you -- and, I think we all know, like, for the most part commercial real estate loans ar'
+  P13 embed/question: 'd into March, I suppose, at least as it relates to, like, the Culinary Institute promotions. And then secon'
+  P14 finbert/question: ' That’s super helpful. And then just one follow-up, like, obviously, the margin in manufacturing this quart'
+  P15 embed/answer: "hen people go out to raise money, we've been doing, like, dramatically better. Risk-adjusted, that is a gre"
+  P16 embed/question: "poke to that aiding growth. Is that growth comment, like, an indication that it's gonna be more about profi"
+  P17 embed/question: "en the marketing and distribution needs. Maybe I'm, like, the only person on this call that might remember "
+  P18 finbert/question: 'reak out like maybe, between canola or the soybean, like, the general contribution from each of them? I mea'
+  P19 finbert/question: 'form and historical platform growth? Just, I guess, like, the moving pieces there would be helpful.'
+
+===== self_intro: 1391 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/qa/question ADP 2014Q2: 'This is Ryan Cary, calling in for Jason.'
+  EX embed/qa/question ADSK 2012Q3: 'This is Fatima in for Ross MacMillan.'
+  EX embed/qa/question AKAM 2024Q3: 'This is Mark on for Fatima.'
+  EX finbert/qa/question APO 2024Q2: 'Hi, this is Alex Bernstein on for Ken.'
+  EX finbert/qa/question AXON 2013Q3: 'This is Mark Strauss on for Paul Coster, congratulations on the quarter.'
+  EX finbert/qa/question BR 2018Q3: 'This is Anthony Cyganovich on behalf of David Togut.'
+  EX finbert/prepared_remarks/prepared JBHT 2019Q2: "It's Jason Seidl from Cowen."
+  EX finbert/qa/answer TRV 2017Q4: 'Hey Elyse, this is Greg Toczydlowski from Business Insurance.'
+  P00 finbert/question: 'This is Mahavir Sanghavi for Stephen Chin.'
+  P01 embed/question: 'This is Hans Hoffman filling in for Hamzah.'
+  P02 embed/question: 'This is actually Cathy Yao calling in for Craig.'
+  P03 embed/question: 'This is Andres Miranda for Rudy.'
+  P04 embed/question: 'This is Perry Huang for Heather.'
+  P05 embed/question: 'This is Ben Budish on for Ramsay.'
+  P06 finbert/question: 'This is Brian Biros on for Kathryn.'
+  P07 finbert/question: 'This is actually Mitchell Peterson on for Jack this afternoon.'
+  P08 embed/question: 'This is Aaron McCann for Anthony Noto.'
+  P09 finbert/question: 'This is actually Cathy Yao calling in for Craig.'
+  P10 embed/question: "It's Mark Rosenblum on for Ricky."
+  P11 finbert/question: 'This is Timothy Sweetnam on for Mark.'
+  P12 finbert/question: "It's actually Alex on for Shar."
+  P13 finbert/answer: 'Hey Elyse, this is Greg Toczydlowski from Business Insurance.'
+  P14 embed/question: 'This is Grace Chen on for Vincent.'
+  P15 finbert/question: "It's Jamie on for Rich."
+  P16 embed/question: 'This is Sean on for Tahira today.'
+  P17 finbert/prepared: "It's Chris Weatherby from Citi."
+  P18 finbert/question: 'Hi, this is Ashok Sivamohan on for Jerry Revich.'
+  P19 embed/question: "It's actually Steve Moss in for John."
+
+===== participant_roster: 6015 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/prepared_remarks/prepared A 2007Q3: 'Rodney Gonsalves - IR Bill Sullivan – President, CEO Adrian Dillon - CFO'
+  EX finbert/prepared_remarks/prepared ACN 2007Q4: 'Rod Bourgeois - Bernstein Julie Santoriello - Morgan Stanley Julio Quinteros - Goldman Sachs Edward Caso - Wachovia David Ridley-Lang - Bear Stearns Abhi Gami - Banc of America Securities George Price'
+  EX embed/prepared_remarks/prepared ACN 2016Q2: 'Tien-tsin Huang - JP Morgan Brian Essex - Morgan Stanley Ashwin Shirvaikar - Citi Bryan Keane - Deutsche Bank Darren Peller - Barclays Dan Perlin - RBC Capital Markets Lisa Ellis - Bernstein Edward Ca'
+  EX finbert/prepared_remarks/prepared ADBE 2018Q4: 'Mike Saviage - VP, IR Shantanu Narayen - Chairman, President & CEO John Murphy - EVP & CFO Walter Pritchard - Citigroup Saket Kalia - Barclays Bank Brad Zelnick - Crédit Suisse AG Taylor Reiners - Pip'
+  EX finbert/prepared_remarks/prepared ADP 2012Q3: 'Foresi - Janney Montgomery Scott LLC, Research Division Sara Gubins - BofA Merrill Lynch, Research Division James Macdonald - First Analysis Securities Corporation, Research Division Michael J.'
+  EX embed/prepared_remarks/prepared ADSK 2019Q1: 'David Gennarelli - Investor Relations Andrew Anagnost - President and Chief Executive Officer Scott Herren - Senior Vice President and Chief Financial Officer'
+  P00 finbert/prepared: 'Melissa Kivett – SVP, IR Rob Pollock – President and CEO Mike Peninger – EVP and CFO Chris Pagano – EVP and Treasurer; President and Chief Investment Officer, Assurant Asset Management Ed Spehar – Ban'
+  P01 finbert/prepared: 'Jason Gammel – Macquarie Research Equities [Paul Cheng – Barclays Company] Robert Kessler – Simmons & Company International Good morning and welcome to Exxon Mobil’s teleconference and webcast on our '
+  P02 embed/prepared: "Joe O'Hare - Director of IR Tom Chewning - CFO Tom Farrell - President & CEO Duane Radtke - EVP Scott Hetzer - SVP & Treasurer Steve Rogers - CAO"
+  P03 finbert/prepared: 'David Erickson – Vice President, Investor-Relations Michael Mussallem – Chief Executive Officer Thomas Abate – Chief Financial Officer Jason Mills – Canaccord Genuity Larry Biegelsen – Wells Fargo Kri'
+  P04 finbert/prepared: 'Robert Sands - Chief Executive Officer, President and Director Robert Ryder - Chief Financial Officer, Principal Accounting Officer and Executive Vice President Patty Yahn-Urlaub - Vice President of I'
+  P05 embed/prepared: 'Drbul - Barclays Capital, Research Division Adrianne Shapira - Goldman Sachs Group Inc. , Research Division Michael Binetti - UBS Investment Bank, Research Division Evren Dogan Kopelman - Wells Fargo '
+  P06 finbert/prepared: 'With me today is Bill Giles, Executive Vice President andChief Financial Officer, Store Development, and IT, and Brian Campbell, VicePresident, Treasurer, Investor Relations and Tax.'
+  P07 finbert/prepared: 'Chuck Zebula – Treasurer and SVP, IR Mike Morris – Chairman, President and CEO Holly Koeppel – EVP and CFO Michael Lapides – Goldman Sachs Brian Chin – Citi Investment Anthony Crowdell – Jefferies Les'
+  P08 embed/prepared: 'Robert Gutman - Guggenheim Securities LLC Jonathan Atkin - RBC Capital Markets LLC Colby Synesael - Cowen & Co.'
+  P09 finbert/prepared: "I'm Larry McGrath, Chief Strategy Officer; I'm joined this morning by David Joyner, President and Chief Executive Officer; and Brian Newman, Chief Financial Officer."
+  P10 embed/answer: 'After which Chris Van Ingen, President of our Bio-Analytical measurement business, will present after that, Tom White, I’m sorry Pat Byrne, Electronic Measurement and then Tom White of the Operation S'
+  P11 embed/prepared: 'On the call with me today are Charles Pope, Executive Vice President and Chief Financial Officer; Dave Wickersham, President and Chief Operating Officer; and Brian Dexheimer, Executive Vice President,'
+  P12 finbert/prepared: 'Prentiss - Raymond James & Associates, Inc. , Research Division Brett Feldman - Goldman Sachs Group Inc. , Research Division Michael Rollins - Citigroup Inc, Research Division Jonathan Chaplin - New S'
+  P13 finbert/prepared: "Susan Kendall - Head of IR Michael Corbat - CEO John Gerspach - CFO John McDonald - Bernstein Jim Mitchell - Buckingham Research Glenn Schorr - Evercore Matt O'Connor - Deutsche Bank Gerard Cassidy - "
+  P14 finbert/prepared: 'Dinos Iordanou - President and CEO John Hele - EVP and CFO Mike Zaremski - Credit Suisse Greg Locraft - Morgan Stanley Jay Gelb - Barclays Capital Vinay Misquith - Evercore Partners Matthew Heimermann'
+  P15 embed/prepared: 'Vijay Bhagavath - Deutsche Bank Securities Ittai Kidron - Oppenheimer Simona Jankowski - Goldman Sachs & Company Tal Liani - Bank of America Securities Steve Milunovich - UBS Securities James Faucette'
+  P16 embed/prepared: 'Paul Goldberg - Vice President, Investor Relations Robert Livingston - President and Chief Executive Officer Brad Cerepak - Senior Vice President and Chief Financial Officer'
+  P17 finbert/prepared: 'Paul Goldberg - Vice President, Investor Relations Robert Livingston - President and Chief Executive Officer Brad Cerepak - Senior Vice President and Chief Financial Officer Andrew Obin - Bank of Amer'
+  P18 embed/prepared: 'Stein - Morgan Stanley, Research Division Paul Ginocchio - Deutsche Bank AG, Research Division Manav Patnaik - Barclays Capital, Research Division David Togut - Evercore Partners Inc. , Research Divis'
+  P19 finbert/prepared: 'Steven Strycula - UBS Securities LLC Jonathan Feeney - Consumer Edge Research LLC Andrew Lazar - Barclays Capital, Inc.'
+
+===== intro_joined_by: 2421 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared ABT 2025Q4: 'With me today are Robert Ford, Chairman and Chief Executive Officer, and Philip Boudreau, Executive Vice President, Finance and Chief Financial Officer.'
+  EX finbert/prepared_remarks/prepared ACN 2014Q2: 'With me today are Pierre Nanterme, our Chairman and Chief Executive Officer; and David Rowland, our Chief Financial Officer.'
+  EX finbert/prepared_remarks/prepared ACN 2017Q2: 'With me today are Pierre Nanterme, our Chairman and Chief Executive Officer; and David Rowland, our Chief Financial Officer.'
+  EX embed/prepared_remarks/prepared BG 2008Q1: "With me today to discuss our results are Alberto Weisser, Bunge's Chairman and CEO, and Jackie Fouse, Bunge's Chief Financial Officer."
+  EX embed/prepared_remarks/prepared CCL 2008Q4: 'This is Howard Frank and with me this morning is Micky Arison, Chairman, and CEO of Carnival along with David Bernstein, who is our Chief Financial Officer and Senior VP of Finance and Beth Roberts, w'
+  EX embed/prepared_remarks/prepared CDW 2019Q1: 'With me on the call are Collin Kebo, our Chief Financial Officer; and Beth Coronelli, our VP of Investor Relations.'
+  EX finbert/qa/answer EBAY 2023Q4: "What I called out on the call is things like, we have over 100 million vehicles stored in my garage, and we're using now predictive maintenance, to say it's time to change, this element for your car."
+  EX embed/qa/answer IT 2022Q3: 'So the 18% associated growth that talked about on the call is largely catch up hiring.'
+  EX finbert/qa/question RCL 2014Q2: 'But I think a lot of us on the call are just trying to figure out how that’s looking right now in the third quarter.'
+  EX finbert/qa/question TSLA 2016Q2: "I'm joined today by Elon Musk, JB Straubel, Jason Wheeler and Jon McNeill."
+  P00 finbert/prepared: 'With me today are Pierre Nanterme, our Chief Executive Officer; and Pamela Craig, our Chief Financial Officer.'
+  P01 finbert/prepared: "I'm Sara Zawoyski, Head of Investor Relations, and with me today is Randy Hogan, our Chairman and Chief Executive Officer; and John Stauch, our Chief Financial Officer."
+  P02 embed/prepared: 'Here with me today are Jeff Stoops, our President and Chief Executive Officer and Brendan Cavanagh, our Chief Financial Officer.'
+  P03 finbert/prepared: 'With me today are Martin Anstice, President and Chief Executive Officer; and Doug Bettinger, Executive Vice President and Chief Financial Officer.'
+  P04 embed/prepared: "This morning, I'm joined by Bruce Gross, our Chief Financial Officer; Dave Collins, who you just heard from; and Dianne Bessette, our Vice President and Treasurer; Rick Beckwitt, our President; Jon Ja"
+  P05 finbert/prepared: "With me today are Jon Nudi, President and CEO of Masco, and Rick Westenberg, Masco's Vice President and Chief Financial Officer."
+  P06 finbert/prepared: "As well, I'm joined by Chris Moser, who runs the company's trading and commercial operations activities; Elizabeth Killinger, who's responsible for the company's retail business in the ERCOT market; a"
+  P07 finbert/prepared: 'Joining me on the call are Don Wood, Dan G. , Dawn Becker, Jeff Berkes, Chris Weilminster and Melissa Solis.'
+  P08 embed/prepared: "This is Marilyn Mora, Head of Investor Relations, and I'm joined by Chuck Robbins, our CEO and Kelly Kramer, our CFO."
+  P09 finbert/prepared: 'This afternoon, I am joined by our President and CEO, Shelley Simpson; our CFO, John Kuhlow; Spencer Frazier, Executive Vice President of Sales and Marketing; our COO and President of Contract Service'
+  P10 finbert/prepared: 'On the call with me today are Pat Yarrington, Vice President and Chief Financial Officer, and Jim Aleveras, General Manager Investor Relations.'
+  P11 embed/prepared: 'Just a few days ago, Eversource and Ørsted were joined by Rhode Island Governor, Dan McKee, to announce the start of construction of our advanced foundation components for our Revolution Wind project.'
+  P12 finbert/prepared: "I'm pleased to be joined today by Sun Choe, our Chief Product Officer, who will share some product highlights."
+  P13 finbert/prepared: 'With me today to discuss our quarterly results are Lew Frankfort, Coach’s Chairman and CEO and Mike Devine, Coach’s CFO.'
+  P14 finbert/prepared: 'The speakers with me this morning are Roger Linquist, our President, CEO and Chairman of the Board; Tom Keys, our Chief Operating Officer; and Braxton Carter, our Executive Vice President and Chief Fi'
+  P15 finbert/prepared: 'I am Troy Lahr and with me today are Jim McNerney, Boeing’s Chairman and Chief Executive Officer and Greg Smith, Boeing’s Chief Financial Officer.'
+  P16 finbert/prepared: 'Our call today is scheduled for one hour and joining me on the call are Paul Garcia, Chairman and CEO; Jim Kelly, President and COO; and David Mangum, EVP and CFO.'
+  P17 finbert/prepared: 'With me today are Dave King, Chairman and Chief Executive Officer; Glenn Eisenberg, Executive Vice President and Chief Financial Officer; and John Ratliff, CEO of Covance Drug Development.'
+  P18 embed/prepared: 'On the line with me today are Brian Cornell, Chairman and Chief Executive Officer; John Mulligan, Chief Operating Officer; and Cathy Smith, Chief Financial Officer.'
+  P19 embed/prepared: 'And for Q&A, we will be joined by Roz Brewer, Chief Operating Officer and Group President, Americas; John Culver, Group President, International, Channel Development and Global Coffee, Tea & Cocoa.'
+
+===== addressed_name: 26900 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared ACGL 2011Q2: 'Thank you, Dinos. Good morning. Regarding our '
+  EX finbert/qa/answer ACGL 2018Q4: "business. And Meyer, as you know, we're students "
+  EX finbert/qa/answer ACGL 2020Q4: "Yes, Geoff, we might, but we'll have to "
+  EX embed/qa/answer ACGL 2022Q4: 'And Meyer, quickly, I think what Franco'
+  EX finbert/prepared_remarks/prepared ACN 2008Q2: 'Thanks, Pam. Hi, everyone and thanks for '
+  EX finbert/prepared_remarks/prepared ACN 2014Q2: 'Thank you, Tom. And thanks everyone for join'
+  EX finbert/qa/question ACN 2017Q2: 'ering if. Hey David, I was wondering may be to fo'
+  EX finbert/qa/answer ACN 2019Q2: 'Good morning, Jim.'
+  EX embed/qa/answer ADBE 2012Q1: 'So Brent, as it relates to CS6 and rea'
+  EX embed/qa/answer ADM 2008Q3: ' regions. So John, do you want to add anything '
+  EX finbert/qa/question ADM 2026Q2: 'ng, Juan. Good morning, Monish. First, congrats on a very st'
+  EX finbert/qa/question ADP 2006Q3: "Hi Art, Gary, Elena - we've talked a"
+  EX embed/prepared_remarks/prepared ADSK 2025Q3: 'r Janesh. Thank you, Andrew, and everyone at Autodesk for'
+  EX embed/qa/question ALGN 2024Q4: 'Hey, Joe, I also want to follow up on '
+  EX embed/qa/question AMAT 2007Q1: 'So Mike, is it fair to assume that yo'
+  EX embed/qa/question BA 2008Q3: 'Yes, Jim, in a couple of your messages'
+  EX embed/prepared_remarks/prepared BSX 2012Q4: 'the U. S. and Europe, by reducing layers and compl'
+  EX embed/prepared_remarks/prepared CHD 2014Q4: 'ugh 2015. So, Lou, in your experience, what do '
+  P00 finbert/prepared: 'Thank you, Ellen. And good morning to our list'
+  P01 finbert/answer: 'Thank you, Greg.'
+  P02 embed/answer: 'Good. Thanks, Art. Appreciate that. And I think'
+  P03 embed/answer: 'he plant. So Tianjin, for example, last year it ra'
+  P04 finbert/answer: 'Thank you, John. Our next quarterly conferenc'
+  P05 embed/prepared: 'Thank you, Audra, and welcome to Northern Trus'
+  P06 finbert/question: 'you, Tom. Thank you, Drew.'
+  P07 embed/answer: 'Yeah, Kevin, if you look at the remaining'
+  P08 finbert/answer: 'Thanks, Noel. First of all, the strong exe'
+  P09 embed/prepared: 'Thank you, Jason, and thank you all for joinin'
+  P10 finbert/answer: 'Yes, Todd. The big laggard for us in Eu'
+  P11 finbert/answer: 'at to do. And, Kevin, you had a question about rei'
+  P12 finbert/answer: 'ther one. So, Brian, as we said, when we – at the'
+  P13 embed/answer: ' factors. And, Jon, you might want to make a com'
+  P14 embed/answer: 'And Manav, just to add, I think -- as S'
+  P15 finbert/question: 'Thanks Carlos. Thanks Andre.'
+  P16 finbert/answer: 'Yes, Jim. We have baked in the share r'
+  P17 finbert/answer: 'ess that. And, Tom, you can jump in at the end i'
+  P18 finbert/answer: 'Yeah, Bill. They always – typically peop'
+  P19 finbert/prepared: 'Thanks, John. Q2 was a terrific quarter an'
+
+===== speaker_name_token: 352693 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared A 2006Q1: ' as well as the outlook moving forward. Adrian?'
+  EX finbert/prepared_remarks/prepared A 2006Q1: 'd said because it was front-end loaded. Agilent’s plans allow for immediate i'
+  EX embed/prepared_remarks/prepared A 2006Q1: 'ust means that there is a still use for Agilent’s test equipment, and as many'
+  EX embed/prepared_remarks/prepared A 2006Q1: 'd said because it was front-end loaded. Agilent’s plans allow for immediate i'
+  EX embed/prepared_remarks/prepared A 2006Q1: ' help it to point out that the value of Agilent today is both a cash value of'
+  EX finbert/prepared_remarks/prepared A 2006Q3: ' & Company Paul Coster – JP Morgan Ajit Pai – Thomas Weisel Partners Edwa'
+  EX finbert/qa/answer A 2006Q3: 'Ajit, this is Adrian and that’s pr'
+  EX embed/qa/question A 2007Q3: 'eane Dray - Goldman Sachs: Both you and Adrian commented on the beginnings o'
+  EX finbert/qa/question AAPL 2006Q2: ' just follow up with one more question. Peter, could you just give us a sen'
+  EX finbert/qa/question AAPL 2006Q2: 'Keith, when you look at desktops, k'
+  EX finbert/qa/question AAPL 2006Q2: " was for the data center, which I think Steve mentioned you'd put together "
+  EX embed/qa/answer AAPL 2006Q2: 'Rich, how about if I start and then Tim can answer your first questio'
+  EX embed/qa/answer AAPL 2006Q2: 'd products. Bill Fearnley - FTN Midwest Securities : Okay, thanks. And also, I w'
+  EX embed/qa/question AAPL 2006Q2: "it's a very difficult compare. Also, as Peter alluded to in the preamble, w"
+  EX embed/qa/answer AAPL 2006Q2: 'tors that will affect gross margin, and Tim may want to add some further '
+  EX finbert/qa/answer AAPL 2010Q1: 'rs might. In terms of seasonal, I think Peter will comment on that.'
+  EX finbert/qa/answer AAPL 2020Q4: 'e placed our thoughts in the color that Luca provided when he said that al'
+  EX embed/qa/question AAPL 2020Q4: 'I guess I have two as well. First off, Tim, on iPhones, you talked about'
+  P00 finbert/answer: "David, we haven't done that, but ba"
+  P01 finbert/prepared: 'Thanks, Sally, and good morning to everyone'
+  P02 embed/answer: 'I think too, Peter, just to underscore, I think,'
+  P03 finbert/prepared: 'ise development group, which focuses on Tyler wide development initiatives '
+  P04 finbert/prepared: 'p Heather Bellini - UBS Jim Macdonald – First Analysis Security Corp.'
+  P05 finbert/prepared: 'rer, Chairman, Chief Executive Officer, President, Chairman of Executive Commit'
+  P06 embed/answer: 'hedule, 48 of the 50 top markets out of Cincinnati will have service, the two ot'
+  P07 finbert/prepared: 'Marilynn Meek - IR Gary Rollins – Vice Chairman and CEO Harry'
+  P08 embed/prepared: ' Mark Lipacis - Jefferies LLC, Research Division'
+  P09 embed/prepared: "o with that, I'll hand the call over to Keith."
+  P10 finbert/answer: 'Okay, thank you Eric for the questions. A couple o'
+  P11 embed/prepared: "lective focus will, we believe, realize Smurfit Westrock's true potential. Ou"
+  P12 finbert/question: 'Ron, just a couple of clarificati'
+  P13 finbert/question: 'hanks for taking my question here guys. Nikesh, maybe for you, you touched o'
+  P14 embed/prepared: 'Stanley Doug Mitchelson - Deutsche Bank Phil Cusick - JPMorgan Craig Moffe'
+  P15 finbert/prepared: 'nahan - Stifel Carter Gould - UBS Navin Jacob - Deutsche Bank Good evening.'
+  P16 embed/prepared: 'ca Rice - CFO Nick Lemen - Director, IR Ronika Pletcher - Director, IR Steve'
+  P17 embed/prepared: 'Amanda Finnis - Director Investor Re'
+  P18 embed/prepared: 'it Suisse Mark Siegel - Canaccord Adams Paul Patterson - Glenrock Associat'
+  P19 finbert/prepared: 'ies Jason Ader - Thomas Weisel Partners Cobb Sadler - Deutsche Bank Inder '
+
+===== boilerplate: 40196 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/prepared_remarks/prepared A 2006Q3: 'In accordance with SEC Regulation G if during this call we use any non GAAP financial measure, you will find momentarily on our web site the required reconciliation to the most directly comparable GAA'
+  EX embed/prepared_remarks/prepared A 2007Q3: "We encourage you to look at the company's most recent filings with the SEC to get a more complete picture of all the factors at work."
+  EX embed/prepared_remarks/prepared A 2007Q3: 'Table 5 of our press release financial tables provides a detailed reconciliation from that non-GAAP income of $194 million to our GAAP income.'
+  EX finbert/prepared_remarks/prepared AAPL 2019Q4: 'Actual results or trends could differ materially from our forecast.'
+  EX finbert/prepared_remarks/prepared AAPL 2021Q4: 'As we move ahead into the December quarter, I’d like to review our outlook, which includes the types of forward-looking information that Tejas referred to at the beginning of the call.'
+  EX finbert/prepared_remarks/prepared ABT 2022Q1: 'Before we get started, some statements made today may be forward-looking for purposes of the Private Securities Litigation Reform Act of 1995, including the expected financial results for 2022.'
+  P00 embed/prepared: 'In addition, an updated investor presentation has also been posted to our website.'
+  P01 embed/prepared: 'A reconciliation of the GAAP to non-GAAP results is provided in today’s press release and on our website.'
+  P02 embed/prepared: 'This call should be considered in conjunction with the press release that we issued earlier today.'
+  P03 embed/prepared: 'During this call, we will reference non-GAAP financial measures as we describe our business performance.'
+  P04 embed/prepared: "As a reminder, today's call may include forward-looking statements, which represent the company's belief regarding future events, which by their nature are not certain and outside of the company's con"
+  P05 finbert/prepared: 'After the market closed, Broadcom distributed a press release and financial tables describing our financial performance for the third quarter of fiscal year 2020.'
+  P06 finbert/prepared: 'Our detailed hedge position is included in our Form 10-Q, which was filed yesterday.'
+  P07 finbert/prepared: "A table providing supplemental information on adjusted EBITDA and reconciling to net income attributable to HCA Holdings, Inc. to adjusted EBITDA is included in the company's first quarter earnings re"
+  P08 finbert/prepared: 'A reconciliation of the GAAP to non-GAAP results is provided in today’s press release and on our website.'
+  P09 embed/prepared: "For those following the presentation, please turn to slide 2, the company's Safe Harbor statement, which says that some of our comments constitute forward-looking statements that reflect management's "
+  P10 embed/prepared: "The non-GAAP measures that we use are defined, qualified and reconciled with GAAP on schedules A-4 to A-8 of the financial statements accompanying today's earnings release."
+  P11 embed/prepared: "And so that's why both on our GAAP and non-GAAP basis for me to get back to that $2. 10 to $2. 20."
+  P12 finbert/prepared: 'The payments segment quarterly non-GAAP revenue increased 8%.'
+  P13 embed/prepared: 'Before we get started I will note that some of this morning’s comments may contain forward-looking statements about future events that are out of JMP’s control.'
+  P14 finbert/prepared: 'Please see our 8-K and trending schedule issued earlier this morning for the reconciliations of these non-GAAP financial measures to GAAP.'
+  P15 finbert/prepared: 'As you know our press release was issued earlier this morning, and the conference call materials are available on the Investor Relations website.'
+  P16 finbert/prepared: 'Non-GAAP operating margin increased to 25. 5% driven by the higher revenue.'
+  P17 finbert/prepared: 'A web replay is also will also be available you’ll find it by going to www. teradyne. com and clicking on investors.'
+  P18 embed/prepared: 'We are reaffirming our 2025 non-GAAP EPS guidance range of $1. 74 to $1. 76 which equates to 8% growth at the midpoint from our delivered 2024 non-GAAP EPS of $1. 62.'
+  P19 embed/prepared: 'We also announced in our press release that our Board of Directors approved an additional $200 million stock repurchase authorization.'
+
+===== artefact: 16955 hits; 3 examples per corpus/section then 20 random for precision
+  EX finbert/prepared_remarks/prepared ACGL 2008Q4: 'y oriented quota share which Dinos mentioned that (inaudible) at December 31, ’08, and that included the transf'
+  EX finbert/qa/question ACGL 2008Q4: 'Okay, fair enough. So, just want to (inaudible) critically, this is not at significantly pure PML'
+  EX finbert/qa/question ACGL 2008Q4: 't I was just hoping to get a little clarification [ph]. Again, next quarter maybe that will help.'
+  EX finbert/qa/answer ACGL 2018Q4: "ce to get out of breath. You don't hear about the [98] others that are actually that worked out to our f"
+  EX embed/qa/answer ACGL 2018Q4: 'k at some things that are published by outfits of [Fairview Urban Institute]. And you will look at the relative you credit qua'
+  EX embed/qa/answer ACGL 2022Q4: 'Difficulty] business. And property and properties [Technical Difficulty] a lot of attention in the last few weeks, but sti'
+  EX embed/qa/answer ACGL 2022Q4: "now. And we still don't know, it’s still not over [indiscernible] are forbearance. So it's still coming back in the"
+  EX finbert/prepared_remarks/prepared ACN 2018Q2: 'g and developing the most relevant talent. Let me [bring] to light in two key parts of our business, Accent'
+  EX finbert/qa/answer ACN 2018Q2: 'cant market, so all what we could, we are calling (inaudible), risk and regulatory management. Of course the ot'
+  EX embed/prepared_remarks/prepared ACN 2018Q2: 'on as the market leader in innovating and leading (inaudible). Before I get in to the details of the quarter, l'
+  EX finbert/qa/question ADBE 2012Q1: "Great. And then just relative to margin in the [indiscernible] business, your commentary was, I guess, you're ca"
+  EX embed/prepared_remarks/prepared ADBE 2018Q4: '18. We would now be happy to take your questions. [Operator Instructions]. Operator?'
+  EX embed/prepared_remarks/prepared ADSK 2009Q3: 's of existence and has emerged from each stronger [and in better] position competitively. I am confident that howev'
+  EX embed/qa/question ADSK 2009Q3: 'he [inaudible]. Could you comment on what was the [inaudible] growth? It looks like it was [negative] probably.'
+  EX finbert/qa/answer ADSK 2010Q3: ' much more afraid that Europe was headed into the [griper] and was looking like it was headed down in the sa'
+  EX embed/qa/question ADSK 2018Q1: 'This is [ Shankar ] for Kash. I have a question on the maintenance co'
+  EX embed/qa/question AES 2012Q2: '[Audio Gap] waiting for a potential settlement, you keep call'
+  EX finbert/prepared_remarks/prepared ALL 2014Q3: ', has slowed growth, particularly of its packaged [ph] policy offering as they expand profit improvement'
+  P00 finbert/answer: 'st in the learning more about. So everything from [Indiscernible], our BCMA CAR-T to nipocalimab that we got throug'
+  P01 embed/answer: "ices. So I think it's a healthy issue in terms of [ph] this was going to happen. It's going to continue "
+  P02 embed/answer: "h is that we consider manpower in the store being [indiscernible] is a fixed cost. You don't open a store without a"
+  P03 embed/answer: 'll of our decisions to scale back our operations. (Inaudible) it happens in click on the switch and it happens '
+  P04 finbert/answer: 'ast, when Jeffersonville does more Galvalume than [ph] galvanized, it presents opportunities for some of'
+  P05 finbert/prepared: ' in a recovery of about four-tenths to five cents [ph] of the negative impact waivers have had on our an'
+  P06 finbert/question: 'pments that was lower than -- lower than what the [technical difficulty] developments. When do you expect that to reverse?'
+  P07 finbert/prepared: 'ngress last week passed legislation that deployed [ph] Medicare competitive bidding for laboratory servi'
+  P08 finbert/answer: 'contractors and through our own stores, we strive [ph] a little better, run the market for us to impleme'
+  P09 embed/answer: 'ncial model and the strong free cash flow that we [indiscernible] gives us the ability to do both in terms of inves'
+  P10 finbert/answer: ' our expectations and offset some of the pressure [ph] that we saw from the bilogics move.'
+  P11 finbert/prepared: 'ay, 60. 6. For those of you that subscribe to the [indiscernible], you may be looking at the 59. 3. What you may no'
+  P12 embed/question: 'rket in the United States, but what percentage of [indiscernible] revenues are levered to the ablation catheter seg'
+  P13 embed/answer: "il by about 800,000 hectoliters in the first half [Technical Difficulty] was about 1. 1 million hectoliters. So there's ab"
+  P14 embed/prepared: 's and Dallas. It provides advanced search and box [ph] for on-demand content. We expect to roll it out b'
+  P15 finbert/prepared: 'justment across the entire portfolio, and achieve [full utilization] (ph) of projected cost savings. I note that begin'
+  P16 embed/answer: "would say it's possible that it could be December [ph] could easily flop our into the first month of '08"
+  P17 finbert/prepared: 'stock and the number of shares used for basic and [Audio Gap] more commonly used treasury stock method. Because'
+  P18 finbert/prepared: 'r borrowing capacity is about $2. 1 million (sic) [$2. 1 billion]. Assuming we did an acquisition and we levered up'
+  P19 finbert/answer: ' an associate at our Cincinnati, Dayton division, [indiscernible] came to the United States from Togo. After a few '
+
+===== repeated_word: 1256 hits; 3 examples per corpus/section then 20 random for precision
+  EX embed/qa/answer ADSK 2026Q3: ' specifics when we are actually guiding to fiscal twenty twenty seven in February. What I wanted to do today is j'
+  EX embed/qa/answer ALGN 2021Q4: 'John, on your your other part about you have the rest of the year, w'
+  EX finbert/qa/answer APP 2021Q3: ' to go after the entire mobile app ecosystem with this this integration and unified solution.'
+  EX finbert/qa/answer AVY 2009Q4: 'anning exercise and scenario. Frankly, let’s face it it’s a bell curve. I think zero is pretty improbable'
+  EX embed/qa/answer BG 2008Q1: 'Yes, because when I looked at it it looked to me like they were consistent the way th'
+  EX embed/prepared_remarks/prepared CL 2026Q1: ' us build a more agile company that can thrive in an an omni-channel environment. There is still uncertai'
+  EX finbert/qa/question CPRT 2008Q4: 'he hurricane, in the past you’ve always said that net net, excluding a Katrina kind of hurricane then reven'
+  EX embed/qa/question CVX 2010Q4: 'nything on the gone projects that were sanctioned D D, Big Foot and Jack/St. Malo and whether those boo'
+  EX finbert/qa/answer CVX 2023Q2: "recover out towards the middle and second part of this this decade. Your second question, I'm sorry I was thi"
+  EX finbert/prepared_remarks/prepared DECK 2015Q1: ' comfortably worn during colder weather. The HOKA ONE ONE brand’s momentum continues to gain pace. We belie'
+  EX embed/qa/question FANG 2024Q4: ' for that for that part of the deal is, you know, we we were gonna have to move a few rigs down south to,'
+  EX finbert/prepared_remarks/prepared FDX 2022Q1: '0 As announced yesterday effective January third, twenty twenty two, FedEx Express, FedEx Ground and FedEx Home D'
+  EX embed/qa/question JPM 2025Q2: "Oh, I I've mentioned that credit spreads are very low."
+  EX embed/prepared_remarks/prepared MDLZ 2013Q2: 'is year to grow at the low end over 5% to 7% long-term term target. And on the bottom line we’re reaffirming '
+  EX finbert/qa/question NTRS 2025Q3: "Great. Thanks for that, Mike. And then you you there's there's been a lot of movement in the markets. You you al"
+  EX finbert/prepared_remarks/prepared ROP 2008Q4: 'e contributions from acquisitions in 2008 most of which which fell in the RF space. Up over 50% gross margins w'
+  EX finbert/qa/question STLD 2009Q1: 'Hi Hi.'
+  P00 finbert/answer: "utions. From a transparency perspective, frankly, we're we're proud to be leading the the transparency transfor"
+  P01 embed/answer: "ndent one. They all have different variables, and we we've got to work through that. But we will prioriti"
+  P02 embed/answer: "a significant improvement to sort of pre pandemic price price profile. The the reason you're you know, we expec"
+  P03 finbert/answer: "ously that we're doing to improve the consistency of of our performance just give me a lot of confidence "
+  P04 finbert/question: 'And then last follow-up. If the the one liner why someone of your size can compete wi'
+  P05 finbert/question: "till number while, you know, a lot of other peers don't don't even give that number. We put it out there for tr"
+  P06 finbert/question: 'is. And if we turn back the clock, and go back to twenty twenty, you had the same seventeen percent goal for the '
+  P07 finbert/prepared: 'ements include Sherry House at the Wolfe Research Auto Auto Tech and Semiconductor Conference in New York Cit'
+  P08 finbert/question: 'sort of growth that implies if you’re successful? Thanks Thanks Todd.'
+  P09 finbert/prepared: ' comfortably worn during colder weather. The HOKA ONE ONE brand’s momentum continues to gain pace. We belie'
+  P10 embed/prepared: 'ion and strengthening our balance sheet in fiscal twenty twenty two. During the quarter, we repurchased one point'
+  P11 embed/question: "from tariff policy off the table? You know, is it the the tax bill certainty? I guess I'm just wondering, h"
+  P12 finbert/question: 'ines and volatility this year to kick things off, we we figured cutting capital and growing less or, you '
+  P13 finbert/question: "the changes that happened within some portfolios, but but we did see fee rates the way at least the way we'"
+  P14 finbert/question: ". But that's it for the rest of your life. And so the the goal is to find opportunities to grow and expand "
+  P15 finbert/answer: 'Good morning, Good morning Jim Jim, your full year 2018 Las Vegas strip outlook sugg'
+  P16 finbert/answer: "t. CCAR, in some cases, inhibit, you know, people we we talk about c carness. But, you know, there's a lo"
+  P17 embed/answer: 'So net net, in the year, SCT delivered mid single digit grow'
+  P18 embed/question: "on? Is there what you kind of baked in on margins from from that? And then a question in terms of you've alre"
+  P19 embed/answer: 'als and partially a second third and not at all a third third. But nonetheless, when it was as high as it was, '

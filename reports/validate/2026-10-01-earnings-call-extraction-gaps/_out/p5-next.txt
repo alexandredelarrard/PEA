@@ -1,0 +1,72 @@
+P5 -- next step after the USER's FinBERT pass: rebuild cube_part_text, then check it
+Written 2026-10-02. NOT run by the agent (build-text needs the speaker-clean-v1 sentiment scores).
+
+PRECONDITIONS
+  1. Embeddings complete: every call under text-embedding-3-small:speaker-clean-v1 (see _out/p5-embed.log).
+       rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT model, count(DISTINCT (ticker, quarter)) calls, count(*) turns FROM earning_calls_embedding GROUP BY 1;"
+       expect 1 row, ~33,591 calls (calls whose split yields 0 turns write no row).
+  2. Sentiment complete under yiyanghkust/finbert-tone:speaker-clean-v1 (verification SQL in p5-finbert-command.txt).
+  3. The EC tasks of the extraction / aggregation DAGs are still paused.
+  4. Snapshot to roll back to: _cache/p5_cube_part_text.dump (pg_dump -Fc -t public.cube_part_text, 1,798,087 rows).
+
+BUILD (from the worktree root, Git Bash)
+  cd "C:/Users/de larrard alexandre/OneDrive - The Boston Consulting Group, Inc/Documents/repos_github/PEA/reports/worktrees/earnings-call-extraction-gaps"
+  PY="$HOME/AppData/Local/pypoetry/Cache/virtualenvs/stock-pick-strat-lkf53h9P-py3.13/Scripts/python.exe"
+  RUN="../../validate/2026-10-01-earnings-call-extraction-gaps"
+  ( time rtk "$PY" -m src data_aggregate build-text -c ./configs -F ) 2>&1 | tee "$RUN/_out/p5-build-text.log"
+  Expected log: "Earnings-call sentiment cache already complete." and
+  "Earnings-call embedding cache already complete (N calls)." -- if either stage logs
+  "Scoring ..." or "Embedding ..." instead, a cache is incomplete: FinBERT would start on that machine (stop it if
+  that is the agent's machine) / OpenAI would be billed for the remainder.
+
+POST-REBUILD CHECK LIST
+  1. Column contract: cube_part_text carries exactly the 12 approved f_ec_* columns
+       f_ec_tone, f_ec_tone_vs_hist, f_ec_qa_gap, f_ec_qa_gap_vs_hist, f_ec_uncertainty, f_ec_uncertainty_vs_hist,
+       f_ec_qa_coherence_mean, f_ec_qa_coherence_mean_vs_hist, f_ec_tone_delta, f_ec_length_delta,
+       f_ec_qa_qq_distance, f_ec_prep_qq_distance
+     rtk docker exec pea_db psql -U alexandre -d pea -At -c "SELECT column_name FROM information_schema.columns WHERE table_name='cube_part_text' AND column_name LIKE 'f_ec_%' ORDER BY 1;"
+     rtk "$PY" -m pytest tests/data_aggregate/test_earnings_call_features.py::test_panel_columns_lifetime_and_missingness -v -s
+
+  2. Per-month f_ec_* coverage vs the snapshot (AC-008: 2024-2026 non-null coverage >= legacy).
+     Legacy monthly counts since 2023-01 are frozen in _out/p0-db.json -> cube_part_text.monthly_since_2023_01
+     (rows, tickers, non_null per legacy column). New counts:
+       rtk docker exec pea_db psql -U alexandre -d pea -c "
+         SELECT to_char(date,'YYYY-MM') AS month, count(*) AS rows, count(DISTINCT ticker) AS tickers,
+                count(f_ec_tone) AS tone, count(f_ec_qa_gap) AS qa_gap, count(f_ec_uncertainty) AS unc,
+                count(f_ec_tone_delta) AS tone_delta, count(f_ec_length_delta) AS len_delta,
+                count(f_ec_qa_coherence_mean) AS coh, count(f_ec_qa_qq_distance) AS qa_qq, count(f_ec_prep_qq_distance) AS prep_qq,
+                count(f_ec_tone_vs_hist) AS tone_hist
+         FROM cube_part_text WHERE date >= '2023-01-01' GROUP BY 1 ORDER BY 1;"
+     Compare like-for-like stems: f_ec_tone vs legacy f_ec_tone_xs, f_ec_qa_gap vs f_ec_qa_gap_xs,
+     f_ec_uncertainty vs f_ec_uncertainty_xs, f_ec_tone_delta vs f_ec_tone_delta_xs, f_ec_length_delta vs
+     f_ec_length_delta_xs, f_ec_qa_coherence_mean vs f_ec_qa_coherence_mean_xs, f_ec_qa_qq_distance vs
+     f_ec_qa_qq_sim_xs, f_ec_prep_qq_distance vs f_ec_prep_qq_sim_xs. Pass = new >= legacy every month of 2024-2026
+     (minus the 66-session lifetime effect on the newest month); explain every month that falls short.
+     Optionally restore the snapshot side by side WITHOUT touching the live table only after asking the user
+     (a pg_restore of this dump targets public.cube_part_text by name).
+
+  3. PIT (REQ-006): a call is invisible on its as_of session and visible from the next session, for 66 sessions.
+       rtk "$PY" -m pytest tests/data_aggregate/test_earnings_call_features.py::test_call_is_invisible_on_its_as_of_session_and_visible_on_the_next -v -s
+     Live spot check on 3 random calls (as_of from earnings_call_sections, paragraph = 1): f_ec_tone is NULL or the
+     PREVIOUS call's value on the as_of date, equals the new call's value on the next trading date, and is NULL after
+     66 sessions with no newer call:
+       rtk docker exec pea_db psql -U alexandre -d pea -c "
+         WITH c AS (SELECT ticker, as_of::date d FROM earnings_call_sections WHERE paragraph = 1 AND as_of >= '2025-01-01'
+                    ORDER BY md5(ticker || quarter) LIMIT 3)
+         SELECT c.ticker, c.d AS call_date, t.date, t.f_ec_tone, t.f_ec_tone_delta FROM c
+         JOIN cube_part_text t ON t.ticker = c.ticker AND t.date BETWEEN c.d - 3 AND c.d + 5 ORDER BY 1, 3;"
+
+  4. Validator (split table + cube contract): the score-9 cube-column finding must be gone.
+       cp "$RUN/_out/earnings_calls.json" "$RUN/_out/earnings_calls.p5-2.json"   # same-day re-runs replace the run_id
+       rtk "$PY" -m src validate earnings-calls -T earnings_call_sections -o "$(cd "$RUN" && pwd -W)" -c ./configs > "$RUN/_out/p5-validator-3.txt" 2>&1
+     Expect [PASS] or only accepted findings; split_ok_rate ~0.987; valid_calls 33,155 (unless a new revision landed).
+
+  5. Fingerprint (gated: ask the user before regenerating any baseline).
+       rtk "$PY" -m pytest tests/data_aggregate/test_aggregate_regression.py -v -s
+     A diff in an EC key is the expected declared numeric change of this PR; do NOT run
+     `python -m tests.data_aggregate.aggregate_fingerprint` (regenerates the baseline) without the user's approval,
+     and only in a commit that touches no src/ file.
+
+  6. Record: wall time, rows written, monthly coverage table and PIT spot check into 03-implementation.md P5.
+
+ROLLBACK (orchestrator only): pg_restore --clean -t cube_part_text _cache/p5_cube_part_text.dump (see _out/p5-renames.txt).

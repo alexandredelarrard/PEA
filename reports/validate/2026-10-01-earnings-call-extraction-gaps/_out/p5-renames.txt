@@ -1,0 +1,20 @@
+P5 renames (2026-10-02), one transaction. Listed from pg_indexes / pg_constraint before the rename.
+snapshot: _cache/p5_cube_part_text.dump (pg_dump -Fc -t public.cube_part_text; 74,490,146 bytes; 1,798,087 rows; 1 TABLE DATA entry)
+
+TABLES
+earnings_call_sections   -> earnings_call_sections_legacy    (110,994 rows)
+earnings_call_sentiment  -> earnings_call_sentiment_legacy   (55,863 rows)
+earning_calls_embedding  -> earning_calls_embedding_legacy   (27,898 distinct calls)
+
+PK CONSTRAINTS (rename also renames the backing unique index)
+earnings_call_sections_pkey   -> earnings_call_sections_legacy_pkey     UNIQUE (ticker, quarter, tag)
+earnings_call_sentiment_pkey  -> earnings_call_sentiment_legacy_pkey    UNIQUE (ticker, quarter, tag)
+earning_calls_embedding_pkey  -> earning_calls_embedding_legacy_pkey    UNIQUE (ticker, quarter, seq)
+
+INDEXES
+ix_earnings_call_sections_as_of   -> ix_earnings_call_sections_as_of_legacy    (as_of)
+ix_earnings_call_sentiment_as_of  -> ix_earnings_call_sentiment_as_of_legacy   (as_of)
+
+No other constraints (pg_constraint lists only the 3 PKs). No unique constraints, FKs or extra indexes.
+
+ROLLBACK (orchestrator): drop new tables; then reverse every line above (ALTER TABLE x_legacy RENAME TO x; ALTER TABLE x RENAME CONSTRAINT x_legacy_pkey TO x_pkey; ALTER INDEX ix_..._legacy RENAME TO ix_...); pg_restore --clean -t cube_part_text _cache/p5_cube_part_text.dump.

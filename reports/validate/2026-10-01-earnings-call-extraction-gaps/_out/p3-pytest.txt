@@ -1,0 +1,59 @@
+
+=== SANITY CHECK: row-group pruning ===
+  4 groups; scope AAA/BF-B/CCC keeps [0, 1, 2]; since 2026-01-01 keeps [0, 1]
+  OK: symbol min/max drops the out-of-scope group, max(report_date) the stale one
+.
+=== SANITY CHECK: first defeatbeta load ===
+  5 calls, 16 paragraph rows; BF.B -> ['AAA', 'BF-B', 'CCC']
+  as_of == report_date as a date: AAA 2026Q1 -> 2026-04-21
+  OK: raw paragraphs land 1:1, repo ticker form, real call date, NULL transcript id kept
+.
+=== SANITY CHECK: incremental diff ===
+  new revision adds AAA 2026Q2: 1 new call, 6 rows, 2 groups read
+  OK: the diff against stored (ticker, quarter, transcript_id) writes only the new call
+.
+=== SANITY CHECK: re-issued transcript (AC-004) ===
+  AAA 2026Q1 id 12 -> 99, 5 -> 3 paragraphs; BF-B 2026Q2 (NULL id) date 06-05 -> 06-09
+  sentiment + embedding rows of both calls deleted; 4 pending markers from the earlier date
+  OK: old paragraphs gone, derivatives invalidated, the untouched AAA 2010Q1 cache survives
+.
+=== SANITY CHECK: revision no-op (AC-003) ===
+  same file hash -> no-op, 0 file opens; -F -> full compare, 0 rows
+  adding BF-B to the scope -> full reconcile, 1 new call
+  OK: an unchanged source costs two metadata requests and writes nothing
+.
+=== SANITY CHECK: duplicate (symbol, fiscal_year, fiscal_quarter) rule ===
+  3 AAA 2026Q1 rows -> kept 2026-04-21 / id 6 (latest date, then highest id)
+  OK: measured 0 duplicate keys in the 238,891-call index; the rule is deterministic anyway
+.
+=== SANITY CHECK: source schema assertion ===
+  transcripts_id as string -> defeatbeta/yahoo-finance-data/data/US/stock_earning_call_transcripts.p...
+  OK: drift raises before any row is written
+.
+=== SANITY CHECK: live defeatbeta smoke (test store) ===
+  revision cd41c0ac6c9e: 4 row groups, calls {'AAPL': 84, 'MSFT': 83}, 11520 rows
+  as_of 2005-10-13 -> 2026-07-30; re-run no-op=True
+  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; same revision is a no-op
+.
+=== SANITY CHECK: extraction DAG sources ===
+  all 26 extraction commands are scheduled
+  OK: the retired Google Trends source is absent and the final gate is present
+.
+=== SANITY CHECK: one freshness inventory ===
+  extraction-status consumes schema.freshness_tables(); no parallel registry exists
+  OK: schema.py is the sole table/cadence/date-column source of truth
+.
+=== SANITY CHECK: extraction retry + gate wiring ===
+  identity producer -> 12 direct consumers; 8-K votes inherit through item/proxy parents
+  fundamentals facts + employees are siblings; merged history waits for both
+  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier
+.
+=== SANITY CHECK: strict EDGAR walks ===
+  all 7 scheduled per-ticker EDGAR fetchers require complete coverage
+  OK: one failed ticker makes the source task retry without advancing its manifest
+.
+=== SANITY CHECK: earnings-call extraction task ===
+  one extract-earnings-calls task in the default pool replaces download + ingest
+  OK: no task or airflow-init pool definition references the scrape pool
+.
+13 passed in 12.38s

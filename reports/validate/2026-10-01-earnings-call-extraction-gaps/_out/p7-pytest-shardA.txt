@@ -1,0 +1,171 @@
+..........................F............s................................ [ 10%]
+........................................................................ [ 20%]
+....................................Fs.................................. [ 31%]
+........................................................................ [ 41%]
+........................................................................ [ 51%]
+...F.................................................................... [ 62%]
+.....................................F.................................. [ 72%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+...............................................                          [100%]
+================================== FAILURES ===================================
+______________ test_persisted_betas_require_a_current_own_price _______________
+
+    def test_persisted_betas_require_a_current_own_price():
+        dates = pd.bdate_range("2024-01-02", periods=4, name="date")
+        beta = pd.DataFrame({"beta_market": [np.nan, 0.8, 0.8, 0.8]}, index=dates)
+        active = pd.DataFrame({"AAA": [False, True, False, True]}, index=dates)
+
+>       out = _betas_to_long({"AAA": beta}, availability=active)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: _betas_to_long() got an unexpected keyword argument 'availability'
+
+tests\data_aggregate\test_betas.py:422: TypeError
+___________________ test_real_panel_wellformed_and_bounded ____________________
+
+fundamental_panel = {'panel':              date ticker  ...  f_nci_income_share  f_nci_income_share_vs_hist
+0      1995-10-02      A  ... ...99  ...  63.450001  62.209999
+2026-09-30  611.760010  172.309998  ...  63.080002  62.119999
+
+[7800 rows x 101 columns]}
+
+    def test_real_panel_wellformed_and_bounded(fundamental_panel):
+        panel = fundamental_panel["panel"]
+        assert {"date", "ticker"}.issubset(panel.columns)
+
+        vp = [c for c in panel.columns if c.endswith("_vs_peers")]
+        xs = [c for c in panel.columns if c.endswith("_xs")]
+>       assert len(vp) >= 8 and len(xs) >= 8
+E       assert (0 >= 8)
+E        +  where 0 = len([])
+
+tests\data_aggregate\test_fundamental_features.py:384: AssertionError
+__________ test_first_publication_shares_chg_error_does_not_regress ___________
+
+    def test_first_publication_shares_chg_error_does_not_regress():
+        """The naive delta basis must stay nearer the revised truth than a matched sample.
+
+        Reads real `sec13f_hr` filings for a ticker sample and compares, per (ticker, quarter),
+        `ic_inst_shares_chg` as first PUBLISHED against the same quantity once every in-band
+        filing has landed. Skips when the DB is unreachable -- it is an integration test.
+        """
+        from tests.conftest import _store
+
+        store = _store()
+        from src.data_store.schema import Tables
+
+        if not store.exists(Tables.sec13f_hr) or not store.exists(Tables.cube_part_prices):
+            pytest.skip("sec13f_hr or cube_part_prices is absent from this DB")
+
+        tickers = sorted(str(t) for t in store.distinct(Tables.cube_part_prices, "ticker"))[::24]
+        grid = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(store.distinct(Tables.cube_part_prices, "date"))).dt.normalize().unique()))
+        holdings = store.load(
+            Tables.sec13f_hr,
+            columns=["ticker", "cik", "period", "filing_date", "shares", "value_usd"],
+            where={"ticker": tickers},
+            optional=True,
+        )
+        if holdings is None or holdings.empty:
+            pytest.skip("no 13F holdings for the sampled tickers")
+
+        stamped = _stamp_availability(_clean_holdings(holdings, key=("ticker", "cik", "period")), grid)
+        stamped = stamped[stamped["period"] >= INST_LEVEL_FLOOR_PERIOD]
+
+        # `truth` is every in-band filing for the period; `published` only those public at the
+        # period's own first publication. Both are differenced against a FULLY REVISED q-1, which
+        # is the naive basis the builder uses.
+        total = stamped.groupby(["ticker", "period"], as_index=False).agg(truth=("shares", "sum"))
+        public = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period"], as_index=False).agg(published=("shares", "sum"))
+        frame = total.merge(public, on=["ticker", "period"], how="inner").sort_values(["ticker", "period"])
+        frame["prev_truth"] = frame.groupby("ticker")["truth"].shift(1)
+        frame["prev_period"] = frame.groupby("ticker")["period"].shift(1)
+        frame = frame[(frame["prev_truth"] > 0) & ((frame["period"] - frame["prev_period"]).dt.days.between(80, 100))]
+        if len(frame) < 200:
+            pytest.skip(f"only {len(frame)} consecutive ticker-quarter pairs in the sample")
+
+        # The matched sample, for the comparison the design decision turns on: both sides cut to
+        # the filers public at `q`'s first publication.
+        cur = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()
+        prv = cast(pd.DataFrame, stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()).rename(columns={"shares": "prev_shares"})
+        period_map = cast(pd.DataFrame, frame[["ticker", "period", "prev_period"]]).rename(columns={"period": "_q", "prev_period": "period"})
+        prv = prv.merge(period_map, on=["ticker", "period"])
+        matched = cur.merge(prv.rename(columns={"_q": "period", "period": "_prev"}), on=["ticker", "period", "cik"], how="inner")
+        matched = matched.groupby(["ticker", "period"], as_index=False).agg(m_cur=("shares", "sum"), m_prev=("prev_shares", "sum"))
+
+        frame = frame.merge(matched, on=["ticker", "period"], how="left")
+        frame = frame[frame["m_prev"] > 0]
+        truth_chg = frame["truth"] / frame["prev_truth"] - 1.0
+        naive = (frame["published"] / frame["prev_truth"] - 1.0 - truth_chg).abs() * 100.0
+        matched_err = (frame["m_cur"] / frame["m_prev"] - 1.0 - truth_chg).abs() * 100.0
+        completeness = (frame["published"] / frame["truth"]).median()
+
+>       assert float(naive.median()) < FIRST_PUBLICATION_ERROR_CEILING_PP, (
+            f"the naive first-publication error regressed to {float(naive.median()):.3f}pp "
+            f"(measured {FIRST_PUBLICATION_ERROR_PP}pp, ceiling {FIRST_PUBLICATION_ERROR_CEILING_PP}pp)"
+        )
+E       AssertionError: the naive first-publication error regressed to 5.924pp (measured 1.825pp, ceiling 2.5pp)
+E       assert 5.923780671300937 < 2.5
+E        +  where 5.923780671300937 = float(np.float64(5.923780671300937))
+E        +    where np.float64(5.923780671300937) = median()
+E        +      where median = 0       4.450830\n1       8.860467\n2       5.017060\n3      18.932916\n4       4.135937\n         ...    \n983     0.177980\n984     2.567647\n985     2.586304\n986     0.240849\n987    10.449099\nLength: 988, dtype: float64.median
+
+tests\data_aggregate\test_institutional_features.py:1142: AssertionError
+_____________ test_availability_is_applied_before_peer_statistics _____________
+
+    def test_availability_is_applied_before_peer_statistics():
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+        tickers = list("ABCDE")
+        values = pd.DataFrame([[1.0, 2.0, 3.0, 1_000.0, 4.0], [1.0, 2.0, 3.0, 0.0, 4.0]], index=dates, columns=tickers)
+        active = pd.DataFrame(True, index=dates, columns=tickers)
+        active.loc[dates[0], "D"] = False
+        peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
+        emission = {"signal": "raw+peers"}
+
+        actual = build_peer_relative_panel({"signal": values}, peers, emission=emission, availability=active)
+        expected = build_peer_relative_panel({"signal": values.where(active)}, peers, emission=emission)
+        expected = expected[~((expected["date"] == dates[0]) & (expected["ticker"] == "D"))]
+
+        cols = ["date", "ticker", "f_signal", "f_signal_vs_peers"]
+>       pd.testing.assert_frame_equal(
+            actual[cols].sort_values(["date", "ticker"]).reset_index(drop=True), expected[cols].sort_values(["date", "ticker"]).reset_index(drop=True)
+        )
+E       AssertionError: DataFrame are different
+E
+E       DataFrame shape mismatch
+E       [left]:  (10, 4)
+E       [right]: (9, 4)
+
+tests\data_aggregate\test_panel_merge_duplicates.py:162: AssertionError
+============================== warnings summary ===============================
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\core\nanops.py:1028: RuntimeWarning: invalid value encountered in subtract
+    sqr = _ensure_numeric((avg - values) ** 2)
+
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\numpy\lib\_function_base_impl.py:4597: RuntimeWarning: invalid value encountered in add
+    lerp_interpolation = add(a, diff_b_a * t, out=... if out is None else out)
+
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\numpy\lib\_function_base_impl.py:4598: RuntimeWarning: invalid value encountered in subtract
+    subtract(b, diff_b_a * (1 - t), out=lerp_interpolation, where=t >= 0.5,
+
+tests/data_aggregate/test_part_status.py::test_all_ticker_live_coverage_makes_the_source_current
+tests/data_aggregate/test_part_status.py::test_all_ticker_live_coverage_makes_the_source_current
+tests/data_aggregate/test_part_status.py::test_partial_live_run_cannot_hide_the_stale_bulk_frontier
+tests/data_aggregate/test_part_status.py::test_partial_live_run_cannot_hide_the_stale_bulk_frontier
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+  C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\src\data_store\store.py:47: SAWarning: Skipped unsupported reflection of expression-based index ix_insider_transactions_ticker
+    return Table(name, MetaData(), autoload_with=engine)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/data_aggregate/test_betas.py::test_persisted_betas_require_a_current_own_price
+FAILED tests/data_aggregate/test_fundamental_features.py::test_real_panel_wellformed_and_bounded
+FAILED tests/data_aggregate/test_institutional_features.py::test_first_publication_shares_chg_error_does_not_regress
+FAILED tests/data_aggregate/test_panel_merge_duplicates.py::test_availability_is_applied_before_peer_statistics
+4 failed, 689 passed, 2 skipped, 12 warnings in 2081.40s (0:34:41)
+exit=1

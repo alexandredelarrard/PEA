@@ -1,0 +1,49 @@
+== BMY 2026Q1 status=ok raw speakers=17
+   Cristian Massacesi                 qa                question    3500
+   Adam Lenkowsky                     qa                answer      1282
+   Chris Boerner                      prepared_remarks  prepared     928
+   David Elkins                       prepared_remarks  prepared     848
+   Chris Boerner                      qa                answer       428
+   Seamus Fernandez                   qa                question     187
+   Mohit Bansal                       qa                question     138
+   Asad Haider                        qa                question     118
+   Chris Schott                       qa                question     105
+   Michael Yee                        qa                question      90
+   Akash Tewari                       qa                question      87
+   Alexandria Hammond                 qa                question      80
+   Chuck Triano                       prepared_remarks  prepared      75
+   Geoff Meacham                      qa                question      69
+== DELL 2026Q3 status=ok raw speakers=16
+   Jeff Clarke                        qa                answer      1118
+   David Kennedy                      prepared_remarks  prepared     878
+   Wamsi Mohan                        qa                question     826
+   Jeff Clarke                        prepared_remarks  prepared     753
+   Michael Ng                         qa                question     519
+   Amit Daryanani                     qa                question     489
+   Asiya Merchant                     qa                question     489
+   Aaron Rakers                       qa                question     349
+   David Voigt                        qa                question     275
+   Simon Leopold                      qa                question     234
+   David Kennedy                      qa                answer       141
+   Samik Chatterjee                   qa                question     118
+   Mark Newman                        qa                question     100
+   Ben Reitzes                        qa                question      68
+== DHI 2024Q2 status=ok raw speakers=21
+   Paul Romanowski                    qa                answer      1858
+   Jessica Hansen                     qa                answer      1667
+   Bill Wheat                         qa                question    1625
+   Michael Murray                     qa                answer       391
+   Michael Rehaut                     qa                question     333
+   Stephen Kim                        qa                question     231
+   Kenneth Zener                      qa                question     195
+   Alan Ratner                        qa                question     185
+   Carl Reichardt                     qa                question     174
+   Paul Romanowski                    prepared_remarks  prepared     171
+   Sam Reid                           qa                question     165
+   Michael Dahl                       qa                question     165
+   Jay McCanless                      qa                question     164
+   John Lovallo                       qa                question     141
+Chris Boerner | operator/logistics: False | asks: False
+Chris Boerner | operator/logistics: False | asks: False
+Chris Boerner | operator/logistics: True | asks: True
+Cristian Massacesi | operator/logistics: False | asks: False

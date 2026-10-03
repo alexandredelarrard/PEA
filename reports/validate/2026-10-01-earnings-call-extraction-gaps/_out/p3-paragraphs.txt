@@ -1,0 +1,14 @@
+symbol: large_string
+fiscal_year: int32
+fiscal_quarter: int32
+report_date: large_string
+transcripts_id: double
+transcripts: list<element: struct<paragraph_number: int64, speaker: string, content: string>>
+  child 0, element: struct<paragraph_number: int64, speaker: string, content: string>
+      child 0, paragraph_number: int64
+      child 1, speaker: string
+      child 2, content: string
+-- schema metadata --
+pandas: '{"index_columns": [], "column_indexes": [], "columns": [{"name":' + 819
+calls 585 empty 0 min paragraph_number counts {1: 585} non-contiguous 0 dup numbers 0 null speakers 0
+paragraphs per call q {0.0: 6.0, 0.5: 67.0, 0.95: 127.79999999999995, 1.0: 179.0}

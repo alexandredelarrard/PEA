@@ -1,0 +1,1 @@
+src/data_extract/utils/common/incremental.py:11:several fetchers (dividends, wiki pageviews, earnings surprises, filing text) already

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EC extraction validation</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f7f8fa; --panel:#fff; --text:#172033; --muted:#596579; --line:#d8dee8; --ok:#176b3a; --warn:#8a5a00; --bad:#a52a2a; --accent:#315efb; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#11151d; --panel:#181e29; --text:#eef2f8; --muted:#aab4c5; --line:#344055; --ok:#62d394; --warn:#f0bd58; --bad:#ff8c8c; --accent:#8da7ff; } }
+    * { box-sizing:border-box; } body { margin:0; font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+    main { width:min(1180px,calc(100% - 32px)); margin:32px auto 64px; } header,.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px; margin:0 0 18px; }
+    h1,h2 { line-height:1.2; } h1 { margin:0 0 8px; } h2 { margin-top:0; } .meta { color:var(--muted); } .verdict { display:inline-block; padding:7px 12px; border:2px solid currentColor; border-radius:999px; font-weight:800; letter-spacing:.04em; }
+    .strong,.pass { color:var(--ok); } .conditional,.partial,.deferred { color:var(--warn); } .not-ready,.high { color:var(--bad); }
+    .tbl { overflow-x:auto; } table { width:100%; border-collapse:collapse; } th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 10px; } th { background:var(--panel); }
+    a { color:var(--accent); } code,pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:13px; } pre { overflow:auto; padding:12px; border:1px solid var(--line); border-radius:8px; white-space:pre-wrap; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; } .card { border:1px solid var(--line); border-radius:8px; padding:14px; } .card b { font-size:22px; display:block; }
+    footer { color:var(--muted); text-align:center; margin-top:28px; } ol li, ul li { margin:4px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="verdict conditional">CONDITIONAL</span>
+    <h1>Earnings-call extraction gaps &mdash; final validation (P9, second pass)</h1>
+    <p>The fix commit 8161e52 was re-validated independently. The three blocking findings are fixed: F-001 (stale and relabelled calls are removed on reconcile), F-016 (executives tagged as questioners fell from 61 to 3 of the 5,241 recent ok calls) and F-002 (a re-issued call stays pending until it is scored). Under the re-baselined rules R-1&hellip;R-3, no acceptance criterion fails. The verdict is conditional because:</p>
+    <ul>
+      <li>AC-008 waits for the user's FinBERT, embedding and cube rebuild under <code>speaker-clean-v2</code>.</li>
+      <li>AC-001 passes on the 487-ticker scope that R-1 names. On the extractor's 490-ticker scope (ED, EXPD, NVR included), 2026Q1 is 96.94 %.</li>
+      <li>A measured side effect of the F-016 fix: 8 recent IR-read calls (NFLX 6, DIS 1, MCK 1) now have 0 Q&amp;A exchanges.</li>
+      <li>F-005 is still open.</li>
+    </ul>
+    <p class="meta">Base 71a9ecd &middot; Candidate 8161e52 (branch harness/earnings-call-extraction-gaps, fixes on top of 56dea8b) &middot; Validated 2026-10-03 &middot; read-only pass</p>
+  </header>
+
+  <section class="panel" id="summary">
+    <h2>Executive summary</h2>
+    <div class="grid">
+      <div class="card"><b>61 &rarr; 3</b>recent ok calls with a &ge; 1,000-word person tagged as question (F-016)</div>
+      <div class="card"><b>0 / 5,241</b>recent ok calls below 60 % of management words kept (R-3)</div>
+      <div class="card"><b>97.54 %</b>lowest quarterly ticker coverage since 2024 (R-1, 487 tickers)</div>
+      <div class="card"><b>0</b>new test failures; 2,069 tests collect</div>
+    </div>
+    <p>Findings: 1 high, 6 medium, 10 low/info. F-001, F-002 and F-016 are FIXED, and no high finding is open. Simplification: 7 material items (S-001&hellip;S-007), not implemented.</p>
+    <p><b>Recommendation:</b> open the PR as CONDITIONAL and state these conditions in it:</p>
+    <ul>
+      <li>AC-008 is deferred to the rebuild.</li>
+      <li>The 490-versus-487 scope choice for AC-001.</li>
+      <li>The IR-read side effect.</li>
+      <li>F-005 is open.</li>
+    </ul>
+    <p>The user then rebuilds FinBERT, the embeddings and the cube under <code>speaker-clean-v2</code>.</p>
+  </section>
+
+  <section class="panel" id="acceptance">
+    <h2>Acceptance criteria</h2>
+    <div class="tbl"><table>
+      <tr><th>AC</th><th>Status</th><th>Evidence</th><th>Limitation</th></tr>
+      <tr><td>AC-001</td><td class="pass">PASS</td><td>R-1: &ge; 97 % of in-scope tickers per calendar quarter. Since 2024 the lowest quarter is 97.54 % (2026Q1, 475/487) (<a href="_out/p9fix2-ac001.txt">p9fix2-ac001</a>). Parity exact (<a href="_out/p5-parity.txt">p5-parity</a>).</td><td>Holds on the 487-ticker scope only. On the extractor's 490-ticker scope, 2026Q1 = 96.94 %.</td></tr>
+      <tr><td>AC-002</td><td class="pass">PASS</td><td>507/510 events matched within &plusmn;3 d (<a href="_out/p9-db-checks.txt">p9-db-checks</a>).</td><td>3 calls missing in the source (F-013).</td></tr>
+      <tr><td>AC-003</td><td class="pass">PASS (accepted)</td><td>R-2 accepts the full build at 18.6 min. No-op: 1.3&ndash;3.9 s (<a href="_out/p5-extract-full.log">log</a>).</td><td>Incremental timing is taken from the nightly run. The reconcile's new removal pass is untimed.</td></tr>
+      <tr><td>AC-004</td><td class="pass">PASS</td><td>Re-issue, removal, relabel-flip and incremental-no-delete tests pass (<a href="_out/p9fix2-pytest-split-validate-extract-dags.txt">pytest</a>). Repro: orphan NO, removal YES (<a href="_out/p9fix-orphan-repro.txt">repro</a>).</td><td>A relabel first seen by an incremental run can leave two calls on one date for up to 7 days. The validator flags it.</td></tr>
+      <tr><td>AC-005</td><td class="pass">PASS</td><td>19 fixtures, including TXN/BMY/JPM. An independent re-split moves the executives tagged as question from 1/1/1 to 0/0/0.</td><td>Fixture level only. The TXN CFO residual is documented.</td></tr>
+      <tr><td>AC-006</td><td class="pass">PASS</td><td>ok 98.87 %, 0 exceptions on all 33,591 calls. R-3 on management words: q01 0.906, 0 of 5,241 recent ok calls below 0.60 (<a href="_out/p9fix2-summary.txt">summary</a>).</td><td>The management set is self-referential. On all words (a lower bound), 39 calls (0.74 %) fall below 0.60.</td></tr>
+      <tr><td>AC-007</td><td class="pass">PASS</td><td>Grep finds no header regexes. Live: 3 of 5,241 recent ok calls have a &ge; 1,000-word person tagged as question (was 61).</td><td>An executive who speaks in fewer than 3 exchanges keeps the old rules.</td></tr>
+      <tr><td>AC-008</td><td class="deferred">DEFERRED</td><td>Contract, PIT and F-002 tests: 30 passed (<a href="_out/p9fix2-pytest-aggregate-ec.txt">pytest</a>). Live PIT holds on 3 tickers (<a href="_out/p5-e2e-checks.txt">e2e</a>).</td><td>Needs the user's full rebuild (F-006).</td></tr>
+      <tr><td>AC-009</td><td class="pass">PASS</td><td>2,069 tests collect (<a href="_out/p9fix2-collect.txt">collect</a>). The only failure in the subsets is the P0 baseline.</td><td>F-014.</td></tr>
+      <tr><td>AC-010</td><td class="pass">PASS</td><td>12 wiki files updated. The first-pass OK audit is clean on the changed pages; the fix touches no wiki file.</td><td>One stale line (F-017). The wiki is uncommitted.</td></tr>
+    </table></div>
+  </section>
+
+  <section class="panel" id="evidence">
+    <h2>Validation evidence (second pass)</h2>
+    <div class="tbl"><table>
+      <tr><th>Command / query</th><th>Exit</th><th>Observation</th><th>Artifact</th></tr>
+      <tr><td><code>pytest --collect-only -q tests</code></td><td>0</td><td>2,069 collected</td><td><a href="_out/p9fix2-collect.txt">txt</a></td></tr>
+      <tr><td><code>pytest split + validate + data_extract/behavioral + dags</code></td><td>1</td><td>1 P0-baseline failure, 108 passed</td><td><a href="_out/p9fix2-pytest-split-validate-extract-dags.txt">txt</a></td></tr>
+      <tr><td><code>pytest tests/data_aggregate -k "earnings_call or cube_text"</code></td><td>0</td><td>30 passed</td><td><a href="_out/p9fix2-pytest-aggregate-ec.txt">txt</a></td></tr>
+      <tr><td><code>p9fix_orphan_repro.py</code> (re-run)</td><td>0</td><td>orphan on relabel flip: NO; reconcile removes: YES</td><td><a href="_out/p9fix-orphan-repro.txt">txt</a> &middot; <a href="_scripts/p9fix_orphan_repro.py">py</a></td></tr>
+      <tr><td><code>p9fix2_split_compare.py</code> &times; 8 shards + <code>p9fix2_summary.py</code></td><td>0</td><td>Old vs new split on 33,591 calls. F-016: 61 &rarr; 3; R-3: 0 calls below 0.60; 0-exchange calls: 8 &rarr; 16</td><td><a href="_out/p9fix2-summary.txt">txt</a> &middot; <a href="_scripts/p9fix2_split_compare.py">py</a> &middot; <a href="_scripts/p9fix2_split_old.py">old module</a></td></tr>
+      <tr><td><code>p9fix2_ac001.py</code></td><td>0</td><td>R-1 min 97.54 % (487); 96.94 % (490)</td><td><a href="_out/p9fix2-ac001.txt">txt</a> &middot; <a href="_scripts/p9fix2_ac001.py">py</a></td></tr>
+      <tr><td><code>git merge-tree --write-tree dev 8161e52</code></td><td>0</td><td>clean merge onto dev 091278b</td><td><a href="_out/p9fix2-merge-tree.txt">txt</a></td></tr>
+    </table></div>
+    <p class="meta">Abstentions: the generic nine-check library, the full suite, FinBERT, embeddings, <code>build-text</code> and extractor runs were not run, by user decision.</p>
+  </section>
+
+  <section class="panel" id="findings">
+    <h2>Findings</h2>
+    <div class="tbl"><table>
+      <tr><th>ID</th><th>Score</th><th>Finding</th><th>Fix / mechanism</th><th>Disposition</th></tr>
+      <tr><td>F-001</td><td class="high">7 high</td><td>Stored calls that leave the source, or flip label, are never deleted.</td><td>On a reconcile, <code>stale_calls</code> + <code>_remove_calls</code> run in order: invalidate the derivatives, write the marker, delete the paragraphs. The validator gains <code>ticker_dates_with_multiple_calls</code>.</td><td class="pass">FIXED (8161e52)</td></tr>
+      <tr><td>F-016</td><td>6 medium</td><td>Executives tagged as question on live calls.</td><td><code>_qa_management</code>: a speaker in &ge; 3 exchanges, never named by a hand-off and not a host counts as management, and management now outranks the sticky-asker rule. Live: 61 &rarr; 3 recent calls; 413 &rarr; 63 over all history.</td><td class="pass">FIXED (8161e52)</td></tr>
+      <tr><td>F-002</td><td>5 medium</td><td>A valid re-issued call is skipped for good if FinBERT is unavailable.</td><td>The markers of calls that can still be scored stay pending; covered by a new test.</td><td class="pass">FIXED (8161e52)</td></tr>
+      <tr><td>F-003</td><td>5 medium</td><td>AC-001 floor vs the scope ceiling.</td><td>R-1 re-baseline.</td><td>Resolved (490 vs 487 residual)</td></tr>
+      <tr><td>F-004</td><td>5 medium</td><td>Full build takes 18.6 min.</td><td>R-2.</td><td>Accepted</td></tr>
+      <tr><td>F-005</td><td>5 medium</td><td>The validator does not measure the AC populations.</td><td><code>checks/earnings_calls.py</code></td><td>OPEN</td></tr>
+      <tr><td>F-006</td><td>4 medium</td><td>AC-008 and the drift findings need the full cube.</td><td>The user runs the rebuild.</td><td>Accepted-deferred</td></tr>
+      <tr><td>F-007&hellip;F-015, F-017</td><td>1&ndash;3</td><td>Low-severity and informational items.</td><td>See the register.</td><td>OPEN / INFO</td></tr>
+    </table></div>
+    <p>Full register: <a href="defects.md">defects.md</a> (dispositions as of the first pass; <a href="06-final.md">06-final.md</a> is current).</p>
+  </section>
+
+  <section class="panel" id="reviews">
+    <h2>Correctness and simplicity reviews</h2>
+    <p><b>Fix diff:</b> 12 files, +715/&minus;26, all in scope. Removal happens only on a full run, where <code>since</code> is <code>None</code>. The crash order is safe. <code>_scorable_keys</code> mirrors the scoring gate. The diff edits <code>constants.py</code>, an ask-first file, to change the cache tags to <code>speaker-clean-v2</code>.</p>
+    <p><b>First pass:</b> <a href="05-review-01.md">05-review-01.md</a>. Ponytail S-001&hellip;S-007 remain proposed (<a href="05-simplification-plan.md">05-simplification-plan.md</a>).</p>
+  </section>
+
+  <section class="panel" id="limitations">
+    <h2>Limitations, risks, user actions</h2>
+    <ul>
+      <li><b>IR-read side effect:</b> 0-exchange ok calls rose from 8 to 16 since 2024 (169 to 191 over all history). The 8 recent calls that flipped are NFLX 2023Q4/2024Q1/2024Q2/2024Q4/2025Q1/2025Q2, DIS 2026Q2 and MCK 2026Q3. They have no per-turn embedding KPI, and their <code>qa</code> text includes the questions the host read out.</li>
+      <li><b>Residual F-016:</b> an executive who speaks in fewer than 3 exchanges stays tagged as question (NFLX 2025Q3 CFO, 586 words).</li>
+      <li>defeatbeta is the single transcript source.</li>
+      <li>Every cached score and embedding is under an old tag and will be recomputed.</li>
+      <li>The Airflow EC tasks stay paused until merge.</li>
+    </ul>
+    <p><b>User actions:</b></p>
+    <ol>
+      <li>Confirm the <code>constants.py</code> cache-tag bump to <code>speaker-clean-v2</code>.</li>
+      <li>Run FinBERT per <a href="_out/p5-finbert-command.txt">p5-finbert-command.txt</a>. The script follows the constants; the SQL in the file says v1, so read it as v2.</li>
+      <li>Run a full re-embed under <code>text-embedding-3-small:speaker-clean-v2</code>.</li>
+      <li>Run <code>build-text -F</code> and the checklist in <a href="_out/p5-next.txt">p5-next.txt</a>, with the validator on <code>-T cube_part_text</code>.</li>
+      <li>Merge, then unpause the Airflow EC tasks.</li>
+      <li>Remove <code>ROIC_API_KEY</code> from <code>.env</code>.</li>
+      <li>Finish deleting <code>data/call_transcripts/</code>: 115 entries are still present. The <code>*_legacy</code> tables are already dropped.</li>
+    </ol>
+  </section>
+
+  <section class="panel" id="commits">
+    <h2>Commit ledger</h2>
+    <pre>63edc8b P6  Wikipedia pageviews removed
+ede92af P1  split library + 16 fixtures
+0b46784 P2  re-schemed earnings_call_sections
+ad4bab9 P3  defeatbeta extractor
+d887eec P3  one call per ticker and call date
+3ed3585 P4  aggregation + validator rewiring
+166a9f2 P4b text cleaning
+56dea8b P7  ROIC / Fool / kurry retirement
+8161e52 P9  fixes F-001, F-016 (+3 fixtures), F-002; cache tags speaker-clean-v2
+(no merges; the validator made no commit)</pre>
+  </section>
+
+  <section class="panel" id="index">
+    <h2>Report index</h2>
+    <ul>
+      <li><a href="00-run.md">00-run.md</a></li>
+      <li><a href="01-research.md">01-research.md</a></li>
+      <li><a href="01-spec.md">01-spec.md</a></li>
+      <li><a href="02-plan.md">02-plan.md</a></li>
+      <li><a href="03-implementation.md">03-implementation.md</a></li>
+      <li><a href="04-validation-01.md">04-validation-01.md</a></li>
+      <li><a href="defects.md">defects.md</a></li>
+      <li><a href="05-review-01.md">05-review-01.md</a></li>
+      <li><a href="05-simplification-plan.md">05-simplification-plan.md</a></li>
+      <li><a href="06-final.md">06-final.md</a> (canonical)</li>
+    </ul>
+  </section>
+  <footer>Generated from the evidence in this run directory. See <a href="06-final.md">06-final.md</a> for the canonical summary.</footer>
+</main>
+</body>
+</html>

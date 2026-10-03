@@ -1,0 +1,13 @@
+[35m2026-10-02 22:03:00 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 22:03:00 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+calls since 2024-01-01: 5301  exceptions: 0
+status: {'ok': 5241, 'no_qa': 32, 'no_prepared': 28}  ok_rate=0.9887
+prepared share q05/q50/q95 = 0.166/0.410/0.624
+(prepared+qa)/turn words q01/q05/q50 = 0.561/0.665/0.778; ok calls < 0.60: 85 (1.62%)
+examples < 0.60: [('ACGL', '2024Q1', 0.586), ('AMAT', '2026Q1', 0.495), ('BMY', '2024Q2', 0.577), ('BMY', '2025Q4', 0.465), ('BMY', '2026Q1', 0.403), ('BSX', '2024Q3', 0.531), ('BSX', '2025Q2', 0.592), ('CIEN', '2024Q2', 0.538), ('COHR', '2024Q2', 0.597), ('COHR', '2024Q3', 0.564), ('COO', '2025Q2', 0.566), ('DASH', '2025Q1', 0.407), ('DELL', '2026Q3', 0.374), ('DHI', '2024Q1', 0.484), ('DHI', '2024Q2', 0.465)]
+CONCLUSION: ok>=98.5% and q05>=0.15 and no exceptions -> PASS; 60% floor -> FAIL
+
+real	17m36.002s
+user	0m0.031s
+sys	0m0.125s
+exit=0

@@ -1,0 +1,80 @@
+FFFF                                                                     [100%]
+================================== FAILURES ===================================
+_________ test_sentence_split_never_alters_decimals_or_abbreviations __________
+
+    def test_sentence_split_never_alters_decimals_or_abbreviations() -> None:
+>       from src.utils.earnings_call_split import split_sentences
+E       ImportError: cannot import name 'split_sentences' from 'src.utils.earnings_call_split' (C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\src\utils\earnings_call_split.py)
+
+tests\utils\test_speaker_turn_split.py:238: ImportError
+_ test_prepared_remarks_drop_boilerplate_roster_courtesy_and_handoffs_but_keep_business _
+
+    def test_prepared_remarks_drop_boilerplate_roster_courtesy_and_handoffs_but_keep_business() -> None:
+        prep = split_call(_default_call()).prepared_remarks
+        for gone in ("thank you for joining", "Joining me today", "forward-looking", "non-GAAP", "turn it over to Jane Doe", "Thanks, John"):
+>           assert gone not in prep, gone
+E           AssertionError: thank you for joining
+E           assert 'thank you for joining' not in "Good mornin...y's history."
+E
+E             'thank you for joining' is contained here:
+E             ?                             ^^^^
+E               Good morning, everyone, and thank you for joining us. Joining me today are Jane Doe, our Chief Financial Officer, and Bob Lee, our COO. Before we begin, please note that today's remarks contain forward-looking statements and actual results may differ materially. A reconciliation of these non-GAAP measures is included in our press release, which is available on our website. Revenue grew 3.5% in the U.S. to $1.2 billion. We expect revenue growth of 5% next year, driven by pricing and new customers in...
+E
+E             ...Full output truncated (3 lines hidden), use '-vv' to show
+
+tests\utils\test_speaker_turn_split.py:254: AssertionError
+________ test_qa_text_is_management_answers_only_and_turns_are_cleaned ________
+
+    def test_qa_text_is_management_answers_only_and_turns_are_cleaned() -> None:
+        split = split_call(_default_call())
+>       assert "Big Bank" not in split.qa and "margin trajectory" not in split.qa and "first question" not in split.qa
+E       AssertionError: assert ('Big Bank' not in 'Our first q...e the risks.'
+E
+E         'Big Bank' is contained here:
+E           lyst with Big Bank. Please proceed.
+E         ?           ++++++++
+E           Hi, this is Mary Analyst from Big Bank. Thanks for taking my question and congrats on the quarter. How should we think about the margin trajectory into the second half of next year?
+E           Thanks, Mary. Yes, Mary, we expect margins to keep expanding as pricing flows through the order book. Thank you. The forward-looking statements in our filings with the SEC describe the risks.)
+
+tests\utils\test_speaker_turn_split.py:264: AssertionError
+_________ test_qa_turns_need_ten_words_and_exchanges_stay_contiguous __________
+
+    def test_qa_turns_need_ten_words_and_exchanges_stay_contiguous() -> None:
+        long_q = "Can you walk us through the drivers of the bookings growth in the second half?"
+        long_a = "Bookings grew on the back of strong renewals and new logos in every single segment we serve."
+        paras = _call(
+            [
+                ("Operator", "Our first question comes from the line of Mary Analyst with Big Bank. Please proceed."),
+                ("Mary Analyst", long_q),
+                ("John Smith", long_a),
+                ("John Smith", "Okay. That is right, yes."),
+                ("Operator", "Our next question comes from the line of Pete Short with Small Bank. Please proceed."),
+                ("Pete Short", "What about margins next year?"),
+                ("John Smith", "Margins should expand modestly as the new products scale through the year and costs fall."),
+                ("Operator", "Our next question comes from the line of Ann Long with Mid Bank. Please proceed."),
+                ("Ann Long", long_q.replace("bookings", "revenue")),
+                ("Jane Doe", long_a.replace("Bookings", "Revenue")),
+            ]
+        )
+        split = split_call(paras)
+        qa = [(t["person"], t["tag"], t["exchange_idx"], t["answer_idx"]) for t in split.turns if t["section"] == "qa"]
+>       assert qa == [
+            ("Mary Analyst", "question", 0, 0),
+            ("John Smith", "answer", 0, 1),
+            ("Ann Long", "question", 1, 0),
+            ("Jane Doe", "answer", 1, 1),
+        ], qa
+E       AssertionError: [('Mary Analyst', 'question', 0, 0), ('John Smith', 'answer', 0, 1), ('Pete Short', 'question', 1, 0), ('John Smith', 'answer', 1, 1), ('Ann Long', 'question', 2, 0), ('Jane Doe', 'answer', 2, 1)]
+E       assert [('Mary Analy...nswer', 2, 1)] == [('Mary Analy...nswer', 1, 1)]
+E
+E         At index 2 diff: ('Pete Short', 'question', 1, 0) != ('Ann Long', 'question', 1, 0)
+E         Left contains 2 more items, first extra item: ('Ann Long', 'question', 2, 0)
+E         Use -v to get more diff
+
+tests\utils\test_speaker_turn_split.py:295: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/utils/test_speaker_turn_split.py::test_sentence_split_never_alters_decimals_or_abbreviations
+FAILED tests/utils/test_speaker_turn_split.py::test_prepared_remarks_drop_boilerplate_roster_courtesy_and_handoffs_but_keep_business
+FAILED tests/utils/test_speaker_turn_split.py::test_qa_text_is_management_answers_only_and_turns_are_cleaned
+FAILED tests/utils/test_speaker_turn_split.py::test_qa_turns_need_ten_words_and_exchanges_stay_contiguous
+4 failed, 69 deselected in 0.32s

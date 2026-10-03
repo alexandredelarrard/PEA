@@ -1,0 +1,40 @@
+ok calls since 2024: 5241
+  calls with a question-tagged person >= 800 words: 8 (0.15%)
+  calls with a question-tagged person >= 1000 words: 3 (0.06%)
+  calls with a question-tagged person >= 1500 words: 0 (0.00%)
+  calls with a question-tagged person >= 2500 words: 0 (0.00%)
+  calls with question words > answer words: 6 (0.11%)
+  calls with prepared words < 500: 140 (2.67%)
+  top question-tagged persons (suspects):
+ticker quarter         top_q_person  top_q_words  q_words  a_words  p_words
+   VLO  2025Q1          Manav Gupta         1119     2438     3390      348
+     T  2025Q4         John Hodulik         1085     2712     2666     3800
+   CRM  2027Q1       Patrick Stokes         1008     1401     2370     4515
+   HIG  2025Q1     Andrew Kligerman          960     2656     2135     2386
+     T  2025Q1         Peter Supino          909     2349     4589     2812
+    GD  2025Q4           Kim Kuryea          861     1669     1838      498
+  DELL  2026Q3          Wamsi Mohan          826     3467     1259     1631
+   JPM  2025Q4            Mike Mayo          800     2035     5358     1398
+    TT  2025Q4 Jeffrey Todd Sprague          782     2228     2796     1982
+  PSKY  2024Q4        George Cheeks          655     1214     3536      400
+  ORLY  2024Q4       Stephen Forbes          654     2088     3111     4438
+   JPM  2025Q2          Glenn Shore          639     2369     5966     1176
+  TSLA  2024Q3          Lars Moravy          635      894     3798     3710
+  META  2025Q4 Mark Elliott Shmulik          612     1461     3353     3171
+    EW  2024Q2        Daveen Chopra          608     1904     3189     3141
+ CMCSA  2026Q2         Steve Croney          595      642     3664     3503
+   DLR  2026Q1          Chris Sharp          586     1424     2958     3147
+  NFLX  2025Q3      Spencer Neumann          586      586     4951      743
+   FDS  2025Q2            Phil Snow          580     1899     3525     2927
+    PG  2026Q2         Steve Powers          579     2397     5717     2780
+   CNC  2025Q4          Sarah James          578     1832     3338     3441
+   SNA  2025Q2      Gary Prestopino          574     1501     3625     5117
+   CHD  2025Q4 Unidentified Analyst          573     1341     4232    12843
+   CFG  2025Q4        Manan Gosalia          553     1726     5573     3173
+   UNH  2023Q4   Heather Cianfrocco          552     1507     4504     2088
+CONCLUSION: share of ok calls with a >=1,000-word question-tagged person = 0.06% (mislabel suspects; inspect the named examples)
+
+real	14m25.904s
+user	0m0.623s
+sys	0m1.748s
+exit=0

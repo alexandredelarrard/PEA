@@ -1,0 +1,52 @@
+src/constants/constants.py:359:# needs to interpret SF1 without fooling itself.                                #
+src/data_aggregate/utils/fundamentals/feature_views.py:86:        "intangibles_roic_drag",
+src/data_aggregate/utils/fundamentals/feature_views.py:121:        "roic_ex_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:122:        "roic_incl_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:188:        "intangibles_roic_drag",
+src/data_aggregate/utils/fundamentals/feature_views.py:212:        "roic_ex_intangibles",
+src/data_aggregate/utils/fundamentals/feature_views.py:213:        "roic_incl_intangibles",
+src/data_aggregate/utils/fundamentals/fundamental_features.py:626:    with `goodwill_roic_drag` identically zero across 3.04 M rows.
+src/data_aggregate/utils/fundamentals/fundamental_features.py:628:    So `roic_ex_intangibles` is a WIDER deduction than a textbook ex-goodwill ROIC: it also
+src/data_aggregate/utils/fundamentals/fundamental_features.py:645:        roic_incl = ratio(nopat, ic, positive_den=True) if ic is not None else pd.DataFrame()
+src/data_aggregate/utils/fundamentals/fundamental_features.py:646:        if roic_incl.notna().any().any():
+src/data_aggregate/utils/fundamentals/fundamental_features.py:647:            F["roic_incl_intangibles"] = roic_incl
+src/data_aggregate/utils/fundamentals/fundamental_features.py:649:                roic_ex = ratio(nopat, ic.sub(intangibles, fill_value=0.0), positive_den=True)
+src/data_aggregate/utils/fundamentals/fundamental_features.py:650:                if roic_ex.notna().any().any():
+src/data_aggregate/utils/fundamentals/fundamental_features.py:651:                    F["roic_ex_intangibles"] = roic_ex
+src/data_aggregate/utils/fundamentals/fundamental_features.py:653:                    F["intangibles_roic_drag"] = roic_incl.sub(roic_ex, fill_value=np.nan)
+src/data_aggregate/utils/fundamentals/sector_features.py:38:  it duplicated `fundamental_features.roic_incl_intangibles` at r = 0.973, the same
+src/data_extract/utils/fundamentals_sharadar/diagnostics.py:191:                "missing_quarters": ", ".join(quarter_label(q) for q in missing) or "-",
+src/data_store/store.py:380:        useful bounds are not always temporal -- `fetch_hf_transcripts` reads a `quarter`
+tests/data_aggregate/aggregate_fingerprint_baseline.json:815:   "f_intangibles_roic_drag",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:816:   "f_intangibles_roic_drag_vs_hist",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:858:   "f_roic_ex_intangibles",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:859:   "f_roic_ex_intangibles_vs_hist",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:860:   "f_roic_incl_intangibles",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:861:   "f_roic_incl_intangibles_vs_hist",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:943:   "f_intangibles_roic_drag": "867c396a22fa1a7d",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:944:   "f_intangibles_roic_drag_vs_hist": "419191c938897eb0",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:986:   "f_roic_ex_intangibles": "e931779924739dfa",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:987:   "f_roic_ex_intangibles_vs_hist": "0d523d91bfe36cb8",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:988:   "f_roic_incl_intangibles": "21a0913a865a636c",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:989:   "f_roic_incl_intangibles_vs_hist": "7c578888a6f492f7",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:2598:   "f_rd_capitalized_roic_vs_hist",
+tests/data_aggregate/aggregate_fingerprint_baseline.json:2647:   "f_rd_capitalized_roic_vs_hist": "aa62a1424d7c0ba4",
+tests/data_aggregate/test_feature_redundancy.py:14:    f_roic_incl_goodwill_* == f_roic_ex_goodwill_*    the bare `goodwill` column is written by
+tests/data_aggregate/test_feature_redundancy.py:204:        ("roic_incl_intangibles", "roic_ex_intangibles", "the intangibles deduction is non-empty"),
+tests/data_aggregate/test_fundamental_feature_views.py:69:        "intangibles_roic_drag",
+tests/data_aggregate/test_fundamental_feature_views.py:93:        "roic_ex_intangibles",
+tests/data_aggregate/test_fundamental_feature_views.py:94:        "roic_incl_intangibles",
+tests/data_aggregate/test_phase3_financial_contracts.py:45:def test_capitalized_rd_roic_tax_adjusts_operating_profit() -> None:
+tests/data_aggregate/test_quality_features.py:205:def test_digestion_roic_wedge_on_combined_intangibles():
+tests/data_aggregate/test_quality_features.py:225:    # NOPAT = 200*(1-0.25)=150 ; IC = 500+200-100 = 600 ; roic_incl = 0.25
+tests/data_aggregate/test_quality_features.py:226:    assert abs(f["roic_incl_intangibles"].loc[last, "X"] - 0.25) < 1e-6
+tests/data_aggregate/test_quality_features.py:227:    # IC ex intangibles = 600-250 = 350 ; roic_ex = 150/350
+tests/data_aggregate/test_quality_features.py:228:    assert abs(f["roic_ex_intangibles"].loc[last, "X"] - 150 / 350) < 1e-6
+tests/data_aggregate/test_quality_features.py:230:    assert f["intangibles_roic_drag"].loc[last, "X"] < -1e-6
+tests/data_aggregate/test_quality_features.py:236:        f"  ROIC incl intangibles = {f['roic_incl_intangibles'].loc[last, 'X']:.3f} "
+tests/data_aggregate/test_quality_features.py:237:        f"vs ex = {f['roic_ex_intangibles'].loc[last, 'X']:.3f} "
+tests/data_aggregate/test_quality_features.py:238:        f"-> drag {f['intangibles_roic_drag'].loc[last, 'X']:+.3f} (non-zero, so the "
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:144:        print(f"    {row.ticker:6s} {row.n_missing} missing -> {row.missing_quarters}")
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:383:            f"{at['last_quarter']}, {at['n_missing']} gap(s) -> {at['missing_quarters']}"
+tests/data_extract/sharadar/test_sharadar_diagnostics.py:385:        found = tuple(q.strip() for q in str(at["missing_quarters"]).split(",") if q.strip() and q.strip() != "-")
+configs/models/random_forest_modelling.yml:81:    - f_roic_ex_goodwill_xs

@@ -1,0 +1,88 @@
+[B1 header fidelity] source turns=37443 speaker recovered=96.19% lost turns=1426 lost distinct speakers=194/1809
+  lost speaker examples: {'G. Sievert': 97, 'Matthew': 57, 'Haendel St. Juste': 52, 'Peter Z. Vanacker': 44, 'C. Nye': 36, 'Eric M. Green': 35, 'Joshua M. Isner': 30, 'Brian E. Lane': 27, 'Timothy P. Argo': 23, 'Neal R. Sheorey': 22, 'Brice A. Hill': 22, 'Charles H. Robbins': 22, 'Deon M. Stander': 20, 'Michael D. Lacy': 20, 'Dr. Lisa Su': 19}
+  calls with >=1 lost speaker turn: 564/585
+[B1m 'Name/--/Role' render] speaker recovered=80.45% lost turns=7321 calls affected=558/585
+  lost: {'Operator': 7205, 'Jerry Kent Masters, Jr.': 18, 'Speaker 11': 11, 'André Almeida': 11, 'Cai von Rumohr': 10, 'Speaker 5': 5, 'Speaker 14': 4, 'Christopher Van ens': 4, 'Speaker 10': 3, 'Speaker 19': 3}
+
+[B4] ALL sample calls: 585 | qa_start None: 4
+  b1: >=1 q & >=1 a = 97.9% | >=1 prepared = 99.8% | >=2 exchanges = 96.9% | q-turns by a prepared speaker = 0/7457 (0.00%) | calls with such a turn = 0
+  b2: >=1 q & >=1 a = 99.1% | >=1 prepared = 99.8% | >=2 exchanges = 97.1% | q-turns by a prepared speaker = 0/7579 (0.00%) | calls with such a turn = 0
+  B1 and B2 identical (tag, person, exchange) per call: 74.2%
+  B1m and B2 identical (tag, person, exchange) per call: 92.0%
+  b1 per-call medians: prep=4.0 q=12.0 a=21.0 ex=12.0
+  b2 per-call medians: prep=4.0 q=12.0 a=22.0 ex=12.0
+
+[B3] overlap with legacy earning_calls_embedding: 526 of 585 calls
+  legacy as_of - defeatbeta report_date (days): {-196: 1, -1: 2, 0: 489, 1: 12, 6: 1, 7: 3, 8: 1, 11: 1, 28: 1, 41: 1, 55: 1, 68: 1, 97: 1, 155: 1, 168: 1, 175: 1, 183: 1, 246: 1, 265: 1, 266: 1, 364: 1, 456: 1, 546: 2}
+  -> |diff|>1 day = different call under the same label in one source; excluded: 23
+  date-aligned overlap: 503 calls
+  b1: answer turns spoken by a question-asker of the same call (analyst follow-up mislabelled answer): 1138/11886 (9.6%)
+  b2: answer turns spoken by a question-asker of the same call (analyst follow-up mislabelled answer): 1156/12710 (9.1%)
+  legacy: answer turns spoken by a question-asker of the same call: 1357/11176 (12.1%)
+  ALL 585 b1: answer turns by a question-asker 1236/13776 (9.0%)
+  ALL 585 b2: answer turns by a question-asker 1256/14725 (8.5%)
+  --- b1 vs legacy (ratio new/legacy, legacy>0)
+    n_prep  n=496 p10=0.75 med=1.00 p90=1.50  legacy==0: 7  new==0: 1
+    n_q     n=496 p10=0.90 med=1.00 p90=1.17  legacy==0: 7  new==0: 3
+    n_a     n=489 p10=0.96 med=1.00 p90=1.17  legacy==0: 14  new==0: 7
+    n_ex    n=496 p10=0.91 med=1.00 p90=1.16  legacy==0: 7  new==0: 3
+    question-person Jaccard full-name n=503 p10=0.41 med=1.00 p90=1.00 | last-name n=503 p10=0.69 med=1.00 p90=1.00 | last-name J==1: 70.0%
+    question persons subset of non-management: new 100.0%
+    calls where a NEW question person is a LEGACY answer/prepared person: 273
+  --- b2 vs legacy (ratio new/legacy, legacy>0)
+    n_prep  n=496 p10=0.75 med=1.00 p90=1.88  legacy==0: 7  new==0: 1
+    n_q     n=496 p10=0.91 med=1.00 p90=1.19  legacy==0: 7  new==0: 2
+    n_a     n=489 p10=1.00 med=1.00 p90=1.67  legacy==0: 14  new==0: 2
+    n_ex    n=496 p10=0.92 med=1.00 p90=1.20  legacy==0: 7  new==0: 2
+    question-person Jaccard full-name n=503 p10=0.38 med=1.00 p90=1.00 | last-name n=503 p10=0.67 med=1.00 p90=1.00 | last-name J==1: 60.4%
+    question persons subset of non-management: new 100.0%
+    calls where a NEW question person is a LEGACY answer/prepared person: 270
+  legacy: question persons subset of non-management: 100.0%
+
+[B3] 10 worst calls (B2 vs legacy): counts as prep/q/a/ex
+  TMUS 2025Q2 k=5.0/75 legacy=59/0/0/0 new=3/9/39/9 J=0.00
+     legacy q-only: []
+     new q-only   : ['chaplin', 'hodulik', 'maral', 'mchugh', 'moffett', 'rollins', 'swinburne', 'venkateshwar']
+     legacy prep persons: ['benjamin swinburne', 'callie field', 'craig moffett', 'gregory williams', 'john hodulik', 'jon freier'] | new prep persons: ['g sievert', 'peter osvaldik', 'quan yao']
+  CSCO 2026Q1 k=4.0/66 legacy=47/0/0/0 new=4/13/34/13 J=0.00
+     legacy q-only: []
+     new q-only   : ['ackerman', 'bohlen', 'chatterjee', 'chkaiban', 'daryanani', 'fish', 'leopold', 'liani']
+     legacy prep persons: ['aaron rakers', 'amit daryanani', 'antoine chkaiban', 'ben bohlen', 'ben reitzes', 'chuck robbins'] | new prep persons: ['chuck robbins', 'mark patterson', 'sami badri']
+  GEHC 2025Q4 k=5.0/60 legacy=41/0/0/0 new=4/8/30/8 J=0.00
+     legacy q-only: []
+     new q-only   : ['biegelsen', 'kumar', 'marcus', 'petrone', 'roman', 'taylor', 'wuensch', 'zimmerman']
+     legacy prep persons: ['anthony petrone', 'carolynne borders', 'david roman', 'jay saccaro', 'joanne wuensch', 'larry biegelsen'] | new prep persons: ['carolynne borders', 'jay saccaro', 'peter arduini']
+  CBRE 2025Q4 k=4.0/50 legacy=35/0/0/0 new=3/8/27/8 J=0.00
+     legacy q-only: []
+     new q-only   : ['bergey', 'blouin', 'kamdem', 'kramm', 'paolone', 'rahmani', 'sakwa', 'sheldon']
+     legacy prep persons: ['alex kramm', 'anthony paolone', 'emma giamartino', 'jade rahmani', 'julien blouin', 'robert sulentic'] | new prep persons: ['chandni luthra', 'emma giamartino', 'robert sulentic']
+  APO 2025Q4 k=5.0/53 legacy=33/0/0/0 new=4/12/21/12 J=0.00
+     legacy q-only: []
+     new q-only   : ['barnidge', 'bedell', 'blostein', 'brown', 'budish', 'burdis', 'cyprys', 'davitt']
+     legacy prep persons: ['alex blostein', 'benjamin budish', 'bill katz', 'brennan hawken', 'brian bedell', 'glenn schorr'] | new prep persons: ['james zelter', 'marc rowan', 'martin kelly', 'noah gunn']
+  APO 2026Q1 k=5.0/48 legacy=27/1/0/1 new=4/12/16/12 J=0.00
+     legacy q-only: ['gunn']
+     new q-only   : ['blostein', 'brown', 'burtis', 'chubak', 'cyprys', 'davitt', 'dziarski', 'hawken']
+     legacy prep persons: ['alexander blostein', 'bart dziarski', 'brennan hawken', 'glenn schorr', 'james zelter', 'kenneth worthington'] | new prep persons: ['jim zelter', 'marc rowan', 'martin kelly', 'noah gunn']
+  COIN 2025Q2 k=30.0/52 legacy=2/1/18/1 new=25/0/0/0 J=0.00
+     legacy q-only: ['lau']
+     new q-only   : []
+     legacy prep persons: ['alesia jeanne haas', 'brian armstrong'] | new prep persons: ['alesia jeanne haas', 'anil k gupta', 'brian armstrong', 'emilie m choi', 'owen lau', 'paul grewal']
+  AXON 2025Q4 k=5.0/99 legacy=119/1/4/1 new=5/2/87/2 J=0.50
+     legacy q-only: []
+     new q-only   : ['ng']
+     legacy prep persons: ['andrew michael sherman', 'brittany bagley', 'david page', 'erik taylor lapinski', 'george charles notter', 'isner'] | new prep persons: ['brittany bagley', 'erik lapinski', 'joshua isner', 'patrick smith']
+  CSCO 2024Q2 k=5.0/72 legacy=38/2/4/2 new=4/14/26/14 J=0.14
+     legacy q-only: []
+     new q-only   : ['chatterjee', 'daryanani', 'ho', 'leopold', 'liani', 'long', 'marshall', 'ng']
+     legacy prep persons: ['amit daryanani', 'ben reitzes', 'chuck robbins', 'david vogt', 'george notter', 'matt niknam'] | new prep persons: ['chuck robbins', 'sami badri', 'scott herren']
+  MAA 2026Q2 k=5.0/61 legacy=1/1/4/1 new=4/16/21/16 J=0.00
+     legacy q-only: ['argo']
+     new q-only   : ['feldman', 'galan', 'goldfarb', 'gorman', 'heffern', 'juste', 'kim', 'kramer']
+     legacy prep persons: ['clay holder'] | new prep persons: ['andrew schaeffer', 'brad hill', 'clay holder', 'tim argo']
+
+=== b_followup.py ===
+  ex ADP 2024Q2 person='Mark Marcon' handoff names=['ashish sabadra', 'bryan bergin', 'bryan keane', 'dan dolev', 'james faucette']
+  ex ADP 2024Q2 person='Mark Marcon' handoff names=['ashish sabadra', 'bryan bergin', 'bryan keane', 'dan dolev', 'james faucette']
+  ex ADP 2024Q3 person='Owen Callahan' handoff names=['ashish sabadra', 'bryan bergin', 'james faucette', 'jason kupferberg', 'kartik mehta']
+analyst-follow-up-as-answer by cause: {'NOT named by handoff (position fallback)': 1256}

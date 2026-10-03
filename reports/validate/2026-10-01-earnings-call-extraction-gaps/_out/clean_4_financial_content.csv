@@ -1,0 +1,10 @@
+corpus,role,sentences,pct_sent_fin,pct_words_in_nofin_sent
+embed,answer,526231.0,45.6,42.04
+embed,prepared,467348.0,71.15,21.57
+embed,question,208363.0,49.62,36.59
+finbert,answer,592915.0,42.24,42.43
+finbert,operator,74078.0,8.73,80.64
+finbert,prepared,463209.0,70.26,21.57
+finbert,question,281710.0,37.14,39.18
+finbert,ALL,,,35.05
+embed,ALL,,,32.95

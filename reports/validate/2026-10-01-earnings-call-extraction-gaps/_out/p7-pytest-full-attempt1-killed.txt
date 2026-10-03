@@ -1,0 +1,539 @@
+F................................F............s......................... [  3%]
+........................................................................ [  7%]
+...........................................Fs........................... [ 10%]
+........................................................................ [ 14%]
+........................................................................ [ 17%]
+..........F............................................................. [ 21%]
+............................................F........................... [ 24%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 35%]
+...........................................ssss......................... [ 38%]
+..........F............................................................. [ 42%]
+.........................s.........s...........................ss....... [ 45%]
+.............ssss....................................................... [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 63%]
+.................................F...................................... [ 66%]
+...............s............................s........................... [ 70%]
+........................................................................ [ 73%]
+...........................................ss........................... [ 77%]
+............................sss......................................... [ 80%]
+.................................s....ss...s............................ [ 84%]
+........................................................................ [ 87%]
+.........................s.............................................. [ 91%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+................
+  grain: 81 rows over 80 distinct (date, ticker) keys -> score 10, duplicate named as AAA 2024-01-10
+.
+  coverage: BBB at 92.5% of its own traded sessions -> filed; FDXF absent and NOT filed (9 declared exclusions reported as info); hole filled -> PASS
+.
+  profile: 4 legs -> dead ['f_dead'], constant ['f_const'], infinite ['f_inf']; f_good n_ok=80 n_distinct=80 p50=19.75
+.
+  bounds: undeclared -> ABSTAIN (exit 3); declared [0, 100] -> 2 violations, worst BBB 2024-01-16 = 140.0
+.
+  redundancy: 6 pairs, every r equal to pandas' pairwise-complete corr to 1e-10; f_x ~ f_copy identical on all 156 shared rows -> score 10; the independent pair not filed
+.
+  clip: f_a_vs_peers 33.3% on the +/-8 clip, f_b_vs_peers 0.0%; f_a_xs modal share 66.7%; no declared suffix -> ABSTAIN
+.
+  catalogue: both directions -- f_renamed_away catalogued but absent (score 9), f_undocumented live but undescribed (score 4), f_live clean; no --catalogue -> ABSTAIN
+..
+  timeseries: f_hole 6-row gap (score 6), f_jump z=13.2 at 1.51x its p1-p99 span (score 3, info); FROZEN ABSTAINS on momentum (no daily_legs) and on institutionals files f_ic_stall_to_mcap at 7, f_ic_rank_to_mcap (pinned at its own max) at 3, and the non-daily leg not at all; conditional holes: one anchor-active price_vs_buy gap still fails, while one anchor-free gap and the exact SMCI source interval and its field-specific rolling warm-up are explained (never zero-filled)
+.
+  leakage: clean ladder h30 -> h60 -> h90 receding 5 sessions each and all behind 2024-02-23 (step 7d) -> PASS; the same frame with h90 pushed to 2024-02-23 -> 2 findings at score 10; PIT permits BBB's observed FTD zero after global source onset despite no BBB event, while still catching AAA short volume 14 days before its own RegSHO event
+...........                                     [100%]
+================================== FAILURES ===================================
+_________________ test_dag_chain_is_derived_from_the_registry _________________
+
+    def test_dag_chain_is_derived_from_the_registry():
+        src = _dag_source()
+        tree = ast.parse(src)
+
+        # CHAIN must be assigned from PART_COMMANDS, not from a hand-written list of strings
+        chain_assign = [n for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "CHAIN" for t in n.targets)]
+        assert chain_assign, "the DAG no longer defines CHAIN"
+        rendered = ast.dump(chain_assign[0].value)
+>       assert "PART_COMMANDS" in rendered, (
+            "CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what "
+            f"drifted before (got {ast.unparse(chain_assign[0].value)})"
+        )
+E       AssertionError: CHAIN must be derived from parts.PART_COMMANDS; a hand-written literal is exactly what drifted before (got ['build-prices', 'build-target', 'build-fundamentals', 'build-momentum', 'build-text', 'build-institutionals', 'build-governance'])
+E       assert 'PART_COMMANDS' in "List(elts=[Constant(value='build-prices'), Constant(value='build-target'), Constant(value='build-fundamentals'), Cons...Constant(value='build-text'), Constant(value='build-institutionals'), Constant(value='build-governance')], ctx=Load())"
+
+tests\dags\test_dag_matches_part_registry.py:37: AssertionError
+______________ test_persisted_betas_require_a_current_own_price _______________
+
+    def test_persisted_betas_require_a_current_own_price():
+        dates = pd.bdate_range("2024-01-02", periods=4, name="date")
+        beta = pd.DataFrame({"beta_market": [np.nan, 0.8, 0.8, 0.8]}, index=dates)
+        active = pd.DataFrame({"AAA": [False, True, False, True]}, index=dates)
+
+>       out = _betas_to_long({"AAA": beta}, availability=active)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: _betas_to_long() got an unexpected keyword argument 'availability'
+
+tests\data_aggregate\test_betas.py:422: TypeError
+___________________ test_real_panel_wellformed_and_bounded ____________________
+
+fundamental_panel = {'panel':              date ticker  ...  f_nci_income_share  f_nci_income_share_vs_hist
+0      1995-10-02      A  ... ...99  ...  63.450001  62.209999
+2026-09-30  611.760010  172.309998  ...  63.080002  62.119999
+
+[7800 rows x 101 columns]}
+
+    def test_real_panel_wellformed_and_bounded(fundamental_panel):
+        panel = fundamental_panel["panel"]
+        assert {"date", "ticker"}.issubset(panel.columns)
+
+        vp = [c for c in panel.columns if c.endswith("_vs_peers")]
+        xs = [c for c in panel.columns if c.endswith("_xs")]
+>       assert len(vp) >= 8 and len(xs) >= 8
+E       assert (0 >= 8)
+E        +  where 0 = len([])
+
+tests\data_aggregate\test_fundamental_features.py:384: AssertionError
+__________ test_first_publication_shares_chg_error_does_not_regress ___________
+
+    def test_first_publication_shares_chg_error_does_not_regress():
+        """The naive delta basis must stay nearer the revised truth than a matched sample.
+
+        Reads real `sec13f_hr` filings for a ticker sample and compares, per (ticker, quarter),
+        `ic_inst_shares_chg` as first PUBLISHED against the same quantity once every in-band
+        filing has landed. Skips when the DB is unreachable -- it is an integration test.
+        """
+        from tests.conftest import _store
+
+        store = _store()
+        from src.data_store.schema import Tables
+
+        if not store.exists(Tables.sec13f_hr) or not store.exists(Tables.cube_part_prices):
+            pytest.skip("sec13f_hr or cube_part_prices is absent from this DB")
+
+        tickers = sorted(str(t) for t in store.distinct(Tables.cube_part_prices, "ticker"))[::24]
+        grid = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(store.distinct(Tables.cube_part_prices, "date"))).dt.normalize().unique()))
+        holdings = store.load(
+            Tables.sec13f_hr,
+            columns=["ticker", "cik", "period", "filing_date", "shares", "value_usd"],
+            where={"ticker": tickers},
+            optional=True,
+        )
+        if holdings is None or holdings.empty:
+            pytest.skip("no 13F holdings for the sampled tickers")
+
+        stamped = _stamp_availability(_clean_holdings(holdings, key=("ticker", "cik", "period")), grid)
+        stamped = stamped[stamped["period"] >= INST_LEVEL_FLOOR_PERIOD]
+
+        # `truth` is every in-band filing for the period; `published` only those public at the
+        # period's own first publication. Both are differenced against a FULLY REVISED q-1, which
+        # is the naive basis the builder uses.
+        total = stamped.groupby(["ticker", "period"], as_index=False).agg(truth=("shares", "sum"))
+        public = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period"], as_index=False).agg(published=("shares", "sum"))
+        frame = total.merge(public, on=["ticker", "period"], how="inner").sort_values(["ticker", "period"])
+        frame["prev_truth"] = frame.groupby("ticker")["truth"].shift(1)
+        frame["prev_period"] = frame.groupby("ticker")["period"].shift(1)
+        frame = frame[(frame["prev_truth"] > 0) & ((frame["period"] - frame["prev_period"]).dt.days.between(80, 100))]
+        if len(frame) < 200:
+            pytest.skip(f"only {len(frame)} consecutive ticker-quarter pairs in the sample")
+
+        # The matched sample, for the comparison the design decision turns on: both sides cut to
+        # the filers public at `q`'s first publication.
+        cur = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()
+        prv = cast(pd.DataFrame, stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()).rename(columns={"shares": "prev_shares"})
+        period_map = cast(pd.DataFrame, frame[["ticker", "period", "prev_period"]]).rename(columns={"period": "_q", "prev_period": "period"})
+        prv = prv.merge(period_map, on=["ticker", "period"])
+        matched = cur.merge(prv.rename(columns={"_q": "period", "period": "_prev"}), on=["ticker", "period", "cik"], how="inner")
+        matched = matched.groupby(["ticker", "period"], as_index=False).agg(m_cur=("shares", "sum"), m_prev=("prev_shares", "sum"))
+
+        frame = frame.merge(matched, on=["ticker", "period"], how="left")
+        frame = frame[frame["m_prev"] > 0]
+        truth_chg = frame["truth"] / frame["prev_truth"] - 1.0
+        naive = (frame["published"] / frame["prev_truth"] - 1.0 - truth_chg).abs() * 100.0
+        matched_err = (frame["m_cur"] / frame["m_prev"] - 1.0 - truth_chg).abs() * 100.0
+        completeness = (frame["published"] / frame["truth"]).median()
+
+>       assert float(naive.median()) < FIRST_PUBLICATION_ERROR_CEILING_PP, (
+            f"the naive first-publication error regressed to {float(naive.median()):.3f}pp "
+            f"(measured {FIRST_PUBLICATION_ERROR_PP}pp, ceiling {FIRST_PUBLICATION_ERROR_CEILING_PP}pp)"
+        )
+E       AssertionError: the naive first-publication error regressed to 5.924pp (measured 1.825pp, ceiling 2.5pp)
+E       assert 5.923780671300937 < 2.5
+E        +  where 5.923780671300937 = float(np.float64(5.923780671300937))
+E        +    where np.float64(5.923780671300937) = median()
+E        +      where median = 0       4.450830\n1       8.860467\n2       5.017060\n3      18.932916\n4       4.135937\n         ...    \n983     0.177980\n984     2.567647\n985     2.586304\n986     0.240849\n987    10.449099\nLength: 988, dtype: float64.median
+
+tests\data_aggregate\test_institutional_features.py:1142: AssertionError
+_____________ test_availability_is_applied_before_peer_statistics _____________
+
+    def test_availability_is_applied_before_peer_statistics():
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+        tickers = list("ABCDE")
+        values = pd.DataFrame([[1.0, 2.0, 3.0, 1_000.0, 4.0], [1.0, 2.0, 3.0, 0.0, 4.0]], index=dates, columns=tickers)
+        active = pd.DataFrame(True, index=dates, columns=tickers)
+        active.loc[dates[0], "D"] = False
+        peers = {ticker: {peer: 1.0 for peer in tickers if peer != ticker} for ticker in tickers}
+        emission = {"signal": "raw+peers"}
+
+        actual = build_peer_relative_panel({"signal": values}, peers, emission=emission, availability=active)
+        expected = build_peer_relative_panel({"signal": values.where(active)}, peers, emission=emission)
+        expected = expected[~((expected["date"] == dates[0]) & (expected["ticker"] == "D"))]
+
+        cols = ["date", "ticker", "f_signal", "f_signal_vs_peers"]
+>       pd.testing.assert_frame_equal(
+            actual[cols].sort_values(["date", "ticker"]).reset_index(drop=True), expected[cols].sort_values(["date", "ticker"]).reset_index(drop=True)
+        )
+E       AssertionError: DataFrame are different
+E
+E       DataFrame shape mismatch
+E       [left]:  (10, 4)
+E       [right]: (9, 4)
+
+tests\data_aggregate\test_panel_merge_duplicates.py:162: AssertionError
+__________ test_every_flagged_group_resolves_to_its_reviewed_verdict __________
+
+live = Identity(entity_by_cik={'0000001800': 'E0000001800', '0000002488': 'E0000002488', '0000002969': 'E0000002969', '000000...036840'}), '`FUEL': frozenset({'0001024452'}), '{NONE)': frozenset({'0000904145'}), '{STA': frozenset({'0000913032'})})
+
+    def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
+        """The acceptance table for the whole plan, on the live tables."""
+>       flagged = pd.read_csv("reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv", dtype=str)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\data_extract\common\test_identity.py:779:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\io\parsers\readers.py:873: in read_csv
+    return _read(filepath_or_buffer, kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\io\parsers\readers.py:300: in _read
+    parser = TextFileReader(filepath_or_buffer, **kwds)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\io\parsers\readers.py:1645: in __init__
+    self._engine = self._make_engine(f, self.engine)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\io\parsers\readers.py:1904: in _make_engine
+    self.handles = get_handle(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path_or_buf = 'reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv'
+mode = 'r', encoding = 'utf-8', compression = None, memory_map = False
+is_text = True, errors = 'strict', storage_options = None
+
+    def get_handle(
+        path_or_buf: FilePath | BaseBuffer,
+        mode: str,
+        *,
+        encoding: str | None = None,
+        compression: CompressionOptions | None = None,
+        memory_map: bool = False,
+        is_text: bool = True,
+        errors: str | None = None,
+        storage_options: StorageOptions | None = None,
+    ) -> IOHandles[str] | IOHandles[bytes]:
+        """
+        Get file handle for given path/buffer and mode.
+
+        Parameters
+        ----------
+        path_or_buf : str or file handle
+            File path or object.
+        mode : str
+            Mode to open path_or_buf with.
+        encoding : str or None
+            Encoding to use.
+        compression : str or dict, default 'infer'
+            For on-the-fly compression of the output data. If 'infer' and 'path_or_buf'
+            is path-like, then detect compression from the following extensions: '.gz',
+            '.bz2', '.zip', '.xz', '.zst', '.tar', '.tar.gz', '.tar.xz' or '.tar.bz2'
+            (otherwise no compression).
+            Set to ``None`` for no compression.
+            Can also be a dict with key ``'method'`` set
+            to one of {``'zip'``, ``'gzip'``, ``'bz2'``, ``'zstd'``, ``'xz'``, ``'tar'``}
+            and other key-value pairs are forwarded to
+            ``zipfile.ZipFile``, ``gzip.GzipFile``,
+            ``bz2.BZ2File``, ``zstandard.ZstdCompressor``, ``lzma.LZMAFile`` or
+            ``tarfile.TarFile``, respectively.
+            As an example, the following could be passed for faster compression and to
+            create a reproducible gzip archive:
+            ``compression={'method': 'gzip', 'compresslevel': 1, 'mtime': 1}``.
+
+               May be a dict with key 'method' as compression mode
+               and other keys as compression options if compression
+               mode is 'zip'.
+
+               Passing compression options as keys in dict is
+               supported for compression modes 'gzip', 'bz2', 'zstd' and 'zip'.
+
+        memory_map : bool, default False
+            See parsers._parser_params for more information. Only used by read_csv.
+        is_text : bool, default True
+            Whether the type of the content passed to the file/buffer is string or
+            bytes. This is not the same as `"b" not in mode`. If a string content is
+            passed to a binary file/buffer, a wrapper is inserted.
+        errors : str, default 'strict'
+            Specifies how encoding and decoding errors are to be handled.
+            See the errors argument for :func:`open` for a full list
+            of options.
+        storage_options: StorageOptions = None
+            Passed to _get_filepath_or_buffer
+
+        Returns the dataclass IOHandles
+        """
+        # Windows does not default to utf-8. Set to utf-8 for a consistent behavior
+        encoding = encoding or "utf-8"
+
+        errors = errors or "strict"
+
+        # read_csv does not know whether the buffer is opened in binary/text mode
+        if _is_binary_mode(path_or_buf, mode) and "b" not in mode:
+            mode += "b"
+
+        # validate encoding and errors
+        codecs.lookup(encoding)
+        if isinstance(errors, str):
+            codecs.lookup_error(errors)
+
+        # open URLs
+        ioargs = _get_filepath_or_buffer(
+            path_or_buf,
+            encoding=encoding,
+            compression=compression,
+            mode=mode,
+            storage_options=storage_options,
+        )
+
+        handle = ioargs.filepath_or_buffer
+        handles: list[BaseBuffer]
+
+        # memory mapping needs to be the first step
+        # only used for read_csv
+        handle, memory_map, handles = _maybe_memory_map(handle, memory_map)
+
+        is_path = isinstance(handle, str)
+        compression_args = dict(ioargs.compression)
+        compression = compression_args.pop("method")
+
+        # Only for write methods
+        if "r" not in mode and is_path:
+            check_parent_directory(str(handle))
+
+        if compression:
+            if compression != "zstd":
+                # compression libraries do not like an explicit text-mode
+                ioargs.mode = ioargs.mode.replace("t", "")
+            elif compression == "zstd" and "b" not in ioargs.mode:
+                # python-zstandard defaults to text mode, but we always expect
+                # compression libraries to use binary mode.
+                ioargs.mode += "b"
+
+            # GZ Compression
+            if compression == "gzip":
+                if isinstance(handle, str):
+                    # error: Incompatible types in assignment (expression has type
+                    # "GzipFile", variable has type "Union[str, BaseBuffer]")
+                    handle = gzip.GzipFile(  # type: ignore[assignment]
+                        filename=handle,
+                        mode=ioargs.mode,
+                        **compression_args,
+                    )
+                else:
+                    handle = gzip.GzipFile(
+                        # No overload variant of "GzipFile" matches argument types
+                        # "Union[str, BaseBuffer]", "str", "Dict[str, Any]"
+                        fileobj=handle,  # type: ignore[call-overload]
+                        mode=ioargs.mode,
+                        **compression_args,
+                    )
+
+            # BZ Compression
+            elif compression == "bz2":
+                import bz2
+
+                # Overload of "BZ2File" to handle pickle protocol 5
+                # "Union[str, BaseBuffer]", "str", "Dict[str, Any]"
+                handle = bz2.BZ2File(  # type: ignore[call-overload]
+                    handle,
+                    mode=ioargs.mode,
+                    **compression_args,
+                )
+
+            # ZIP Compression
+            elif compression == "zip":
+                # error: Argument 1 to "_BytesZipFile" has incompatible type
+                # "Union[str, BaseBuffer]"; expected "Union[Union[str, PathLike[str]],
+                # ReadBuffer[bytes], WriteBuffer[bytes]]"
+                handle = _BytesZipFile(
+                    handle,  # type: ignore[arg-type]
+                    ioargs.mode,
+                    **compression_args,
+                )
+                if handle.buffer.mode == "r":
+                    handles.append(handle)
+                    zip_names = handle.buffer.namelist()
+                    if len(zip_names) == 1:
+                        handle = handle.buffer.open(zip_names.pop())
+                    elif not zip_names:
+                        raise ValueError(f"Zero files found in ZIP file {path_or_buf}")
+                    else:
+                        raise ValueError(
+                            "Multiple files found in ZIP file. "
+                            f"Only one file per ZIP: {zip_names}"
+                        )
+
+            # TAR Encoding
+            elif compression == "tar":
+                compression_args.setdefault("mode", ioargs.mode)
+                if isinstance(handle, str):
+                    handle = _BytesTarFile(name=handle, **compression_args)
+                else:
+                    # error: Argument "fileobj" to "_BytesTarFile" has incompatible
+                    # type "BaseBuffer"; expected "Union[ReadBuffer[bytes],
+                    # WriteBuffer[bytes], None]"
+                    handle = _BytesTarFile(
+                        fileobj=handle,  # type: ignore[arg-type]
+                        **compression_args,
+                    )
+                assert isinstance(handle, _BytesTarFile)
+                if "r" in handle.buffer.mode:
+                    handles.append(handle)
+                    files = handle.buffer.getnames()
+                    if len(files) == 1:
+                        file = handle.buffer.extractfile(files[0])
+                        assert file is not None
+                        handle = file
+                    elif not files:
+                        raise ValueError(f"Zero files found in TAR archive {path_or_buf}")
+                    else:
+                        raise ValueError(
+                            "Multiple files found in TAR archive. "
+                            f"Only one file per TAR archive: {files}"
+                        )
+
+            # XZ Compression
+            elif compression == "xz":
+                # error: Argument 1 to "LZMAFile" has incompatible type "Union[str,
+                # BaseBuffer]"; expected "Optional[Union[Union[str, bytes, PathLike[str],
+                # PathLike[bytes]], IO[bytes]], None]"
+                import lzma
+
+                handle = lzma.LZMAFile(
+                    handle,  # type: ignore[arg-type]
+                    ioargs.mode,
+                    **compression_args,
+                )
+
+            # Zstd Compression
+            elif compression == "zstd":
+                zstd = import_optional_dependency("zstandard")
+                if "r" in ioargs.mode:
+                    open_args = {"dctx": zstd.ZstdDecompressor(**compression_args)}
+                else:
+                    open_args = {"cctx": zstd.ZstdCompressor(**compression_args)}
+                handle = zstd.open(
+                    handle,
+                    mode=ioargs.mode,
+                    **open_args,
+                )
+
+            # Unrecognized Compression
+            else:
+                msg = f"Unrecognized compression type: {compression}"
+                raise ValueError(msg)
+
+            assert not isinstance(handle, str)
+            handles.append(handle)
+
+        elif isinstance(handle, str):
+            # Check whether the filename is to be opened in binary mode.
+            # Binary mode does not support 'encoding' and 'newline'.
+            if ioargs.encoding and "b" not in ioargs.mode:
+                # Encoding
+>               handle = open(
+                    handle,
+                    ioargs.mode,
+                    encoding=ioargs.encoding,
+                    errors=errors,
+                    newline="",
+                )
+E               FileNotFoundError: [Errno 2] No such file or directory: 'reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv'
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\io\common.py:930: FileNotFoundError
+_________ test_the_dividend_factor_is_monotone_and_terminates_at_one __________
+
+store = <src.data_store.store.DataStore object at 0x000002789C39E620>
+
+    def test_the_dividend_factor_is_monotone_and_terminates_at_one(store):
+        """`close_total / close_split` = D(d), the product of (1 - div/price) over ex-dates AFTER
+        d. So it must RISE monotonically toward the present and reach 1.0 on the last row -- no
+        future dividends remain to discount.
+
+        This encodes the definition of D(d) as a test. A violation means the two columns came
+        from different responses or different vintages."""
+        df = _series(store, "KO").dropna(subset=["close_split", "close_total"])
+        df = df[df["close_split"] > 0]
+        d = (df["close_total"] / df["close_split"]).to_numpy()
+
+        # A tolerance, not exact monotonicity: each ratio is a quotient of two rounded prices, so
+        # neighbouring days wobble in the 4th decimal. The SHAPE is what is being asserted.
+        drops = int((np.diff(d) < -1e-3).sum())
+>       assert drops == 0, f"D(d) falls on {drops} day(s) -- it must be non-decreasing in date"
+E       AssertionError: D(d) falls on 1 day(s) -- it must be non-decreasing in date
+E       assert 1 == 0
+
+tests\data_extract\prices\test_adjustment_basis.py:119: AssertionError
+============================== warnings summary ===============================
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:47
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:47: PendingDeprecationWarning: The set_bad function will be deprecated in a future version. Use cmap.with_extremes(bad=...) or Colormap(bad=...) instead.
+    red_blue.set_bad(gray_rgb.tolist(), 1.0)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:48
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:48: PendingDeprecationWarning: The set_over function will be deprecated in a future version. Use cmap.with_extremes(over=...) or Colormap(over=...) instead.
+    red_blue.set_over(gray_rgb.tolist(), 1.0)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:49
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:49: PendingDeprecationWarning: The set_under function will be deprecated in a future version. Use cmap.with_extremes(under=...) or Colormap(under=...) instead.
+    red_blue.set_under(gray_rgb.tolist(), 1.0)  # "under" is incorrectly used instead of "bad" in the scatter plot
+
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\pandas\core\nanops.py:1028: RuntimeWarning: invalid value encountered in subtract
+    sqr = _ensure_numeric((avg - values) ** 2)
+
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\numpy\lib\_function_base_impl.py:4597: RuntimeWarning: invalid value encountered in add
+    lerp_interpolation = add(a, diff_b_a * t, out=... if out is None else out)
+
+tests/data_aggregate/test_aggregate_regression.py::test_aggregation_output_is_unchanged_by_the_refactor
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\numpy\lib\_function_base_impl.py:4598: RuntimeWarning: invalid value encountered in subtract
+    subtract(b, diff_b_a * (1 - t), out=lerp_interpolation, where=t >= 0.5,
+
+tests/data_aggregate/test_part_status.py::test_all_ticker_live_coverage_makes_the_source_current
+tests/data_aggregate/test_part_status.py::test_all_ticker_live_coverage_makes_the_source_current
+tests/data_aggregate/test_part_status.py::test_partial_live_run_cannot_hide_the_stale_bulk_frontier
+tests/data_aggregate/test_part_status.py::test_partial_live_run_cannot_hide_the_stale_bulk_frontier
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+tests/data_aggregate/test_part_status.py::test_unpromoted_bulk_overlap_cannot_make_status_green
+  C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\src\data_store\store.py:47: SAWarning: Skipped unsupported reflection of expression-based index ix_insider_transactions_ticker
+    return Table(name, MetaData(), autoload_with=engine)
+
+tests/data_extract/common/test_sec_bulk_datasets.py: 2 warnings
+tests/data_extract/institutionals/test_insider_identity_screen.py: 9 warnings
+  C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\src\data_store\store.py:47: SAWarning: Skipped unsupported reflection of expression-based index ix_insider_transactions_transaction_date
+    return Table(name, MetaData(), autoload_with=engine)
+
+tests/data_extract/common/test_tier_c_resolution.py::test_an_unparseable_filed_date_is_dropped_not_silently_kept
+  C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\src\data_extract\utils\common\registrant.py:867: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    filed = pd.to_datetime(df[filed_col], errors="coerce")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/dags/test_dag_matches_part_registry.py::test_dag_chain_is_derived_from_the_registry
+FAILED tests/data_aggregate/test_betas.py::test_persisted_betas_require_a_current_own_price
+FAILED tests/data_aggregate/test_fundamental_features.py::test_real_panel_wellformed_and_bounded
+FAILED tests/data_aggregate/test_institutional_features.py::test_first_publication_shares_chg_error_does_not_regress
+FAILED tests/data_aggregate/test_panel_merge_duplicates.py::test_availability_is_applied_before_peer_statistics
+FAILED tests/data_extract/common/test_identity.py::test_every_flagged_group_resolves_to_its_reviewed_verdict
+FAILED tests/data_extract/prices/test_adjustment_basis.py::test_the_dividend_factor_is_monotone_and_terminates_at_one
+7 failed, 2019 passed, 26 skipped, 27 warnings in 6536.53s (1:48:56)

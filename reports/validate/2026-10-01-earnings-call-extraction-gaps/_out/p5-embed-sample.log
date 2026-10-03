@@ -1,0 +1,58 @@
+[35m2026-10-02 14:06:39 - root - INFO - seed.py - Set seed to value = 4325[0m
+[35m2026-10-02 14:06:39 - src.context - INFO - context.py - Loaded environment file: C:\Users\de larrard alexandre\OneDrive - The Boston Consulting Group, Inc\Documents\repos_github\PEA\reports\worktrees\earnings-call-extraction-gaps\.env[0m
+[35m2026-10-02 14:06:58 - src.context - INFO - earnings_call_embeddings.py - Embedding 50 earnings calls per-turn (OpenAI text-embedding-3-small)...[0m
+EC embeddings:   0%|          | 0/50 [00:00<?, ?it/s][35m2026-10-02 14:07:03 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   2%|2         | 1/50 [00:06<05:25,  6.64s/it][35m2026-10-02 14:07:05 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   4%|4         | 2/50 [00:08<02:50,  3.55s/it][35m2026-10-02 14:07:07 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   6%|6         | 3/50 [00:09<02:01,  2.59s/it][35m2026-10-02 14:07:08 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:   8%|8         | 4/50 [00:10<01:36,  2.10s/it][35m2026-10-02 14:07:09 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  10%|#         | 5/50 [00:12<01:30,  2.01s/it][35m2026-10-02 14:07:11 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  12%|#2        | 6/50 [00:13<01:13,  1.68s/it][35m2026-10-02 14:07:12 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  14%|#4        | 7/50 [00:15<01:07,  1.57s/it][35m2026-10-02 14:07:14 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  16%|#6        | 8/50 [00:16<01:06,  1.57s/it][35m2026-10-02 14:07:15 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  18%|#8        | 9/50 [00:17<00:56,  1.37s/it][35m2026-10-02 14:07:16 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  20%|##        | 10/50 [00:20<01:16,  1.91s/it][35m2026-10-02 14:07:19 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  22%|##2       | 11/50 [00:23<01:20,  2.06s/it][35m2026-10-02 14:07:21 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  24%|##4       | 12/50 [00:24<01:13,  1.92s/it][35m2026-10-02 14:07:24 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  26%|##6       | 13/50 [00:26<01:07,  1.83s/it][35m2026-10-02 14:07:25 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  28%|##8       | 14/50 [00:27<00:59,  1.67s/it][35m2026-10-02 14:07:26 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  30%|###       | 15/50 [00:29<01:04,  1.85s/it][35m2026-10-02 14:07:28 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  32%|###2      | 16/50 [00:31<01:03,  1.87s/it][35m2026-10-02 14:07:30 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  34%|###4      | 17/50 [00:33<01:00,  1.82s/it][35m2026-10-02 14:07:32 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  36%|###6      | 18/50 [00:34<00:55,  1.72s/it][35m2026-10-02 14:07:33 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  38%|###8      | 19/50 [00:36<00:49,  1.60s/it][35m2026-10-02 14:07:36 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  40%|####      | 20/50 [00:39<01:04,  2.14s/it][35m2026-10-02 14:07:38 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  42%|####2     | 21/50 [00:40<00:51,  1.76s/it][35m2026-10-02 14:07:39 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  44%|####4     | 22/50 [00:41<00:46,  1.64s/it][35m2026-10-02 14:07:40 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  46%|####6     | 23/50 [00:43<00:40,  1.51s/it][35m2026-10-02 14:07:42 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  48%|####8     | 24/50 [00:44<00:40,  1.57s/it][35m2026-10-02 14:07:44 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  50%|#####     | 25/50 [00:46<00:37,  1.50s/it][35m2026-10-02 14:07:45 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  52%|#####2    | 26/50 [00:47<00:33,  1.40s/it][35m2026-10-02 14:07:46 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  54%|#####4    | 27/50 [00:49<00:34,  1.50s/it][35m2026-10-02 14:07:48 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  56%|#####6    | 28/50 [00:50<00:34,  1.56s/it][35m2026-10-02 14:07:49 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  58%|#####8    | 29/50 [00:51<00:30,  1.43s/it][35m2026-10-02 14:07:50 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  60%|######    | 30/50 [00:53<00:26,  1.34s/it][35m2026-10-02 14:07:51 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  62%|######2   | 31/50 [00:53<00:22,  1.16s/it][35m2026-10-02 14:07:52 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  64%|######4   | 32/50 [00:54<00:20,  1.15s/it][35m2026-10-02 14:07:53 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  66%|######6   | 33/50 [00:55<00:19,  1.12s/it][35m2026-10-02 14:07:55 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  68%|######8   | 34/50 [00:57<00:19,  1.21s/it][35m2026-10-02 14:07:56 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  70%|#######   | 35/50 [00:59<00:20,  1.36s/it][35m2026-10-02 14:07:58 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  72%|#######2  | 36/50 [01:00<00:20,  1.44s/it][35m2026-10-02 14:07:59 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  74%|#######4  | 37/50 [01:02<00:19,  1.47s/it][35m2026-10-02 14:08:01 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  76%|#######6  | 38/50 [01:03<00:16,  1.38s/it][35m2026-10-02 14:08:02 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  78%|#######8  | 39/50 [01:04<00:14,  1.29s/it][35m2026-10-02 14:08:03 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  80%|########  | 40/50 [01:05<00:12,  1.26s/it][35m2026-10-02 14:08:04 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  82%|########2 | 41/50 [01:07<00:12,  1.38s/it][35m2026-10-02 14:08:06 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  84%|########4 | 42/50 [01:08<00:11,  1.38s/it][35m2026-10-02 14:08:07 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  86%|########6 | 43/50 [01:10<00:11,  1.58s/it][35m2026-10-02 14:08:09 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  88%|########8 | 44/50 [01:11<00:08,  1.46s/it][35m2026-10-02 14:08:10 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  90%|######### | 45/50 [01:12<00:06,  1.33s/it][35m2026-10-02 14:08:12 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  92%|#########2| 46/50 [01:14<00:05,  1.25s/it][35m2026-10-02 14:08:13 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  94%|#########3| 47/50 [01:15<00:04,  1.41s/it][35m2026-10-02 14:08:14 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  96%|#########6| 48/50 [01:16<00:02,  1.26s/it][35m2026-10-02 14:08:15 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings:  98%|#########8| 49/50 [01:17<00:01,  1.18s/it][35m2026-10-02 14:08:16 - httpx - INFO - _client.py - HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"[0m
+EC embeddings: 100%|##########| 50/50 [01:18<00:00,  1.12s/it]EC embeddings: 100%|##########| 50/50 [01:18<00:00,  1.57s/it]
+[35m2026-10-02 14:08:17 - src.context - INFO - earnings_call_embeddings.py - Earnings-call embeddings: +2516 turn rows -> 'earning_calls_embedding'.[0m
+sample=50 calls tokens=457,482 (9,150/call) requests=50 api=0.72s/call wall=1.91s/call
+PROJECTION over 33591 calls: 307.3M tokens = $6.15; sequential wall=17.8 h
+CONCLUSION: cost gate PASSED ($6.15 vs $15 ceiling).

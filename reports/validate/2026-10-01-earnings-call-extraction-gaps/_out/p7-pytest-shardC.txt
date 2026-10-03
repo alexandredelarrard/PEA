@@ -1,0 +1,38 @@
+..................................................s..................... [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+.........................................
+  grain: 81 rows over 80 distinct (date, ticker) keys -> score 10, duplicate named as AAA 2024-01-10
+.
+  coverage: BBB at 92.5% of its own traded sessions -> filed; FDXF absent and NOT filed (9 declared exclusions reported as info); hole filled -> PASS
+.
+  profile: 4 legs -> dead ['f_dead'], constant ['f_const'], infinite ['f_inf']; f_good n_ok=80 n_distinct=80 p50=19.75
+.
+  bounds: undeclared -> ABSTAIN (exit 3); declared [0, 100] -> 2 violations, worst BBB 2024-01-16 = 140.0
+.
+  redundancy: 6 pairs, every r equal to pandas' pairwise-complete corr to 1e-10; f_x ~ f_copy identical on all 156 shared rows -> score 10; the independent pair not filed
+.
+  clip: f_a_vs_peers 33.3% on the +/-8 clip, f_b_vs_peers 0.0%; f_a_xs modal share 66.7%; no declared suffix -> ABSTAIN
+.
+  catalogue: both directions -- f_renamed_away catalogued but absent (score 9), f_undocumented live but undescribed (score 4), f_live clean; no --catalogue -> ABSTAIN
+..
+  timeseries: f_hole 6-row gap (score 6), f_jump z=13.2 at 1.51x its p1-p99 span (score 3, info); FROZEN ABSTAINS on momentum (no daily_legs) and on institutionals files f_ic_stall_to_mcap at 7, f_ic_rank_to_mcap (pinned at its own max) at 3, and the non-daily leg not at all; conditional holes: one anchor-active price_vs_buy gap still fails, while one anchor-free gap and the exact SMCI source interval and its field-specific rolling warm-up are explained (never zero-filled)
+.
+  leakage: clean ladder h30 -> h60 -> h90 receding 5 sessions each and all behind 2024-02-23 (step 7d) -> PASS; the same frame with h90 pushed to 2024-02-23 -> 2 findings at score 10; PIT permits BBB's observed FTD zero after global source onset despite no BBB event, while still catching AAA short volume 14 days before its own RegSHO event
+...........            [100%]
+============================== warnings summary ===============================
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:47
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:47: PendingDeprecationWarning: The set_bad function will be deprecated in a future version. Use cmap.with_extremes(bad=...) or Colormap(bad=...) instead.
+    red_blue.set_bad(gray_rgb.tolist(), 1.0)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:48
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:48: PendingDeprecationWarning: The set_over function will be deprecated in a future version. Use cmap.with_extremes(over=...) or Colormap(over=...) instead.
+    red_blue.set_over(gray_rgb.tolist(), 1.0)
+
+..\..\..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:49
+  C:\Users\de larrard alexandre\AppData\Local\pypoetry\Cache\virtualenvs\stock-pick-strat-lkf53h9P-py3.13\Lib\site-packages\shap\plots\colors\_colors.py:49: PendingDeprecationWarning: The set_under function will be deprecated in a future version. Use cmap.with_extremes(under=...) or Colormap(under=...) instead.
+    red_blue.set_under(gray_rgb.tolist(), 1.0)  # "under" is incorrectly used instead of "bad" in the scatter plot
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+276 passed, 1 skipped, 3 warnings in 1028.87s (0:17:08)
+exit=0

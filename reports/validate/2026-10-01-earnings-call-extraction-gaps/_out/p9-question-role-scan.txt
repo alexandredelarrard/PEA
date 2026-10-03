@@ -1,0 +1,40 @@
+ok calls since 2024: 5241
+  calls with a question-tagged person >= 800 words: 81 (1.55%)
+  calls with a question-tagged person >= 1000 words: 61 (1.16%)
+  calls with a question-tagged person >= 1500 words: 34 (0.65%)
+  calls with a question-tagged person >= 2500 words: 11 (0.21%)
+  calls with question words > answer words: 45 (0.86%)
+  calls with prepared words < 500: 140 (2.67%)
+  top question-tagged persons (suspects):
+ticker quarter       top_q_person  top_q_words  q_words  a_words  p_words
+   TXN  2025Q1         Haviv Ilan         3861     4715      191     1120
+   KIM  2025Q4        Ross Cooper         3561     5158     1096     3245
+   BMY  2026Q1 Cristian Massacesi         3500     4548     1710     1851
+   CRM  2026Q2       Marc Benioff         3098     3575     3534     4538
+  NFLX  2025Q2     Gregory Peters         2900     4417     1280      339
+   JPM  2024Q3        Jamie Dimon         2709     4642     3860     1248
+  NFLX  2024Q2        Greg Peters         2708     2708     2334      739
+   HSY  2025Q1       Michele Buck         2646     5112     1322       37
+  DASH  2025Q1      Ravi Inukonda         2538     4131     3348       57
+  FANG  2024Q4       Travis Stice         2530     4044     1627       19
+   BMY  2025Q4     Adam Lenkowsky         2528     4173     2447     2161
+  NFLX  2023Q4        Greg Peters         2322     3408     2640      363
+   HSY  2025Q4     Steven Voskuil         2250     4723     4148      148
+    EW  2025Q4      Daniel Lippis         2175     3018     1977     2597
+   ROL  2025Q4     Kenneth Krause         2163     3247     2172     1747
+   DPZ  2025Q4      Sandeep Reddy         2160     3352     2376     2570
+   BMY  2024Q4     Adam Lenkowsky         2138     3919     5222     2688
+   DIS  2026Q2      Hugh Johnston         1934     1934     2412     1362
+   BSX  2024Q3      Kenneth Stein         1909     3272     2347     2319
+   PEP  2025Q3     Ramon Laguarta         1878     3513     3278       10
+  NFLX  2024Q1     Spence Neumann         1857     1857     4305      553
+  NFLX  2024Q4        Greg Peters         1842     2093     2805      324
+  PSKY  2026Q2     Dennis Cinelli         1830     3375     3131      409
+   DHI  2024Q1      Bill W. Wheat         1739     4127     3892      328
+   BMY  2024Q2     Adam Lenkowsky         1736     3681     3720     2731
+CONCLUSION: share of ok calls with a >=1,000-word question-tagged person = 1.16% (mislabel suspects; inspect the named examples)
+
+real	14m37.442s
+user	0m0.015s
+sys	0m0.203s
+exit=0

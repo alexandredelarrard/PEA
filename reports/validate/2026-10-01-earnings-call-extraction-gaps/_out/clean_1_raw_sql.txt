@@ -1,0 +1,109 @@
+== empty / whitespace-only content
+ n_rows  | n_null | n_blank | pct_empty
+---------+--------+---------+-----------
+ 2804060 |      0 |   10147 |     0.362
+
+== length quantiles (non-empty rows): chars then words
+   k   |       percentile_disc
+-------+-----------------------------
+ chars | {5,13,74,266,601,1827,8455}
+ words | {1,2,13,48,108,323,1366}
+
+== share <=3 words, <=1 word, <=5, <=10 (non-empty)
+  count  | le1  | le3  |  le5  | le10
+---------+------+------+-------+-------
+ 2793913 | 2.13 | 9.14 | 12.91 | 20.42
+
+== top speakers that look like placeholders
+                 speaker                  | count
+------------------------------------------+--------
+ Operator                                 | 422664
+ Unidentified Analyst                     |  11197
+ Unidentified Company Representative      |   2099
+ AI Insights                              |    528
+ Unidentified Participant                 |    287
+ Unknown                                  |    255
+ Unidentified Company Speaker             |    147
+                                          |    140
+ Presentation                             |    105
+ Analyst                                  |     98
+ UnidentifiedAnalyst                      |     63
+ Speaker 12                               |     53
+ Unidentified Corporate Participant       |     48
+ Moderator                                |     47
+ Unidentified Speaker                     |     43
+ Speaker 14                               |     38
+ Speaker 11                               |     35
+ Speaker 9                                |     33
+ Speaker 15                               |     33
+ Speaker 10                               |     30
+ Speaker 4                                |     29
+ Speaker 5                                |     25
+ Speaker 13                               |     25
+ Unidentified analyst                     |     24
+ Speaker 17                               |     24
+ Unidentified company participant         |     23
+ Speaker 18                               |     22
+ Speaker 7                                |     21
+ Unidentified Conference Call Participant |     17
+ Speaker 19                               |     17
+
+== top 25 raw short contents (<=3 words)
+        content         | count
+------------------------+-------
+ Thank you.             | 35083
+ Good morning.          | 12862
+ Yes.                   | 12459
+                        | 10147
+ Okay.                  |  9223
+ Okay. Thank you.       |  6976
+ Thanks.                |  6435
+ Great. Thank you.      |  5297
+ Yeah.                  |  4474
+ Sure.                  |  4077
+ Okay, thank you.       |  3255
+ Right.                 |  2870
+ Correct.               |  2158
+ No.                    |  1878
+ You bet.               |  1858
+ Great, thank you.      |  1729
+ You're welcome.        |  1647
+ Okay. Thanks.          |  1577
+ Hi, good morning.      |  1577
+ Okay, thanks.          |  1300
+ That's correct.        |  1282
+ Morning.               |  1074
+ Thanks very much.      |  1002
+ Hi. Good morning.      |   977
+ Next question, please. |   950
+
+== bracketed artefacts over all rows
+ n_artefact_rows | n_opinstr_rows | n_any_bracket_rows
+-----------------+----------------+--------------------
+           61672 |          54801 |             114845
+
+== calls per year
+  y   | count
+------+-------
+ 2005 |    24
+ 2006 |   378
+ 2007 |   715
+ 2008 |  1529
+ 2009 |  1380
+ 2010 |  1157
+ 2011 |  1392
+ 2012 |  1684
+ 2013 |  1728
+ 2014 |  1760
+ 2015 |  1763
+ 2016 |  1777
+ 2017 |  1797
+ 2018 |  1812
+ 2019 |  1838
+ 2020 |  1871
+ 2021 |  1885
+ 2022 |  1905
+ 2023 |  1895
+ 2024 |  1933
+ 2025 |  1927
+ 2026 |  1441

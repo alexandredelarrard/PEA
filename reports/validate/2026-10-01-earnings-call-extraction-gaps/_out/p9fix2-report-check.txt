@@ -1,0 +1,3 @@
+checked 10 ACs, 38 links, 1 high/critical findings
+CONCLUSION: report integrity PASS
+exit=0

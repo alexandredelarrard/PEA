@@ -1,0 +1,27 @@
+P7 pending deletions -- NOT executed; each needs explicit user confirmation.
+Measured 2026-10-02, read-only (pg_class sizes; find/awk over the bind mount inside pea_airflow_scheduler).
+
+1) Legacy DB tables (renamed to *_legacy in P5; nothing in src reads them)
+   table                            exact rows (P0 snapshot)   est rows (reltuples)   total size (pg_total_relation_size)
+   earning_calls_embedding_legacy   1,379,014                  1,282,700              8,658 MB (9,078,702,080 B)
+   earnings_call_sections_legacy      110,994                    103,065              1,618 MB (1,696,088,064 B)
+   earnings_call_sentiment_legacy      55,863                     51,241                 11 MB (   11,567,104 B)
+   TOTAL                                                                               ~10.0 GB (10,786,357,248 B)
+   Exact row counts are the P0 snapshot (_out/p0-db.json) of the same tables before the P5 rename;
+   no write has touched them since. Proposed: DROP TABLE <name>; for the three tables (rollback
+   steps in _out/p5-renames.txt stop working after the drop).
+
+2) Legacy transcript cache: data/call_transcripts/
+   Host path : <repo>/data/call_transcripts  (main tree)
+   Airflow   : /opt/airflow/project/data/call_transcripts is a BIND MOUNT of that same host
+               directory (docker inspect pea_airflow_scheduler), not a separate volume --
+               one deletion covers both.
+   The worktree has no data/call_transcripts.
+   contents                                   files   bytes
+   hf_sp500_transcripts.parquet (kurry HF)        1   1,824,805,388  (~1.70 GiB, dated 2026-09-07)
+   transcript_index.json (Fool link index)        1         142,714  (dated 2026-10-01)
+   <TICKER>/<quarter>.html (Fool HTML)          455     246,936,411  (~235 MiB; 113 ticker dirs; 444 dated 2026-09, 11 dated 2026-10)
+   TOTAL                                        457   2,071,884,513  (~1.93 GiB; `du -sh` = 2.0G)
+   No other file type is present. Proposed: delete the whole directory.
+
+3) Not agent-actionable: the user removes ROIC_API_KEY from .env.

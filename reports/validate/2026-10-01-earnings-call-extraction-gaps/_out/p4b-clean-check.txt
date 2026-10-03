@@ -1,0 +1,61 @@
+P4b clean check on 2940 sample calls (before = 3ed3585, after = working tree)
+split status before {'ok': 2880, 'empty': 24, 'no_qa': 35, 'no_prepared': 1} | after {'ok': 2876, 'empty': 24, 'no_qa': 35, 'no_prepared': 5}
+gate failures (ok calls failing assess_earnings_call_sections): before 0 | after 9
+    after-fail ACN 2007Q2: missing sections: qa
+    after-fail ACN 2007Q4: missing sections: qa
+    after-fail GOOGL 2017Q2: missing sections: qa
+    after-fail GS 2006Q4: missing sections: qa
+    after-fail KLAC 2007Q4: missing sections: qa
+    after-fail MDLZ 2007Q2: missing sections: qa
+    after-fail OKE 2017Q4: missing sections: qa
+    after-fail PEP 2007Q3: missing sections: qa
+    after-fail TDG 2025Q4: missing sections: qa
+qa exchange indices non-contiguous (after): 0 calls
+
+decimals in model inputs ('d. d' broken / 'd.d' intact / 'U. S.'):
+  finbert  before   95260 /       0 /  17983  -> after     171 /   90335 /     26
+  embed    before   95628 /       0 /  17852  -> after     130 /   94036 /     26
+
+Q&A sentiment words by speaker role:
+  before analyst            27.1 %
+  before operator            4.2 %
+  before management/other   68.8 %
+  after: qa = management answer turns only (analyst 0 %, operator 0 % by construction)
+
+turns per role (count / words): before -> after
+  prepared    14580 /   9773394  ->   14375 /   9147129
+  question    66125 /   4049759  ->   60345 /   3855143
+  answer      83838 /  10602617  ->   69750 /   9596144
+
+prepared share of call words (ok calls) before: q05/q50/q95 = [0.16, 0.37, 0.58] | prepared / (prepared + qa) = [0.17, 0.37, 0.59]
+prepared share of call words (ok calls) after: q05/q50/q95 = [0.15, 0.34, 0.56] | prepared / (prepared + qa) = [0.2, 0.44, 0.68]
+
+residual noise, % of words (research regexes of clean_noise.py): before -> after
+  class                   finbert/prepared_remarks                finbert/qa    embed/prepared_remarks                  embed/qa
+  words                    9,592,130 ->  8,911,009  16,002,252 -> 11,111,242   9,773,394 ->  9,147,129  14,652,376 -> 13,451,287
+  courtesy_sentence            0.699 ->      0.147       1.734 ->      0.247       0.271 ->      0.164       0.350 ->      0.310
+  backchannel_sentence         0.006 ->      0.000       0.338 ->      0.004       0.003 ->      0.000       0.038 ->      0.003
+  self_intro                   0.000 ->      0.000       0.035 ->      0.000       0.000 ->      0.000       0.030 ->      0.001
+  intro_joined_by              0.300 ->      0.001       0.005 ->      0.005       0.294 ->      0.001       0.005 ->      0.005
+  participant_roster           1.235 ->      1.289       0.001 ->      0.001       1.098 ->      1.026       0.001 ->      0.001
+  addressed_name               0.063 ->      0.003       0.104 ->      0.005       0.005 ->      0.003       0.031 ->      0.005
+  speaker_name_token           1.199 ->      1.034       0.901 ->      0.269       1.138 ->      1.021       0.376 ->      0.264
+  boilerplate                  5.025 ->      1.550       0.000 ->      0.000       4.979 ->      1.477       0.000 ->      0.000
+  logistics_sentence           0.612 ->      0.123       2.326 ->      0.067       0.531 ->      0.131       0.083 ->      0.057
+  filler_youknow_imean         0.003 ->      0.004       0.226 ->      0.251       0.004 ->      0.004       0.243 ->      0.244
+  filler_kindof_sortof         0.008 ->      0.008       0.478 ->      0.334       0.010 ->      0.011       0.507 ->      0.516
+  filler_uh                    0.000 ->      0.000       0.000 ->      0.000       0.000 ->      0.000       0.000 ->      0.000
+
+words removed by the product cleaner, by class (all turns of the sample, before role filters):
+  prepared  addressed_name     36,068 words  (33450 fragments in all sections)
+  prepared  boilerplate       402,587 words  (18696 fragments in all sections)
+  prepared  courtesy           34,096 words  (133611 fragments in all sections)
+  prepared  handoff            95,151 words  (8669 fragments in all sections)
+  prepared  handoff_name       31,004 words  (2081 fragments in all sections)
+  prepared  roster             44,855 words  (1830 fragments in all sections)
+  prepared  self_intro             77 words  (775 fragments in all sections)
+  qa        addressed_name    304,192 words  (33450 fragments in all sections)
+  qa        courtesy          261,871 words  (133611 fragments in all sections)
+  qa        handoff             8,670 words  (8669 fragments in all sections)
+  qa        handoff_name       19,326 words  (2081 fragments in all sections)
+  qa        self_intro          5,347 words  (775 fragments in all sections)

@@ -44,7 +44,7 @@ from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
+from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
 from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
@@ -542,6 +542,18 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
 def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse, repair_availability=repair_availability)
+
+
+@cli.command(
+    name="notes-download",
+    help="Cache the SEC Notes zips and capture every filer's cover-page symbols (dei:TradingSymbol) into symbol_tenure. SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def notes_download(config_path: str, full: bool) -> None:
+    """`--full` re-captures every cached zip (one-off backfill); the default captures only periods not yet stored."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    download_financial_notes(context, full=full)
 
 
 # --- Structure (governance) ---

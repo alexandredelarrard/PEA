@@ -4,6 +4,8 @@ Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for
 curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. Rows carry their archive
 `period` and point-in-time `available_at` clock. Incremental: a stored period is skipped unless the universe gained
 tickers or `reparse` is set. Zips are large, so the window is the dedicated `notes_years_history` knob.
+`download_financial_notes` caches the zips and captures every filer's cover-page `dei:TradingSymbol` facts
+into the `dei` partition of `symbol_tenure`, one Notes period at a time; the notes parse reads its zips itself.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
+from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, save_dei_period
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik_series
 
@@ -94,6 +97,10 @@ _SUB_USECOLS = frozenset({"adsh", "cik", "form", "fy", "fp", "filed"})
 _NUM_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnote", "value"})
 _TXT_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"})
 _FACT_PK = ["adsh", "tag", "ddate", "qtrs"]
+_DEI_SUB_USECOLS = frozenset({"adsh", "cik", "name", "filed"})
+_DEI_TXT_USECOLS = frozenset({"adsh", "tag", "coreg", "value"})
+_DEI_SYMBOL_TAG = "TradingSymbol"
+_NOTES_ZIP_NAME = re.compile(r"(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip")
 _NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
 _TXT_OUT = [
     "cik",
@@ -309,6 +316,73 @@ def _save_period(context: Context, table: Table, frame: pd.DataFrame, columns: l
     frame["period"] = period
     frame["available_at"] = available_at
     return context.store.save(table, frame[[c for c in columns if c in frame.columns]])
+
+
+# --------------------------------------------------------------------------- #
+# Download + cover-page symbol capture (`dei` partition of symbol_tenure)       #
+# --------------------------------------------------------------------------- #
+def _cover_symbol_rows(chunk: pd.DataFrame) -> pd.Series:
+    """`dei:TradingSymbol` facts of the primary filer; a co-registrant's symbol belongs to another CIK."""
+    coreg = chunk.get("coreg", pd.Series("", index=chunk.index)).astype("string").fillna("").str.strip()
+    return chunk["tag"].eq(_DEI_SYMBOL_TAG) & (coreg == "")
+
+
+def _read_dei_facts(path: Path) -> pd.DataFrame | None:
+    """One notes zip -> `[adsh, value, cik, name, filed]` cover-page symbol facts of every filer; None when unreadable."""
+    specs = {
+        "sub.tsv": ZipRead(usecols=_DEI_SUB_USECOLS),
+        "txt.tsv": ZipRead(usecols=_DEI_TXT_USECOLS, keep=_cover_symbol_rows, chunksize=_CHUNK, skip_bad_lines=True),
+    }
+    tables = read_zip_tables(path, specs, on_corrupt="delete", log=logger)
+    if not tables:
+        return None
+    if tables["txt.tsv"].empty:
+        return pd.DataFrame(columns=["adsh", "value", *sorted(_DEI_SUB_USECOLS - {"adsh"})])
+    return tables["txt.tsv"][["adsh", "value"]].merge(tables["sub.tsv"], on="adsh", how="inner")
+
+
+def _cached_notes_periods(cache: Path) -> list[str]:
+    """Period tags of the notes zips cached under `cache`, oldest first."""
+    return sorted(match.group(1) for path in cache.glob("*_notes.zip") if (match := _NOTES_ZIP_NAME.fullmatch(path.name)))
+
+
+def capture_dei_symbols(context: Context, cache: Path, periods: list[str]) -> int:
+    """Write each cached period's `dei` rows to `symbol_tenure`, replacing that period's rows; returns rows written."""
+    written = 0
+    for period in tqdm(periods, desc="SEC notes cover-page symbols"):
+        facts = _read_dei_facts(cache / f"{period}_notes.zip")
+        if facts is None or facts.empty:
+            logger.info("notes dei %s: no cover-page symbol facts", period)
+            continue
+        rows = aggregate_dei_symbols(facts, period)
+        n_saved = save_dei_period(context, period, rows)
+        written += n_saved
+        logger.info("notes dei %s: %d accession(s) -> %d (symbol, CIK) row(s), %d written", period, facts["adsh"].nunique(), len(rows), n_saved)
+    return written
+
+
+def download_financial_notes(context: Context, years_history: int = 15, full: bool = False) -> int:
+    """Cache the notes zips of the window, then capture `dei` symbols from every cached zip not yet captured.
+
+    Resume reads the `dei` periods stored in `symbol_tenure` (no marker file); `full` re-captures every
+    cached zip. Returns the `dei` rows written.
+    """
+    cache = cache_dir(context, context.config.local.paths.financial_notes)
+    captured = {str(value) for value in context.store.distinct(Tables.symbol_tenure, "evidence_period", where={"source": DEI_SOURCE})}
+    for period in _notes_periods(context, years_history + 1):
+        if period not in captured:
+            ensure_zip(
+                context,
+                cache / f"{period}_notes.zip",
+                SEC_FINNOTES_URL_TEMPLATE.format(period=period),
+                label=f"notes {period}",
+                timeout=600,
+                log=logger,
+            )
+    pending = [period for period in _cached_notes_periods(cache) if full or period not in captured]
+    written = capture_dei_symbols(context, cache, pending)
+    logger.info("notes dei: %d period(s) captured, %d row(s) written (%d already stored)", len(pending), written, len(captured))
+    return written
 
 
 def fetch_financial_notes(

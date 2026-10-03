@@ -1,9 +1,9 @@
 """Ticker identity, axis B: which issuer CIK held symbol X on date d (`symbol_tenure`).
 
 Evidence rows by `source`: `form345` (derived offline from `SUBMISSION.TSV` in the cached Form 345
-quarter zips) and `manual` (the evidenced config) are written here; other sources own their own
-partition. PK (symbol, issuer_cik, valid_from, source, evidence_period); `evidence_period` is '' for
-`form345` and `manual`. Tenures may overlap: `valid_to` is the observed end of that CIK's own filing
+quarter zips) and `manual` (the evidenced config) are written by the identity build; `dei` (Notes
+cover-page symbols) is written one Notes zip period at a time. Each source rewrites only its own partition.
+PK (symbol, issuer_cik, valid_from, source, evidence_period); `evidence_period` is '' for `form345` and `manual`. Tenures may overlap: `valid_to` is the observed end of that CIK's own filing
 window, so the table answers a membership question, never a single-answer lookup.
 """
 
@@ -78,6 +78,9 @@ BUILD_SOURCES = ("form345", "manual")
 
 #: Column order of the materialized partitions.
 TABLE_COLUMNS = ("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence")
+
+#: Notes cover-page (`dei:TradingSymbol`) partition, one row set per Notes zip period.
+DEI_SOURCE = "dei"
 
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
 MANUAL_TENURE_VERSION = 1
@@ -488,3 +491,67 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
     else:
         logger.info("symbol_tenure: wrote %d %s row(s)", written, "/".join(BUILD_SOURCES))
     return out
+
+
+def aggregate_dei_symbols(facts: pd.DataFrame, period: str) -> pd.DataFrame:
+    """One Notes zip's cover-page symbol facts `[adsh, cik, name, filed, value]` -> its `dei` rows.
+
+    Symbols go through `parse_symbol_field` (placeholders and noise dropped, lists exploded); `n_filings`
+    counts distinct accessions per (symbol, issuer_cik); `valid_to` is the last filing + 1 day.
+    """
+    fields = facts["value"].astype("string")
+    symbols_by_field = {field: symbols for field in fields.dropna().unique() if (symbols := parse_symbol_field(field))}
+    df = pd.DataFrame(
+        {
+            "adsh": facts["adsh"],
+            "issuer_cik": pad_cik_series(facts["cik"]),
+            "name": facts["name"].astype("string"),
+            "filed": pd.to_datetime(facts["filed"], format="%Y%m%d", errors="coerce"),
+            "symbol": fields.astype(object).map(symbols_by_field),
+        }
+    )
+    df = df[df["symbol"].notna() & df["filed"].notna() & ~df["issuer_cik"].isin(("", "0" * 10))]
+    df = df.explode("symbol").drop_duplicates(["symbol", "issuer_cik", "adsh"]).sort_values("filed", kind="mergesort")
+    agg = df.groupby(["symbol", "issuer_cik"], as_index=False).agg(
+        valid_from=("filed", "min"), last_filed=("filed", "max"), n_filings=("adsh", "size"), evidence=("name", "last")
+    )
+    out = agg.assign(
+        valid_to=agg["last_filed"] + pd.Timedelta(days=1),
+        n_filings=agg["n_filings"].astype("int64"),
+        source=DEI_SOURCE,
+        evidence_period=period,
+        evidence=agg["evidence"].fillna("").astype(str).str.strip(),
+    )
+    return out[list(TABLE_COLUMNS)].sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
+
+
+def collapse_dei_periods(rows: pd.DataFrame) -> pd.DataFrame:
+    """`dei` rows of several Notes periods -> one row per (symbol, issuer_cik).
+
+    A monthly period (`YYYY_MM`) whose quarter (`YYYYqN`) is also present is dropped first, because the
+    quarterly zip republishes the same accessions; bounds are then min/max and counts summed.
+    """
+    df = rows[rows["source"].eq(DEI_SOURCE)]
+    periods = df["evidence_period"].astype("string")
+    is_month = periods.str.contains("_", regex=False)
+    month = pd.to_numeric(periods.str.slice(5).where(is_month), errors="coerce")
+    quarter_of_month = periods.str.slice(0, 4) + "q" + ((month - 1) // 3 + 1).astype("Int64").astype("string")
+    superseded = is_month & quarter_of_month.isin(set(periods[~is_month])).fillna(False)
+    agg = (
+        df[~superseded]
+        .sort_values("valid_to", kind="mergesort")
+        .groupby(["symbol", "issuer_cik"], as_index=False)
+        .agg(valid_from=("valid_from", "min"), valid_to=("valid_to", "max"), n_filings=("n_filings", "sum"), evidence=("evidence", "last"))
+    )
+    return agg.assign(source=DEI_SOURCE)[["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]]
+
+
+def save_dei_period(context: Context, period: str, rows: pd.DataFrame) -> int:
+    """Replace the `dei` rows of one Notes period, leaving every other partition; an unchanged period is not rewritten."""
+    where: dict[str, object] = {"source": DEI_SOURCE, "evidence_period": period}
+    existing = context.store.load(Tables.symbol_tenure, project=True, where=where, optional=True)
+    if matches_stored(existing, rows, Tables.symbol_tenure):
+        return 0
+    if existing is not None and not existing.empty:
+        context.store.delete(Tables.symbol_tenure, where=where)
+    return context.store.save(Tables.symbol_tenure, rows) if not rows.empty else 0

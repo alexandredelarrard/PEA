@@ -39,7 +39,7 @@ The [table registry and store boundary](../concepts/table-registry-and-store-bou
 
 Managed source and aggregate tables keep generated DDL and are emptied on replacement. Unmanaged `cube_part_*` tables are dropped and recreated because their columns legitimately change with the feature set. The final cube is streamed in chunks by [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py).
 
-Non-tabular products do not masquerade as tables: models, diagnostics, downloaded SEC archives, transcripts, and the peer dictionary use paths resolved by [context.py](../../src/context.py).
+Non-tabular products do not masquerade as tables: models, diagnostics, downloaded SEC archives, and the peer dictionary use paths resolved by [context.py](../../src/context.py).
 
 ## Related
 

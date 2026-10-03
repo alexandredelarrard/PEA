@@ -5,54 +5,6 @@ Schedule 13G / 13G/A -- the PASSIVE >5% beneficial-ownership channel -- via edga
 (`filing.obj()` -> `Schedule13G`) into `sec_13g`, one row per reporting person, the same grain
 and column names as `sec_13d` so the 13G->13D escalation join is a plain
 (ticker, reporting_person_cik) union ordered by filing_date.
-
-THE STRUCTURED-DATA CLIFF is the whole story of this module. Beneficial-ownership XML became
-mandatory 2024-12-17; before it edgartools cannot read a 13G's numbers at all and builds the
-object from the SGML header alone (`_partial_from_header`), returning class defaults: 0 for
-percent_of_class, aggregate_amount and all four power fields, '' for the event date, the CUSIP
-and the security title. Measured on ETN 0000315066-24-002743 (SC 13G/A, 2024-11-12, FMR LLC):
-`has_structured_data=False` and every numeric 0. Publishing that 0 would claim a 0% stake the
-filer never disclosed, so `num_or_null` turns it into NaN.
-
-`has_structured_data` is the ONLY numeric guard here. 13D needs a second one
-(`_is_placeholder_numerics`) because post-mandate 13D filers routinely defer the cover-page
-numbers to the Item 5 narrative ("Rows 7-13: See Item 5"); a 13G has no such narrative item to
-defer to, so the single guard is enough.
-
-THE REPORTING-PERSON CIK COMES FROM TWO DIFFERENT PLACES, one per era, and only one of them is
-edgartools':
-  * pre-mandate, the header path fills `ReportingPerson.cik` from the filer block;
-  * post-mandate, the 13G XML cover page has NO CIK element -- edgartools hard-codes `cik=''`
-    (`# Not provided in 13G cover page`). Measured: ETN 0002100119-26-000028 parses Vanguard
-    Capital Management with percent_of_class=7.48 and cik=''.
-So the escalation key would be NULL exactly where the numbers are real. `_reporting_person_cik`
-backfills it from the filing header's own filer list. That costs nothing: `filing.xml()` and
-`filing.header` both resolve through the same memoized `filing.sgml()`, so the header is already
-in memory once `.obj()` has run.
-
-The two form-string eras are the same trap as 13D -- "SC 13G" through 2024-12-16, "SCHEDULE 13G"
-from 2024-12-17, matched EXACTLY by `get_filings(form=...)` -- and all four spellings live in
-`SEC_13G_FORMS`.
-
-THE ISSUER/FILER GUARD matters more here than on 13D. A ticker's 13G listing includes every
-filing where its CIK appears at all, and asset managers file hundreds of 13Gs against unrelated
-issuers; a bank in the S&P 500 is a FILER far more often than it is a subject. Only filings
-whose issuer CIK matches the ticker's own are kept.
-
-`is_passive_investor` is deliberately NOT stored: edgartools implements it as a hard-coded
-`return True` for every 13G, so the column would be degenerate. `rule_designation` -- the Rule
-13d-1 paragraph the filer designated, (b) qualified institutional / (c) passive / (d) exempt --
-is the field that actually discriminates the filer regimes, and it exists post-mandate only.
-
-TWO COLUMNS ARE ALWAYS NULL, and neither NULL means what it looks like:
-  * `reporting_person_comment` -- edgartools' 13G parser hard-codes `comment=None` (the 13D one
-    reads it). The comment IS in the document: the same ETN filing carries a 300-word "Comment
-    for Type of Reporting Person" naming the four Vanguard affiliates the position aggregates.
-    So a NULL here means NOT PARSED, never "no comment filed".
-  * `is_group_member` -- `memberGroup` was absent from all 112 smoke rows.
-Both are kept rather than dropped because the whole point of this table's shape is column parity
-with `sec_13d`: the escalation query unions the two and orders by filing_date, and a missing
-column there is a query that has to special-case which side it is reading.
 """
 
 from __future__ import annotations

@@ -111,11 +111,13 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `earnings_call_sections` | ticker × quarter × section tag | Transcript prose; text is intentionally part of the read payload. |
-| `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores. |
-| `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings with question/answer linkage; text is omitted from the default projection. |
+| `earnings_call_sections` | ticker × quarter × paragraph | Raw defeatbeta transcript paragraphs: `as_of` DATE is the real call date (not null), plus `transcript_id`, `speaker`, `content`. `quarter` is the fiscal label (`2026Q2`). Nothing is split or cleaned here; quarterly freshness on `as_of`. `content` is the payload, so reads project the needed columns and scope by ticker. |
+| `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores of the cleaned prepared remarks and the management-answer Q&A text; rows carry the cleaned-text cache version in `model`. Also holds the pending refresh markers of re-issued calls. |
+| `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings of the split's cleaned turns, with question/answer linkage (`exchange_idx`); `model` is the cache tag `<OpenAI model>:<cleaning version>`. Text is omitted from the default projection. |
 | `notes_embedding` | ticker × accession × tag | Mean-pooled footnote embeddings. Currently populated but not consumed by a cube panel. |
 | `ticker_descriptions`, `ticker_embeddings` | ticker | Business descriptions and similarity vectors used by peer deduction. |
+
+Earnings-call `as_of` is stored as the call date with no +1 day. The text aggregate aligns calls to the trading calendar with `searchsorted(as_of, side="right")`, so a call dated D is first visible on the next trading session: a Wednesday call on Thursday, a Friday call on Monday. The source date is date-only, so this one-session lag is the earliest safe visibility.
 
 ## Aggregate products
 

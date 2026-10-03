@@ -7,24 +7,6 @@ short interest. Saved long [date, ticker, short_volume, total_volume]; each day'
 disseminated the next morning, so the aggregation step lags it one trading day (point-in-time).
 
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
-
-⚠ THE CDN KEEPS A ROLLING ~8-YEAR WINDOW. There is no deep history to backfill, and this is a
-RETENTION limit at the source, not a gap in this fetcher -- so no future reader should spend a
-day trying. Probed at the URL pattern below on 2026-09-08:
-
-    20100415 403 · 20130415 403 · 20160415 403 · 20170103 403 · 20180112 403 · 20180712 403
-    20180731 403 · 20180801 200 · 20180814 200 · 20190701 200 · ... · 20260901 200
-
-Binary-searched to the day: last 403 is 2018-07-31, first 200 is 2018-08-01 -- a boundary on a
-month start, ~8.10 years before the probe date, which is why it MOVES FORWARD. Rows already
-stored below it cannot be re-fetched if lost.
-
-The stored `min(date)` is 2017-12-29, which is NOT the history start: 20171229 is a lone file
-that survives outside the window (probed 200 while every other 2017 and early-2018 date returns
-403). Treating it as a floor would claim eight months of coverage that do not exist.
-
-NAMING: the table is `sec_short_interest` but it holds short-sale VOLUME. The misnomer is a live
-table with consumers, so it is fixed at the feature level (`ic_shortvol_*`), not here.
 """
 
 from __future__ import annotations
@@ -54,11 +36,6 @@ _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 SHORT_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
-
-
-def _today() -> pd.Timestamp:
-    """Normalised current day, isolated for deterministic window tests."""
-    return pd.Timestamp.today().normalize()
 
 
 def _parse_regsho(text: str) -> pd.DataFrame:
@@ -102,7 +79,7 @@ def _resume_day(context: Context, years_history: int = 15, full: bool = False) -
     day even after a later day advanced the global maximum.
     """
 
-    today = _today()
+    today = pd.Timestamp.today().normalize()
     stored_max = context.store.max_date(Tables.short_interest)
     if stored_max is None or full:
         return today - pd.DateOffset(years=years_history)
@@ -163,6 +140,7 @@ def _reconcile_legacy(
     source = legacy.rename(columns={"ticker": "source_symbol"})
     accepted, unresolved = resolve_symbol_rows(identity, source, universe)
     log_symbol_resolutions(context, "RegSHO legacy", accepted, unresolved, universe=universe)
+
     relabelled = int((accepted["source_symbol"] != accepted["ticker"]).sum())
     proven_exclusions = {"entity_not_in_universe", "redundant_share_class"}
     removed_mask = unresolved["resolution_verdict"].isin(proven_exclusions)
@@ -206,9 +184,10 @@ def fetch_short_interest(
 ) -> None:
     """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates."""
 
-    today = _today()
+    today = pd.Timestamp.today().normalize()
     days = pd.bdate_range(_resume_day(context, years_history, full), today)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
+
     resolver = identity or load_identity(context)
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     candidates = resolver.candidate_symbols(universe)

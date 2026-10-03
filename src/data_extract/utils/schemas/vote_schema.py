@@ -9,22 +9,6 @@ Item 5.07 is the ONLY source of these numbers. The disclosure was moved out of 1
 Part II Item 4 into the 8-K by Rel. 33-9089 and so begins **2010-03**; no vote count is
 ever tagged in XBRL (Apple's 2025 annual-meeting 8-K carries 21 facts, 100% of them
 `dei:` cover-page tags), the SEC publishes no data set for it, and no free parse exists.
-
-Why an LLM and not a parser. Measured head-to-head on 60 filings / 690 hand-read rows:
-rows fully correct 82.8% (parser) vs 82.5% (LLM), but **missed rows 39 vs 1** and
-**filings fully clean 40% vs 65%**. The parser's failures are layout-driven and
-unbounded — 12 distinct header vocabularies across 34 filings, 41% combined-table
-layouts, 20.0% writing "Withheld" instead of "Against", a vertical `For: 1,234` layout
-it misses 100% of the time, and a dropped-header case that yields a silent COLUMN
-PERMUTATION.
-
-Cost, measured on a 48-filing run at `gpt.threads: 12`: 48 calls, 146k input / 143k output
-tokens, $0.30 — **~$0.0063/filing, so ~$50 for the 8,107 Item 5.07 filings in `sec_8k`**.
-Output is half the token bill because `gpt-5-mini` is a reasoning model and its reasoning
-tokens bill as output, so size a run on filings LISTED and not on rows expected.
-
-`proposal_type` reuses the vocabulary of the retired `sec_def14a_votes` table verbatim
-(nothing new invented) so a proxy's proposal and its meeting's tally speak one language.
 """
 
 from __future__ import annotations

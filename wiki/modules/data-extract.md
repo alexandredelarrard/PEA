@@ -36,13 +36,14 @@ tags:
 - [step_extract_fundamentals.py](../../src/data_extract/transformers/step_extract_fundamentals.py) builds SEC facts and the replay history.
 - [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py) independently lists annual filings across the dated CIK chain, validates Luna's quoted headcount against filing text, and writes only `fundamentals_employees` with SEC filing-date `as_of`.
 - [step_extract_structure.py](../../src/data_extract/transformers/step_extract_structure.py) handles filing text, DEF 14A, and Item 5.07 votes.
-- [step_extract_behavioral.py](../../src/data_extract/transformers/step_extract_behavioral.py) handles earnings-call transcripts; retired Wikipedia and Google Trends sources are not part of the nightly contract.
+- [step_extract_behavioral.py](../../src/data_extract/transformers/step_extract_behavioral.py) runs the earnings-call extractor; Google Trends is not wired and there is no Wikipedia pageviews source.
+- `src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py` (`extract_earnings_calls`, CLI `extract-earnings-calls [-F] [-t]`) writes raw defeatbeta paragraphs to `earnings_call_sections`. It pins every read to the dataset commit and checks the source schema. The transcripts file's content hash is recorded in the run manifest, so an unchanged file, scope and reconcile clock make the run a no-op. Otherwise it keeps only the row groups whose `symbol` statistics meet the scope and, incrementally, whose latest call reaches the stored frontier minus `lookback_days`; a full comparison runs with `-F`, a scope change, a cold table or every `reconcile_days`. It reads the five index columns on `read_workers` threads, diffs them against stored calls, and reads the `transcripts` column only for row groups holding new or re-issued calls. All DB writes run on one thread, one row group per batch. Measured: full load 18.6 min for 33,591 calls; no-op about 2–4 s.
 - [schema.py](../../src/data_store/schema.py) is the sole freshness inventory: `freshness_tables()` exposes each checked table, cadence, and publication date column to the CLI gate.
 - `src/data_extract/utils/common/` centralizes EDGAR and identity mechanics.
 
 ## Dependencies
 
-The module depends on [DataStore](./data-store.md), shared runtime utilities, yfinance, SEC/FINRA/FRED endpoints, Sharadar, and the reusable [GPT extraction module](./gpt-extract.md).
+The module depends on [DataStore](./data-store.md), shared runtime utilities, yfinance, SEC/FINRA/FRED endpoints, Sharadar, the HuggingFace Hub (earnings-call transcripts), and the reusable [GPT extraction module](./gpt-extract.md).
 
 ## Participates in
 

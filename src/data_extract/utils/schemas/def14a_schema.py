@@ -31,10 +31,6 @@ class DirectorInfo(BaseModel):
     age: int | None = Field(None, description="Age in years")
     tenure_years: float | None = Field(None, description="Years served on the board (derive from 'director since YYYY')")
     is_independent: bool | None = Field(None, description="True if classified as an independent director")
-    # `gender` is KEPT because `pct_female_directors` carries alpha -- but it was 97.9% filled
-    # while only 17.4% of proxies disclose it, i.e. overwhelmingly a first-name prior with no
-    # provenance and no way to tell a stated value from a guess. The resolution ORDER plus
-    # `gender_basis` is what turns an invisible inference into a measurable, filterable one.
     gender: str | None = Field(
         None,
         description="'male' or 'female'. Resolve IN THIS ORDER: (1) the proxy STATES it "
@@ -214,29 +210,6 @@ class GovernanceProfile(BaseModel):
         None,
         description="TOTAL auditor fees for the PRIOR fiscal year, WHOLE USD — the proxy shows two years side by side. Enables a fee-growth signal",
     )
-    # ---- ownership / alignment (from the beneficial-ownership summary) ----
-    # ⚠ ASK FOR BOTH COLUMNS, DO NOT ASK THE MODEL TO CHOOSE. A dual-class proxy's ownership
-    # table prints "Percent of Class" and "Percent of Total Voting Power" side by side. The
-    # previous schema told the model three times to read the first and never the second; it
-    # still returned voting power on 59 of 12,343 filings, 98.3% of them dual-class, giving
-    # UHS 100.00% and META 99.8% insider ownership where the real economic stakes are ~14%.
-    # Extracting both columns is a task a model does reliably; SUPPRESSING a column it can see
-    # has been tried, is recorded here as tried, and does not hold. CODE picks the economic leg
-    # downstream, and the difference of the two is a feature in its own right
-    # (`f_control_wedge`): a founder controlling 61% of the votes on 14% of the equity faces a
-    # different incentive structure from one holding 14% of both.
-    # ⚠ AND THE DENOMINATOR IS THE SECOND HALF OF THE DEFECT, measured on Alphabet's own 2026
-    # table. Its columns are `Class A Shares | Class A % | Class B Shares | Class B % | Total
-    # Voting Power %` and there is NO combined economic column at all: Larry Page's 46.5% is
-    # 389,051,160 shares as a share of CLASS B (~837M), not of the ~12bn shares outstanding,
-    # which would be ~3%. So a percentage read off a per-class column is LITERALLY CORRECT for
-    # that column and is NOT economic ownership -- and for this filer shape an insider economic
-    # percentage is not a disclosed fact at all, only a computable one.
-    #
-    # The field therefore asks for the COMBINED basis and for NULL when only per-class columns
-    # exist, rather than accepting a number that would be wrong by a factor of 15. The share
-    # COUNTS are exact and always disclosed, so `insider_shares` carries the evidence a
-    # combined percentage can be computed from downstream.
     insider_ownership_pct: float | None = Field(
         None,
         description="Percent of TOTAL shares outstanding (ALL classes combined) held by "

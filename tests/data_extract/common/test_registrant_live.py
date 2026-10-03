@@ -6,9 +6,11 @@ network: a loader runs on the nightly path and must not make an HTTP call. Those
 here, parametrised over EVERY register entry rather than a hand-picked three, so a boundary
 added next quarter is asserted the moment it lands.
 
-Run deliberately:
+The EDGAR checks are `@pytest.mark.live` and skip by default; run them deliberately:
 
-    "$PY" -m pytest -m network tests/data_extract/common/test_registrant_live.py -q -s
+    PEA_LIVE_TESTS=1 "$PY" -m pytest -m live tests/data_extract/common/test_registrant_live.py -q -s
+
+`test_every_register_ticker_is_in_the_universe` only reads the live DB and always runs.
 
 ⚠ ONE EDGAR WALK AT A TIME. The rate limiter is per-PROCESS, so running this alongside an
 extraction puts ~18 req/s against SEC's limit of 10. The block is silent.
@@ -26,8 +28,6 @@ import pytest
 
 from src.constants.constants import FUNDAMENTALS_FORMS
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
-
-pytestmark = pytest.mark.network
 
 CONFIG_DIR = "./configs"
 
@@ -83,6 +83,7 @@ def consolidating(edgar_ready, registrants) -> dict[str, dict[str, dict]]:
     return out
 
 
+@pytest.mark.live
 def test_every_boundary_falls_inside_its_predecessors_filing_window(registrants, consolidating):
     """The check that cannot live in the loader, because it needs EDGAR.
 
@@ -113,6 +114,7 @@ def test_every_boundary_falls_inside_its_predecessors_filing_window(registrants,
     print("  OK: every segment keeps a non-empty slice of its own filings.")
 
 
+@pytest.mark.live
 def test_the_split_duplicates_no_accession(registrants, consolidating):
     """Disjointness of what is KEPT, which is not the same as disjointness of the two indexes.
 
@@ -142,6 +144,7 @@ def test_the_split_duplicates_no_accession(registrants, consolidating):
     print("      test that makes a union's duplicate impossible.")
 
 
+@pytest.mark.live
 def test_there_is_no_gap_at_a_boundary(registrants, consolidating):
     """The predecessor's last kept filing is followed by the successor's first, with no
     reporting period unclaimed between them. A gap is the other half of the failure mode: an
@@ -167,6 +170,7 @@ def test_there_is_no_gap_at_a_boundary(registrants, consolidating):
 MAX_REPORTING_GAP_DAYS = 400
 
 
+@pytest.mark.live
 def test_a_predecessor_that_kept_filing_is_excluded_from_consolidating_forms(registrants, consolidating):
     """APA is the reason the register is dated rather than additive, so it gets its own test.
 
@@ -190,6 +194,7 @@ def test_a_predecessor_that_kept_filing_is_excluded_from_consolidating_forms(reg
     print("  OK: a union of these CIKs would blend two legal entities' accounts.")
 
 
+@pytest.mark.live
 def test_an_event_form_needs_the_union(edgar_ready, registrants):
     """⚠ THE D9.1 ASSERTION, and it is the mirror image of the test above.
 
@@ -251,6 +256,7 @@ def test_every_register_ticker_is_in_the_universe():
     print("  OK: every entry names a ticker the pipeline actually walks.")
 
 
+@pytest.mark.live
 def test_the_register_recovers_history_the_ticker_walk_cannot_reach(edgar_ready, registrants):
     """The acceptance criterion, asserted rather than asserted-by-eye: walking the register's
     CIKs must reach filings `Company(ticker)` alone does not.

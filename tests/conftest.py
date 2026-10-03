@@ -8,6 +8,8 @@ Two flavours of fixture live here, matching the project testing conventions:
 * real-data, small-sample -> used for every economic / sanity check, so the
   tests see the real NaNs, delistings and late IPOs that the estimator has to
   survive (this is exactly what surfaced the sector-NaN truncation bug).
+
+It also owns the live-test gate: `@pytest.mark.live` tests skip unless PEA_LIVE_TESTS=1.
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
+# `tests/` is on sys.path (pytest prepends a conftest's directory), so the guard imports flat.
+import live_guard  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
@@ -53,6 +57,34 @@ from src.data_store.store import DataStore  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
 
 DATA = ROOT / "data"
+
+
+# --------------------------------------------------------------------------- #
+# Live tests are opt-in.                                                       #
+# --------------------------------------------------------------------------- #
+# `Context._load_env` calls `find_dotenv`, which walks up from any worktree to the parent
+# repo's `.env`, so a real Context in a test holds the live DATABASE_URL and every API key.
+# A test that WRITES the live DB or calls a live external API (Sharadar, EDGAR, OpenAI, ...)
+# is marked `@pytest.mark.live` and skips unless PEA_LIVE_TESTS=1. Tests that only READ the
+# live DB are real-data tests and stay unmarked. Without the flag the tripwire in
+# `live_guard.py` is also installed, so an unmarked test that tries a live effect fails.
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        f"{live_guard.LIVE_MARKER}: writes the live database or calls a live external API; skipped unless {live_guard.LIVE_FLAG}=1",
+    )
+    if not config.pluginmanager.is_registered(live_guard):
+        config.pluginmanager.register(live_guard, "live_guard")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip every `live` item before its fixtures set up (a skip marker is evaluated first)."""
+    if live_guard.live_enabled():
+        return
+    skip = pytest.mark.skip(reason=f"live test (writes the live DB or calls a live API): set {live_guard.LIVE_FLAG}=1 to run")
+    for item in items:
+        if item.get_closest_marker(live_guard.LIVE_MARKER):
+            item.add_marker(skip)
 
 
 # --------------------------------------------------------------------------- #

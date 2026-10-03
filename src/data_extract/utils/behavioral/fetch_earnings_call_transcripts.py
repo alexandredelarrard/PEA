@@ -1,40 +1,13 @@
-"""
-fetch_earnings_call_transcripts.py  (src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py)
-----------------------------------------------------------------------------------------------------------
-Raw earnings-call transcripts from the free HuggingFace dataset `defeatbeta/yahoo-finance-data`
-(`data/US/stock_earning_call_transcripts.parquet`, ~2.27 GB, rebuilt about daily) into
-`earnings_call_sections`, ONE ROW PER SOURCE PARAGRAPH. Nothing is cleaned or split here; the
-speaker-turn split runs at aggregate time (`src/utils/earnings_call_split.py`).
+"""Raw earnings-call transcripts from the HuggingFace dataset `defeatbeta/yahoo-finance-data` into
+`earnings_call_sections`, one row per source paragraph; the speaker-turn split runs at aggregate time.
 
-The file is one parquet sorted by symbol: 1,195 row groups of ~200 calls, 551 of them touching
-the roster. Footer 1.5-3 s, index columns ~0.29 s and a whole row group ~0.86 s per group. So a
-run reads the footer once, keeps the row groups whose `symbol` statistics intersect the scope
-(and, incrementally, whose `max(report_date)` reaches the frontier minus `lookback_days`),
-reads only the five index columns of those groups, diffs them against the stored calls, and
-reads the `transcripts` column only of the groups that hold a new or re-issued call.
-
-  * No-op: the transcripts file's content hash is recorded with the run; an unchanged hash,
-    an unchanged scope and no reconcile due skip everything after two metadata requests.
-  * Reconcile: `-F`, a scope change, a cold table, or `reconcile_days` since the last full run
-    compare every scoped call instead of the recent window.
-  * Re-issue: a stored (ticker, quarter) whose `transcript_id` or call date changed has its old
-    paragraphs deleted, its sentiment and embedding rows invalidated, and a pending refresh
-    marker written. The date matters: `transcripts_id` is NULL on 2,914 of 33,676 roster calls
-    (1,610 of them in 2025), so the id alone cannot see those calls change.
-  * Removal: a reconcile sees every source call of its tickers, so a stored (ticker, quarter)
-    absent from the deduplicated source (dropped upstream, or a relabel that moved its date to
-    another fiscal label) is deleted the same way, derivatives and refresh marker included. An
-    incremental run sees a date window only and never removes anything.
-  * Reads run on `read_workers` threads, each with its own file handle; every DB write runs on
-    the calling thread, one row group per batch, so a crash loses at most one batch.
-
-Measured on the 2026-10-01 index (238,891 calls): (symbol, fiscal_year, fiscal_quarter) is
-unique; the dedup rule (latest `report_date`, then highest `transcripts_id`) is defensive.
-23 roster dates of 10 tickers carry two fiscal labels (provider relabels, e.g. DG 2025Q4 and
-2026Q4 on 2026-03-12); `one_call_per_date` keeps one, chaining back from the next later call.
-No symbol carries a `.` (BF-B is stored as `BF-B`); `.` is still mapped to `-` on read.
-`paragraph_number` starts at 1 and is contiguous on 585/585 sampled calls, so the stored-call
-diff reads only paragraph 1 of each call.
+A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the scope
+(and, incrementally, whose latest call reaches the frontier minus `lookback_days`), diffs their index
+columns against the stored calls and reads the `transcripts` column only for new or re-issued calls.
+An unchanged file hash, scope and reconcile clock is a no-op. A reconcile (`-F`, scope change, cold
+table, or every `reconcile_days`) also deletes stored calls absent from the source; a re-issued or
+removed call has its derivatives invalidated and a pending refresh marker written. Reads run on
+`read_workers` threads; every DB write runs on the calling thread, one row group per batch.
 """
 
 from __future__ import annotations
@@ -143,17 +116,17 @@ def resolve_hf_source() -> TranscriptSource:
     return TranscriptSource(revision=revision, fingerprint=str(fingerprint), opener=lambda: fs.open(path, "rb", block_size=_BLOCK_SIZE))
 
 
+def _is_text(dtype: pa.DataType) -> bool:
+    return pa.types.is_string(dtype) or pa.types.is_large_string(dtype)
+
+
 def check_source_schema(schema: pa.Schema) -> None:
     """Fail loudly when the source columns drift from the layout this module parses."""
-
-    def is_text(dtype: pa.DataType) -> bool:
-        return pa.types.is_string(dtype) or pa.types.is_large_string(dtype)
-
     expected: dict[str, Callable[[pa.DataType], bool]] = {
-        "symbol": is_text,
+        "symbol": _is_text,
         "fiscal_year": pa.types.is_integer,
         "fiscal_quarter": pa.types.is_integer,
-        "report_date": is_text,
+        "report_date": _is_text,
         "transcripts_id": pa.types.is_integer,
     }
     problems = [f"{name}: missing" for name in [*expected, TRANSCRIPTS_COLUMN] if name not in schema.names]
@@ -164,8 +137,8 @@ def check_source_schema(schema: pa.Schema) -> None:
         fields = {item.field(i).name: item.field(i).type for i in range(item.num_fields)} if item is not None and pa.types.is_struct(item) else {}
         if not (
             pa.types.is_integer(fields.get("paragraph_number", pa.null()))
-            and is_text(fields.get("speaker", pa.null()))
-            and is_text(fields.get("content", pa.null()))
+            and _is_text(fields.get("speaker", pa.null()))
+            and _is_text(fields.get("content", pa.null()))
         ):
             problems.append(f"{TRANSCRIPTS_COLUMN}: {dtype}")
     if problems:

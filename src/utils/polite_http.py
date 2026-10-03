@@ -225,7 +225,7 @@ def http_get(url, *, params=None, headers=None, timeout=30, retries=4, backoff=3
     return None
 
 
-def _wait_before_retry(r, url: str, code: int, attempt: int, retries: int, backoff: float) -> None:
+def _wait_before_retry(r: Any, url: str, code: int, attempt: int, retries: int, backoff: float) -> None:
     """Sleep max(Retry-After, exponential backoff) plus jitter; a 429 also slows this host."""
     wait = max(retry_after_seconds(r) or 0.0, backoff * (2**attempt)) + random.uniform(0.5, 2.5)
     if code == 429:

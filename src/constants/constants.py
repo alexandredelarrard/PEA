@@ -130,8 +130,8 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={company}&type=13F-HR&dateb=&owner=include&count=10&output=atom"
 )
 
-# Insider ownership events. Quarterly ZIPs remain canonical history; these form names feed
-# the daily EDGAR tail until the next ZIP is published and reconciled.
+# Insider ownership events. Daily EDGAR filings of these forms are authoritative; the
+# quarterly ZIPs fill filings EDGAR does not return.
 SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
 SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"

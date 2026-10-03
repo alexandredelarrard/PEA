@@ -897,23 +897,28 @@ CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
 );
 CREATE INDEX IF NOT EXISTS ix_sec13f_manager_holdings_period ON "sec13f_manager_holdings" ("period");
 
--- [extract] insider_transactions  (pk: accession_number, security_type, transaction_sk)
+-- [extract] insider_transactions  (pk: accession_number, security_type, row_sequence)
+-- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').
 
 CREATE TABLE IF NOT EXISTS "insider_transactions" (
     "accession_number" TEXT NOT NULL,
     "security_type" TEXT NOT NULL,
-    "transaction_sk" TEXT NOT NULL,
+    "row_sequence" BIGINT NOT NULL,
+    "source" TEXT,
     "ticker" TEXT,
     "issuer_cik" TEXT,
     "issuer_name" TEXT,
     "owner_cik" TEXT,
     "owner_name" TEXT,
+    "owner_ciks" TEXT,
+    "n_reporting_owners" BIGINT,
     "is_director" DOUBLE PRECISION,
     "is_officer" DOUBLE PRECISION,
     "is_ten_pct_owner" DOUBLE PRECISION,
     "is_other" DOUBLE PRECISION,
     "officer_title" TEXT,
     "document_type" TEXT,
+    "original_submission_date" DATE,
     "transaction_date" DATE,
     "filing_date" DATE,
     "period_of_report" DATE,
@@ -938,7 +943,10 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
     "underlying_security_title" TEXT,
     "underlying_shares" DOUBLE PRECISION,
     "underlying_value" DOUBLE PRECISION,
-    PRIMARY KEY ("accession_number", "security_type", "transaction_sk")
+    "footnote_ids" TEXT,
+    "acceptance_datetime" TIMESTAMP,
+    "fetched_at" TIMESTAMP,
+    PRIMARY KEY ("accession_number", "security_type", "row_sequence")
 );
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_transaction_date ON "insider_transactions" ("transaction_date");

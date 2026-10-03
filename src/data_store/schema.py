@@ -772,58 +772,77 @@ class Tables:
             "other_value",
         ),
     )
-    # SEC Insider Transactions Data Sets (Forms 3/4/5): one row per reported transaction
-    # (non-derivative + derivative), keyed by accession + table + SK.
+    # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
+    # that table). One table for both sources: EDGAR daily rows are authoritative
+    # (`source='edgar'`); quarterly zips add only filings EDGAR lacks (`source='zip'`).
+    # `quarter` is the zip quarter that covered the filing, NULL until one has.
     #
-    # FIRST USABLE DATE 2006-01-03 -- but on `filing_date`, not on `transaction_date`. The bulk
-    # data set itself begins 2006q1 (a source start, not a fetch limit), while min
-    # (transaction_date) is 1990-05-07: a Form 3 holding or a late Form 5 legitimately reports a
-    # trade decades older than the filing that discloses it. Cutting the history on
-    # `transaction_date` would therefore keep a thin, non-representative pre-2006 tail.
-    #
-    # `is_10b5_1` is a FLOAT, not a bool, and the distinction is the point: NaN means the
-    # quarter's SUBMISSION.tsv had no `AFF10B5ONE` column at all, which is every quarter before
-    # 2023q1 (measured across all 81 cached zips). A False there would assert that 68 quarters
-    # of insiders traded outside a plan, which is not something the source says. Even within the
-    # column's own era the raw values are mixed-encoding -- 2026q1: '0' 42,435, 'false' 11,525,
-    # '1' 3,620, 'true' 1,162, NaN 10,517 -- so all four spellings are normalised.
-    #
-    # The derivative block (`exercise_price`, `exercise_date`, `expiration_date`,
-    # `underlying_*`) is NULL on every `security_type='nonderiv'` row by construction, not by
-    # omission -- so ANY fill rate for it must be taken over `security_type='deriv'` alone.
-    # Over the whole table it cannot exceed 29.3%, because nonderiv is 1,374,331 of 1,942,795
-    # rows.
-    #
-    # ⚠ ON `exercise_price`, NULL AND 0 ARE THE SAME STATEMENT for anything that is not an
-    # option. An RSU converts one-for-one at no cost, so no strike exists; filers express that
-    # either by omitting the field or by writing an explicit 0, and both are common. Measured:
-    #
-    #   security kind (deriv rows)      NULL      = 0     > 0
-    #   option                         1,741      921  217,478   -> 99.2% filled, 0.4% of them 0
-    #   RSU / phantom / performance  219,565  100,772   27,987   -> 78.3% of non-nulls are 0
-    #
-    # Reading `exercise_price = 0` as a zero-strike option is wrong, and so is imputing the
-    # NULL as missing. On options the same 0 is rare enough (0.4%) to be a filer error.
-    # The deriv-row fill rate falls 73.8% (2006) -> 41.6% (2025) purely because executive
-    # compensation shifted from options to RSUs; the data did not degrade.
+    # History starts 2006-01-03 on `filing_date` (the zip data sets begin 2006q1);
+    # `transaction_date` legitimately reaches further back.
+    # `is_10b5_1` is a float: NaN means unknown (before the filing field existed), not False.
+    # The derivative columns are NULL on every nonderiv row by construction.
+    # ⚠ For anything that is not an option, `exercise_price` NULL and 0 mean the same thing.
     insider_transactions = Table(
         "insider_transactions",
-        ("accession_number", "security_type", "transaction_sk"),
+        ("accession_number", "security_type", "row_sequence"),
         date_col="transaction_date",
-        date_type_cols=("transaction_date", "filing_date", "period_of_report", "deemed_execution_date", "exercise_date", "expiration_date"),
-        freshness="quarterly",
+        date_type_cols=(
+            "transaction_date",
+            "filing_date",
+            "period_of_report",
+            "deemed_execution_date",
+            "exercise_date",
+            "expiration_date",
+            "original_submission_date",
+        ),
+        freshness="daily",
         freshness_date_col="filing_date",
-        # insider_features + insider_quality. Wider than it looks, and every column earns it:
-        # `security_type`/`security_title` scope the read to common stock (a preferred row at
-        # par put BAC's reference price at $57.80), `price_per_share` + `shares` are what the
-        # consensus screen repairs `value_usd` from, `accession_number`/`transaction_date`
-        # link an exercise-and-sell package, and `shares_owned_after`/`direct_indirect` are
-        # the two legs of the direct/indirect ownership split. Dropping any of them does not
-        # degrade a feature, it deletes it.
-        # `transaction_form_type` / `acquired_disposed` are deliberately ABSENT: the fetcher
-        # writes both, but no cube builder reads either (measured 2026-09-14 -- the only
-        # non-fetcher hits are two test fixtures), and a projection with no reader is a claim
-        # that some builder needs the column.
+        # What insider_quality and insider_features read.
+        read_columns=(
+            "accession_number",
+            "ticker",
+            "owner_cik",
+            "owner_name",
+            "filing_date",
+            "transaction_date",
+            "transaction_code",
+            "shares",
+            "price_per_share",
+            "value_usd",
+            "shares_owned_after",
+            "security_type",
+            "security_title",
+            "direct_indirect",
+            "officer_title",
+            "is_director",
+            "is_officer",
+            "is_ten_pct_owner",
+            "is_10b5_1",
+            "owner_ciks",
+            "n_reporting_owners",
+            "original_submission_date",
+            "document_type",
+            "source",
+            "row_sequence",
+        ),
+    )
+    # Daily EDGAR tail for the still-open bulk quarter. Its row sequence is local to the
+    # ownership XML and deliberately distinct from the quarterly data set's generated
+    # `transaction_sk`. Consumers overlay only accessions absent from the bulk table.
+    insider_transactions_live = Table(
+        "insider_transactions_live",
+        ("accession_number", "security_type", "source_row_sequence"),
+        date_col="transaction_date",
+        date_type_cols=(
+            "transaction_date",
+            "filing_date",
+            "period_of_report",
+            "deemed_execution_date",
+            "exercise_date",
+            "expiration_date",
+        ),
+        freshness="daily",
+        freshness_date_col="filing_date",
         read_columns=(
             "accession_number",
             "ticker",
@@ -845,25 +864,6 @@ class Tables:
             "is_ten_pct_owner",
             "is_10b5_1",
         ),
-    )
-    # Daily EDGAR tail for the still-open bulk quarter. Its row sequence is local to the
-    # ownership XML and deliberately distinct from the quarterly data set's generated
-    # `transaction_sk`. Consumers overlay only accessions absent from the bulk table.
-    insider_transactions_live = Table(
-        "insider_transactions_live",
-        ("accession_number", "security_type", "source_row_sequence"),
-        date_col="transaction_date",
-        date_type_cols=(
-            "transaction_date",
-            "filing_date",
-            "period_of_report",
-            "deemed_execution_date",
-            "exercise_date",
-            "expiration_date",
-        ),
-        freshness="daily",
-        freshness_date_col="filing_date",
-        read_columns=insider_transactions.read_columns,
     )
     # One row per requested universe ticker. A row advances only after that ticker's EDGAR
     # listing and parsing succeeds, including the legitimate zero-new-filings case. The cube

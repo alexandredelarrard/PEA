@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
+from pathlib import Path
 from typing import Literal, cast
 
 import pandas as pd
@@ -18,8 +21,8 @@ from src.data_extract.utils.common.edgar_driver import PROGRAMMING_ERRORS, Incom
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import Registrant, identity_scope_fingerprint, load_registrants, resolve_registrant_filings
-from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_filing_outcomes, record_run
+from src.data_extract.utils.common.registrant import Registrant, load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -27,19 +30,36 @@ from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 HEADCOUNT_FORMS = ("10-K", "10-K/A", "10-K405")
-TERMINAL_STATUSES = frozenset({"saved", "no_headcount", "superseded"})
 FRAME_COLUMNS = ["ticker", "as_of", "employees"]
+MANUAL_ROSTER = Path("sec") / "employees_manual_roster.json"
 _GAP = "[... filing gap ...]"
+_FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 
-# Locate filing context and check LLM evidence; none of these extracts a fallback count.
 _CONTEXT_RE = re.compile(
     r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
     r"personnel|staff|colleagues?|full[- ]time|part[- ]time)\b",
     re.I,
 )
-_BOUND_RE = re.compile(r"\b(?:over|nearly|more than|less than|at least|at most|up to|fewer than|greater than)\s+[\d,]+", re.I)
-_SPLIT_RE = re.compile(r"([\d,]+)\s+(full|part)[- ]time employees\s+and\s+([\d,]+)\s+(full|part)[- ]time employees", re.I)
-_NUMBER_RE = re.compile(r"\b\d[\d,]*\b")
+_ELLIPSIS_RE = re.compile(r"\s*(?:\.\s*\.\s*\.|…)\s*")
+_QUANTITY_RE = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million)\b)?", re.I)
+_SCALES = {"thousand": 1_000, "million": 1_000_000}
+_IN_THOUSANDS_RE = re.compile(r"\(\s*(?:in\s+)?thousands\s*\)|\bin thousands\b", re.I)
+_LOWER_BOUND_RE = re.compile(r"\b(?:over|more than|greater than|at least|in excess of|exceeding)\s*$", re.I)
+_UPPER_BOUND_RE = re.compile(r"\b(?:nearly|almost|under|less than|fewer than|up to|at most)\s*$", re.I)
+_RANGE_BEFORE_RE = re.compile(
+    r"(?:\bbetween\s*|\bbetween\s+[\d,.]+\s*(?:thousand|million)?\s+and\s*|\d\s*(?:thousand\s*|million\s*)?(?:-|–|to)\s*)$", re.I
+)
+_RANGE_AFTER_RE = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
+# Prose names a number's shift in lower case after it ("11,040 full-time"); a table names it in a
+# capitalised row label before the row's numbers ("Part-time Associates 97,913 41,184 13 139,110"),
+# so case keeps the next row's label from tagging the number before it. A Total row has no shift.
+_SHIFT_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?(full|part)[\s-]*time")
+_ROW_LABEL_RE = re.compile(
+    r"\b(Total|TOTAL|Full|FULL|Part|PART)(?:[\s-]*(?:time|Time|TIME))?\b"
+    r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s+|$))*$"
+)
+_FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
+_MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
 
 
 class EmployeeAnswer(BaseModel):
@@ -53,20 +73,36 @@ class EmployeeAnswer(BaseModel):
 
 @dataclass(frozen=True)
 class EmployeeTickerResult:
+    """One row per decided filing date (`employees` NaN when no count is supported) and the per-filing decisions."""
+
     frame: pd.DataFrame
     outcomes: list[dict]
-    unavailable_dates: frozenset[pd.Timestamp]
 
 
 @dataclass(frozen=True)
-class _ResumePlan:
-    """Listing window and existing accession/date decisions for one run."""
+class _Decision:
+    filing: Filing
+    source: str  # "manual" (the roster file) or "llm"
+    status: str
+    count: int | None
 
-    since: pd.Timestamp
-    is_full_rescan: bool
-    done_accessions: frozenset[str]
-    saved_dates: dict[str, frozenset[pd.Timestamp]]
-    skip_dates: dict[str, frozenset[pd.Timestamp]]
+
+def load_manual_roster(config_dir: str) -> dict[str, dict]:
+    """Hand-kept employee decisions from `configs/sec/employees_manual_roster.json`, by accession.
+
+    An entry's `employees` is stored as-is (null for a filing that states no usable count) and
+    replaces the LLM for that filing; the pipeline only reads this file.
+    """
+    path = Path(config_dir) / MANUAL_ROSTER
+    if not path.exists():
+        return {}
+    roster = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        str(entry["accession_number"]): {**entry, "ticker": ticker}
+        for ticker, entries in roster.items()
+        if not ticker.startswith("_")
+        for entry in entries
+    }
 
 
 def filing_body_text(filing: Filing) -> str:
@@ -108,52 +144,133 @@ def employee_excerpt(text: str, limit: int) -> str:
     return f"\n\n{_GAP}\n\n".join(text[start:end] for start, end in merged)[:limit]
 
 
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+([,;:])", r"\1", " ".join(text.split()).casefold())
+@dataclass(frozen=True)
+class _Quantity:
+    """One number the source states inside a located quote."""
+
+    value: int
+    bound: int  # +1 for "over N", -1 for "nearly N", 0 for an exact or approximate N
+    shift: str | None  # "full" or "part" when the source labels the number full- or part-time
+    in_range: bool
+    is_date: bool
 
 
-def _anchored_table_spans(quote: str, source: str) -> list[tuple[int, int]]:
-    """Spans for a `heading ... total` quote whose heading and total sit close together in the source."""
-    if quote.count(" ... ") != 1:
-        return []
-    heading, total = quote.split(" ... ")
-    if len(heading) < 40 or "employ" not in heading or not total.startswith("total ") or len(total) < 20:
-        return []
-    spans = []
-    for start in re.finditer(re.escape(heading), source):
-        end = source.find(total, start.end())
-        gap = source[start.end() : end] if end >= 0 else ""
-        if (
-            0 <= end - start.end() <= 2_000
-            and _GAP not in gap
-            and not re.search(r"\bas of\b", gap)
-            and len(re.findall(r"\bnumber of employees\b", gap)) <= 1
-        ):
-            spans.append((start.start(), end + len(total)))
+def _compact(text: str) -> tuple[str, list[int]]:
+    """Letters and digits only, casefolded, with each kept character's index in `text`.
+
+    Filing text breaks words and numbers in ways a quote does not reproduce (`part-\\ntime`,
+    `2018 .`, `A s of`, mis-decoded apostrophes); comparing letters and digits ignores all of them.
+    """
+    kept = [(char, i) for i, char in enumerate(text.casefold()) if char.isalnum()]
+    return "".join(char for char, _ in kept), [i for _, i in kept]
+
+
+def _chain(fragments: list[str], compact: str, index: list[int], source: str, start: int) -> list[tuple[int, int]] | None:
+    """Spans of every fragment from `start` on, each close after the previous with no date or gap between."""
+    spans = [(index[start], index[start + len(fragments[0]) - 1] + 1)]
+    position = start + len(fragments[0])
+    for fragment in fragments[1:]:
+        found = compact.find(fragment, position)
+        if found < 0:
+            return None
+        gap = source[spans[-1][1] : index[found]].casefold()
+        if len(gap) > _FRAGMENT_GAP or _GAP in gap or re.search(r"\bas of\b", gap) or gap.count("number of employees") > 1:
+            return None
+        spans.append((index[found], index[found + len(fragment) - 1] + 1))
+        position = found + len(fragment)
     return spans
 
 
+def _locate(quote: str, source: str) -> list[tuple[int, int]] | None:
+    """Source spans of the quote's `...`-joined fragments, or None when the source does not contain it."""
+    fragments = [fragment for fragment in (_compact(part)[0] for part in _ELLIPSIS_RE.split(quote)) if fragment]
+    if not fragments:
+        return None
+    compact, index = _compact(source)
+    start = compact.find(fragments[0])
+    while start >= 0:
+        if spans := _chain(fragments, compact, index, source, start):
+            return spans
+        start = compact.find(fragments[0], start + 1)
+    return None
+
+
+def _shift(before: str, after: str) -> str | None:
+    row = _ROW_LABEL_RE.search(before)
+    if (row and row.group(1).casefold() == "total") or _FULL_AND_PART_RE.search(after[:40]):
+        return None
+    if label := _SHIFT_AFTER_RE.match(after) or row:
+        return label.group(1).casefold()
+    return None
+
+
+def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
+    """Every number inside the spans, read with the source words just before and after it."""
+    quantities = []
+    for start, end in spans:
+        in_thousands = bool(_IN_THOUSANDS_RE.search(source[max(0, start - 80) : end]))
+        for match in _QUANTITY_RE.finditer(source, start, end):
+            before = " ".join(source[max(0, match.start() - 120) : match.start()].split())
+            after = " ".join(source[match.end() : match.end() + 60].split())
+            digits, fraction, scale = match.groups()
+            is_date = (not scale and not fraction and "," not in digits and 1900 <= int(digits) <= 2100) or bool(_MONTH_RE.search(before))
+            multiplier = _SCALES[scale.casefold()] if scale else 1_000 if in_thousands and not is_date else 1
+            quantities.append(
+                _Quantity(
+                    value=round(float(digits.replace(",", "") + (fraction or "")) * multiplier),
+                    bound=1 if _LOWER_BOUND_RE.search(before) or after.startswith("+") else -1 if _UPPER_BOUND_RE.search(before) else 0,
+                    shift=_shift(before, after),
+                    in_range=bool(_RANGE_BEFORE_RE.search(before) or _RANGE_AFTER_RE.match(after)),
+                    is_date=is_date,
+                )
+            )
+    return quantities
+
+
+def _claimed(quantities: list[_Quantity], count: int) -> list[_Quantity] | None:
+    """The stated number equal to the model's count, else the fewest stated components summing to it."""
+    pool = [quantity for quantity in quantities if not quantity.is_date]
+    for size in range(1, min(len(pool), 4) + 1):
+        for combination in combinations(pool, size):
+            if sum(quantity.value for quantity in combination) == count:
+                return list(combination)
+    return None
+
+
+def _resolve_bound(quantity: _Quantity) -> int:
+    """`over N` -> N + half a unit and `nearly N` -> N - half a unit, the unit being N's last
+    significant digit at no coarser than two significant digits: over 13,000 -> 13,500,
+    over 300,000 -> 305,000, over 6,250 -> 6,255, nearly 2.2 million -> 2,150,000."""
+    text = str(quantity.value)
+    unit = 10 ** min(len(text) - len(text.rstrip("0")), max(len(text) - 2, 0))
+    return quantity.value + quantity.bound * (unit // 2)
+
+
 def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | None:
-    """Accept a source-backed claim; allow table ellipses only between real anchors."""
-    if answer.status != "found" or answer.count is None or answer.count <= 0 or not answer.quote:
+    """The source-backed headcount for the model's claim, or None when the source does not support it.
+
+    The quote must be in the source and the model's count must be a number it states, or the sum of
+    stated components. Only full-time is kept: part-time components are dropped, and a total the
+    quoted passage splits into full- and part-time rows becomes its full-time row. Open bounds resolve
+    by `_resolve_bound`, and a stated range such as `50,000 to 100,000` is unclear, so None.
+    """
+    if answer.count is None or answer.count <= 0 or not answer.quote or _GAP in answer.quote:
         return None
-    quote, source = _normalise(answer.quote), _normalise(source_text)
-    if _GAP in quote or _BOUND_RE.search(quote):
+    spans = _locate(answer.quote, source_text)
+    claimed = _claimed(_quantities(source_text, spans), answer.count) if spans else None
+    if not claimed or any(quantity.in_range for quantity in claimed):
         return None
-    spans = [(match.start(), match.end()) for match in re.finditer(re.escape(quote), source)] or _anchored_table_spans(quote, source)
-    # A model can trim "over" off an otherwise literal source quote.
-    if not spans or any(_BOUND_RE.search(source[max(0, start - 32) : end]) for start, end in spans):
-        return None
-    split = _SPLIT_RE.search(quote)
-    if split and split.group(2).casefold() != split.group(4).casefold():
-        first = int(split.group(1).replace(",", ""))
-        second = int(split.group(3).replace(",", ""))
-        return first + second if answer.count in {first, second, first + second} else None
-    numbers = {int(token.replace(",", "")) for token in _NUMBER_RE.findall(quote)}
-    return answer.count if answer.count in numbers else None
+    if len(claimed) == 1 and claimed[0].shift is None and spans:
+        passage = _quantities(source_text, [(spans[0][0], spans[-1][1])])
+        part_values = {q.value for q in passage if q.shift == "part"}
+        if split := next((q for q in passage if q.shift != "part" and claimed[0].value - q.value in part_values), None):
+            claimed = [split]
+    full_time = [quantity for quantity in claimed if quantity.shift != "part"]
+    return sum(map(_resolve_bound, full_time)) if full_time else None
 
 
 def _decide(answer: EmployeeAnswer, source_text: str) -> tuple[str, int | None]:
+    """Every status is final: an `ambiguous` filing is not sent to the LLM again."""
     count = supported_employee_count(answer, source_text)
     if count is not None:
         return "saved", count
@@ -214,59 +331,61 @@ def _extract_answers(context: Context, config: DictConfig, ticker: str, filings:
     return results
 
 
-def _outcome(ticker: str, cik: str, result: LlmResult, answer: EmployeeAnswer, status: str, model_name: str) -> dict:
-    filing = _task_filing(result)
-    report_date = cast("pd.Timestamp | None", result.task.meta["report_date"])
-    return {
-        "ticker": ticker,
-        "accession_number": str(filing.accession_number),
-        "cik": filed_by(filing, cik),
-        "form": str(filing.form),
-        "filing_date": _filed(filing).strftime("%Y-%m-%d"),
-        "report_date": report_date.strftime("%Y-%m-%d") if report_date is not None else None,
-        "measurement_period": answer.measurement_period,
-        "qualifier": answer.qualifier,
-        "source_quote": answer.quote,
-        "model": model_name,
-        "source_status": answer.status,
-        "reason": answer.reason,
-        "ordering": result.seq,
-        "status": status,
-    }
-
-
-def _decide_ticker(context: Context, ticker: str, cik: str, results: list[LlmResult], model_name: str) -> EmployeeTickerResult:
-    """Guard every answer; keep the last supported count per filing date and mark earlier ones superseded."""
-    outcomes: list[dict] = []
-    chosen: dict[pd.Timestamp, tuple[int, int]] = {}  # filing date -> (count, outcome index)
-    all_dates: set[pd.Timestamp] = set()
-    for result in results:
+def _llm_decisions(context: Context, ticker: str, filings: list[Filing], identity: Identity) -> list[_Decision]:
+    """One guarded LLM decision per filing; any failed call fails the ticker."""
+    config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
+    decisions = []
+    for result in _extract_answers(context, config, ticker, filings, identity):
         answer = result.parsed
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         status, count = _decide(answer, str(result.task.meta["source_text"]))
-        outcome = _outcome(ticker, cik, result, answer, status, model_name)
-        filed = _filed(_task_filing(result))
-        all_dates.add(filed)
-        if count is not None:
+        decisions.append(_Decision(_task_filing(result), "llm", status, count))
+    return decisions
+
+
+def _manual_decision(filing: Filing, entry: dict) -> _Decision:
+    count = entry.get("employees")
+    status = str(entry.get("status") or ("saved" if count is not None else "no_headcount"))
+    return _Decision(filing, "manual", status, None if count is None else int(count))
+
+
+def _decide_ticker(context: Context, ticker: str, cik: str, decisions: list[_Decision]) -> EmployeeTickerResult:
+    """One row per filing date: the last supported count in filing order, else NaN; earlier counts are superseded."""
+    outcomes: list[dict] = []
+    chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome whose count is kept
+    for decision in sorted(decisions, key=lambda decision: _filing_key(decision.filing)):
+        filing = decision.filing
+        filed = _filed(filing)
+        if decision.count is not None:
             if filed in chosen:
-                outcomes[chosen[filed][1]]["status"] = "superseded"
-            chosen[filed] = (count, len(outcomes))
-        outcomes.append(outcome)
-        context.log.info(
-            "employees decision ticker=%s accession=%s cik=%s as_of=%s status=%s count=%s",
-            ticker,
-            outcome["accession_number"],
-            outcome["cik"],
-            outcome["filing_date"],
-            status,
-            count,
+                outcomes[chosen[filed]]["status"] = "superseded"
+            chosen[filed] = len(outcomes)
+        outcomes.append(
+            {
+                "ticker": ticker,
+                "accession_number": str(filing.accession_number),
+                "filing_date": filed,
+                "source": decision.source,
+                "status": decision.status,
+                "count": decision.count,
+            }
         )
-    frame = pd.DataFrame(
-        [{"ticker": ticker, "as_of": filed, "employees": float(count)} for filed, (count, _) in sorted(chosen.items())],
-        columns=FRAME_COLUMNS,
-    )
-    return EmployeeTickerResult(frame, outcomes, frozenset(all_dates - chosen.keys()))
+        context.log.info(
+            "employees decision ticker=%s accession=%s cik=%s as_of=%s source=%s status=%s count=%s",
+            ticker,
+            filing.accession_number,
+            filed_by(filing, cik),
+            filed.date(),
+            decision.source,
+            decision.status,
+            decision.count,
+        )
+    rows = [
+        {"ticker": ticker, "as_of": filed, "employees": float(outcomes[chosen[filed]]["count"]) if filed in chosen else float("nan")}
+        for filed in sorted({outcome["filing_date"] for outcome in outcomes})
+    ]
+    return EmployeeTickerResult(pd.DataFrame(rows, columns=FRAME_COLUMNS), outcomes)
 
 
 def build_ticker_employees(
@@ -275,13 +394,13 @@ def build_ticker_employees(
     cik: str,
     *,
     since: pd.Timestamp | None,
-    done_accessions: frozenset[str],
-    skip_dates: frozenset[pd.Timestamp],
+    done_dates: frozenset[pd.Timestamp],
+    manual: dict[str, dict],
     registrants: dict[str, Registrant],
     identity: Identity,
     symbol_tenure: pd.DataFrame,
 ) -> EmployeeTickerResult:
-    """Read undecided annual filings and validate their LLM answers."""
+    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM."""
     filings = sorted(
         (
             filing
@@ -289,80 +408,29 @@ def build_ticker_employees(
                 ticker,
                 HEADCOUNT_FORMS,
                 since=since,
-                done_accessions=done_accessions,
+                done_accessions=frozenset(),
                 registrants=registrants,
                 identity=identity,
                 symbol_tenure=symbol_tenure,
                 roster_cik=cik,
             )
-            if _filed(filing) not in skip_dates
+            if _filed(filing) not in done_dates
         ),
         key=_filing_key,
     )
-    if not filings:
-        return EmployeeTickerResult(pd.DataFrame(columns=FRAME_COLUMNS), [], frozenset())
-    config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
-    results = _extract_answers(context, config, ticker, filings, identity)
-    return _decide_ticker(context, ticker, cik, results, str(config.gpt.llm_model.open_ai_cheap))
+    by_hand = [_manual_decision(filing, manual[str(filing.accession_number)]) for filing in filings if str(filing.accession_number) in manual]
+    to_read = [filing for filing in filings if str(filing.accession_number) not in manual]
+    decisions = by_hand + (_llm_decisions(context, ticker, to_read, identity) if to_read else [])
+    return _decide_ticker(context, ticker, cik, decisions)
 
 
-def _resume_plan(
-    context: Context,
-    entry: dict,
-    tickers: list[str],
-    n_tickers: int,
-    fallback_since: pd.Timestamp,
-    *,
-    full: bool,
-) -> _ResumePlan:
-    """Replay all only on `--full`; routine runs retry unresolved filings and skip stored dates."""
-    requested = set(tickers)
-    relevant = [outcome for outcome in entry.get("filing_outcomes", []) if str(outcome.get("ticker")) in requested]
-    pending = [outcome for outcome in relevant if outcome.get("status") not in TERMINAL_STATUSES]
-    pending_dates = [pd.Timestamp(outcome["filing_date"]).normalize() for outcome in pending if outcome.get("filing_date")]
-    if full or pending or not entry.get("coverage_complete"):
-        since, is_full_rescan = min([fallback_since, *pending_dates]), True
-    else:
-        since, is_full_rescan = manifest_window(
-            context,
-            Tables.fundamentals_employees,
-            n_tickers,
-            fallback_since=fallback_since,
-            full_rescan_days=int(context.config.data_extract.manifest_full_rescan_days),
-        )
-    if full:
-        return _ResumePlan(since, is_full_rescan, frozenset(), {}, {})
-    stored = context.store.load(
-        Tables.fundamentals_employees,
-        columns=["ticker", "as_of"],
-        where={"ticker": tickers},
-        since=min(fallback_since, since),
-        optional=True,
-    )
-    saved_dates: dict[str, set[pd.Timestamp]] = {ticker: set() for ticker in requested}
-    if stored is not None:
-        for row in stored.itertuples(index=False):
-            saved_dates[str(row.ticker)].add(pd.Timestamp(row.as_of).normalize())
-    known_saved: dict[str, set[pd.Timestamp]] = {ticker: set() for ticker in requested}
-    pending_by_ticker: dict[str, set[pd.Timestamp]] = {ticker: set() for ticker in requested}
-    done: set[str] = set()
-    for outcome in relevant:
-        ticker = str(outcome["ticker"])
-        status = outcome.get("status")
-        filed = pd.Timestamp(outcome["filing_date"]).normalize() if outcome.get("filing_date") else None
-        if status == "saved" and filed is not None:
-            known_saved[ticker].add(filed)
-        if status not in TERMINAL_STATUSES and filed is not None:
-            pending_by_ticker[ticker].add(filed)
-        if status == "no_headcount" or (status in {"saved", "superseded"} and filed in saved_dates[ticker]):
-            done.add(str(outcome["accession_number"]))
-    return _ResumePlan(
-        since,
-        is_full_rescan,
-        frozenset(done),
-        {ticker: frozenset(dates) for ticker, dates in saved_dates.items()},
-        {ticker: frozenset(dates - known_saved[ticker] - pending_by_ticker[ticker]) for ticker, dates in saved_dates.items()},
-    )
+def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
+    """Filing dates that already have a row, count or NULL: the table alone says what is decided."""
+    stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of"], where={"ticker": tickers}, since=since, optional=True)
+    done: dict[str, set[pd.Timestamp]] = {}
+    for row in [] if stored is None else stored.itertuples(index=False):
+        done.setdefault(str(row.ticker), set()).add(pd.Timestamp(cast("str", row.as_of)).normalize())
+    return {ticker: frozenset(dates) for ticker, dates in done.items()}
 
 
 def fetch_fundamentals_employees(
@@ -372,30 +440,31 @@ def fetch_fundamentals_employees(
     *,
     full: bool = False,
 ) -> None:
-    """Fetch missing issuer-wide counts, or recheck every filing on `--full`."""
+    """Decide every annual filing in the window whose date has no row; `--full` re-decides them all.
+
+    Each run lists the whole `years_history` window and skips filing dates already in
+    `fundamentals_employees`. A filing with no supported count is stored as a NULL row, so it is
+    decided once and never sent to the LLM again. A filing listed in the manual roster takes its
+    value from there instead of the LLM, on `--full` too.
+    """
     context.ensure_edgar_identity()
     cik_map = load_cik_mapping(context, tickers)
     missing = set(tickers) - set(cik_map["ticker"])
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
-    fallback_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    entry = get_entry(context, Tables.fundamentals_employees) or {}
+    since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     identity = load_identity(context)
     symbol_tenure = pd.DataFrame(
         [{"symbol": symbol, "issuer_cik": cik} for symbol, ciks in identity.ciks_by_symbol.items() for cik in ciks],
         columns=["symbol", "issuer_cik"],
     )
     registrants = load_registrants(str(context.config_dir))
-    scope_fingerprints = {
-        str(row.ticker): identity_scope_fingerprint(str(row.ticker), str(row.cik), identity, symbol_tenure, registrants)
-        for row in cik_map.itertuples()
-    }
-    changed_scopes = changed_scope_tickers(entry, scope_fingerprints)
-    plan = _resume_plan(context, entry, tickers, len(cik_map), fallback_since, full=full)
+    manual = load_manual_roster(str(context.config_dir))
+    done = {} if full else _done_dates(context, tickers, since)
     context.log.info(
-        "fundamentals employees resume: %d accession(s) and %d stored filing date(s) skipped",
-        len(plan.done_accessions),
-        sum(map(len, plan.skip_dates.values())),
+        "fundamentals employees: %d decided filing date(s) skipped, %d manual roster entries",
+        sum(map(len, done.values())),
+        len(manual),
     )
 
     # `store.ensure_table` is check-then-create with no lock: serialize writes until the table exists.
@@ -417,18 +486,15 @@ def fetch_fundamentals_employees(
                 context,
                 ticker,
                 cik,
-                since=fallback_since if ticker in changed_scopes else plan.since,
-                done_accessions=plan.done_accessions,
-                skip_dates=plan.skip_dates.get(ticker, frozenset()),
+                since=since,
+                done_dates=done.get(ticker, frozenset()),
+                manual=manual,
                 registrants=registrants,
                 identity=identity,
                 symbol_tenure=symbol_tenure,
             )
             if not result.frame.empty:
                 _save(result.frame)
-            # A now-null date is cleared unless a skipped (already decided) filing saved it.
-            for filed in result.unavailable_dates - plan.saved_dates.get(ticker, frozenset()):
-                context.store.delete(Tables.fundamentals_employees, where={"ticker": ticker, "as_of": filed})
             return result
         except PROGRAMMING_ERRORS:
             raise
@@ -443,29 +509,22 @@ def fetch_fundamentals_employees(
         max_workers=int(context.config.data_extract.fundamentals_workers),
     )
     successful = [result for result in results if result is not None]
-    record_filing_outcomes(context, Tables.fundamentals_employees, [outcome for result in successful for outcome in result.outcomes])
     failed = len(results) - len(successful)
-    ambiguous = sum(any(outcome["status"] == "ambiguous" for outcome in result.outcomes) for result in successful)
-    rows_written = sum(len(result.frame) for result in successful)
+    outcomes = [outcome for result in successful for outcome in result.outcomes]
+    rows = sum(len(result.frame) for result in successful)
+    counted = sum(int(result.frame["employees"].notna().sum()) for result in successful)
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) read, %d failed, %d ambiguous -> %d rows written",
+        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d from the manual roster, %d ambiguous) "
+        "-> %d count row(s), %d NULL row(s)",
         len(successful),
         len(cik_map),
         failed,
-        ambiguous,
-        rows_written,
+        len(outcomes),
+        sum(outcome["source"] == "manual" for outcome in outcomes),
+        sum(outcome["status"] == "ambiguous" for outcome in outcomes),
+        counted,
+        rows - counted,
     )
-    if failed or ambiguous:
-        raise IncompleteEdgarRunError(
-            f"fundamentals employees: {failed} ticker(s) failed and {ambiguous} ambiguous; "
-            "accession outcomes were saved, but no complete frontier was advanced"
-        )
-    record_run(
-        context,
-        Tables.fundamentals_employees,
-        len(cik_map),
-        rows_written,
-        is_full_rescan=plan.is_full_rescan,
-        coverage_complete=True,
-        identity_scope_fingerprints=scope_fingerprints,
-    )
+    if failed:
+        raise IncompleteEdgarRunError(f"fundamentals employees: {failed} ticker(s) failed; decided filings were saved and the rest retry next run")
+    record_run(context, Tables.fundamentals_employees, len(cik_map), counted, is_full_rescan=True, coverage_complete=True)

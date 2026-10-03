@@ -322,7 +322,12 @@ def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *, tol
     for the same no-leakage reason, and THE SAME CAP ON THE CARRY -- 370 days admits the three
     quarters that follow a 10-K and refuses a headcount stale by more than a year, which an
     uncapped join would carry forward forever for a ticker the SEC producer has dropped.
+
+    A NULL row records a 10-K that states no usable count; it is dropped here so it neither
+    becomes the as-of match nor cuts the prior year's carry short.
     """
+    if employees is not None:
+        employees = employees.dropna(subset=[EMPLOYEES_COLUMN])
     if employees is None or employees.empty:
         out = frame.copy()
         out[EMPLOYEES_COLUMN] = np.nan

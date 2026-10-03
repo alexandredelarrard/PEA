@@ -48,10 +48,11 @@ sequenceDiagram
 1. Seed or load the S&P 500 universe through [data extraction](../modules/data-extract.md).
 2. Refresh insider evidence, build `identity-tables`, then fan out every issuer-identity SEC consumer. The 13F manager chain remains independent because it does not resolve issuer filing history.
 3. Run SEC facts/history and standalone employee headcount as sibling tasks. The Sharadar merge waits for both, but either task can be repaired and rerun without replaying the other.
-4. Retry an extractor that raises up to three times. Per-ticker SEC API walks consume the whole SEC pool so their process-local rate limiters cannot exceed the shared request budget.
-5. Run the final extraction gate. Its complete table inventory, cadence, and publication date column come from `freshness_tables()` in [schema.py](../../src/data_store/schema.py); cadence tolerances come from [constants.py](../../src/constants/constants.py). The gate also inherits three retries. Wikipedia pageviews and Google Trends are retired, not scheduled, and declare no freshness.
-6. On green only, trigger [peer deduction](../modules/data-peers.md), then the [cube-build flow](./cube-build.md).
-7. Run the cube part-status gate and trigger [model prediction](./model-training-and-prediction.md) only when that gate succeeds.
+4. Run `extract-earnings-calls` as one task in the default pool. It compares the defeatbeta transcripts file's content hash with the one recorded in the run manifest and exits in seconds when the daily build has not changed and no `reconcile_days` full comparison is due; otherwise it reads only the row groups holding new or re-issued calls. The split, sentiment and embeddings run later in `build-text`.
+5. Retry an extractor that raises up to three times. Per-ticker SEC API walks consume the whole SEC pool so their process-local rate limiters cannot exceed the shared request budget.
+6. Run the final extraction gate. Its complete table inventory, cadence, and publication date column come from `freshness_tables()` in [schema.py](../../src/data_store/schema.py); cadence tolerances come from [constants.py](../../src/constants/constants.py). The gate also inherits three retries. `earnings_call_sections` declares quarterly freshness on `as_of`. Google Trends is not scheduled and declares no freshness; there is no Wikipedia pageviews task.
+7. On green only, trigger [peer deduction](../modules/data-peers.md), then the [cube-build flow](./cube-build.md).
+8. Run the cube part-status gate and trigger [model prediction](./model-training-and-prediction.md) only when that gate succeeds.
 
 ## Failure modes
 

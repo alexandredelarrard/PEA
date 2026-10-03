@@ -11,7 +11,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common.run_manifest import changed_scope_tickers, manifest_window, record_filing_outcomes, record_run
+from src.data_extract.utils.common.run_manifest import changed_scope_tickers, manifest_window, record_run
 from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
@@ -85,21 +85,6 @@ def test_record_run_preserves_last_full_rescan_date_on_routine_run(tmp_path):
 
     print("\n=== SANITY CHECK: last_full_rescan_date pinned across routine runs ===")
     print(f"  last_run_date advanced to {entry['last_run_date']} while last_full_rescan_date stayed at {entry['last_full_rescan_date']}. Validated.")
-
-
-def test_filing_outcomes_persist_without_advancing_completeness(tmp_path):
-    ctx = _ctx(tmp_path)
-    pending = {"ticker": "AAA", "accession_number": "acc-1", "status": "pending_regime", "candidate": 10_000}
-    record_filing_outcomes(ctx, Tables.fundamentals_employees, [pending])
-    entry = get_entry(ctx, Tables.fundamentals_employees)
-    assert entry["filing_outcomes"] == [pending]
-    assert "last_run_date" not in entry and "coverage_complete" not in entry
-
-    saved = {**pending, "status": "saved"}
-    record_filing_outcomes(ctx, Tables.fundamentals_employees, [saved])
-    record_run(ctx, Tables.fundamentals_employees, ticker_count=1, rows_added=1, coverage_complete=True)
-    assert get_entry(ctx, Tables.fundamentals_employees)["filing_outcomes"] == [saved]
-    print("\nSANITY: per-accession outcomes persist independently of the run frontier.")
 
 
 def test_manifest_window_full_rescan_on_first_run(tmp_path):

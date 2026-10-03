@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -54,7 +55,8 @@ def build(
     filings: list[Filing],
     answers: dict[str, mod.EmployeeAnswer],
     *,
-    skip_dates: frozenset[pd.Timestamp] = frozenset(),
+    done_dates: frozenset[pd.Timestamp] = frozenset(),
+    manual: dict[str, dict] | None = None,
 ) -> mod.EmployeeTickerResult:
     def listing(ticker, forms, **kwargs):
         assert ticker == "AAA"
@@ -92,15 +94,15 @@ def build(
         "AAA",
         "0000000001",
         since=None,
-        done_accessions=frozenset(),
-        skip_dates=skip_dates,
+        done_dates=done_dates,
+        manual=manual or {},
         registrants={},
         identity=identity,
         symbol_tenure=pd.DataFrame([{"symbol": "AAA", "issuer_cik": "0000000001"}]),
     )
 
 
-def test_incremental_skips_stored_filing_before_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decided_date_skips_filing_before_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     filings = [
         Filing("stored", "2024-03-01", "We had 40,000 employees."),
         Filing("new", "2025-03-01", "We had 41,000 employees."),
@@ -110,69 +112,127 @@ def test_incremental_skips_stored_filing_before_llm(monkeypatch: pytest.MonkeyPa
         monkeypatch,
         filings,
         {"new": answer(41000, "We had 41,000 employees.")},
-        skip_dates=frozenset({pd.Timestamp("2024-03-01")}),
+        done_dates=frozenset({pd.Timestamp("2024-03-01")}),
     )
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2025-03-01")]
     assert [outcome["accession_number"] for outcome in result.outcomes] == ["new"]
-    print("\nSANITY: a stored filing date is excluded before filing text and the employee LLM are called.")
+    print("\nSANITY: a filing date that already has a row (count or NULL) is skipped before filing text and the LLM.")
 
 
-def test_incremental_reads_stored_dates_when_manifest_lacks_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
-    saved_date = pd.Timestamp("2024-03-01")
-    calls: list[tuple[object, dict[str, object]]] = []
-
-    def load(table: object, **kwargs: object) -> pd.DataFrame:
-        calls.append((table, kwargs))
-        return pd.DataFrame([{"ticker": "AAA", "as_of": saved_date}])
-
-    context = SimpleNamespace(
-        store=SimpleNamespace(load=load),
-        config=SimpleNamespace(
-            data_extract=SimpleNamespace(manifest_full_rescan_days=30),
-            gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
-        ),
-    )
-    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2026-09-30"), False))
-    plan = mod._resume_plan(context, {"coverage_complete": True}, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
-    assert calls == [
-        (
-            mod.Tables.fundamentals_employees,
-            {
-                "columns": ["ticker", "as_of"],
-                "where": {"ticker": ["AAA"]},
-                "since": pd.Timestamp("2000-01-01"),
-                "optional": True,
-            },
-        )
-    ]
-    assert plan.skip_dates["AAA"] == frozenset({saved_date})
-    assert plan.done_accessions == frozenset()
-    old_model = {
-        "coverage_complete": True,
-        "filing_outcomes": [{"ticker": "AAA", "accession_number": "stored", "status": "saved", "model": "regex", "filing_date": "2024-03-01"}],
+def test_manual_roster_replaces_the_llm(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    (tmp_path / "sec").mkdir()
+    roster = {
+        "_README": "fixture",
+        "AAA": [
+            {"accession_number": "hand", "filing_date": "2023-03-01", "employees": 1234, "status": "saved"},
+            {"accession_number": "hand-null", "filing_date": "2024-03-01", "employees": None, "status": "no_headcount"},
+        ],
     }
-    plan = mod._resume_plan(context, old_model, ["AAA"], 1, pd.Timestamp("2000-01-01"), full=False)
-    assert plan.done_accessions == frozenset({"stored"})
-    assert plan.skip_dates["AAA"] == frozenset()
-    print(
-        "\nSANITY: stored dates skip without a manifest; a prior accession skips across model changes while a new same-day amendment stays eligible."
-    )
+    (tmp_path / mod.MANUAL_ROSTER).write_text(json.dumps(roster), encoding="utf-8")
+    manual = mod.load_manual_roster(str(tmp_path))
+    assert set(manual) == {"hand", "hand-null"} and manual["hand"]["ticker"] == "AAA"
+    assert mod.load_manual_roster(str(tmp_path / "absent")) == {}
+    filings = [
+        Filing("hand", "2023-03-01", "unused"),
+        Filing("hand-null", "2024-03-01", "unused"),
+        Filing("new", "2025-03-01", "We had 41,000 employees."),
+    ]
+    for filing in filings[:2]:
+        filing.html = lambda: pytest.fail("a manual roster filing was read or sent to the LLM")
+    result = build(monkeypatch, filings, {"new": answer(41000, "We had 41,000 employees.")}, manual=manual)
+    employees = result.frame["employees"].tolist()
+    assert employees[0] == 1234.0 and pd.isna(employees[1]) and employees[2] == 41000.0
+    assert [(outcome["source"], outcome["status"]) for outcome in result.outcomes] == [
+        ("manual", "saved"),
+        ("manual", "no_headcount"),
+        ("llm", "saved"),
+    ]
+    print("\nSANITY: a manual roster filing takes its count (or NULL) from configs/sec without text or LLM; others go to the LLM.")
 
 
-def test_source_guard_rejects_bounds_and_unsupported_claims():
+def supported(count: int | None, text: str, quote: str | None = None) -> int | None:
+    """The guard on `text`, quoting all of it unless a narrower quote is given."""
+    return mod.supported_employee_count(answer(count, quote or text), text)
+
+
+def test_source_guard_resolves_bounds_units_full_time_and_ranges():
     exact = "As of December 31, 2023, we employed approximately 74,042 employees."
-    bound = "We had over 300,000 employees."
-    split = "We had 2,476 full-time employees and 37 part-time employees."
-    assert mod.supported_employee_count(answer(74042, exact), exact) == 74042
-    assert mod.supported_employee_count(answer(300000, bound), bound) is None
-    assert mod.supported_employee_count(answer(300000, "300,000 employees"), bound) is None
-    assert mod.supported_employee_count(answer(2476, split), split) == 2513
-    assert mod.supported_employee_count(answer(99999, exact), exact) is None
-    assert mod.supported_employee_count(answer(74042, "fabricated quote"), exact) is None
+    assert supported(74042, exact) == 74042
+    # Open bounds move half a unit of the stated precision; a quote trimmed of "over" still reads it.
+    assert supported(13000, "At December 31, 2016, we had over 13,000 employees.") == 13_500
+    assert supported(300000, "We had over 300,000 employees.") == 305_000
+    assert supported(300000, "We had over 300,000 employees.", quote="300,000 employees") == 305_000
+    assert supported(6250, "The Company had over 6,250 full-time employees.") == 6_255
+    assert supported(2200000, "We employed nearly 2.2 million associates.") == 2_150_000
+    assert supported(95000, "Medtronic has 95,000+ full-time employees") == 95_500
+    assert supported(19800, "With approximately 19,800 employees in more than 30 countries") == 19_800
+    # Full-time only, whether the model returned the full-time count or the full + part-time sum.
+    dltr = "We employed approximately 11,040 full-time and 19,115 part-time associates on January 29, 2005."
+    assert supported(11040, dltr) == supported(30155, dltr) == 11_040
+    assert supported(19115, dltr) is None
+    assert supported(2513, "We had 2,476 full-time employees and 37 part-time employees.") == 2_476
+    assert supported(230800, "We employed approximately 230,800 full-time and part-time employees.") == 230_800
+    dltr_table = (
+        "As of January 30, 2021, we employed more than 199,300 associates, as follows: Store and Distribution Center Associates "
+        "Dollar Tree Family Dollar Store Support Center Associates Total Full-time Associates 27,952 29,862 2,403 60,217 "
+        "Part-time Associates 97,913 41,184 13 139,110 Total 125,865 71,046 2,416 199,327 Part-time associates work an average "
+        "of less than 30 hours per week."
+    )
+    table_quote = "As of January 30, 2021, we employed more than 199,300 associates ... Total 125,865 71,046 2,416 199,327"
+    assert supported(199327, dltr_table, table_quote) == 60_217
+    # Units, components and tables in thousands.
+    assert (
+        supported(61000, "The number of regular employees was 61 thousand, 62 thousand, and 62 thousand at years ended 2024, 2023, and 2022.")
+        == 61_000
+    )
+    assert supported(826, "As of December 31, 2024, we had 714 non-union employees and 112 union employees.") == 826
+    assert supported(97900, "Number of regular employees at year-end (thousands) 97.9") == 97_900
+    # A range is not a count, and neither is an unsupported number, a fabricated quote or an image.
+    assert supported(50000, "We employ between 50,000 and 100,000 people.") is None
+    assert supported(100000, "We employ between 50,000 and 100,000 people.") is None
+    assert supported(50000, "We employ 50 to 100 thousand people.") is None
+    assert supported(99999, exact) is None
+    assert supported(2023, exact) is None
+    assert supported(74042, exact, quote="fabricated quote") is None
     assert mod.supported_employee_count(answer(None, None, status="image_only"), exact) is None
     print(
-        "\nSANITY: exact text supports a count; full and shortened bounds, unsupported quote and image-only evidence abstain; an explicit split sums."
+        "\nSANITY: over 13,000 -> 13,500, nearly 2.2 million -> 2,150,000, full + part-time -> full-time only, "
+        "61 thousand -> 61,000, components sum; ranges, unsupported counts and quotes give None."
     )
+
+
+def test_source_guard_locates_quotes_through_filing_text_noise():
+    assert (
+        supported(
+            53368, "Employees We employed 53,368 persons at December 31, 2018 . Environmental", "We employed 53,368 persons at December 31, 2018."
+        )
+        == 53_368
+    )
+    assert (
+        supported(
+            5700,
+            "EMPLOYEES\nA s of February 7, 2014, we had approximately 5,700 employees.",
+            "As of February 7, 2014, we had approximately 5,700 employees.",
+        )
+        == 5_700
+    )
+    msft = "the Company employed approximately 47,600 people on a full-\ntime basis, 33,000 in the United States"
+    assert supported(47600, msft, "the Company employed approximately 47,600 people on a full-time basis") == 47_600
+    mcd = "The Company’s number of employees worldwide was approximately 440,000 as of year-end 2012 ."
+    assert supported(440000, mcd, "The Company�s number of employees worldwide was approximately 440,000 as of year-end 2012.") == 440_000
+    afl = (
+        "Aflac Japan had 3,860 employees and Aflac U.S. had 4,089 employees. We consider our relations excellent. Other operations had 293 employees."
+    )
+    assert (
+        supported(8242, afl, "Aflac Japan had 3,860 employees and Aflac U.S. had 4,089 employees. ... Other operations had 293 employees.") == 8_242
+    )
+    assert (
+        supported(
+            39000, "ADM is a global company of approximately 39,000 employees.", "The Company is a global company of approximately 39,000 employees."
+        )
+        is None
+    )
+    print("\nSANITY: line-break hyphens, split letters, spaced full stops, bad apostrophes and `...` joins locate; a paraphrase does not.")
 
 
 def test_source_guard_recovers_punctuation_and_anchored_table_quote():
@@ -244,7 +304,7 @@ def test_legacy_annual_form_uses_dated_registrant_scope():
     print("\nSANITY: 10-K405 joins the dated annual registrant scope used with entity lineage and symbol tenure.")
 
 
-def test_legacy_form_table_total_measurement_period_and_image_null(monkeypatch):
+def test_legacy_form_table_total_and_image_null_row(monkeypatch):
     filings = [
         Filing("aapl-2001", "2001-12-21", "Apple and its subsidiaries worldwide had 9,603 employees.", form="10-K405", report="2001-09-29"),
         Filing("csco-2014", "2014-09-09", "United States 36,725 Rest of world 37,317 Total 74,042 employees.", report="2014-07-26"),
@@ -256,17 +316,15 @@ def test_legacy_form_table_total_measurement_period_and_image_null(monkeypatch):
         "peg-2023": answer(None, None, status="image_only", measurement_period=None),
     }
     result = build(monkeypatch, filings, answers)
-    assert result.frame["employees"].tolist() == [9603.0, 74042.0]
-    assert result.frame["as_of"].tolist() == [pd.Timestamp("2001-12-21"), pd.Timestamp("2014-09-09")]
+    employees = result.frame["employees"].tolist()
+    assert employees[:2] == [9603.0, 74042.0] and pd.isna(employees[2])
+    assert result.frame["as_of"].tolist() == [pd.Timestamp("2001-12-21"), pd.Timestamp("2014-09-09"), pd.Timestamp("2024-02-26")]
     assert {row["accession_number"]: row["status"] for row in result.outcomes} == {
         "aapl-2001": "saved",
         "csco-2014": "saved",
         "peg-2023": "no_headcount",
     }
-    assert result.outcomes[0]["measurement_period"] == "September 29, 2001"
-    assert result.outcomes[0]["model"] == "gpt-6-luna"
-    assert result.unavailable_dates == frozenset({pd.Timestamp("2024-02-26")})
-    print("\nSANITY: legacy annual form and table total use SEC filing dates; image-only PEG remains null with provenance.")
+    print("\nSANITY: legacy annual form and table total use SEC filing dates; image-only PEG is stored as a NULL row, so it is decided once.")
 
 
 def test_same_day_amendment_uses_later_supported_count(monkeypatch):
@@ -291,194 +349,65 @@ def test_missing_report_period_keeps_filing_date_and_bad_cik_fails_closed(monkey
     filing = Filing("no-period", "2024-03-01", "We had 40,000 employees.", report=None)
     result = build(monkeypatch, [filing], {"no-period": answer(40000, "We had 40,000 employees.")})
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]
-    assert result.outcomes[0]["report_date"] is None
     filing.cik = "0000000002"
     with pytest.raises(ValueError, match="outside the issuer lineage"):
         build(monkeypatch, [filing], {"no-period": answer(40000, "We had 40,000 employees.")})
     print("\nSANITY: optional report metadata does not block filing-date storage; reused alias CIKs fail closed.")
 
 
-def test_full_replay_rechecks_saved_accession_and_clears_null(monkeypatch):
-    deleted = []
-    saved = []
-    outcomes = []
-    runs = []
-    store = SimpleNamespace(
-        save=lambda table, frame: saved.append(frame), delete=lambda table, where: deleted.append(where), load=lambda *args, **kwargs: None
-    )
-    config = SimpleNamespace(
-        data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
-        gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
-    )
-    context = SimpleNamespace(
-        store=store,
-        config=config,
+def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None) -> SimpleNamespace:
+    return SimpleNamespace(
+        store=SimpleNamespace(save=lambda table, frame: saved.append(frame), load=lambda *args, **kwargs: stored),
+        config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=1)),
         config_dir="configs",
         ensure_edgar_identity=lambda: None,
         log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
     )
+
+
+def patch_run(monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> None:
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={"AAA": {"0000000001"}}))
+    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
     monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
-    monkeypatch.setattr(
-        mod,
-        "get_entry",
-        lambda *args: {
-            "coverage_complete": True,
-            "filing_outcomes": [{"ticker": "AAA", "accession_number": "old", "status": "saved"}],
-        },
-    )
-    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2024-01-01"), False))
-    monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: outcomes.extend(args[-1]))
+    monkeypatch.setattr(mod, "load_manual_roster", lambda *args: {})
+    monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
     monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
-    monkeypatch.setattr(
-        mod,
-        "run_per_ticker",
-        lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")],
-    )
-    seen = {}
+
+
+def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
+    # 1030 ambiguous filings once lived only in a side manifest and went back to the LLM nightly.
+    saved: list[pd.DataFrame] = []
+    runs: list[dict] = []
+    decided = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2024-02-26")}])
+    patch_run(monkeypatch, runs)
+    seen: list[dict] = []
 
     def fake_build(*args, **kwargs):
-        seen.update(kwargs)
+        seen.append(kwargs)
+        frame = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2025-02-26"), "employees": float("nan")}], columns=mod.FRAME_COLUMNS)
         return mod.EmployeeTickerResult(
-            pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            [{"ticker": "AAA", "accession_number": "old", "status": "no_headcount"}],
-            frozenset({pd.Timestamp("2024-02-26")}),
+            frame, [{"ticker": "AAA", "accession_number": "unclear", "source": "llm", "status": "ambiguous", "count": None}]
         )
 
     monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
-    mod.fetch_fundamentals_employees(context, ["AAA"], 15, full=True)
-    assert seen["done_accessions"] == frozenset()
-    assert deleted == [{"ticker": "AAA", "as_of": pd.Timestamp("2024-02-26")}]
-    assert saved == []
-    assert outcomes[0]["status"] == "no_headcount"
-    assert len(runs) == 1
-    deleted.clear()
-    runs.clear()
-    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    assert seen["done_accessions"] == frozenset()
-    assert deleted == [{"ticker": "AAA", "as_of": pd.Timestamp("2024-02-26")}]
-    assert len(runs) == 1
-    print("\nSANITY: full replay revisits old decisions; a missing table row remains retryable in a routine run.")
+    mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15)
+    assert seen[0]["done_dates"] == frozenset({pd.Timestamp("2024-02-26")})
+    assert seen[0]["since"] == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    assert pd.isna(saved[0]["employees"].iloc[0])
+    assert runs[0]["coverage_complete"] is True
+    mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15, full=True)
+    assert seen[1]["done_dates"] == frozenset()
+    print("\nSANITY: an ambiguous filing is stored as a NULL row and completes the run; dates with rows are skipped, `--full` re-reads them.")
 
 
-def test_new_null_amendment_preserves_skipped_supported_original(monkeypatch):
-    deleted = []
-    context = SimpleNamespace(
-        store=SimpleNamespace(
-            save=lambda *args: None,
-            delete=lambda table, where: deleted.append(where),
-            load=lambda *args, **kwargs: pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2024-03-01")}]),
-        ),
-        config=SimpleNamespace(
-            data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
-            gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
-        ),
-        config_dir="configs",
-        ensure_edgar_identity=lambda: None,
-        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
-    )
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
-    monkeypatch.setattr(mod, "changed_scope_tickers", lambda *args: set())
-    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: (pd.Timestamp("2024-03-01"), False))
-    monkeypatch.setattr(
-        mod,
-        "get_entry",
-        lambda *args: {
-            "coverage_complete": True,
-            "filing_outcomes": [
-                {
-                    "ticker": "AAA",
-                    "accession_number": "original",
-                    "status": "saved",
-                    "model": "gpt-6-luna",
-                    "filing_date": "2024-03-01",
-                }
-            ],
-        },
-    )
-    monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
-    monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: None)
-    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: None)
-    seen = {}
-
-    def fake_build(*args, **kwargs):
-        seen.update(kwargs)
-        return mod.EmployeeTickerResult(
-            pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            [{"ticker": "AAA", "accession_number": "amendment", "status": "no_headcount"}],
-            frozenset({pd.Timestamp("2024-03-01")}),
-        )
-
-    monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
-    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    assert seen["done_accessions"] == frozenset({"original"})
-    assert seen["skip_dates"] == frozenset()
-    assert deleted == []
-    print("\nSANITY: a new image-only amendment cannot erase the saved same-day original skipped by the routine frontier.")
-
-
-def test_ambiguous_result_cannot_advance_complete_frontier(monkeypatch):
-    # The guard may reject a paid answer; it must remain retryable and cannot certify coverage.
-    saved_outcomes = []
-    context = SimpleNamespace(
-        store=SimpleNamespace(save=lambda *args: None, delete=lambda *args, **kwargs: None, load=lambda *args, **kwargs: None),
-        config=SimpleNamespace(
-            data_extract=SimpleNamespace(manifest_full_rescan_days=30, fundamentals_workers=1),
-            gpt=SimpleNamespace(llm_model=SimpleNamespace(open_ai_cheap="gpt-6-luna")),
-        ),
-        config_dir="configs",
-        ensure_edgar_identity=lambda: None,
-        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
-    )
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
-    monkeypatch.setattr(mod, "identity_scope_fingerprint", lambda *args: "scope")
-    monkeypatch.setattr(mod, "get_entry", lambda *args: {})
-    monkeypatch.setattr(mod, "run_per_ticker", lambda mapping, worker, **kwargs: [worker("AAA", "0000000001")])
-    monkeypatch.setattr(
-        mod,
-        "build_ticker_employees",
-        lambda *args, **kwargs: mod.EmployeeTickerResult(
-            pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            [{"ticker": "AAA", "accession_number": "uncertain", "status": "ambiguous", "model": "gpt-6-luna", "filing_date": "2001-12-21"}],
-            frozenset(),
-        ),
-    )
-    monkeypatch.setattr(mod, "record_filing_outcomes", lambda *args: saved_outcomes.extend(args[-1]))
-    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: pytest.fail("ambiguous result advanced the frontier"))
-    with pytest.raises(IncompleteEdgarRunError, match="ambiguous"):
-        mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    assert saved_outcomes[0]["status"] == "ambiguous"
-    monkeypatch.setattr(
-        mod,
-        "get_entry",
-        lambda *args: {
-            "coverage_complete": True,
-            "last_run_date": "2025-01-01",
-            "filing_outcomes": list(saved_outcomes),
-        },
-    )
-    monkeypatch.setattr(mod, "manifest_window", lambda *args, **kwargs: pytest.fail("pending filing skipped by recent frontier"))
-
-    def retry_build(*args, **kwargs):
-        assert kwargs["since"] <= pd.Timestamp("2001-12-21")
-        assert "uncertain" not in kwargs["done_accessions"]
-        return mod.EmployeeTickerResult(
-            pd.DataFrame(columns=["ticker", "as_of", "employees"]),
-            list(saved_outcomes),
-            frozenset(),
-        )
-
-    monkeypatch.setattr(mod, "build_ticker_employees", retry_build)
-    with pytest.raises(IncompleteEdgarRunError, match="ambiguous"):
-        mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    print("\nSANITY: a historical ambiguous accession remains retryable on the next run despite an old recent frontier.")
+def test_failed_ticker_still_blocks_the_frontier(monkeypatch):
+    runs: list[dict] = []
+    patch_run(monkeypatch, runs)
+    monkeypatch.setattr(mod, "build_ticker_employees", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("EDGAR down")))
+    with pytest.raises(IncompleteEdgarRunError, match="1 ticker"):
+        mod.fetch_fundamentals_employees(run_context([], None), ["AAA"], 15)
+    assert runs == []
+    print("\nSANITY: a ticker that could not be read keeps the run incomplete; it has no rows, so it retries next run.")
 
 
 def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):

@@ -63,6 +63,7 @@ The ignored root `.env` is loaded by [Context](../../src/context.py). Common key
 | `FRED_API_KEY` | FRED macro series. |
 | `OPENAI_API_KEY` | Structured proxy/vote extraction and embeddings. |
 | `OPENFIGI_API_KEY` | Optional acceleration for CUSIP resolution. |
+| `FINBERT_DEVICE` | `cuda` or `cpu` for earnings-call FinBERT scoring; unset picks CUDA when available. |
 | PostgreSQL variables or `DATABASE_URL` | Host database override. |
 | `ROOT_PATH` | Alternate runtime root, notably Airflow. |
 
@@ -89,10 +90,9 @@ Run `seed-universe` before stages that resolve the default ticker set.
 | Identity | `identity-tables` | Rebuilds `symbol_tenure` and `entity_lineage` together from cached ownership files and database evidence. |
 | Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-employees`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts and employees are independent SEC network walks; SEC and merged history rebuilds are local once inputs exist. |
 | Structure/text | `def14a`, `def14a-edgar`, `sec-8k-votes`, `filing-text` | LLM-backed DEF 14A and vote extraction spend API calls; deterministic DEF 14A XBRL is separate. |
-| Behavioral | `wiki-pageviews`, `google-trends` | Google Trends is deliberately rate-limited and slow. |
-| Calls | `download-earnings-calls`, `ingest-earnings-calls` | First caches source files, then parses them into the database. |
+| Earnings calls | `extract-earnings-calls [-F] [-t]` | Reads the defeatbeta HuggingFace parquet into `earnings_call_sections`. An unchanged source file is a no-op; `-F` compares every scoped call. |
 
-`fundamentals-employees` owns the 10-K/10-K/A/10-K405 headcount walk and uses GPT-6 Luna on filing text. It stores only source-supported values at the SEC filing date and can run without replaying SEC XBRL facts or `fundamentals_history_sec`. A normal run lists eligible filings but skips dates already stored in `fundamentals_employees` before reading filing text or calling the LLM; prior null decisions are skipped by accession. `--full` reprocesses all eligible accessions in the configured history window, upserts supported values, and deletes exact filing-date rows that now lack support. A full run uses SEC and OpenAI APIs and writes the employee table. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
+`fundamentals-employees` owns the 10-K/10-K/A/10-K405 headcount walk and uses GPT-6 Luna on filing text. It stores source-supported values at the SEC filing date, and a NULL row for a filing with no usable count, and can run without replaying SEC XBRL facts or `fundamentals_history_sec`. A normal run lists the whole history window and skips filing dates that already have a row; a filing in `configs/sec/employees_manual_roster.json` takes its value from there instead of the LLM. Delete a row to have that filing re-decided. `--full` re-decides every filing in the window and upserts counts or NULLs. A full run uses SEC and OpenAI APIs and writes the employee table. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
 
 For a notes availability-date correction, first obtain the approved `available_at` column migration for both notes tables and back up the affected data. Then run `rtk "$PY" -m src data_extract financial-notes --repair-availability`: this updates existing clocks only and does not download or reparse ZIPs. Check the resulting period dates (for example, `2021_08` → 2021-09-13), then fully rebuild `cube_part_fundamentals` and reassemble `cube`. The ordinary 45-trading-session refresh cannot rewrite the older historical feature rows whose dates changed. See [data sources](../reference/data-sources.md) for the estimated-versus-observed date policy.
 
@@ -176,7 +176,7 @@ rtk docker compose up -d --force-recreate airflow-scheduler airflow-webserver
 
 The generated `.cache/corporate_ca_bundle.pem` is ignored by Git and visible inside Airflow through the repository bind mount. Pipeline startup reuses it on Linux for `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`; certificate and hostname verification remain enabled. Compose also directs yfinance's timezone and cookie caches to writable `/tmp/pea-cache`.
 
-The compose stack mounts the repository, persistent `data/`, and DAG directory separately. Inside containers, use the service hostname `db`, not localhost. Operational pools throttle SEC bulk, SEC API, scraping, and aggregate tasks.
+The compose stack mounts the repository, persistent `data/`, and DAG directory separately. Inside containers, use the service hostname `db`, not localhost. Operational pools throttle SEC bulk, SEC API, and aggregate tasks; light sources, including earnings calls, run in the default pool.
 
 In the extraction DAG, `identity-tables` runs after `insider-transactions` and before every identity-consuming SEC task, including facts, standalone employees, deterministic and LLM proxy extraction, 8-K/13D/13G, and filing text. The independent 13F manager chain is not an issuer-identity consumer. Sharadar merge waits for both SEC facts/history and employee extraction.
 
@@ -210,6 +210,24 @@ Form-string eras and manifests make `-F` important for complete rebuilds. 13G li
 ### Insider bulk/live cutover
 
 Run canonical insider extraction, use `--live-full` after discovery/parser changes, replay a completed quarter through the parity validator, and advance the authoritative bulk quarter only after a retained PASS. Keep staged live rows as the reproducible audit copy.
+
+### Earnings-call rebuild
+
+A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`):
+
+| Stage | Cost | Resume |
+| --- | --- | --- |
+| `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes; an unchanged source revision is a no-op in seconds | Writes one row group per batch, so a crash loses at most one batch. |
+| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v1` cache version. |
+| OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
+
+Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment before it embeds and has no `-t` scope; `-F` rebuilds `cube_part_text` for the universe, after which the cube must be assembled again. Then validate the part:
+
+```bash
+rtk "$PY" -m src validate earnings-calls -T cube_part_text -o reports/validate/YYYY-MM-DD-earnings-calls
+```
+
+The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, split status (`ok` rate at least 0.985, prepared word share q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the 12-column feature schema, bounds, redundancy and drift.
 
 ## Validation commands
 

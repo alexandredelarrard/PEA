@@ -327,10 +327,6 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
-class AmbiguousRegistrantScopeError(RuntimeError):
-    """Identity found a CIK transition that has no complete dated registrant chain."""
-
-
 def identity_scope_fingerprint(
     ticker: str,
     roster_cik: str,
@@ -384,8 +380,13 @@ def _identity_filing_scope(
     symbol_tenure: pd.DataFrame,
     entry: Registrant | None,
     policy: Combine,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Audit CIK scope; return same-CIK aliases and additive UNION CIKs."""
+) -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
+    """Audit CIK scope; return same-CIK aliases, additive UNION CIKs and the CIKs a listed filing may carry.
+
+    A SPLIT form whose identity lineage holds a CIK the register has not dated lists the curated
+    chain, or the roster CIK alone, and warns: blending two registrants' consolidated filings is
+    the defect SPLIT exists to prevent, and failing the ticker would block the whole run.
+    """
     required = {"symbol", "issuer_cik"}
     missing = required - set(symbol_tenure.columns)
     if missing:
@@ -410,14 +411,18 @@ def _identity_filing_scope(
     curated_ciks = {_normalise_cik(cik) for cik in entry.all_ciks()} if entry is not None else set()
     missing_from_chain = discovered_ciks - curated_ciks
     if policy is Combine.SPLIT and len(discovered_ciks) > 1 and missing_from_chain:
-        raise AmbiguousRegistrantScopeError(
-            f"{ticker}: identity discovered registrant CIK(s) "
-            f"{', '.join(sorted(discovered_ciks))}, including uncurated "
-            f"{', '.join(sorted(missing_from_chain))}; add a complete explicit dated "
-            "registrant chain before fetching consolidating filings"
+        listed = curated_ciks or {roster_cik}
+        logger.warning(
+            "%s: identity discovered registrant CIK(s) %s, including uncurated %s; listing %s only "
+            "until a complete dated registrant chain is curated",
+            ticker,
+            ", ".join(sorted(discovered_ciks)),
+            ", ".join(sorted(missing_from_chain)),
+            ", ".join(sorted(listed)),
         )
+        return (), (), frozenset(listed)
     additional_ciks = discovered_ciks - {roster_cik} - curated_ciks
-    return tuple(sorted(aliases)), tuple(sorted(additional_ciks))
+    return tuple(sorted(aliases)), tuple(sorted(additional_ciks)), frozenset(discovered_ciks | curated_ciks)
 
 
 def resolve_registrant_filings(
@@ -439,8 +444,9 @@ def resolve_registrant_filings(
 
     With no register entry and no identity-discovered alias or CIK, behavior stays identical
     to `Company(ticker).get_filings(...)`. Identity may add same-CIK historical symbols for
-    discovery; a newly discovered CIK is additive for UNION forms and fails closed for SPLIT
-    forms until the register supplies an authoritative dated chain.
+    discovery; a newly discovered CIK is additive for UNION forms, while SPLIT forms list only
+    the roster CIK (and warn) until the register supplies an authoritative dated chain. With
+    identity, a listed filing whose CIK is outside the issuer lineage is dropped.
 
     UNION walks `Company(ticker)` PLUS every segment CIK and dedups on accession, with the
     ticker-resolved registrant FIRST so first-writer-wins preserves the provenance of every
@@ -469,10 +475,20 @@ def resolve_registrant_filings(
         raise ValueError("identity, symbol_tenure and roster_cik must be provided together")
     aliases: tuple[str, ...] = ()
     identity_ciks: tuple[str, ...] = ()
+    lineage_ciks: frozenset[str] | None = None
     if identity is not None and symbol_tenure is not None and roster_cik is not None:
-        aliases, identity_ciks = _identity_filing_scope(ticker, roster_cik, identity, symbol_tenure, entry, policy)
+        aliases, identity_ciks, lineage_ciks = _identity_filing_scope(ticker, roster_cik, identity, symbol_tenure, entry, policy)
+    foreign_ciks: set[str] = set()
 
     def _keep(f) -> pd.Timestamp | None:
+        # `Company(alias)` resolves a reused symbol to its CURRENT holder, so an alias walk can
+        # list another company's filings (ALB's `AB`, ITW's CIK 73124); drop them at the source.
+        filer = getattr(f, "cik", None)
+        if lineage_ciks is not None and filer is not None and (cik := _normalise_cik(filer)) not in lineage_ciks:
+            if cik not in foreign_ciks:
+                foreign_ciks.add(cik)
+                logger.warning("%s: dropped filing(s) from CIK %s, outside the issuer lineage (first: %s)", ticker, cik, f.accession_number)
+            return None
         if f.accession_number in done_accessions:
             if stats is not None:
                 skipped_existing.add(f.accession_number)

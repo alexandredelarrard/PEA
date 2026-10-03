@@ -1,9 +1,9 @@
 """Officer / director / 10%-owner transactions from the SEC quarterly Insider Transactions Data
 Sets (bulk TSV zips, Forms 3/4/5).
 
-SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS and DERIV_TRANS are mapped to the canonical string
-frame (`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame`, screened CIK-first, and
-upserted one row per (accession, table, SK); FOOTNOTES follow the kept accessions.
+SUBMISSION, (NON)DERIV_TRANS and every REPORTINGOWNER row are mapped to the canonical string frames
+(`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame`, screened CIK-first, and upserted
+one row per (accession, table, `row_sequence`); FOOTNOTES follow the kept accessions.
 
 Zips are cached and downloaded only when missing; a stored quarter is skipped unless the universe
 gained tickers or `reparse` is set, in which case cached zips are re-parsed.
@@ -40,7 +40,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
-    InsiderField,
+    OWNER_STRING_COLUMNS,
     build_insider_frame,
     empty_footnotes,
     filter_footnotes,
@@ -76,38 +76,38 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Pure parse: zip members -> canonical string frame                            #
 # --------------------------------------------------------------------------- #
-def _bulk_text(df: pd.DataFrame, field: InsiderField) -> pd.Series:
-    """One canonical field from its TSV column; a reporting owner without a relationship has no role."""
-    column = _col(df, field.bulk or "")
-    return column.fillna("") if field.kind == "role" else column
-
-
 def _member_strings(df: pd.DataFrame, scope: str) -> pd.DataFrame:
     """The canonical string columns of one member (`scope`), keyed on `accession_number`."""
     fields = [field for field in INSIDER_FIELDS if field.scope == scope and field.bulk]
-    return pd.DataFrame({"accession_number": _col(df, "ACCESSION_NUMBER"), **{field.name: _bulk_text(df, field) for field in fields}})
+    return pd.DataFrame({"accession_number": _col(df, "ACCESSION_NUMBER"), **{field.name: _col(df, field.bulk or "") for field in fields}})
 
 
 def _transaction_strings(df: pd.DataFrame | None, sk_col: str, security_type: str) -> pd.DataFrame:
-    """One string row per (non-)derivative transaction line."""
+    """One string row per keyed (non-)derivative transaction line. `row_sequence` is the rank of the
+    numeric SEC transaction id inside the accession's table, which is the filing's XML order;
+    a line without an id cannot be keyed and is dropped."""
     if df is None or df.empty or "ACCESSION_NUMBER" not in df.columns:
         return pd.DataFrame()
-    return _member_strings(df, "transaction").assign(security_type=security_type, transaction_sk=_col(df, sk_col))
+    sk = pd.to_numeric(_col(df, sk_col), errors="coerce")
+    df_lines = _member_strings(df, "transaction").assign(security_type=security_type, _sk=sk)[sk.notna()]
+    sequence = df_lines.groupby("accession_number")["_sk"].rank(method="first").astype("int64")
+    return df_lines.assign(row_sequence=sequence).drop(columns="_sk")
 
 
-def extract_bulk_strings(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
-    """SUBMISSION + REPORTINGOWNER (first owner per accession) + (NON)DERIV_TRANS -> canonical
-    string rows; rows without a `transaction_sk` cannot be keyed and are dropped."""
+def extract_bulk_strings(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """SUBMISSION + (NON)DERIV_TRANS -> transaction string rows, and REPORTINGOWNER -> one owner
+    string row per reporting owner of those accessions."""
+    empty = (pd.DataFrame(), pd.DataFrame(columns=OWNER_STRING_COLUMNS))
     if sub is None or sub.empty:
-        return pd.DataFrame()
+        return empty
     df_trans = pd.concat(
         [_transaction_strings(nonderiv, "NONDERIV_TRANS_SK", "nonderiv"), _transaction_strings(deriv, "DERIV_TRANS_SK", "deriv")], ignore_index=True
     )
     if df_trans.empty:
-        return pd.DataFrame()
-    df_owner = _member_strings(own, "owner").drop_duplicates("accession_number", keep="first")
-    df_str = df_trans.merge(_member_strings(sub, "filing"), on="accession_number", how="inner").merge(df_owner, on="accession_number", how="left")
-    return df_str.dropna(subset=["transaction_sk"])
+        return empty
+    df_str = df_trans.merge(_member_strings(sub, "filing"), on="accession_number", how="inner")
+    df_owners = _member_strings(own, "owner")
+    return df_str, df_owners[df_owners["accession_number"].isin(set(df_str["accession_number"]))].reset_index(drop=True)
 
 
 def _footnote_strings(notes: pd.DataFrame | None) -> pd.DataFrame:
@@ -128,15 +128,16 @@ def _accession_rows(df: pd.DataFrame, accessions: set[str]) -> pd.DataFrame:
 
 
 def _parse_quarter(
-    tables: tuple[pd.DataFrame, ...], quarter: str, universe: Sequence[str], identity: Identity
+    tables: tuple[pd.DataFrame, ...], quarter: str, universe: Sequence[str], identity: Identity, fetched_at: pd.Timestamp
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """One quarter's members -> (kept transactions, quarantine rows, footnotes of kept accessions).
-    Members are first cut to the accessions the screen can keep or quarantine."""
+    Members are first cut to the accessions the screen can keep or quarantine; rows are stamped
+    `source='zip'`, `quarter` and `fetched_at`."""
     sub, own, nonderiv, deriv, notes = tables
     accessions = screened_accessions(_member_strings(sub, "filing"), universe, identity)
-    df_str = extract_bulk_strings(*(_accession_rows(df, accessions) for df in (sub, own, nonderiv, deriv)))
-    df_built = build_insider_frame(df_str, value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS)
-    df_kept, df_quarantine = screen_insider_rows(df_built.assign(quarter=quarter), universe, identity)
+    df_str, df_owners = extract_bulk_strings(*(_accession_rows(df, accessions) for df in (sub, own, nonderiv, deriv)))
+    df_built = build_insider_frame(df_str, df_owners, date_formats=BULK_DATE_FORMATS)
+    df_kept, df_quarantine = screen_insider_rows(df_built.assign(source="zip", quarter=quarter, fetched_at=fetched_at), universe, identity)
     if df_kept.empty:
         return df_kept, df_quarantine, empty_footnotes()
     df_notes = filter_footnotes(_footnote_strings(notes), set(df_kept["accession_number"].dropna().unique()))
@@ -215,13 +216,14 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     pending = pending_periods(context, cache, Tables.insider_transactions, quarters, tickers, reparse=reparse, column="quarter")
 
     saved = notes_saved = quarantined = 0
+    fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter in tqdm(pending, desc="insider data sets"):
         url_template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
         path = ensure_zip(context, cache / f"{quarter}.zip", url_template.format(quarter=quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue
-        df_kept, df_quarantine, df_notes = _parse_quarter(tables, quarter, tickers, identity)
+        df_kept, df_quarantine, df_notes = _parse_quarter(tables, quarter, tickers, identity, fetched_at)
         if not df_quarantine.empty:
             quarantined += context.store.save(Tables.insider_transactions_quarantine, df_quarantine)
         if not df_kept.empty:

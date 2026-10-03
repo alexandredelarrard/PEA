@@ -1,37 +1,41 @@
-"""Shared insider Forms 3/4/5 contract for the quarterly bulk ZIP path and the live EDGAR XML path.
+"""Shared insider Forms 3/4/5 contract for the quarterly bulk ZIP path and the EDGAR XML path.
 
-Both paths extract the same canonical string frame (`INSIDER_FIELDS`), type it once with
-`build_insider_frame`, and screen it with `screen_insider_rows`. The bulk-vs-live differences
-are explicit arguments: `value_rule` (which `value_usd` source wins), `numeric_rule` (pandas
-`to_numeric` vs Python `float` after stripping `,` and `$`) and `date_formats`.
+Both paths extract the same two canonical string frames from `INSIDER_FIELDS`: one row per
+transaction line (keyed by `row_sequence`) and one row per reporting owner. `build_insider_frame`
+types them with one numeric parser, one value rule and one owner rule; only the date formats
+differ by source. `screen_insider_rows` then resolves each row CIK-first.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal, NamedTuple
 
-import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.common.identity import Identity
+from src.utils.string import pad_cik_series
 
 #: The `insider_transactions` column contract.
 INSIDER_COLUMNS = [
     "accession_number",
     "security_type",
-    "transaction_sk",
+    "row_sequence",
+    "source",
     "ticker",
     "issuer_cik",
     "issuer_name",
     "owner_cik",
     "owner_name",
+    "owner_ciks",
+    "n_reporting_owners",
     "is_director",
     "is_officer",
     "is_ten_pct_owner",
     "is_other",
     "officer_title",
     "document_type",
+    "original_submission_date",
     "transaction_date",
     "filing_date",
     "period_of_report",
@@ -56,6 +60,9 @@ INSIDER_COLUMNS = [
     "underlying_security_title",
     "underlying_shares",
     "underlying_value",
+    "footnote_ids",
+    "acceptance_datetime",
+    "fetched_at",
 ]
 FOOTNOTE_COLUMNS = ["accession_number", "footnote_id", "footnote_text"]
 #: Quarantine rows carry every `insider_transactions` column plus the verdict.
@@ -70,6 +77,12 @@ BULK_DATE_FORMATS = ("%d-%b-%Y", "ISO8601")
 LIVE_DATE_FORMATS = ("mixed",)
 #: Role flag -> regex matched in the lower-cased comma-joined relationship text.
 ROLE_PATTERNS = {"is_director": "director", "is_officer": "officer", "is_ten_pct_owner": "ten|10", "is_other": "other"}
+#: Primary-owner precedence: an owner ranks by its best role in this order; no role ranks last.
+ROLE_RANK = ("is_officer", "is_director", "is_ten_pct_owner", "is_other")
+#: Owner fields that describe the primary owner of an accession.
+PRIMARY_OWNER_COLUMNS = ["owner_cik", "owner_name", "officer_title"]
+#: Per-accession owner columns `build_insider_frame` attaches to every transaction row.
+OWNER_SUMMARY_COLUMNS = [*PRIMARY_OWNER_COLUMNS, "owner_ciks", "n_reporting_owners", *ROLE_PATTERNS]
 
 
 class InsiderField(NamedTuple):
@@ -82,7 +95,7 @@ class InsiderField(NamedTuple):
     xml: tuple[str, ...]
 
 
-#: The canonical string frame. XML paths are relative to the root (`filing`), the first
+#: The canonical string fields. XML paths are relative to the root (`filing`), each
 #: `reportingOwner` (`owner`), or one transaction node (`transaction`). `relationship` is the
 #: comma-joined role names (`Director,Officer,TenPercentOwner,Other`); `total_value` feeds `value_usd`.
 INSIDER_FIELDS = (
@@ -92,6 +105,7 @@ INSIDER_FIELDS = (
     InsiderField("document_type", "text", "filing", "DOCUMENT_TYPE", ("documentType",)),
     InsiderField("filing_date", "date", "filing", "FILING_DATE", ()),
     InsiderField("period_of_report", "date", "filing", "PERIOD_OF_REPORT", ("periodOfReport",)),
+    InsiderField("original_submission_date", "date", "filing", "DATE_OF_ORIG_SUB", ("dateOfOriginalSubmission",)),
     InsiderField("is_10b5_1", "flag", "filing", "AFF10B5ONE", ("aff10b5One",)),
     InsiderField("owner_cik", "text", "owner", "RPTOWNERCIK", ("reportingOwnerId/rptOwnerCik",)),
     InsiderField("owner_name", "text", "owner", "RPTOWNERNAME", ("reportingOwnerId/rptOwnerName",)),
@@ -124,8 +138,8 @@ INSIDER_FIELDS = (
     InsiderField("underlying_value", "number", "transaction", "UNDLYNG_SEC_VALUE", ("underlyingSecurity/underlyingSecurityValue",)),
 )
 
-ValueRule = Literal["shares_x_price_first", "stated_total_first"]
-NumericRule = Literal["to_numeric", "strip_currency_float"]
+#: The owner string frame: one row per reporting owner of an accession.
+OWNER_STRING_COLUMNS = ["accession_number", *(field.name for field in INSIDER_FIELDS if field.scope == "owner")]
 
 
 # --------------------------------------------------------------------------- #
@@ -141,11 +155,9 @@ def _python_float(value: object) -> float:
         return float("nan")
 
 
-def coerce_numeric(s: pd.Series, *, numeric_rule: NumericRule) -> pd.Series:
-    """Numbers from source text: pandas `to_numeric` (bulk TSV) or, after stripping `,` and `$`,
-    Python `float` per value (live XML; `to_numeric` rounds some long decimals differently)."""
-    if numeric_rule == "to_numeric":
-        return pd.to_numeric(s, errors="coerce")
+def parse_number(s: pd.Series) -> pd.Series:
+    """Numbers from SEC text: `,` and `$` stripped, then Python `float` per value; NaN when missing
+    or not a number."""
     text = s.astype("string").str.replace(",", "", regex=False).str.replace("$", "", regex=False)
     return pd.Series([_python_float(value) for value in text], index=s.index, dtype="float64")
 
@@ -170,53 +182,81 @@ def normalize_flag(s: pd.Series) -> pd.Series:
 
 
 def _role_flags(relationship: pd.Series) -> dict[str, pd.Series]:
-    """Role flags matched in the relationship text; NaN where the relationship is unknown."""
+    """Role flags 1.0/0.0 matched in the relationship text; an absent or blank relationship has no role."""
     text = relationship.astype("string").str.lower()
-    return {name: text.str.contains(pattern, na=False).astype(float).where(text.notna()) for name, pattern in ROLE_PATTERNS.items()}
+    return {name: text.str.contains(pattern, na=False).astype(float) for name, pattern in ROLE_PATTERNS.items()}
 
 
-def _value_usd(df: pd.DataFrame, value_rule: ValueRule) -> pd.Series:
-    """`value_usd`: shares x price filled by the stated total, or the stated total filled by a finite shares x price."""
-    product = df["shares"] * df["price_per_share"]
-    if value_rule == "shares_x_price_first":
-        return product.fillna(df["total_value"])
-    finite_product = product.where(np.isfinite(df["shares"]) & np.isfinite(df["price_per_share"]))
-    return df["total_value"].where(np.isfinite(df["total_value"]), finite_product)
+def _number_column(df: pd.DataFrame, name: str) -> pd.Series:
+    """Typed number column `name`, all NaN when the frame has none."""
+    return df[name] if name in df.columns else pd.Series(float("nan"), index=df.index, dtype="float64")
+
+
+def _value_usd(df: pd.DataFrame) -> pd.Series:
+    """`value_usd`: shares x price, filled by the stated total where either is missing."""
+    product = _number_column(df, "shares") * _number_column(df, "price_per_share")
+    return product.fillna(_number_column(df, "total_value"))
+
+
+# --------------------------------------------------------------------------- #
+# Owners                                                                        #
+# --------------------------------------------------------------------------- #
+def _owner_rank(df_roles: pd.DataFrame) -> pd.Series:
+    """Each owner's best role position in `ROLE_RANK`; `len(ROLE_RANK)` when it has none."""
+    rank = pd.Series(len(ROLE_RANK), index=df_roles.index, dtype="int64")
+    for position, name in reversed(list(enumerate(ROLE_RANK))):
+        rank = rank.mask(df_roles[name].eq(1.0), position)
+    return rank
+
+
+def owner_summary(df_owners: pd.DataFrame) -> pd.DataFrame:
+    """One row per accession from the owner string frame: the primary owner's CIK, name and title
+    (best role rank, then lowest numeric CIK, missing CIK last), `owner_ciks` (sorted unique 10-digit
+    CIKs joined by `,`), `n_reporting_owners` (its length) and each role flag OR'ed across owners."""
+    if df_owners.empty:
+        return pd.DataFrame(columns=["accession_number", *OWNER_SUMMARY_COLUMNS])
+    ciks = pad_cik_series(df_owners["owner_cik"])
+    df_owned = df_owners.assign(owner_cik=ciks.where(ciks != "", None), **_role_flags(df_owners["relationship"]))
+    df_ranked = df_owned.assign(_rank=_owner_rank(df_owned), _cik_number=pd.to_numeric(df_owned["owner_cik"], errors="coerce"))
+    df_primary = df_ranked.sort_values(["accession_number", "_rank", "_cik_number"], na_position="last", kind="mergesort").drop_duplicates(
+        "accession_number", keep="first"
+    )
+    df_ciks = df_owned.dropna(subset=["owner_cik"]).drop_duplicates(["accession_number", "owner_cik"]).sort_values(["accession_number", "owner_cik"])
+    joined = df_ciks.groupby("accession_number")["owner_cik"].agg(",".join).rename("owner_ciks")
+    counts = df_ciks.groupby("accession_number").size().rename("n_reporting_owners")
+    flags = df_owned.groupby("accession_number")[list(ROLE_PATTERNS)].max()
+    df_summary = df_primary.set_index("accession_number")[PRIMARY_OWNER_COLUMNS].join(joined).join(counts).join(flags)
+    df_summary["n_reporting_owners"] = df_summary["n_reporting_owners"].fillna(0).astype("int64")
+    return df_summary.reset_index()[["accession_number", *OWNER_SUMMARY_COLUMNS]]
 
 
 # --------------------------------------------------------------------------- #
 # Canonical frame                                                               #
 # --------------------------------------------------------------------------- #
-def _built_columns(columns: Iterable[str]) -> list[str]:
-    """Column names `build_insider_frame` returns for a string frame with `columns`."""
-    names = list(columns)
-    kept = [name for name in names if name not in ("relationship", "total_value")]
-    value = ["value_usd"] if "total_value" in names else []
-    roles = list(ROLE_PATTERNS) if "relationship" in names else []
-    return kept + value + roles
-
-
-def build_insider_frame(df_str: pd.DataFrame, *, value_rule: ValueRule, numeric_rule: NumericRule, date_formats: Sequence[str]) -> pd.DataFrame:
-    """Type a canonical string frame: numbers, dates, yes/no flags, upper-cased ticker, the four
-    role flags from `relationship`, and `value_usd`; the two helper columns are dropped."""
+def build_insider_frame(df_str: pd.DataFrame, df_owners: pd.DataFrame, *, date_formats: Sequence[str]) -> pd.DataFrame:
+    """Type the transaction string frame (numbers, dates, yes/no flags, ticker, `value_usd`) and
+    attach `owner_summary(df_owners)` to every row of its accession. An accession without an owner
+    row gets role flags 0, `n_reporting_owners` 0 and NULL owner fields; `total_value` is dropped."""
     if df_str.empty:
-        return pd.DataFrame(columns=_built_columns(df_str.columns))
-    fields = [field for field in INSIDER_FIELDS if field.name in df_str.columns]
-    typed = {field.name: _typed(df_str[field.name], field.kind, numeric_rule, date_formats) for field in fields if field.kind not in ("text", "role")}
-    df_built = df_str.assign(**typed)
-    df_built = df_built.assign(value_usd=_value_usd(df_built, value_rule), **_role_flags(df_built["relationship"]))
-    return df_built.drop(columns=["relationship", "total_value"])
+        return pd.DataFrame(columns=[*(name for name in df_str.columns if name != "total_value"), "value_usd", *OWNER_SUMMARY_COLUMNS])
+    fields = [field for field in INSIDER_FIELDS if field.name in df_str.columns and field.kind != "text"]
+    df_typed = df_str.assign(**{field.name: _typed(df_str[field.name], field.kind, date_formats) for field in fields})
+    df_typed = df_typed.assign(value_usd=_value_usd(df_typed)).drop(columns=["total_value"], errors="ignore")
+    df_built = df_typed.merge(owner_summary(df_owners), on="accession_number", how="left")
+    no_owner = {name: df_built[name].fillna(0.0).astype("float64") for name in ROLE_PATTERNS}
+    return df_built.assign(n_reporting_owners=df_built["n_reporting_owners"].fillna(0).astype("int64"), **no_owner)
 
 
 def _symbol_text(s: pd.Series) -> pd.Series:
-    """A claimed trading symbol as typed: stripped and upper-cased."""
-    return s.str.strip().str.upper()
+    """A claimed trading symbol: stripped and upper-cased; blank is missing."""
+    text = s.astype("string").str.strip().str.upper()
+    return text.mask(text.eq("").fillna(False))
 
 
-def _typed(s: pd.Series, kind: str, numeric_rule: NumericRule, date_formats: Sequence[str]) -> pd.Series:
+def _typed(s: pd.Series, kind: str, date_formats: Sequence[str]) -> pd.Series:
     """One string column typed by its field kind."""
     if kind == "number":
-        return coerce_numeric(s, numeric_rule=numeric_rule)
+        return parse_number(s)
     if kind == "date":
         return parse_sec_date(s, formats=date_formats)
     if kind == "flag":

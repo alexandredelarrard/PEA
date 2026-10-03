@@ -30,6 +30,7 @@ from src.data_extract.utils.common.sec_atom import (
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     LIVE_DATE_FORMATS,
+    OWNER_STRING_COLUMNS,
     build_insider_frame,
     empty_footnotes,
     filter_footnotes,
@@ -39,15 +40,8 @@ from src.data_extract.utils.institutionals.insider_edgar_parser import extract_x
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
-_LIVE_COLUMNS = (
-    "accession_number",
-    "source_row_sequence",
-    *(column for column in INSIDER_COLUMNS if column not in ("accession_number", "transaction_sk", "filing_date", "quarter")),
-    "footnote_ids",
-    "filing_date",
-    "acceptance_datetime",
-    "fetched_at",
-)
+#: EDGAR rows carry the whole contract except `quarter`, which only a zip ingest sets.
+_EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
 _LOG = logging.getLogger(__name__)
 
 
@@ -158,22 +152,24 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
-def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Ownership filings -> (canonical string transactions, footnotes, filing metadata), keyed on accession."""
+def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (transaction strings, owner strings, footnotes, filing metadata), keyed on accession."""
     transaction_frames: list[pd.DataFrame] = []
+    owner_frames: list[pd.DataFrame] = []
     footnote_frames: list[pd.DataFrame] = []
     metadata: list[dict[str, object]] = []
     for filing in filings:
         xml = filing.xml()
         if not xml:
             raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
-        df_str, df_notes = extract_xml_strings(xml)
+        accession = str(filing.accession_number)
+        df_str, df_owners, df_notes = extract_xml_strings(xml, accession)
         if df_str.empty:
             continue
-        accession = str(filing.accession_number)
-        transaction_frames.append(df_str.assign(accession_number=accession))
+        transaction_frames.append(df_str)
+        owner_frames.append(df_owners)
         if not df_notes.empty:
-            footnote_frames.append(df_notes.assign(accession_number=accession))
+            footnote_frames.append(df_notes)
         metadata.append(
             {
                 "accession_number": accession,
@@ -182,24 +178,26 @@ def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame,
             }
         )
     df_str = pd.concat(transaction_frames, ignore_index=True) if transaction_frames else pd.DataFrame()
+    df_owners = pd.concat(owner_frames, ignore_index=True) if owner_frames else pd.DataFrame(columns=OWNER_STRING_COLUMNS)
     df_notes = pd.concat(footnote_frames, ignore_index=True) if footnote_frames else empty_footnotes()
-    return df_str, df_notes, pd.DataFrame(metadata)
+    return df_str, df_owners, df_notes, pd.DataFrame(metadata)
 
 
-def _screen_live_rows(df_str: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Type the string rows, attach filing metadata and an `edgar:` row key, then screen into (kept, quarantine)."""
-    df_built = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS)
+def _screen_live_rows(
+    df_str: pd.DataFrame, df_owners: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Type the string rows, attach filing metadata and `source='edgar'`, then screen into (kept, quarantine)."""
+    df_built = build_insider_frame(df_str, df_owners, date_formats=LIVE_DATE_FORMATS)
     df_built = df_built.merge(df_meta.drop_duplicates("accession_number", keep="last"), on="accession_number", how="left")
-    df_built["transaction_sk"] = "edgar:" + df_built["security_type"].astype(str) + ":" + df_built["source_row_sequence"].astype(str)
-    return screen_insider_rows(df_built, universe, identity)
+    return screen_insider_rows(df_built.assign(source="edgar"), universe, identity)
 
 
 def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Ownership filings -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
-    df_str, df_notes, df_meta = _ticker_strings(filings)
+    df_str, df_owners, df_notes, df_meta = _ticker_strings(filings)
     if df_str.empty:
         return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
-    df_kept, df_quarantine = _screen_live_rows(df_str, df_meta, universe, identity)
+    df_kept, df_quarantine = _screen_live_rows(df_str, df_owners, df_meta, universe, identity)
     df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"])) if not df_kept.empty else empty_footnotes()
     return df_kept, df_kept_notes, df_quarantine
 
@@ -226,11 +224,11 @@ def build_ticker_insider_edgar(
     )
     df_kept, df_notes, df_quarantine = live_insider_frames(filings, universe=universe, identity=identity)
 
-    live = pd.DataFrame(columns=_LIVE_COLUMNS)
+    live = pd.DataFrame(columns=_EDGAR_COLUMNS)
     if not df_kept.empty:
         df_live = df_kept.assign(fetched_at=fetched_at)
-        live = df_live[[column for column in _LIVE_COLUMNS if column in df_live.columns]].drop_duplicates(
-            subset=list(Tables.insider_transactions_live.pk), keep="last"
+        live = df_live[[column for column in _EDGAR_COLUMNS if column in df_live.columns]].drop_duplicates(
+            subset=list(Tables.insider_transactions.pk), keep="last"
         )
     coverage = pd.DataFrame([{"ticker": ticker, "complete_through": scan_through, "updated_at": fetched_at}])
     return {

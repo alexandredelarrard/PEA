@@ -104,7 +104,7 @@ def _rows(pairs) -> pd.DataFrame:
             {
                 "accession_number": f"a{i}",
                 "security_type": "nonderiv",
-                "transaction_sk": str(i),
+                "row_sequence": i + 1,
                 "ticker": sym,
                 "issuer_cik": cik,
                 "issuer_name": f"CO {i}",
@@ -235,7 +235,7 @@ def test_the_partition_is_disjoint_and_loses_no_in_scope_row(identity):
     frame = _rows(pairs)
     kept, quarantine = screen_insider_rows(frame, UNIVERSE, identity)
 
-    keys = ["accession_number", "security_type", "transaction_sk"]
+    keys = ["accession_number", "security_type", "row_sequence"]
     kept_keys = set(map(tuple, kept[keys].to_numpy()))
     rej_keys = set(map(tuple, quarantine[keys].to_numpy()))
     assert not (kept_keys & rej_keys), "a row cannot be both kept and quarantined"
@@ -441,14 +441,10 @@ def test_the_accession_prefilter_drops_only_accessions_the_row_screen_drops(iden
         tables = ins._read_tables(INSIDER_CACHE / f"{quarter}.zip")
         assert tables is not None
         sub, own, nonderiv, deriv, _ = tables
-        df_built = build_insider_frame(
-            ins.extract_bulk_strings(sub, own, nonderiv, deriv),
-            value_rule="shares_x_price_first",
-            numeric_rule="to_numeric",
-            date_formats=BULK_DATE_FORMATS,
-        )
-        full_kept, full_quarantine = screen_insider_rows(df_built.assign(quarter=quarter), UNIVERSE, identity)
-        kept, quarantine, _ = ins._parse_quarter(tables, quarter, UNIVERSE, identity)
+        fetched_at = pd.Timestamp("2026-10-03 12:00")
+        df_built = build_insider_frame(*ins.extract_bulk_strings(sub, own, nonderiv, deriv), date_formats=BULK_DATE_FORMATS)
+        full_kept, full_quarantine = screen_insider_rows(df_built.assign(source="zip", quarter=quarter, fetched_at=fetched_at), UNIVERSE, identity)
+        kept, quarantine, _ = ins._parse_quarter(tables, quarter, UNIVERSE, identity, fetched_at)
         accessions = screened_accessions(ins._member_strings(sub, "filing"), UNIVERSE, identity)
 
         assert set(full_kept["accession_number"]) | set(full_quarantine["accession_number"]) <= accessions

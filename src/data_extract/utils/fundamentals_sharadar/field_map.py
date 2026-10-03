@@ -182,14 +182,18 @@ def load_corrections(config_dir: str = DEFAULT_CONFIG_DIR) -> dict[str, dict[str
     register = _entries(raw)
     for field, by_ticker in register.items():
         for ticker, entry in by_ticker.items():
-            where = f"{path}: {field}/{ticker}"
-            action = entry.get("action")
-            if action not in SHARADAR_CORRECTION_ACTIONS:
-                raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
-            for key in ("reason", "evidence"):
-                if not str(entry.get(key, "")).strip():
-                    raise RuntimeError(f"{where} has no `{key}`. Every correction states what was measured or which filing was read.")
+            _check_correction(f"{path}: {field}/{ticker}", entry)
     return register
+
+
+def _check_correction(where: str, entry: dict) -> None:
+    """Raise unless one register entry uses a known action and states its `reason` and `evidence`."""
+    action = entry.get("action")
+    if action not in SHARADAR_CORRECTION_ACTIONS:
+        raise RuntimeError(f"{where} has action {action!r}; the vocabulary is closed to {sorted(SHARADAR_CORRECTION_ACTIONS)}")
+    for key in ("reason", "evidence"):
+        if not str(entry.get(key, "")).strip():
+            raise RuntimeError(f"{where} has no `{key}`. Every correction states what was measured or which filing was read.")
 
 
 def _basis_for(name: str, source: str, catalogue: Catalogue) -> str:
@@ -237,19 +241,23 @@ def _spec_from(name: str, entry: dict, *, catalogue, path: Path, basis: str | No
     return ColumnSpec(name=name, kind=kind, basis=basis)
 
 
+def _expected_formula(op: str, inputs: tuple[str, ...]) -> str | None:
+    """The prose formula `op` computes over `inputs`, or None when the arity is wrong for `op`."""
+    if op == "quarter":
+        return f"the DISCRETE quarter's {inputs[0]}" if len(inputs) == 1 else None
+    if op == "sum":
+        return " + ".join(inputs)
+    if op == "sum_optional":
+        # the formula must show which legs are optional, or it reads like `sum`
+        return " + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]]) if len(inputs) >= 2 else None
+    if op == "ratio":
+        return " / ".join(inputs) if len(inputs) == 2 else None
+    return f"{inputs[0]} / {inputs[1]} - 1" if len(inputs) == 2 else None
+
+
 def _assert_formula_matches(name: str, op: str, inputs: tuple[str, ...], formula: str | None, path: Path) -> None:
     """Raise unless the prose `formula` equals what `op` + `inputs` actually compute."""
-    if op == "quarter":
-        expected = f"the DISCRETE quarter's {inputs[0]}" if len(inputs) == 1 else None
-    elif op == "sum":
-        expected = " + ".join(inputs)
-    elif op == "sum_optional":
-        # the formula must show which legs are optional, or it reads like `sum`
-        expected = " + ".join([inputs[0]] + [f"coalesce({i}, 0)" for i in inputs[1:]]) if len(inputs) >= 2 else None
-    elif op == "ratio":
-        expected = " / ".join(inputs) if len(inputs) == 2 else None
-    else:
-        expected = f"{inputs[0]} / {inputs[1]} - 1" if len(inputs) == 2 else None
+    expected = _expected_formula(op, inputs)
     if expected is None:
         raise RuntimeError(f"{path}: {name} op {op!r} has the wrong arity for inputs {inputs}")
     if formula != expected:
@@ -368,19 +376,24 @@ def apply_corrections(frame: pd.DataFrame, corrections: dict[str, dict[str, dict
         for ticker, entry in by_ticker.items():
             rows = out["ticker"] == ticker
             action = entry["action"]
-            if action == "null":
-                hit = rows & out[field].notna()
-            elif action == "null_if_positive":
-                hit = rows & (out[field] > 0)
-            else:
-                hit = rows & (out[field] < 0)
+            hit = _correction_hit(out[field], rows, action)
             count = int(hit.sum())
-            if count:
-                out.loc[hit, field] = np.nan
-                if report is not None:
-                    key = f"{field}/{ticker}:{action}"
-                    report.corrected[key] = report.corrected.get(key, 0) + count
+            if not count:
+                continue
+            out.loc[hit, field] = np.nan
+            if report is not None:
+                key = f"{field}/{ticker}:{action}"
+                report.corrected[key] = report.corrected.get(key, 0) + count
     return out
+
+
+def _correction_hit(column: pd.Series, rows: pd.Series, action: str) -> pd.Series:
+    """The cells of `column` inside `rows` that a correction `action` nulls."""
+    if action == "null":
+        return rows & column.notna()
+    if action == "null_if_positive":
+        return rows & (column > 0)
+    return rows & (column < 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -521,6 +534,12 @@ def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[floa
     return yf_value, None
 
 
+def _reject_yfinance_only(row: pd.Series, report: TranslationReport | None) -> None:
+    """Record an uncorroborated, non-split-shaped yfinance event as rejected on `report`, if any."""
+    if report is not None:
+        report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
+
+
 def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: TranslationReport | None = None) -> pd.DataFrame:
     """Merge two cleaned split lists into one, sorted by `(ticker, date)`.
 
@@ -545,8 +564,7 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Tra
         elif _is_split_shaped(value):
             kept_yf += 1
         else:
-            if report is not None:
-                report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
+            _reject_yfinance_only(row, report)
             continue
         events.append({"ticker": row["ticker"], "date": row["date"], "value": value})
 

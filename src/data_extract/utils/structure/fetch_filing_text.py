@@ -114,16 +114,18 @@ def _filing_sections(filing) -> dict[str, str]:
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
     missing = needed - sections.keys()
-    if missing:
-        try:
-            text = filing.text()
-        except Exception:  # noqa: BLE001 -- best-effort only
-            text = None
-        if text:
-            fallback = extract_item_sections(text, form)
-            for k in missing:
-                if k in fallback:
-                    sections[k] = fallback[k]
+    if not missing:
+        return sections
+    try:
+        text = filing.text()
+    except Exception:  # noqa: BLE001 -- best-effort only
+        text = None
+    if not text:
+        return sections
+    fallback = extract_item_sections(text, form)
+    for k in missing:
+        if k in fallback:
+            sections[k] = fallback[k]
     return sections
 
 

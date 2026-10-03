@@ -469,7 +469,7 @@ def issuer_ciks(
     if entry is not None:
         ciks.update(entry.all_ciks())
     if identity is not None:
-        ciks.update(identity.ciks_for(identity.universe_entity(ticker)))
+        ciks.update(identity.ciks_by_entity.get(identity.universe_entity(ticker), frozenset()))
     return frozenset(c for c in ciks if c)
 
 

@@ -516,7 +516,7 @@ def test_cli_still_dispatches_explicit_full_replay(monkeypatch):
     calls = []
     context = SimpleNamespace()
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    monkeypatch.setattr(cli_mod, "_ctx", lambda path: (config, context))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(
         cli_mod,

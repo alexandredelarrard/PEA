@@ -666,6 +666,33 @@ def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
     return out.sort_values("filing_date")
 
 
+def _companyfacts_rows(concept: str, payload: dict, field: str) -> list[dict]:
+    """One `fundamentals_facts`-shaped row per companyfacts entry of `concept`, across all its units."""
+    return [
+        {
+            "ticker": "FIXTURE",
+            "accession_number": f"{concept}-{unit}-{i}",
+            "field": field,
+            "fiscal_year": pd.Timestamp(entry["end"]).year,
+            "fiscal_period": entry.get("fp", "NA"),
+            "form": entry.get("form", "10-Q"),
+            "filing_date": entry.get("filed"),
+            "is_amendment": False,
+            "period_of_report": entry["end"],
+            "regime": None,
+            "period_start": entry.get("start"),
+            "period_end": entry["end"],
+            "value": entry.get("val"),
+            "unit": unit,
+            "source_concept": concept,
+            "dc_code": None,
+            "adjustment": None,
+        }
+        for unit, entries in (payload.get("units") or {}).items()
+        for i, entry in enumerate(entries)
+    ]
+
+
 def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFrame:
     """A `fundamentals_facts`-shaped frame from a raw `companyfacts` mapping, for synthetic fixtures ONLY.
 
@@ -682,31 +709,8 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
     for concepts in (blob.get("facts") or {}).values():
         for concept, payload in concepts.items():
             field = by_concept.get(concept.split(":")[-1])
-            if field is None:
-                continue
-            for unit, entries in (payload.get("units") or {}).items():
-                for i, entry in enumerate(entries):
-                    rows.append(
-                        {
-                            "ticker": "FIXTURE",
-                            "accession_number": f"{concept}-{unit}-{i}",
-                            "field": field,
-                            "fiscal_year": pd.Timestamp(entry["end"]).year,
-                            "fiscal_period": entry.get("fp", "NA"),
-                            "form": entry.get("form", "10-Q"),
-                            "filing_date": entry.get("filed"),
-                            "is_amendment": False,
-                            "period_of_report": entry["end"],
-                            "regime": None,
-                            "period_start": entry.get("start"),
-                            "period_end": entry["end"],
-                            "value": entry.get("val"),
-                            "unit": unit,
-                            "source_concept": concept,
-                            "dc_code": None,
-                            "adjustment": None,
-                        }
-                    )
+            if field is not None:
+                rows.extend(_companyfacts_rows(concept, payload, field))
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
@@ -775,6 +779,30 @@ def _keyed_by_as_of(frame: pd.DataFrame) -> pd.DataFrame:
     return out.set_index("as_of").sort_index()
 
 
+def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.DataFrame, codes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The rebuilt `(history, codes)` rows whose `as_of` is not stored yet.
+
+    Raises ValueError, after logging the diff, if a stored row would change (history is append-only).
+    """
+    drift = diff_against_stored(stored, history)
+    if not drift.empty:
+        context.log.error(
+            "history: %s would CHANGE %d already-published cell(s) "
+            "across %d row(s) -- refusing to overwrite. Re-run with "
+            "--rebuild-history to accept:\n%s",
+            ticker,
+            len(drift),
+            drift["as_of"].nunique(),
+            drift.head(20).to_string(),
+        )
+        raise ValueError(
+            f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would change; history is append-only (pass --rebuild-history to rebuild)"
+        )
+    known = set(pd.to_datetime(stored["as_of"]))
+    new = ~pd.to_datetime(history["as_of"]).isin(known)
+    return history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
+
+
 def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
@@ -809,24 +837,7 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
                 deleted,
             )
         elif stored is not None:
-            drift = diff_against_stored(stored, history)
-            if not drift.empty:
-                context.log.error(
-                    "history: %s would CHANGE %d already-published cell(s) "
-                    "across %d row(s) -- refusing to overwrite. Re-run with "
-                    "--rebuild-history to accept:\n%s",
-                    ticker,
-                    len(drift),
-                    drift["as_of"].nunique(),
-                    drift.head(20).to_string(),
-                )
-                raise ValueError(
-                    f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would "
-                    "change; history is append-only (pass --rebuild-history to rebuild)"
-                )
-            known = set(pd.to_datetime(stored["as_of"]))
-            new = ~pd.to_datetime(history["as_of"]).isin(known)
-            history, codes = history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
+            history, codes = _unpublished_events(context, ticker, stored, history, codes)
         if history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
             continue

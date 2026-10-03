@@ -93,6 +93,25 @@ def fetch_sharadar_tickers(context: Context) -> None:
 # --------------------------------------------------------------------------- #
 # 2. fundamentals (SF1)                                                        #
 # --------------------------------------------------------------------------- #
+def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[pd.DataFrame]:
+    """The non-empty SF1 pages of `symbol` since `since`, one request per dimension; raises `NotEntitledError`."""
+    frames: list[pd.DataFrame] = []
+    for dimension in SHARADAR_DIMENSIONS:
+        page = sharadar_get(
+            context,
+            "fundamentals",
+            expect_columns=SHARADAR_SF1_COLUMNS,
+            ticker=symbol,
+            dimension=dimension,
+            sort="date.asc",
+            **cast(dict[str, Any], {"date.gte": since}),
+        )
+        if page is not None and not page.empty:
+            frames.append(page)
+        sleep_pace(pace, SHARADAR_BASE_URL)
+    return frames
+
+
 def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_history: int, full: bool = False) -> None:
     """SF1 for `tickers` x `SHARADAR_DIMENSIONS` -> `fundamentals_sharadar`, resumed per ticker.
 
@@ -133,21 +152,8 @@ def fetch_sharadar_fundamentals(context: Context, tickers: list[str], *, years_h
             continue
 
         since = _since(resume.get(ticker), years_history, full)
-        frames: list[pd.DataFrame] = []
         try:
-            for dimension in SHARADAR_DIMENSIONS:
-                page = sharadar_get(
-                    context,
-                    "fundamentals",
-                    expect_columns=SHARADAR_SF1_COLUMNS,
-                    ticker=symbol,
-                    dimension=dimension,
-                    sort="date.asc",
-                    **cast(dict[str, Any], {"date.gte": since}),
-                )
-                if page is not None and not page.empty:
-                    frames.append(page)
-                sleep_pace(pace, SHARADAR_BASE_URL)
+            frames = _sf1_pages(context, symbol, since, pace)
         except NotEntitledError:
             denied.append(ticker)
             continue

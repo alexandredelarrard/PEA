@@ -58,6 +58,11 @@ def _openfigi_request(cusips: list[str], api_key: str | None) -> list[dict]:
     return r.json()
 
 
+def _mapped_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Real mappings only (drop the recorded misses) -> feeds the ticker merge."""
+    return df[df["ticker"].notna() & (df["ticker"].astype("string").str.strip() != "")]
+
+
 def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6.0) -> pd.DataFrame:
     """Return the mapped [cusip, ticker] rows, looking up only CUSIPs absent from the cache.
     Responded batches are persisted (misses as NULL); failed batches are left to retry."""
@@ -80,10 +85,6 @@ def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6
         if stale:
             context.store.save(Tables.cusip_ticker_map, overrides)  # repair the cached misses
             logger.info(f"CUSIP overrides: {len(overrides)} curated identifiers applied ({len(stale)} were unmapped in the cache, e.g. {stale[:5]})")
-
-    def _mapped_only(df: pd.DataFrame) -> pd.DataFrame:
-        """Real mappings only (drop the recorded misses) -> feeds the ticker merge."""
-        return df[df["ticker"].notna() & (df["ticker"].astype("string").str.strip() != "")]
 
     known = set(cached["cusip"])
     todo = sorted({n for c in cusips if (n := normalize_cusip(c)) and n not in known})

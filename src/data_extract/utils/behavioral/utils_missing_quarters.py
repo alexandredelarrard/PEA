@@ -163,10 +163,10 @@ def _missing_for(
     return required - have
 
 
-def sort_quarters(quarters) -> list[str]:
-    """Quarter labels oldest-first. Malformed labels sort first rather than raising, so a
-    stray value can never abort a whole run."""
-    return sorted(quarters, key=lambda q: _quarter_index(*(_parse_quarter(q) or (0, 1))))
+def _quarter_sort_key(quarter: str) -> int:
+    """Sort key putting quarter labels oldest-first. A malformed label sorts first rather than
+    raising, so a stray value can never abort a whole run."""
+    return _quarter_index(*(_parse_quarter(quarter) or (0, 1)))
 
 
 def remaining_after(missing: dict[str, list[str]], filled: dict[str, set[str]] | None) -> dict[str, list[str]]:
@@ -177,7 +177,7 @@ def remaining_after(missing: dict[str, list[str]], filled: dict[str, set[str]] |
     for ticker, quarters in missing.items():
         left = set(quarters) - set(filled.get(ticker, ()))
         if left:
-            out[ticker] = sort_quarters(left)
+            out[ticker] = sorted(left, key=_quarter_sort_key)
     return out
 
 
@@ -212,5 +212,5 @@ def missing_quarters_by_ticker(
     for tk in universe:
         miss = _missing_for(tk, hf_latest, floor_idx, end_idx, cache, have_db, malformed_db, released)
         if miss:
-            out[tk] = sort_quarters(miss)
+            out[tk] = sorted(miss, key=_quarter_sort_key)
     return out

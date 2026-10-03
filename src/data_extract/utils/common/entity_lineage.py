@@ -80,11 +80,8 @@ class _Union:
     parent: dict[str, str] = field(default_factory=dict)
     blocked: list[tuple[str, str, str, float | None]] = field(default_factory=list)
 
-    def add(self, cik: str) -> None:
-        self.parent.setdefault(cik, cik)
-
     def find(self, cik: str) -> str:
-        self.add(cik)
+        self.parent.setdefault(cik, cik)
         root = cik
         while self.parent[root] != root:
             root = self.parent[root]
@@ -327,7 +324,7 @@ def derive_entity_lineage(
     roster_ciks = frozenset(roster_cik.values())
     union = _Union(roster_ciks=roster_ciks)
     for cik in candidates:
-        union.add(cik)
+        union.parent.setdefault(cik, cik)
     provenance = _Provenance()
     _apply_register(union, provenance, load_registrants(config_dir))
     _apply_manual(union, provenance, load_manual_lineage(config_dir))
@@ -355,7 +352,7 @@ def _apply_register(union: _Union, provenance: _Provenance, registrants: Mapping
     for ticker, entry in sorted(registrants.items()):
         ciks = list(entry.all_ciks())
         for cik in ciks:
-            union.add(cik)
+            union.parent.setdefault(cik, cik)
         for other in ciks[1:]:
             union.union(ciks[0], other, source=f"register[{ticker}]")
         for segment in entry.segments:
@@ -368,7 +365,7 @@ def _apply_manual(union: _Union, provenance: _Provenance, manual: Mapping[str, d
     for key, entry in sorted(manual.items()):
         same, own = entry["same_entity"], entry["own_entity"]
         for cik in same + own:
-            union.add(cik)
+            union.parent.setdefault(cik, cik)
             provenance.curated.add(cik)
             provenance.claim(cik, "manual", None, f"{key}: {entry['evidence']}")
         for other in same[1:]:

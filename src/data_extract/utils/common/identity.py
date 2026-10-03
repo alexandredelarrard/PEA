@@ -149,7 +149,7 @@ class Identity:
     redundant_symbols: frozenset[str]
     #: Raw symbol -> observed issuer CIKs, retained for filing-scope discovery.
     ciks_by_symbol: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    #: entity_id -> its stored CIKs (the inverse of `entity_by_cik`).
+    #: entity_id -> its stored CIKs (the inverse of `entity_by_cik`); a singleton entity has no key.
     ciks_by_entity: Mapping[str, frozenset[str]] = field(default_factory=dict)
     #: entity_id -> sorted (normalised symbol, padded CIK) pairs from `ciks_by_symbol`.
     scope_pairs_by_entity: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
@@ -159,10 +159,6 @@ class Identity:
     def entity_of(self, cik) -> str:
         """The entity a CIK belongs to. A CIK with no stored row IS its own entity."""
         return entity_or_singleton(self.entity_by_cik, pad_cik(cik))
-
-    def ciks_for(self, entity_id: str) -> frozenset[str]:
-        """Every stored CIK on an entity; empty for a singleton entity, whose CIK is its id minus `"E"`."""
-        return self.ciks_by_entity.get(entity_id, frozenset())
 
     def universe_entity(self, ticker: str) -> str:
         """The entity of a universe ticker via its roster CIK; raises `UnknownUniverseTickerError` rather than returning None."""
@@ -184,7 +180,7 @@ class Identity:
             ticker=key,
             entity=entity,
             roster_cik=roster_cik,
-            ciks=tuple(sorted(self.ciks_for(entity) | {roster_cik} | {cik for _, cik in pairs})),
+            ciks=tuple(sorted(self.ciks_by_entity.get(entity, frozenset()) | {roster_cik} | {cik for _, cik in pairs})),
             symbols=tuple(sorted({key} | {symbol for symbol, _ in pairs})),
             aliases=tuple(sorted({symbol for symbol, cik in pairs if cik == roster_cik and symbol and symbol != key})),
         )

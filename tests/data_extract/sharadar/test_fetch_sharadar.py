@@ -6,6 +6,9 @@ and the REAL database; only the dtype test gets a synthetic known-truth fixture,
 cannot verify "a column the first ticker never populates still becomes float64" without
 constructing a first ticker that never populates it.
 
+The tests that call the Sharadar API or write the live tables are `@pytest.mark.live` and
+skip unless PEA_LIVE_TESTS=1; the read-only DB checks always run.
+
 Every test prints a sanity-check conclusion.
 """
 
@@ -145,6 +148,7 @@ def test_share_class_symbols_map_both_ways_and_nothing_else_moves():
     print("  NOT rewritten (a dot that is not a share class): EVN.AX, MUV2.MI, TECHM.NS, NFTA.TA, OXY.WS, AAC.U1, TAP.A1. Validated.")
 
 
+@pytest.mark.live  # live Sharadar GET
 def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
     """THE REASON THE DEFECT WAS SILENT, pinned against the live feed.
 
@@ -170,6 +174,7 @@ def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
 # --------------------------------------------------------------------------- #
 # 2. The response header IS the contract (real call)                           #
 # --------------------------------------------------------------------------- #
+@pytest.mark.live  # live Sharadar GET
 def test_response_header_matches_contract(context):
     """`fields=` drops an unavailable field SILENTLY -- a typo yields a missing column and no
     warning. So the header is validated against `SHARADAR_SF1_COLUMNS` on every response, and
@@ -245,6 +250,7 @@ def _rows_for(context, ticker: str) -> int:
     return 0 if frame is None else len(frame)
 
 
+@pytest.mark.live  # live Sharadar GETs + upserts into live sharadar_tickers / fundamentals_sharadar
 def test_resume_is_incremental(context):
     """The second run must write nothing and must never ask for a date at or before the
     stored max -- that is the whole point of resuming from `max_date_by` rather than

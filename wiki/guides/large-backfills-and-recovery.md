@@ -93,7 +93,7 @@ Choose the narrowest repair:
 
 A ticker with no stored accessions may not self-heal through an ordinary incremental run. Identify genuinely empty tickers explicitly, then force only that scope.
 
-Employee repair is independent of facts and SEC-history replay. Full employee mode retries prior `no_headcount`, `rejected_outlier`, and `pending_regime` outcomes, skips accessions already saved, and seeds continuity from stored headcount history. Retrieval or body-read failures remain retryable because they do not receive a terminal manifest outcome.
+Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (count or NULL) and let the next run read them; to pin a value by hand, add the accession to `configs/sec/employees_manual_roster.json`. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run.
 
 ## Applying a fundamentals schema change
 

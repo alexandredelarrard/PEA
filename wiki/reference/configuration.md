@@ -42,7 +42,8 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 
 - `registrant_cutover.json`: dated legal-filer chains;
 - `entity_lineage_manual.json`: CIK-to-economic-entity adjudication;
-- `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals.
+- `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals;
+- `employees_manual_roster.json`: per-accession employee headcount decisions (count or null) that replace the LLM for a filing with no table row.
 
 Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register.
 

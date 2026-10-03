@@ -20,7 +20,7 @@ tags:
 - Keep completed per-ticker work durable, but fail completeness-sensitive SEC walks when any requested ticker fails so Airflow retries the source.
 - Gate aggregation on each schema-declared table's maximum publication date and cadence tolerance.
 - Maintain shared EDGAR, identity, registrant, lineage, pacing, and manifest plumbing, including per-ticker identity-scope fingerprints.
-- Extract employee headcount through an independent annual-filing walk with accession-level outcomes that are all final (`saved`, `superseded`, `no_headcount`, `ambiguous`).
+- Extract employee headcount through an independent annual-filing walk where a table row (count or NULL) marks a filing decided and `configs/sec/employees_manual_roster.json` replaces the LLM for the accessions it lists.
 
 ## Public API / entry points
 

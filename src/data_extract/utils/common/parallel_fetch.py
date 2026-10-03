@@ -1,13 +1,8 @@
-"""
-parallel_fetch.py (src/data_extract/utils/common/parallel_fetch.py)
----------------------------------------------------------------------
-Bounded thread pool for the per-entity EDGAR walks. Each walk is network I/O spaced by
-edgartools' shared, thread-safe rate limiter (~9 req/sec globally), so several entities in
-flight keep every request under SEC's cap while actually using it; a sequential walk has one
-request in flight and is latency-bound. Writers call `context.store.save` directly: the store
-serializes the CREATE of a cold table.
+"""Bounded thread pool for the per-entity EDGAR walks.
 
-Does NOT apply to `fetch_def14a_llm.py`, which is bound by OpenAI's rate limits and cost.
+Requests are spaced by edgartools' shared, thread-safe per-process rate limiter, which keeps one
+process under SEC's 10 req/s cap; run one EDGAR walk (process) at a time. Workers save through
+`context.store.save`, which serializes the CREATE of a cold table.
 """
 
 from __future__ import annotations
@@ -20,13 +15,10 @@ from typing import Any
 import pandas as pd
 from tqdm import tqdm
 
-DEFAULT_WORKERS = 8  # network-bound; edgartools' own client caps ~9 req/sec globally
+DEFAULT_WORKERS = 8  # network-bound; the shared rate limiter caps throughput
 
-#: Exception classes that mean this pipeline is broken, not the source record. They are
-#: re-raised wherever a per-entity or per-filing handler would otherwise swallow them, so a
-#: repo defect fails the run instead of being logged once per ticker. `KeyError` is included:
-#: on these paths it means a frame's column contract broke. A narrow `except` around a
-#: library parse (`filing.xbrl()`) still absorbs everything.
+#: Exceptions meaning the pipeline is broken, not the source record; per-entity and per-filing
+#: handlers re-raise them instead of logging (`KeyError` = a broken frame column contract).
 PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError, KeyError, ImportError)
 
 

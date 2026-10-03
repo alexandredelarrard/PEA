@@ -1,44 +1,11 @@
-"""
-entity_lineage.py (src/data_extract/utils/common/entity_lineage.py)
---------------------------------------------------------------------------------------------
-AXIS A OF TICKER IDENTITY: WHICH CIKs ARE THE SAME ECONOMIC COMPANY.
+"""Ticker identity, axis A: which CIKs are the same economic company (`entity_lineage`, PK `cik`).
 
-`symbol_tenure` answers "who held symbol X on date d". This answers "are these two CIKs the
-same firm", and it is the one the `owns()` predicate reads. The two questions are genuinely
-independent, and collapsing them is what the whole identity defect is made of: CIK
-`0001466258` filed under `IR` for eleven years and is now `TT`'s registrant, so an
-owner-overlap oracle scores it 0.400 against `IR` -- "emphatically the same people", and
-CORRECT, because it IS one continuous entity. It is simply **`TT`'s** entity, not `IR`'s.
-Only the entity comparison settles that, which is why this oracle is asked "is C the same
-entity as R" and NEVER "does C own symbol T".
-
-FOUR ORACLES, IN PRIORITY ORDER. Each may only be overruled by one above it:
-
-  1. `register`       -- `configs/sec/registrant_cutover.json`, 16 hand-evidenced chains read
-                         through `load_registrants()`. The curated top layer; always wins.
-  2. `manual`         -- `configs/sec/entity_lineage_manual.json`, the hand adjudications of
-                         cases the automatic oracle cannot decide, each with prose evidence.
-  3. `owner_overlap`  -- do the SAME reporting owners appear on both CIKs' Forms 3/4/5? A
-                         reorganisation hands the same directors and officers to the new
-                         registrant; a symbol reassignment to an unrelated company does not.
-  4. `roster`         -- a roster CIK that ended in no group is recorded as its own entity,
-                         so the table states a verdict for all 500 rather than staying silent.
-
-⚠ `sharadar_permaticker` IS DELIBERATELY ABSENT, AND THAT IS A MEASURED RESULT. Sharadar
-mints a NEW permaticker for a delisted predecessor -- DuPont E I is `DD1`/199769 against
-DuPont de Nemours' 199776, Chubb Corp `CB1`/199850 against Chubb Ltd's 197681 -- so across
-the 621 candidate CIKs exactly ZERO permatickers are shared by two of them, and on the 8
-known predecessor pairs it says DIFFERENT 4 times and is absent 4 times (SAME: 0). It cannot
-seed this table. It is used as a ticker->CIK CROSS-CHECK instead, so no row here carries
-Sharadar-licensed content.
-
-⚠ THE UNION-FIND IS CONSTRAINED, AND THAT CONSTRAINT IS THE MOST IMPORTANT LINE IN THE FILE.
-A merge that would put TWO universe tickers in one entity is REJECTED and listed for hand
-adjudication, never applied. `DD`, `DOW` and `CTVA` all descend from DowDuPont and shared
-directors through 2017-2019 -- exactly the signal `owner_overlap` keys on -- but a spin-off
-into two index members is TWO entities that share a past. Merging them would make the reverse
-map collapse one onto the other and RELABEL EVERY ROW OF THE LOSER, which is the only failure
-in this design that corrupts data rather than dropping it.
+`symbol_tenure` answers "who held symbol X on date d"; this answers "is CIK C the same entity as R",
+which `owns()` reads. Four oracles in priority order, each overruled only by one above it:
+`register` (`registrant_cutover.json`), `manual` (`entity_lineage_manual.json`), `owner_overlap`
+(shared Form 3/4/5 reporting owners) and `roster` (an ungrouped roster CIK is its own entity).
+The union-find refuses any merge that would put two universe tickers in one entity: it is
+listed for hand adjudication, never applied, since it would relabel every row of one ticker.
 """
 
 from __future__ import annotations
@@ -63,19 +30,12 @@ from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
-#: `configs/sec/entity_lineage_manual.json`. Sibling of `registrant_cutover.json` and read
-#: only here, so it is declared here rather than in `constants.py`.
+#: `configs/sec/entity_lineage_manual.json`.
 MANUAL_CONFIG_SUBDIR = "sec"
 MANUAL_CONFIG_FILENAME = "entity_lineage_manual.json"
 
-#: Oracle 3's rule, verbatim from the research that hand-labelled 63 groups and got 55 right:
-#:   shared == 0                              -> UNRELATED, no lineage row
-#:   jaccard >= 0.05 OR shared >= 5           -> SAME ENTITY
-#:   anything between                         -> GREY BAND, which the builder REFUSES to
-#:                                               decide; it must carry a curated row or the
-#:                                               build raises.
-#: Two thresholds and not one because the two failure shapes differ: a huge board dilutes the
-#: jaccard on a genuine predecessor, and a tiny board inflates it on an unrelated pair.
+#: Oracle 3: shared == 0 -> unrelated; jaccard >= 0.05 OR shared >= 5 -> same entity; anything
+#: between is a grey band the build refuses to decide without a curated row.
 OVERLAP_JACCARD_SAME = 0.05
 OVERLAP_SHARED_SAME = 5
 
@@ -84,29 +44,16 @@ SOURCE_PRIORITY = ("register", "manual", "owner_overlap", "roster")
 #: The `sp500_tickers` columns the identity layer reads (`roster_cik_map`).
 ROSTER_COLUMNS = ("ticker", "cik")
 
-#: The key inside `entity_lineage_manual.json` holding the D19 cross-check's exception list.
-#: Underscore-prefixed so the lineage loader skips it -- it is a different shape and a
-#: different question, but it belongs in the same curated file because it is the same kind of
-#: hand verdict about identity.
+#: Key in `entity_lineage_manual.json` holding the D19 cross-check's exceptions; underscore-prefixed so the lineage loader skips it.
 D19_ALLOWLIST_KEY = "_d19_allowlist"
 
 
 class TwoUniverseTickersOneEntityError(ValueError):
-    """A merge would put two INVESTABLE tickers in one entity.
-
-    Raised rather than applied: `universe_ticker_by_entity` would collapse one ticker onto
-    the other and relabel every row of the loser. A spin-off into two index members is two
-    entities that share a past, so the correct fix is a curated row, never a wider merge.
-    """
+    """A merge would put two universe tickers in one entity; the fix is a curated row, never a wider merge."""
 
 
 class UndecidedGreyBandError(ValueError):
-    """An owner-overlap score landed between the thresholds and no curated row decides it.
-
-    The oracle is explicitly not allowed to break a tie: the 7 grey-band groups measured in
-    2026-09 include both a real predecessor (`COHR`) and a real reuse (`CEG`), and a rule
-    that guessed either way would silently delete or silently import a decade of filings.
-    """
+    """An owner-overlap score landed between the thresholds and no curated row decides it; the oracle never breaks the tie."""
 
 
 class ManualTenureEntityError(ValueError):
@@ -157,7 +104,7 @@ class _Union:
         if len(self.roster_members(a) | self.roster_members(b)) > 1:
             self.blocked.append((a, b, source, confidence))
             return False
-        # the OLDEST cik roots the group, so `entity_id` is stable under merge order
+        # The oldest CIK roots the group, so `entity_id` is stable under merge order.
         older, newer = sorted((root_a, root_b))
         self.parent[newer] = older
         return True
@@ -170,12 +117,10 @@ class _Union:
 
 
 def entity_id_for(ciks: set[str]) -> str:
-    """`"E" + the oldest (numerically smallest) CIK in the group`, zero-padded.
+    """`"E" + the oldest (numerically smallest) padded CIK in the group`.
 
-    A natural key: no allocation state, so two independent derivations agree. The known
-    failure -- a group that later gains an OLDER cik shifts its id -- is acceptable because
-    nothing outside the identity layer joins on `entity_id`, and the quarantine table records
-    both the resolved and the expected id so a shift reads as a diff, not a silent re-verdict.
+    A natural key with no allocation state; a group that later gains an older CIK shifts its id,
+    which `detect_older_cik_rekeys` guards.
     """
     return "E" + min(ciks)
 
@@ -218,11 +163,9 @@ def _manual_blob(config_dir: str | None) -> dict:
 
 
 def load_d19_allowlist(config_dir: str | None = None) -> dict[str, str]:
-    """`{ticker: why this ticker's roster CIK may disagree with symbol_tenure}`.
+    """`{ticker: why this ticker's roster CIK may disagree with symbol_tenure}` for the D19 assertion.
 
-    Consumed by the D19 assertion. An entry is a hand reading that CLEARS a disagreement;
-    anything not listed must raise, because an unexplained disagreement is the XOM class of
-    defect -- a roster CIK, sourced from Wikipedia, pointing at the wrong company.
+    An entry clears a disagreement; any unlisted disagreement must raise (a roster CIK pointing at the wrong company).
     """
     allow = _manual_blob(config_dir).get(D19_ALLOWLIST_KEY, {})
     return {t: str(why) for t, why in allow.items() if not t.startswith("_")}
@@ -231,12 +174,8 @@ def load_d19_allowlist(config_dir: str | None = None) -> dict[str, str]:
 def load_manual_lineage(config_dir: str | None = None) -> dict[str, dict]:
     """`configs/sec/entity_lineage_manual.json` -> `{key: entry}`; `{}` when absent.
 
-    Two entry shapes, because the grey band produces two kinds of verdict:
-      * `"same_entity": [cik, ...]` -- these CIKs are one company;
-      * `"own_entity": [cik, ...]`  -- this CIK is NOT the ticker it filed under, recorded so
-        the verdict is stated rather than merely absent.
-    Both require non-empty `evidence`, for the reason `registrant.py` gives: an undocumented
-    identity decision is a guess that silently deletes or imports a decade of filings.
+    `"same_entity"` (>= 2 CIKs that are one company) and/or `"own_entity"` (CIKs that are their
+    own entity, not the ticker they filed under); every entry needs non-empty `evidence`.
     """
     blob = _manual_blob(config_dir)
     out: dict[str, dict] = {}
@@ -255,15 +194,11 @@ def load_manual_lineage(config_dir: str | None = None) -> dict[str, dict]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Oracle 3 -- reporting-owner overlap, from the same cached zips               #
-# --------------------------------------------------------------------------- #
+# Oracle 3 -- reporting-owner overlap
 def derive_owner_sets(owner_pairs: pd.DataFrame, ciks: frozenset[str]) -> dict[str, set[str]]:
-    """`{issuer_cik: {padded reporting owner CIKs}}` for `ciks` only, from a Form 345 cache scan's
-    (issuer_cik, owner_cik_raw) pairs.
+    """`{issuer_cik: {padded reporting owner CIKs}}` for `ciks`, from Form 345 (issuer_cik, owner_cik_raw) pairs.
 
-    Keyed on the ISSUER CIK across every symbol it ever filed under, not on (symbol, cik): the
-    question is "is C the same company as R", and one symbol's filings would answer a narrower one.
+    Keyed on the issuer CIK across every symbol it filed under, not on (symbol, cik).
     """
     owners: dict[str, set[str]] = {cik: set() for cik in ciks}
     df_matched = owner_pairs[owner_pairs["issuer_cik"].isin(ciks)]
@@ -288,7 +223,7 @@ def score_overlap(a: set[str], b: set[str]) -> tuple[int, float]:
 
 
 def classify_overlap(shared: int, jaccard: float) -> str:
-    """`unrelated` | `same` | `grey` -- see `OVERLAP_JACCARD_SAME` for why two thresholds."""
+    """`unrelated` | `same` | `grey` per the `OVERLAP_*` thresholds."""
     if shared == 0:
         return "unrelated"
     if jaccard >= OVERLAP_JACCARD_SAME or shared >= OVERLAP_SHARED_SAME:
@@ -296,15 +231,12 @@ def classify_overlap(shared: int, jaccard: float) -> str:
     return "grey"
 
 
-# --------------------------------------------------------------------------- #
-# The build                                                                     #
-# --------------------------------------------------------------------------- #
+# The build
 def candidate_ciks(tenure: pd.DataFrame, roster: pd.DataFrame) -> tuple[frozenset[str], dict[str, set[str]], dict[str, str]]:
     """(all candidates, {ticker: CIKs seen under its symbol}, {ticker: roster CIK}).
 
-    Candidates are every issuer CIK that ever filed under a TODAY-universe symbol, union
-    every roster CIK. Every other CIK in EDGAR needs no row: it is a singleton by default,
-    which is exactly the verdict `owns()` needs from it.
+    Candidates are every issuer CIK that filed under a current-universe symbol plus every roster
+    CIK; any other CIK is a singleton by default.
     """
     roster_cik = roster_cik_map(roster)
     seen = tenure[tenure["symbol"].astype(str).isin(set(roster_cik))]
@@ -387,12 +319,9 @@ def _write_rekey_manifest(config_dir: str | None, impacts: list[dict[str, object
 def derive_entity_lineage(
     tenure: pd.DataFrame, roster: pd.DataFrame, owner_pairs: pd.DataFrame, config_dir: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(`entity_lineage` rows, the blocked-merge report) from the tenure table, the roster and a
-    Form 345 cache scan's (issuer_cik, owner_cik) pairs.
+    """(`entity_lineage` rows, the blocked-merge report) from tenure, roster and Form 345 owner pairs.
 
-    Raises `UndecidedGreyBandError` when an automatic score lands between the thresholds and no
-    curated row decides it. A blocked merge is RECORDED rather than raised, so one run reports
-    the whole list instead of stopping at the first.
+    Raises `UndecidedGreyBandError` for an uncurated grey-band score; blocked merges are recorded, not raised.
     """
     candidates, by_ticker, roster_cik = candidate_ciks(tenure, roster)
     roster_ciks = frozenset(roster_cik.values())
@@ -455,9 +384,7 @@ def _apply_owner_overlap(
 ) -> tuple[list[tuple[str, str, str, int, float]], Counter]:
     """Oracle 3: score each non-roster candidate against its ticker's roster CIK and merge `same`.
 
-    A CIK a curated layer spoke for (or already joined to the roster CIK) is not re-opened: the
-    register and the manual file rank above this oracle. Returns the grey-band pairs and the
-    verdict counts.
+    Curated CIKs and CIKs already joined to the roster CIK are not re-opened. Returns grey-band pairs and verdict counts.
     """
     grey: list[tuple[str, str, str, int, float]] = []
     verdicts: Counter = Counter()
@@ -492,11 +419,7 @@ def _raise_grey_band(grey: list[tuple[str, str, str, int, float]]) -> None:
 
 
 def _lineage_frame(union: _Union, provenance: _Provenance, roster_ciks: frozenset[str]) -> pd.DataFrame:
-    """One row per CIK in a non-singleton group, per roster CIK and per curated CIK.
-
-    Curated CIKs are stored even when singleton, so an `own_entity` verdict stays visible instead
-    of reading like a CIK nobody looked at.
-    """
+    """One row per CIK in a non-singleton group, per roster CIK and per curated CIK (even when singleton)."""
     groups = union.groups()
     entity_of = {cik: entity_id_for(members) for members in groups.values() for cik in members}
     non_singleton = {cik for members in groups.values() if len(members) > 1 for cik in members}
@@ -533,11 +456,10 @@ def build_entity_lineage(
     *,
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
 ) -> pd.DataFrame:
-    """Derive `entity_lineage` from the materialized `symbol_tenure` frame and a cache scan's
-    owner pairs, and REPLACE the table unless it is unchanged; returns the derived frame.
+    """Derive `entity_lineage` from `symbol_tenure` and owner pairs and replace the table unless unchanged.
 
-    An older CIK changes the natural entity ID. Such a write stays fail-closed unless every
-    observed ``(old_entity_id, new_entity_id)`` pair is acknowledged exactly for this call.
+    An older-CIK rekey fails closed (`EntityRekeyError`) unless every observed
+    ``(old_entity_id, new_entity_id)`` pair is in `approved_rekeys`. Returns the derived frame.
     """
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert roster is not None

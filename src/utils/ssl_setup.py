@@ -1,29 +1,10 @@
-"""
-ssl_setup.py  (src/utils/ssl_setup.py)
---------------------------------------
-Make Python's HTTPS clients trust a CORPORATE TLS-inspection proxy.
+"""Make Python's HTTPS clients trust a corporate TLS-inspection proxy's root CA.
 
-On a managed / corporate network, outbound HTTPS is intercepted by a proxy that
-re-signs traffic with a corporate root CA. That CA lives in the OS trust store
-(installed by IT) but Python's HTTP libs default to the `certifi` bundle, which
-does NOT contain it -> `curl: (60) SSL certificate problem: unable to get local
-issuer certificate` from curl_cffi (yfinance), and the equivalent
-from requests (SEC / FRED / Wikipedia / Dataroma) and httpx (OpenAI).
-
-`configure_corporate_ca()` builds a COMBINED bundle = certifi + the OS trust store
-(via `ssl.enum_certificates` on Windows), stores it in the repo's ignored `.cache`
-directory so the Airflow bind mount can see it, and points the standard CA env vars at it:
-
-    SSL_CERT_FILE, CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE
-
-which curl_cffi (its `_default_cacert()` checks exactly these three before certifi),
-requests, urllib and httpx all honour. This only ADDS the roots the OS already
-trusts (exactly what your browser trusts) — it does NOT disable verification.
-
-IMPORTANT ordering: yfinance imports curl_cffi at module load and freezes its
-default CA path THEN, so this must run BEFORE the first HTTP-client import — call
-it as the first line of `main.py`, or set the same vars persistently so every
-process inherits them:  `python -m src.utils.ssl_setup`  prints the `setx` commands.
+`configure_corporate_ca()` builds a combined bundle (certifi + the OS trust store, Windows only) in the repo's
+ignored `.cache` (visible to the Airflow bind mount) and points SSL_CERT_FILE, CURL_CA_BUNDLE and
+REQUESTS_CA_BUNDLE at it. It only adds roots the OS already trusts; verification stays on. It must run before
+the first HTTP-client import (yfinance freezes curl_cffi's CA path at import), i.e. first in `main.py`;
+`python -m src.utils.ssl_setup` prints `setx` commands to persist the vars.
 """
 
 from __future__ import annotations
@@ -35,8 +16,7 @@ from pathlib import Path
 
 import certifi
 
-# curl_cffi._default_cacert() checks these in order before falling back to certifi;
-# requests honours REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE; ssl/urllib/httpx use SSL_CERT_FILE.
+# The CA env vars curl_cffi, requests, urllib and httpx honour.
 CA_ENV_VARS = ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
 DEFAULT_BUNDLE = Path(__file__).resolve().parents[2] / ".cache" / "corporate_ca_bundle.pem"
 
@@ -61,10 +41,7 @@ def _os_store_pem() -> list[str]:
 
 
 def bundle_is_usable(path: Path) -> bool:
-    """Does `path` exist and load cleanly as a CA bundle? Guards against a HALF-WRITTEN
-    file (see `build_corporate_ca_bundle`): a torn bundle surfaces as `[X509] PEM lib` or
-    a bogus `unable to get local issuer certificate`, both of which look like a network
-    problem rather than a corrupt file."""
+    """True when `path` exists and loads cleanly as a CA bundle (guards against a half-written file)."""
     try:
         if not path.exists() or path.stat().st_size < 100_000:
             return False
@@ -75,18 +52,10 @@ def bundle_is_usable(path: Path) -> bool:
 
 
 def build_corporate_ca_bundle(dest: Path | None = None, force: bool = False) -> Path:
-    """Write `certifi + OS trust store` to `dest` (default: under the user home) and
-    return the path.
+    """Write `certifi + OS trust store` to `dest` (default `DEFAULT_BUNDLE`) and return the path.
 
-    REUSED when a usable bundle is already there (`force=True` rebuilds): the OS trust
-    store changes rarely, while this runs on EVERY process start, so rewriting each time
-    was pure churn on a file other processes are reading.
-
-    The write is ATOMIC (temp file + `os.replace`). A plain `write_text` truncates the
-    destination first, so a concurrent reader -- a CLI run, a pytest session and Airflow
-    tasks all call this at import -- could load a bundle that was 0 certs, half a PEM
-    block, or certifi-without-the-OS-roots. Measured before this fix: 6 concurrent
-    processes, 5 TLS failures across three different error messages.
+    A usable existing bundle is reused unless `force=True`. The write is atomic (temp file + `os.replace`)
+    because concurrent processes read the bundle at import.
     """
     dest = Path(dest) if dest else DEFAULT_BUNDLE
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -99,8 +68,7 @@ def build_corporate_ca_bundle(dest: Path | None = None, force: bool = False) -> 
     try:
         os.replace(tmp, dest)  # atomic: readers see old or new, never torn
     except OSError:
-        # another process replaced it under us (Windows can refuse while it is open).
-        # Its content is equivalent, so keep whichever is on disk if it is usable.
+        # Another process replaced it (Windows can refuse while open); keep the equivalent file on disk if usable.
         tmp.unlink(missing_ok=True)
         if not bundle_is_usable(dest):
             raise
@@ -111,11 +79,9 @@ def configure_corporate_ca(dest: Path | None = None, force: bool = False) -> str
     """Point the CA env vars at a combined certifi + OS-store bundle so every HTTPS
     client trusts the corporate proxy CA.
 
-    No-op (returns the existing value) when a CA env var is ALREADY set — the user's
-    own config wins — unless `force=True`. Windows builds the bundle from its OS store;
-    Linux reuses that bundle when the repo is bind-mounted into Airflow, and otherwise
-    leaves certifi as the default. Returns the bundle path in effect, or None if nothing
-    was configured.
+    No-op (returns the existing value) when a CA env var is already set, unless `force=True`. Windows builds the
+    bundle; elsewhere an existing usable bundle (the Airflow bind mount) is reused, else certifi stays the default.
+    Returns the bundle path in effect, or None.
     """
     already = next((os.environ[v] for v in CA_ENV_VARS if os.environ.get(v)), None)
     if already and not force:
@@ -132,24 +98,16 @@ def configure_corporate_ca(dest: Path | None = None, force: bool = False) -> str
     return bundle
 
 
-# --------------------------------------------------------------------------- #
-# Python 3.13 strict-X509 workaround for the inspection proxy's CA             #
-# --------------------------------------------------------------------------- #
+# --- Python 3.13 strict-X509 workaround for the inspection proxy's CA ---
 def ca_bundle_in_effect() -> str:
     """The CA file every HTTPS client should verify against (our bundle, else certifi)."""
     return next((os.environ[v] for v in CA_ENV_VARS if os.environ.get(v)), certifi.where())
 
 
 def ca_anchor_files() -> list[str]:
-    """EVERY CA file worth trusting, most-specific first, de-duplicated.
+    """Every existing CA file worth trusting (in-effect bundle, our bundle, certifi), most-specific first, de-duplicated.
 
-    Deliberately a UNION rather than a single choice. `configure_corporate_ca()` honours a
-    CA env var the user (or another tool) already set and returns early WITHOUT adding the
-    corporate roots -- correct as a courtesy, but if that pre-set bundle happens to be a
-    plain certifi it silently loses the inspection proxy's CA and every intercepted host
-    dies with `unable to get local issuer certificate`. Loading both files means we are
-    right whichever one is incomplete: `load_verify_locations` ADDS anchors, so trusting
-    the union costs nothing and removes a whole class of ordering/propagation bug.
+    A union, because a pre-set CA env var may point at a bundle lacking the proxy CA; `load_verify_locations` only adds anchors.
     """
     out: list[str] = []
     for cand in (ca_bundle_in_effect(), str(DEFAULT_BUNDLE), certifi.where()):
@@ -159,19 +117,10 @@ def ca_anchor_files() -> list[str]:
 
 
 def relaxed_ssl_context(cafile: str | None = None):
-    """An SSL context that TRUSTS the corporate CA and still verifies everything that
-    matters, with ONE pedantic check disabled.
+    """An SSL context trusting the corporate CA with only `VERIFY_X509_STRICT` cleared.
 
-    Python 3.13 turned `VERIFY_X509_STRICT` on by default in `create_default_context()`.
-    Zscaler's intermediate marks `basicConstraints` NON-critical -- a cosmetic RFC 5280
-    violation that strict mode rejects outright, so every intercepted host dies with
-    `certificate verify failed: Basic Constraints of CA cert not marked critical`. That is
-    the corporate CA being sloppy, not a MITM, and no CA bundle can fix it: the flag
-    rejects the chain no matter which roots we trust.
-
-    So we clear ONLY that flag. `verify_mode=CERT_REQUIRED` and `check_hostname` stay ON:
-    measured against badssl.com, this context still rejects both an EXPIRED certificate
-    and a WRONG-HOSTNAME certificate. This is far narrower than `verify=False`.
+    Python 3.13 enables strict X509 by default, which rejects a proxy CA whose `basicConstraints` is not marked
+    critical. `verify_mode=CERT_REQUIRED` and `check_hostname` stay on, so this is far narrower than `verify=False`.
     """
     import ssl as _ssl
 
@@ -181,7 +130,7 @@ def relaxed_ssl_context(cafile: str | None = None):
     if cafile:
         ctx.load_verify_locations(cafile=cafile)
     else:
-        # make sure OUR bundle exists before trusting it (cheap: reused when already valid)
+        # Ensure our bundle exists (cheap: reused when already valid).
         try:
             build_corporate_ca_bundle()
         except Exception:
@@ -202,10 +151,7 @@ def relaxed_ssl_context(cafile: str | None = None):
 
 
 def corporate_session():
-    """A `requests.Session` whose HTTPS adapter uses `relaxed_ssl_context()`.
-
-    `requests.get()` builds its own context per call and cannot be told to drop a verify
-    flag, so the context has to be injected through a mounted adapter."""
+    """A `requests.Session` whose HTTPS adapter uses `relaxed_ssl_context()` (a per-call `requests.get` cannot drop a verify flag)."""
     import requests
     from requests.adapters import HTTPAdapter
 

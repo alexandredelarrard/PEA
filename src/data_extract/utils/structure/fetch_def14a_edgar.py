@@ -1,18 +1,8 @@
-"""
-fetch_def14a_edgar.py (src/data_extract/utils/structure/fetch_def14a_edgar.py)
---------------------------------------------------------------------------------
-`sec_def14a`: the Pay-versus-Performance / ECD inline-XBRL block of a proxy, and
-nothing else. One row per `(ticker, accession_number)`, zero LLM cost.
+"""`sec_def14a`: the Pay-versus-Performance / ECD inline-XBRL block of a proxy, and nothing else.
 
-These are facts the FILER tagged and computed, so reading them deterministically
-beats any extraction. Everything a proxy says in PROSE -- the compensation
-tables, director fees, beneficial ownership, audit fees, the CEO pay ratio,
-board voting recommendations -- now belongs entirely to `fetch_def14a_llm.py`.
-The HTML-parsed block that used to live here, plus its four child tables, was
-deleted: edgartools' proxy HTML parser returns values that are silently WRONG
-rather than absent (a missed "(in thousands)" header, a hardcoded 0.5 standing
-in for a "*" percent, three value-inventing pay-ratio repairs), and the defects
-are ticker-persistent, so they do not average out.
+One row per `(ticker, accession_number)`, zero LLM cost: facts the filer tagged, read deterministically.
+Everything a proxy states in prose (comp tables, ownership, audit fees, ...) belongs to `def14a/fetch.py`.
+Listing starts at the Item 402(v) effective date (`minimum_since`), since no earlier proxy carries ECD facts.
 """
 
 from __future__ import annotations
@@ -39,9 +29,7 @@ _MAIN_COLS = [
     "period_of_report",
     "company_name",
     "has_individual_executive_data",
-    # The fiscal year the PVP facts describe. Not derivable from `period_of_report`, which for a
-    # proxy is the MEETING date -- without this column nothing says which year `peo_total_comp`
-    # belongs to, and the PVP table carries five.
+    # Fiscal year the PVP facts describe; a proxy's `period_of_report` is the meeting date.
     "ecd_period_end",
     "peo_name",
     "peo_total_comp",
@@ -81,10 +69,7 @@ _NUMERIC_COLS = tuple(
     )
 )
 
-#: Cover-page registrant name. Read from XBRL when tagged, else from the filing index --
-#: edgartools reads this concept with NO index fallback, and DEF 14A has no mandatory
-#: cover-page iXBRL requirement, so it is None on every pre-2023 filing and `__str__`
-#: substitutes the literal "Unknown Company".
+#: Cover-page registrant name: read from XBRL when tagged, else from the filing index (DEF 14A cover iXBRL is optional).
 _REGISTRANT = "dei:EntityRegistrantName"
 
 
@@ -110,13 +95,12 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     row = ecd_row(facts)
     row.update(
         ticker=ticker,
-        # The filer's own CIK, not the roster's: a registrant reorganisation then shows up as
-        # two CIKs either side of a date instead of hiding behind one stamped value.
+        # The filer's own CIK, not the roster's, so a registrant reorganisation stays visible.
         cik=stamp.cik,
         accession_number=stamp.accession_number,
         form=str(stamp.form),
         filing_date=stamp.filed.normalize(),
-        # From the filing index, like every sibling fetcher (guarded: the raw property can raise).
+        # From the filing index (guarded: the raw property can raise).
         period_of_report=stamp.period_of_report,
         company_name=_company_name(facts, stamp.filing),
     )

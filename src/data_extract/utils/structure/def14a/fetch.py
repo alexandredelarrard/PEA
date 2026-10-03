@@ -1,57 +1,10 @@
-"""
-fetch.py  (src/data_extract/utils/structure/def14a/fetch.py)
------------------------------------------------------------------
-Extract structured governance data from SEC DEF 14A proxy statements using an
-LLM with structured output (Def14AExtract schema).
+"""Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
 
-Per ticker, it fetches that ticker's DEF 14A filings from EDGAR, sends targeted
-sections to the OpenAI Responses API (constrained to the Def14AExtract Pydantic
-schema, prompt caching on), then **immediately upserts that
-ticker's rows into the `def14a_llm` Postgres table** before moving to the next
-ticker — so an interrupted run never loses the (expensive) LLM calls already made.
-
-Per-filing incremental (gap-filling): each ticker's FULL `years_history` window of DEF 14A
-filings is listed, and the LLM is (re-)run ONLY on filings whose `accession_number` is NOT already
-in the `def14a_llm` table. So any MISSING year/filing — including a hole in the middle of the
-history, not just after the latest — is filled, while every already-extracted filing is skipped
-(no repeat LLM cost). Tickers with no rows yet get the whole window; already-complete tickers make
-no LLM calls at all.
-
-Requires OPENAI_API_KEY (or OPEN_AI_API_KEY) in the .env file.
-If the key is absent the function logs a warning and returns.
-
-Output columns (DB table `def14a_llm`), scalar summaries + raw JSON:
-    keys        ticker, as_of, period, accession_number, company_name, fiscal_year_extract
-    board       n_directors, board_size, avg_director_age, avg_board_tenure,
-                pct_independent_directors, pct_female_directors,
-                avg_other_public_boards, pct_gender_stated,
-                n_women_directors_vs_inferred
-    ceo         ceo_name_proxy, ceo_age, ceo_since_year, ceo_is_founder,
-                ceo_is_board_chair, ceo_salary, ceo_bonus, ceo_stock_awards,
-                ceo_option_awards, ceo_non_equity_incentive, ceo_all_other_comp,
-                ceo_total_comp, ceo_equity_pay_pct
-    neos        n_neos, total_neo_comp, sct_years
-    ownership   insider_ownership_pct, ceo_ownership_pct, n_five_percent_holders,
-                n_ownership_rows
-    governance  independent_chair, lead_independent_director, classified_board,
-                dual_class_shares, poison_pill, majority_voting,
-                say_on_pay_support_pct, ceo_pay_ratio, median_employee_pay
-    auditor     auditor_name, auditor_since_year, auditor_fees, audit_fees_audit,
-                audit_fees_audit_related, audit_fees_tax, audit_fees_other,
-                auditor_fees_prior
-    counts      n_director_comp_rows, n_ownership_rows
-    def14a_json (full Def14AExtract as JSON for downstream use)
-
-`n_technology_directors` / `pct_technology_directors` / `technology_committee` were REMOVED:
-they were an opinion, not an extraction (mean |delta| of 1.06 directors between consecutive
-filings of the same company, only 38.8% unchanged).
-
-FOUR CHILD TABLES are written alongside, flattened out of the same paid extract:
-    def14a_executive_comp   one row per NEO per fiscal year (Item 402(c), ~3 years/filing)
-    def14a_director_comp    one row per non-employee director (Item 402(k), single-year)
-    def14a_ownership        one row per beneficial holder (Item 403)
-    def14a_directors        one row per director -- and the substrate the cross-filing gender
-                            consensus pass groups over (see def14a_gender.py)
+Per ticker: list its DEF 14A filings over the manifest window (across its registrant chain), carve
+the relevant sections, send only accessions without stored evidence to the LLM, and upsert that
+ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`, `def14a_director_comp`,
+`def14a_ownership`, `def14a_directors`) before the next ticker. A cross-ticker gender consensus runs
+once after the loop. Skips with a warning when no OpenAI key is configured.
 """
 
 from __future__ import annotations
@@ -92,9 +45,7 @@ from src.data_extract.utils.structure.def14a.gender import (
 )
 from src.data_store.schema import Tables
 
-# `gpt_extract` is a shared service, like `src/utils/` -- the sanctioned cross-import. It
-# owns the model, the keys, the prompts (`prompt_templates/def14a_*.md`) and the thread
-# pool; the anchor carve and the flatten are this package's business.
+# `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmTask
@@ -104,16 +55,8 @@ logger = logging.getLogger(__name__)
 
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
-    """The filing's raw markup, retrying the `<accession>.txt` full submission when the primary
-    document 404s.
-
-    `primaryDocument` names a file that is genuinely ABSENT from the archive on 7 of 663
-    measured DEF 14A filings (all 2000-08..2001-03, all naming `"0001.txt"`). Those produce no
-    row at all without this retry, because the raise propagates out of `_payload_for` and the
-    filing never becomes a task -- a loss invisible in the "pre-2001 rows are NULL" count
-    since there is no row to be null. The `.txt` carries the real proxy (53,661-165,380 chars
-    on the four spot-checked).
-    """
+    """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
+    document cannot be fetched; re-raises when there is no distinct `.txt` URL."""
     try:
         return sec_get(context, filing["doc_url"]).text
     except Exception:
@@ -127,9 +70,7 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
 def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
     """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
 
-    Fetching and carving happen on the MAIN thread, before any task is queued: a worker
-    receives text and a schema, never a `Context`. The SEC fetch is disk-cached and rate
-    limited anyway, so the ~94s LLM call is what the pool is for.
+    Runs on the main thread before any task is queued: a worker receives text and a schema, never a `Context`.
     """
     try:
         raw_html = _fetch_filing_html(context, filing)
@@ -194,33 +135,12 @@ def _list_across_registrants(
     since: pd.Timestamp | None,
     cutovers: dict[str, Registrant],
 ) -> pd.DataFrame:
-    """That ticker's DEF 14A filings, across a registrant boundary when it has one.
+    """That ticker's DEF 14A filings by CIK, walking every segment of its registrant chain when it has one.
 
-    ⚠ THIS MODULE IS THE ONLY PIPELINE IN THE REPO THAT RESOLVES BY CIK. Every other EDGAR
-    fetcher goes through `registrant.resolve_registrant_filings`, i.e. `Company(ticker)`. That makes
-    `sp500_tickers.cik` a single-pipeline dependency -- and it is why a wrong or superseded CIK
-    shows up as a governance-only hole while prices, fundamentals and 8-K stay clean.
-
-    XOM is the measured case (2026-09-09). EDGAR remapped the XOM ticker to ExxonMobil Holdings
-    Corp (CIK 2115436), whose first filing is an 8-K12B on 2026-07-01 and which holds no proxy
-    forms at all, so this loop listed ZERO proxies and XOM carried 0 rows in all five
-    `def14a_*` tables while its 4,092 `cube_part_governance` rows held no non-null governance
-    feature. The full proxy history is under the predecessor, CIK 34088.
-
-    ⚠ THE SPLIT IS DATED, NEVER A UNION OF CIKS, and `DEF14A_FORMS` is declared SPLIT in
-    `registrant.FORM_POLICY` for it. Two legal entities can file concurrently, and
-    concatenating both CIKs blends a subsidiary's disclosures into the parent's -- on this
-    table that means two boards and two pay tables for one company-year, which corrupts the
-    governance grain rather than merely duplicating a row. Each segment contributes only
-    filings inside `[valid_from, valid_to)`, so the sets are disjoint by construction.
-
-    N SEGMENTS, NOT TWO: the register is a chain, and a two-CIK loop gave PSKY one hop.
-
-    ⚠ THE PER-FILING CIK COMES OUT RIGHT FOR FREE, and that is the point of listing per
-    registrant rather than post-labelling. `list_filings` stamps each row with the CIK whose
-    submissions document it parsed, so a row's `cik` is the CIK that actually filed it. Stamping
-    the roster CIK onto filings resolved by TICKER is how 521 XOM 8-K rows came to carry a CIK
-    holding 29 filings.
+    This is the only EDGAR fetcher that resolves by CIK (`sp500_tickers.cik`), not `Company(ticker)`.
+    The chain is a dated SPLIT, never a union (`DEF14A_FORMS` is SPLIT in `registrant.FORM_POLICY`): each
+    segment contributes only filings inside `[valid_from, valid_to)`, so segments are disjoint and a
+    company-year never blends two registrants' boards. Each row's `cik` is the CIK that actually filed it.
     """
     entry = cutovers.get(ticker)
     if entry is None:
@@ -248,8 +168,7 @@ def _list_across_registrants(
     out = pd.concat(frames, ignore_index=True)
     dupes = int(out["accession_number"].duplicated().sum())
     if dupes:
-        # The dated split makes this impossible; if it fires, the register is wrong rather
-        # than the data, and silently deduping would hide that.
+        # The dated split makes this impossible, so a duplicate means the register is wrong; do not dedupe it away.
         context.log.warning("%s: %d duplicate accession(s) across the %s chain", ticker, dupes, " -> ".join(entry.all_ciks()))
     return out
 
@@ -268,10 +187,9 @@ def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
 
 
 def _completed_accessions(context: Context) -> set[str]:
-    """Accessions whose parent contains real extracted evidence, not merely a PK.
+    """Accessions whose parent row carries real extracted evidence, not merely a PK.
 
-    The projection deliberately excludes the JSON blob and metadata-only columns. Historical
-    empty parents stay in the table for auditability, but no longer suppress a later repair.
+    Evidence-free parents stay in the table but do not count as completed, so a later run re-extracts them.
     """
     if not context.store.exists(Tables.def14a_llm):
         return set()
@@ -290,15 +208,10 @@ def _completed_accessions(context: Context) -> set[str]:
 
 
 def _finalise_gender(context: Context) -> None:
-    """Cross-ticker gender consensus, run ONCE after the per-ticker loop.
+    """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop.
 
-    It cannot live inside the loop: a director recurs across COMPANIES as well as years, so the
-    consensus needs every ticker's rows before it can group on people. Cheap on a routine rerun
-    -- DEF 14A is a yearly filing, so an incremental day adds ~0 rows and the pass is a narrow
-    read plus a no-op write.
-
-    Both reads are projected to the three columns the consensus needs; both writes carry only
-    the columns they change (AGENTS.md: never read a large table unprojected).
+    A director recurs across companies, so the consensus needs every ticker's rows. Rewrites
+    `def14a_directors` gender columns and the parent's gender ratios only when something changed.
     """
     directors = context.store.load(
         Tables.def14a_directors, columns=["ticker", "accession_number", "name", "as_of", "gender", "gender_basis"], optional=True
@@ -320,9 +233,7 @@ def _finalise_gender(context: Context) -> None:
         pk=["ticker", "accession_number", "name"],
     )
 
-    # `pct_female_directors` keeps its existing precedence -- the filing's own
-    # `n_women_directors` first, this ratio as the FALLBACK -- so a consensus correction makes
-    # the fallback better rather than overriding a stated count.
+    # The filing's stated `n_women_directors` still wins; this ratio only improves the fallback.
     parent = recompute_parent_gender(resolved)
     if not parent.empty:
         context.store.save(Tables.def14a_llm, parent, pk=["ticker", "accession_number"])

@@ -1,9 +1,10 @@
 """
 fetch_13f.py (src/data_extract/utils/institutionals/fetch_13f.py)
 -----------------------------------------------------------------
-One walk over every 13F-HR, by FILING DATE (edgartools), feeding two tables from one parse: the S&P 500
-ticker slice of each book -> `sec13f_hr`, and the complete CUSIP book of every roster manager ->
-`sec13f_manager_holdings`. Tickers come from the CUSIP map (OpenFIGI), never from issuer names.
+One oldest-first walk over every 13F-HR by filing date (edgartools), feeding two tables from one parse: the
+universe ticker slice of each book -> `sec13f_hr`, and the complete CUSIP book of every roster manager ->
+`sec13f_manager_holdings`. In-batch dedup keeps the last filed (amendment wins). Tickers come from the
+CUSIP map (OpenFIGI), never from issuer names.
 """
 
 from __future__ import annotations
@@ -67,13 +68,10 @@ _BOOK_COLS = [
 #: `sec13f_manager_holdings`' PK; the last filing wins on it.
 _BOOK_KEY = ["cik", "period", "cusip"]
 
-# 13F `VALUE` is in $thousands or $ones depending on the schema the FILER used, not on the period.
-# edgartools infers the unit per filing and returns dollars; an implied price outside this band
-# means it inferred wrong, the one failure mode that silently scales value_usd by 1000x.
+# edgartools infers the per-filing $thousands/$ones unit; an implied price outside this band flags a wrong inference.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
 
-#: The five mutually exclusive holding classes, in the order `position_type` resolves ties.
-#: `common` first because a line that reads as stock is stock whatever else also matches.
+#: The five mutually exclusive holding classes, in tie-break order (`common` wins).
 POSITION_TYPES = ("common", "call", "put", "debt", "other")
 
 #: The per-type value columns, in `POSITION_TYPES` order; `_dominant_type` picks among them.
@@ -102,13 +100,8 @@ def _pick(df: pd.DataFrame, *candidates: str) -> pd.Series:
 
 
 def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Series, pd.Series]:
-    """`({position_type: mask}, amount, value)` for one info table -- the SINGLE definition of
-    what makes a holding line stock, an option, debt or residual.
-
-    Extracted so `_classify_holdings` (which buckets the numbers into per-type columns) and
-    `position_type` (which labels the line) read the same masks. Two derivations would drift,
-    and the drift would be invisible: the columns would keep summing correctly while the label
-    on the row said something else."""
+    """`({position_type: mask}, amount, value)` for one info table: the single definition of a
+    stock/option/debt/other line, shared by `_classify_holdings` and `position_type`."""
     putcall = _pick(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
     amttype = _pick(infotable, "SSHPRNAMTTYPE", "Type").astype("string").str.strip().str.upper().fillna("")
     amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce").fillna(0.0)
@@ -125,9 +118,7 @@ def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Se
 
 
 def position_type(infotable: pd.DataFrame) -> pd.Series:
-    """One `position_type` label per holding line, from the same masks `_classify_holdings`
-    buckets on. `sec13f_manager_holdings` stores it so a conviction denominator can exclude
-    puts, calls and debt without re-deriving the classification."""
+    """One `position_type` label per holding line, from the masks `_classify_holdings` buckets on."""
     masks, _, _ = _holding_masks(infotable)
     out = pd.Series("other", index=infotable.index, dtype="object")
     for name in reversed(POSITION_TYPES):  # `common` applied last, so it wins any overlap
@@ -136,10 +127,8 @@ def position_type(infotable: pd.DataFrame) -> pd.Series:
 
 
 def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
-    """One typed row per holding line: value/shares land in exactly one bucket keyed on
-    put/call and the amount type. A blank type with no put/call is long stock (the
-    overwhelmingly common case, and what older data sets omit). The amount type is spelled
-    SH/PRN in the bulk TSVs and Shares/Principal by edgartools; both are accepted."""
+    """One typed row per holding line: value/shares land in exactly one bucket keyed on put/call
+    and amount type (SH/PRN or Shares/Principal); a blank type with no put/call is long stock."""
     masks, amt, val = _holding_masks(infotable)
     is_stock, is_call = masks["common"], masks["call"]
     is_put, is_debt, is_other = masks["put"], masks["debt"], masks["other"]
@@ -162,9 +151,7 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
 
 
 def _dominant_type(grouped: pd.DataFrame) -> pd.Series:
-    """`position_type` of an already-grouped row: the class carrying the most absolute value.
-    The per-class value columns stay authoritative; ties (including the all-zero row) go to
-    `common`, because `idxmax` returns the first column and `_VALUE_BY_TYPE` lists it first."""
+    """`position_type` of a grouped row: the class with the most absolute value; ties go to `common`."""
     values = pd.DataFrame({name: grouped[col].fillna(0.0).abs() for name, col in _VALUE_BY_TYPE.items()})
     return values.idxmax(axis=1)
 
@@ -301,12 +288,10 @@ def fetch_13f(
     lookback_days: int = 7,
     filing_window: tuple[str, str] | None = None,
 ) -> None:
-    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date` minus `lookback_days`
-    (the re-read tail retries filings that failed transiently), or the `filing_window` backfill.
-    Each batch upserts the universe slice to `sec13f_hr` and roster CIKs' books to
-    `sec13f_manager_holdings`; both are idempotent on their PKs. ONE EDGAR walk at a time.
-    The walk is oldest-first, so an amendment overwrites its original and a crash never leaves the
-    watermark past an unsaved filing."""
+    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date` minus `lookback_days`,
+    or the `filing_window` backfill (watermark untouched). Each batch upserts the universe slice to
+    `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs. One
+    EDGAR walk at a time; oldest-first, so an amendment overwrites its original."""
     context.ensure_edgar_identity()
     since, until = _resolve_window(context, years_history, lookback_days, filing_window)
     roster_ciks = roster_cik_union(context)

@@ -1,27 +1,11 @@
 """
 fetch_superinvestors.py (src/data_extract/utils/institutionals/fetch_superinvestors.py)
 --------------------------------------------------------------------------------
-WRITE side of `superinvestor_roster` -- Dataroma's curated roster of proven long-term
-managers, stored ONE ROW PER (snapshot_date, dataroma_code) so roster membership is a
-fact over time. The read side is `src/utils/superinvestor_roster.py`.
-
-TWO internet sources, combined:
-  * Dataroma (dataroma.com) — the curated ROSTER of proven long-term investors
-    (names only; it exposes no CIK, no returns).
-  * SEC EDGAR company search — the AUTHORITATIVE fund-name -> 13F-manager CIK lookup.
-
-Two entry points:
-  * `seed_roster_history`   — one-off: the 13 web.archive.org captures committed at
-    `data/superinvestors/dataroma_roster_history.json` (2013 -> 2026, 879 manager-rows,
-    104 distinct codes). Committed rather than re-scraped because Wayback rate-limits
-    hard and the walk is slow and flaky.
-  * `upsert_roster_snapshot` — every run: scrape today's roster, write today's snapshot.
-
-This REPLACES the old `{cik: investor_name}` JSON, which carried a single `generated_at`
-and so could not say who was on the roster at a past date. Applying today's 81 names to
-2013 drops the 23 managers Dataroma has since dropped -- six with real 13F history, two
-of them (Arlington Value, Wintergreen) the concentrated managers a concentration selector
-ranks highest. That bias runs in the same direction as the selection rule.
+WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), one row per
+(snapshot_date, dataroma_code) so membership is point-in-time, with CIKs resolved via SEC EDGAR
+company search. Hand resolutions live in configs/sec/superinvestor_overrides.json. Entry points:
+`seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster).
+The read side is `src/utils/superinvestor_roster.py`.
 """
 
 from __future__ import annotations
@@ -99,14 +83,12 @@ DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
 _WAYBACK_URL = "https://web.archive.org/web/{year}/" + DATAROMA_HOME_URL
 _ROSTER_HISTORY_FILE = Path("superinvestors") / "dataroma_roster_history.json"
 
-# Resolution provenance, stored per row so a hand-mapped CIK is never mistaken for one
-# EDGAR returned.
+# Resolution provenance, stored per row.
 RESOLUTION_EDGAR = "edgar"
 RESOLUTION_OVERRIDE = "override"
 RESOLUTION_UNRESOLVED = "unresolved"
 
-# Hand resolutions (code -> CIK overrides and the recorded-unresolvable codes with their
-# reasons) live in configs/sec/superinvestor_overrides.json.
+# Hand resolutions (CIK overrides and recorded-unresolvable codes) live in configs/sec/superinvestor_overrides.json.
 OVERRIDES_CONFIG_SUBDIR = "sec"
 OVERRIDES_CONFIG_FILENAME = "superinvestor_overrides.json"
 
@@ -125,8 +107,7 @@ class SuperinvestorResolutionError(RuntimeError):
 
 
 def load_superinvestor_overrides(config_dir: str | None = None) -> SuperinvestorOverrides:
-    """The superinvestor hand resolutions, cached per config DIRECTORY rather than per
-    spelling of it -- see `resolve_config_dir`."""
+    """The superinvestor hand resolutions, cached per resolved config directory."""
     return _overrides_at(resolve_config_dir(config_dir))
 
 
@@ -155,15 +136,13 @@ def _name_tokens(name: str) -> frozenset[str]:
 
 
 def _fund_part(dataroma_name: str) -> str:
-    """Dataroma lists 'Person - Fund'; the SEC filer is the FUND, so search on the
-    part after the last dash (fall back to the whole string when there is no dash)."""
+    """The fund part of a 'Person - Fund' name (after the last dash), else the whole string."""
     parts = re.split(r"\s[-–—]\s", str(dataroma_name))
     return parts[-1].strip() if len(parts) > 1 else str(dataroma_name).strip()
 
 
 def _parse_dataroma_roster(html: str) -> list[dict]:
-    """Dataroma home page -> [{code, name}] for every `holdings.php?m=CODE` link.
-    Deduplicated by code, order preserved. Robust to the surrounding markup."""
+    """Dataroma home page -> [{code, name}] per `holdings.php?m=CODE` link, deduplicated by code in order."""
     soup = BeautifulSoup(html or "", "html.parser")
     out, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -172,8 +151,7 @@ def _parse_dataroma_roster(html: str) -> list[dict]:
             continue
         code = m.group(1)
         name = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
-        # Dataroma appends "Updated <D Mon YYYY>" to each link text; strip it so the
-        # date does not leak into the fund name / matching tokens.
+        # Strip the trailing "Updated <date>" Dataroma appends to link text.
         name = re.sub(r"\s+Updated\b.*$", "", name, flags=re.IGNORECASE).strip()
         if code and code not in seen and name:
             seen.add(code)
@@ -182,9 +160,8 @@ def _parse_dataroma_roster(html: str) -> list[dict]:
 
 
 def _parse_edgar_matches(atom_text: str) -> list[tuple[str, str]]:
-    """(padded-cik, conformed-name) for each `<company-info>` block in an EDGAR
-    company-search atom feed. Tags are LOWER-case (`<cik>`, `<conformed-name>`); the
-    conformed-name is empty on multi-match blocks that omit it."""
+    """(padded-cik, conformed-name) per `<company-info>` block of an EDGAR company-search feed;
+    the name is '' when the block omits it."""
     out: list[tuple[str, str]] = []
     for block in re.split(r"<company-info", atom_text or "")[1:]:
         cik_m = re.search(r"<cik>(\d+)", block)
@@ -196,9 +173,7 @@ def _parse_edgar_matches(atom_text: str) -> list[tuple[str, str]]:
 
 
 def _pick_best_match(pairs: list[tuple[str, str]], query: str) -> tuple[str, str] | None:
-    """Pick the CIK whose filer name best token-matches `query`; a single match is
-    trusted outright, and ties / the no-name multi-match case fall back to EDGAR's
-    first (most-relevant) block."""
+    """The pair whose filer name best token-matches `query`; a single match is trusted, ties go to EDGAR's first block."""
     if not pairs:
         return None
     if len(pairs) == 1:
@@ -209,17 +184,9 @@ def _pick_best_match(pairs: list[tuple[str, str]], query: str) -> tuple[str, str
 
 
 def _edgar_cik_for_name(fund_name: str, get_fn) -> tuple[str | None, str | None]:
-    """Resolve a fund name to its 13F-manager CIK via SEC EDGAR company search.
-    Returns (cik, filer_name) or (None, None). `get_fn(url) -> response` is injected
-    so tests can stub the network (production always passes a `context`-bound `sec_get`;
-    see `upsert_roster_snapshot`).
-
-    The search URL filters `type=13F-HR`, so an empty feed means "this name never filed a
-    13F", not "no such company" -- which is why an unresolved manager is worth recording
-    rather than chasing. A TRANSPORT failure is indistinguishable here from that empty feed,
-    so it is logged at WARNING: `sec_get` does not retry, and the SEC returns 503s under
-    load, which would otherwise be written into the table as a permanent NULL cik. The
-    resolution gate is what stops that reaching the table."""
+    """Resolve a fund name to its 13F-HR filer CIK via EDGAR company search: (cik, filer_name) or
+    (None, None). A transport failure also returns (None, None) but logs a WARNING; the
+    resolution gate keeps it out of the table. `get_fn(url) -> response` is injected."""
     q = _fund_part(fund_name)
     try:
         text = get_fn(SEC_EDGAR_COMPANY_SEARCH_URL.format(company=quote(q))).text
@@ -231,10 +198,7 @@ def _edgar_cik_for_name(fund_name: str, get_fn) -> tuple[str | None, str | None]
 
 
 def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver) -> list[dict]:
-    """One `superinvestor_roster` row per roster entry, PURE given `resolver`.
-
-    `resolver(code, name) -> (cik | None, resolution)` is the only impure part, so the row
-    shape, the CIK padding and the unresolved handling are all testable without a network."""
+    """One `superinvestor_roster` row per roster entry; pure given `resolver(code, name) -> (cik | None, resolution)`."""
     rows = []
     for entry in roster:
         code, name = entry["code"], entry["name"]
@@ -253,10 +217,8 @@ def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver) 
 
 
 def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> list[str]:
-    """RAISE unless every unresolved code is in `unresolvable`; return those codes.
-
-    The gate D22 asks for: 100% resolution, or every exception named with its reason. An
-    unresolved manager silently falls out of the eligible pool, so this fails loudly."""
+    """Raise `SuperinvestorResolutionError` unless every unresolved code is in `unresolvable`;
+    return the unresolved codes."""
     unresolved = sorted({r["dataroma_code"] for r in rows if r["resolution"] == RESOLUTION_UNRESOLVED})
     unexpected = [c for c in unresolved if c not in unresolvable]
     if unexpected:
@@ -276,10 +238,7 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
 # IO: Dataroma fetch (its cert chain is incomplete -> verified-then-relaxed)     #
 # --------------------------------------------------------------------------- #
 def _http_get(url: str) -> requests.Response:
-    """GET with SSL verification, falling back to an UNVERIFIED retry on SSLError.
-    Dataroma serves an incomplete certificate chain (missing intermediate) that
-    OpenSSL cannot verify; the data is public and read-only, so an unverified fetch
-    is acceptable here and is logged so the relaxation is never silent."""
+    """GET with SSL verification, retrying unverified (logged) on SSLError; the data is public and read-only."""
     try:
         r = requests.get(url, headers=BROWSER_HEADERS, timeout=60)
     except requests.exceptions.SSLError:
@@ -309,21 +268,9 @@ def _make_resolver(
     name_history: dict[str, list[str]] | None = None,
     known: dict[str, tuple[str, str]] | None = None,
 ):
-    """`(code, name) -> (cik | None, resolution)`, memoised PER CODE.
-
-    Memoised because the seed replays 879 manager-rows over 104 distinct codes: resolving
-    per row would be an eight-fold EDGAR bill for the same answers, and the code -- not
-    the name -- is the manager's identity across snapshots.
-
-    Three sources, in precedence order, so a resolution never silently regresses:
-      1. `cik_overrides` -- a hand mapping always wins, which is what lets an
-         operator CORRECT a CIK the table already holds.
-      2. `known` -- `{code: (cik, resolution)}` already stored for that code. Resolution is
-         STICKY: Dataroma rewrites its display names constantly (52 of 104 codes were
-         renamed at least once; `SEQUX` carries seven), and a rename must not turn a manager
-         we have already identified back into an unresolved one.
-      3. EDGAR, on the name in hand and then on the earlier names in `name_history`
-         (NEWEST FIRST)."""
+    """`(code, name) -> (cik | None, resolution)`, memoised per code (the code is the identity).
+    Precedence: `cik_overrides`, then the stored `known` resolution (sticky across renames), then
+    EDGAR on the current name and earlier `name_history` names, newest first."""
     resolved_by_code: dict[str, tuple[str | None, str]] = {}
 
     def resolve(code: str, name: str) -> tuple[str | None, str]:
@@ -386,20 +333,13 @@ def _write(context: Context, rows: list[dict], unresolvable: Mapping[str, str]) 
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
 def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
-    """One-off: load the committed Wayback captures and write one row per
-    (snapshot_date, dataroma_code).
-
-    The capture file is keyed by YEAR, and the exact Wayback timestamps were not preserved,
-    so each snapshot is dated **1 January of its year**. That is an approximation and the
-    direction of its error is known: a manager Dataroma added mid-year reads as present from
-    that January. It is the dating the downstream pool assumes (the 2016 roster of 64 is the
-    eligible pool at 2016-06-30); a December dating would instead delay every addition by up
-    to a year, which on a survivorship fix is the more damaging error."""
+    """One-off: write the committed Wayback captures, one row per (snapshot_date, dataroma_code).
+    The capture file is keyed by year, so each snapshot is dated 1 January of its year."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     path = context.paths["DATA_STORE"] / _ROSTER_HISTORY_FILE
     history: dict[str, dict[str, str]] = json.loads(path.read_text(encoding="utf-8"))
 
-    # newest name first, so a renamed code resolves on the name EDGAR is likeliest to know
+    # Newest name first, so a renamed code resolves on its most recent name.
     name_history: dict[str, list[str]] = {}
     for year in sorted(history, reverse=True):
         for code, name in history[year].items():
@@ -421,13 +361,8 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
 
 
 def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
-    """Scrape Dataroma's roster today and write TODAY's snapshot into
-    `superinvestor_roster`. Idempotent: re-running the same day upserts the same PK.
-
-    CIKs come straight from EDGAR (or a code the table has already resolved -- see
-    `_make_resolver`), so this does NOT depend on a local 13F cache. `get_fn` defaults to
-    `sec_get` bound to `context` (which owns the SEC session / rate limiter); tests inject
-    their own single-arg stub instead."""
+    """Scrape Dataroma's roster and upsert today's snapshot (idempotent per day). CIKs resolve via
+    `_make_resolver`; `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))

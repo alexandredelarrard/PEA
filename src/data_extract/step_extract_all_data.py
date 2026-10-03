@@ -1,19 +1,8 @@
-"""
-step_extract_all_data.py  (src/data_extract/step_extract_all_data.py)
----------------------------------------------------------------------
-Super step orchestrating the data-extraction sub-steps. Resolves the ticker universe once
-— from the `sp500_tickers` table (the single entry point; seeded via the S&P 500 scraper
-only when empty) — and hands it to each sub-step:
+"""Super step orchestrating the data-extraction sub-steps over one universe from `sp500_tickers`.
 
-  1. prices          — price history, dividends, splits, macro / market series
-  2. institutionals  — 13F, superinvestors, insiders, 13D, 8-K, short interest, FTD
-  3. fundamentals    — fundamentals (Sharadar then SEC), earnings surprises
-  4. structure       — DEF 14A governance, filing text, shareholder votes
-  5. behavioral      — earnings-call transcripts
-
-⚠ institutionals runs BEFORE structure: structure's `fetch_8k_votes_llm` parses the `sec_8k`
-Item 5.07 narratives that institutionals stores, so the other order leaves the vote parser
-reading the previous run's 8-Ks.
+The universe is seeded via the S&P 500 scraper only when the table is empty. Order: prices ->
+institutionals -> fundamentals (Sharadar then SEC) -> structure -> behavioral. Institutionals must run
+before structure: the vote parser reads the `sec_8k` Item 5.07 narratives institutionals stores.
 """
 
 from omegaconf import DictConfig

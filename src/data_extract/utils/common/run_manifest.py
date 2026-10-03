@@ -1,32 +1,9 @@
-"""
-run_manifest.py  (src/data_extract/utils/common/run_manifest.py)
-------------------------------------------------------------------
-Single JSON checkpoint file (`data/extraction_manifest.json`) tracking, per DB
-table, the last extraction run's date / ticker count / rows added. Two distinct
-uses across the fetchers the five `step_extract_*` sub-steps call:
+"""Per-table JSON checkpoint (`extraction_manifest.json`): last run date, ticker count, rows added.
 
-  1. VISIBILITY (most fetchers): `record_run` is called once at the end purely
-     for bookkeeping. These fetchers already decide their own extraction window
-     from DB state (per-ticker max date, or bulk-period/accession dedup), which
-     stays authoritative and is NOT replaced by this file. `fetch_13f` belongs
-     here despite being an EDGAR filing-lister: it is all-filers, so
-     `manifest_window`'s ticker-membership trigger means nothing to it, and a full
-     rescan would be ~528k filings (~16h). It resumes from the table's
-     max(filing_date) minus its own bounded `lookback_days` instead.
-  2. WINDOW CONTROL (the EDGAR filing-listing fetchers only: 13D, 8-K, DEF 14A
-     edgar + LLM, fundamentals edgartools): these list each ticker's FULL
-     `years_history` window every run and rely solely on post-hoc accession
-     dedup (`incremental.stored_values` on `accession_number`). `manifest_window`
-     gives them a narrower `since` cutoff (the last run's date, inclusive)
-     instead of the fixed multi-year window.
-
-     Bounded, not unconditional: with a permanent per-ticker cutoff a filing
-     missed by a bug, or one EDGAR posts out of date order, would stay missing
-     forever once the window stops looking behind it.
-     `manifest_window` therefore also forces a full-window relist (self-heal)
-     whenever the table's exact ticker membership changed (a new ticker needs its own full
-     history) or `full_rescan_days` have elapsed since the last full relist --
-     bounding any silently-missed filing to that window instead of forever.
+Most fetchers call `record_run` for bookkeeping only; their DB frontier stays authoritative. The
+per-ticker EDGAR filing listers also take their `since` from `manifest_window`, which forces a
+full-window relist when the exact ticker membership changed or `full_rescan_days` elapsed. Writes
+are atomic read-modify-write that never clobber sibling tables' entries.
 """
 
 from __future__ import annotations
@@ -64,8 +41,7 @@ def _load_manifest(context: Context) -> dict:
 
 
 def _save_manifest(context: Context, manifest: dict) -> None:
-    """Write `manifest` atomically: a temp file in the same directory, then `os.replace`, so a crash
-    mid-write leaves the previous manifest intact instead of a truncated file."""
+    """Write `manifest` atomically (same-directory temp file, then `os.replace`), so a crash keeps the previous file."""
     path = manifest_path(context)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -73,10 +49,7 @@ def _save_manifest(context: Context, manifest: dict) -> None:
 
 
 def get_entry(context: Context, table: Table | str) -> dict | None:
-    """This table's last recorded run, or None on a first run / corrupt file.
-
-    `name_of` because the JSON is keyed by the table NAME: callers now pass the `Table` object,
-    and keying on it would both fail to serialize and orphan every existing manifest entry."""
+    """This table's last recorded run (keyed by table name), or None on a first run / corrupt file."""
     return _load_manifest(context).get(name_of(table))
 
 
@@ -93,10 +66,8 @@ def record_filing_outcomes(
 ) -> None:
     """Upsert accession-grain outcomes without advancing the run frontier.
 
-    A completeness-sensitive fetcher can persist work from successful tickers even
-    when another ticker fails, while leaving last_run_date and coverage_complete
-    untouched. A later outcome for the same ticker/accession replaces the earlier
-    one (notably pending_regime -> saved).
+    `last_run_date` and `coverage_complete` stay untouched; a later outcome for the same
+    (ticker, accession) replaces the earlier one.
     """
     if not outcomes:
         return
@@ -129,14 +100,11 @@ def manifest_window(
     fallback_since: pd.Timestamp,
     full_rescan_days: int,
 ) -> tuple[pd.Timestamp, bool]:
-    """The `since` cutoff an EDGAR filing-lister should use, and whether this run
-    counts as a full rescan (pass straight through to `record_run`).
+    """`(since, is_full_rescan)` for an EDGAR filing lister; pass `is_full_rescan` on to `record_run`.
 
-    Falls back to `fallback_since` (the fetcher's usual years-history window) --
-    marking `is_full_rescan=True` -- when there is no recorded run yet, the set of
-    `tickers` differs from the one `record_run` stored (a same-size swap included),
-    or the last full rescan is `>= full_rescan_days` old. Otherwise returns the
-    entry's `last_run_date` (inclusive) with `is_full_rescan=False`."""
+    Returns `(fallback_since, True)` when there is no recorded run, the exact `tickers` set differs
+    from the stored one (a same-size swap included), or the last full rescan is `>= full_rescan_days`
+    old; otherwise the entry's `last_run_date` (inclusive) with False."""
 
     entry = get_entry(context, table)
     if not entry or entry.get("tickers") != sorted({str(ticker) for ticker in tickers}):
@@ -173,18 +141,11 @@ def record_run(
     identity_scope_fingerprints: dict[str, str] | None = None,
     tickers: Iterable[str] | None = None,
 ) -> None:
-    """Merge this table's run stats into the shared manifest (read-modify-write --
-    every fetcher in a step run shares the one file, so this must not clobber
-    sibling tables' entries). `last_run_date` is always set to `run_date`
-    (default today); `last_full_rescan_date` is set to it too when
-    `is_full_rescan` or this table has no prior entry, else left unchanged.
+    """Merge this table's run stats into the shared manifest without touching sibling tables.
 
-    ⚠ `backfill_window` MARKS A RUN THAT REFILLED A HOLE BEHIND THE HEAD, and such a run
-    advances NOTHING. `last_run_date` is a resume cutoff (`manifest_window` returns it as
-    the next `since`), so stamping it from a backfill would claim the table had been brought
-    current when the run never looked at the head at all -- and the next incremental would
-    then start from the backfill's date. The window is appended to a `backfills` list and
-    every other field is carried through from the prior entry unchanged."""
+    `last_run_date` becomes `run_date` (default today); `last_full_rescan_date` too when
+    `is_full_rescan` or no prior one exists. A `backfill_window` run advances nothing: the window is
+    appended to `backfills` and every other field is carried through unchanged."""
     run_ts = pd.Timestamp(run_date).normalize() if run_date is not None else pd.Timestamp.today().normalize()
     run_date_str = run_ts.strftime(DATE_FORMAT)
 

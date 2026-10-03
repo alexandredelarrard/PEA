@@ -1,26 +1,9 @@
-"""
-crawler.py  (src/utils/crawler.py)
-----------------------------------
-A clean, fast, low-footprint HTTP crawler for rate-limited public endpoints (Motley Fool,
-Wikimedia, ...). Same ETHOS as `polite_http`: cooperate with rate limits and keep a minimal
-fingerprint. For IP rotation it uses ONLY proxies YOU supply and are authorized to use
-(`PEA_SCRAPE_PROXIES`); it does NOT fetch, scrape or bundle anonymous / residential proxy pools and
-does NOT solve CAPTCHAs — that is ban-evasion, not crawling hygiene (and it's brittle).
+"""Stateless HTTP crawler for rate-limited public endpoints (Motley Fool, Wikimedia, ...).
 
-Design (each request is independent, so a daily crawl stays fast):
-  * HEADLESS / STATELESS — plain HTTP GETs, no browser: no JavaScript, no images, and NO cookie jar
-    is carried between requests (nothing to fingerprint or expire).
-  * ROLLING fingerprint — a fresh REAL-browser TLS impersonation (curl_cffi) + a rotated
-    User-Agent / header set on EVERY request (a python-requests JA3 is blocked within a few calls).
-  * MOVING IPs — on a detected block (403 / 429 / 503) it advances to the NEXT proxy in your
-    configured list before retrying, so a flagged exit IP is dropped immediately. With no proxies
-    configured it retries direct (you can't rotate IPs you don't have — supply your own).
-  * FAST adaptive retry — short exponential backoff + jitter, honouring Retry-After, plus the
-    shared per-host slowdown from `polite_http` (one host's throttle never slows another).
-
-Configure the proxy pool (comma-separated, each an authorized proxy URL you own/rent):
-    export PEA_SCRAPE_PROXIES="http://user:pass@host1:port,http://user:pass@host2:port"
-Falls back to the single-proxy envs `polite_http` already honours (PEA_SCRAPE_PROXY / HTTPS_PROXY).
+Each GET is independent: no cookie jar, a rotated real-browser TLS impersonation (curl_cffi) and header set per
+request, short exponential backoff honouring Retry-After plus `polite_http`'s per-host slowdown. On a block
+(403/407/429/503 or 5xx) it advances to the next proxy in `PEA_SCRAPE_PROXIES` (comma-separated, user-supplied
+and authorized only; falls back to PEA_SCRAPE_PROXY / HTTPS_PROXY, else direct). It never sources proxy pools or solves CAPTCHAs.
 """
 
 from __future__ import annotations
@@ -39,7 +22,7 @@ from src.utils import polite_http as ph
 
 logger = logging.getLogger(__name__)
 
-# comma-separated list of YOUR authorized proxies (rotated on a detected block). No anonymous pools.
+# Comma-separated list of user-supplied authorized proxies, rotated on a detected block.
 PROXY_POOL_ENV = "PEA_SCRAPE_PROXIES"
 # HTTP status codes that mean "detected / throttled" -> rotate IP + retry
 DEFAULT_ROTATE_ON = (403, 407, 429, 503)
@@ -122,9 +105,7 @@ class Crawler:
             self._i = (self._i + 1) % len(self._proxies)
 
     def _raw_get(self, url: str, params: dict | None, headers: dict, proxy: str | None):
-        """ONE stateless GET. curl_cffi with a ROTATED real-browser impersonation (best vs JA3
-        fingerprinting), else plain requests. No Session -> no cookies persist. Returns a response
-        (.status_code/.text/.headers/.json) or None on a transport error."""
+        """One stateless GET: curl_cffi with a random browser impersonation, else plain requests; None on a transport error."""
         proxies: Any = {"http": proxy, "https": proxy} if proxy else None
         if self._impersonate:
             try:
@@ -150,10 +131,10 @@ class Crawler:
 
     # ------------------------------------------------------------------ #
     def get(self, url: str, *, params: dict | None = None, headers: dict | None = None, log_missing: bool | None = None):
-        """Fetch `url`, rotating IP + retrying on a detected block. Returns the response on HTTP 200,
-        else None (a non-retryable 4xx like 404, or all retries exhausted). `headers` overrides the
-        rolling browser headers (e.g. a friendly API's descriptive UA); `log_missing` overrides the
-        instance default for this call (silence the expected 404 when probing)."""
+        """Fetch `url`, rotating proxy and retrying on a detected block; the response on HTTP 200, else None.
+
+        `headers` overrides the rolling browser headers; `log_missing` overrides the instance default for this call
+        (to silence an expected 404 when probing)."""
         lm = self._log_missing if log_missing is None else log_missing
         for attempt in range(self._retries + 1):
             proxy = self._current_proxy()

@@ -1,36 +1,10 @@
-"""
-registrant.py (src/data_extract/utils/common/registrant.py)
---------------------------------------------------------------------------------------------
-THE SINGLE AUTHORITY ON WHICH CIKs A TICKER'S FILINGS CAN COME FROM.
+"""The single authority on which CIKs a ticker's filings can come from.
 
-A ticker's price history follows the ECONOMIC ENTITY; its filings follow the LEGAL
-REGISTRANT. When a company reorganises under a new holding company or re-registers in another
-jurisdiction, the registrant's CIK changes and the price history does not. `Company(ticker)`
-resolves exactly one CIK -- the one EDGAR's ticker table points at *today* -- so everything
-the predecessor filed becomes invisible **with no error, no exception and no gap signal**. The
-ticker simply arrives with 22 filings where its peers have 62.
-
-WHY `common/` AND NOT `fundamentals/`. This was diagnosed once, for fundamentals, and the
-register was filed under `configs/fundamentals/` accordingly. That home is the reason the
-other two tiers were wired late and inconsistently: five tier-A fetchers reached across into
-`fundamentals` for it, and the three bulk-dataset fetchers (`insider_transactions`,
-`notes_*`, `pension_facts`) never learned it existed at all. It is a cross-cutting concern and
-it lives at the lowest layer.
-
-WHY SEGMENTS AND NOT TWO CIKs. Chains are real. `PSKY` is CBS -> Viacom -> ViacomCBS ->
-Paramount Global -> Paramount Skydance. A two-CIK schema gives it one hop and leaves the rest
-truncated, so an entry is an ORDERED, CONTIGUOUS list of segments and a boundary is the seam
-between two of them.
-
-⚠ THIS FILE'S CONFIG IS A RISK ZONE. The failure mode is QUIET DATA LOSS: a `valid_to` set a
-year early drops the predecessor's last four filings and admits nothing in their place, and
-nothing downstream can tell that from a company that genuinely filed nothing. A wrong entry
-cannot raise on its own, so the loader raises on every malformed one it *can* detect, and
-every segment must carry its evidence.
-
-The one check that CANNOT live here is "the boundary falls inside the predecessor's own
-filing window" -- that needs EDGAR, and a config loader must never make a network call on a
-nightly path. `tests/data_extract/common/test_registrant_live.py` asserts it instead.
+Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication while
+`Company(ticker)` resolves only today's CIK. `registrant_cutover.json` declares each such ticker as
+an ordered, contiguous chain of evidenced `[valid_from, valid_to)` segments, validated strictly at
+load. `FORM_POLICY` decides per form whether filings UNION across the chain or SPLIT by date;
+`resolve_registrant_filings` walks it oldest first. The schedule subject-first search lives here too.
 """
 
 from __future__ import annotations
@@ -68,37 +42,19 @@ logger = logging.getLogger(__name__)
 _CIK_KIND = "register CIK"
 _ALIAS_KIND = "historical alias"
 
-#: Above this many filings retained AFTER cheap SGML subject-CIK filtering, discovery is
-#: considered incomplete. The broad owner-inclusive candidate book is deliberately uncapped:
-#: BLK can appear as filer on tens of thousands of unrelated schedules while having only a small
-#: issuer-side history of its own.
-#:
-#: ⚠ The limit is a hard incomplete outcome, never a successful empty result. Full filing
-#: objects are created only for retained issuer matches (plus headers whose subject is genuinely
-#: unavailable), so the former memory failure is avoided without losing late issuer filings.
+#: Retained filings after SGML subject-CIK filtering above which discovery raises as incomplete, never returns empty.
 SCHEDULE_SUBJECT_CAP = 2_000
-# SEC's legacy company-browse Atom endpoint returned a stable HTTP 503 at offset 5,100 for
-# BLK's reporting-person book on 2026-09-24. Stop before that deep-pagination boundary and
-# bisect the requested date range; each child is independently exhausted, so no filing is
-# inferred away and ordinary issuer CIKs still use one request.
+# Atom pagination offset at which a date window is split instead of paging deeper (SEC 503s beyond it).
 SCHEDULE_ATOM_SAFE_OFFSET = 5_000
 
-#: `configs/sec/registrant_cutover.json`. Declared here rather than in `constants.py`, whose
-#: rule is "a literal two or more non-test `src/` modules share": this module is the only
-#: reader, and every other module reaches the register through `load_registrants`.
+#: `configs/sec/registrant_cutover.json`, read only through `load_registrants`.
 REGISTRANT_CONFIG_SUBDIR = "sec"
 REGISTRANT_CONFIG_FILENAME = "registrant_cutover.json"
 
-#: `reorganisation` = a new legal parent (Apache Corp -> APA Corp holding company);
-#: `domestication` = the same business re-registered in another jurisdiction (Eaton's 2012
-#: move to Ireland). Both change the CIK.
+#: `reorganisation` = a new legal parent; `domestication` = re-registered in another jurisdiction. Both change the CIK.
 CUTOVER_KINDS: frozenset[str] = frozenset({"reorganisation", "domestication"})
 
-#: The `kind` a reader will reach for and must NOT use, rejected by name with its reason
-#: attached. A rename keeps the CIK -- CVS Caremark -> CVS Health, Facebook -> Meta -- so an
-#: entry would walk one CIK twice and duplicate every filing. Naming it explicitly is what
-#: stops the next person adding one; Sharadar records a name change whether or not the CIK
-#: moved, so the shell-name evidence that motivates most entries also fits a pure rename.
+#: Rejected by name: a rename keeps the CIK, so an entry would walk one CIK twice and duplicate every filing.
 RENAME_KIND = "rename"
 
 
@@ -106,8 +62,7 @@ RENAME_KIND = "rename"
 class Segment:
     """One registrant's tenure over a ticker: `[valid_from, valid_to)`.
 
-    `valid_from is None` on the oldest segment and `valid_to is None` on the newest, so the
-    chain is open at both ends and every date in history lands in exactly one segment.
+    The oldest segment has no `valid_from` and the newest no `valid_to`, so every date lands in exactly one segment.
     """
 
     cik: str
@@ -116,8 +71,7 @@ class Segment:
     evidence: str
 
     def covers(self, date) -> bool:
-        """Strictly-before / on-or-after, the convention the dated split has always used, so
-        two adjacent segments are disjoint by construction rather than by de-duplication."""
+        """Half-open membership, so adjacent segments are disjoint by construction."""
         stamp = pd.Timestamp(date)
         if self.valid_from is not None and stamp < self.valid_from:
             return False
@@ -133,7 +87,7 @@ class Registrant:
     segments: tuple[Segment, ...]
 
     def all_ciks(self) -> tuple[str, ...]:
-        """Every CIK in the chain, oldest first. This is the UNION set for event forms."""
+        """Every CIK in the chain, oldest first (the UNION set for event forms)."""
         return tuple(s.cik for s in self.segments)
 
     @property
@@ -143,18 +97,13 @@ class Registrant:
 
 
 def load_registrants(config_dir: str | None = None) -> dict[str, Registrant]:
-    """The registrant register, keyed by ticker, cached per config DIRECTORY rather than per
-    spelling of it -- see `resolve_config_dir`."""
+    """The registrant register keyed by ticker, cached per resolved config directory; `{}` when absent."""
     return _registrants_at(resolve_config_dir(config_dir))
 
 
 @cache
 def _registrants_at(config_dir: str) -> dict[str, Registrant]:
-    """`load_registrants`, keyed on a resolved absolute path. `{}` when the file is absent.
-
-    Validation is strict and happens at LOAD time, because a typo here silently deletes a
-    decade of history rather than raising -- see the module docstring.
-    """
+    """`load_registrants` keyed on a resolved path; validation is strict and raises at load."""
     path = Path(config_dir) / REGISTRANT_CONFIG_SUBDIR / REGISTRANT_CONFIG_FILENAME
     if not path.exists():
         return {}
@@ -228,12 +177,7 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
 
 
 def _check_ciks_unique_across_entries(registrants: dict[str, Registrant]) -> None:
-    """No CIK may appear in two tickers' chains.
-
-    Two tickers claiming one CIK is a register bug that produces a duplicate ticker in the
-    CIK->ticker map tier C resolves through, which would route one company's bulk rows to two
-    names. It cannot be caught inside a single entry, so it is checked across all of them.
-    """
+    """No CIK may appear in two tickers' chains (it would route one company's bulk rows to two names)."""
     owner: dict[str, str] = {}
     for ticker, reg in sorted(registrants.items()):
         for cik in reg.all_ciks():
@@ -253,41 +197,15 @@ class Combine(StrEnum):
     SPLIT = "split"  # consolidating: one registrant owns each date, disjoint by construction
 
 
-#: Every form this repo fetches, and how it combines across a registrant boundary.
-#:
-#: ⚠ FAIL CLOSED. A form absent here RAISES. Defaulting is exactly how this defect class stayed
-#: invisible for a year -- `Company(ticker)` silently returned one registrant and nothing said
-#: so -- and a new form family silently taking the wrong rule is the same failure again.
-#:
-#: THE TWO RULES LOOK CONTRADICTORY AND ARE BOTH RIGHT. One measurement settles it. Against
-#: APA's 2021-03-01 boundary the predecessor Apache Corp (CIK 6769) filed:
-#:
-#:     4  (insider events)     4,291 filings  2003-06-17 .. 2024-03-20    4 after the boundary
-#:     10-K / 10-Q (consol.)     140 filings  1994-03-21 .. 2024-11-07   15 after the boundary
-#:     DEF 14A                    28 filings  1994-03-29 .. 2020-04-03    0 after the boundary
-#:
-#: A UNION of the event stream gains 4,287 Form 4s and risks 4 ambiguous ones. A UNION of the
-#: consolidating stream would blend 15 subsidiary 10-K/10-Qs into the parent's accounts -- a
-#: fuller-looking history that is quietly wrong, which is the dangerous direction. And a SPLIT
-#: of the event stream is a regression on a named example: XOM's SCHEDULE 13G of 2026-08-07 is
-#: filed under the PREDECESSOR, after the boundary, so a split would discard a filing already
-#: in the database.
-#:
-#: ⚠ THE PROXY IS SPLIT, NOT UNION, AND THAT IS DELIBERATE. A proxy is a consolidating annual
-#: disclosure of one registrant's board and pay; two registrants' proxies for the same year
-#: would give the governance panel two boards. APA measured 0 predecessor proxies after its
-#: boundary, so the split costs nothing observed and protects the case that would corrupt the
-#: grain.
-#:
-#: ⚠ `FILING_TEXT_FORMS` IS 10-K/10-Q -- THE SAME FORMS, SPLIT. Item 1A/7 text is a
-#: registrant's own narrative, so a subsidiary's MD&A must not land in the parent's series.
+#: Every form this repo fetches and how it combines across a registrant boundary; an absent form raises (fail closed).
+#: Event forms UNION (an event happened whoever indexed it); periodic reports, their carved text and the
+#: proxy family SPLIT, since one registrant's accounts, narrative or board must never blend with another's.
 FORM_POLICY: dict[str, Combine] = {
     # events -- 8-K
     "8-K": Combine.UNION,
     "8-K/A": Combine.UNION,
     "8-K12B": Combine.UNION,
-    # events -- beneficial ownership. Both spellings of each: EDGAR renamed the form type at
-    # the 2024-12-17 structured-XML mandate and `get_filings(form=...)` matches EXACTLY.
+    # events -- beneficial ownership; both spellings, since EDGAR renamed the form types and matching is exact.
     "SC 13D": Combine.UNION,
     "SC 13D/A": Combine.UNION,
     "SCHEDULE 13D": Combine.UNION,
@@ -317,12 +235,7 @@ FORM_POLICY: dict[str, Combine] = {
 
 
 def combine_for(forms: Sequence[str]) -> Combine:
-    """The one policy governing `forms`, or a `ValueError` naming what is wrong.
-
-    A MIXED list raises rather than picking a winner: the caller is asking one question with
-    two right answers, which is a bug at the call site and not something this function can
-    resolve on its behalf.
-    """
+    """The one policy governing `forms`; raises `ValueError` for an unknown form, a mixed list or no forms."""
     unknown = [f for f in forms if f not in FORM_POLICY]
     if unknown:
         raise ValueError(
@@ -349,7 +262,10 @@ class AmbiguousRegistrantScopeError(RuntimeError):
 
 
 def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> str:
-    """Stable digest of one ticker's discovered scope and its authoritative register segments."""
+    """Stable SHA-256 of one ticker's discovered scope (ticker, roster CIK, CIKs, symbols) and register segments.
+
+    A changed fingerprint makes the EDGAR driver relist that ticker over the full window.
+    """
     segments = (
         []
         if entry is None
@@ -422,17 +338,12 @@ def resolve_registrant_filings(
     identity: Identity | None = None,
     stats: dict[str, int] | None = None,
 ) -> list:
-    """Every filing of `forms` for `ticker`, across its registrant chain, oldest first.
+    """Every filing of `forms` for `ticker` across its registrant chain, oldest first.
 
-    Combination is per-form, from `FORM_POLICY`; a mixed `forms` list raises. With no register
-    entry and no identity-discovered alias or CIK this is `Company(ticker).get_filings(...)`.
-    Identity adds same-CIK historical symbols; a discovered CIK is additive for UNION forms and
-    fails closed for SPLIT forms until the register supplies a dated chain.
-
-    UNION walks `Company(ticker)` first, then every segment / identity CIK, deduping on
-    accession (first writer wins). SPLIT gives each segment only the filings inside
-    `[valid_from, valid_to)`; a duplicate accession there is logged as a register error.
-    `since` and `done_accessions` are applied before the sort.
+    Policy comes from `FORM_POLICY` (a mixed list raises). UNION walks `Company(ticker)`, then
+    identity aliases and segment / identity CIKs, first writer per accession wins. SPLIT gives each
+    segment only filings inside its dates; an uncurated identity CIK raises for SPLIT forms.
+    `since` and `done_accessions` filter before the sort.
     """
     policy = combine_for(forms)
     entry = registrants.get(ticker)
@@ -462,9 +373,8 @@ def _filing_sources(
 ) -> list[tuple[str, Any | None]]:
     """`(label, Company)` pairs in provenance order, the ticker-resolved registrant first.
 
-    Without a register entry the ticker is labelled by its own symbol and followed by its aliases
-    and (UNION only) identity CIKs; with one it is labelled "ticker" and followed by the chain
-    CIKs and identity CIKs. Every Company is built before any listing is read.
+    Without a register entry: the ticker, its aliases and (UNION only) identity CIKs; with one:
+    "ticker", then chain CIKs and identity CIKs.
     """
     if entry is None:
         additive_ciks = identity_ciks if policy is Combine.UNION else ()
@@ -549,11 +459,10 @@ def issuer_ciks(
     registrants: dict[str, Registrant],
     identity: Identity | None = None,
 ) -> frozenset[str]:
-    """Every CIK that legitimately identifies THIS ticker as the SUBJECT of a schedule.
+    """Every CIK that identifies this ticker as the subject of a schedule.
 
-    The roster CIK, every register segment CIK and every identity-lineage CIK on the ticker's
-    entity: the 13D/13G issuer guard must accept a pre-boundary schedule filed about a
-    predecessor, which carries the predecessor's issuer CIK.
+    The roster CIK, register segment CIKs and identity-lineage CIKs, so the 13D/13G issuer guard
+    accepts a schedule filed about a predecessor.
     """
     ciks = {pad_cik(roster_cik)} if roster_cik else set()
     entry = registrants.get(ticker)
@@ -651,8 +560,7 @@ def _window_children(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[pd.Ti
 def _collect_window(query: _ScheduleQuery, cik: str, family: str, window_start: pd.Timestamp, window_end: pd.Timestamp) -> WindowResult:
     """Exhaust one inclusive date window, splitting it into child windows before unsafe deep pagination.
 
-    Pages read before a split count toward `pages` and `owner_rows_excluded`; their candidates
-    are replaced by the children's.
+    Any page failure raises `ScheduleDiscoveryIncompleteError`; after a split the children's candidates replace the pages read.
     """
     result = WindowResult()
     start = 0
@@ -681,8 +589,7 @@ def _collect_window(query: _ScheduleQuery, cik: str, family: str, window_start: 
                 or entry.filing_date < window_start
             ):
                 continue
-            # SEC includes a file number only when the queried CIK is the SUBJECT issuer;
-            # reporting-person rows omit it. The SGML subject-CIK guard remains the final authority.
+            # Only subject-issuer rows carry a file number; the SGML subject-CIK guard stays the final authority.
             if entry.file_number is None:
                 result.owner_rows_excluded += 1
                 continue
@@ -767,11 +674,9 @@ def resolve_schedule_subject_filings(
 
 
 def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str, filed_col: str, registrants: dict[str, Registrant]) -> pd.DataFrame:
-    """Drop bulk-dataset rows whose `filed` date lies outside the segment that CIK owns.
+    """Drop consolidating bulk-dataset rows whose `filed` date lies outside the segment their CIK owns.
 
-    For CONSOLIDATING bulk tables: a predecessor CIK resolves to the ticker through
-    `cik_to_ticker`, so a row is kept only when the segment covering its `filed` date is the
-    segment whose CIK filed it. Tickers with no register entry are untouched. Vectorised.
+    Tickers with no register entry are untouched.
     """
     if df.empty or not registrants:
         return df

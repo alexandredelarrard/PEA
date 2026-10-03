@@ -1,11 +1,8 @@
-"""
-edgar_driver.py (src/data_extract/utils/common/edgar_driver.py)
------------------------------------------------------------------
-Shared driver for the per-ticker edgartools fetchers (8-K, 13D, 13G, DEF 14A, filing
-text, fundamentals, insider live): resolve the listing window, dedup by accession, walk
-tickers on a thread pool, upsert each ticker's frames and record the run. Each fetcher
-declares one `EdgarFetch`; the single-table filing fetchers build their rows with
-`build_filing_rows` and supply only a per-filing row function.
+"""Shared driver for the per-ticker edgartools fetchers.
+
+Resolves the listing window, dedups by accession, walks tickers on a thread pool, upserts each
+ticker's frames and records the run. Each fetcher declares one `EdgarFetch`; single-table filing
+fetchers build rows with `build_filing_rows` and supply only a per-filing row function.
 """
 
 from __future__ import annotations
@@ -84,10 +81,8 @@ class FilingStamp:
     def period_of_report(self) -> Any:
         """The filing's raw `period_of_report`, or None when EDGAR's metadata cannot yield it.
 
-        edgartools implements it as a property that can raise `TypeError` from inside itself on
-        old submissions (`getattr`'s default does not catch that). `TypeError` is in
-        `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises, so the read is guarded here: the
-        value is optional metadata and every consumer tolerates a null.
+        Guarded because the edgartools property can raise `TypeError`, which `run_per_ticker`
+        re-raises as a `PROGRAMMING_ERRORS` member; consumers tolerate a null.
         """
         try:
             return self.filing.period_of_report
@@ -96,8 +91,7 @@ class FilingStamp:
 
     @cached_property
     def doc_url(self) -> str | None:
-        """The primary document's URL: the attachment's own `url` (`str()` of `filing.document`
-        renders a table, not a URL), else the archives path, else None."""
+        """The primary document's URL: the attachment's own `url`, else the archives path, else None."""
         document = getattr(self.filing, "document", None)
         url = getattr(document, "url", None) if document is not None else None
         if not url and self.accession_number and self.primary_document and self.cik:
@@ -106,20 +100,10 @@ class FilingStamp:
 
 
 def num_or_null(value, trust_value: bool) -> float:
-    """A beneficial-ownership numeric (13D or 13G) is only meaningful once the caller has
-    established the value is real rather than a class default -- usually 0, which a schedule
-    parser emits for every field it could not find. `trust_value` is the caller's AND of
-    every reason to disbelieve it: the filing carried no structured data at all, or it did
-    but this reporting person deferred its numbers to a narrative item.
+    """A 13D/13G beneficial-ownership numeric as float, or NaN when `trust_value` is False or it is unparseable.
 
-    Returns NaN (never None/Python-null) so the column stays float dtype even when every row
-    in a batch is unknown -- an all-None object column gets inferred as SQL TEXT by
-    `ensure_table`'s dtype mapping, which would corrupt a genuinely numeric field the first
-    time a real value needs to share that column.
-
-    Lives here rather than in either fetcher because both schedules need exactly this rule and
-    two copies would drift: 13D nulls on `has_structured_data` AND its placeholder test, 13G on
-    `has_structured_data` alone, and the difference must be visible at the CALL site."""
+    `trust_value` is the caller's judgement that the value is real rather than a parser default.
+    Returns NaN, never None, so an all-unknown batch stays float dtype rather than SQL TEXT."""
     if not trust_value or value is None:
         return float("nan")
     try:
@@ -235,7 +219,7 @@ def _resolve_window(
     # `-F/--full` serves chunked backfills, whose universe-size change the manifest cannot see.
     if full:
         return RunWindow(fallback_since, fallback_since, True)
-    # A legacy manifest cannot prove complete coverage, so the first complete-contract run walks the full history.
+    # A manifest without `coverage_complete` cannot prove coverage, so walk the full history.
     if fetch.require_complete and not (entry or {}).get("coverage_complete"):
         return RunWindow(fallback_since, fallback_since, True)
     since, is_full_rescan = manifest_window(

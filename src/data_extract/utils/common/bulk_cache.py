@@ -1,13 +1,8 @@
-"""
-bulk_cache.py  (src/data_extract/utils/common/bulk_cache.py)
-------------------------------------------------------------
-Cache, read and incremental-state helpers for the SEC bulk data sets (insider Forms 3/4/5,
-Financial Statement and Notes sets, fails-to-deliver) and the earnings-call transcript cache.
+"""Cache, read and incremental-state helpers for the SEC bulk data sets and the earnings-call transcript cache.
 
-Downloads stream to a `.part` file and rename on success; SEC tab-separated zips are read through
+Downloads stream to a `.part` file and rename on success; tab-separated zips are read through
 `read_zip_tables`; `pending_periods` / `mark_processed` decide which cached periods a run re-parses;
-`archive_available_at` / `stored_period_clock` give each archive its availability date. This module
-owns the name `cache_dir`, so callers keep the returned directory in a variable named `cache`.
+`archive_available_at` / `stored_period_clock` give each archive its availability date.
 """
 
 from __future__ import annotations
@@ -44,7 +39,7 @@ __all__ = [
 ]
 
 _CHUNK = 1 << 20  # 1 MiB streaming chunks
-_DEFAULT_TIMEOUT = 300  # seconds; the notes zips are ~380 MB
+_DEFAULT_TIMEOUT = 300  # seconds
 _RELEASE_DAY = 12  # estimated release: this day of the month after the period end
 
 logger = logging.getLogger(__name__)
@@ -176,8 +171,7 @@ def read_zip_tables(
 
 
 def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger | None = None) -> str | None:
-    """The FIRST member of a zip as decoded text (undecodable bytes replaced); a corrupt archive is
-    deleted so it re-downloads."""
+    """The first member of a zip as decoded text; a corrupt archive is deleted so it re-downloads."""
     log = log or logger
     try:
         with zipfile.ZipFile(path) as archive:
@@ -279,7 +273,6 @@ def stored_period_clock(context: Context, tables: Sequence[Table], period: str, 
 
 
 def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
-    """`['2015q1', '2015q2', ...]` covering the requested window, never starting before
-    `first_year` (the year the data set itself begins)."""
+    """`YYYYqN` tags covering the last `years_history` years, never before `first_year`."""
     now = (today or pd.Timestamp.today()).normalize()
     return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]

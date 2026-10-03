@@ -1,11 +1,7 @@
-"""
-edgar_fillings.py  (src/data_extract/utils/common/edgar_fillings.py)
------------------------------------------------------------
-List a company's filings of arbitrary form types over the full history,
-INCLUDING the older paginated pages that submissions/CIK{cik}.json splits out
-(the `filings.files[]` archives), so long histories are not truncated (covers
-15y+). Shared, on-demand filing discovery for the structure fetchers (DEF 14A,
-employees) -- there is no separate filing-index download.
+"""List a company's filings of arbitrary form types over its full submissions history.
+
+Reads the recent page and the older paginated `filings.files[]` pages of submissions/CIK{cik}.json,
+so long histories are not truncated. On-demand filing discovery for the structure fetchers.
 """
 
 from __future__ import annotations
@@ -51,13 +47,9 @@ def _rows_from_recent(block: dict, cik: str, company: str, forms: set, cutoff: p
                 "period_of_report": block.get("reportDate", [None] * n)[i],
                 "accession_number": acc,
                 "primary_document": primary,
-                # `primaryDocument` is EMPTY for filings up to ~2000 and a bare directory URL
-                # serves a folder index, so the `<accession>.txt` full submission is the document.
+                # Old filings have an empty `primaryDocument`; the `<accession>.txt` full submission stands in.
                 "doc_url": archive_url(cik, acc, primary or f"{acc}.txt"),
-                # always-present fallback: a named primary document can be MISSING from the
-                # archive (7 of 663 measured DEF 14A filings, all 2000-08..2001-03, name
-                # "0001.txt" and 404), and those filings produce no row at all today because the
-                # fetch raises. Consumers retry this URL when the primary GET fails.
+                # Fallback consumers retry when a named primary document is missing from the archive.
                 "txt_url": archive_url(cik, acc, f"{acc}.txt"),
                 # 8-K structured item codes (e.g. "2.02,9.01"); "" for forms without items
                 "items": (block.get("items", [""] * n)[i] or ""),
@@ -67,8 +59,7 @@ def _rows_from_recent(block: dict, cik: str, company: str, forms: set, cutoff: p
 
 
 def _cache_json(cache_dir: Path | None, name: str, payload: dict) -> None:
-    """Save a raw EDGAR submissions page to disk BEFORE it is parsed (reproducible re-parse /
-    offline). No-op when `cache_dir` is None."""
+    """Best-effort save of a raw submissions page before it is parsed; no-op when `cache_dir` is None."""
     if cache_dir is None:
         return
     try:
@@ -87,21 +78,15 @@ def list_filings(
     since: pd.Timestamp | str | None = None,
     cache_dir: Path | None = None,
 ) -> pd.DataFrame:
-    """All filings of `forms` for one CIK, across the recent page AND older
-    archive pages. Returns columns incl. `items` (8-K structured item codes).
+    """All filings of `forms` for one CIK over the last `years` years, oldest first, incl. 8-K `items`.
 
-    Window: the last `years` years by default. When `since` is given (a date
-    already fully parsed, `D`), only filings STRICTLY AFTER it are returned --
-    this is the incremental path, so a re-run fetches just D..today instead of
-    re-listing the whole history. Older archive pages entirely before the cutoff
-    are skipped without being downloaded. When `cache_dir` is given, every raw
-    submissions page is written there before parsing.
+    With `since` (a date already fully parsed) only filings strictly after it are returned; archive
+    pages entirely before the cutoff are not downloaded. `cache_dir` keeps every raw page.
     """
     cik = pad_cik(cik)
     forms_set = set(forms)
     cutoff = pd.Timestamp.today() - pd.DateOffset(years=years)
     if since is not None:
-        # strictly after the last date already parsed
         cutoff = max(cutoff, pd.Timestamp(since).normalize() + pd.Timedelta(days=1))
 
     data = sec_get(context, SEC_SUBMISSIONS_URL.format(cik=cik)).json()
@@ -111,12 +96,10 @@ def list_filings(
 
     rows = _rows_from_recent(filings.get("recent", {}), cik, company, forms_set, cutoff)
 
-    # older paginated archives
     for f in filings.get("files", []):
         older_name = f.get("name")
         if not older_name:
             continue
-        # only fetch a page if its date range can overlap our window
         page_to = f.get("filingTo")
         if page_to and pd.Timestamp(page_to) < cutoff:
             continue

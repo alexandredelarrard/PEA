@@ -1,27 +1,9 @@
-"""
-fetch_financial_statements.py  (src/data_extract/utils/fundamentals/fetch_financial_statements.py)
--------------------------------------------------------------------------------------------------
-Pension facts from the SEC "Financial Statement Data Sets" (free quarterly bulk
-TSV zips of the flattened primary-statement XBRL). This is the PRIMARY source for
-pensions: `companyfacts` only surfaces the tags a filer happens to expose, and the
-Sharadar-first `fundamentals_history` carries no pension column at all, so the bulk
-num/sub sets are what give the recognized net defined-benefit liability across the
-universe. Measured: 6,244 rows over 125 tickers, median 17 years each. The footnote
-funded status in `notes_num` (see `fetch_financial_notes.py`) is the second source
-and the only other one; together they reach 199 of 489 tickers.
+"""Pension facts from the SEC Financial Statement Data Sets (quarterly bulk zips of primary-statement XBRL).
 
-Each quarter's zip carries:
-  * sub.txt   adsh -> cik, name, form, period, fy, fp, filed
-  * num.txt   adsh, tag, version, ddate (period end), qtrs (0 = instant/balance
-              sheet), uom, segments, coreg, value
-
-We keep the CONSOLIDATED company-level rows (no dimensional `segments` member, no
-`coreg`) for a curated set of pension tags, join to sub for cik / form / filed,
-map to our tickers, and upsert to `pension_facts` (one row per company / tag /
-period-end / duration / ZIP quarter). The tag list is easily extended. The footnote PBO / plan-asset
-detail from the Financial Statement AND Notes sets is already wired -- separately, in
-`fetch_financial_notes.py` (`notes_num` / `notes_text`).
-
+Each quarter's `sub.txt` + `num.txt` is cached locally; consolidated rows (no `segments` member, no `coreg`) for
+the curated pension tags are joined to `sub` for cik / form / filed, mapped to universe tickers and upserted to
+`pension_facts`, one row per (cik, tag, ddate, qtrs, quarter), latest filed wins, stamped with the archive's
+point-in-time `available_at`. Footnote pension detail comes from `fetch_financial_notes.py`.
 """
 
 from __future__ import annotations
@@ -57,9 +39,7 @@ logger = logging.getLogger(__name__)
 
 _CHUNK = 500_000
 
-# Curated defined-benefit pension tags. The first is the recognized NET deficit
-# (balance-sheet, the debt-like obligation that feeds the cube's pension overhang);
-# the rest add coverage / detail where filers report them. Extend freely.
+# Curated defined-benefit tags: the recognized net liability first, then coverage/detail variants.
 _PENSION_TAGS = frozenset(
     {
         "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
@@ -104,8 +84,7 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
             "value": pd.to_numeric(num["value"], errors="coerce"),
         }
     )
-    # pension tags only (defensive: real path pre-filters, but keep the join pure),
-    # consolidated parent-company fact only (drop dimensional members / co-registrants)
+    # pension tags (re-checked so the join stays pure), consolidated parent-company facts only
     n = n[n["tag"].isin(_PENSION_TAGS) & (seg == "") & (coreg == "")].dropna(subset=["value", "ddate"])
     if n.empty:
         return pd.DataFrame()
@@ -128,8 +107,7 @@ def _join_pension(num: pd.DataFrame, sub: pd.DataFrame) -> pd.DataFrame:
 
 
 def _read_pension_facts(path: Path) -> pd.DataFrame | None:
-    """sub.txt plus the pension-tag rows of num.txt (streamed in chunks), joined. None when the zip
-    is corrupt (deleted for re-download) or lacks either member."""
+    """`sub.txt` joined to the pension rows of `num.txt`; None if the zip is corrupt (deleted) or lacks a member."""
     tables = read_zip_tables(path, _ZIP_SPECS, on_corrupt="delete", log=logger)
     if not tables:
         return None
@@ -137,20 +115,10 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
 
 
 def fetch_financial_statements(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
-    """Download (cached) the Financial Statement Data Sets over `years_history`,
-    extract pension facts for the universe, upsert to `pension_facts`. Returns the
-    number of rows upserted.
+    """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
-    ⚠ `reparse` RE-READS EVERY CACHED PERIOD, and it exists because the incremental test
-    cannot see a resolution change. That test is "did the ticker universe gain members?" --
-    and a registrant-register change gains none: the same 491 tickers resolve through MORE
-    CIKs. Without this flag the recovered predecessor rows would never be parsed.
-
-    ⚠ A PARTIAL RE-PARSE IS WORSE THAN EITHER STATE ALONE. It leaves the oldest periods
-    carrying the old resolution while the rest carry the new, and nothing downstream can tell
-    that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
-
-    Cached periods cost no network; a newly published quarter may still be downloaded.
+    Only pending quarters are read. `reparse` re-reads the WHOLE cached window (needed after a registrant/CIK
+    resolution change; never a partial suffix). Cached quarters cost no network.
     """
 
     cikmap = load_cik_mapping(context)
@@ -180,8 +148,7 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
             continue
         facts["ticker"] = facts["cik"].map(cik2tkr)
         facts = facts[facts["ticker"].isin(tickers)]
-        # `pension_facts` is CONSOLIDATING: a predecessor CIK resolves to the ticker, but only
-        # for the dates that registrant actually owned. See `FORM_POLICY`.
+        # consolidating table: a predecessor CIK counts only inside its dated segment (see `FORM_POLICY`)
         facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
         if facts.empty:
             continue

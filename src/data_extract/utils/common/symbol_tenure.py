@@ -1,33 +1,10 @@
-"""
-symbol_tenure.py (src/data_extract/utils/common/symbol_tenure.py)
---------------------------------------------------------------------------------------------
-AXIS B OF TICKER IDENTITY: WHICH ISSUER CIK HELD SYMBOL `X` ON DATE `d`.
+"""Ticker identity, axis B: which issuer CIK held symbol X on date d (`symbol_tenure`).
 
-A trading symbol is a LEASE, not a name. `IR` was Ingersoll-Rand Co Ltd, then Ingersoll-Rand
-plc, then Ingersoll Rand Inc; `COR` was Cortex Pharmaceuticals, then CoreSite Realty, then
-Cencora. Any pipeline that resolves a filing to a ticker by matching the filer's own typed
-`ISSUERTRADINGSYMBOL` against TODAY's universe therefore imports one company's rows under
-another company's name -- measured at 38,910 rows (1.92%) of `insider_transactions`.
-
-⚠ THE SEC PUBLISHES NO HISTORICAL TICKER->CIK DATASET. `company_tickers.json` is a current
-snapshot with no dates and `data.sec.gov/submissions` carries `formerNames` but no
-`formerTickers` (Meta's CIK 1326801 returns only `META`; the string `FB` appears nowhere).
-The fact exists only INSIDE the filings, so this table is DERIVED, not fetched -- from the
-`SUBMISSION.TSV` member of the cached Form 345 quarterly zips, which is primary source, free
-and entirely offline.
-
-⚠ TENURES OVERLAP. Two issuers legitimately file under the same symbol in the same year --
-one is still typing the symbol it lost, or the two sit on different exchanges. `valid_to` is
-the OBSERVED end of THAT CIK's own filing window, never the start of the next CIK's, so the
-table answers a MEMBERSHIP question ("did this CIK hold X at d") and never a lookup expecting
-one answer. Collapsing overlaps onto a single winner would silently rewrite history.
-
-⚠ THIS TABLE IS NOT ON THE `owns()` HOT PATH. The insider screen compares ENTITIES
-(`entity_lineage`, axis A) and never reads tenure, which is why the 2006q1 coverage floor
-costs nothing. Tenure is the DISCOVERY substrate that produces the candidate list axis A
-adjudicates, the third opinion in the roster-CIK cross-check, and the only resolver available
-to the tables that carry a symbol and a date but no CIK at all (fails-to-deliver, short
-interest).
+Derived offline from `SUBMISSION.TSV` in the cached Form 345 quarter zips, plus the evidenced
+manual config; PK (symbol, issuer_cik, valid_from), manual rows winning a PK collision. Tenures
+may overlap: `valid_to` is the observed end of that CIK's own filing window, so the table answers
+a membership question, never a single-answer lookup. Not read by `owns()`; it feeds axis-A
+candidates, the D19 cross-check and CIK-less symbol/date sources.
 """
 
 from __future__ import annotations
@@ -50,8 +27,7 @@ from src.utils.string import normalise_ticker, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
-#: The two zip members the identity tables read in ONE pass: SUBMISSION feeds `symbol_tenure`
-#: and, joined to REPORTINGOWNER on the accession, the owner sets `entity_lineage` scores.
+#: SUBMISSION feeds `symbol_tenure`; joined to REPORTINGOWNER on accession it feeds the `entity_lineage` owner sets.
 SUBMISSION_MEMBER = "SUBMISSION.TSV"
 OWNER_MEMBER = "REPORTINGOWNER.TSV"
 _FORM345_READ = {
@@ -62,28 +38,16 @@ _FORM345_READ = {
 #: `ISSUERNAME` is optional and feeds `evidence`; a zip missing any of these is skipped loudly.
 _REQUIRED_COLUMNS = frozenset({"ISSUERCIK", "ISSUERTRADINGSYMBOL", "FILING_DATE"})
 
-#: `ISSUERTRADINGSYMBOL` strings that mean "no symbol". Filers type all of these, and they are
-#: NOT a long tail: dropping them removes 194 (symbol, cik) pairs over 3 pseudo-symbols, each
-#: of which would otherwise read as a heavily-reused ticker held by dozens of unrelated CIKs.
-#: `NA`, `N/A` and `NULL` never reach here as strings -- pandas' default NA handling has
-#: already turned them into NaN -- but they stay listed so the rule is readable in one place.
+#: `ISSUERTRADINGSYMBOL` strings that mean "no symbol"; dropped so they never read as a reused ticker.
 _NULL_SYMBOLS = frozenset({"", "NONE", "N/A", "NA", "-", "--", "N.A.", "NULL"})
 
-#: A double quote is never part of a ticker, so it is stripped rather than kept as the filer's
-#: string. It is not cosmetic: 53 (symbol, cik) pairs arrive quoted, every one of them under
-#: the SAME CIK as the unquoted symbol, so leaving them split SHORTENS a real tenure. `WM` is
-#: the case that matters -- Washington Mutual's 325 filings of 2006-01..2008-09 are all typed
-#: `"WM"`, so without this the table says WM was Washington Mutual's only from 2008-04, and a
-#: pre-2008 `WM` filing looks like it belongs to nobody. No other normalisation is applied:
-#: `(SPAR)`, `NYSE:DRH` and `AMEX FVE` stay as typed, visible as low-`n_filings` tenures.
+#: Stripped because a quoted symbol would split a real tenure; no other normalisation is applied.
 _SYMBOL_NOISE_CHARS = '"'
 
-#: `DD-MON-YYYY` is the shape the SEC ships in most quarters; a minority are ISO. Both are
-#: parsed, because a silent parse failure here is a silent tenure gap.
+#: Month names for the `DD-MON-YYYY` filing-date shape (ISO dates are parsed too).
 _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
 
-#: Below this many cached quarters the derivation is a PARTIAL history that looks complete.
-#: 2006q1 -> 2026q1 is 81; the guard warns rather than raises so a deliberate subset still runs.
+#: Fewer cached quarters than this warns (not raises) that the derivation is a partial history.
 MIN_EXPECTED_QUARTERS = 80
 
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
@@ -127,11 +91,10 @@ def _manual_date(value: object, *, field: str, location: str) -> pd.Timestamp | 
 
 
 def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
-    """Load, normalize and validate the evidenced manual ticker-history input.
+    """Load, normalize and validate the evidenced manual ticker-history config; overlapping intervals raise.
 
-    The returned frame retains ``canonical_ticker`` and ``reason`` for the lineage builder's
-    cross-check. Those two audit columns are removed before materializing ``symbol_tenure``.
-    Runtime identity resolution reads only the materialized table, never this JSON.
+    Keeps the ``canonical_ticker`` and ``reason`` audit columns, which are dropped when ``symbol_tenure``
+    is materialized; runtime resolution reads only the table.
     """
     path = Path(config_dir) / MANUAL_TENURE_FILE
     if not path.exists():
@@ -216,7 +179,7 @@ def _check_manual_overlaps(manual: pd.DataFrame) -> None:
 
 
 def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
-    """Materialize both evidence classes, coalescing collisions at the table grain."""
+    """Manual plus derived rows; a PK (symbol, issuer_cik, valid_from) collision coalesces with manual first."""
     table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
     out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
     priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
@@ -255,20 +218,12 @@ def _coalesce_collisions(df_collisions: pd.DataFrame, primary_key: list[str]) ->
 
 
 def _parse_filing_dates(raw: pd.Series) -> pd.Series:
-    """`FILING_DATE` -> datetime64, accepting BOTH shapes the SEC ships.
-
-    `03-MAR-2006` and `2006-03-03` both appear across the 81 quarters. `pd.to_datetime` with
-    `format="mixed"` guesses per element and would read `01-02-2006` as a day-first or a
-    month-first date depending on its neighbours, so the `DD-MON-YYYY` shape is decoded
-    explicitly and only what it cannot claim falls through to ISO.
-    """
+    """`FILING_DATE` -> datetime64: `DD-MON-YYYY` decoded explicitly, the rest as ISO (never `format="mixed"`)."""
     text = raw.astype("string").str.strip().str.upper()
     out = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
     parts = text.str.split("-", n=2, expand=True)
     if parts.shape[1] == 3:
-        # Decoded on the SUBSET, not masked over the whole column: a row that is not this
-        # shape has no year to convert, and building the (year, month, day) frame over all
-        # rows raises `cannot convert NA to integer` on the first junk date in the quarter.
+        # Decode only the matching subset; junk rows elsewhere would make a whole-column parse raise.
         is_month_name = parts[1].isin(_MONTHS).fillna(False)
         if is_month_name.any():
             out.loc[is_month_name] = pd.to_datetime(text[is_month_name], format="%d-%b-%Y", errors="coerce")
@@ -287,9 +242,7 @@ def _quarter_of(path: Path) -> pd.Period | None:
 
 
 def _aggregate_submission(raw: pd.DataFrame, name: str, drops: Counter) -> pd.DataFrame | None:
-    """Per-(symbol, cik) first/last filing date, filing count and issuer name for one quarter's
-    `SUBMISSION.TSV` (ISSUERCIK already padded); None when the member lacks a required column or
-    keeps no row."""
+    """Per-(symbol, cik) first/last filing date, count and issuer name for one quarter; None when nothing usable."""
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
         logger.warning("symbol_tenure: %s lacks %s -> SKIPPED", name, sorted(missing))
@@ -321,8 +274,7 @@ def _aggregate_submission(raw: pd.DataFrame, name: str, drops: Counter) -> pd.Da
 
 
 def _owner_pairs(submission: pd.DataFrame, owners: pd.DataFrame) -> pd.DataFrame:
-    """Distinct (issuer_cik, owner_cik_raw) pairs of one quarter: each reporting owner, as filed,
-    joined to its filing's (padded) issuer on the accession number."""
+    """Distinct (issuer_cik, owner_cik_raw) pairs of one quarter, joined on the accession number."""
     if owners.empty:
         return pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"])
     df_issuers = pd.DataFrame({"accession": submission["ACCESSION_NUMBER"], "issuer_cik": submission["ISSUERCIK"]})
@@ -331,10 +283,9 @@ def _owner_pairs(submission: pd.DataFrame, owners: pd.DataFrame) -> pd.DataFrame
 
 
 def scan_form345_cache(cache: Path) -> Form345Scan:
-    """Read every cached Form 345 quarter zip ONCE for both identity tables.
+    """Read every cached Form 345 quarter zip once for both identity tables.
 
-    Each quarter yields its tenure aggregate and its distinct reporting-owner pairs. A corrupt zip
-    is skipped (and kept); a zip without `SUBMISSION.TSV` is skipped loudly.
+    A corrupt zip is skipped and kept (`on_corrupt="skip"`); a zip without `SUBMISSION.TSV` is skipped loudly.
     """
     zips = sorted(p for p in cache.glob("*.zip") if _quarter_of(p) is not None)
     if not zips:
@@ -382,10 +333,8 @@ def scan_form345_cache(cache: Path) -> Form345Scan:
 def derive_symbol_tenure(scan: Form345Scan) -> pd.DataFrame:
     """(symbol, issuer_cik) -> (valid_from, valid_to, n_filings) from one Form 345 cache scan.
 
-    Deterministic: the same cache always yields the same frame, sorted on (symbol, valid_from,
-    issuer_cik). Boundaries are half-open like `registrant.Segment.covers`: `valid_to` is
-    `last_filed + 1 day`, and NULL ("no end observed") when `last_filed` falls inside the most
-    recent cached quarter.
+    Deterministic, sorted on (symbol, valid_from, issuer_cik). Half-open: `valid_to` is `last_filed + 1 day`,
+    NULL ("no end observed") when `last_filed` falls in the latest cached quarter.
     """
     if not scan.tenure_parts:
         raise ValueError(f"symbol_tenure: every zip under {scan.cache} was unreadable or empty")
@@ -453,11 +402,9 @@ def changed_tenure_symbols(
 
 
 def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | Path | None = None) -> pd.DataFrame:
-    """Derive `symbol_tenure` from a cache scan and REPLACE the table unless it is unchanged;
-    returns the materialized frame.
+    """Derive `symbol_tenure` and replace the table unless unchanged; returns the materialized frame.
 
-    `replace`, never `save`: the table is a full derivation of the cache, and an upsert would
-    leave rows from an earlier, narrower run behind with nothing to tell them from current ones.
+    `replace`, never `save`: a full derivation must not leave stale rows behind.
     """
     existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
     derived = derive_symbol_tenure(scan)
@@ -473,8 +420,7 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
         context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
     unchanged = matches_stored(existing, out, Tables.symbol_tenure)
     written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, out)
-    # `ticker_count=0`: a market-wide derivation over every EDGAR symbol, not a per-ticker walk.
-    # Always a full rescan: the whole cache is re-read every time.
+    # Market-wide derivation (ticker_count 0) that re-reads the whole cache, so always a full rescan.
     record_run(context, Tables.symbol_tenure, 0, written, is_full_rescan=True)
     if unchanged:
         logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(out))

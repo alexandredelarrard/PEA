@@ -123,7 +123,7 @@ def _accession_rows(df: pd.DataFrame, accessions: set[str]) -> pd.DataFrame:
     """Rows of one zip member whose `ACCESSION_NUMBER` is in `accessions`."""
     if "ACCESSION_NUMBER" not in df.columns:
         return df
-    # `isin` on the Arrow-backed str column is ~15x slower than on its object copy.
+    # `isin` is much faster on an object copy than on the Arrow-backed str column.
     return df[df["ACCESSION_NUMBER"].astype(object).isin(accessions)]
 
 

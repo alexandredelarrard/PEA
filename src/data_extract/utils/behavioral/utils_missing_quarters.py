@@ -1,30 +1,10 @@
-"""
-utils_missing_quarters.py  (src/data_extract/utils/behavioral/utils_missing_quarters.py)
----------------------------------------------------------------------------------------
-THE single definition of "which earnings-call quarters is each ticker still missing".
+"""The single definition of which earnings-call quarters each ticker is still missing.
 
-Every recent-gap source answers the same question before it spends a request, so the
-answer is computed ONCE, here, and handed to each source in priority order:
-
-    missing = missing_quarters_by_ticker(context)      <- one pass over HF + DB + disk
-    rows, filled = fetch_roic_transcripts(context, missing=missing)   <- 1. clean JSON API
-    missing = remaining_after(missing, filled)         <- drop what Roic just supplied
-    build_transcript_index_by_ticker(context, missing=missing)        <- 2. fool HTML, last resort
-
-Before this was centralised, `fetch_roic_transcripts` called `missing_quarters_by_ticker`
-while the fool discovery re-derived the identical thing inline (its own universe load, HF
-horizon read, DB read, released-quarter read and gap closure), and `fetch_earnings_calls`
-carried a byte-level copy of all eleven helpers. Two consequences: the gap definition
-could drift between the two sources, and `hf_latest_quarter_by_ticker` -- which scans the
-1.8 GB HuggingFace parquet -- ran twice per pipeline run.
-
-`gap = required - have`, where
-  required : from the quarter AFTER the HF backbone's latest for the ticker (or the
-             `since` floor when HF has nothing) up to the latest quarter that ticker has
-             ACTUALLY REPORTED per `earnings_surprises` (falling back to the calendar
-             quarter of today - grace when unknown), and
-  have     : quality-valid quarters already on disk or in `earnings_call_sections`.
-Names that hold no earnings call at all (NO_EARNINGS_CALL_TICKERS) are always empty.
+Computed once per run and handed down the sources in priority order (Roic, then Motley Fool), with
+`remaining_after` removing what each source supplied. `gap = required - have`: required runs from the quarter
+after the HF backbone's latest (or the `since` floor) to the latest quarter the ticker has actually reported
+per `earnings_surprises` (else the calendar quarter of today - grace); have is the quality-valid quarters on
+disk or in `earnings_call_sections`. Quarters are fiscal labels `YYYYQn`. NO_EARNINGS_CALL_TICKERS are never missing.
 """
 
 import re
@@ -132,13 +112,9 @@ def stored_call_quarters(context: Context, tickers: Sequence[str]) -> tuple[dict
 
 
 def _released_quarter_idx_by_ticker(context: Context, lag_days: int = EARNINGS_REPORT_TO_QUARTER_LAG_DAYS) -> dict[str, int]:
-    """{ticker: index of the latest quarter it has ACTUALLY REPORTED}, from `earnings_surprises`
-    (which carries the earnings report date per ticker). We take the most recent earnings_date that
-    is <= today and map it back into the quarter it reported (shift by `lag_days`, since a report
-    lands a few weeks after quarter-end). This replaces the blanket calendar guess with the real
-    per-ticker release, so the gap logic never demands a quarter a ticker hasn't reported yet — and
-    picks up an early reporter the calendar heuristic would miss. {} when the table is unavailable
-    (callers then fall back to the calendar `end_idx`)."""
+    """{ticker: index of the latest quarter it has actually reported}: its latest `earnings_surprises` date
+    <= today, shifted back by `lag_days` into the reported quarter. {} when the table is unavailable (callers
+    then fall back to the calendar `end_idx`)."""
     try:
         es = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date"])
     except Exception:
@@ -169,27 +145,20 @@ def _missing_for(
     malformed_db: dict[str, set] | None = None,
     released: dict[str, int] | None = None,
 ) -> set[str]:
-    """The quarters still needed for `tk`: everything from the fool gap-start (the quarter AFTER the
-    HF backbone's latest for `tk`, or the `since` floor when HF has none) up to the latest quarter
-    the ticker has ACTUALLY REPORTED (`released[tk]` from earnings_surprises; falls back to the
-    calendar `end_idx` when unknown), MINUS what's already quality-valid on disk / in the DB.
-    Tickers that hold no earnings call (NO_EARNINGS_CALL_TICKERS, e.g. Berkshire) return {} so they
-    are never fetched or flagged as missing. Shared by the MF quote-page discovery AND the Roic
-    fallback so the 'what's missing' definition can't drift."""
+    """The quarters still needed for `tk` per the module's gap rule, plus any malformed stored quarter up to its
+    end; {} for NO_EARNINGS_CALL_TICKERS."""
     if tk in NO_EARNINGS_CALL_TICKERS:
         return set()
     hf = hf_latest.get(tk)
     gap_start = (_quarter_index(*hf) + 1) if hf else floor_idx
     tk_end = released.get(tk, end_idx) if released is not None else end_idx  # actual release, per ticker
     required = set(_quarters_between(gap_start, tk_end))
-    # A malformed stored call remains recoverable even when it lies at or before the HF
-    # frontier; otherwise the frontier would permanently hide it from ROIC/Fool retries.
+    # A malformed stored call stays recoverable even at or before the HF frontier.
     for quarter in (malformed_db or {}).get(tk, set()):
         parsed = _parse_quarter(quarter)
         if parsed is not None and _quarter_index(*parsed) <= tk_end:
             required.add(quarter)
-    # An index URL is discovery state, not transcript coverage. Only valid parsed DB/disk
-    # content closes the gap; malformed cached/indexed calls are retried.
+    # Only valid parsed DB/disk content closes the gap; an index URL is not coverage.
     have = _local_quarters(cache, tk) | have_db.get(tk, set())
     return required - have
 
@@ -201,12 +170,8 @@ def sort_quarters(quarters) -> list[str]:
 
 
 def remaining_after(missing: dict[str, list[str]], filled: dict[str, set[str]] | None) -> dict[str, list[str]]:
-    """`missing` minus whatever an earlier source just supplied -> what the NEXT source
-    should attempt. Tickers left with nothing are dropped, so the following source skips
-    them entirely instead of spending a request to discover they are complete.
-
-    This is what makes a single up-front gap computation safe to share across sources: the
-    hand-off is explicit rather than relying on the next source re-reading the DB."""
+    """`missing` minus what an earlier source just supplied -> what the next source should attempt.
+    Tickers left with nothing are dropped, so the next source never requests them."""
     filled = filled or {}
     out: dict[str, list[str]] = {}
     for ticker, quarters in missing.items():
@@ -226,11 +191,8 @@ def missing_quarters_by_ticker(
     needs after the HF backbone + whatever is already quality-valid on disk / in the DB. Empty entries
     are dropped.
 
-    THE single source of truth for 'what to fetch', shared by the Roic API layer and the
-    Motley Fool discovery. Call it ONCE per run and pass the result down (see the module
-    docstring): it reads the HF parquet horizon, the sections table and transcript cache,
-    so re-deriving it per source is both slow and a chance for
-    the two sources to disagree about what is missing."""
+    The single source of truth for what to fetch, shared by Roic and Motley Fool discovery; call it once
+    per run and pass the result down (it scans the HF parquet, the sections table and the transcript cache)."""
     roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
     assert roster is not None
     universe = list(cast(pd.Series, roster["ticker"]))

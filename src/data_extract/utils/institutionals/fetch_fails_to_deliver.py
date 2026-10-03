@@ -1,15 +1,10 @@
 """
 fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-SEC Fails-to-Deliver (FTD): semi-monthly settlement-fail files, a signal for
-settlement stress / short-squeeze risk. Kept in its own table, separate from
-`short_interest`, so its semi-monthly publication lag doesn't corrupt that table's
-global-max-date incremental sync (see schema.py).
-
-It is a Cumulative Balance, NOT Daily New Fails:
-The number listed on date t represents
-the total net unsettled balance as of that night.
-$$\text{FTD}_t = \text{FTD}_{t-1} + \text{New Fails}_t - \text{Resolved Fails}_t$$
+SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date), its own table so
+its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
+unsettled balance on each settlement date, not new fails. Resume skips periods already processed
+under the current symbol policy; historical symbols resolve point-in-time; `full` replaces the table.
 """
 
 from __future__ import annotations
@@ -45,15 +40,11 @@ logger = logging.getLogger(__name__)
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
 _POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
 
-# {period} names the source semi-monthly ZIP. Its tag, not the settlement day,
-# controls availability: some b ZIPs contain day-15 rows. The SAME
-# cnsfails{period}.zip files (identical pipe format) live under TWO paths:
-#   * current path       -> 2017-06b onward
-#   * FOIA "legacy" path  -> 2009-07a .. 2017-06a  (pre-2017-06 history)
+# The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
-SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path (>= 201706b uses the current path)
-SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file overall (2009-07, legacy path) -> full 15y coverage
+SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
+SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -111,10 +102,8 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
 
 
 def _period_urls(period: str) -> tuple[str, ...]:
-    """Download URL(s) for a semi-monthly period, path chosen by date: the FOIA
-    'legacy' path for <= 2017-06a, the current path for >= 2017-06b. The other path
-    is tried as a fallback (boundary / occasional re-issued files live on both).
-    Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
+    """Download URLs for a period: the date-appropriate path first (legacy <= 2017-06a), the other
+    as fallback. Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
     modern = SEC_FTD_URL_TEMPLATE.format(period=period)
     legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
@@ -178,7 +167,7 @@ def fetch_fails_to_deliver(
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     candidates = resolver.candidate_symbols(universe)
     policy_scope = set(candidates) | {_POLICY_MARKER}
-    # a full rebuild must reproduce every stored period, so it needs the stored set itself
+    # A full rebuild must reproduce every stored period.
     stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period") if full else frozenset()
 
     saved = 0

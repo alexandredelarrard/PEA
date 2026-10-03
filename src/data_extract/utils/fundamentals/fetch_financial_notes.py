@@ -1,43 +1,9 @@
-"""
-fetch_financial_notes.py  (src/data_extract/utils/fundamentals/fetch_financial_notes.py)
-----------------------------------------------------------------------------------------
-SEC "Financial Statement AND Notes" data sets — the heavier sibling of the plain
-Financial Statement Data Sets (fetch_financial_statements.py). Where the plain sets
-carry only the PRIMARY-statement XBRL, the NOTES sets ALSO carry the footnote-level
-facts, both:
+"""SEC Financial Statement and Notes data sets -> `notes_num` (footnote pension numerics) and `notes_text` (note prose).
 
-  * NUMERIC (num.tsv) — the footnote pension roll-forward the primary statements
-    never expose: projected benefit obligation (PBO), fair value of plan assets,
-    accumulated benefit obligation (ABO), service / interest cost, employer
-    contributions, discount-rate assumption. `companyfacts` only surfaces these
-    where a filer tags them UNdimensioned, so coverage there is patchy (PBO ~24%,
-    plan assets ~42% of our universe); the bulk sets give the same undimensioned
-    totals across the whole universe in one pull, and we UNION them with the
-    existing pension_facts / companyfacts data at the feature layer.
-  * TEXT (txt.tsv) — the narrative note prose (pension, revenue recognition,
-    commitments / litigation, segment, going-concern / concentration risk,
-    critical accounting policies). Stored raw for LATER embedding / sentiment;
-    no NLP is done here. Scoped to a curated high-signal tag set (not every
-    boilerplate policy block) to keep the table lean.
-
-Each period's zip carries (.tsv, note the extension differs from the plain sets'
-.txt): sub.tsv (adsh -> cik, form, fy, fp, filed), num.tsv (adsh, tag, ddate,
-qtrs, uom, dimh, dimn, coreg, value, footnote, ...), txt.tsv (adsh, tag, ddate,
-qtrs, dimn, coreg, escaped, txtlen, value [the text], ...).
-
-We keep the CONSOLIDATED / undimensioned company-level fact only (`dimn == 0`, no
-`coreg`) — dimn>0 rows are pension-vs-OPEB / asset-category breakdowns we skip for
-now (a dim.tsv join to sum members is a documented follow-up). Rows are joined to
-sub for cik / form / filed, mapped to our tickers, and upserted per filing to
-`notes_num` (numeric) and `notes_text` (text).
-
-Incremental: zips cached under data/sec_financial_notes/ and only downloaded when
-missing; a period already in the DB is skipped unless the universe gained tickers
-(then cached zips are re-parsed, no re-download). Upsert de-dupes by filing.
-
-WARNING: these files are ~300-450MB EACH (~30x the other sources). At
-notes_years_history=15 the full back-fill is ~26GB of cached zips — scoped by the
-dedicated `data_extract.notes_years_history` config knob.
+Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for universe filers, keeping only
+curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. Rows carry their archive
+`period` and point-in-time `available_at` clock. Incremental: a stored period is skipped unless the universe gained
+tickers or `reparse` is set. Zips are large, so the window is the dedicated `notes_years_history` knob.
 """
 
 from __future__ import annotations
@@ -80,9 +46,7 @@ _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-sta
 _OBSERVED_FROM = date(2026, 9, 1)
 _NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 
-# Curated footnote NUMERIC pension tags (undimensioned totals). Superset of the
-# balance-sheet net-liability tags in pension_facts — adds the footnote detail
-# only the NOTES sets carry. Discount-rate tags are percentages (uom != USD).
+# Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD.
 _NOTES_NUM_TAGS = frozenset(
     {
         "DefinedBenefitPlanBenefitObligation",  # PBO
@@ -100,8 +64,7 @@ _NOTES_NUM_TAGS = frozenset(
     }
 )
 
-# High-signal NOTES narrative text blocks (TextBlock XBRL elements). Stored raw for
-# later embedding / sentiment; a few variants per theme for coverage.
+# High-signal note TextBlock elements, a few variants per theme.
 _NOTES_TEXT_TAGS = frozenset(
     {
         # pension / retirement
@@ -164,9 +127,7 @@ def _period_year(tag: str) -> int:
 
 
 def _scrape_available_periods(context: Context) -> list[str] | None:
-    """Authoritative available-file list from the landing page (robust to the
-    rolling quarterly<->monthly boundary). None on any failure -> caller falls
-    back to the deterministic generator."""
+    """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator)."""
     try:
         r = context.sec_session.get(_LANDING_URL, timeout=60)
         if r.status_code != 200:
@@ -178,9 +139,7 @@ def _scrape_available_periods(context: Context) -> list[str] | None:
 
 
 def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
-    """Deterministic candidate tags: quarterly for every year in the window PLUS
-    the last 14 months as monthly. 404s are skipped by the downloader, so
-    over-generating the recent edge is harmless."""
+    """Candidate tags: quarterly over the window plus the last 14 months as monthly (404s are skipped downstream)."""
     today = (today or pd.Timestamp.today()).normalize()
     quarterly = quarter_periods(years_history, SEC_FINNOTES_FIRST_YEAR, today)
     monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(end=today, periods=14, freq="M")]
@@ -215,9 +174,7 @@ def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str], re
     )
     s["ticker"] = s["cik"].map(cik2tkr)
     s = s[s["ticker"].isin(universe)]
-    # `notes` is a CONSOLIDATING table, so a predecessor CIK resolving to the ticker is only
-    # half the rule -- the row must also fall in the segment that CIK owned. Without this,
-    # Apache Corp's post-2021 subsidiary notes would blend into APA's. See `FORM_POLICY`.
+    # consolidating table: a predecessor CIK's row must also fall in that CIK's dated segment (see `FORM_POLICY`)
     return drop_rows_outside_segment(s, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
 
 
@@ -306,8 +263,7 @@ def _consolidated_rows(chunk: pd.DataFrame, adsh_set: set[str], tags: frozenset[
 
 
 def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """One notes zip -> (tidy num facts, tidy text) for the universe. sub.tsv resolves the universe
-    filings, then num/txt stream in chunks keeping their consolidated curated rows."""
+    """One notes zip -> `(num facts, text)` for universe filings; num/txt stream in chunks keeping consolidated curated rows."""
     empty = (pd.DataFrame(), pd.DataFrame())
     subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete", log=logger)
     if not subs:
@@ -327,8 +283,7 @@ def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str], registr
 
 
 def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dict[str, date]:
-    """Stamp `available_at` on stored periods lacking it (every stored period when `overwrite`);
-    returns the clock written per period."""
+    """Stamp `available_at` on stored periods lacking it (all stored periods if `overwrite`); returns the clock per period."""
     periods = _periods_missing_available_at(context)
     if overwrite:
         periods |= stored_values(context, _NOTES_TABLES, "period")
@@ -363,23 +318,11 @@ def fetch_financial_notes(
     reparse: bool = False,
     repair_availability: bool = False,
 ) -> int:
-    """Download (cached) the SEC Financial Statement & Notes data sets over
-    `notes_years_history`, extract footnote pension NUMERICS -> `notes_num` and
-    high-signal note TEXT -> `notes_text` for the universe. Returns total rows
-    upserted (num + text). Incremental: a period already in the DB is skipped
-    (no re-download) unless the universe gained tickers (then cached zips are
-    re-parsed, no re-download).
+    """Fetch the notes data sets over `years_history` into `notes_num` and `notes_text`; returns rows upserted.
 
-    ⚠ `reparse` RE-READS EVERY CACHED PERIOD, and it exists because the incremental test
-    cannot see a resolution change. That test is "did the ticker universe gain members?" --
-    and a registrant-register change gains none: the same 491 tickers resolve through MORE
-    CIKs. Without this flag the recovered predecessor rows would never be parsed.
-
-    ⚠ A PARTIAL RE-PARSE IS WORSE THAN EITHER STATE ALONE. It leaves the oldest periods
-    carrying the old resolution while the rest carry the new, and nothing downstream can tell
-    that from a real coverage cliff. So this re-reads the whole window, not a suffix of it.
-
-    `repair_availability` updates stored clocks only and returns before ZIP download or parsing.
+    A stored period is skipped unless the universe gained tickers. `reparse` re-reads the WHOLE cached window
+    (needed after a registrant/CIK-resolution change; never a partial suffix). `repair_availability` only
+    repairs stored `available_at` clocks and returns 0 before any download or parse.
     """
 
     cikmap = load_cik_mapping(context)

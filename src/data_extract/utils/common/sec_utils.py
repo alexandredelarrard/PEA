@@ -1,14 +1,9 @@
-"""
-Shared helpers for talking to SEC EDGAR (free, no API key, but requires a
-descriptive User-Agent and respectful rate limiting — SEC's fair-access
-policy asks for <=10 requests/second; we stay just under it).
+"""Shared SEC EDGAR helpers: rate-limited GET, the universe CIK mapping and the CIK -> ticker map.
 
-https://www.sec.gov/os/webmaster-faq#developers
-
-The rate limiter is THREAD-SAFE: request *initiation* is serialized and spaced
-by `_MIN_INTERVAL` across all threads (so the global rate never exceeds SEC's
-limit), while the network transfer happens outside the lock so downloads from a
-ThreadPoolExecutor overlap. This is what lets the EDGAR fetchers parallelize.
+SEC's fair-access policy requires a descriptive User-Agent and <= 10 requests/second
+(https://www.sec.gov/os/webmaster-faq#developers). The limiter is thread-safe but per process:
+request starts are spaced by `_MIN_INTERVAL` across threads while transfers overlap, so run one
+EDGAR walk at a time.
 """
 
 import threading
@@ -29,9 +24,7 @@ _next_slot = [0.0]  # monotonic time of the next allowed request start
 
 
 def _reserve_slot() -> None:
-    """Reserve the next evenly-spaced request slot (thread-safe). The wait
-    happens OUTSIDE the lock so concurrent transfers overlap while request
-    starts stay spaced by `_MIN_INTERVAL`."""
+    """Reserve the next evenly-spaced request slot; the wait happens outside the lock."""
     with _rate_lock:
         start = max(time.monotonic(), _next_slot[0])
         _next_slot[0] = start + _MIN_INTERVAL
@@ -41,9 +34,7 @@ def _reserve_slot() -> None:
 
 
 def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
-    """Rate-limited GET on `context.sec_session` (the required SEC User-Agent header is
-    pre-set on it). Safe to call from multiple threads: the session's connection pool is
-    thread-safe and only request *initiation* is serialized, by `_reserve_slot`."""
+    """Rate-limited, thread-safe GET on `context.sec_session` (User-Agent pre-set); raises on HTTP error."""
     kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     _reserve_slot()
     resp = context.sec_session.get(url, **kwargs)
@@ -51,60 +42,25 @@ def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
     return resp
 
 
-#: The `sp500_tickers` projection every SEC fetcher resolves its universe through. Module-level
-#: so a test fixture standing in for that table can be built FROM it -- a fixture that pinned its
-#: own column list passed while production read a column the fixture never wrote, and the
-#: resulting `KeyError` surfaced only as an unrelated-looking driver failure.
+#: The `sp500_tickers` projection every SEC fetcher resolves its universe through; test fixtures build from it.
 CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector", "industry_group", "sub_industry")
 
 
 def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.DataFrame:
-    """Ticker -> CIK (+ name / GICS) resolution for the SEC EDGAR fetchers, filtered
-    server-side to `tickers` when given.
-
-    Single source of truth is `sp500_tickers` (built by fetch_prices), which already
-    carries `cik` alongside `name` / `sector` / `industry_group` / `sub_industry`.
-    A separate `cik_mapping` table rebuilt from SEC's company_tickers.json was dropped:
-    it duplicated `sp500_tickers` AND mismapped active tickers (e.g. XOM -> a non-filing
-    "ExxonMobil Holdings Corp" shell).
-    """
+    """Ticker -> 10-digit CIK (+ name / GICS) from `sp500_tickers`, filtered server-side to `tickers` when given."""
     df = context.store.load(Tables.sp500_tickers, columns=list(CIK_MAPPING_COLS), where={"ticker": list(tickers)} if tickers is not None else None)
     assert df is not None
 
-    df["cik"] = pad_cik_series(df["cik"])  # SEC URLs need the 10-digit zero-padded CIK
+    df["cik"] = pad_cik_series(df["cik"])
     return df
 
 
 def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dict[str, str]:
-    """CIK -> ticker, INCLUDING every predecessor CIK in the registrant register.
+    """CIK -> upper-case ticker, including every register predecessor CIK of a ticker in `cikmap`.
 
-    ⚠ THE BULK DATA SETS HAD NO CUTOVER CONCEPT AT ALL, and this one dict is why. The SEC's
-    insider, financial-notes and financial-statement data sets are keyed by CIK, and these
-    fetchers map a row to a ticker through this map alone. With one CIK per ticker, every row
-    a PREDECESSOR filed resolved to nothing and was dropped -- silently, since a row for an
-    unknown CIK is indistinguishable from a row for a company outside the universe.
-
-    Measured 2026-09-09, the two cases where the trading symbol moved too, so even the
-    insider fetcher's symbol-first path could not save it:
-
-        GOOGL  insider_transactions starts 2015-10-08   (boundary 2015-10-02, predecessor GOOG)
-        VTRS   insider_transactions starts 2020-11-16   (predecessor traded MYL)
-        APA    insider_transactions starts 2006-01-04   -- saved ONLY because APA never moved
-
-    ⚠ THE MAP ALONE IS NOT ENOUGH FOR A `SPLIT` TABLE. `notes_*` and `pension_facts` are
-    consolidating, so their callers must additionally drop rows whose `filed` date falls
-    outside the matched segment's window -- otherwise they re-acquire the Apache-subsidiary
-    problem the register was built to prevent. `insider_transactions` is UNION (Forms 3/4/5
-    are events) and takes no date filter. See `registrant.FORM_POLICY`.
-
-    ⚠ SUPERSEDED FOR THE INSIDER PATH BY `identity.entity_ticker`, AND LEFT IN PLACE ON
-    PURPOSE. This map answers "which ticker" from a hand list of 16 register chains; the
-    identity layer answers it from a DERIVED lineage of ~556 CIKs, so it resolves ~40
-    predecessors this map has never heard of -- measured at 1,133 filings / 2,275 rows the
-    symbol-first path drops today. `notes_*`, `pension_facts` and the fundamentals fetchers
-    still depend on this exact shape, so nothing here changes until those move too.
-
-    Returns `dict[str, str]` exactly as before, so no call site changes shape.
+    For CIK-keyed bulk data sets. A consolidating (SPLIT) table must additionally drop rows filed
+    outside the matched segment (`registrant.drop_rows_outside_segment`); UNION tables need no
+    date filter. The insider path resolves through `identity.entity_ticker` instead.
     """
     if cikmap.empty or "ticker" not in cikmap.columns:
         return {}
@@ -112,7 +68,7 @@ def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dic
     universe = set(out.values())
     for ticker, entry in load_registrants(config_dir).items():
         if ticker.upper() not in universe:
-            continue  # a register entry for a ticker this run is not
-        for cik in entry.all_ciks():  # walking adds nothing and would widen the map
+            continue  # only tickers this run walks
+        for cik in entry.all_ciks():
             out.setdefault(cik, ticker.upper())
     return out

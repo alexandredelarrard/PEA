@@ -4,10 +4,7 @@ fetch_8k_edgar.py (src/data_extract/utils/institutionals/fetch_8k_edgar.py)
 SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
 Item codes come from the filing index; `has_earnings` / `has_press_release` and
 the per-item text come from edgartools' typed `CurrentReport` (`filing.obj()`).
-
-Parsing financial statements out of an attached earnings release is deliberately
-out of scope -- it would store unstandardized figures competing with
-`fundamentals_facts`.
+Financial statements in attached earnings releases are out of scope.
 """
 
 from __future__ import annotations
@@ -93,13 +90,8 @@ _NEXT_8K_SECTION_RE = re.compile(r"(?im)^\s*(?:Item\s+(?!5\.07\b)\d\.\d{2}\b[^\n
 
 
 def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
-    """Replace an edgartools table-less Item 5.07 slice with its primary-doc section.
-
-    Some issuers render the prose and tables in separate HTML blocks. The typed
-    `CurrentReport` section ends after "results ... below", while `filing.text()` retains
-    the tables. Keep complete structured slices byte-for-byte and accept a fallback only
-    when the stub announces following results and the carved section contains both vote
-    labels and multiple grouped tallies.
+    """Replace a table-less Item 5.07 slice that announces results "below" with the longer
+    primary-document section, only when that section has a vote table; else keep it unchanged.
     """
     if not _RESULTS_FOLLOW_RE.search(item_text) or has_vote_table(item_text):
         return item_text
@@ -116,15 +108,10 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
 
 
 def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
-    """One 8-K -> one row per item code. `has_earnings`/`has_press_release` are
-    best-effort: a filing whose `.obj()` parse fails keeps its item rows (those come
-    straight from the filing index) with both flags NaN.
-
-    NaN rather than None: `store.ensure_table` infers column types from the first frame
-    written to a cold table, so an all-None column would be created TEXT for good."""
+    """One 8-K -> one row per item code. A failed `.obj()` parse keeps the item rows with both
+    flags NaN (not None, so a cold table never infers the column as TEXT)."""
     filing = stamp.filing
-    # Item codes come free off the filing index. Read them BEFORE `.obj()`: with no item codes
-    # this filing yields no rows at all, so the parse would be thrown away.
+    # Item codes come off the filing index, read before `.obj()` so a code-less filing skips the parse.
     items = getattr(filing, "items", "") or ""
     item_list = [i.strip() for i in str(items).split(",") if i.strip()]
     if not item_list:
@@ -141,8 +128,7 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 
     base = {
         "ticker": ticker,
-        # The CIK that FILED this 8-K, not the roster's: the union walks every registrant in
-        # the chain, so this column makes a registrant boundary visible.
+        # The filing registrant's CIK (not the roster's), so a registrant boundary stays visible.
         "cik": stamp.cik,
         "accession_number": stamp.accession_number,
         "form": stamp.form,
@@ -171,8 +157,7 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     return rows
 
 
-#: A filing repeating a code in its `items` string (two officer changes -> "5.02,5.02") yields
-#: one PK row twice; `build_filing_rows` collapses it (Postgres rejects such an upsert).
+#: `build_filing_rows` collapses a repeated item code ("5.02,5.02") into one PK row.
 SEC_8K_FETCH = EdgarFetch(
     desc="8-K (edgartools)",
     tables=(Tables.sec_8k,),

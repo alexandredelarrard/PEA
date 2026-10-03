@@ -1,8 +1,4 @@
-"""
-step_extract_behavioral.py  (src/data_extract/step_extract_behavioral.py)
--------------------------------------------------------------------------
-Behavioral alt-data extraction: earnings-call transcripts.
-"""
+"""Behavioral alt-data extraction: earnings-call transcripts."""
 
 from omegaconf import DictConfig
 
@@ -17,9 +13,6 @@ class StepExtractBehavioral(Step):
 
     def run(self, tickers: list[str]) -> None:
 
-        # Earnings-call transcripts -> earnings_call_sections -> FinBERT sentiment/text
-        # KPIs in the cube (earnings_call_features). DEFERRED: the Motley Fool site is now
-        # a JS / anti-bot SPA (transcript detail pages 404 to HTTP clients), so the scraper
-        # needs a rework (headless browser or an alternate free source) before this can
+        # Earnings-call transcripts -> earnings_call_sections.
 
         fetch_earnings_calls(self._context, tickers=tickers)

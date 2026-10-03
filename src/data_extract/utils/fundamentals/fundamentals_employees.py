@@ -69,12 +69,9 @@ class _ResumePlan:
 
 
 def filing_body_text(filing: Filing) -> str:
-    """Primary-document text (visible HTML table cells included, no OCR), else the full submission.
+    """Primary-document text (visible HTML table cells included, no OCR), else the full submission; "" if none.
 
-    edgartools 5.51 `Filing.html()` reads `homepage.primary_html_document.empty` without a None
-    check, so a filing whose index lists no primary document raises AttributeError from inside the
-    library, and `text()` goes through `html()` too. That is a property of the filing, not of our
-    code, so it is absorbed here instead of escaping as a run-aborting programming error.
+    edgartools raises AttributeError for a filing with no primary document; that is absorbed as a filing property.
     """
     readers: tuple[tuple[str, Callable[[str], str]], ...] = (
         ("html", html_to_text),
@@ -92,7 +89,7 @@ def filing_body_text(filing: Filing) -> str:
 
 
 def employee_excerpt(text: str, limit: int) -> str:
-    """Keep filing opening text and the first workforce contexts, as in the benchmark."""
+    """The filing's opening text plus windows around the first workforce mentions, gap-marked and capped at `limit`."""
     spans = [(0, min(8_000, len(text)))]
     for match in _CONTEXT_RE.finditer(text):
         spans.append((max(0, match.start() - 550), min(len(text), match.end() + 850)))
@@ -360,7 +357,10 @@ def fetch_fundamentals_employees(
     *,
     full: bool = False,
 ) -> None:
-    """Fetch missing issuer-wide counts, or recheck every filing on `--full`."""
+    """Fetch missing issuer-wide counts into `fundamentals_employees`, or recheck every filing on `--full`.
+
+    Raises `IncompleteEdgarRunError` (outcomes saved, frontier not advanced) if any ticker fails or is ambiguous.
+    """
     context.ensure_edgar_identity()
     cik_map = load_cik_mapping(context, tickers)
     missing = set(tickers) - set(cik_map["ticker"])

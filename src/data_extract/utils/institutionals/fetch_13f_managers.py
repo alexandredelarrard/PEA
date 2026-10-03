@@ -27,9 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class SuperinvestorRosterEmptyError(RuntimeError):
-    """`superinvestor_roster` holds no CIK. The roster IS this walk's entire input, so an empty
-    one must stop the run rather than let it report success over zero managers -- the failure
-    mode a warning would produce is a table that silently stops growing."""
+    """`superinvestor_roster` holds no CIK; the roster is the walk's entire input, so the run stops."""
 
 
 def _filings_to_read(cik: str, floor: pd.Timestamp | None, since: pd.Timestamp) -> list[FilingStamp]:

@@ -10,8 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-#: edgartools preserves the source HTML's whitespace runs verbatim, and a non-breaking space
-#: is not `\s` to `str.strip` -- both have to go before any key is built on the value.
+#: Whitespace runs edgartools preserves from the source HTML; non-breaking spaces are replaced first.
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -29,9 +28,8 @@ def clean_text(value: Any) -> str | None:
 
 
 def pad_cik(x: object) -> str:
-    """Canonical 10-digit zero-padded CIK (as stored in sp500_tickers /
-    sec13f_hr / the superinvestor roster JSON). Tolerates ints, '123',
-    '123.0' and already-padded strings; '' when there is no digit at all."""
+    """Canonical 10-digit zero-padded CIK. Tolerates ints, '123', '123.0' and already-padded strings;
+    '' when there is no digit at all."""
     s = re.sub(r"\D", "", str(x).strip().split(".")[0])
     return s.zfill(10) if s else ""
 

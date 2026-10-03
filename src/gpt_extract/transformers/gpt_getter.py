@@ -1,14 +1,4 @@
-"""
-gpt_getter.py  (src/gpt_extract/transformers/gpt_getter.py)
-------------------------------------------------------------
-`LLMExtractor`: fill N schemas concurrently, return them in submission order, and write
-only from the main thread.
-
-Concurrency is not an optimisation here, it is what makes a backfill possible: measured
-serially, one modern proxy takes ~94s (a 130k-char payload on a reasoning model), so 656
-filings would be ~17h. The work is entirely network-bound on an API that is fine with
-parallel requests.
-"""
+"""`LLMExtractor`: fill N schemas concurrently, return them in submission order, and write only from the main thread."""
 
 from __future__ import annotations
 
@@ -34,17 +24,9 @@ GroupKeyFn = Callable[[LlmTask], str]
 class LLMExtractor(GptExtracter):
     """Threaded schema-filling over a list of payloads.
 
-    Two queues. `clients` holds initialised providers so N workers rotate across every API
-    key available -- that is what the queue is FOR, and with a single key every slot holds
-    the same client object, which is correct because an OpenAI client is thread-safe and
-    pools its connections. `tasks` holds the payloads.
-
-    Results come back in SUBMISSION order regardless of completion order, because the
-    caller zips them against its own filing list.
-
-    **Workers never write.** They receive a task and a provider, and never a `Context`, so an
-    interrupted run loses no paid tokens: one save per ticker after that ticker's filings are
-    all parsed means a Ctrl-C costs at most one ticker's calls.
+    `clients` rotates initialised providers across every API key (one shared thread-safe client with a single key);
+    `tasks` holds the payloads. Worker count is `threads`, defaulting to `config.gpt.threads`. Results come back in
+    submission order. Workers never receive a `Context` and never write; saves happen on the main thread.
     """
 
     def __init__(
@@ -59,9 +41,7 @@ class LLMExtractor(GptExtracter):
         self._results: dict[int, LlmResult] = {}
         self._results_lock = Lock()
         self._submitted = 0
-        #: Built once and reused across runs. One extracter serves every ticker, so
-        #: rebuilding the clients per ticker would throw away warm connections -- and
-        #: `prompt_cache_key` only pays off while the calls keep hitting one cached prefix.
+        #: Built once and reused across runs, keeping warm connections and the prompt-cache prefix.
         self._provider_pool: list[_Provider] | None = None
 
     # ------------------------------------------------------------------- queues --- #
@@ -71,11 +51,9 @@ class LLMExtractor(GptExtracter):
         self._submitted += 1
 
     def initialize_queue_clients(self, n_slots: int) -> list[_Provider]:
-        """Fill the client queue with `n_slots` entries drawn from every (provider, key)
-        pair available, so M keys are shared by N workers without partitioning them.
+        """Fill the client queue with `n_slots` entries drawn round-robin from every (provider, key) pair.
 
-        The queue is emptied first: this extracter is reused across tickers, and topping
-        it up every run would grow it without bound.
+        The queue is emptied first, since the extracter is reused across tickers.
         """
         while not self._clients.empty():  # a previous run's slots
             self._clients.get_nowait()
@@ -94,22 +72,15 @@ class LLMExtractor(GptExtracter):
         return self._provider_pool
 
     def close_queue_clients(self, n_workers: int) -> None:
-        """One sentinel per worker.
-
-        Not `qsize()` sentinels: `Queue.qsize()` is advisory on every platform and workers
-        are concurrently putting clients back, so sizing the shutdown on it is a race.
-        """
+        """One sentinel per worker (not sized on `Queue.qsize()`, which is advisory and racy)."""
         for _ in range(n_workers):
             self._tasks.put(None)
 
     # ------------------------------------------------------------------ workers --- #
 
     def _worker(self, progress: tqdm | None = None) -> None:
-        """Call and parse. Never touch the store, never let an exception escape.
-
-        A dead worker with tasks still queued is a hang, so every failure becomes an
-        `LlmResult` carrying its error rather than propagating out of the thread.
-        """
+        """Call and parse; never touch the store, and turn every failure into an `LlmResult` with its error
+        (a dead worker with tasks still queued is a hang)."""
         while True:
             task = self._tasks.get()
             if task is None:  # sentinel -> this worker is done
@@ -130,8 +101,7 @@ class LLMExtractor(GptExtracter):
                     error=f"{type(exc).__name__}: {exc}",
                 )
             finally:
-                # In `finally` or a raising task drains the client queue and the run
-                # deadlocks with every worker blocked on `clients.get()`.
+                # In `finally`, or a raising task drains the client queue and the run deadlocks.
                 self._clients.put(provider)
 
             with self._results_lock:
@@ -187,13 +157,9 @@ class LLMExtractor(GptExtracter):
     ) -> list[LlmResult]:
         """Fill every task's schema, then save from the MAIN thread, once per group.
 
-        `flatten` is a callable rather than a single table because one answer can fan out
-        to several tables -- the DEF 14A extract writes five.
-
-        Tables are saved in the order `flatten` first yields them. That is load-bearing for
-        a caller with parent/child tables: writing children FIRST means a crash between the
-        two leaves a child row without a parent (recoverable, because the dedup keys on the
-        parent) rather than a parent claiming children it does not have.
+        `flatten` maps one answer to frames for one or more tables. Tables are saved in the order `flatten`
+        first yields them, so a caller with parent/child tables yields children first: a crash then leaves an
+        orphan child (recoverable) rather than a parent claiming children it lacks.
         """
         for task in tasks:
             self.submit(task)

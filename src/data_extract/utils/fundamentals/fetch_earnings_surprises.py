@@ -1,15 +1,7 @@
-"""
-fetch_earnings_surprises.py
---------------------------
-Historical earnings surprises = the market's FORWARD EPS expectation vs what the
-company actually delivered, per quarter, going back years.
+"""Historical earnings surprises (consensus EPS estimate vs reported EPS) per quarter -> `earnings_surprises`.
 
-This is the free, genuinely-historical answer to "what did the market think about
-future earnings, in the past?". `yfinance.get_earnings_dates()` returns, for each
-past earnings date, the consensus **EPS Estimate**, the **Reported EPS**, and the
-**Surprise(%)** -- often close to the full `years_history` window for large,
-long-listed S&P 500 names. It also returns the NEXT (not-yet-reported) date with
-its estimate and a NaN actual: that row is the live forward EPS.
+Source is `yfinance.get_earnings_dates()`. The next, not-yet-reported date arrives as a forward row with a NaN
+actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is reported.
 """
 
 from __future__ import annotations
@@ -37,19 +29,12 @@ _COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_p
 # a stale ticker (no new row within this many days) is re-pulled with this limit
 _RECENT_LIMIT = 8
 
-# earnings surprise before this date are sporadic and almost always missing
+# rows before this date are sporadic and almost always missing, so they are dropped
 MIGRATION_DATE = "2002-10-01"
 
 
 def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
-    """One ticker's earnings-date table normalized to `_COLUMNS`; None if empty.
-
-    yfinance's earnings-dates endpoint is aggressively rate-limited (429), which
-    used to make a ~fixed subset of tickers fail on every run and be silently
-    skipped. We now wait + retry on 429 (exponential backoff) so throttled tickers
-    recover; a genuine empty (Yahoo has no calendar for the name) still returns
-    None after the retries.
-    """
+    """One ticker's earnings-date table normalized to `_COLUMNS`, retried with backoff on 429; None if empty."""
     raw = call_with_retries(lambda: yf.Ticker(ticker).get_earnings_dates(limit=limit), retries=3, base_wait=10.0, label=f"earnings {ticker}")
     if raw is None or raw.empty:
         return None
@@ -66,16 +51,11 @@ def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
 
 
 def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None, full_limit: int, refetch_window_days: int) -> list[tuple[str, int]]:
-    """(ticker, limit) list: full pull for unseen tickers; a small pull only for
-    tickers whose NEXT earnings date has already passed (a new quarter is due);
-    nothing for tickers whose next earnings is still in the future.
+    """`(ticker, limit)` fetch plan: full pull for unseen tickers, `_RECENT_LIMIT` once the stored forward date has passed.
 
-    yfinance returns the upcoming (not-yet-reported) date as a forward row
-    (eps_actual = NaN), so its max earnings_date is the next-expected date. Gating on
-    that — instead of a fixed staleness window shorter than the ~91-day quarterly
-    cycle — stops ~30% of names being re-pulled needlessly in the ~10-day gap before
-    they report (they already have full history; there is simply nothing new yet).
-    Tickers with no known forward date fall back to the staleness window."""
+    Tickers with no stored forward row fall back to `refetch_window_days` since the last reported date; the rest
+    are skipped.
+    """
     last_reported: dict[str, pd.Timestamp] = {}
     next_expected: dict[str, pd.Timestamp] = {}
     if existing is not None and not existing.empty:
@@ -108,8 +88,7 @@ def fetch_earnings_surprises(
     pause: float = 0.3,
     refetch_window_days: int = 95,  # > one quarter; fallback only when no forward date is known
 ) -> None:
-    """Build/refresh the incremental earnings-surprise history and upsert it into the
-    `earnings_surprises` DB table."""
+    """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped."""
 
     existing = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
     if existing is not None:
@@ -148,8 +127,7 @@ def fetch_earnings_surprises(
         context.log.warning("No earnings-surprise data available (nothing fetched, no cache).")
         record_run(context, Tables.earnings_surprises, len(tickers), 0)
 
-    # upsert the freshly-fetched rows; the DB merges on (ticker, earnings_date),
-    # so a now-filled actual overwrites the old forward-estimate row.
+    # upsert on (ticker, earnings_date): a now-filled actual overwrites its forward-estimate row
     if new_frames:
         new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
         new = new.loc[new["earnings_date"] >= MIGRATION_DATE].reset_index(drop=True)

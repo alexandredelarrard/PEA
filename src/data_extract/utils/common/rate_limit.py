@@ -1,11 +1,4 @@
-"""
-rate_limit.py  (src/data_extract/utils/common/rate_limit.py)
------------------------------------------------------
-Shared retry-with-backoff helper for free data sources that throttle with HTTP
-429 or intermittently fail with retryable HTTP 5xx responses or transport
-timeouts. Instead of silently dropping the symbol, wait and retry with
-exponential backoff.
-"""
+"""Retry-with-exponential-backoff for sources that throttle (HTTP 429) or fail transiently (502/503/504, timeouts)."""
 
 from __future__ import annotations
 

@@ -1,47 +1,15 @@
 """
 periods.py (src/data_extract/utils/fundamentals/periods.py)
 --------------------------------------------------------------------------------------
-The period engine: turn the as-filed duration facts in `fundamentals_facts` into
-**discrete quarters that are actually discrete**, and a TTM that is not a staircase.
+The period engine: turns one ticker's as-filed duration facts from `fundamentals_facts` into
+discrete quarters, trailing-twelve-month values and quarterly-grid instants, in memory only.
 
-`fundamentals_facts` is deliberately as-filed -- one row per period SHAPE the filer
-actually tagged. Filers tag flows three different ways in the same year (a discrete
-3-month column, a cumulative year-to-date column, an annual column), and ASC 230 only
-requires cash-flow amounts CUMULATIVELY, so for many fields the discrete quarter is never
-published at all. This module reconstructs it, in memory, and records how.
-
-Two defects it exists to remove, both measured on the legacy table:
-
-  * **The Q4 footing check was vacuous.** All 203,798 legacy Q4 rows were derived as
-    `FY - (Q1+Q2+Q3)`, so the validator's `Q1+Q2+Q3+Q4 == FY` test passed 99.73% **by
-    construction**. An identity cannot take its own output as an input. The primary ladder
-    here is `Q4 = FY - YTD9` -- one as-reported nine-month number instead of three derived
-    quarters -- which leaves `Q1+Q2+Q3` genuinely free to disagree, and so makes the
-    footing check a real test for the first time.
-  * **The TTM staircase.** The legacy annual fallback (`ttm_a -> <field>_ann.ffill(4)`)
-    froze **1,622 of 26,242 consecutive `totalRevenue` pairs (6.2%; APA 100%, XOM 36%)**,
-    which made `revenueGrowth` exactly 0 for three quarters in four. A TTM is emitted here
-    ONLY from four discrete quarters; otherwise it is NULL with `insufficient_quarters`.
-    This REDUCES coverage on purpose.
-
-**Nothing in this module reads `fiscal_period`.** SEC's `fp` labels a fact by the
-*filing's* period focus, so one calendar quarter can appear as Q1, Q2 AND Q3 across
-successive 10-Qs (edgartools GH #848), and a 10-K's discrete fourth-quarter column is
-labelled `FY` like the annual one. Every input is selected by its calendar WINDOW. That
-makes three expensively-learned repairs in the deleted 1,140-line engine structurally
-unnecessary rather than merely dropped: the `YTD3/6/9/12` -> quarter label remap, the
-"never trust a native Q4 label" rule, and `_reassign_misordered_native_q4` (MAA tagged all
-three of FY2017's discrete quarters `Q4`). The shape bands below replace all of them.
-
-**The subtraction is CROSS-FILING, and that is the hard part.** The FY fact comes from the
-10-K and the YTD9 fact from the Q3 10-Q -- two separate `resolve_field` calls, which can
-land on two different concepts. Requiring them to match outright is what made 107 real
-quarters underivable in the legacy engine (ATO tagged D&A `DepreciationAndAmortization` in
-its 10-Qs and `DepreciationDepletionAndAmortization` in its 10-K for NINE consecutive
-years; AFL/DTE/ATO/C alternate between the two pretax-income variants; several filers
-switch revenue concept at the ASC-606 cutover). So a switch is allowed and recorded, and
-only then does the scale test decide -- which the legacy engine had to apply
-unconditionally, because it had no `source_concept` column to compare.
+Every input is selected by its calendar WINDOW shape (`period_shape`), never by the filer's
+`fiscal_period` label. Quarters are kept as reported or derived by the ladder `Q2 = YTD6 - Q1`,
+`Q3 = YTD9 - YTD6`, `Q4 = FY - YTD9`, fallback `Q4 = FY - (Q1+Q2+Q3)`, each tagged with its `basis`.
+The FY and YTD legs may come from different filings and concepts: a switch is allowed, recorded in
+`concept_switch`, and gated by a scale test. A TTM is emitted only from four contiguous discrete
+quarters, otherwise NULL with `insufficient_quarters`. Refused windows are reported through `refusals`.
 """
 
 from __future__ import annotations
@@ -61,9 +29,8 @@ from src.utils.config import read_config
 
 @dataclass(frozen=True)
 class PeriodGuards:
-    """The two calibrated thresholds the derivation guards need, injected rather than
-    imported so a known-truth test can state its own and so the numbers stay in
-    `configs/configs.yml` where they are readable without opening a module."""
+    """The derivation guard thresholds, read from `configs.yml` (`data_extract.fundamentals_periods`)
+    and injected so a known-truth test can state its own."""
 
     max_opposite_sign_ratio: float
     concept_switch_scale_max: float
@@ -71,9 +38,7 @@ class PeriodGuards:
 
 
 def load_guards(config_dir: str | None = DEFAULT_CONFIG_DIR) -> PeriodGuards:
-    """Read the guards from `configs.yml`. Cached per config DIRECTORY -- not per spelling
-    of it (`resolve_config_dir`) -- because the period engine runs once per (ticker, field)
-    and must not re-read a YAML tree ~50 times a filing."""
+    """Read the guards from `configs.yml`, cached per resolved config directory (`resolve_config_dir`)."""
     return _guards_at(resolve_config_dir(config_dir))
 
 
@@ -89,12 +54,8 @@ def _guards_at(config_dir: str) -> PeriodGuards:
 
 # --------------------------------------------------------------------- period shapes ---
 
-#: Day-count bands classifying a duration fact by SHAPE rather than by the filer's own
-#: `fiscal_period` label. Bands are wide because a 52/53-week issuer's fiscal quarter can
-#: run ~112 days while a calendar one is 90/91/92, and they are deliberately DISJOINT with
-#: gaps: a 130-day duration is neither a quarter nor a half, and calling it either would
-#: corrupt a TTM far more quietly than carrying it as unusable. Measured: exactly 10 of
-#: 109,267 valued in-sample rows land outside every band.
+#: Day-count bands classifying a duration fact by SHAPE. Wide enough for 52/53-week quarters
+#: (~112 days) and deliberately disjoint: a duration between bands is `other`, never rounded in.
 _DURATION_BANDS: tuple[tuple[int, int, str], ...] = (
     (60, 120, "quarterly"),
     (150, 210, "ytd6"),
@@ -107,10 +68,9 @@ OTHER_SHAPE = "other"
 
 
 def period_shape(period_type: str, days: float | None) -> str:
-    """The period's SHAPE -- what the ladder below selects on.
+    """The period's SHAPE: `instant`, one of the `_DURATION_BANDS` names, or `other`.
 
-    `other` is a first-class outcome, not a failure: a 47-day stub period is real, and the
-    honest thing is to carry it unusable rather than to round it into a band.
+    `other` (a stub, or a missing day count) is a valid outcome and is carried as unusable.
     """
     if period_type == INSTANT:
         return INSTANT
@@ -124,9 +84,8 @@ def period_shape(period_type: str, days: float | None) -> str:
 
 # --------------------------------------------------------------------------- vocabulary ---
 
-#: How a discrete quarter was obtained. Carried on the value's own row, never re-joined --
-#: `q4_footing` is only a genuine test on the rows whose basis is NOT `FY_MINUS_QUARTERS`,
-#: and the validator cannot know which those are unless the row says so.
+#: How a discrete quarter was obtained, carried on the value's own row so the Q4 footing check
+#: can exclude `FY_MINUS_QUARTERS` rows (which foot by construction).
 AS_REPORTED = "as_reported"
 Q2_FROM_YTD6 = "ytd6_minus_q1"
 Q3_FROM_YTD9 = "ytd9_minus_ytd6"
@@ -138,48 +97,24 @@ TTM_FOUR_QUARTERS = "sum_4q"
 TTM_FOUR_QUARTER_MEAN = "mean_4q"
 TTM_AS_REPORTED_ANNUAL = "as_reported_annual"
 
-#: `dc_code`s this module attaches to a value it refuses to emit.
-#:
-#: Until Phase 5 a refused *quarter* carried no code at all -- `_derived` returned None and
-#: the window simply had no row -- which was the last structural hole in "zero unexplained
-#: nulls" (register item 7). Every refusal now travels through the `refusals` out-parameter
-#: to `fundamentals_reason_codes`, which stays the single source of truth for why a value is
-#: absent: this module records, the history build writes.
+#: `dc_code`s attached to a value this module refuses to emit. Every refusal travels through the
+#: `refusals` out-parameter to `fundamentals_reason_codes`, the single source of truth for absences.
 INSUFFICIENT_QUARTERS = "insufficient_quarters"
 SPLIT_BASIS_MISMATCH = "split_basis_mismatch"
 
-#: The two QUARTER-level refusals `_derived` makes (register item 7). Neither name is in the
-#: plan's code table, which listed only the codes that already existed -- and routing them
-#: through one that did would have been worse than adding two: `insufficient_quarters` means
-#: the window was not there, and these mean it WAS there and the arithmetic was refused.
-#:
-#:   * `derived_basis_mismatch` -- the scale test refused the subtraction. The total and the
-#:     subtrahend are not the same measure: either the concept switched between the two
-#:     windows (two different statement lines), or the field is a weighted-average share
-#:     count whose two windows sit on two SPLIT bases. The second case keeps the older and
-#:     more specific `split_basis_mismatch`, because it is literally the same defect
-#:     `_one_share_basis` names one level up.
-#:   * `derived_sign_implausible` -- `_is_coherent` refused it: a `non_negative` field came
-#:     out negative (proof the two inputs measured different things), or the value's sign
-#:     opposes every sibling quarter by more than the guard allows.
+#: Quarter-level refusals made by `_derived` (the window existed but the arithmetic was refused):
+#:   * `derived_basis_mismatch` -- the scale test refused a concept-switched subtraction (a share
+#:     count on two split bases uses `split_basis_mismatch` instead).
+#:   * `derived_sign_implausible` -- `_is_coherent` refused the value's sign.
 DERIVED_BASIS_MISMATCH = "derived_basis_mismatch"
 DERIVED_SIGN_IMPLAUSIBLE = "derived_sign_implausible"
 
-#: `dc_code` for the D1b refusal (4c.8): a duration fact tagged into a QUARTERLY context
-#: whose value is the whole fiscal year, where the filer publishes NO annual-window fact for
-#: that year at all -- so there is nothing to compare it against and D1's value test cannot
-#: run. Declining to guess is not inference; reclassifying it would be, because the only
-#: available "is this really the year?" test would use the very quarters being derived.
-#:
-#: Measured on ORCL `totalRevenue`: **9 rows across fiscal 2018-2022**, in three consecutive
-#: 10-Ks. The plan recorded this as one row (FY2020, $39,068M against a true ~$10,439M); it
-#: is a five-year habit of one filer, and every one of those years would otherwise propagate
-#: a ~4x Q4 into four TTM windows, `revenueGrowth`, and every peer z-score built on them.
+#: A quarterly-context fact whose value is the whole fiscal year, where no annual-window fact exists
+#: to compare it against (see `_is_ambiguous_duration`). Refused, never reclassified.
 AMBIGUOUS_DURATION = "ambiguous_duration"
 
-#: A trailing-twelve window must be four quarters covering roughly a year. The bounds are
-#: the annual band's, so a 52/53-week issuer's 371-day year and a calendar 365 both pass
-#: while a year with a stub or a missing quarter does not.
+#: A trailing-twelve window is four quarters spanning the annual band, so 52/53-week years pass
+#: and a year with a stub or missing quarter does not.
 TTM_MIN_DAYS, TTM_MAX_DAYS = 330, 400
 TTM_QUARTERS = 4
 
@@ -206,50 +141,22 @@ _QUARTER_COLUMNS: tuple[str, ...] = (
 
 
 def _inclusive_days(days):
-    """Day counts for the share-day arithmetic, counting BOTH endpoints.
-
-    `period_days` is `(end - start).days`, which is one short of the days a period actually
-    covers and, worse, is not additive across abutting periods: a calendar year reads 365
-    while its nine-month and fourth-quarter legs read 273 + 91 = 364. Multiplying and
-    dividing by that loses a day at every junction and put the share-day derivation ~1%
-    out. Adding the endpoint back makes the legs foot exactly (274 + 92 = 366).
-    """
+    """Day counts counting BOTH endpoints, so abutting periods' day counts add up exactly
+    for the share-day arithmetic (`period_days` is `end - start`, one short)."""
     return days + 1
 
 
-#: `_latest_per_window`'s order, and therefore its CONTRACT: which row survives a window is
-#: whichever sorts last on these three keys. Named because `quarterize` establishes the order
-#: once and every `_shape` call then reuses it.
+#: `_latest_per_window`'s sort order and therefore its contract: the row that sorts last wins.
 _WINDOW_ORDER: list[str] = ["period_end", "filing_date", "period_days"]
 
 
 def _latest_per_window(frame: pd.DataFrame, *, presorted: bool = False) -> pd.DataFrame:
     """One row per calendar window, the LATEST filing winning.
 
-    `presorted` says the caller has already ordered the frame by `_WINDOW_ORDER`. Sorting a
-    frame and then filtering it gives the same sequence as filtering and then sorting --
-    pandas' multi-key sort is a `np.lexsort` and therefore stable, and a boolean filter keeps
-    relative order -- so `quarterize` sorts once and the four shape reads it makes are free.
-    Do not pass True on a frame ordered any other way: the bucketing below reads
-    `period_end.diff()` and every result depends on the sort.
-
-    A window is re-tagged every time it appears as a comparative in a later filing, and the
-    values can differ: `us-gaap:Revenues` for BAC FY2023 is $98,581M as filed and
-    **$102,769M** as re-presented in the FY2025 10-K. Taking the latest is correct *inside a
-    point-in-time replay*, because Phase 5 hands this function only the facts with
-    `filing_date <= as_of`; the restatement therefore becomes visible on the day it was
-    published and not a day earlier.
-
-    The window's identity is its **END, within a few days** -- not its exact (start, end)
-    pair. Filers nudge the boundary day between filings and the two contexts are the same
-    quarter: BRK-B tags Q3-2013 as both `06-29 ->` and `07-01 -> 09-30`, KR ships three
-    variants of the quarter ending 2011-11-05, and GS tags Q1-2013 as both `-> 03-30` and
-    `-> 03-31`. Keyed on the exact pair all of them survive and the fiscal-quarter label
-    then lands on two rows at once: measured, 61 such collisions across 6 tickers, and an
-    exact-end key still left GS's 8. `_SAME_PERIOD_DAYS` is an order of magnitude below the
-    smallest real gap between two quarter ends on this roster (KR's 4-4-5 calendar, 82
-    days), so it cannot merge two genuine quarters. Shapes are deduped separately, so a YTD
-    and a quarter that share an end are never confused.
+    A window is identified by its END within `_SAME_PERIOD_DAYS` (filers nudge boundary days
+    between filings), not by its exact (start, end). Latest-wins is point-in-time correct because
+    the caller passes only facts with `filing_date <= as_of`. `presorted=True` asserts the frame
+    is already ordered by `_WINDOW_ORDER`; the bucketing depends on that sort.
     """
     if frame.empty:
         return frame
@@ -263,43 +170,23 @@ def _shape(frame: pd.DataFrame, shape: str, *, presorted: bool = False) -> pd.Da
     return _latest_per_window(frame[frame["duration_type"] == shape], presorted=presorted)
 
 
-#: How close a nine-month cumulative's end must sit to a fourth quarter's start for the two
-#: to be the same fiscal year's contiguous pieces. Days rather than an exact match because a
-#: 52/53-week filer's Q4 can begin a day or two off the cumulative's last day.
+#: Max gap between a nine-month cumulative's end and a fourth quarter's start for the two to be
+#: contiguous pieces of one fiscal year (52/53-week filers drift by a day or two).
 _CONTIGUOUS_DAYS = 4
 
 
 def _is_ambiguous_duration(q, ends: np.ndarray, values: np.ndarray) -> bool:
-    """D1b: is this `quarterly`-shaped fact really the whole fiscal year?
+    """Is this `quarterly`-shaped fact really the whole fiscal year? Used only where no annual fact exists.
 
-    Called only where D1 found NO annual fact to compare against, so this is the last
-    non-circular evidence available: the filer's own nine-month cumulative, which is an
-    as-filed fact and not a derived quarter.
-
-    True when a contiguous `ytd9` exists, is materially non-zero, runs in the SAME DIRECTION,
-    and is smaller in magnitude than the "quarter" -- a fourth quarter exceeding the nine
-    months before it would have to be more than three quarters of the year, which is not a
-    shape a real fourth quarter takes.
-
-    **The same-sign condition is load-bearing and was learned the expensive way.** Without it
-    the rule fires on a genuine loss quarter: LLY's Q4 2017 is **-$1,656.9M** (the Tax Cuts
-    and Jobs Act charge) against a nine-month **+$1,452.8M**, so a magnitude-only test deleted
-    a correct quarter -- and the four quarters foot to LLY's real FY2017 net loss of $204.1M,
-    which is how the annual-footing report caught it. Note the catalogue cannot help here:
-    `netIncome` AND `totalRevenue` both declare `sign: any`, so gating on the field's sign
-    would have disabled the ORCL case this guard exists for.
-
-    `ends` / `values` are the nine-month cumulatives as NUMPY arrays rather than a frame --
-    see `_drop_annual_masquerading_as_quarter`, which is called once per (ticker, field) but
-    loops over every quarterly row, so a per-row DataFrame filter here made this the single
-    most expensive function in the period engine.
+    True when a contiguous `ytd9` (given as numpy `ends` / `values`) exists, is materially non-zero
+    (>1% of the quarter), has the SAME sign, and is smaller in magnitude than the "quarter". The
+    same-sign condition keeps a genuine loss quarter after a profitable nine months.
     """
     if ends.size == 0 or pd.isna(q.period_start) or pd.isna(q.value):
         return False
     gap = cast(Any, np.datetime64(cast(Any, q.period_start), "ns") - ends) / np.timedelta64(1, "D")
     quarter = float(cast(Any, q.value))
-    # Contiguous AND same-direction. A cumulative of the opposite sign is evidence the year
-    # turned, not evidence the window is mislabelled.
+    # An opposite-sign cumulative means the year turned, not that the window is mislabelled.
     keep = (gap >= 0) & (gap <= _CONTIGUOUS_DAYS) & (values * quarter > 0)
     if not keep.any():
         return False
@@ -311,72 +198,23 @@ def _drop_annual_masquerading_as_quarter(
     frame: pd.DataFrame,
     refusals: list[dict] | None = None,
 ) -> pd.DataFrame:
-    """Drop duration facts whose window says *quarter* but whose value is the FULL YEAR.
+    """Drop quarterly-shaped facts whose value is the FULL YEAR (an annual figure tagged into a Q4 context).
 
-    Some filers tag the annual figure against a fourth-quarter context, so the row arrives
-    with a ~92-day window and the twelve-month number in it. The day-count bands cannot see
-    this -- the window really is 92 days -- and because an as-reported quarter outranks a
-    derived one, the mislabelled row then WINS over `FY - YTD9` and inflates Q4 roughly
-    fourfold. Measured out-of-sample: ORCL `totalRevenue`, 5 rows across fiscal 2019, 2021
-    and 2022, e.g. fiscal 2022 Q4 read $42,440M against a true $11,840M. In-sample: 0 rows,
-    so this is not a blanket rescale of anything that already worked.
-
-    The test has to be tight, because a fourth quarter legitimately EQUALS its fiscal year
-    whenever the first nine months were zero -- a capex programme that only spends in Q4 is
-    unusual but not wrong. So all three conditions must hold:
-
-      1. an ANNUAL-shaped fact ends within `_SAME_PERIOD_DAYS` of the quarter's end (a real
-         Q4 shares its year's end date, which is exactly why the two get confused);
-      2. the two values agree to within 0.1% -- a *coincidence* at that precision on a
-         nine-figure number is not a thing that happens; and
-      3. an interim cumulative fact inside the same year is materially non-zero (>1% of the
-         annual), which PROVES the year accumulated before its final quarter and therefore
-         that the fourth quarter cannot be the whole of it.
-
-    Condition 3 is what makes this safe rather than merely plausible: without it the rule
-    would silently delete the one shape it is allowed to keep.
-
-    **D1b (4c.8): the same defect where no annual fact exists at all.** Conditions 1 and 2
-    both need the filer's own annual figure, so they cannot run when the mislabelled fact is
-    the ONLY place the year appears. That is not hypothetical: ORCL tags its full-year
-    `us-gaap:Revenues` into a 91-day Q4 context and publishes no annual-window `Revenues`
-    for those years, in **9 rows across fiscal 2018-2022**. The plan proposed gating D1b on
-    the WINDOW LENGTH -- "a ~365-day fact in a quarterly slot" -- but measurement refutes
-    the premise: the window really is 91 days, so `duration_type` is `quarterly` and there
-    is no length anomaly to see.
-
-    What IS available, and is not circular, is the filer's own NINE-MONTH CUMULATIVE. Both
-    facts are as-filed and neither is a derived quarter, so the two conditions are:
-
-      1b. no annual fact ends within `_SAME_PERIOD_DAYS` of the quarter's end -- i.e. D1
-          declined to judge this row; and
-      2b. the contiguous `ytd9` fact for the same year exists, is materially non-zero
-          (>1% of the quarter, the same guard as condition 3), and is SMALLER than the
-          "quarter". A fourth quarter that exceeds the whole nine months preceding it is a
-          mislabelled year: it would need to be more than three quarters of the annual.
-
-    Refused rather than reclassified, per decision 24. Reclassifying would be inference, and
-    the only test for "is this really the year?" uses the quarters being derived. Refusals
-    are appended to `refusals` with `AMBIGUOUS_DURATION` so Phase 5 can reason-code them --
-    `fundamentals_reason_codes` stays the single source of truth for why a value is absent.
+    With an annual fact present, a quarter is dropped only when all hold: an annual fact ends within
+    `_SAME_PERIOD_DAYS` of it, the values agree within 0.1%, and an interim cumulative inside that year
+    is >1% of the annual (so a real Q4 that equals its year, after a zero nine months, survives).
+    With no annual fact, `_is_ambiguous_duration` decides; those drops are appended to `refusals`
+    with `AMBIGUOUS_DURATION`.
     """
     quarters = frame[frame["duration_type"] == QUARTERLY]
     annual = frame[frame["duration_type"] == ANNUAL]
     interim = frame[frame["duration_type"].isin((YTD6, YTD9))]
     ytd9 = frame[frame["duration_type"] == YTD9]
-    # `annual` may legitimately be EMPTY and the function must still run: D1b exists exactly
-    # for the filer that never tags an annual window, so short-circuiting on it -- as this
-    # did until 4c.8 -- disables the new branch on the only frames it is meant to judge.
+    # `annual` may be empty: the no-annual-fact branch must still run.
     if quarters.empty or (annual.empty and ytd9.empty):
         return frame
     drop: list = []
-    # The three comparison frames as NUMPY, taken once. The loop is O(quarters x annual) by
-    # nature and that is fine; what was not fine is that each iteration built a boolean mask,
-    # a block manager and a fancy take over a 15-year frame. Profiled on AAPL, this one
-    # function was **>50% of the entire period engine**, and the engine runs once per
-    # publication event -- so it was the dominant cost of the whole history build. The
-    # arithmetic below is the same arithmetic; `quarterize` has already dropped every row
-    # with a null value, start or end, so no NaN-skipping reduction is needed.
+    # Numpy arrays taken once; `quarterize` has already dropped rows with a null value, start or end.
     a_end = annual["period_end"].to_numpy("datetime64[ns]")
     a_start = annual["period_start"].to_numpy("datetime64[ns]")
     a_value = annual["value"].to_numpy(float)
@@ -408,9 +246,7 @@ def _drop_annual_masquerading_as_quarter(
         scale = float(np.abs(near_value).max())
         if scale < 1 or float(np.abs(near_value - float(cast(Any, q.value))).min()) > 0.001 * scale:
             continue
-        # Scoped to the ANNUAL window, not to the quarter's: a nine-month cumulative ends
-        # exactly where the fourth quarter begins, so anchoring on `q.period_start` would
-        # exclude the one fact that proves the year accumulated.
+        # Scoped to the annual window: the nine-month cumulative ends where the quarter begins.
         year_start = a_start[near].min()
         accumulated = (i_end > year_start) & (i_end <= q_end)
         if (np.abs(i_value[accumulated]) > 0.01 * scale).any():
@@ -419,13 +255,9 @@ def _drop_annual_masquerading_as_quarter(
 
 
 def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None:
-    """The candidate sharing this window's START and ending strictly earlier -- the only
-    fact a cumulative total may be differenced against.
+    """The latest candidate sharing this window's START and ending strictly earlier, or None.
 
-    Sharing the start is what makes the subtraction arithmetically valid: `YTD9 - YTD6` is
-    a quarter only if both run from the same first day of the fiscal year. The legacy
-    engine matched on "the nearest earlier period end", which silently differenced across a
-    fiscal-year boundary whenever a quarter was missing.
+    Sharing the start is what makes a cumulative subtraction valid (never across a fiscal-year boundary).
     """
     if candidates.empty or pd.isna(start):
         return None
@@ -439,35 +271,15 @@ def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None
 
 
 def _scale_agrees(total: float, total_days: float, part: float, part_days: float, guards: PeriodGuards, two_sided: bool) -> bool:
-    """Are the two legs of a subtraction plausibly the SAME line, judged purely on scale?
+    """Are the two legs of a subtraction plausibly the SAME line, compared as per-day rates?
 
-    Compared as **per-day rates**, which is the only dimensionally honest comparison: the
-    legs are a twelve-month figure and a nine-month one, so their raw magnitudes differ by
-    construction and any count-based annualisation (`x 4 / len(parts)`) is wrong the moment
-    a leg is itself cumulative.
-
-    Using the parts' summed MAGNITUDES rather than the magnitude of their sum is deliberate
-    and was a real bug in the legacy engine: `abs(q1 + q2 + q3)` collapses toward zero
-    whenever a year contains offsetting quarters, so every annual figure then looks wildly
-    out of scale. That rejected four confirmed, perfectly derivable quarters whose only
-    problem was one loss quarter in the year (Cboe FY2022 read as 2.34x, Dow FY2020 as 88x,
-    PG&E FY2021 at 0.12x, EA FY2012 at 0.17x).
-
-    **`two_sided` is the difference between a flow and a stock.** For an additive flow only
-    an upper bound can work -- a year of offsetting quarters legitimately foots to a small
-    annual figure, and the case a lower bound would catch (an annual fact on a different,
-    smaller concept, e.g. JPM's `Revenues` against `RevenuesNetOfInterestExpense` quarters)
-    already yields a negative quarter that `_is_coherent` rejects on sign. For a
-    **non-additive share count the bound is two-sided and exact**, because a share count
-    cannot halve or double in a quarter without a corporate action, and a corporate action
-    is precisely what this has to catch: see `quarterize`'s stock-split note.
+    One-sided (upper bound `concept_switch_scale_max`) for an additive flow; two-sided with
+    `share_basis_max_ratio` for a non-additive share count, so a split between the legs is refused.
     """
     if total_days <= 0 or part_days <= 0 or part == 0:
         return False
     ratio = abs(float(total) / total_days) / abs(float(part) / part_days)
-    # A share count gets its own, much tighter bound: `concept_switch_scale_max` is 2.0 and
-    # a 2-for-1 split lands at 1.996-2.003, so the commonest split ratio in existence sat
-    # exactly on the threshold and half of them passed.
+    # Share counts need a tighter bound than 2.0, where a 2-for-1 split sits on the threshold.
     bound = guards.share_basis_max_ratio if two_sided else guards.concept_switch_scale_max
     if ratio > bound:
         return False
@@ -475,22 +287,11 @@ def _scale_agrees(total: float, total_days: float, part: float, part_days: float
 
 
 def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec, guards: PeriodGuards) -> bool:
-    """Is a derived quarter broadly consistent with the quarters already observed?
+    """Is a derived quarter consistent with the year's observed quarters?
 
-    Deliberately permissive about magnitude alone: a real business can have a legitimately
-    much larger or smaller quarter, so a value sharing its sign with ANY sibling is
-    accepted regardless of size. The legacy engine required the sign to match EVERY
-    sibling, and that single `all(...)` nulled **745 of the 950 missing Q4s** measured in a
-    10-ticker audit -- one loss-making quarter anywhere in the year destroyed that year's
-    Q4 for every income-statement field at once (GLW FY2016: -368 / +2,207 / +284 against
-    an FY of 3,695 has a perfectly correct Q4 of +1,572, thrown away).
-
-    The sharpest test runs first and needs no threshold at all: for a field the catalogue
-    declares `non_negative`, a negative derived value is arithmetically impossible, so it
-    is proof the two inputs measured different things. That one rule subsumes both
-    confirmed mismatched-concept failures (JPM's -$63B revenue quarter, CBRE FY2016's
-    -$6.4B cost of revenue) and catches cases magnitude missed entirely (KeyCorp's D&A,
-    -$152M in each of eight consecutive years).
+    False for a negative value on a `non_negative` field. Otherwise True if it shares its sign with
+    ANY sibling, if its sign flip is forced by the year's total, or if its magnitude is within
+    `max_opposite_sign_ratio` of the largest sibling.
     """
     if spec.sign == "non_negative" and derived < 0:
         return False
@@ -498,12 +299,7 @@ def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec, guards:
         return True
     if any((derived >= 0) == (s >= 0) for s in siblings):
         return True
-    # The one case where a large opposite-sign quarter is arithmetically FORCED: the year's
-    # own total came out the opposite sign from the periods before it, which can only
-    # happen if this one outweighed all of them. Confirmed real: Citigroup FY2017 (nine
-    # months +$12.1B, FY -$6.8B -> a -$18.9B Q4 at 4.6x the largest quarter) and Corning
-    # FY2017 (3.2x), both the December-2017 Tax Cuts and Jobs Act deferred-tax writedown --
-    # a systematic fiscal-2017 hole across the index, not two outliers.
+    # A large opposite-sign quarter is forced when it flips the sign of the year's own total.
     if ((derived + sum(siblings)) >= 0) != (sum(siblings) >= 0):
         return True
     largest = max(abs(s) for s in siblings)
@@ -516,20 +312,10 @@ def _is_coherent(derived: float, siblings: list[float], spec: FieldSpec, guards:
 def _derived(
     total, subtrahend, basis: str, spec: FieldSpec, siblings: list[float], guards: PeriodGuards, refusals: list[dict] | None = None
 ) -> dict | None:
-    """One subtraction, guarded. Returns None where the guards refuse it, because a NULL
-    the validator can explain is worth more than a plausible wrong number.
+    """One guarded subtraction `total - subtrahend` -> a quarter row, or None when the guards refuse it.
 
-    A refusal is now RECORDED rather than merely returned (register item 7). The record
-    carries the window the quarter would have occupied and the value that was refused --
-    both of which the caller has no other way of knowing, since the whole point is that no
-    row is emitted -- so `fundamentals_reason_codes` can say "this quarter was refused, at
-    this size, for this reason" instead of leaving a hole a null-gate reports as unexplained.
-
-    One caveat worth stating rather than discovering: for a NON-ADDITIVE field `quarterize`
-    has already transformed the frame into SHARE-DAYS, so the refused `value` recorded here
-    is a share-day product, not a share count. It is diagnostic only -- the reason code is
-    what the table stores -- and converting it back would need the window's day count to
-    mean something it does not for a refused window.
+    A refusal is appended to `refusals` with the would-be window, the refused value and its `dc_code`.
+    For a non-additive field the recorded value is in share-days (diagnostic only).
     """
     value = float(total["value"]) - float(subtrahend["value"])
     switched = str(total["source_concept"]) != str(subtrahend["source_concept"])
@@ -552,9 +338,7 @@ def _derived(
             }
         )
 
-    # The scale test runs on a concept switch (the legs may be two different lines) and
-    # ALWAYS for a non-additive share count (the legs may be two different SPLIT BASES --
-    # same concept, same line, incompatible units).
+    # Scale test on a concept switch, and always for a share count (legs may sit on two split bases).
     if switched or not spec.is_additive:
         if not _scale_agrees(
             total["value"], total["period_days"], subtrahend["value"], subtrahend["period_days"], guards, two_sided=not spec.is_additive
@@ -583,57 +367,27 @@ def quarterize(
     year_ends: list[pd.Timestamp] | None = None,
     refusals: list[dict] | None = None,
 ) -> pd.DataFrame:
-    """One (ticker, field)'s duration facts -> discrete quarters, with provenance.
+    """One (ticker, field)'s duration facts -> discrete quarters (`_QUARTER_COLUMNS`), with provenance.
 
-    Reported discrete quarters are kept as they are. Everything else climbs the ladder:
-    `Q2 = YTD6 - Q1`, `Q3 = YTD9 - YTD6`, then `Q4 = FY - YTD9` and only failing that
-    `Q4 = FY - (Q1+Q2+Q3)`.
-
-    **A non-additive field is differenced in SHARE-DAYS, not refused.** A weighted-average
-    share count is not additive across quarters -- four summed quarterly averages are four
-    times the share count -- but `average x days` IS, because that product is the number of
-    share-days outstanding and share-days simply accumulate. So the ladder runs in that
-    space and converts back, which makes `Q4 = (FY.avg*FY.days - YTD9.avg*YTD9.days) /
-    Q4.days` exact rather than approximate.
-
-    This is a deliberate departure from the plan's *"refuse share counts"*, and from
-    edgartools' `_is_additive_concept`, which refuses them too. Measured, refusing them
-    leaves `dilutedShares_ttm` computable at **129 of 1,532 points (8%)** -- because filers
-    never publish a discrete Q4 average, so a four-quarter run essentially never closes --
-    and decision #9 defines `epsDiluted` as `netIncome_ttm / dilutedShares_ttm`. Refusing
-    the derivation therefore does not protect Tier-2 EPS, it deletes it. What decision #9
-    actually forbids is summing four quarterly **EPS** figures: EPS is a ratio of two flows
-    and its denominator moves, which is a different thing from a time-average of a stock.
-    Ratios and per-share amounts never reach here at all -- `build_periods` only walks
-    fields whose `kind` is `duration`, and both are `ratio`/`derived`.
-
-    `refusals`, when a list is passed, collects EVERY window this call declined -- the D1b
-    `ambiguous_duration` rows and, since register item 7, the ladder's own
-    `derived_basis_mismatch` / `split_basis_mismatch` / `derived_sign_implausible`
-    refusals. An out-parameter rather than a fourth return value because the list is empty
-    on most (ticker, field) pairs and the history build is the only consumer.
+    Reported quarters are kept and win over a derived one for the same window; the rest come from the
+    ladder. A non-additive field (weighted-average shares) is differenced in share-days
+    (`average x days`) and converted back. `known_from` is the latest filing date of the inputs.
+    `refusals`, when given, collects every declined window; `year_ends` defaults to this field's own.
     """
     guards = guards or load_guards()
     if facts.empty:
         return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     frame = facts[facts["value"].notna() & facts["period_start"].notna() & facts["period_end"].notna()].copy()
-    # Coerced only if the caller did not. `build_history._normalise_facts` does it once per
-    # ticker, so on the production path all three columns already arrive as `datetime64` and
-    # re-converting them ran once per (event, field) for an answer that never changed. A
-    # synthetic fixture handing in strings is still converted -- and still exactly once,
-    # here, rather than sorted lexicographically further down.
+    # Coerce only if the caller did not, so strings are never sorted lexicographically below.
     for column in ("period_start", "period_end", "filing_date"):
         if not is_datetime64_any_dtype(frame[column]):
             frame[column] = pd.to_datetime(frame[column])
-    # Before the share-day transform, so the value comparison is on as-filed numbers: a
-    # 92-day window and a 365-day one are multiplied by different factors and a mislabelled
-    # annual would stop matching its own annual fact.
+    # Before the share-day transform, so the value comparison is on as-filed numbers.
     frame = _drop_annual_masquerading_as_quarter(frame, refusals)
     if not spec.is_additive:
         frame["value"] = frame["value"] * _inclusive_days(frame["period_days"])
 
-    # Once, here, for all four shape reads below -- see `_latest_per_window`. After the
-    # share-day transform, so nothing downstream sees a differently ordered `frame`.
+    # Sorted once for all four shape reads below -- see `_latest_per_window`.
     frame = frame.sort_values(_WINDOW_ORDER)
 
     quarters = _shape(frame, QUARTERLY, presorted=True)
@@ -659,17 +413,12 @@ def quarterize(
         return pd.DataFrame(columns=list(_QUARTER_COLUMNS))
     if not spec.is_additive:
         out["value"] = out["value"] / _inclusive_days(out["period_days"])
-    # An as-reported quarter always beats a derived one for the same window: it is the
-    # filer's own number rather than our arithmetic on two of them.
+    # An as-reported quarter always beats a derived one for the same window.
     out["_rank"] = (out["basis"] != AS_REPORTED).astype(int)
     out = out.sort_values(["period_end", "_rank", "known_from"]).drop_duplicates(subset=["period_end"], keep="first").drop(columns="_rank")
     out.insert(0, "field", spec.name)
     out.insert(0, "ticker", facts["ticker"].iloc[0])
-    # The calendar is the TICKER's, never this field's own annual facts. A field with one
-    # annual fact in fifteen years has a one-bucket calendar, and every quarter it ever
-    # reported then lands in that single fiscal year: measured, AMT's `interestExpense` put
-    # 2015, 2016 and 2017 all into FY2017 and produced four Q1s. 69 such collisions across
-    # 11 tickers, and every one of them disappears once the calendar is shared.
+    # Callers should pass the TICKER's calendar: a field's own sparse annual facts mislabel fiscal years.
     return label_fiscal_periods(out, fiscal_year_ends(frame) if year_ends is None else year_ends)
 
 
@@ -682,12 +431,10 @@ def _ladder(
     guards: PeriodGuards,
     refusals: list[dict] | None = None,
 ) -> list[dict]:
-    """The three decumulation rungs plus the two Q4 routes, in that order.
+    """The Q2/Q3 decumulation rungs, then Q4 by `FY - YTD9` or else `FY - (Q1+Q2+Q3)`.
 
-    `refusals` is forwarded to every `_derived` call, so a rung that declines a window is
-    recorded once, at the rung that declined it. A window the LADDER never reaches -- no
-    cumulative fact, or no prior fact to difference against -- is not a refusal and is not
-    recorded: nothing was rejected, the input was simply never published.
+    A rung that declines a window records it once in `refusals`; a window with no input to difference
+    is not a refusal and is not recorded.
     """
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
@@ -702,8 +449,7 @@ def _ladder(
     for fy in annual.itertuples():
         fy_row = cast(Any, fy)._asdict()
         inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
-        # A discrete quarter already ending on the fiscal year-end IS Q4 as reported --
-        # nothing to derive, and deriving anyway would duplicate the window.
+        # A discrete quarter ending on the fiscal year-end IS Q4 as reported.
         if (inside["period_end"] == fy.period_end).any():
             continue
         siblings = [float(cast(Any, v)) for v in inside["value"]]
@@ -715,9 +461,7 @@ def _ladder(
                 out.append(derived)
                 continue
 
-        # Fallback. Exactly the three quarters that precede Q4 -- anything else (a gap, an
-        # overlap, a stub) is ambiguous, and emitting a value from an ambiguous input set
-        # is how the legacy engine made its Q4 footing check tautological.
+        # Fallback needs exactly the three preceding quarters; a gap, overlap or stub is ambiguous.
         if len(inside) != TTM_QUARTERS - 1:
             continue
         total = float(inside["value"].sum())
@@ -746,28 +490,16 @@ def _ladder(
 
 
 def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
-    """The issuer's own fiscal year-end dates, taken from the ANNUAL-shaped facts' window
-    ends rather than from a month-of-year rule.
+    """The issuer's fiscal year-end dates, ascending, from its ANNUAL-shaped facts' window ends.
 
-    Keying off the filer's own period ends is what makes a 52/53-week issuer work: its year
-    end walks by a day or six and lands in a different calendar month every few years, so
-    any fixed-month rule mislabels it. Annual-SHAPED, not `FY`-labelled: Skyworks FY2020
-    tags both a 370-day and a **97-day** fact as `fp='FY'`, and only the day count tells
-    them apart.
+    Missing years between two ends are interpolated, and one year is extrapolated past the last
+    annual end so quarters filed since the latest 10-K still get labelled. Empty when no annual fact.
     """
     annual = facts[(facts["duration_type"] == ANNUAL) & facts["value"].notna()]
     ends = sorted(pd.Timestamp(e) for e in pd.to_datetime(annual["period_end"]).dropna().unique())
     if not ends:
         return []
-    # Extrapolate ONE year past the last 10-K. The quarters a model actually trades on are
-    # the ones filed since the most recent annual report, and without this they fall off
-    # the end of the calendar unlabelled -- measured, that silently dropped AAPL's three
-    # most recent quarters. One year only: two would be inventing a fiscal calendar rather
-    # than extending the filer's own.
-    # Fill a MISSING year before extrapolating. A filer files every year, so a gap in the
-    # annual facts is a gap in what survived entity scoping, not in the calendar -- and an
-    # unfilled gap dumps two or three years of quarters into one bucket: measured, MAA's
-    # 2013 quarters were all labelled FY2017 Q1.
+    # Fill gaps (a gap is a scoping loss, not a calendar change), then extend exactly one year.
     filled = [ends[0]]
     for end in ends[1:]:
         previous = filled[-1]
@@ -782,37 +514,25 @@ def fiscal_year_ends(facts: pd.DataFrame) -> list[pd.Timestamp]:
 
 @lru_cache(maxsize=256)
 def _bounds_of(year_ends: tuple[pd.Timestamp, ...]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """`_fiscal_bounds` keyed on the calendar itself. One ticker has ONE calendar and every
-    field is labelled against it, so this is asked the same question E*K + E times a replay.
-    Tuples out, not lists: the answer is shared between callers and must not be mutable."""
+    """`_fiscal_bounds` cached on the calendar tuple; returns immutable tuples because callers share them."""
     ends = tuple(sorted(pd.Timestamp(e) for e in year_ends))
     starts = (ends[0] - pd.Timedelta(days=364), *(e + pd.Timedelta(days=1) for e in ends[:-1]))
     return ends, starts
 
 
 def _fiscal_bounds(year_ends: list[pd.Timestamp]) -> tuple[tuple[pd.Timestamp, ...], tuple[pd.Timestamp, ...]]:
-    """The fiscal years as (end, start) pairs: each year starts the day after the previous
-    one ended, and the first is back-dated 364 days because there is no earlier end to
-    anchor it on.
+    """The fiscal years as `(ends, starts)`: each starts the day after the previous end, the first 364 days back.
 
-    Shared by `label_fiscal_periods` and `fiscal_quarter_of_end` so a quarter cannot be
-    labelled one way inside a quarters frame and another way from its end date alone.
+    Shared by `label_fiscal_periods` and `fiscal_quarter_of_end` so both label a quarter identically.
     """
     return _bounds_of(tuple(year_ends))
 
 
 def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
-    """Which fiscal quarter (1-4) does a period **ending** on `end` sit in?
+    """Which fiscal quarter (1-4) a period ENDING on `end` sits in, or None if outside the calendar.
 
-    The mirror of `label_fiscal_periods`, for the caller that has only an end date -- the
-    history layer stamps one `fiscal_end` per publication event and has no `period_start`
-    to offset from. Measuring the span the year-start covers UP TO `end` and rounding is
-    the same arithmetic seen from the other side: a period ending exactly on the year end
-    covers 4 quarter-lengths and lands on Q4, one ending a quarter in covers 1 and lands
-    on Q1.
-
-    Answers for a TTM or an instant too, which is the point: the row still reports *as of*
-    a quarter of the filer's year even when the number on it spans four of them.
+    The end-date mirror of `label_fiscal_periods`, for TTM and instant rows too: the covered span from
+    the year start, divided by that year's quarter length and rounded.
     """
     if not year_ends or end is None or pd.isna(end):
         return None
@@ -829,22 +549,11 @@ def fiscal_quarter_of_end(end, year_ends: list[pd.Timestamp]) -> int | None:
 
 
 def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) -> pd.DataFrame:
-    """Attach `fiscal_year` and `fiscal_quarter`, positioned against the fiscal year's own
-    START and its own LENGTH.
+    """Attach `fiscal_year` and `fiscal_quarter` and return `_QUARTER_COLUMNS`.
 
-    Not a fixed day-count divisor -- calendar quarters run 90/91/92 days and a 52/53-week
-    issuer's year is 364 or 371, so `days // 91` misclassifies at the boundary. Dividing
-    the quarter's offset into the year by *that year's own* quarter length and rounding is
-    exact for any regular calendar, 53-week years included.
-
-    Not a chronological rank either, which was the first attempt and is wrong for the year
-    the filer is still inside: ranking AAPL's three post-10-K quarters from the end labelled
-    them Q2/Q3/Q4 instead of Q1/Q2/Q3, and those are precisely the quarters a model trades
-    on. Ranking from the start instead breaks the mirror case, an early-history year seen
-    only from Q3 onward. Anchoring on the calendar handles both without a special case.
-
-    `fiscal_year` is the calendar year of the year-end the quarter falls in, matching SEC's
-    own `fy` convention.
+    The quarter is the offset of `period_start` into its fiscal year divided by that year's own quarter
+    length, rounded (exact for 52/53-week years). `fiscal_year` is the calendar year of the year-end,
+    matching SEC's `fy`. Quarters beyond the calendar stay NA.
     """
     out = quarters.copy()
     out["fiscal_year"] = pd.NA
@@ -870,30 +579,18 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
 
 
 def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFrame | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
-    """A trailing-twelve-month value at every quarter end it can be built from FOUR
-    DISCRETE QUARTERS -- and nowhere else.
+    """A TTM value at every quarter end, built only from FOUR contiguous discrete quarters.
 
-    This is the staircase fix. The legacy fallback carried the last annual figure forward
-    up to four quarters, which froze **6.2% of consecutive `totalRevenue` pairs** and made
-    `revenueGrowth` exactly 0 for three quarters in four (APA 100% frozen, XOM 36%). A
-    carried-forward annual is not a trailing twelve months; it is last year's number
-    wearing this quarter's date. Where the four quarters do not exist, the value is NULL
-    with `insufficient_quarters`, and coverage drops on purpose.
-
-    A **non-additive** field (a weighted-average share count) is averaged, not summed --
-    four summed quarterly averages are four times the share count. Where the window ends on
-    a fiscal year end and the filer published the annual figure, that as-reported
-    twelve-month average is used instead, because it is the filer's own exact number rather
-    than our mean of four means.
+    Otherwise the row is NULL with `insufficient_quarters` (never a carried-forward annual). A
+    non-additive field is the share-day-weighted mean, or the as-reported annual figure where the
+    window ends on a fiscal year end; a window straddling a split is NULL with `split_basis_mismatch`.
     """
     empty = pd.DataFrame(columns=["ticker", "field", "period_end", "value", "basis", "known_from", "n_quarters", "dc_code"])
     if quarters.empty:
         return empty
     guards = guards or load_guards()
     ordered = quarters.sort_values("period_end").reset_index(drop=True)
-    # Only the non-additive branch below reads it, and a weighted-average share count is
-    # 3 of the 48 fields -- so deriving the annual shape for the other 45 was a
-    # `_latest_per_window` per (event, field) whose result was never looked at.
+    # Only the non-additive branch reads the annual facts.
     reported_annual = {} if spec.is_additive else _annual_by_end(annual)
     rows = []
     for i in range(len(ordered)):
@@ -919,9 +616,7 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
         if not spec.is_additive and not _one_share_basis(window, guards):
             rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": SPLIT_BASIS_MISMATCH})
             continue
-        # Share-days again for a non-additive field: a twelve-month weighted average is the
-        # share-day total over the days, not the mean of four means (which is only equal
-        # when all four quarters are the same length -- a 53-week year's Q4 is not).
+        # A twelve-month weighted average is share-days over days, not the mean of four means.
         days = _inclusive_days(window["period_days"])
         value = window["value"].sum() if spec.is_additive else (window["value"] * days).sum() / days.sum()
         rows.append(
@@ -935,9 +630,7 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
             }
         )
     out = pd.DataFrame(rows, columns=list(empty.columns))
-    # One null representation, not two: a python `None` and a numpy NaN in the same object
-    # column survive a parquet round-trip as two distinct values and make every downstream
-    # `== None` test quietly wrong.
+    # One null representation: mixed None/NaN in an object column breaks downstream null tests.
     return out.astype({"basis": "string", "dc_code": "string"})
 
 
@@ -949,21 +642,9 @@ def _annual_by_end(annual: pd.DataFrame | None) -> dict:
 
 
 def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
-    """Are the four quarterly share counts on ONE split basis?
+    """Are the window's share counts on ONE split basis (max/min within `share_basis_max_ratio`)?
 
-    A stock split retroactively rescales every prior share count, and each quarter in a
-    trailing window comes from a different filing -- so a window straddling a split mixes
-    a pre- and a post-split basis and averages two incompatible units. Measured on the
-    26-ticker roster: **45 `dilutedShares` windows across 8 tickers** (AAPL 7:1 2014 and
-    4:1 2020, NEE 4:1 2020, AFL 2:1 2018, EOG 2:1 2014, KR 2:1 2015, plus VRT's SPAC merger
-    and BRK-B's A/B classes, whose spread is 246,000x).
-
-    A share count cannot move more than ~15% in a year organically, so the bound is not
-    close to anything real -- and the value it protects is `epsDiluted`, where a
-    split-straddling denominator is wrong by an exact integer factor and looks entirely
-    plausible. Refused with a reason code rather than repaired: the repair would be to pick
-    one basis, and there is no way to know from the facts alone which one the consumer
-    wants.
+    A window straddling a split mixes two incompatible units; it is refused, not repaired.
     """
     values = window["value"].abs()
     smallest = values.min()
@@ -971,9 +652,7 @@ def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
 
 
 def _window_is_contiguous(window: pd.DataFrame) -> bool:
-    """Four quarters make a year only if they abut and span one. Checked rather than
-    assumed, because a ticker with a filing gap has four quarters spanning two years and
-    summing them produces a number that looks entirely reasonable."""
+    """True when the quarters abut (gaps of at most 1 day) and span `TTM_MIN_DAYS`..`TTM_MAX_DAYS`."""
     starts = list(window["period_start"])
     ends = list(window["period_end"])
     for previous_end, next_start in zip(ends, starts[1:], strict=False):
@@ -985,25 +664,15 @@ def _window_is_contiguous(window: pd.DataFrame) -> bool:
 
 # --------------------------------------------------------------------------- instants ---
 
-#: An instant tagged with the fiscal YEAR is the year-END snapshot, which occupies the same
-#: grid slot as the fourth quarter. Every other label already names its own quarter.
+#: An instant tagged with the fiscal YEAR is the year-END snapshot, which occupies the Q4 grid slot.
 _YEAR_END_LABEL = {"FY": "Q4", "YTD12": "Q4"}
 
 
 def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
-    """Point-in-time facts on the quarterly grid: balance-sheet levels, the cover-page
-    share count, and the 10-K's headcount.
+    """Point-in-time facts on the quarterly grid: balance-sheet levels, cover-page shares, headcount.
 
-    There is no ladder here -- an instant is already discrete -- so the work is two rules:
-
-      * **A fiscal-year label on an instant means the year END.** A balance sheet tagged
-        `FY` is the 31 December snapshot, not a twelve-month measure, so it belongs in the
-        Q4 slot. A DURATION field legitimately has both an `FY` and a `Q4` flavour and must
-        never be relabelled this way, which is why the discriminator is the absence of a
-        `period_start` and not the label itself.
-      * **One row per (field, date), latest filing wins** -- the same rule the duration path
-        uses and for the same reason: a level is re-tagged as a comparative in every later
-        filing, and inside a point-in-time replay the latest visible one is the right one.
+    Instants are rows with no `period_start` (else `duration_type == instant`); an `FY`/`YTD12` label on
+    them is relabelled `Q4`. One row per (ticker, field, period_end), the latest filing winning.
     """
     if facts.empty:
         return facts
@@ -1022,24 +691,15 @@ def instant_stock(facts: pd.DataFrame) -> pd.DataFrame:
 
 
 class InstantLookup:
-    """`instant_stock`'s output as one sorted `(period_end, value)` array pair per field,
-    so "this level's latest known value at `as_of`" is a `np.searchsorted` instead of a
-    one-row `merge_asof`.
+    """`instant_stock`'s output as one sorted `(period_end, value)` array pair per field, so a level's
+    latest known value at `as_of` is a `np.searchsorted`.
 
-    Same answer as `build_history.carry_latest_known`, which stays as the oracle the
-    equivalence test compares against: `direction="backward"` with exact matches allowed is
-    `searchsorted(..., side="right") - 1`, and the ties `merge_asof` would have to break are
-    already gone -- `instant_stock` emits at most one row per `(field, period_end)`.
-
-    Built once per distinct visible instant set rather than once per (event, field): the
-    one-row `merge_asof` was 312 calls and 12.8% of the profiled replay, all of it spent
-    constructing two DataFrames to answer a single index lookup.
+    Equivalent to `build_history.carry_latest_known` (backward as-of, exact matches allowed).
     """
 
     __slots__ = ("_by_field",)
 
-    #: The columns a lookup needs. `filing_date` only to break a duplicate `period_end`,
-    #: which `instant_stock` has already done on the production path.
+    #: The columns a lookup needs; `filing_date` only breaks a duplicate `period_end`.
     _COLUMNS: tuple[str, ...] = ("field", "period_end", "value", "filing_date")
 
     def __init__(self, instants: pd.DataFrame | None) -> None:
@@ -1055,19 +715,14 @@ class InstantLookup:
             frame = frame.sort_values("period_end")
         values = pd.to_numeric(frame["value"], errors="coerce").to_numpy(dtype=float)
         frame = frame.assign(_value=values)
-        # `searchsorted` returns nonsense rather than an error on an unsorted array, so the
-        # sort above is asserted, not assumed. Once per frame, not per field: `groupby`
-        # preserves within-group row order, so a globally ascending `period_end` is
-        # ascending inside every group.
+        # `searchsorted` silently misreads an unsorted array; groupby keeps the global order per group.
         ends = frame["period_end"].to_numpy("datetime64[ns]")
         assert bool(np.all(ends[:-1] <= ends[1:])), "InstantLookup: period_end is not ascending -- searchsorted would be wrong"
         for name, group in frame.groupby("field", sort=False):
             self._by_field[str(name)] = (group["period_end"].to_numpy(dtype="datetime64[ns]"), group["_value"].to_numpy(dtype=float))
 
     def value(self, field: str, as_of) -> float | None:
-        """`field`'s latest value dated on or before `as_of`, or None where the field has
-        no instant at or before it. A level is carried forward because that IS its latest
-        known value -- absence here means the filer never tagged one, not a stale read."""
+        """`field`'s latest value dated on or before `as_of`, or None when there is none (or it is NaN)."""
         entry = self._by_field.get(field)
         if entry is None or as_of is None or pd.isna(as_of):
             return None
@@ -1089,35 +744,13 @@ def build_periods(
     refusals: list[dict] | None = None,
     year_ends: list[pd.Timestamp] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Every field's discrete quarters, TTM values and instants for one ticker's facts.
+    """Every `duration` field's discrete quarters and TTM values, plus the instants, for one ticker's facts.
 
-    Returns `(quarters, ttm, instants)` -- all three, rather than leaving instants to a
-    second call, because a history built from the first two alone is silently missing every
-    balance-sheet level and would still look complete.
-
-    All three are long frames; the history build pivots them onto the publication-event
-    grain. Nothing here is written to a table: a derived quarter is not a fact the filer
-    published, and `fundamentals_facts` stays a faithful record of what was.
-
-    `refusals`, when a list is passed, collects every refused window -- D1b's
-    `ambiguous_duration` and the ladder's three quarter-level codes -- tagged with its
-    field, for the history build to write to `fundamentals_reason_codes`. Left None it is
-    simply not collected: a caller that does not reason-code must not be forced to.
-
-    `year_ends` is the ticker's fiscal calendar, accepted from a caller that already needs
-    it for its own labelling (`build_history._snapshot` stamps one `fiscal_end` per event)
-    so the same annual-shaped facts are not walked twice per event. Derived here when
-    omitted.
-
-    Not memoised across events, deliberately. A per-field memo keyed on the visible fact
-    count is exact -- the visible set is a prefix -- but measured, it hits on **0.3-15 %**
-    of lookups (mean ~5 %), because every filing re-tags as comparatives the windows it
-    already reported, so almost every field's count grows at almost every event. CPU-time
-    A/B: -5.8 % at an 11 % hit rate, +1.6 % at 0 %. That is not worth a cache whose key
-    every future change to this function's inputs would have to re-prove.
+    Returns long frames `(quarters, ttm, instants)`; nothing is written to a table. `refusals`, when given,
+    collects every refused window tagged with its `field`. `year_ends` is the ticker's fiscal calendar,
+    derived from all annual-shaped facts when omitted and shared by every field.
     """
-    # Here rather than in `quarterize`/`trailing_twelve`, which are called once per
-    # (event, field) and would each re-resolve the default.
+    # Resolved once here rather than per (event, field) in the callees.
     guards = guards or load_guards()
     if facts.empty:
         return (
@@ -1126,10 +759,7 @@ def build_periods(
             facts,
         )
     durations = facts[~facts["duration_type"].isin([INSTANT, OTHER_SHAPE])]
-    # One calendar for the whole ticker, built from every annual-shaped fact any field
-    # reported -- see `quarterize`. `durations` rather than `facts` makes no difference to
-    # the answer (only ANNUAL-shaped rows are read), which is what lets a caller hand in its
-    # own.
+    # One calendar for the whole ticker, built from every field's annual-shaped facts.
     if year_ends is None:
         year_ends = fiscal_year_ends(durations)
     all_quarters, all_ttm = [], []

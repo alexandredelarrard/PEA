@@ -1,32 +1,11 @@
 """
-build_history.py  (src/data_extract/utils/fundamentals/build_history.py)
---------------------------------------------------------------------------------------------
-`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, on the
-PUBLICATION-EVENT grain.
+`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, on the publication-event grain.
 
-`as_of` is a FILING DATE, not a period end. That one change is the whole phase: the previous
-build computed `as_of` as a median-of-spine heuristic over the concepts that made a period
-COMPUTABLE, which pushed 10-Q-derived quarters ~400 days past their own period end and, for
-ROP's 2009 year, 59 days BEFORE it -- a look-ahead leak. Under this grain there is nothing to
-compute. The five rules, in the order they are applied:
-
-  1. A row is emitted for every `(ticker, date)` on which >=1 extracted value became newly
-     public. An ORIGINAL filing always qualifies.
-  2. An AMENDMENT emits a row only if it changes >=1 extracted value AND lands <=365 days
-     after the original (decision 34). The value test discards the ~88 Part-III/cover-only
-     amendments; the cutoff discards the restatements a long/short model cannot learn from,
-     because a quarter stays inside some live TTM window for about twelve months.
-  3. The row is a COMPLETE SNAPSHOT. Every column carries its latest-known value at that
-     date, so a plain `asof` merge needs no reconstruction. This is the property `PitFrames`
-     depends on, and the reason `fundamentals_reason_codes` is dense rather than sparse.
-  4. Rows are IMMUTABLE once written -- enforced, not asserted: see `diff_against_stored`.
-  5. SAME-DAY COLLAPSE by `(ticker, date)`, never by accession. Two filings on one day
-     produce one row reflecting both, with provenance resolved by form precedence.
-
-A restated value propagates further than one cell, and that is correct rather than a bug:
-the table stores TTM LEVELS, so restating Q1 moves the TTM at Q1, Q2, Q3 and Q4. What stays
-frozen is the EARLIER ROWS, which keep their as-filed values forever -- that is where the
-no-leakage property lives.
+`as_of` is a FILING DATE. Rules: (1) a row for every `(ticker, date)` on which >=1 value became public (an original
+always qualifies); (2) an amendment emits a row only if it changes >=1 value and lands <= `MAX_AMENDMENT_LAG_DAYS`
+after the original; (3) each row is a complete snapshot of latest-known values, built only from facts filed on or
+before `as_of`, with every null explained by a reason code; (4) stored rows are immutable (`diff_against_stored`);
+(5) same-day filings collapse to one row by `(ticker, date)`, provenance by `FORM_PRECEDENCE`.
 """
 
 from __future__ import annotations
@@ -53,34 +32,15 @@ from src.data_extract.utils.fundamentals.periods import (
     load_guards,
 )
 
-#: Form precedence for a same-day collapse (decision 37). Scalar-with-a-precedence-rule
-#: rather than a pipe-joined string, so a `publication_form == '10-K'` filter can never
-#: silently miss a day on which a 10-K was co-filed.
+#: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
 
-#: Decision 34. Structural, not tunable -- it encodes "the restated quarter is still inside
-#: a live trailing-twelve window", which is a property of the TTM basis and not a knob.
+#: Structural, not tunable: a restated quarter stays inside some live TTM window for twelve months.
 MAX_AMENDMENT_LAG_DAYS = 365
 
-#: THE HARD GUARDS (plan-5b decision 46): `{column: predicate that means the value is
-#: IMPOSSIBLE}`. Applied by `_hard_guard` BEFORE the row is written, which is the only place
-#: they can live -- the validator never mutates (decision 40), and a post-hoc UPDATE on an
-#: append-only table would change a historical row's value after the fact, so yesterday's
-#: cube and today's would disagree about the same publication event.
-#:
-#: FOUR RULES, AND ONLY IMPOSSIBLE ONES. Not "implausible", not "outside a measured band" --
-#: impossible, in the sense that no filer could report it and be right. v2 proposed a wider
-#: set including a `[-1, 1]` ratio bound; that bound nulls HCA's correct negative
-#: `debtToEquity` (its equity IS negative) and every filer whose debt exceeds its equity,
-#: which is the 745-correct-rows-nulled-by-an-over-strict-guard failure mode repeating
-#: verbatim. Everything else v2 listed is a FLAG-ONLY Tier-1 check (`impossible_value`)
-#: that reports the number and leaves it in the table for a human to judge.
-#:
-#: A negative share count is arithmetically impossible; zero is a filing error rather than a
-#: fact (a company with no shares outstanding has no equity to report), so `<= 0` is the
-#: test for the three counts. `totalAssets` uses `< 0` and not `<= 0`: a shell in its first
-#: period legitimately foots to exactly zero (VRT's pre-merger SPAC), and nulling that would
-#: destroy a correct value to catch nothing.
+#: `{column: predicate meaning the value is IMPOSSIBLE}`, nulled by `_hard_guard` before the row is written.
+#: Impossible only, never merely implausible (those are flag-only validator checks). Share counts refuse `<= 0`;
+#: `totalAssets` refuses only `< 0`, since a shell can legitimately foot to zero.
 HARD_GUARDS: dict[str, Callable[[float], bool]] = {
     "totalAssets": lambda v: v < 0,
     "sharesOutstanding": lambda v: v <= 0,
@@ -88,25 +48,12 @@ HARD_GUARDS: dict[str, Callable[[float], bool]] = {
     "dilutedShares": lambda v: v <= 0,
 }
 
-#: The identity of one as-filed value inside a filing. Two filings that carry the same tuple
-#: are reporting the SAME measurement, which is what makes "did this amendment change
-#: anything?" answerable by value rather than by fact count -- an amendment can re-tag 200
-#: facts to identical values and still be a no-op.
-#:
-#: Keyed on `period_end`, NOT on the `(fiscal_year, fiscal_period)` LABELS. The labels are not
-#: unique inside a filing: AAPL's FY2025 10-K carries FY2023, FY2024 and FY2025 annual revenue,
-#: and the label pair collides for 16,340 of them across the roster -- which is exactly why
-#: `fundamentals_facts` now keys on `period_end` too. Keeping the labels here would collapse
-#: three different measurements to one and then report an amendment as a no-op, or a no-op as
-#: an amendment, depending on which one `keep='last'` happened to retain.
+#: Identity of one as-filed measurement, used to test an amendment by value. Keyed on `period_end`, not the
+#: fiscal labels, which are not unique inside a filing.
 _VALUE_KEY: tuple[str, ...] = ("field", "duration_type", "period_end")
 
-#: Every computed column, as `column -> (inputs, formula)`. The formulas are also declared
-#: in prose in `fundamentals_kpis.json`; `test_build_history` asserts the two agree, so the
-#: config stays the contract and this stays the single implementation of it.
-#:
-#: Flows are TTM here, because that IS the column (decision 31): `profitMargins` is TTM net
-#: income over TTM revenue, never a quarter over a quarter.
+#: Every computed column, as `column -> (inputs, formula)`; must agree with `fundamentals_kpis.json`.
+#: Flow inputs are TTM, so ratios are TTM over TTM.
 _FORMULAS: dict[str, tuple[tuple[str, ...], Callable[[float, float], float]]] = {
     "ebitda": (("operatingIncome", "depAmort"), lambda a, b: a + b),
     "freeCashflow": (("operatingCashFlow", "capex"), lambda a, b: a - b),
@@ -120,15 +67,10 @@ _FORMULAS: dict[str, tuple[tuple[str, ...], Callable[[float, float], float]]] = 
     "optionOverhang": (("dilutedShares", "basicShares"), lambda a, b: a / b - 1),
 }
 
-#: History columns taken from the DISCRETE quarter rather than from the trailing twelve,
-#: mapped to the field each reads. Not `periods._QUARTER_COLUMNS`, which is the quarter
-#: FRAME's 12-column contract -- same name, different type, and this module imports that
-#: one. The only two that survive the contract: the legacy table had four `_q` columns and
-#: `ebitda_q` / `freeCashflow_q` are declared casualties (Phase 6 §6.1 reconciles them).
+#: History columns read from the discrete quarter rather than the TTM, mapped to their source field.
 _QUARTER_LABEL_COLUMNS: dict[str, str] = {"revenue_q": "totalRevenue", "netIncome_q": "netIncome"}
 
-#: Formulas whose second operand is a denominator. A zero denominator is not a ratio, and
-#: `x / 0` is an infinity that survives every plausibility check downstream.
+#: Formulas whose second operand is a denominator; a zero denominator yields None, never an infinity.
 _RATIOS: frozenset[str] = frozenset(
     {"epsDiluted", "effectiveTaxRate", "grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "optionOverhang"}
 )
@@ -136,9 +78,7 @@ _RATIOS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class TickerHistory:
-    """One ticker's two frames. Returned together because they are one statement: a null in
-    `history` is only legitimate if `reason_codes` explains it, and building them in separate
-    passes is how the two would drift."""
+    """One ticker's history and reason-code frames, built together: every null in `history` has a reason code."""
 
     history: pd.DataFrame
     reason_codes: pd.DataFrame
@@ -148,8 +88,7 @@ class TickerHistory:
 
 
 def _same_value(before, after) -> bool:
-    """Are two as-filed values the same measurement? NaN == NaN here, deliberately: a
-    reason-coded value-less row re-tagged as another value-less row changed nothing."""
+    """Whether two as-filed values are equal, with NaN == NaN (a value-less row re-tagged changed nothing)."""
     if pd.isna(before) and pd.isna(after):
         return True
     if pd.isna(before) or pd.isna(after):
@@ -158,12 +97,7 @@ def _same_value(before, after) -> bool:
 
 
 def _amended_fields(facts: pd.DataFrame, accession: str, filed: pd.Timestamp) -> list[str]:
-    """Which fields this amendment actually MOVED, against everything filed before it.
-
-    Compared by VALUE on `_VALUE_KEY`, not by fact count: 88 of the 246 amendments in the
-    legacy dump carry fewer than 10 facts (Part III / cover-page only) and a count threshold
-    both admits some of those and rejects a genuine one-number restatement.
-    """
+    """Sorted fields this amendment changed, by value on `_VALUE_KEY`, against everything filed before it."""
     amendment = facts[facts["accession_number"] == accession]
     prior = facts[facts["filing_date"] < filed]
     if prior.empty:
@@ -215,8 +149,7 @@ def publication_events(facts: pd.DataFrame) -> pd.DataFrame:
 
 
 def _collapse_same_day(events: pd.DataFrame) -> pd.DataFrame:
-    """Rule 5. Two filings on one day are ONE publication event; provenance resolves by
-    precedence so every column stays scalar and queryable."""
+    """Rule 5: one event per day; provenance resolves by `FORM_PRECEDENCE`, amended fields are unioned."""
     rank = {form: i for i, form in enumerate(FORM_PRECEDENCE)}
     events = events.assign(_rank=[rank.get(f, len(rank)) for f in events["publication_form"]])
     out = []
@@ -238,27 +171,12 @@ def _collapse_same_day(events: pd.DataFrame) -> pd.DataFrame:
 
 
 def carry_latest_known(facts: pd.DataFrame, ends, field: str, on: str = "period_end") -> pd.DataFrame:
-    """`field`'s latest known value at each date in `ends`, as a one-column frame.
+    """`field`'s latest known value at each date in `ends` (backward as-of), as a frame of `on` and `field`.
 
-    The as-of alignment an ANNUAL-ONLY disclosure needs to reach the interim quarters: a
-    headcount stated once in the 10-K must populate the following three quarters rather than
-    the fiscal-year row alone. It is also the instant path for the wide table -- a
-    balance-sheet level's "latest known value" is exactly the last one reported -- which is
-    why it is one primitive and not two.
-
-    Ties on `on` are broken by `filing_date`, latest wins: a level is re-tagged as a
-    comparative in every later filing, and inside a point-in-time replay the freshest
-    visible tagging of a period is the right one.
-
-    The frame-at-a-time form. The replay's own per-event read goes through
-    `periods.InstantLookup`, which answers the same question with a `searchsorted` instead
-    of a one-row `merge_asof`; this is the ORACLE that equivalence is pinned against, so it
-    stays even though the hot path no longer calls it.
+    Ties on `on` keep the latest `filing_date`. The frame-at-a-time oracle that `periods.InstantLookup` is
+    tested against.
     """
-    # Both sides forced to nanoseconds. A parquet round-trip yields `datetime64[ms]` while a
-    # constructed index is `[us]`, and `merge_asof` refuses to join two resolutions rather
-    # than silently coercing -- so this normalisation is the difference between working and
-    # raising, not a tidiness measure.
+    # `merge_asof` refuses mixed datetime resolutions, so both sides are forced to nanoseconds.
     index = pd.DatetimeIndex(pd.to_datetime(ends)).astype("datetime64[ns]").sort_values()
     rows = facts[facts["field"] == field]
     out = pd.DataFrame({on: index})
@@ -278,22 +196,13 @@ def carry_latest_known(facts: pd.DataFrame, ends, field: str, on: str = "period_
     return pd.merge_asof(out, ordered.sort_values(on), on=on, direction="backward")
 
 
-#: How far a trailing-twelve window's end may sit from the `fiscal_end` it is reported
-#: against before it stops being this period's number. HALF A QUARTER, so the tolerance can
-#: only ever admit the SAME fiscal quarter and never the previous one -- which is the whole
-#: job, since a one-quarter carry is already a silent basis error.
-#:
-#: A tolerance rather than exact equality because the two dates come from different columns
-#: and legitimately disagree by days: `fiscal_end` is `_latest_period_known`, read off
-#: `period_of_report`, while the TTM grid is built on the facts' own `period_end`. A 52/53-week
-#: filer's ends walk, and ORCL files a quarter ending 2014-01-31 against a 2014-02-28 calendar
-#: -- 28 days apart, unambiguously the same quarter.
+#: Max days between a TTM window's end and the row's `fiscal_end`: half a quarter, so only the SAME fiscal
+#: quarter is admitted (the two dates come from different columns and can differ by days).
 TTM_STALENESS_DAYS = 45
 
 
 def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.Series | None:
-    """The newest row `frame` holds for `field`, or None. `frame` is a `build_periods`
-    output, so "newest" is the newest period end this ticker has reached for that field."""
+    """The row of `frame` (a `build_periods` output) with the newest `column` for `field`, or None."""
     if frame is None or frame.empty or "field" not in frame.columns:
         return None
     rows = frame[frame["field"] == field]
@@ -304,12 +213,7 @@ def _latest(frame: pd.DataFrame, field: str, column: str = "period_end") -> pd.S
 
 
 def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
-    """Does this trailing-twelve window belong to a different quarter than `period`?
-
-    False when `period` is unknown: a row with no `fiscal_end` has nothing to be stale
-    against, and inventing a refusal there would null the first publication event of every
-    ticker. Absence of a bound is not a bound of zero.
-    """
+    """Whether this TTM window ends more than `TTM_STALENESS_DAYS` from `period`; False when `period` is unknown."""
     if pd.isna(period):
         return False
     end = pd.to_datetime(cast(Any, newest.get("period_end")), errors="coerce")
@@ -317,24 +221,14 @@ def _is_stale(newest: pd.Series, period: pd.Timestamp) -> bool:
 
 
 def _split_by_field(visible: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """`visible` cut once into one frame per field, in filing order.
-
-    Every helper below wants "this field's visible rows", and each of them used to re-run
-    `visible["field"] == field` over the whole prefix -- three of them once per field, so
-    ~150 boolean masks and fancy-takes per publication event over a 27-column frame. One
-    `groupby` per event answers all of them. `sort=False` keeps each group in the parent's
-    order, which is `filing_date` (`_normalise_facts` sorts) -- and the `.iloc[-1]` reads
-    below depend on it.
-    """
+    """`visible` split into one frame per field, each kept in `filing_date` order (callers rely on `.iloc[-1]`)."""
     return {str(field): group for field, group in visible.groupby("field", sort=False)}
 
 
 def _facts_code(by_field: dict[str, pd.DataFrame], field: str) -> str | None:
-    """The facts layer's own reason for this field having nothing usable.
+    """The facts layer's `dc_code` for this field, preferring the latest filing that mentions it.
 
-    Read off the LATEST filing that mentions the field, never off the whole history: an
-    absence explained by a 2011 filing says nothing about a 2024 one, and a code that
-    outlives its filing is how a reason table becomes decorative.
+    `not_disclosed` when no visible filing mentions the field; None when none carries a code.
     """
     rows = by_field.get(field)
     if rows is None:
@@ -348,21 +242,9 @@ def _facts_code(by_field: dict[str, pd.DataFrame], field: str) -> str | None:
 
 
 def _deduced_nci(by_field: dict[str, pd.DataFrame]) -> float | None:
-    """The non-controlling interest DEDUCED from the filer's own two equity elements.
+    """NCI deduced as equity-incl-NCI minus equity-ex-NCI at the latest `period_end` tagged on both bases, or None.
 
-    Where a filing tags equity on BOTH bases at the same `period_end`, the difference IS the
-    NCI -- arithmetic over two filed facts, not an inference about absence. Latest observation
-    wins and is carried forward like any other instant, so one deducible date supplies every
-    later event until the next observation.
-
-    Measured on the roster: the overlap is RARE (EOG 7 of 63 period ends, TMO 6 of 65, MCD 0 of
-    72), so this does not replace the assumed-zero branch, it shrinks it. Where it does fire it
-    shows the quantity at stake is tiny -- EOG's two bases are identical to the dollar on 6 of 7
-    dates, and TMO's differ by $8-47M against $27-39bn of equity (0.02-0.12%).
-
-    Deliberately NOT written into the `minorityInterest` COLUMN: that column reports what the
-    filer tagged for the field, and injecting a computed value would make it non-as-filed. The
-    deduction is local to the identity that needs it.
+    Used only inside `_total_liabilities_identity`; never written into the as-filed `minorityInterest` column.
     """
     equity = by_field.get("stockholdersEquity")
     if equity is None:
@@ -386,22 +268,15 @@ def _deduced_nci(by_field: dict[str, pd.DataFrame]) -> float | None:
 
 
 def _has_valued_fact(by_field: dict[str, pd.DataFrame], field: str) -> bool:
-    """Did the filer actually tag a NUMBER for this field in anything visible?
-
-    The difference between "we found nothing" and "we found it and could not use it", which
-    `not_disclosed` cannot express and a reader would act on differently.
-    """
+    """Whether any visible fact carries a value for this field ("found but unusable" vs `not_disclosed`)."""
     rows = by_field.get(field)
     return rows is not None and bool(rows["value"].notna().any())
 
 
 def _qualifiers(by_field: dict[str, pd.DataFrame], field: str) -> list[str]:
-    """Codes that describe a value which IS present but is not on the field's nominal basis.
+    """Qualifier codes for a present value off its nominal basis, from the latest filing touching the field.
 
-    All three sources are properties of the latest filing that touched the field: a
-    `dc_code` in `IS_QUALIFIER` (today only `period_intersection_partial`, riding the
-    value-less stub route 3b's strict intersection now emits), and the `adjustment` JSON's
-    `basis_qualifier` and `zero_only_retained` keys.
+    Sources: a `dc_code` in `rc.IS_QUALIFIER`, and the `adjustment` JSON's `basis_qualifier` / `zero_only_retained`.
     """
     rows = by_field.get(field)
     if rows is None:
@@ -420,30 +295,18 @@ def _qualifiers(by_field: dict[str, pd.DataFrame], field: str) -> list[str]:
     return sorted(found)
 
 
-#: The equity concept that ALREADY INCLUDES the non-controlling interest. Where the equity row
-#: resolved on this element, adding `minorityInterest` would double-count it.
+#: Equity concept that already includes NCI; adding `minorityInterest` to it would double-count.
 _EQUITY_INCL_NCI = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
 
 
-#: How far the filer's own three tags may disagree before its arithmetic counts as a
-#: CONTRADICTION of `grossProfit = totalRevenue - costOfRevenue`. 1% is the same band the
-#: acceptance measurement used, and it is wide enough to absorb rounding at `decimals=-6`
-#: while being far narrower than the two real dissenters (CAT +22.5%, COST +20.3%).
+#: Relative error above which the filer's own tags contradict `grossProfit = totalRevenue - costOfRevenue`.
 GROSS_PROFIT_IDENTITY_TOLERANCE = 0.01
 
 
 def _contradicts_gross_profit(visible: pd.DataFrame) -> bool:
-    """Has this filer, in anything visible by now, tagged all three and broken the identity?
+    """Whether any visible window tags all three gross-profit terms and breaks the identity beyond tolerance.
 
-    POINT-IN-TIME and per-FILER, never per-regime. That is the shape decision the
-    `minorityInterest` bridge already had to learn: a rule asserted across a regime is what
-    nearly claimed UNH earns no premiums, and a lifetime test would let a 2024 filing decide
-    a 2013 row. Here the same rule keeps CAT and COST -- whose own filings show our
-    `costOfRevenue` is short of their tagged gross profit -- from being handed a derived
-    number, while a filer that simply never tags `grossProfit` is not condemned by silence.
-
-    Joined on `(period_end, duration_type)` because that pair IS the fact identity; the
-    fiscal LABELS collide 5.5% of the time and would compare two different windows.
+    Point-in-time and per filer (reads only `visible`), joined on `(period_end, duration_type)`, not fiscal labels.
     """
     wanted = ("grossProfit", "totalRevenue", "costOfRevenue")
     rows = visible[visible["field"].isin(wanted) & visible["value"].notna()]
@@ -461,24 +324,10 @@ def _contradicts_gross_profit(visible: pd.DataFrame) -> bool:
 
 
 def _gross_profit_identity(row: dict, visible: pd.DataFrame) -> float | None:
-    """`grossProfit` from the catalogue's own `derived_fallback`, where no filer tag gave it.
+    """`grossProfit` as TTM `totalRevenue - costOfRevenue` (the catalogue's `derived_fallback`), where no tag gave it.
 
-    **Reg S-X Rule 5-03 never required a gross-profit line from anyone** -- the phrase
-    appears zero times in its text -- so its absence is not a filing defect and a coverage
-    gap is the wrong response. Reconstructing it from captions 1-9 is, and that is what
-    every data vendor does: Oracle presents no gross-profit and no total-cost-of-revenue
-    subtotal at all, yet its gross margin is a published number everywhere, because
-    revenue minus the cost block IS the definition.
-
-    The catalogue has declared `"derived_fallback": "totalRevenue - costOfRevenue"` since the
-    rebuild and NOTHING read it -- the key was prose. This is the implementation, kept here
-    rather than in the facts layer for the same reason `_total_liabilities_identity` is: the
-    inputs are TTM cells, and an identity over two as-filed windows of different lengths is
-    not the same number.
-
-    Returns None rather than a value whenever either input is missing -- an identity short
-    one term is not an approximation of itself -- or where `_contradicts_gross_profit` says
-    the filer's own tags disagree.
+    Computed here, not in the as-filed facts layer. None when either input is missing or
+    `_contradicts_gross_profit` says the filer's own tags disagree.
     """
     revenue, cost = row.get("totalRevenue"), row.get("costOfRevenue")
     if revenue is None or cost is None or _contradicts_gross_profit(visible):
@@ -487,46 +336,11 @@ def _gross_profit_identity(row: dict, visible: pd.DataFrame) -> float | None:
 
 
 def _total_liabilities_identity(row: dict, by_field: dict[str, pd.DataFrame]) -> tuple[float | None, str | None]:
-    """`totalLiabilities` from the balance sheet's own identity, where no filer tag gave it.
+    """`totalLiabilities` as `totalAssets - equity (incl. NCI)`, where no filer tag gave it; returns `(value, code)`.
 
-    **§5.1, and the measurement that redirected it.** Register item 8 prescribed exactly this
-    identity; the planning interview (decision 30) rejected it as the PRIMARY route on the
-    grounds that the filer's own liability legs -- Reg S-X 5-02 captions 21-31 -- had never
-    been read, and asked for a route-3b leg-sum measured first. That measurement was run
-    (11 zero-coverage tickers x 4 10-Ks; the artefact of record is
-    `data/total_liabilities_legs.json` -- the script that produced it is no longer in
-    the tree) and it
-    refutes the leg-sum, though not for the reason the plan anticipated:
-
-      * **All 44 filings declare a leg-set and NONE declares a `Liabilities` total.** So the
-        legs really are the filer's own evidence, exactly as decision 30 argued.
-      * **The raw route-3b refusal rate is 68% (30 of 44)**, and it is caused by a single
-        element: `us-gaap:CommitmentsAndContingencies`, the Reg S-X 5-02(24) caption filers
-        declare under the balance-sheet root as a footnote POINTER and never report a value
-        for. Excluding it, 42 of 44 filings (95%) carry a complete leg-set -- the two
-        residuals being genuine partials (DUK FY2023 `NotesPayableRelatedPartiesNoncurrent`,
-        MCD FY2024 `OperatingLeaseLiabilityNoncurrent`).
-      * **But route 3b cannot safely sum them anyway**, and this is the decisive part.
-        `_leaf_sum` admits only concepts the catalogue ENUMERATES in `roll_up.any_of`; an
-        unlisted sibling is refused only when it is a company EXTENSION, and silently dropped
-        when it is us-gaap. The measured leg-sets vary by filer AND by year (2 legs for ETN,
-        7 for MCD; EOG and TMO change theirs between 2023 and 2024), so any enumeration is a
-        union that cannot be shown to be complete -- and an incomplete union produces a
-        balance-sheet total that is SHORT BY A CAPTION and looks entirely plausible. That is
-        the `shortTermDebt` defect this whole rebuild exists to remove, re-created on a Tier-1
-        field. §B.5 refuted "element names are evidence of what a filer declares" twice; a
-        Reg S-X caption list is that reasoning again.
-
-    So the identity wins on the merits, as the plan's own instruction allowed for. It lives
-    HERE and not in the facts layer, which is a deliberate departure from §5.1's
-    `resolution_method = 'derived_identity'`: `fundamentals_facts` is documented as strictly
-    as-filed -- "every row carries a number the filer actually tagged" -- and a derived
-    number in that table would contradict the property the publication-event grain rests on.
-    The history layer already computes; it stamps `derived_identity` in
-    `fundamentals_reason_codes` so the cell never reads as resolved evidence.
-
-    The **NCI bridge** reads the equity ROW rather than the concept priority list, because
-    priority-first is not the same as what actually won for a given filing.
+    Computed here, never in the as-filed facts layer, and coded `derived_identity`. Unless the equity row's latest
+    concept already includes NCI, adds `minorityInterest`, else `_deduced_nci`; with neither, NCI is assumed zero
+    (`derived_identity_nci_zero`) only if no visible fact ever tagged an NCI value, otherwise `(None, None)`.
     """
     assets, equity = row.get("totalAssets"), row.get("stockholdersEquity")
     if assets is None or equity is None:
@@ -538,31 +352,10 @@ def _total_liabilities_identity(row: dict, by_field: dict[str, pd.DataFrame]) ->
     if not incl_nci:
         nci = row.get("minorityInterest")
         if nci is None:
-            # Before assuming, try to DEDUCE it: if the filer tags equity on both bases at one
-            # period end, their difference is the NCI, and that is two filed facts rather than
-            # a claim about absence. Keeps the plain `derived_identity` code, because nothing
-            # here rests on interpreting a NULL.
+            # A deduction from two filed facts keeps the plain `derived_identity` code.
             nci = _deduced_nci(by_field)
         if nci is None:
-            # Nothing tagged and nothing deducible. A NULL `minorityInterest` conflates "not
-            # tagged" with "genuinely zero", and ex-NCI equity plus an UNKNOWN NCI would
-            # overstate liabilities -- but a filer that has never tagged an NCI in anything
-            # visible has told us it has none, which is its own filing history rather than an
-            # asserted rule, and refusing there costs a Tier-1 total for no gain.
-            #
-            # Read off `visible`, so it is POINT-IN-TIME: at an `as_of` before a filer's first
-            # NCI disclosure, zero is what was knowable then. That distinction is load-bearing
-            # and easy to get wrong -- measured on LIFETIME facts, TMO looks like it must be
-            # refused (38 valued NCI facts); measured point-in-time, its first NCI is filed
-            # 2022-02-24 against a history starting 2011-11-04, so a decade of its events had
-            # no NCI to know. Only a filer that discloses one in its FIRST filing (LLY, ETN)
-            # is refused throughout.
-            #
-            # What remains on the assumption after the deduction above is therefore: MCD (0 of
-            # 72 period ends carry both equity bases, so nothing is ever deducible for it) and,
-            # for everyone else, only the events before their first deducible or tagged NCI.
-            # Where the quantity IS observable it is negligible -- EOG's two bases agree to the
-            # dollar on 6 of 7 dates, TMO's differ by 0.02-0.12% of equity.
+            # Point-in-time: zero is assumed only while no visible fact has tagged an NCI value.
             if _has_valued_fact(by_field, "minorityInterest"):
                 return None, None
             basis = rc.DERIVED_IDENTITY_NCI_ZERO
@@ -572,30 +365,16 @@ def _total_liabilities_identity(row: dict, by_field: dict[str, pd.DataFrame]) ->
 
 
 def _as_datetime(column: pd.Series) -> pd.Series:
-    """`column` as timestamps, converting only where it is not already. A no-op on the
-    production path -- `_normalise_facts` has done it -- and a real conversion for a
-    synthetic fixture that hands in strings."""
+    """`column` as timestamps, converting only when it is not already datetime."""
     return column if is_datetime64_any_dtype(column) else pd.to_datetime(column, errors="coerce")
 
 
 def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Timestamp:
-    """`fiscal_end`: the latest fiscal period the filer had REPORTED ON by `as_of`.
+    """`fiscal_end`: the latest `period_of_report` (else `period_end`) visible by `as_of`, capped at `as_of`.
 
-    Capped at `as_of`, which is what makes the no-look-ahead property structural rather than
-    checked. A period end in the future is not knowable, however a filing happens to be
-    dated -- and filings ARE occasionally dated ahead of the period they carry: ROP's
-    2009-12-31 numbers reached the old builder stamped 2009-11-02, 59 days before the year
-    closed, which read as "the full-year figures were public while the year was still
-    running". Under the cap the same fixture simply reports the newest period it actually
-    could: Q3.
-
-    Monotone non-decreasing by construction -- the visible set only grows and `as_of` only
-    advances -- which is the second half of the point-in-time contract. An amendment
-    restating an older quarter therefore keeps the LATEST known period here and carries the
-    restated one in `amended_fiscal_end`.
+    The cap prevents look-ahead from a filing dated before its period closes. Monotone non-decreasing over
+    events; an amendment's restated period goes in `amended_fiscal_end` instead.
     """
-    # `_normalise_facts` coerces both columns once per ticker; re-coercing them here ran
-    # once per event over the whole visible prefix, which is the quadratic shape.
     periods = _as_datetime(visible["period_of_report"])
     if periods.isna().all():
         periods = _as_datetime(visible["period_end"])
@@ -604,22 +383,15 @@ def _latest_period_known(visible: pd.DataFrame, as_of: pd.Timestamp) -> pd.Times
 
 
 def _instant(lookup: InstantLookup, field: str, period) -> float | None:
-    """A balance-sheet level's latest known value as of `period`.
+    """A balance-sheet level's latest known value as of `period` (carried forward), None only if it has none.
 
-    NULL only where the field has no instant at all: a level is carried forward because that
-    IS its latest known value. Which is also why B.6.6's refused SCHW `cash` period needs a
-    qualifier of its own -- there is no null for a gate to find.
-
-    Reads a `searchsorted` rather than `carry_latest_known`'s one-row `merge_asof`, which
-    the two answer identically; `test_instant_lookup_matches_merge_asof` pins that against
-    `carry_latest_known` as the oracle.
+    Equivalent to `carry_latest_known`, pinned by `test_instant_lookup_matches_merge_asof`.
     """
     return lookup.value(field, period)
 
 
 def _ratio(column: str, numerator, denominator):
-    """A formula's value, or None where its inputs cannot produce one. A zero denominator
-    is refused rather than allowed to become an infinity that no later check can see."""
+    """A `_FORMULAS` value, or None for a missing input or a zero `_RATIOS` denominator."""
     if numerator is None or denominator is None:
         return None
     if pd.isna(numerator) or pd.isna(denominator):
@@ -632,30 +404,20 @@ def _ratio(column: str, numerator, denominator):
 def _snapshot(
     ticker: str, visible: pd.DataFrame, event: pd.Series, catalogue: Catalogue, guards: PeriodGuards, narrow: pd.DataFrame | None = None
 ) -> tuple[dict, list[dict]]:
-    """One complete row plus its reason codes, from every fact filed on or before `as_of`.
+    """One complete history row plus its reason codes, from `visible` (every fact filed on or before `as_of`).
 
-    `narrow` is the same rows projected to the columns `build_periods` actually reads. It is
-    not a micro-optimisation: every filter inside the period engine copies its whole frame,
-    and on the full 27-column shape -- half of it Arrow-backed strings -- that copying WAS
-    the replay, at ~14 minutes a ticker. See `PERIOD_COLUMNS`.
+    `narrow` is the same rows projected to `PERIOD_COLUMNS` for `build_periods`.
     """
     refusals: list[dict] = []
     as_of = pd.Timestamp(event["as_of"])
     facts = narrow if narrow is not None else visible
     by_field = _split_by_field(visible)
-    # Off the filer's own year ends as of THIS event, not a global calendar: the label has to
-    # be knowable from what was filed by `as_of`, and a 52/53-week filer's year ends walk.
-    # Built here and handed to `build_periods`, which needs the same calendar: it selects the
-    # annual-shaped facts identically (instants and unbanded shapes carry no ANNUAL row), so
-    # deriving it twice per event was two answers that could never differ.
+    # The filer's own year ends as known at THIS event, shared with `build_periods`.
     year_ends = fiscal_year_ends(facts)
     quarters, ttm, instants = build_periods(facts, catalogue, guards, refusals, year_ends=year_ends)
-    # Built once per event and asked once per instant field, rather than a `merge_asof` per
-    # (field, event). See `InstantLookup`: 15.4x on the primitive, measured.
     lookup = InstantLookup(instants)
     period = _latest_period_known(visible, as_of)
-    # No re-sort: `_normalise_facts` sorted by `filing_date` and `visible` is a positional
-    # PREFIX of that frame, so the last non-null regime is already the latest-filed one.
+    # `visible` is a filing-date-sorted prefix, so the last non-null regime is the latest-filed one.
     regime = visible["regime"].dropna()
     regime = str(regime.iloc[-1]) if not regime.empty else None
 
@@ -688,27 +450,12 @@ def _snapshot(
         if field in _FORMULAS:
             continue  # computed once the inputs are in
         if catalogue.field(field).kind == INSTANT:
-            # Aligned on `as_of`, NOT on `fiscal_end`. The cover-page share count is dated
-            # at the filing, days AFTER the period it accompanies -- and it is the only
-            # summable count for a multi-class issuer -- so capping instants at `fiscal_end`
-            # would delete `sharesOutstanding` for the current period on every filer.
+            # Aligned on `as_of`, not `fiscal_end`: the cover-page share count is dated after the period end.
             value, reason = _instant(lookup, field, as_of), None
         else:
-            # The newest quarter end this field has reached, REQUIRED to be this row's own
-            # quarter. `trailing_twelve`'s contract is four discrete quarters or nothing, and
-            # carrying the last computable TTM forward is precisely the staircase (1,622 of
-            # 26,242 consecutive `totalRevenue` pairs frozen) that this rebuild removed.
-            # Coverage drops on purpose.
-            #
-            # Two ways a TTM goes missing, and only the first used to be handled: a REFUSED
-            # window stays NULL with its own code, but a window that stops being COMPUTABLE
-            # because its input quarters dried up left `_latest` returning the newest row
-            # that had ever existed -- an uncapped forward-fill. `_is_stale` is the cap.
+            # The newest TTM must be this row's own quarter; an older window is never carried forward.
             newest = _latest(ttm, field)
             if newest is not None and _is_stale(newest, period):
-                # A window from another quarter is not this row's value. Without this the
-                # cell reads as a live measurement forever after the field stops resolving:
-                # see `rc.STALE_TTM` for the 27 pairs it was frozen on.
                 newest = None
                 reason = rc.STALE_TTM
             else:
@@ -717,12 +464,7 @@ def _snapshot(
         if value is None and reason is None:
             reason = _facts_code(by_field, field)
         if value is None and reason is None and _has_valued_fact(by_field, field):
-            # The facts ARE there and the window still could not be assembled, so
-            # `not_disclosed` would be a false statement: the filer disclosed it. The only
-            # way a duration field reaches here is a window short of four discrete quarters
-            # -- anything the guards refused already carries its own code. Measured on AAPL:
-            # 4 cells, all at the FIRST publication event, where one visible filing cannot
-            # make a trailing twelve months by construction.
+            # Disclosed but no full four-quarter window yet; guard refusals already carry their own code.
             reason = rc.INSUFFICIENT_QUARTERS
         row[field], gated = _gate(catalogue, regime, field, value)
         if row[field] is None:
@@ -732,27 +474,20 @@ def _snapshot(
                 code(field, qualifier)
         _break_code(catalogue, field, period, code)
 
-    # After the field loop, so `minorityInterest` (tier 3) is already resolved -- the NCI
-    # bridge needs it and `history_fields` is tier-ordered, which puts tier-1
-    # `totalLiabilities` first.
+    # After the field loop, so `minorityInterest` (resolved after `totalLiabilities`) is available.
     if row.get("totalLiabilities") is None:
         row["totalLiabilities"], basis = _total_liabilities_identity(row, by_field)
         if row["totalLiabilities"] is not None:
             assert basis is not None
-            # The absence code the loop just wrote is now false: the cell is not absent, it
-            # is derived. Replace rather than accumulate, or the row says both.
+            # Replace the absence code with the derivation code (qualifiers stay).
             codes[:] = [c for c in codes if c["field"] != "totalLiabilities" or c["dc_code"] in rc.IS_QUALIFIER]
             code("totalLiabilities", basis)
 
-    # Before `_FORMULAS`, so `grossMargins` divides a derived numerator rather than a null.
-    # `operatingIncome` declares a `derived_fallback` too and is deliberately NOT wired to
-    # one: measured, its formula lands within 1% of the filed figure in 0.5% of 550 rows.
-    # See `rc.DERIVED_FALLBACK`.
+    # Before `_FORMULAS`, so `grossMargins` can use it; `operatingIncome`'s `derived_fallback` is deliberately unwired.
     if row.get("grossProfit") is None:
         row["grossProfit"] = _gross_profit_identity(row, visible)
         if row["grossProfit"] is not None:
-            # The absence code the loop just wrote is now false: the cell is not absent, it
-            # is derived. Replace rather than accumulate, or the row says both.
+            # Replace the absence code with the derivation code (qualifiers stay).
             codes[:] = [c for c in codes if c["field"] != "grossProfit" or c["dc_code"] in rc.IS_QUALIFIER]
             code("grossProfit", rc.DERIVED_FALLBACK)
 
@@ -770,23 +505,16 @@ def _snapshot(
 
     for refusal in refusals:
         code(refusal["field"], str(refusal["dc_code"]))
-    # LAST, so it sees the ratios and the discrete-quarter columns too, and so nothing
-    # downstream can put an impossible value back. See `HARD_GUARDS` for why there are four.
+    # Last, so it also covers derived and computed columns.
     _hard_guard(ticker, event["as_of"], row, codes)
     return row, codes
 
 
 def _hard_guard(ticker: str, as_of, row: dict, codes: list[dict]) -> None:
-    """Null every `HARD_GUARDS` violation in `row`, recording what was thrown away.
+    """Null every `HARD_GUARDS` violation in `row` in place, before the write.
 
-    In place, on the row about to be written -- decision 46's "applied before the write".
-    The refused number goes onto the reason-code row as `rejected_value` rather than into a
-    log line, because a derived cell (a TTM, the `derived_identity` total) has NO fact row
-    to go back to and the number would otherwise be unrecoverable. That is what makes "did
-    this guard null something correct?" a query instead of an archaeology exercise.
-
-    Replaces any absence code the field already earned: a value that was PRESENT and refused
-    is not `not_disclosed`, and a row asserting both would be incoherent.
+    The field's existing codes are replaced by one `failed_hard_guard` row carrying the refused number as
+    `rejected_value` (a derived cell has no fact row to recover it from).
     """
     for field, is_impossible in HARD_GUARDS.items():
         value = row.get(field)
@@ -800,14 +528,10 @@ def _hard_guard(ticker: str, as_of, row: dict, codes: list[dict]) -> None:
 
 
 def _gate(catalogue: Catalogue, regime: str | None, field: str, value: float | None) -> tuple[float | None, str | None]:
-    """Regime gating, applied HERE and not in the facts layer.
+    """Regime gating (history layer only): returns `(value, code)`.
 
-    A `regime_gated` field is UNDEFINED for a regime whose register cell says so -- a bank
-    has no `AssetsCurrent` because Reg S-X Article 9 has no current/non-current split -- so
-    any value that reached us is a resolution accident and is dropped. A field that is merely
-    `expected_absent` keeps whatever it resolved (PGR really does tag capex) and only has its
-    ABSENCE explained. The facts layer stays regime-agnostic about absence on purpose, so the
-    register can be re-measured against it instead of being assumed by it.
+    Where the field is `expected_absent` for the regime, a `regime_gated` field is dropped with
+    `not_applicable_for_regime`; otherwise the value is kept and only its absence gets that code.
     """
     if not regime or not catalogue.expected_absent(regime, field):
         return value, None
@@ -817,12 +541,7 @@ def _gate(catalogue: Catalogue, regime: str | None, field: str, value: float | N
 
 
 def _break_code(catalogue: Catalogue, field: str, period, code) -> None:
-    """Flag a cell whose own trailing year contains a definitional discontinuity.
-
-    The window is one year because that is the span over which the cell is compared with
-    itself: a YoY or TTM read that straddles ASC 842 sees a step that is real accounting and
-    not a data defect. Outside the window both sides are internally comparable again.
-    """
+    """Code `regime_break` when the field's definitional break date falls in the trailing year ending at `period`."""
     effective = catalogue.regime_break_effective(field)
     if effective is None or pd.isna(period):
         return
@@ -834,12 +553,9 @@ def _break_code(catalogue: Catalogue, field: str, period, code) -> None:
 
 
 def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> pd.DataFrame:
-    """One ticker's `fundamentals_history_sec` frame -- 69 columns, one row per publication event.
+    """One ticker's `fundamentals_history_sec` frame: 69 columns, one row per publication event.
 
-    The signature the acceptance test has pinned since Phase 1
-    (`tests/data_extract/test_fundamentals_point_in_time.py`). `facts` is normally the
-    ticker's `fundamentals_facts` rows; a `companyfacts`-shaped mapping is accepted for
-    SYNTHETIC FIXTURES ONLY, via `facts_frame_from_companyfacts`.
+    `facts` is the ticker's `fundamentals_facts` rows; a `companyfacts` mapping is accepted for synthetic fixtures only.
     """
     return build_ticker(ticker, facts, catalogue=catalogue, guards=guards).history
 
@@ -847,12 +563,9 @@ def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = No
 def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> TickerHistory:
     """`build_ticker_history` plus the dense reason-code side table.
 
-    The replay is O(filings): the per-ticker facts frame is loaded ONCE and sliced in
-    memory, never re-queried per event (Phase 10 names this explicitly). Every event
-    rebuilds the whole snapshot from `filing_date <= as_of`, which is the `as_of_cutoff`
-    replay the old builder supported as an audit-only debug path, promoted to the production
-    loop -- so the no-leakage property is a consequence of the algorithm rather than a
-    guard bolted onto it.
+    The facts frame is loaded once and sliced in memory; every event rebuilds its whole snapshot from facts with
+    `filing_date <= as_of`, so no-leakage follows from the algorithm. Asserts the 69-column contract, known codes
+    only, and the grain (`_assert_grain`).
     """
     catalogue = catalogue or load_catalogue()
     guards = guards or load_guards()
@@ -867,18 +580,13 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guar
     filed = frame["filing_date"].to_numpy()
     rows, codes = [], []
     for _, event in events.iterrows():
-        # A POSITIONAL slice of a filing-date-sorted frame, not a boolean mask: the mask
-        # allocates and then fancy-takes all 27 columns once per event, and `iloc[:n]` on a
-        # sorted frame is a view. Correct because `_normalise_facts` sorts by
-        # `filing_date`, so "filed on or before as_of" is a prefix by construction.
+        # `frame` is sorted by `filing_date`, so "filed on or before as_of" is a positional prefix.
         upto = int(filed.searchsorted(event["as_of"].to_datetime64(), side="right"))
         row, row_codes = _snapshot(ticker, frame.iloc[:upto], event, catalogue, guards, narrow.iloc[:upto])
         rows.append(row)
         codes.extend(row_codes)
 
-    # Pinned dtypes, all-null columns included: two builds of one ticker must compare equal on
-    # dtype for `diff_against_stored`, and `store.ensure_table` infers a cold table's column
-    # types from the first frame it is handed (an all-None object column would become TEXT).
+    # Pinned dtypes (all-null columns too) for `diff_against_stored` and cold-table type inference.
     history = pin_dtypes(
         pd.DataFrame(rows).reindex(columns=columns),
         dates=("as_of", "fiscal_end", "amended_fiscal_end"),
@@ -896,20 +604,12 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guar
     return TickerHistory(history, reason)
 
 
-#: `fundamentals_reason_codes`' grain, then its two payloads. Neither payload is a key:
-#: `combined_into` names at most one destination per field and `rejected_value` at most one
-#: refused number per (field, code), so putting either in the key would let two rows disagree
-#: about the same fact rather than making the second one impossible to write.
+#: `fundamentals_reason_codes` grain `(ticker, as_of, field, dc_code)`, then its two non-key payloads.
 _CODE_COLUMNS: tuple[str, ...] = ("ticker", "as_of", "field", "dc_code", "combined_into", "rejected_value")
 
 
 def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
-    """The two invariants §5.0 makes structural, asserted anyway.
-
-    Under this grain neither can fire -- `as_of` IS a filing date and the visible fact set
-    only grows -- which is exactly what makes them a good test rather than a redundant one:
-    if either ever trips, the grain has been broken somewhere upstream.
-    """
+    """Assert the grain: unique `(ticker, as_of)`, monotone `fiscal_end`, and `as_of >= fiscal_end` (no look-ahead)."""
     assert not history.duplicated(["ticker", "as_of"]).any(), f"{ticker}: two rows share an (ticker, as_of) -- the same-day collapse failed"
     ends = pd.to_datetime(history["fiscal_end"])
     assert (ends.diff().dropna() >= pd.Timedelta(0)).all(), f"{ticker}: fiscal_end is not monotone non-decreasing in as_of"
@@ -917,13 +617,7 @@ def _assert_grain(ticker: str, history: pd.DataFrame) -> None:
     assert (lag >= 0).all(), f"{ticker}: as_of precedes fiscal_end -- look-ahead leak"
 
 
-#: The only columns `build_periods` reads. Projecting to them before the replay is the single
-#: largest cost in this module: profiled on AAPL (7,262 facts / 69 events), every boolean
-#: filter inside `quarterize` and `_drop_annual_masquerading_as_quarter` was fancy-taking all
-#: 27 columns, and half of those arrive from parquet or Postgres as ARROW-backed strings whose
-#: `take` goes through `pyarrow.compute` one call per slice -- 98,646 of them in a single
-#: `build_periods`. The engine never looks at `adjustment`, `role_uri` or `roll_up_children`;
-#: carrying them through 69 replays cost about ten minutes a ticker.
+#: The only columns `build_periods` reads; the replay projects to them because every engine filter copies its frame.
 PERIOD_COLUMNS: tuple[str, ...] = (
     "ticker",
     "field",
@@ -940,12 +634,7 @@ PERIOD_COLUMNS: tuple[str, ...] = (
 
 
 def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
-    """`frame` reduced to `PERIOD_COLUMNS`, with its string columns off Arrow.
-
-    Both halves matter. The projection cuts the width; `astype(object)` cuts the per-slice
-    Arrow round-trip, which is what actually dominates -- a numpy object take is a pointer
-    copy, an Arrow take rebuilds the array through `pyarrow.compute`.
-    """
+    """`frame` reduced to `PERIOD_COLUMNS`, with string columns cast to object (cheap per-slice takes, unlike Arrow)."""
     out = frame[[c for c in PERIOD_COLUMNS if c in frame.columns]].copy()
     for column in ("field", "duration_type", "source_concept", "fiscal_period"):
         if column in out.columns and not pd.api.types.is_object_dtype(out[column]):
@@ -954,8 +643,7 @@ def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
-    """The facts frame with its dates as timestamps, and the missing columns a synthetic
-    fixture may not carry filled in."""
+    """The facts frame with timestamp dates, defaults for columns a fixture may lack, sorted by `filing_date`."""
     if not isinstance(facts, pd.DataFrame):
         facts = facts_frame_from_companyfacts(facts, catalogue)
     out = facts.copy()
@@ -979,17 +667,10 @@ def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
 
 
 def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFrame:
-    """A `fundamentals_facts`-shaped frame from a raw `companyfacts` mapping.
+    """A `fundamentals_facts`-shaped frame from a raw `companyfacts` mapping, for synthetic fixtures ONLY.
 
-    SYNTHETIC FIXTURES ONLY, and never on the production path -- §B.5 measured why:
-    companyfacts publishes no company-extension taxonomy and silently drops dimensioned
-    facts, so a resolution built on it is a different measurement from the one the linkbase
-    walk performs. It exists because the pinned unit test in
-    `test_fundamentals_point_in_time.py` builds its ROP-shaped fixture in that layout, and a
-    test the build cannot read is a test that passes by returning nothing.
-
-    The concept -> field map comes from the catalogue's OWN declared concepts, so no second
-    priority vocabulary is introduced here; a concept no field declares is skipped.
+    Never on the production path (companyfacts drops extension and dimensioned facts). Concepts map to fields via
+    the catalogue's own declared concepts; undeclared concepts are skipped.
     """
     by_concept: dict[str, str] = {}
     for name in catalogue.extracted_fields:
@@ -1038,8 +719,7 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
 
 # ------------------------------------------------------------------- immutability ---
 
-#: The `fundamentals_facts` columns the replay reads. Projected, never `SELECT *`: the table
-#: is ~28 columns x ~14k rows per ticker and the replay touches one ticker at a time.
+#: The `fundamentals_facts` columns the replay reads (projected read, one ticker at a time).
 FACT_COLUMNS: tuple[str, ...] = (
     "ticker",
     "accession_number",
@@ -1064,24 +744,14 @@ FACT_COLUMNS: tuple[str, ...] = (
 
 
 def diff_against_stored(stored: pd.DataFrame, rebuilt: pd.DataFrame) -> pd.DataFrame:
-    """Every cell an already-stored row would CHANGE if it were rebuilt today.
+    """Every cell of an already-stored row that a rebuild would change, as `as_of, column, stored, rebuilt`.
 
-    The store has no append-only primitive -- `store.save` is `INSERT ... ON CONFLICT DO
-    UPDATE` on `(ticker, as_of)` -- so "rows are immutable once written" was, until this
-    function, an assertion with nothing behind it: a re-run after a resolution change would
-    silently overwrite history, which is the exact failure the publication-event grain exists
-    to prevent. Recompute-diff-raise (decision 28) makes immutability PROVABLE, gives Phase
-    5b's `pit_leak` check for free, and catches resolution drift the moment it appears
-    instead of after a cube has been trained on it. Cost: one ~62-row read per ticker.
-
-    Compared EXACTLY, with no tolerance. If it ever trips on floating-point noise we want to
-    find that out rather than to have pre-forgiven it -- `DOUBLE PRECISION` round-trips bit
-    for bit, so a difference is a real change until proven otherwise.
+    Enforces immutability, since `store.save` upserts on `(ticker, as_of)`. Compared exactly, with no tolerance
+    (DOUBLE PRECISION round-trips bit for bit); NaN on both sides counts as equal.
     """
     if stored is None or stored.empty or rebuilt.empty:
         return pd.DataFrame(columns=["as_of", "column", "stored", "rebuilt"])
-    # DATE columns come back from Postgres as `datetime.date`, which never equals a
-    # `Timestamp`; normalise both sides or every row reads as drifted.
+    # Postgres DATE columns return as `datetime.date`, which never equals a `Timestamp`.
     left = _keyed_by_as_of(stored)
     right = _keyed_by_as_of(rebuilt)
     shared_rows = left.index.intersection(right.index)
@@ -1106,14 +776,11 @@ def _keyed_by_as_of(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
-    """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`.
+    """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
-    Append-only in normal operation: a second run over unchanged facts appends **0** rows and
-    raises nothing. Where a stored row WOULD change, the run stops on that ticker and prints
-    the diff -- because the alternative is publishing a silently different past. Pass
-    `rebuild_history=True` (CLI `--rebuild-history`) to delete the ticker's rows from both
-    tables and rebuild from the facts already stored; no network is involved, which is the
-    whole point of having it separate from `--rebuild`.
+    Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
+    logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
+    and rebuilds from stored facts, with no network.
     """
     from src.data_store.schema import Tables  # local: avoids a package cycle
 
@@ -1128,11 +795,7 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
         built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
             continue
-        # The projection IS the whole table -- `diff_against_stored` compares every value
-        # column, so this buys no bytes. It is stated explicitly anyway: an unprojected read
-        # is forbidden by `AGENTS.md`, and naming the 69 columns makes the read fail loudly
-        # the day the table and the column contract diverge instead of quietly handing the
-        # diff a column it has no rebuilt counterpart for.
+        # Explicit projection so the read fails loudly if the table and the column contract diverge.
         stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
         history, codes = built.history, built.reason_codes
         if rebuild_history:

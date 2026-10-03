@@ -1,9 +1,6 @@
-"""
-item_carve.py (src/data_extract/utils/common/item_carve.py)
-------------------------------------------------------------
-Item-heading regexes and the span scan shared by the filing-text carvers (10-K/10-Q sections,
-Schedule 13D items). `carve_spans` returns one candidate body per start heading; each caller
-keeps its own pick rule.
+"""Item-heading regexes and the span scan shared by the filing-text carvers (10-K/10-Q, Schedule 13D).
+
+`carve_spans` returns one candidate body per start heading; each caller keeps its own pick rule.
 """
 
 from __future__ import annotations

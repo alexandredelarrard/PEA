@@ -1,30 +1,11 @@
 """
 fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_interest.py)
 ---------------------------------------------------------------------------------
-FINRA RegSHO CONSOLIDATED short-sale volume (`CNMSshvol` daily files, free, no auth). This is
-short-selling PRESSURE (daily short vs total volume) -- a proxy for short interest, NOT reported
-short interest. Saved long [date, ticker, short_volume, total_volume]; each day's file is
-disseminated the next morning, so the aggregation step lags it one trading day (point-in-time).
-
-Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
-
-⚠ THE CDN KEEPS A ROLLING ~8-YEAR WINDOW. There is no deep history to backfill, and this is a
-RETENTION limit at the source, not a gap in this fetcher -- so no future reader should spend a
-day trying. Probed at the URL pattern below on 2026-09-08:
-
-    20100415 403 · 20130415 403 · 20160415 403 · 20170103 403 · 20180112 403 · 20180712 403
-    20180731 403 · 20180801 200 · 20180814 200 · 20190701 200 · ... · 20260901 200
-
-Binary-searched to the day: last 403 is 2018-07-31, first 200 is 2018-08-01 -- a boundary on a
-month start, ~8.10 years before the probe date, which is why it MOVES FORWARD. Rows already
-stored below it cannot be re-fetched if lost.
-
-The stored `min(date)` is 2017-12-29, which is NOT the history start: 20171229 is a lone file
-that survives outside the window (probed 200 while every other 2017 and early-2018 date returns
-403). Treating it as a floor would claim eight months of coverage that do not exist.
-
-NAMING: the table is `sec_short_interest` but it holds short-sale VOLUME. The misnomer is a live
-table with consumers, so it is fixed at the feature level (`ic_shortvol_*`), not here.
+FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_interest`
+[date, ticker, short_volume, total_volume]; despite the table name it is not reported short
+interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
+The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
+`full` mode therefore preserves stored dates the source no longer serves.
 """
 
 from __future__ import annotations
@@ -93,13 +74,9 @@ def _fetch_day(
 
 
 def _resume_day(context: Context, years_history: int = 15, full: bool = False) -> pd.Timestamp:
-    """The first day to download: a seven-session overlap from the GLOBAL stored max,
-    or the full `years_history` window on a cold table.
-
-    Global and not per-ticker on purpose. A RegSHO day-file carries every symbol at once, so
-    one lagging ticker would drag the whole download back to its own last date and re-fetch
-    days already stored for all the others. The bounded overlap repairs a failed interior
-    day even after a later day advanced the global maximum.
+    """The first day to download: `SHORT_REFRESH_TRADING_DAYS` before the global stored max (a day
+    file carries every symbol, and the overlap repairs a failed interior day), or the full
+    `years_history` window on a cold table or `full` run.
     """
 
     today = _today()

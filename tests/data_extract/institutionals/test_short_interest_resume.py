@@ -226,7 +226,7 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
         }
     )
     sqlite_store.replace(Tables.short_interest, stored)
-    monkeypatch.setattr(si, "_today", lambda: pd.Timestamp("2020-03-06"))
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
     monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
     monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
 
@@ -273,7 +273,7 @@ def test_full_refresh_all_source_failures_abort_without_erasing_history(sqlite_s
             }
         ),
     )
-    monkeypatch.setattr(si, "_today", lambda: pd.Timestamp("2020-03-06"))
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
     monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
     monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
 

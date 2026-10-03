@@ -218,7 +218,7 @@ A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/va
 | Stage | Cost | Resume |
 | --- | --- | --- |
 | `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes; an unchanged source revision is a no-op in seconds | Writes one row group per batch, so a crash loses at most one batch. |
-| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v1` cache version. |
+| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v2` cache version. |
 | OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
 
 Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment before it embeds and has no `-t` scope; `-F` rebuilds `cube_part_text` for the universe, after which the cube must be assembled again. Then validate the part:

@@ -56,7 +56,7 @@ Measured on samples of 585 and 2,940 calls: split `ok` on 99.3 %; analyst text i
 
 A call yields features only when its split status is `ok` and its cleaned texts pass `assess_earnings_call_sections` (both sections present, at least 100 cleaned words). Cached sentiment must be complete, cheap word and uncertainty metrics are refreshed from the current text, and embeddings are left-joined only onto quality-valid calls. A call with no prepared management text (for example a live-on-X call) or no management answer text drops out. A valid call becomes visible on the next trading session, remains available for 66 trading sessions, and then expires to null. Missing or malformed quarters remain null; a mathematically observed zero remains zero. Full and incremental runs both calculate on the complete trading calendar, while the shared writer alone slices the incremental refresh tail.
 
-Sentiment rows carry the cache version `speaker-clean-v1` and embedding rows the model tag `text-embedding-3-small:speaker-clean-v1`; rows under another tag are rescored or re-embedded by the normal incremental pass. When a re-issued source call arrives, a durable pending marker carries its call date across the extract/aggregate boundary and is acknowledged only after the inclusive cube repair succeeds.
+Sentiment rows carry the cache version `speaker-clean-v2` and embedding rows the model tag `text-embedding-3-small:speaker-clean-v2`; rows under another tag are rescored or re-embedded by the normal incremental pass. When a re-issued source call arrives, a durable pending marker carries its call date across the extract/aggregate boundary and is acknowledged only after the inclusive cube repair succeeds.
 
 ## Dependencies
 

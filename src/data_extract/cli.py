@@ -279,7 +279,7 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> Non
 
 @cli.command(
     name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees, with independent accession resume, continuity outcomes, and registrant lineage.",
+    help="SEC 10-K prose -> fundamentals_employees, skipping filing dates that already have a row (NULL decisions included), over the registrant lineage.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

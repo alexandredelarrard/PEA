@@ -212,7 +212,13 @@ def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *, tolerance_days:
 
 
 def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *, tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
-    """Attach annual headcount by backward as-of join, capped at `tolerance_days` so it reaches the following quarters only."""
+    """Attach annual headcount by backward as-of join, capped at `tolerance_days` so it reaches the following quarters only.
+
+    A NULL row records a 10-K that states no usable count; it is dropped so it neither becomes
+    the as-of match nor cuts the prior year's carry short.
+    """
+    if employees is not None:
+        employees = employees.dropna(subset=[EMPLOYEES_COLUMN])
     if employees is None or employees.empty:
         out = frame.copy()
         out[EMPLOYEES_COLUMN] = np.nan

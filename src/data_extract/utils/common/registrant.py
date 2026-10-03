@@ -257,10 +257,6 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
-class AmbiguousRegistrantScopeError(RuntimeError):
-    """Identity found a CIK transition that has no complete dated registrant chain."""
-
-
 def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> str:
     """Stable SHA-256 of one ticker's discovered scope (ticker, roster CIK, CIKs, symbols) and register segments.
 
@@ -289,36 +285,52 @@ def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> 
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _split_scope_check(scope: FilingScope, entry: Registrant | None, policy: Combine) -> tuple[str, ...]:
-    """The identity CIKs outside the roster CIK and the register chain, sorted.
+def _identity_scope(scope: FilingScope, entry: Registrant | None, policy: Combine) -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
+    """Same-CIK aliases, additive identity CIKs and the CIKs a listed filing may carry.
 
-    Raises for a SPLIT form when identity found more than one CIK and the register does not
-    curate all of them: consolidating filings need an explicit dated chain.
+    A SPLIT form whose identity lineage holds a CIK the register has not dated lists the curated
+    chain, or the roster CIK alone, and warns: failing the ticker would block the whole run.
     """
     discovered = set(scope.ciks)
     curated = set(entry.all_ciks()) if entry is not None else set()
     missing_from_chain = discovered - curated
     if policy is Combine.SPLIT and len(discovered) > 1 and missing_from_chain:
-        raise AmbiguousRegistrantScopeError(
-            f"{scope.ticker}: identity discovered registrant CIK(s) "
-            f"{', '.join(sorted(discovered))}, including uncurated "
-            f"{', '.join(sorted(missing_from_chain))}; add a complete explicit dated "
-            "registrant chain before fetching consolidating filings"
+        listed = curated or {scope.roster_cik}
+        logger.warning(
+            "%s: identity discovered registrant CIK(s) %s, including uncurated %s; listing %s only until a complete dated registrant chain is curated",
+            scope.ticker,
+            ", ".join(sorted(discovered)),
+            ", ".join(sorted(missing_from_chain)),
+            ", ".join(sorted(listed)),
         )
-    return tuple(sorted(discovered - {scope.roster_cik} - curated))
+        return (), (), frozenset(listed)
+    return scope.aliases, tuple(sorted(discovered - {scope.roster_cik} - curated)), frozenset(discovered | curated)
 
 
 @dataclass
 class _FilingWindow:
-    """The `since` / `done_accessions` filter shared by every walk; counts skipped stored accessions."""
+    """The filter shared by every walk: issuer lineage, `since` and `done_accessions`; counts skipped stored accessions.
 
+    `Company(alias)` resolves a reused symbol to its current holder, so a filing whose CIK is
+    outside `lineage_ciks` (when identity gave one) is dropped and its CIK warned once.
+    """
+
+    ticker: str
     since: pd.Timestamp | None
     done_accessions: frozenset[str]
     stats: dict[str, int] | None
+    lineage_ciks: frozenset[str] | None = None
     skipped_existing: set[str] = field(default_factory=set)
+    foreign_ciks: set[str] = field(default_factory=set)
 
     def filed(self, filing: Any) -> pd.Timestamp | None:
         """The filing date when `filing` is kept, else None."""
+        filer = getattr(filing, "cik", None)
+        if self.lineage_ciks is not None and filer is not None and (cik := pad_cik(filer)) not in self.lineage_ciks:
+            if cik not in self.foreign_ciks:
+                self.foreign_ciks.add(cik)
+                logger.warning("%s: dropped filing(s) from CIK %s, outside the issuer lineage (first: %s)", self.ticker, cik, filing.accession_number)
+            return None
         if filing.accession_number in self.done_accessions:
             if self.stats is not None:
                 self.skipped_existing.add(filing.accession_number)
@@ -342,8 +354,9 @@ def resolve_registrant_filings(
 
     Policy comes from `FORM_POLICY` (a mixed list raises). UNION walks `Company(ticker)`, then
     identity aliases and segment / identity CIKs, first writer per accession wins. SPLIT gives each
-    segment only filings inside its dates; an uncurated identity CIK raises for SPLIT forms.
-    `since` and `done_accessions` filter before the sort.
+    segment only filings inside its dates; with an uncurated identity CIK a SPLIT form lists the
+    curated chain or the roster CIK only (and warns). With identity, a filing whose CIK is outside
+    the issuer lineage is dropped. `since` and `done_accessions` filter before the sort.
     """
     policy = combine_for(forms)
     entry = registrants.get(ticker)
@@ -352,10 +365,10 @@ def resolve_registrant_filings(
         stats.setdefault("skipped_existing", 0)
     aliases: tuple[str, ...] = ()
     identity_ciks: tuple[str, ...] = ()
+    lineage_ciks: frozenset[str] | None = None
     if identity is not None:
-        scope = identity.filing_scope(ticker)
-        aliases, identity_ciks = scope.aliases, _split_scope_check(scope, entry, policy)
-    window = _FilingWindow(since=since, done_accessions=done_accessions, stats=stats)
+        aliases, identity_ciks, lineage_ciks = _identity_scope(identity.filing_scope(ticker), entry, policy)
+    window = _FilingWindow(ticker=ticker, since=since, done_accessions=done_accessions, stats=stats, lineage_ciks=lineage_ciks)
     if entry is not None and policy is Combine.SPLIT:
         return _split_walk(ticker, entry, forms, window.filed)
     sources = _filing_sources(ticker, entry, policy, aliases, identity_ciks)

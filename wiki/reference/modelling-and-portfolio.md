@@ -16,7 +16,6 @@ tags:
 flowchart LR
   Cube[(Point in time cube)] --> Engines[Signal engines]
   Engines --> Sleeves[Strategy sleeves]
-  Macro[(Macro returns)] --> Sleeves
   Sleeves --> Blend[Portfolio ERC blend]
   Blend --> Risk[Global volatility and leverage]
   Risk --> Ledger[(Trade ledger)]
@@ -26,7 +25,7 @@ The three layers have separate contracts:
 
 | Layer | Location | Responsibility |
 | --- | --- | --- |
-| Signal engines | [src/modelling](../../src/modelling/) | Train cross-sectional ensembles and produce scores; build standalone trend and long-book signals. |
+| Signal engines | [src/modelling](../../src/modelling/) | Train cross-sectional ensembles, report diagnostics and a label-only backtest, and produce scores. |
 | Strategy sleeves | [src/strategies](../../src/strategies/) | Convert one engine/data contract into a self-contained return stream and tradeable book. |
 | Portfolio and execution | [src/portfolio](../../src/portfolio/) | Align sleeves, allocate risk, target portfolio volatility, and persist trade moves. |
 
@@ -38,8 +37,6 @@ A sleeve never depends on another sleeve. The portfolio is the only component th
 | --- | --- | --- | --- |
 | `ls_equity` | `strategy_ls` | long/short ensemble | Market-, beta-, and sector-controlled equity alpha, evaluated out of sample. |
 | `eq_long_only` | `strategy_eq_long_only` | long/short ensemble | Top-name long-only expression suitable for accounts without shorting. |
-| `long_book` | `strategy_long_book` | macro long-book allocation | Long-only multi-asset risk allocation with trend and volatility-regime overlays. |
-| `trend_cta` | `strategy_trend` | macro trend engine | Long/short time-series momentum diversifier. |
 
 The registry is [STRATEGY_REGISTRY](../../src/strategies/__init__.py). Sleeve names do not map mechanically to YAML keys, so every implementation declares `config_key`.
 
@@ -54,13 +51,13 @@ The book panels are essential. Portfolio allocation varies through time, and sha
 
 ## Long/short training lifecycle
 
-[StepModelling](../../src/modelling/long_short/step_train.py) exposes three behaviors:
+[StepLongShort](../../src/modelling/steps/step_long_short.py) exposes three behaviors (`run()` is `run_train()`):
 
 | CLI behavior | Method | Contract |
 | --- | --- | --- |
-| Holdout training | `run()` | Train between configured boundaries, run time-series CV and diagnostics, and produce out-of-sample artifacts. |
-| Production refit | `run(full_history=True)` | Fit through the latest eligible cube date with no holdout. Daily prediction reads these artifacts. |
-| Latest prediction | `predict_latest(n_dates=...)` | Load production artifacts, score the newest unlabelled cube rows, and write `predictions_latest` without retraining. |
+| Holdout training | `run_train()` | Train between configured boundaries, run time-series CV, diagnostics and the per-horizon label-only backtest, and produce out-of-sample artifacts. |
+| Production refit | `run_train(full_history=True)` | Fit through the latest eligible cube date with no holdout. Daily prediction reads these artifacts. |
+| Latest prediction | `run_predict(n_dates=...)` | Load production artifacts, score the newest unlabelled cube rows, and write `predictions_latest` without retraining. |
 
 The weekly order is deliberate: holdout training → portfolio backtest → full-history refit. Reversing it makes evaluation and horizon-blend weights in-sample.
 
@@ -73,7 +70,7 @@ A model family is not complete until it has:
 3. printed per-fold and aggregate out-of-fold metrics; and
 4. persisted artifacts that round-trip through the production prediction path.
 
-ElasticNet members serialize as pickle files. Both standard LightGBM and the configured random-forest family are LightGBM boosters and serialize as text models.
+Every member, of any family, serializes as one pickle of its fitted transformer (`model_h<h>_<family>.pkl`, without context, config or logger), so a new family round-trips with no extra persistence code.
 
 ## Cube loading and memory
 
@@ -83,7 +80,7 @@ Latest prediction uses a separate feature-only path. The newest cube rows correc
 
 ## Artifact contract
 
-Model files and metadata live under `context.paths["MODELS_DIR"]`. `metadata.json` is the compatibility contract consumed by the backtest, daily predictor, strategies, and Streamlit app. It records:
+Model files and metadata live under `model.models_dir` (default `output/models`, relative to the data store; resolved by `utils.artifacts.models_dir`). `metadata.json` is the compatibility contract consumed by the daily predictor, strategies, and Streamlit app; it is stamped `artifact_format: transformer-pickle-v1`, and metadata without that stamp raises a "retrain" error. It records:
 
 - horizons and target type;
 - global and family/horizon-resolved feature lists;
@@ -91,7 +88,7 @@ Model files and metadata live under `context.paths["MODELS_DIR"]`. `metadata.jso
 - actual training boundaries and full-history status; and
 - non-negative per-horizon training IC-IR weights for blending.
 
-Per-run diagnostics live under a timestamped diagnostics directory and include horizon KPIs, feature importance, sampled SHAP matrices, plots, and a flat comparison table. Database outputs remain in `predictions`, `cube_signal`, and `predictions_latest`.
+Per-run diagnostics (the `Monitor`) live under a timestamped diagnostics directory and include horizon KPIs with the OOS cumulative-IC drawdown, feature importance, sampled SHAP matrices, dependence plots, PDPs, the label-only quantile backtest (`backtest_*.csv`, `backtest.png`, `bt_*` KPI columns), and a flat comparison table. Database outputs remain in `predictions`, `cube_signal`, and `predictions_latest`.
 
 ## Long/short construction
 
@@ -108,7 +105,7 @@ Small nominal capital can make integer-share portfolios collapse. Validate posit
 
 ## Other sleeves
 
-The long-book and trend sleeves read `prices_macro`, which provides a longer multi-asset history than the equity table. They keep their signal and allocation logic inside their own engines and return the same `StrategyResult` shape as equity sleeves.
+The equity long-only sleeve scores the same ensemble and returns the same `StrategyResult` shape. The multi-asset `long_book` and `trend_cta` sleeves were removed in 2026-10; a new sleeve registers in `STRATEGY_REGISTRY` and follows the same contract.
 
 Any sleeve-specific leverage used to create trades must be represented consistently in its returned book panels. Summary `positions` may intentionally show a different diagnostic view.
 

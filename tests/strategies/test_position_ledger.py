@@ -221,9 +221,9 @@ def test_fees_are_charged_pro_rata_to_the_closed_part():
 
 
 def test_cash_legs_without_a_price_are_dropped():
-    """The long_book sleeve trades a `cash` residual with no price. It is an accounting
-    residual, not an order you place, and shares / entry / exit / P&L are undefined for it."""
-    rows = _blotter_rows([("2026-01-02", "equity", 10, 100.0)], sleeve="long_book")
+    """A sleeve can emit a `cash` residual leg with no price. It is an accounting residual,
+    not an order you place, and shares / entry / exit / P&L are undefined for it."""
+    rows = _blotter_rows([("2026-01-02", "equity", 10, 100.0)], sleeve="eq_long_only")
     cash = rows.iloc[0].copy()
     cash["instrument"] = "cash"
     cash["price"] = np.nan
@@ -232,7 +232,7 @@ def test_cash_legs_without_a_price_are_dropped():
     led = round_trip_ledger(pd.concat([rows, cash.to_frame().T], ignore_index=True))
     assert set(led["ticker"]) == {"equity"}
     print("\n=== SANITY CHECK: price-less cash leg ===")
-    print("  long_book 'cash' row (no price) dropped; only the priced 'equity' move is a ledger entry. Validated.")
+    print("  price-less 'cash' row dropped; only the priced 'equity' move is a ledger entry. Validated.")
 
 
 def test_end_to_end_from_a_real_blotter():

@@ -117,7 +117,7 @@ def test_fx_comes_from_fred_already_usd_per_eur():
     DEXUSEU starts 1999-01 where Yahoo's `USDEUR=X` only starts 2003-12, and it is already
     quoted USD per EUR -- the convention every consumer uses -- so there is no reciprocal to
     invert. Yahoo's `XXXYYY=X` means "YYY per one XXX", i.e. EUR per USD, and silently
-    storing that would flip a real long position in the long-book sleeve."""
+    storing that would flip the sign of the cube's FX beta."""
     assert MACRO_FRED_SERIES["DEXUSEU"] == "fx_usdeur"
     assert "fx_usdeur" not in MACRO_PRICE_SERIES.values()
     assert not any(s.endswith("=X") for s in MACRO_PRICE_SERIES), "no FX pair on the price leg"

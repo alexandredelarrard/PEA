@@ -2,10 +2,9 @@
 The long->wide macro adapter (src/utils/macro.py).
 
 `prices_macro` is stored long, but every consumer -- the cube's beta/target step, the
-long-book and trend-CTA sleeves, the portfolio benchmark, the L/S diagnostics -- was written
-against a WIDE frame with `date` as a column. This adapter is the single place that conversion
-happens, so its contract is what makes the refactor a one-line change at each of those six
-call sites instead of six rewrites:
+portfolio benchmark, the L/S signal builder, the L/S diagnostics -- was written against a WIDE
+frame with `date` as a column. This adapter is the single place that conversion happens, so its
+contract is what keeps each call site a one-line read instead of its own pivot:
 
   * `date` is a COLUMN, not the index (drop-in for the `store.load` it replaced),
   * columns are the SERIES names, so the old wide-column vocabulary survives verbatim,
@@ -23,9 +22,7 @@ from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series, load_macro_wide
 
 # the wide columns each real consumer reads, so a rename in `prices_macro` breaks HERE
-_TREND_COLS = ["equity_tr", "gold", "energy", "bond_10y_tr", "fx_usdeur"]  # trend/signal.py
-_ALLOC_COLS = _TREND_COLS + ["cash_rate"]  # long_book/allocation.py
-_LONGBOOK_COLS = _ALLOC_COLS + ["vix"]  # step_long_book.py
+_REF_COLS = [MACRO_MARKET_SERIES, "energy"]  # portfolio benchmark / ls_model, analysis/common.py
 _CUBE_COLS = ["equity_tr", "oil", "gold", "fx_usdeur", "yield_10y", "yield_curve_10y2y", "vix", "breakeven_10y", "baa_credit_spread"]
 
 
@@ -38,7 +35,7 @@ def _seed(store, series: list[str], n: int = 6) -> pd.DataFrame:
 
 
 def test_load_macro_wide_shape_and_vocabulary(sqlite_store):
-    long = _seed(sqlite_store, sorted(set(_LONGBOOK_COLS + _CUBE_COLS)))
+    long = _seed(sqlite_store, sorted(set(_REF_COLS + _CUBE_COLS)))
 
     wide = load_macro_wide(sqlite_store)
     assert wide is not None
@@ -47,7 +44,7 @@ def test_load_macro_wide_shape_and_vocabulary(sqlite_store):
     assert wide["date"].is_monotonic_increasing
     # one row per date, one column per series
     assert len(wide) == long["date"].nunique()
-    for consumer, cols in (("trend", _TREND_COLS), ("allocation", _ALLOC_COLS), ("long_book", _LONGBOOK_COLS), ("cube", _CUBE_COLS)):
+    for consumer, cols in (("references", _REF_COLS), ("cube", _CUBE_COLS)):
         missing = [c for c in cols if c not in wide.columns]
         assert not missing, f"{consumer} would lose {missing}"
 
@@ -57,7 +54,7 @@ def test_load_macro_wide_shape_and_vocabulary(sqlite_store):
 
 
 def test_series_narrows_the_read(sqlite_store):
-    _seed(sqlite_store, sorted(set(_LONGBOOK_COLS + _CUBE_COLS)))
+    _seed(sqlite_store, sorted(set(_REF_COLS + _CUBE_COLS)))
 
     wide = load_macro_wide(sqlite_store, series=["equity_tr", "vix"])
     assert wide is not None

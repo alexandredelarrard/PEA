@@ -9,16 +9,15 @@ Layout:
     per-sleeve target vol, window, capital, fees). One "Run" builds the whole book.
   * Main panel — PORTFOLIO results FIRST (KPIs vs SP, per-strategy Sharpe table, sleeve
     correlation matrix, equity curve, dynamic $-allocation, sleeve-correlation evolution).
-  * Tabs — one PER STRATEGY: its KPIs + analysis metrics + analysis plots (L/S: IC / Sharpe /
-    market-neutrality; long_book: asset-class correlation; trend: crisis-alpha / exposure), so
-    you can check how accurate / well-behaved each sleeve is.
+  * Tabs — one PER STRATEGY: its KPIs + analysis metrics + analysis plots (IC / Sharpe /
+    market-neutrality for the L/S book, IC / beta for the long-only book), so you can check how
+    accurate / well-behaved each sleeve is.
 
-The models are assumed pre-trained (StepModelling). L/S is out-of-sample from the model train_end.
+The models are assumed pre-trained (`python -m src modelling train`). L/S is out-of-sample from the model train_end.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -39,6 +38,7 @@ import streamlit as st
 from omegaconf import DictConfig, OmegaConf
 
 from src.context import get_config_context
+from src.modelling.utils.artifacts import models_dir, read_metadata
 from src.portfolio import StepPortfolio
 
 st.set_page_config(page_title="PEA — Portfolio Dashboard", layout="wide", initial_sidebar_state="expanded")
@@ -57,13 +57,11 @@ _PB = base_config.portfolio
 
 def model_train_end() -> str | None:
     """The trained L/S ensemble's train_end (metadata.json) — the L/S sleeve is out-of-sample
-    only from this date. The backtest start must equal it for a clean OOS L/S."""
-    meta = context.paths["MODELS_DIR"] / "metadata.json"
-    if not meta.exists():
-        return None
+    only from this date. The backtest start must equal it for a clean OOS L/S. None when no
+    model was trained or its artifacts predate the current format (both mean: retrain)."""
     try:
-        return str(json.loads(meta.read_text()).get("train_end"))
-    except Exception:
+        return str(read_metadata(models_dir(context, base_config)).get("train_end"))
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -71,7 +69,7 @@ TRAIN_END = model_train_end()
 
 # model-dependent equity sleeves (need the trained ensemble; OOS from its train_end)
 MODEL_SLEEVES = ("ls_equity", "eq_long_only")
-ALL_SLEEVES = ["ls_equity", "eq_long_only", "long_book", "trend_cta"]
+ALL_SLEEVES = ["ls_equity", "eq_long_only"]
 
 # friendly per-sleeve blurb (what to look for in its analysis tab)
 SLEEVE_INFO = {
@@ -83,14 +81,6 @@ SLEEVE_INFO = {
         "Long-only top-N equity (no shorts)",
         "Long the model's best-ranked names (top-N, hold-band). Check IC > 0; "
         "**beta-to-SP ≈ 1** here (it's a long book / smart-beta tilt, retail-viable).",
-    ),
-    "long_book": (
-        "Multi-asset long book (ERC)",
-        "Check: the asset classes stay lowly/negatively correlated over time (diversification holds; watch stress spikes).",
-    ),
-    "trend_cta": (
-        "Trend / CTA (long-short)",
-        "Check: profits when SP falls (crisis-alpha, beta-to-SP ≈ 0 / negative) and positions flip long/short with the trend.",
     ),
 }
 
@@ -129,7 +119,7 @@ with st.sidebar:
         st.caption(f"⚙ Model **train-end = {TRAIN_END}** — the L/S sleeve is out-of-sample from this date. Keep Start = this for a clean OOS L/S.")
     else:
         st.error(
-            "No trained L/S model found (metadata.json). Train StepModelling first, otherwise the `ls_equity` sleeve will be dropped from the blend."
+            "No trained L/S model found (metadata.json). Run `python -m src modelling train` first, otherwise the `ls_equity` sleeve will be dropped from the blend."
         )
     # start defaults to the model train-end so L/S is OOS-aligned and always present
     start = st.text_input("Start date (YYYY-MM-DD)", value=TRAIN_END or str(_PB.get("start", "2023-01-01")))
@@ -275,14 +265,14 @@ if _model_sel and not _ls_ready:
     if TRAIN_END is None:
         st.warning(
             f"⚠ No trained equity model found. Train it for this period first "
-            f"(`train.end_date = {_start}`, then StepModelling), or deselect {_model_sel}. "
+            f"(`train.end_date = {_start}`, then `modelling train`), or deselect {_model_sel}. "
             f"**The backtest will not run with a missing model.**"
         )
     else:
         st.warning(
             f"⚠ The equity model is trained to **train_end = {TRAIN_END}**, but the backtest "
             f"starts **{_start}** — not trained for this period. Retrain with "
-            f"`train.end_date = {_start}` (then StepModelling), set Start = {TRAIN_END}, or "
+            f"`train.end_date = {_start}` (then `modelling train`), set Start = {TRAIN_END}, or "
             f"deselect {_model_sel}. **The backtest will not run with a misaligned model.**"
         )
 

@@ -6,6 +6,7 @@ FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
 `full` mode therefore preserves stored dates the source no longer serves.
+Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
 """
 
 from __future__ import annotations
@@ -35,11 +36,6 @@ _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 SHORT_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
-
-
-def _today() -> pd.Timestamp:
-    """Normalised current day, isolated for deterministic window tests."""
-    return pd.Timestamp.today().normalize()
 
 
 def _parse_regsho(text: str) -> pd.DataFrame:
@@ -79,7 +75,7 @@ def _resume_day(context: Context, years_history: int = 15, full: bool = False) -
     `years_history` window on a cold table or `full` run.
     """
 
-    today = _today()
+    today = pd.Timestamp.today().normalize()
     stored_max = context.store.max_date(Tables.short_interest)
     if stored_max is None or full:
         return today - pd.DateOffset(years=years_history)
@@ -140,6 +136,7 @@ def _reconcile_legacy(
     source = legacy.rename(columns={"ticker": "source_symbol"})
     accepted, unresolved = resolve_symbol_rows(identity, source, universe)
     log_symbol_resolutions(context, "RegSHO legacy", accepted, unresolved, universe=universe)
+
     relabelled = int((accepted["source_symbol"] != accepted["ticker"]).sum())
     proven_exclusions = {"entity_not_in_universe", "redundant_share_class"}
     removed_mask = unresolved["resolution_verdict"].isin(proven_exclusions)
@@ -183,9 +180,10 @@ def fetch_short_interest(
 ) -> None:
     """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates."""
 
-    today = _today()
+    today = pd.Timestamp.today().normalize()
     days = pd.bdate_range(_resume_day(context, years_history, full), today)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
+
     resolver = identity or load_identity(context)
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     candidates = resolver.candidate_symbols(universe)

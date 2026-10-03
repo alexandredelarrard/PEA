@@ -6,11 +6,11 @@ the configured training window. Invoked by the Airflow `modelling` DAG as:
 
     python -m src modelling train [-c ./configs] [--train-start 2011-01-01] [--train-end 2022-01-01]
 
-`StepModelling` reads the training window from `modellling.yml` (`train.start_date` /
+`StepLongShort.run_train` reads the training window from `modellling.yml` (`train.start_date` /
 `train.end_date`); the optional `--train-start` / `--train-end` flags OVERRIDE those config dates
-for this run (leaving them out uses the config as-is). The step trains one per-horizon ensemble
-(elasticnet + LightGBM + random_forest), saves the model artifacts + metadata.json (the backtest
-reads them back), the `predictions` / `cube_signal` tables, and the per-run diagnostics pictures.
+for this run (leaving them out uses the config as-is). It trains one per-horizon ensemble of the
+`model.ensemble` families, saves the pickled members + metadata.json (the strategies read them
+back), the `predictions` / `cube_signal` tables, and the per-run diagnostics + backtest report.
 """
 
 from typing import Any, cast
@@ -19,7 +19,7 @@ import click
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
-from src.modelling.long_short.step_train import StepModelling
+from src.modelling.steps.step_long_short import StepLongShort
 from src.utils.cli_helper import SpecialHelpOrder
 
 
@@ -45,7 +45,7 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
     if train_end:
         config.train.end_date = train_end
     context.log.info("Training window: %s -> %s", config.train.start_date, config.train.end_date)
-    StepModelling(context=context, config=config).run()
+    StepLongShort(context=context, config=config).run_train()
 
 
 @cli.command(
@@ -56,7 +56,7 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def full_train(config_path: str) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
-    StepModelling(context=context, config=config).run(full_history=True)
+    StepLongShort(context=context, config=config).run_train(full_history=True)
 
 
 @cli.command(
@@ -69,4 +69,4 @@ def full_train(config_path: str) -> None:
 @click.option("--n-dates", default=1, show_default=True, type=int, help="How many of the most recent cube dates to predict.")
 def predict(config_path: str, n_dates: int) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
-    StepModelling(context=context, config=config).predict_latest(n_dates=n_dates)
+    StepLongShort(context=context, config=config).run_predict(n_dates=n_dates)

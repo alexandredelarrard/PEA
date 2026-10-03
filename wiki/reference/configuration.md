@@ -31,11 +31,11 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
-| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, and train/holdout boundaries. The filename intentionally contains three “l” characters. |
+| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), `backtest.n_quantiles` (label-only backtest buckets), and train/holdout boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
 | `linear`, `lgbm`, `random_forest` | [configs/models](../../configs/models/) | Family hyperparameters and family-specific feature columns. |
-| `strategy_ls`, `strategy_eq_long_only`, `strategy_long_book`, `strategy_trend` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
+| `strategy_ls`, `strategy_eq_long_only` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
-| `data_availability`, `source_freshness` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, live-insider lag, and the parity-approved bulk quarter. |
+| `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, live-insider lag, the parity-approved bulk quarter, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
 
 Curated evidence registers under [configs/sec](../../configs/sec/) are versioned data contracts rather than tuning knobs:
@@ -43,7 +43,8 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 - `registrant_cutover.json`: dated legal-filer chains;
 - `entity_lineage_manual.json`: CIK-to-economic-entity adjudication;
 - `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals;
-- `superinvestor_overrides.json`: Dataroma manager-code to CIK overrides and the codes recorded as unresolvable, each with its reason, read by `load_superinvestor_overrides` in [fetch_superinvestors.py](../../src/data_extract/utils/institutionals/fetch_superinvestors.py) and cached per resolved config directory.
+- `superinvestor_overrides.json`: Dataroma manager-code to CIK overrides and the codes recorded as unresolvable, each with its reason, read by `load_superinvestor_overrides` in [fetch_superinvestors.py](../../src/data_extract/utils/institutionals/fetch_superinvestors.py) and cached per resolved config directory;
+- `employees_manual_roster.json`: per-accession employee headcount decisions (count or null) that replace the LLM for a filing with no table row.
 
 Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register.
 
@@ -58,6 +59,7 @@ Key distinctions:
 - `sharadar_years_history` is separate because entitlement and response size differ;
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
+- `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `lookback_days: 45` (an incremental run re-checks calls dated within this many days of the stored frontier), `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread) and `reconcile_days: 7` (a full comparison of every scoped call at least this often). The dataset repo and file path are module constants of the extractor;
 - LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction pins one thread per ticker in code;
 - regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/structure/fetch_def14a_edgar.py).
 
@@ -97,13 +99,13 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 [modellling.yml](../../configs/modellling.yml) currently selects rank targets and an ensemble of ElasticNet, LightGBM, and LightGBM random-forest mode. Time-series CV uses an embargo that defaults to the primary horizon when null. Weight decay is disabled because the measured fold-stability trade-off favored uniform history.
 
-Each family owns its feature list. LightGBM additionally owns categorical features and monotonic constraints. The earnings-call contract in `configs/models/lgbm_modelling.yml` is exactly 12 raw/issuer-history columns; `_xs` and `_vs_peers` earnings-call variants are intentionally excluded. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap remains an interpretable feature but is unconstrained because the section includes both analyst questions and management answers; coherence, embedding distance, and disclosure-length change are likewise unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, and latest-20-session audit window. Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
+Each family owns its feature list. LightGBM additionally owns categorical features and monotonic constraints. The earnings-call contract in `configs/models/lgbm_modelling.yml` is exactly 12 raw/issuer-history columns; `_xs` and `_vs_peers` earnings-call variants are intentionally excluded. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap (management-answer tone minus prepared-remarks tone), coherence, embedding distance, and disclosure-length change are unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, latest-20-session audit window, and the split-quality floors (`split_ok_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
 
 Training boundaries describe the holdout evaluation run. Production `full-train` intentionally ignores the configured end date and fits through the latest eligible cube row.
 
 ## Strategies and portfolio
 
-The portfolio currently selects `ls_equity`, `eq_long_only`, and `long_book`; `trend_cta` remains available but unselected. The portfolio owns capital, global target volatility, costs, risk-free rate, covariance/blending policy, rebalance frequency, leverage, and output switches.
+The portfolio selects `ls_equity` and `eq_long_only`, the only registered sleeves. The portfolio owns capital, global target volatility, costs, risk-free rate, covariance/blending policy, rebalance frequency, leverage, and output switches.
 
 Sleeve YAML owns only sleeve construction. [PortfolioInputs](../../src/strategies/base.py) passes portfolio-level values down. A sleeve can override trading costs where explicitly supported, but must not duplicate capital or global risk settings.
 

@@ -44,15 +44,15 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
 Every major `src/` package owns a `step_*.py` orchestrator that inherits `Step`, calls
 `super().__init__(context=context, config=config)`, and exposes `run()` as its public method.
-Strategy sleeves instead implement `Strategy.run(PortfolioInputs) -> StrategyResult`.
+`StepLongShort` adds `run_train`/`run_predict`; sleeves implement `Strategy.run(inputs) -> StrategyResult`.
 
 ```text
 data_store/    only SQL; registry, facade, DDL
 data_extract/  ordered source fetchers and six domain sub-steps
 data_peers/    business/return peer baskets
 data_aggregate/ eight cube parts plus streamed assembly
-modelling/     long_short, trend, and long_book engines
-strategies/    ls_equity, eq_long_only, long_book, trend_cta sleeves
+modelling/     steps/ (StepLongShort), transformers/ (models, Monitor, Backtest), utils/
+strategies/    ls_equity and eq_long_only sleeves
 portfolio/     ERC blend and strategy trade ledger
 validate/      all read-only validation code
 utils/         shared cross-package code

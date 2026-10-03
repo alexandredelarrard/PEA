@@ -2,7 +2,7 @@
 title: Live database
 description: Dated measurements of the local PostgreSQL volume, coverage gaps, and operational caveats.
 type: reference
-snapshot: 2026-09-23
+snapshot: 2026-10-02
 tags:
   - wiki
   - reference
@@ -16,7 +16,7 @@ tags:
 This page records the latest migrated measurements of the local PostgreSQL volume. It describes observed state, not the desired schema. The [table catalog](./table-catalog.md) remains authoritative for meaning and grain.
 
 > [!CAUTION]
-> Most global measurements were taken in August 2026, with targeted institutional and identity updates through September 2026. Re-query before relying on row counts, byte sizes, date maxima, or table presence. Never turn a historical measurement on this page into a hardcoded application assumption.
+> Most global measurements were taken in August 2026, with targeted institutional and identity updates through September 2026 and the earnings-call cutover on 2026-10-02. Re-query before relying on row counts, byte sizes, date maxima, or table presence. Never turn a historical measurement on this page into a hardcoded application assumption.
 
 The measured environment was PostgreSQL 16 in container `pea_db`, database `pea`, local owner role `alexandre`, backed by volume `stock_pick_strat_pgdata`. At the August snapshot it occupied roughly 19 GB and held 41 physical tables in `public`.
 
@@ -34,16 +34,24 @@ Prefer catalog queries that return table presence, row estimates, physical size,
 
 | Table | Observed scale | Observed coverage | Operational implication |
 | --- | --- | --- | --- |
-| `earning_calls_embedding` | about 1.38M rows / 8.6 GB | 2005-10 to 2026-07, 494 tickers | Always project; vectors are PostgreSQL arrays and cannot be bound by SQLite. |
 | `sec13f_hr` | about 23.8M rows / 6.2 GB | period rows from 1987, usable broad coverage much later | Stream and scope every read; evaluate coverage on manager counts. |
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
-| `earnings_call_sections` | about 110K rows / 1.5 GB | 2005-10 to 2026-07 | Text is the payload and is intentionally projected when scoring. |
+| `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
 | `sec_filing_text` | about 34K rows / 1.2 GB | 2011-07 to 2026-08 | Do not perform unbounded text reads. |
 | `insider_transactions` | about 2.01M canonical rows | filing coverage from 2006 through the latest completed bulk quarter | Canonical reads must apply scope/repair and bulk/live completeness. |
 | `insider_footnotes` | about 1.89M rows | accession-linked, no ticker/date grain | Join at filing grain; quarantined accessions can leave explainable orphans. |
-| `wiki_pageviews` | about 1.70M rows | 2016-07 onward | Long windows have materially shorter history than prices. |
 
 The 2026-09-23 targeted rebuild of `cube_part_institutionals` recorded roughly 3.27M rows, 120 feature columns, 491 tickers, and 1995-09 to 2026-09 coverage. Insider-dependent cross-source cells stopped at the measured bulk/live completeness frontier rather than being forward-filled.
+
+## Earnings-call snapshot (2026-10-02)
+
+The earnings-call tables were cut over to the defeatbeta paragraph grain on 2026-10-02. Evidence lives under `reports/validate/2026-10-01-earnings-call-extraction-gaps/` (`03-implementation.md`, `_out/p5-*`).
+
+- `earnings_call_sections`: full load of 33,591 calls in 1,119 s (18.6 min, 1,091 s of it DB writes); an unchanged source revision is a no-op in about 1.3–3.9 s. Parity with the source index at the same revision is exact (0 calls only in source, 0 only in DB, 0 `as_of` mismatches). The validator measured split `ok` on 98.71 % of calls, prepared word share q05/q50/q95 = 0.165/0.363/0.581, and a clean grain.
+- `earnings_call_sentiment` and `earning_calls_embedding` were recreated empty and are only partly filled: the 72-call cost probe, the 3-ticker end-to-end sample (ABNB, PLTR, CEG, 78 calls) and about 7,450 embedded calls. Full FinBERT scoring and the rest of the embeddings are pending; see [run the pipeline](../guides/run-the-pipeline.md#earnings-call-rebuild).
+- `cube_part_text` currently holds only the 3 sample tickers (3,780 rows) with exactly the 12 approved `f_ec_*` columns. A full `build-text -F` after scoring restores the universe. The pre-cutover part is kept as `_cache/p5_cube_part_text.dump` in the evidence folder.
+- The pre-cutover tables are renamed `earnings_call_sections_legacy` (110,994 rows, 1,618 MB), `earnings_call_sentiment_legacy` (55,863 rows, 11 MB) and `earning_calls_embedding_legacy` (1,379,014 rows, 8,658 MB), pending the user's confirmation to drop them. Nothing reads them.
+- The `wiki_pageviews` table measured in August 2026 (about 1.70M rows) has no producer or reader left in the code.
 
 ## Fundamentals snapshot
 
@@ -80,6 +88,7 @@ Important measured state:
 | DEF 14A parent covers many tickers but children cover only a smoke roster | Joining a child silently narrows the universe unless coverage is checked first. |
 | `dividends` covers fewer tickers | Correct for non-payers; no row is not automatically missing data. |
 | `earnings_surprises` has future dates | Scheduled calls are present; realized signals require non-null actual EPS. |
+| Roster names with no earnings-call rows | BRK-B holds no calls; ED, EXPD and NVR are absent from the defeatbeta source. Their `f_ec_*` features are null, not stale. |
 | Bulk insider/pension maxima lag today | Publication cadence, not automatically failed extraction. |
 | Short-volume minimum predates the current provider window | The isolated stored date is not proof of continuously recoverable history. |
 | `sec_def14a` code exists but table was removed in an older cutover | Check current table presence before designing a feature around Pay-versus-Performance history. |

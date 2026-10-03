@@ -25,7 +25,6 @@ import pytest
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import (
     FORM_POLICY,
-    AmbiguousRegistrantScopeError,
     Combine,
     Registrant,
     Segment,
@@ -215,22 +214,64 @@ def test_same_cik_historical_aliases_are_walked_and_accession_deduped(monkeypatc
     print("  ZBH + ZMH were walked; their shared accession was returned and counted once. Validated.")
 
 
-def test_identity_discovered_cik_transition_requires_a_complete_curated_chain(monkeypatch):
-    _patch(monkeypatch, {"ZBH": []})
-    identity = _identity("ZBH", "0001136869", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"}, ("ZBH", "0001136869"))
+def _filed_by(accession: str, filing_date: str, cik: int):
+    return types.SimpleNamespace(accession_number=accession, filing_date=filing_date, cik=cik)
 
-    with pytest.raises(AmbiguousRegistrantScopeError, match="0000058766"):
-        resolve_registrant_filings(
-            "ZBH",
-            ["10-K"],
-            since=None,
-            done_accessions=frozenset(),
-            registrants={},
-            identity=identity,
-        )
 
-    print("\n=== SANITY CHECK: multi-CIK discovery fails closed ===")
-    print("  lineage found an uncurated predecessor CIK -> explicit dated chain required.")
+def test_uncurated_cik_transition_lists_the_roster_cik_only_and_warns(monkeypatch, caplog):
+    """28 tickers (ACN, GM, ORCL, ...) failed fundamentals and employees every night on this.
+    Without a dated chain the predecessor is not walked, nor is its alias, so two registrants'
+    consolidated filings cannot blend, and the ticker keeps its roster-CIK history."""
+    _patch(
+        monkeypatch,
+        {
+            "ZBH": [_filed_by("current", "2025-01-01", 1136869)],
+            "ZMH": [_filed_by("alias-predecessor", "2005-01-01", 58766)],
+            58766: [_filed_by("predecessor", "2005-01-01", 58766)],
+        },
+    )
+    identity = _identity("ZBH", "0001136869", {"0001136869": "E-ZBH", "0000058766": "E-ZBH"}, ("ZBH", "0001136869"), ("ZMH", "0001136869"))
+
+    out = resolve_registrant_filings(
+        "ZBH",
+        ["10-K"],
+        since=None,
+        done_accessions=frozenset(),
+        registrants={},
+        identity=identity,
+    )
+
+    assert [f.accession_number for f in out] == ["current"]
+    assert "uncurated 0000058766" in caplog.text and "listing 0001136869 only" in caplog.text
+    print("\n=== SANITY CHECK: an uncurated multi-CIK SPLIT scope degrades, it does not fail ===")
+    print("  roster CIK listed, predecessor and its alias skipped, warning names the uncurated CIK. Validated.")
+
+
+def test_reused_alias_symbol_cannot_import_another_companys_filings(monkeypatch, caplog):
+    """`Company("AB")` is AllianceBernstein today, not ALB's old Form 4 typo; its filings carry
+    a CIK outside ALB's lineage and are dropped where they are listed."""
+    _patch(
+        monkeypatch,
+        {
+            "ALB": [_filed_by("albemarle", "2024-02-15", 915913)],
+            "AB": [_filed_by("alliancebernstein", "2024-02-12", 825313)],
+        },
+    )
+    identity = _identity("ALB", "0000915913", {"0000915913": "E-ALB"}, ("ALB", "0000915913"), ("AB", "0000915913"))
+
+    out = resolve_registrant_filings(
+        "ALB",
+        ["10-K"],
+        since=None,
+        done_accessions=frozenset(),
+        registrants={},
+        identity=identity,
+    )
+
+    assert [f.accession_number for f in out] == ["albemarle"]
+    assert "CIK 0000825313, outside the issuer lineage" in caplog.text
+    print("\n=== SANITY CHECK: a reused alias symbol imports nothing ===")
+    print("  AB's filing (CIK 825313) dropped from ALB's walk, with a warning. Validated.")
 
 
 def test_identity_discovered_cik_transition_is_additive_for_union_events(monkeypatch):

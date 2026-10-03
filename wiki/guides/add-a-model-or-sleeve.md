@@ -17,8 +17,8 @@ Add a model family to the cross-sectional ensemble or add a self-contained strat
 ### Model family
 
 1. Add one top-level model-family YAML under [configs/models](../../configs/models/) with hyperparameters and its own feature columns.
-2. Extend model construction, fitting, persistence, and reload logic in [modelling/long_short/utils/model.py](../../src/modelling/long_short/utils/model.py).
-3. Ensure [StepModelling](../../src/modelling/long_short/step_train.py) can train, diagnose, save, and load the family per horizon.
+2. Add a `BaseModel` subclass under `src/modelling/transformers/` (see [base.py](../../src/modelling/transformers/base.py)): set `config_key` (its YAML block), implement `_fit`, `_predict` and `importance`, and set `supports_shap` / `supports_classification`. Persistence is inherited: every member pickles itself.
+3. Register its `model.ensemble` name in `MODEL_FAMILIES` ([transformers/__init__.py](../../src/modelling/transformers/__init__.py)) and add the file to `EXPECTED_TRANSFORMERS` in [test_architecture_guard.py](../../tests/modelling/test_architecture_guard.py). [StepLongShort](../../src/modelling/steps/step_long_short.py) then trains, diagnoses, saves, and loads it per horizon with no step change.
 4. Preserve time-series cross-validation, embargo handling, validation-only diagnostics, and per-day prediction standardization.
 5. Add persistence, reproducibility, diagnostics, and ensemble-member tests under [tests/modelling](../../tests/modelling/).
 
@@ -33,7 +33,7 @@ Add a model family to the cross-sectional ensemble or add a self-contained strat
 
 ## Relevant code
 
-- Training: [step_train.py](../../src/modelling/long_short/step_train.py)
+- Training: [step_long_short.py](../../src/modelling/steps/step_long_short.py); model families: [transformers/base.py](../../src/modelling/transformers/base.py)
 - Strategy contract: [strategies/base.py](../../src/strategies/base.py)
 - Strategy registry: [strategies/__init__.py](../../src/strategies/__init__.py)
 - Portfolio consumer: [step_portfolio.py](../../src/portfolio/step_portfolio.py)
@@ -41,7 +41,7 @@ Add a model family to the cross-sectional ensemble or add a self-contained strat
 
 ## Gotchas
 
-Do not use random folds for cross-sectional time-series data. A LightGBM random forest is still serialized as a booster, while linear models use a different artifact format. Do not duplicate portfolio-wide capital, window, target-volatility, or risk-free settings in a sleeve config.
+Do not use random folds for cross-sectional time-series data. Never fit the linear family with `task: classification` (it is regression-only and refuses it); a classification task needs a {0, 1} label, not a rank target. Old artifacts without `artifact_format` must be retrained. Do not duplicate portfolio-wide capital, window, target-volatility, or risk-free settings in a sleeve config.
 
 ## Related
 

@@ -10,7 +10,7 @@ tags:
 
 ## Definition
 
-A `Step` is a package-level orchestrator with a single public `run()` method. Subclasses call the base constructor with a `Context` and `DictConfig`, then keep implementation work in private methods, helpers, or composed sub-steps. The base class in [utils/step.py](../../src/utils/step.py) supplies configuration, context, a module-specific logger, a derived name, and the current date.
+A `Step` is a package-level orchestrator with a single public `run()` method (the one exception, `StepLongShort`, adds `run_train()` / `run_predict()`; see [coding standards](../guides/coding-standards.md)). Subclasses call the base constructor with a `Context` and `DictConfig`, then keep implementation work in private methods, helpers, or composed sub-steps. The base class in [utils/step.py](../../src/utils/step.py) supplies configuration, context, a module-specific logger, a derived name, and the current date.
 
 ## Why it matters
 

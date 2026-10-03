@@ -85,7 +85,7 @@ Branch on `is None`, not `.empty`.
 
 Schema evolution can add columns but never silently remove or retype them. This is why part replacement drops unmanaged tables: a deleted feature must disappear physically, or every later incremental write will see a schema mismatch.
 
-Tabular data belongs in PostgreSQL. Do not substitute CSV or Parquet as an application table. Models, plots, caches, transcripts, and the peer dictionary are non-tabular artifacts and belong under `context.paths`.
+Tabular data belongs in PostgreSQL. Do not substitute CSV or Parquet as an application table. Models, plots, caches, and the peer dictionary are non-tabular artifacts and belong under `context.paths`. Earnings-call transcripts are tabular: they live only in `earnings_call_sections`, with no file cache.
 
 ## Incremental extraction
 

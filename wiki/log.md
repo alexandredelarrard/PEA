@@ -138,6 +138,23 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md)
 - Evidence: the local table had 11,257 rows while its manifest had zero accession outcomes; a read-only plan skipped 31 AAPL and 30 CSCO stored dates, and 14 focused tests passed.
 
+## 2026-10-01: refresh — modelling refactor
+
+- Profile: internal/standard
+- source_commit: f9ab52d (harness/modelling-transformers-refactor, merged into dev)
+- Coverage: `src/modelling` split into `steps/` (StepLongShort), `transformers/` (model families, Monitor, Backtest) and `utils/`; `long_book` and `trend_cta` sleeves removed; new config keys `model.models_dir`, `model.backtest`, per-family `task`; artifact format `transformer-pickle-v1` (portable member pickles; metadata records library versions)
+- Pages: [Modelling](./modules/modelling.md), [Strategies](./modules/strategies.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Model training and daily prediction](./flows/model-training-and-prediction.md), [Add a model or sleeve](./guides/add-a-model-or-sleeve.md), [Coding standards](./guides/coding-standards.md), [Step pattern](./concepts/step-pattern.md), [Feature-to-portfolio pipeline](./architecture/feature-to-portfolio.md), [TODO](./TODO.md)
+- Agent entry points: [AGENTS.md](../AGENTS.md)
+
+## 2026-10-02: refresh — earnings-call extraction on defeatbeta
+
+- Profile: internal/standard
+- source_commit: 166a9f2 plus the uncommitted legacy-retirement phase (harness/earnings-call-extraction-gaps)
+- Coverage: one transcript source (HuggingFace `defeatbeta/yahoo-finance-data`) replaces ROIC, Motley Fool and the kurry dataset; the Wikipedia pageviews fetcher is gone; `earnings_call_sections` is re-keyed to (ticker, quarter, paragraph) with the call date as `as_of`; CLI `extract-earnings-calls` and one default-pool DAG task; shared speaker-turn split and cleaning in `src/utils/earnings_call_split.py`; config `earnings_calls` in `configs/data.yml`; tone-drift item deferred to the TODO
+- Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md), [Configuration](./reference/configuration.md), [Data extraction](./modules/data-extract.md), [Cube aggregation](./modules/data-aggregate.md), [Run the pipeline](./guides/run-the-pipeline.md), [Data access](./guides/data-access.md), [Data platform](./architecture/data-platform.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-01-earnings-call-extraction-gaps/` (full load 33,591 calls in 18.6 min, exact parity with the source index, split `ok` 98.71 %)
+- Operational boundary: full FinBERT scoring, the remaining embeddings and the universe `build-text -F` are pending; `cube_part_text` holds 3 sample tickers; the `*_legacy` tables await the user's drop confirmation.
+
 ## 2026-10-02: refresh — shared EDGAR extraction driver
 
 - Profile: internal/standard

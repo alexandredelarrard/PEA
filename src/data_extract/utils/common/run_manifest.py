@@ -59,39 +59,6 @@ def changed_scope_tickers(entry: dict | None, current: dict[str, str]) -> frozen
     return frozenset(ticker for ticker, fingerprint in current.items() if prior.get(ticker) != fingerprint)
 
 
-def record_filing_outcomes(
-    context: Context,
-    table: Table | str,
-    outcomes: list[dict],
-) -> None:
-    """Upsert accession-grain outcomes without advancing the run frontier.
-
-    `last_run_date` and `coverage_complete` stay untouched; a later outcome for the same
-    (ticker, accession) replaces the earlier one.
-    """
-    if not outcomes:
-        return
-    name = name_of(table)
-    manifest = _load_manifest(context)
-    prior = manifest.get(name) or {}
-    merged = {(str(outcome["ticker"]), str(outcome["accession_number"])): outcome for outcome in prior.get("filing_outcomes", [])}
-    for outcome in outcomes:
-        merged[(str(outcome["ticker"]), str(outcome["accession_number"]))] = outcome
-    entry = dict(prior)
-    entry["filing_outcomes"] = sorted(
-        merged.values(),
-        key=lambda outcome: (
-            str(outcome.get("ticker", "")),
-            str(outcome.get("filing_date", "")),
-            int(outcome.get("ordering", 0)),
-            str(outcome.get("accession_number", "")),
-        ),
-    )
-    entry["updated_at"] = datetime.now(UTC).isoformat()
-    manifest[name] = entry
-    _save_manifest(context, manifest)
-
-
 def manifest_window(
     context: Context,
     table: Table | str,
@@ -171,7 +138,7 @@ def record_run(
     last_full_rescan_date = run_date_str if (is_full_rescan or not prior.get("last_full_rescan_date")) else prior["last_full_rescan_date"]
 
     entry = {
-        **{k: v for k, v in prior.items() if k in {"backfills", "filing_outcomes", "identity_scope_fingerprints", "tickers"}},
+        **{k: v for k, v in prior.items() if k in {"backfills", "identity_scope_fingerprints", "tickers"}},
         "last_run_date": run_date_str,
         "last_full_rescan_date": last_full_rescan_date,
         "ticker_count": int(ticker_count),

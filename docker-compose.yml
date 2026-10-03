@@ -33,7 +33,7 @@ x-airflow-common: &airflow-common
     # anchor the pipeline's data root to the mounted project (absolute, cwd-independent) so
     # DATA_STORE = /opt/airflow/project/data -> the ./data bind mount below -> the HOST disk.
     # All heavy downloads (SEC zip bulk sets under sec_financial_notes / sec_financial_statements /
-    # sec_bulk_cache / sec_13f_insiders, the HF transcript parquet under call_transcripts, models &
+    # sec_bulk_cache / sec_13f_insiders, models &
     # peer dict under output/) are written there, so they SURVIVE the container and are reused
     # (incremental fetchers skip a re-download when the cached zip is found on the host).
     ROOT_PATH: /opt/airflow/project

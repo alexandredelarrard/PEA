@@ -22,11 +22,12 @@ Two stages:
 
 Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward):
     ec_tone            length-weighted call tone  P(pos) − P(neg)      (level)
-    ec_tone_delta      Δ tone vs the PRIOR call                        (tone momentum)
+    ec_tone_delta      Δ tone vs the prior consecutive quarter's call  (tone momentum)
     ec_qa_gap          Q&A tone − prepared-remarks tone   (candor: scripted optimism
                        far above unscripted answers is a bearish tell)
     ec_uncertainty     length-weighted hedging ratio (LM uncertainty words)
-    ec_length_delta    log(total words this call / prior call)         (disclosure Δ)
+    ec_length_delta    log(total words this call / prior consecutive   (disclosure Δ)
+                       quarter's call); both deltas are null when that quarter has no call
     ec_qa_coherence_mean   mean question/answer embedding cosine
     ec_qa_qq_distance      1 − cosine(Q&A embedding vs prior consecutive quarter)
     ec_prep_qq_distance    1 − cosine(prepared embedding vs prior consecutive quarter)

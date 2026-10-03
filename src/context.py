@@ -24,8 +24,8 @@ os.environ["PYTHONUTF8"] = "1"
 # before any extractor opens a socket. Every entrypoint -- main.py and all six CLIs -- imports
 # this module, so this is the one place that covers them all; tests get it from conftest.py.
 # Without it the proxy's re-signed certificates fail verification and outbound HTTPS dies as an
-# opaque "GET failed (transport)": measured on this network, api.roic.ai and huggingface.co both
-# fail from requests and curl_cffi, and both return 200 once this runs. It only ADDS roots the OS
+# opaque "GET failed (transport)": measured on this network, huggingface.co fails from requests
+# and curl_cffi, and returns 200 once this runs. It only ADDS roots the OS
 # already trusts and leaves verification ON; a CA env var the user set themselves still wins.
 configure_corporate_ca()
 

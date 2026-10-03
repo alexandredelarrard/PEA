@@ -106,6 +106,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                     "valid_to": None,
                     "n_filings": 40,
                     "source": "form345",
+                    "evidence_period": "",
                     "evidence": "",
                 },
                 {
@@ -115,6 +116,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                     "valid_to": None,
                     "n_filings": 9,
                     "source": "form345",
+                    "evidence_period": "",
                     "evidence": "",
                 },
             ]

@@ -162,6 +162,8 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
                 "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01"],
                 "valid_to": ["2024-04-01", None, None],
                 "n_filings": [10, 10, 10],
+                "source": ["form345"] * 3,
+                "evidence_period": [""] * 3,
             }
         ),
     )

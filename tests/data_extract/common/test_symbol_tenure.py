@@ -197,6 +197,174 @@ def test_every_drop_reason_is_counted(tmp_path):
     print("  -> read == kept + the sum of the reasons, so a gap can always be explained.")
 
 
+#: Known truth for every non-alphanumeric alias filed under a roster CIK in the live table
+#: (`_out/p1_junk_pairs.txt`), plus the named placeholder and share-class cases.
+#: None = placeholder ("no symbol"), () = noise, otherwise the symbols in roster spelling.
+_SYMBOL_FIELDS: list[tuple[str, tuple[str, ...] | None]] = [
+    ("(BBT)", ("BBT",)),
+    ("[FB]", ("FB",)),
+    ("NYSE: GLW", ("GLW",)),
+    ("NYSE: BAX", ("BAX",)),
+    ("NYSE:IRM", ("IRM",)),
+    ("OTC: VICI", ("VICI",)),
+    ("BAX (NYSE)", ("BAX",)),
+    ("BFA/BFB", ("BFA", "BFB")),
+    ("BFA, BFB", ("BFA", "BFB")),
+    ("BFA,BFB", ("BFA", "BFB")),
+    ("BF'B", ("BFB",)),
+    ("LEN, LEN.B", ("LEN", "LEN-B")),
+    ("LEN,LEN.B", ("LEN", "LEN-B")),
+    ("CMG/CMG.B", ("CMG", "CMG-B")),
+    ("CMG.B", ("CMG-B",)),
+    ("STZ/STZ.B", ("STZ", "STZ-B")),
+    ("HUBA, HUBB", ("HUBA", "HUBB")),
+    ("HUBA,HUBB", ("HUBA", "HUBB")),
+    ("HUB-A", ("HUB-A",)),
+    ("TAP.A TAP", ()),
+    ("TAP.A, TAP", ("TAP-A", "TAP")),
+    ("FCE A/FCE", ("FCE-A", "FCE")),
+    ("KVA / KVB", ("KVA", "KVB")),
+    ("FNF, FIS", ("FNF", "FIS")),
+    ("L; LMC.B", ("L", "LMC-B")),
+    ("ALF A", ("ALF-A",)),
+    ("XSIAX (A)", ("XSIAX-A",)),
+    ("HBC PR A", ("HBC-PR-A",)),
+    ("N O G", ("NOG",)),
+    ("V S E C", ("VSEC",)),
+    ("BWINA / B", ("BWINA-B",)),
+    ("NWIN(OB)", ("NWIN",)),
+    ("CPTC.OB", ("CPTC",)),
+    ("DE/TGAL", ("TGAL",)),
+    ("OWL ROCK T", ()),
+    ("APP. FOR", ()),
+    ("Z AND ZG", ()),
+    ("TAP.A; TAP", ("TAP-A", "TAP")),
+    ("LTR:CG", ("LTR", "CG")),
+    ("LTR; CG", ("LTR", "CG")),
+    ("LTR;CG", ("LTR", "CG")),
+    ("BRK.B", ("BRK-B",)),
+    ("BRK/B", ("BRK-B",)),
+    ("BRK-A", ("BRK-A",)),
+    ("BRK.A", ("BRK-A",)),
+    ("BRK/A", ("BRK-A",)),
+    ("BRKB", ("BRKB",)),
+    ("KIM-PG", ("KIM-PG",)),
+    ('"WM"', ("WM",)),
+    ("(AEP)", ("AEP",)),
+    ("(AIG)", ("AIG",)),
+    ("(BMY)", ("BMY",)),
+    ("(BSX)", ("BSX",)),
+    ("(CPT", ("CPT",)),
+    ("(CPT)", ("CPT",)),
+    ("[D]", ("D",)),
+    ("(HCA)", ("HCA",)),
+    ("[HON]", ("HON",)),
+    ("[IBKR]", ("IBKR",)),
+    ("[IRM", ("IRM",)),
+    ("IRM]", ("IRM",)),
+    ("CMCSA]", ("CMCSA",)),
+    ("NCLH]", ("NCLH",)),
+    ("(LYB)", ("LYB",)),
+    ("(MRK)", ("MRK",)),
+    ("[OMC]", ("OMC",)),
+    ("(PRU)", ("PRU",)),
+    ("(RCL)", ("RCL",)),
+    ("(REGN)", ("REGN",)),
+    ("(RTX", ("RTX",)),
+    ("[TER]", ("TER",)),
+    ("(TSN)", ("TSN",)),
+    ("[TYL]", ("TYL",)),
+    ("(WST)", ("WST",)),
+    ("(KO)", ("KO",)),
+    ("RC:", ("RC",)),
+    ("RCL:", ("RCL",)),
+    ("KEY--", ("KEY",)),
+    ("IDXX`", ("IDXX",)),
+    ("DALRQ.PK", ("DALRQ",)),
+    ("/DE/CHD", ("CHD",)),
+    ("CARR WI", ("CARR",)),
+    ("OTIS WI", ("OTIS",)),
+    ("CIEN US", ("CIEN",)),
+    ("HCA INC.", ("HCA",)),
+    ("3M CO", ("3M",)),
+    ("(NONE)", None),
+    ("[NONE]", None),
+    ("[ N/A ]", None),
+    ("NONE", None),
+    ("NO SYMBOL", None),
+    ("N/A", None),
+    ("N.A.", None),
+    ("-", None),
+    ("---", None),
+    ("", None),
+    ("4", ()),
+    ("DEERE & CO", ()),
+    ("4$EJNNIU", ()),
+    ("@ABC3DEF", ()),
+    ("DC18*POL", ()),
+    ("DC6*POLK", ()),
+    ("EG8R*NSC", ()),
+    ("FF9EYD*", ()),
+    ("FO9JOD#Z", ()),
+    ("I#EK7JYE", ()),
+    ("IGEWXR6*", ()),
+    ("JPMC*011", ()),
+    ("OC6N*NMF", ()),
+    ("SPUD*CO2", ()),
+    ("T@NET5WKS", ()),
+]
+
+
+def test_symbol_fields_normalise_to_roster_spelling():
+    """Every junk spelling filed under a roster CIK maps to its known symbols, a placeholder or noise."""
+    parse = tenure_module.parse_symbol_field
+    wrong = [(raw, expected, parse(raw)) for raw, expected in _SYMBOL_FIELDS if parse(raw) != expected]
+    assert not wrong, wrong
+    assert parse(None) is None and parse(pd.NA) is None
+
+    n_lists = sum(1 for _, expected in _SYMBOL_FIELDS if expected and len(expected) > 1)
+    n_placeholders = sum(1 for _, expected in _SYMBOL_FIELDS if expected is None)
+    n_noise = sum(1 for _, expected in _SYMBOL_FIELDS if expected == ())
+    print("\n=== SANITY CHECK: symbol-field normalisation ===")
+    print(f"  {len(_SYMBOL_FIELDS)} known-truth fields: {n_lists} multi-symbol lists, {n_placeholders} placeholders, {n_noise} noise")
+    print("  '(BBT)'->BBT  '[FB]'->FB  'NYSE: GLW'->GLW  'BFA/BFB'->BFA,BFB  'BRK.B'/'BRK/B'->BRK-B  'BRKB' stays")
+    print("  'ALF A'->ALF-A  'N O G'->NOG  'OWL ROCK T'->noise: whitespace never splits a list, so no stray single-letter ticker appears")
+    print("  OK: lists split before the share-class rule; a slash before one letter is a class, not a list")
+
+
+def test_junk_symbol_fields_derive_clean_tenures(tmp_path):
+    """Junk spellings of one issuer's symbol collapse into its roster-spelled tenures; noise is counted, never stored."""
+    _write_zip(
+        tmp_path,
+        "2019q4",
+        [
+            ("t1", "92230", "BB&T CORP", "(BBT)", "05-NOV-2019"),
+            ("t2", "92230", "BB&T CORP", "BBT", "06-NOV-2019"),
+            ("m1", "1326801", "FACEBOOK INC", "[FB]", "07-NOV-2019"),
+            ("g1", "24741", "CORNING INC", "NYSE: GLW", "08-NOV-2019"),
+            ("b1", "14693", "BROWN FORMAN CORP", "BFA/BFB", "09-NOV-2019"),
+            ("k1", "1067983", "BERKSHIRE HATHAWAY INC", "BRK.B", "10-NOV-2019"),
+            ("k2", "1067983", "BERKSHIRE HATHAWAY INC", "BRK/B", "11-NOV-2019"),
+            ("n1", "200406", "JOHNSON & JOHNSON", "(NONE)", "12-NOV-2019"),
+            ("x1", "1000", "SOME FILER", "DC18*POL", "13-NOV-2019"),
+        ],
+    )
+    scan = scan_form345_cache(tmp_path)
+    out = derive_symbol_tenure(scan)
+    by_symbol = out.set_index("symbol")
+
+    assert set(out["symbol"]) == {"BBT", "FB", "GLW", "BFA", "BFB", "BRK-B"}
+    assert by_symbol.loc["BBT", "n_filings"] == 2 and by_symbol.loc["BRK-B", "n_filings"] == 2
+    assert by_symbol.loc["BFA", "issuer_cik"] == by_symbol.loc["BFB", "issuer_cik"] == "0000014693"
+    assert scan.drops["empty_symbol"] == 1 and scan.drops["noise_symbol"] == 1
+    assert scan.drops["rows_read"] == 9 and scan.drops["rows_kept"] == 7
+
+    print("\n=== SANITY CHECK: junk symbol fields through the derivation ===")
+    print(f"  9 filings -> {len(out)} tenures {sorted(out['symbol'])}")
+    print(f"  placeholder dropped={scan.drops['empty_symbol']} noise dropped={scan.drops['noise_symbol']}")
+    print("  OK: '(BBT)' merges into BBT, BRK.B and BRK/B into BRK-B, 'BFA/BFB' yields two symbols on one CIK")
+
+
 def test_a_corrupt_zip_is_skipped_not_raised(tmp_path):
     """The research run hit a corrupt quarter; one bad zip must not lose the other 80."""
     _write_zip(tmp_path, "2020q1", [("a1", "111", "OLDCO INC", "AAA", "05-JAN-2020")])
@@ -226,6 +394,7 @@ def test_store_round_trip_keeps_date_semantics(sqlite_store):
             "valid_to": pd.to_datetime(pd.Series(["2020-02-28", None], dtype="object")),
             "n_filings": [2, 1],
             "source": ["form345"] * 2,
+            "evidence_period": [""] * 2,
             "evidence": ["OLDCO", "NEWCO"],
         }
     )
@@ -371,13 +540,15 @@ def test_materialization_keeps_manual_and_derived_evidence():
     assert len(out) == 2
     assert list(out["source"]) == ["manual", "form345"]
     assert set(out["issuer_cik"]) == {"0000000001", "0000000002"}
+    assert (out["evidence_period"] == "").all()
 
     print("\n=== SANITY CHECK: manual-over-derived auditability ===")
     print("  manual=1 derived=1 materialized=2; manual is ordered first but neither row is hidden")
     print("  OK: precedence is a resolver concern, not destructive evidence replacement")
 
 
-def test_materialization_coalesces_an_exact_primary_key_collision():
+def test_materialization_keeps_both_sources_of_a_shared_interval():
+    """A manual and a derived row on one (symbol, issuer_cik, valid_from) are two evidence rows, not one."""
     columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
     derived = pd.DataFrame(
         [["A", "0001090872", pd.Timestamp("2006-02-16"), pd.NaT, 900, "form345", "AGILENT TECHNOLOGIES INC"]],
@@ -390,16 +561,75 @@ def test_materialization_coalesces_an_exact_primary_key_collision():
 
     out = materialize_symbol_tenure(derived, manual)
 
-    assert len(out) == 1
-    row = out.iloc[0]
-    assert row["source"] == "manual"
-    assert row["n_filings"] == 900
-    assert "manual evidence: SEC listing evidence" in row["evidence"]
-    assert "form345 evidence: AGILENT TECHNOLOGIES INC" in row["evidence"]
-    assert not out.duplicated(["symbol", "issuer_cik", "valid_from"]).any()
-    print("\n=== SANITY CHECK: manual/derived primary-key collision ===")
-    print("  one manual-precedence row retains both evidence strings and the derived filing count")
-    print("  OK: auditability fits the existing table grain without a schema change")
+    assert list(out["source"]) == ["manual", "form345"]
+    assert list(out["n_filings"]) == [0, 900]
+    assert list(out["evidence"]) == ["SEC listing evidence", "AGILENT TECHNOLOGIES INC"]
+    primary_key = list(Tables.symbol_tenure.pk)
+    assert primary_key == ["symbol", "issuer_cik", "valid_from", "source", "evidence_period"]
+    assert not out.duplicated(primary_key).any()
+    print("\n=== SANITY CHECK: cross-source interval kept as evidence ===")
+    print(f"  manual + form345 on A/0001090872/2006-02-16 -> {len(out)} rows, sources {list(out['source'])}")
+    print("  OK: source is in the primary key, so no evidence string or filing count is merged away")
+
+
+def _seed_tenure_row(symbol: str, cik: str, source: str, evidence_period: str) -> dict[str, object]:
+    """One stored `symbol_tenure` row for the partition tests."""
+    return {
+        "symbol": symbol,
+        "issuer_cik": cik,
+        "valid_from": pd.Timestamp("2019-01-01"),
+        "valid_to": pd.NaT,
+        "n_filings": 3,
+        "source": source,
+        "evidence_period": evidence_period,
+        "evidence": f"{source} seed",
+    }
+
+
+def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, monkeypatch, tmp_path):
+    """The form345/manual build must leave rows of other sources (`dei`) in place and drop its own stale rows."""
+    seeded = pd.DataFrame(
+        [
+            _seed_tenure_row("DEI", "0000000009", "dei", "2024q1"),
+            _seed_tenure_row("STALE", "0000000008", "form345", ""),
+        ]
+    )
+    sqlite_store.save(Tables.symbol_tenure, seeded)
+    derived = pd.DataFrame(
+        {
+            "symbol": ["AAA"],
+            "issuer_cik": ["0000000001"],
+            "valid_from": pd.to_datetime(["2020-01-01"]),
+            "valid_to": pd.to_datetime(pd.Series([None], dtype="object")),
+            "n_filings": [1],
+            "source": ["form345"],
+            "evidence": ["AAA INC"],
+        }
+    )
+    monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: derived)
+    manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
+    monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
+    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
+    writes: list[str] = []
+    for method in ("save", "replace", "delete"):
+        real = getattr(sqlite_store, method)
+        monkeypatch.setattr(sqlite_store, method, lambda *args, _real=real, _name=method, **kwargs: (writes.append(_name), _real(*args, **kwargs))[1])
+    context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.partition"))
+
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    stored = sqlite_store.load(Tables.symbol_tenure, project=True)
+    assert stored is not None
+    rows = {(row.symbol, row.source, row.evidence_period) for row in stored.itertuples(index=False)}
+    assert rows == {("DEI", "dei", "2024q1"), ("AAA", "form345", "")}
+    assert "replace" not in writes
+
+    first_writes = list(writes)
+    tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+    assert writes == first_writes, "an unchanged form345/manual partition must not be rewritten"
+
+    print("\n=== SANITY CHECK: partition-scoped symbol_tenure build ===")
+    print(f"  seeded dei + stale form345 -> stored {sorted(rows)}; writes {first_writes}; unchanged rebuild added none")
+    print("  OK: the build owns only form345/manual; dei evidence survives and the stale derived row is gone")
 
 
 def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeypatch, caplog, tmp_path):
@@ -454,7 +684,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
     print("  OK: a new former symbol is visible before symbol-only consumers run")
 
 
-def test_symbol_tenure_replace_is_skipped_when_unchanged(sqlite_store, monkeypatch, caplog, tmp_path):
+def test_symbol_tenure_write_is_skipped_when_unchanged(sqlite_store, monkeypatch, caplog, tmp_path):
     """A rebuild that derives exactly the stored rows (read back through the store) writes nothing."""
     frame = pd.DataFrame(
         {
@@ -472,89 +702,29 @@ def test_symbol_tenure_replace_is_skipped_when_unchanged(sqlite_store, monkeypat
     manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
     monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
-    replaced: list[int] = []
-    real_replace = sqlite_store.replace
+    saved: list[int] = []
+    real_save = sqlite_store.save
 
-    def counting_replace(table, df):
-        replaced.append(len(df))
-        return real_replace(table, df)
+    def counting_save(table, df):
+        saved.append(len(df))
+        return real_save(table, df)
 
-    monkeypatch.setattr(sqlite_store, "replace", counting_replace)
+    monkeypatch.setattr(sqlite_store, "save", counting_save)
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.skip"))
     caplog.set_level(logging.INFO)
 
     tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
     tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
-    assert replaced == [2]
-    assert "symbol_tenure: unchanged (2 row(s)); replace skipped" in caplog.text
+    assert saved == [2]
+    assert "symbol_tenure: unchanged (2 row(s)); write skipped" in caplog.text
 
     current["frame"] = frame.assign(n_filings=[5, 1])
     tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
-    assert replaced == [2, 2]
+    assert saved == [2, 2]
 
     print("\n=== SANITY CHECK: unchanged symbol_tenure is not rewritten ===")
-    print(f"  cold build wrote once; identical rebuild skipped the replace; a changed n_filings wrote again -> replace calls {replaced}")
+    print(f"  cold build wrote once; identical rebuild skipped the write; a changed n_filings wrote again -> save calls {saved}")
     print("  OK: the DATE round-trip and row order do not defeat the comparison")
-
-
-def _per_group_materialize(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
-    """Reference: the per-primary-key-group coalescing loop `materialize_symbol_tenure` replaced."""
-    table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
-    out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
-    priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
-    out = (
-        out.assign(_source_priority=priority)
-        .sort_values(["symbol", "valid_from", "_source_priority", "issuer_cik"], kind="mergesort")
-        .drop(columns="_source_priority")
-        .reset_index(drop=True)
-    )
-    coalesced: list[dict[str, object]] = []
-    for _, rows in out.groupby(["symbol", "issuer_cik", "valid_from"], sort=False, dropna=False):
-        winner = rows.iloc[0].copy()
-        if len(rows) > 1:
-            winner["n_filings"] = pd.to_numeric(rows["n_filings"], errors="coerce").max()
-            labelled = [f"{row.source} evidence: {row.evidence}" for row in rows.itertuples(index=False) if str(row.evidence).strip()]
-            winner["evidence"] = " | ".join(dict.fromkeys(labelled))
-        coalesced.append(cast(dict[str, object], winner.to_dict()))
-    return pd.DataFrame.from_records(coalesced, columns=table_columns)
-
-
-def test_materialize_collisions_match_the_per_group_rule():
-    """Vectorised coalescing equals the per-group loop on a crafted frame, dtypes included."""
-    columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
-    day = pd.Timestamp
-    derived = pd.DataFrame(
-        [
-            ["A", "0000000001", day("2006-02-16"), pd.NaT, 900, "form345", "AGILENT"],  # collides with manual
-            ["B", "0000000002", day("2010-01-01"), day("2012-01-01"), 7, "form345", "BCO"],  # no collision
-            ["C", "0000000003", day("2011-05-05"), pd.NaT, 3, "form345", ""],  # collides, blank evidence
-            ["C", "0000000004", day("2011-05-05"), pd.NaT, 2, "form345", "OTHER C"],  # same day, other CIK
-            ["D", "0000000005", day("2001-01-01"), day("2003-01-01"), 1, "form345", "DCO"],
-            ["E", "0000000006", day("2019-09-09"), pd.NaT, 11, "form345", "ECO"],  # collides with a manual twin
-        ],
-        columns=columns,
-    )
-    manual_rows = [
-        ["A", "A", "0000000001", day("2006-02-16"), pd.NaT, 0, "manual", "SEC listing", "lower bound"],
-        ["C", "C", "0000000003", day("2011-05-05"), day("2020-01-01"), 0, "manual", "8-K", "rename"],
-        ["E", "E", "0000000006", day("2019-09-09"), pd.NaT, 0, "manual", "S-4", "merger"],
-        ["F", "F", "0000000007", day("2022-02-02"), pd.NaT, 0, "manual", "Form 25", "listing"],
-    ]
-    manual = pd.DataFrame(manual_rows, columns=["canonical_ticker", *columns, "reason"])
-
-    expected = _per_group_materialize(derived, manual)
-    out = materialize_symbol_tenure(derived, manual)
-
-    pd.testing.assert_frame_equal(out, expected, check_dtype=True)
-    assert list(out.dtypes) == list(expected.dtypes)
-    assert len(out) == 7 and not out.duplicated(["symbol", "issuer_cik", "valid_from"]).any()
-    c_row = out[(out.symbol == "C") & (out.issuer_cik == "0000000003")].iloc[0]
-    assert c_row["source"] == "manual" and c_row["n_filings"] == 3 and c_row["evidence"] == "manual evidence: 8-K"
-
-    print("\n=== SANITY CHECK: vectorised collision coalescing ===")
-    print(f"  {len(derived)} derived + {len(manual)} manual rows, 3 primary-key collisions -> {len(out)} rows")
-    print(f"  dtypes {dict(out.dtypes.astype(str))}")
-    print("  OK: identical to the per-group loop (values, order, dtypes); a blank evidence string is not labelled")
 
 
 def test_repository_manual_tenure_covers_validated_ia3_boundaries():
@@ -633,7 +803,7 @@ def test_real_cache_scale_and_determinism(real_tenure):
     per_symbol = real_tenure.groupby("symbol")["issuer_cik"].nunique()
     multi = int((per_symbol > 1).sum())
     share = multi / len(per_symbol)
-    assert len(real_tenure) > 30_000 and len(per_symbol) > 27_000
+    assert len(real_tenure) > 27_000 and len(per_symbol) > 24_000
     assert 0.05 < share < 0.15
     assert real_tenure["valid_to"].isna().sum() > 0  # some tenures are still open
     # deterministic: the same cache must give the same table, or the build is not rebuildable

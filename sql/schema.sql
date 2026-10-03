@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS "superinvestor_roster" (
 );
 CREATE INDEX IF NOT EXISTS ix_superinvestor_roster_cik ON "superinvestor_roster" ("cik");
 
--- [reference] symbol_tenure  (pk: symbol, issuer_cik, valid_from)
+-- [reference] symbol_tenure  (pk: symbol, issuer_cik, valid_from, source, evidence_period)
 -- WHICH ISSUER CIK HELD A TRADING SYMBOL, AND WHEN -- axis B of ticker identity
 -- (`entity_lineage` is axis A). DERIVED, not fetched: the SEC publishes no historical
 -- ticker->CIK data set (`company_tickers.json` is an undated snapshot and
@@ -64,6 +64,10 @@ CREATE INDEX IF NOT EXISTS ix_superinvestor_roster_cik ON "superinvestor_roster"
 -- at d"), never a lookup expecting one answer; collapsing overlaps onto one winner would
 -- silently rewrite history.
 --
+-- One row per evidence SOURCE: `form345` and `manual` (identity build) and `dei` (Notes
+-- cover-page symbols, one row per Notes zip period in `evidence_period`). `evidence_period`
+-- is '' (never NULL) for `form345` and `manual`; each source rewrites only its partition.
+--
 -- No extra index: the read pattern is symbol-first and the PK's leading column already
 -- covers it. Revisit only if the fails-to-deliver / short-interest measurement needs one.
 
@@ -73,9 +77,10 @@ CREATE TABLE IF NOT EXISTS "symbol_tenure" (
     "valid_from" DATE NOT NULL,
     "valid_to" DATE,
     "n_filings" BIGINT,
-    "source" TEXT,
+    "source" TEXT NOT NULL,
+    "evidence_period" TEXT NOT NULL,
     "evidence" TEXT,
-    PRIMARY KEY ("symbol", "issuer_cik", "valid_from")
+    PRIMARY KEY ("symbol", "issuer_cik", "valid_from", "source", "evidence_period")
 );
 
 -- [reference] entity_lineage  (pk: cik)

@@ -28,6 +28,7 @@ from src.data_extract.utils.common.entity_lineage import (
     load_d19_allowlist,
     roster_cik_map,
 )
+from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
@@ -96,11 +97,6 @@ class SymbolResolution:
 
 #: Per-context cache (weak keys) so one database's identity never leaks into another context.
 _CACHE: weakref.WeakKeyDictionary[Context, Identity] = weakref.WeakKeyDictionary()
-
-
-def normalise_market_symbol(value: object) -> str:
-    """Use the roster's hyphen spelling for market share-class separators."""
-    return str(value).strip().upper().replace(".", "-").replace("/", "-")
 
 
 def _as_timestamp(value) -> pd.Timestamp | None:

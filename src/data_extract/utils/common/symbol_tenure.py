@@ -1,16 +1,17 @@
 """Ticker identity, axis B: which issuer CIK held symbol X on date d (`symbol_tenure`).
 
-Derived offline from `SUBMISSION.TSV` in the cached Form 345 quarter zips, plus the evidenced
-manual config; PK (symbol, issuer_cik, valid_from), manual rows winning a PK collision. Tenures
-may overlap: `valid_to` is the observed end of that CIK's own filing window, so the table answers
-a membership question, never a single-answer lookup. Not read by `owns()`; it feeds axis-A
-candidates, the D19 cross-check and CIK-less symbol/date sources.
+Evidence rows by `source`: `form345` (derived offline from `SUBMISSION.TSV` in the cached Form 345
+quarter zips) and `manual` (the evidenced config) are written here; other sources own their own
+partition. PK (symbol, issuer_cik, valid_from, source, evidence_period); `evidence_period` is '' for
+`form345` and `manual`. Tenures may overlap: `valid_to` is the observed end of that CIK's own filing
+window, so the table answers a membership question, never a single-answer lookup.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
@@ -38,11 +39,33 @@ _FORM345_READ = {
 #: `ISSUERNAME` is optional and feeds `evidence`; a zip missing any of these is skipped loudly.
 _REQUIRED_COLUMNS = frozenset({"ISSUERCIK", "ISSUERTRADINGSYMBOL", "FILING_DATE"})
 
-#: `ISSUERTRADINGSYMBOL` strings that mean "no symbol"; dropped so they never read as a reused ticker.
-_NULL_SYMBOLS = frozenset({"", "NONE", "N/A", "NA", "-", "--", "N.A.", "NULL"})
+#: Cleaned symbol fields that mean "no symbol"; a field with no letter or digit is one too.
+_PLACEHOLDER_SYMBOLS = frozenset({"NONE", "N/A", "NA", "N.A.", "NULL", "NO SYMBOL"})
 
-#: Stripped because a quoted symbol would split a real tenure; no other normalisation is applied.
-_SYMBOL_NOISE_CHARS = '"'
+#: Quote characters removed from a symbol field; brackets read as spaces (`(BBT)`, `NWIN(OB)`).
+_SYMBOL_QUOTES = re.compile(r"[\"'`]")
+_SYMBOL_BRACKETS = re.compile(r"[()\[\]{}]")
+
+#: EDGAR state-of-incorporation marker typed in front of a symbol (`/DE/CHD`, `DE/TGAL`).
+_STATE_MARKER = re.compile(r"^(?:/[A-Z]{2}/|DE/)")
+
+#: A slash before a full symbol separates a list (`BFA/BFB`); before one character it is a class (`BRK/B`).
+_SLASH_LIST = re.compile(r"/(?=[A-Z0-9]{2})")
+
+#: Spaces around a slash (`KVA / KVB`).
+_SLASH_SPACES = re.compile(r"\s*/\s*")
+
+#: List separators inside one symbol field; whitespace is not one (`ALF A` is one class symbol).
+_LIST_SEPARATORS = re.compile(r"[,;:]+")
+
+#: Exchange, venue and qualifier words dropped from a multi-word field (`NYSE: GLW`, `CARR WI`, `HCA INC.`).
+_QUALIFIER_WORDS = frozenset({"NYSE", "NASDAQ", "AMEX", "OTC", "OTCBB", "ARCA", "PINK", "PK", "OB", "WI", "US", "INC", "CO", "CORP"})
+
+#: OTC venue suffix on one symbol (`DALRQ.PK`).
+_VENUE_SUFFIX = re.compile(r"\.(?:PK|OB)$")
+
+#: A market symbol in roster spelling: letters and digits with at least one letter, `-` between parts.
+_SYMBOL_SHAPE = re.compile(r"(?=[A-Z0-9-]*[A-Z])[A-Z0-9]+(?:-[A-Z0-9]+)*")
 
 #: Month names for the `DD-MON-YYYY` filing-date shape (ISO dates are parsed too).
 _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
@@ -50,12 +73,59 @@ _MONTHS = {month: i + 1 for i, month in enumerate("JAN FEB MAR APR MAY JUN JUL A
 #: Fewer cached quarters than this warns (not raises) that the derivation is a partial history.
 MIN_EXPECTED_QUARTERS = 80
 
+#: The `symbol_tenure` partitions `build_symbol_tenure` owns; every other source keeps its rows.
+BUILD_SOURCES = ("form345", "manual")
+
+#: Column order of the materialized partitions.
+TABLE_COLUMNS = ("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence")
+
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
 MANUAL_TENURE_VERSION = 1
 
 
 class ManualSymbolTenureError(ValueError):
     """The manual symbol-tenure config is unsafe or cannot be audited."""
+
+
+def normalise_market_symbol(value: object) -> str:
+    """Use the roster's hyphen spelling for market share-class separators."""
+    return str(value).strip().upper().replace(".", "-").replace("/", "-")
+
+
+def parse_symbol_field(value: object) -> tuple[str, ...] | None:
+    """The market symbols one filer-typed symbol field names, in roster spelling.
+
+    None for a missing field or a placeholder ("no symbol"), () for noise. Quotes, brackets, qualifier
+    words and venue suffixes are removed; `,` `;` `:` and a slash before a full symbol split a list,
+    before the share-class rule (`.` and `/` -> `-`). Words inside one item join as a class (`ALF A` -> `ALF-A`).
+    """
+    if not isinstance(value, str):
+        return None
+    text = _SYMBOL_BRACKETS.sub(" ", _SYMBOL_QUOTES.sub("", value)).strip().upper()
+    text = _STATE_MARKER.sub("", _SLASH_SPACES.sub("/", " ".join(text.split())))
+    if text in _PLACEHOLDER_SYMBOLS or not any(char.isalnum() for char in text):
+        return None
+    items = [[word.strip("-.") for word in item.split()] for item in _LIST_SEPARATORS.split(_SLASH_LIST.sub(",", text))]
+    items = [[word for word in item if word] for item in items]
+    if sum(len(item) for item in items) > 1:
+        items = [[word for word in item if word not in _QUALIFIER_WORDS] for item in items]
+    symbols = [_join_item(item) for item in items if item]
+    if not symbols or not all(symbol and _SYMBOL_SHAPE.fullmatch(symbol) for symbol in symbols):
+        return ()
+    return tuple(dict.fromkeys(str(symbol) for symbol in symbols))
+
+
+def _join_item(words: list[str]) -> str | None:
+    """One list item's words as one symbol: spaced letters join (`N O G`), a base plus short class words
+    hyphenate (`HBC PR A`); anything else (`OWL ROCK T`) is None."""
+    words = [_VENUE_SUFFIX.sub("", word) for word in words]
+    if len(words) == 1:
+        return normalise_market_symbol(words[0])
+    if all(len(word) == 1 for word in words):
+        return "".join(words)
+    if len(words[0]) >= 2 and all(len(word) <= 2 for word in words[1:]):
+        return normalise_market_symbol("-".join(words))
+    return None
 
 
 @dataclass(frozen=True)
@@ -179,9 +249,9 @@ def _check_manual_overlaps(manual: pd.DataFrame) -> None:
 
 
 def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd.DataFrame:
-    """Manual plus derived rows; a PK (symbol, issuer_cik, valid_from) collision coalesces with manual first."""
-    table_columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]
-    out = pd.concat([manual[table_columns], derived[table_columns]], ignore_index=True)
+    """The `form345` and `manual` partitions as table rows: manual ordered first, every row kept."""
+    evidence_columns = [column for column in TABLE_COLUMNS if column != "evidence_period"]
+    out = pd.concat([manual[evidence_columns], derived[evidence_columns]], ignore_index=True).assign(evidence_period="")
     priority = out["source"].map({"manual": 0, "form345": 1}).fillna(2)
     out = (
         out.assign(_source_priority=priority)
@@ -189,32 +259,13 @@ def materialize_symbol_tenure(derived: pd.DataFrame, manual: pd.DataFrame) -> pd
         .drop(columns="_source_priority")
         .reset_index(drop=True)
     )
-    primary_key = ["symbol", "issuer_cik", "valid_from"]
-    collides = out.duplicated(primary_key, keep=False)
-    out = pd.concat([out[~collides], _coalesce_collisions(out[collides], primary_key)]).sort_index().reset_index(drop=True)
     logger.info(
-        "symbol_tenure: materialized %d manual and %d derived row(s) as %d unique table-grain row(s) over %d symbol(s)",
+        "symbol_tenure: materialized %d manual and %d derived row(s) over %d symbol(s)",
         len(manual),
         len(derived),
-        len(out),
         out["symbol"].nunique(),
     )
-    return out
-
-
-def _coalesce_collisions(df_collisions: pd.DataFrame, primary_key: list[str]) -> pd.DataFrame:
-    """One row per colliding primary key, kept at its first position: the first row's fields, the
-    group's highest `n_filings`, and every non-blank evidence string labelled by its source."""
-    if df_collisions.empty:
-        return df_collisions
-    group = df_collisions.groupby(primary_key, sort=False, dropna=False).ngroup()
-    evidence = df_collisions["evidence"].map(str)
-    labelled = (df_collisions["source"].map(str) + " evidence: " + evidence).where(evidence.str.strip().ne(""))
-    joined = labelled.groupby(group, sort=False).agg(lambda values: " | ".join(dict.fromkeys(values.dropna())))
-    n_filings = pd.to_numeric(df_collisions["n_filings"], errors="coerce").groupby(group, sort=False).max()
-    df_winners = df_collisions[~df_collisions.duplicated(primary_key)]
-    winner_group = group.loc[df_winners.index]
-    return df_winners.assign(n_filings=n_filings.loc[winner_group].to_numpy(), evidence=joined.loc[winner_group].to_numpy())
+    return out[list(TABLE_COLUMNS)]
 
 
 def _parse_filing_dates(raw: pd.Series) -> pd.Series:
@@ -249,25 +300,32 @@ def _aggregate_submission(raw: pd.DataFrame, name: str, drops: Counter) -> pd.Da
         drops["missing_columns"] += 1
         return None
 
+    raw_symbol = raw["ISSUERTRADINGSYMBOL"].astype("string")
+    symbols_by_field = {field: parse_symbol_field(field) for field in raw_symbol.dropna().unique()}
     df = pd.DataFrame(
         {
-            "symbol": (raw["ISSUERTRADINGSYMBOL"].astype("string").str.replace(_SYMBOL_NOISE_CHARS, "", regex=False).str.strip().str.upper()),
+            "symbol": raw_symbol.astype(object).map(symbols_by_field),
             "issuer_cik": raw["ISSUERCIK"],
             "issuer_name": (raw["ISSUERNAME"].astype("string") if "ISSUERNAME" in raw.columns else pd.Series(pd.NA, index=raw.index, dtype="string")),
             "filed": _parse_filing_dates(raw["FILING_DATE"]),
         }
     )
     drops["rows_read"] += len(df)
-    bad_symbol = df["symbol"].isna() | df["symbol"].isin(_NULL_SYMBOLS)
+    placeholder = df["symbol"].isna()
+    noise = ~placeholder & df["symbol"].map(len, na_action="ignore").eq(0)
+    bad_symbol = placeholder | noise
     bad_cik = df["issuer_cik"].isin(("", "0" * 10))
     bad_date = df["filed"].isna()
-    drops["empty_symbol"] += int(bad_symbol.sum())
+    drops["empty_symbol"] += int(placeholder.sum())
+    drops["noise_symbol"] += int(noise.sum())
     drops["empty_cik"] += int((bad_cik & ~bad_symbol).sum())
     drops["unparseable_filing_date"] += int((bad_date & ~bad_symbol & ~bad_cik).sum())
     df = df[~(bad_symbol | bad_cik | bad_date)]
     drops["rows_kept"] += len(df)
     if df.empty:
         return None
+    drops["multi_symbol_rows"] += int(df["symbol"].map(len).gt(1).sum())
+    df = df.explode("symbol", ignore_index=True)
     return df.groupby(["symbol", "issuer_cik"], as_index=False, sort=False).agg(
         first_filed=("filed", "min"), last_filed=("filed", "max"), n_filings=("filed", "size"), issuer_name=("issuer_name", "last")
     )
@@ -402,28 +460,31 @@ def changed_tenure_symbols(
 
 
 def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | Path | None = None) -> pd.DataFrame:
-    """Derive `symbol_tenure` and replace the table unless unchanged; returns the materialized frame.
+    """Derive the `form345` and `manual` partitions of `symbol_tenure` and rewrite them unless unchanged.
 
-    `replace`, never `save`: a full derivation must not leave stale rows behind.
+    Only those partitions are deleted and saved, so rows of other sources survive; returns the materialized frame.
     """
-    existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
+    existing = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(BUILD_SOURCES)}, optional=True)
     derived = derive_symbol_tenure(scan)
     manual = load_manual_symbol_tenure(config_dir or context.config_dir)
     out = materialize_symbol_tenure(derived, manual)
     context.log.info(
         f"symbol_tenure: validated {len(manual)} manual interval(s) for {manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
     )
-    if existing is None:
+    if existing is None or existing.empty:
         context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over {out['symbol'].nunique()} symbol(s)")
     else:
         changed = changed_tenure_symbols(existing, out)
         context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
     unchanged = matches_stored(existing, out, Tables.symbol_tenure)
-    written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, out)
+    written = 0
+    if not unchanged:
+        context.store.delete(Tables.symbol_tenure, where={"source": list(BUILD_SOURCES)})
+        written = context.store.save(Tables.symbol_tenure, out)
     # Market-wide derivation (ticker_count 0) that re-reads the whole cache, so always a full rescan.
     record_run(context, Tables.symbol_tenure, 0, written, is_full_rescan=True)
     if unchanged:
-        logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(out))
+        logger.info("symbol_tenure: unchanged (%d row(s)); write skipped", len(out))
     else:
-        logger.info("symbol_tenure: wrote %d row(s)", written)
+        logger.info("symbol_tenure: wrote %d %s row(s)", written, "/".join(BUILD_SOURCES))
     return out

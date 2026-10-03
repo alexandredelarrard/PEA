@@ -148,8 +148,15 @@ class Tables:
     # "last writer wins" collapse would be wrong. Resolution is a MEMBERSHIP test ("did this
     # CIK hold X at d"), never a lookup expecting one answer.
     #
-    # `symbol` is the filer's own typed string, upper-cased. It is not validated against any
-    # exchange listing; a filer typo becomes a one-filing tenure, visible as `n_filings=1`.
+    # `symbol` is the filer's typed string in roster spelling (`symbol_tenure.parse_symbol_field`:
+    # quotes, brackets and exchange prefixes removed, lists such as 'BFA, BFB' split, `.`/`/`
+    # class separators -> `-`, placeholders dropped). It is not validated against any exchange
+    # listing; a filer typo becomes a one-filing tenure, visible as `n_filings=1`.
+    #
+    # One row per evidence SOURCE: `form345` and `manual` (written by the identity build) and
+    # `dei` (Notes cover-page symbols, one row per Notes zip period in `evidence_period`).
+    # `evidence_period` is '' (never NULL) for `form345` and `manual`. Each source rewrites only
+    # its own partition, so the same (symbol, issuer_cik, valid_from) can hold one row per source.
     #
     # `valid_from` is an OBSERVATION (first Form 3/4/5 filed), not a listing date -- a
     # company can have traded under the symbol for years before its first insider filing.
@@ -158,11 +165,11 @@ class Tables:
     # predicate is ENTITY-based and does not read this table (D7).
     symbol_tenure = Table(
         "symbol_tenure",
-        ("symbol", "issuer_cik", "valid_from"),
+        ("symbol", "issuer_cik", "valid_from", "source", "evidence_period"),
         KIND_REFERENCE,
         ticker_col=None,
         date_type_cols=("valid_from", "valid_to"),
-        read_columns=("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"),
+        read_columns=("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence"),
     )
 
     # Which CIKs are THE SAME ECONOMIC COMPANY -- axis A of the identity problem, and the

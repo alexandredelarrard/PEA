@@ -19,7 +19,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, _read_filing, _save_book
+from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, _latest_per_key, _read_filing, _save_book
 from src.data_store.schema import Tables
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -32,8 +32,10 @@ class SuperinvestorRosterEmptyError(RuntimeError):
 
 def _filings_to_read(cik: str, floor: pd.Timestamp | None, since: pd.Timestamp) -> list[FilingStamp]:
     """The CIK's 13F-HR filings filed on/after `floor` (all when None) whose period is on/after
-    `since`; a null or unparseable period is skipped."""
-    stamps = [FilingStamp.of(f, cik) for f in Company(cik).get_filings(form=SEC_13F_FORMS) or []]
+    `since`, oldest first by (filed, accession) -- edgartools lists newest first; a null or
+    unparseable period is skipped."""
+    listing = Company(cik).get_filings(form=SEC_13F_FORMS) or []
+    stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.accession_number))
     if floor is not None:
         stamps = [s for s in stamps if s.filed.normalize() >= floor]
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
@@ -41,12 +43,13 @@ def _filings_to_read(cik: str, floor: pd.Timestamp | None, since: pd.Timestamp) 
 
 
 def _catch_up_cik(label: str, cik: str, *, context: Context, frontier: dict[str, pd.Timestamp], since: pd.Timestamp) -> tuple[int, int]:
-    """Read and save one roster CIK's filings newer than its frontier. `label` is the log key
-    `run_per_ticker` passes first. Returns (rows saved, suspect-price rows)."""
+    """Read and save one roster CIK's filings newer than its frontier, the last filed winning per
+    (cik, period, cusip). `label` is the log key `run_per_ticker` passes first. Returns (rows
+    saved, suspect-price rows)."""
     frames = [rows for stamp in _filings_to_read(cik, frontier.get(cik), since) if not (rows := _read_filing(stamp)).empty]
     if not frames:
         return 0, 0
-    return _save_book(context, pd.concat(frames, ignore_index=True))
+    return _save_book(context, _latest_per_key(pd.concat(frames, ignore_index=True)))
 
 
 def _warn_empty_books(context: Context, empty: list[str], n_ciks: int) -> None:

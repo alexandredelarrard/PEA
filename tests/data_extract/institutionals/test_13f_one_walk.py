@@ -315,3 +315,40 @@ def test_catch_up_reads_from_each_frontier_and_warns_only_for_frontierless_ciks(
     print("\n=== SANITY: 13F manager catch-up ===")
     print(f"  frontier CIK read {sorted(read)}; frontier-less read {sorted(read_nf)}; listing failure -> 0 rows;")
     print(f"  NO-rows warning names only the frontier-less failing CIK: {empty_warnings[0][-40:]!r}. Validated.")
+
+
+def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sqlite_store, monkeypatch):
+    listing = [_roster_amendment(), _roster_original()]  # edgartools order: newest filing first
+    _seed_roster(sqlite_store, [ROSTER])
+
+    class _FakeCompany:
+        def __init__(self, cik: str) -> None:
+            self.cik = cik
+
+        def get_filings(self, form: Any) -> list[_FakeFiling]:
+            return list(listing)
+
+    sent: list[pd.DataFrame] = []
+    real_save_book = f13m._save_book
+
+    def _spy_save_book(context: Any, book: pd.DataFrame) -> tuple[int, int]:
+        sent.append(book.copy())
+        return real_save_book(context, book)
+
+    monkeypatch.setattr(f13m, "Company", _FakeCompany)
+    monkeypatch.setattr(f13m, "_save_book", _spy_save_book)
+    monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
+
+    saved = f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    df_sent = pd.concat(sent, ignore_index=True)
+    assert not df_sent.duplicated(subset=f13._BOOK_KEY).any(), df_sent[f13._BOOK_KEY]  # Postgres rejects a repeated PK in one upsert
+    assert saved == 2  # AAPL from the amendment + the CUSIP only the original reported
+    df_book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
+    assert df_book.loc["037833100", "value_usd"] == 1_200_000.0
+    assert df_book.loc["037833100", "filing_date"] == pd.Timestamp("2026-06-01")
+    assert df_book.loc["G0450A105", "filing_date"] == pd.Timestamp("2026-05-10")
+    print("\n=== SANITY: catch-up keeps the amendment ===")
+    print(f"  newest-first listing, original + 13F-HR/A for one CUSIP: {len(df_sent)} rows sent, one per PK;")
+    print(f"  AAPL stored {df_book.loc['037833100', 'value_usd']:,.0f} filed 2026-06-01 (the 13F-HR/A). Validated.")

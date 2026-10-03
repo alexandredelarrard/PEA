@@ -4,7 +4,8 @@ fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.
 Per-CIK catch-up of `sec13f_manager_holdings` (complete CUSIP books, no universe filter) for every CIK
 ever on `superinvestor_roster`, with `fetch_13f`'s parser and save. A listed filing is done when the
 stored book shows it, or a later filing of the same period, by `(period, filing_date)`; every other
-filing is read, so a failed read or an inline-written newer filing never hides older gaps.
+filing is read, so a failed read or an inline-written newer filing never hides older gaps. A transient
+read failure holds its quarter back for the next run; a deterministic one skips only that filing.
 `fetch_13f` writes the same rows inline during its walk.
 """
 
@@ -21,7 +22,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, _latest_per_key, _read_filing, _save_book
+from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _latest_per_key, _read_filing, _save_book
 from src.data_store.schema import Tables
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -64,24 +65,47 @@ def _pending_filings(context: Context, cik: str, listed: list[tuple[FilingStamp,
     return [(s, p) for s, p in listed if p not in newest_done or s.filed.normalize() > newest_done[p]]
 
 
+def _log_read_failure(context: Context, cik: str, stamp: FilingStamp, period: pd.Timestamp, failure: ReadFailure) -> None:
+    """WARNING for a transient failure (its quarter is held back), ERROR for a deterministic one."""
+    if failure.transient:
+        context.log.warning(
+            "13F managers: CIK %s %s (period %s) failed transiently (%s); the quarter is held back and retried next run",
+            cik,
+            stamp.accession_number,
+            period.date(),
+            failure.reason,
+        )
+        return
+    context.log.error(
+        "13F managers: CIK %s %s (period %s) is unreadable (%s); the filing is skipped and the quarter's readable filings are saved",
+        cik,
+        stamp.accession_number,
+        period.date(),
+        failure.reason,
+    )
+
+
 def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp) -> tuple[int, int, int]:
     """Read and save one roster CIK's pending filings, the last filed winning per (cik, period,
-    cusip). A failed read keeps its whole period out of this save, so the period stays pending and
-    is retried next run; other periods still save. `label` is the log key `run_per_ticker` passes
-    first. Returns (rows saved, suspect-price rows, failed reads)."""
+    cusip). A transient read failure keeps its whole period out of this save, so the period stays
+    pending (no stored rows) and is retried next run; a deterministic failure skips only that
+    filing. `label` is the log key `run_per_ticker` passes first. Returns (rows saved,
+    suspect-price rows, transient failures)."""
     frames: list[pd.DataFrame] = []
-    failed_periods: list[pd.Timestamp] = []
+    held_periods: list[pd.Timestamp] = []
     for stamp, period in _pending_filings(context, cik, _listed_filings(cik, since)):
         rows = _read_filing(stamp)
-        if rows is None:
-            failed_periods.append(period)
+        if isinstance(rows, ReadFailure):
+            _log_read_failure(context, cik, stamp, period, rows)
         elif not rows.empty:
             frames.append(rows)
+        if isinstance(rows, ReadFailure) and rows.transient:
+            held_periods.append(period)
     if not frames:
-        return 0, 0, len(failed_periods)
+        return 0, 0, len(held_periods)
     book = pd.concat(frames, ignore_index=True)
-    saved, suspect = _save_book(context, _latest_per_key(book[~book["period"].isin(failed_periods)]))
-    return saved, suspect, len(failed_periods)
+    saved, suspect = _save_book(context, _latest_per_key(book[~book["period"].isin(held_periods)]))
+    return saved, suspect, len(held_periods)
 
 
 def _warn_empty_books(context: Context, empty: list[str], n_ciks: int) -> None:
@@ -130,7 +154,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     _warn_empty_books(context, [c for c, (n, _, _) in zip(ciks, results, strict=True) if n == 0 and c not in with_book], len(ciks))
     if failed:
         logger.warning(
-            "13F managers: %d filing read(s) failed across %d CIK(s); their periods were not saved and are retried next run: %s",
+            "13F managers: %d filing read(s) failed transiently across %d CIK(s); their quarters were held back and are retried next run: %s",
             sum(f for _, f in failed),
             len(failed),
             ", ".join(c for c, _ in failed),

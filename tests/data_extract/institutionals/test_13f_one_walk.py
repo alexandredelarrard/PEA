@@ -15,11 +15,14 @@ from datetime import date
 from types import SimpleNamespace
 from typing import Any
 
+import edgar.exceptions as edgar_exceptions
+import httpx
 import pandas as pd
 import pyarrow as pa
 import pytest
 
 from src.data_extract.utils.common import parallel_fetch
+from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_managers as f13m
 from src.data_store.schema import Tables
@@ -57,6 +60,8 @@ class _FakeFiling:
     reads: list[str] = field(default_factory=list)
     fail_reads: int = 0  # the first N `obj()` calls raise, like a transient SEC 429
     accession: str | None = None  # a real accession's prefix is the filer agent's CIK
+    fail_error: type[Exception] = ConnectionError  # what a transient failure raises
+    unparseable: bool = False  # every `obj()` raises a deterministic parse error
 
     @property
     def accession_number(self) -> str:
@@ -64,9 +69,11 @@ class _FakeFiling:
 
     def obj(self) -> Any:
         self.reads.append(self.accession_number)
+        if self.unparseable:
+            raise ValueError("unparseable information table")
         if self.fail_reads > 0:
             self.fail_reads -= 1
-            raise ConnectionError("429 Too Many Requests")
+            raise self.fail_error("429 Too Many Requests")
         return SimpleNamespace(infotable=pd.DataFrame(self.lines))
 
 
@@ -513,3 +520,91 @@ def test_a_failed_same_day_amendment_of_a_stored_period_is_retried(sqlite_store,
     print(
         f"  P1 period and the 2026-02-14 date were each stored by OTHER filings; run 2 re-read only the amendment and stored {after_run2['2025-09-30']}. Validated."
     )
+
+
+@pytest.mark.parametrize("unreadable", ["original", "amendment"])
+def test_a_parse_failure_skips_only_its_filing_and_the_quarter_saves(sqlite_store, monkeypatch, caplog, unreadable):
+    original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
+    amendment = _FakeFiling(
+        ROSTER, "2026-06-01", "2026-03-31", [_line("037833100", "APPLE INC", 2_000.0, 20)], form="13F-HR/A", accession="0000000001-26-000002"
+    )
+    broken, readable = (original, amendment) if unreadable == "original" else (amendment, original)
+    broken.unparseable = True
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_company(monkeypatch, {ROSTER: [amendment, original]})
+
+    with caplog.at_level(logging.WARNING):
+        f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+
+    book = _book_by_period(sqlite_store, ROSTER)
+    readable_value = 2_000.0 if readable is amendment else 1_000.0
+    assert book == {"2026-03-31": (readable_value, readable.filing_date)}  # the readable sibling saved in run 1
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and all(s in errors[0] for s in (ROSTER, broken.accession_number, "2026-03-31")), errors
+    print(f"\n=== SANITY: deterministic parse failure of the {unreadable} (F-011) ===")
+    print(
+        f"  the period saved from the readable {('amendment' if readable is amendment else 'original')} {book['2026-03-31']}; one ERROR: {errors[0][:110]!r}. Validated."
+    )
+
+
+@pytest.mark.parametrize("fail_error", [RuntimeError, ConnectionError, TimeoutError])
+def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error):
+    original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
+    amendment = _FakeFiling(
+        ROSTER,
+        "2026-06-01",
+        "2026-03-31",
+        [_line("037833100", "APPLE INC", 2_000.0, 20)],
+        form="13F-HR/A",
+        accession="0000000001-26-000002",
+        fail_reads=1,
+        fail_error=fail_error,
+    )
+    other_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", [_line("037833100", "APPLE INC", 500.0, 5)], accession="0000000001-26-000000")
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_company(monkeypatch, {ROSTER: [amendment, original, other_quarter]})
+
+    with caplog.at_level(logging.WARNING):
+        f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+    after_run1 = _book_by_period(sqlite_store, ROSTER)
+    f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
+    after_run2 = _book_by_period(sqlite_store, ROSTER)
+
+    assert after_run1 == {"2025-12-31": (500.0, "2026-02-14")}  # the quarter is held back whole; the other quarter saves
+    assert after_run2["2026-03-31"] == (2_000.0, "2026-06-01")  # filled next run, the amendment winning
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and amendment.accession_number in r.getMessage()]
+    assert warnings and all(s in warnings[0] for s in (ROSTER, "2026-03-31")), warnings
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    print(f"\n=== SANITY: transient read failure ({fail_error.__name__}) holds the quarter back (F-011) ===")
+    print(
+        f"  run 1 stored {sorted(after_run1)} only; run 2 filled 2026-03-31 with {after_run2['2026-03-31']}; WARNING: {warnings[0][:100]!r}. Validated."
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "transient"),
+    [
+        (RuntimeError("429 Too Many Requests"), True),
+        (ConnectionResetError("connection reset by peer"), True),
+        (TimeoutError("timed out"), True),
+        (httpx.ConnectError("boom"), True),
+        (httpx.RemoteProtocolError("peer closed connection"), True),
+        (edgar_exceptions.TooManyRequestsError("https://www.sec.gov/x"), True),
+        (edgar_exceptions.TransportError("Could not reach https://www.sec.gov/x", url="https://www.sec.gov/x"), True),
+        (edgar_exceptions.TransportError("HTTP 404 from https://www.sec.gov/x", url="https://www.sec.gov/x", status_code=404), False),
+        (ValueError("unparseable information table"), False),
+        (KeyError("infotable"), False),
+    ],
+)
+def test_read_filing_reports_the_failure_kind(error, transient):
+    class _Raising(_FakeFiling):
+        def obj(self) -> Any:
+            raise error
+
+    stamp = FilingStamp.of(_Raising(ROSTER, "2026-05-15", "2026-03-31", [], accession="0000000001-26-000001"), ROSTER)
+
+    failure = f13._read_filing(stamp)
+
+    assert isinstance(failure, f13.ReadFailure) and failure.transient is transient, failure
+    assert type(error).__name__ in failure.reason
+    print(f"\n=== SANITY: {type(error).__name__} -> {'transient' if transient else 'deterministic'} ({failure.reason[:60]!r}). Validated.")

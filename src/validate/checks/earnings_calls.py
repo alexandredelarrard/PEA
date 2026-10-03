@@ -1,25 +1,43 @@
-"""Dedicated earnings-call coverage and feature-quality validation."""
+"""Dedicated earnings-call coverage, source-grain, split-quality and feature-quality validation.
+
+Reads `earnings_call_sections` at its paragraph grain (projected, 25 tickers per read), splits
+every call with `src/utils/earnings_call_split.split_call` and applies the shared quality gate,
+so the coverage it reports is the coverage the features can use.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
     EARNINGS_CALL_FEATURES,
-    EARNINGS_CALL_SCORED_TAGS,
     EARNINGS_CALL_SIGNAL_SESSIONS,
     EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
     NO_EARNINGS_CALL_TICKERS,
 )
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.text_metrics import assess_earnings_call_sections
+from src.utils.earnings_call_split import split_call
+from src.utils.text_metrics import assess_earnings_call_sections, word_count
 from src.validate.result import CheckResult, Finding, full_table_only
 
 CHECK = "earnings_calls"
+_PARAGRAPH_COLUMNS = ["ticker", "quarter", "paragraph", "as_of", "speaker", "content"]
+_SPLIT_STATUSES = ("ok", "no_qa", "no_prepared", "empty")
+_GRAIN_KEYS = (
+    "rows",
+    "calls",
+    "duplicate_keys",
+    "null_paragraph_rows",
+    "null_as_of_rows",
+    "calls_with_multiple_as_of",
+    "calls_missing_first_paragraph",
+    "calls_non_contiguous_paragraphs",
+    "ticker_dates_with_multiple_calls",
+)
 
 
 def _settings(config: Any) -> Any:
@@ -57,6 +75,52 @@ def _quarter_index(date: object) -> int | None:
 def _calendar_quarter_index(date: object) -> int | None:
     value = pd.to_datetime(date, errors="coerce")
     return None if pd.isna(value) else int(value.year) * 4 + int(value.quarter) - 1
+
+
+def _grain_counts(paragraphs: pd.DataFrame) -> dict[str, int]:
+    """Paragraph-grain integrity of one read: unique (ticker, quarter, paragraph), one non-null
+    `as_of` per call, paragraph numbers 1..n per call (the extractor diffs stored calls on
+    paragraph 1 only, so a call without it is invisible to the re-issue check), and one call per
+    (ticker, as_of) (a provider fiscal relabel can put a second label on a stored call's date).
+    `paragraphs` must hold every call of its tickers: the reads are batched by ticker."""
+    keyed = paragraphs.dropna(subset=["paragraph"])
+    calls = keyed.groupby(["ticker", "quarter"], sort=False).agg(
+        first=("paragraph", "min"),
+        last=("paragraph", "max"),
+        distinct=("paragraph", "nunique"),
+    )
+    dates = paragraphs.groupby(["ticker", "quarter"], sort=False)["as_of"].nunique()
+    call_dates = (
+        paragraphs.assign(as_of=pd.to_datetime(paragraphs["as_of"], errors="coerce").dt.normalize())
+        .dropna(subset=["as_of"])
+        .groupby(["ticker", "quarter"], sort=False)["as_of"]
+        .first()
+        .reset_index()
+    )
+    calls_per_date = call_dates.groupby(["ticker", "as_of"], sort=False)["quarter"].size()
+    return {
+        "rows": int(len(paragraphs)),
+        "calls": int(paragraphs[["ticker", "quarter"]].drop_duplicates().shape[0]),
+        "duplicate_keys": int(keyed.duplicated(["ticker", "quarter", "paragraph"]).sum()),
+        "null_paragraph_rows": int(paragraphs["paragraph"].isna().sum()),
+        "null_as_of_rows": int(paragraphs["as_of"].isna().sum()),
+        "calls_with_multiple_as_of": int((dates > 1).sum()),
+        "calls_missing_first_paragraph": int((calls["first"] != 1).sum()),
+        "calls_non_contiguous_paragraphs": int((calls["last"] - calls["first"] + 1 != calls["distinct"]).sum()),
+        "ticker_dates_with_multiple_calls": int((calls_per_date > 1).sum()),
+    }
+
+
+def _release_gap_buckets(gaps: list[int | None]) -> dict[str, int]:
+    """Valid calls by `as_of` minus the nearest `earnings_surprises` release date of the issuer."""
+    known = [gap for gap in gaps if gap is not None]
+    return {
+        "same_day": sum(gap == 0 for gap in known),
+        "one_day": sum(abs(gap) == 1 for gap in known),
+        "two_to_seven_days": sum(2 <= abs(gap) <= 7 for gap in known),
+        "beyond_seven_days": sum(abs(gap) > 7 for gap in known),
+        "no_release": len(gaps) - len(known),
+    }
 
 
 def _coverage_buckets(values: pd.Series) -> dict[str, Any]:
@@ -139,57 +203,79 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     eligible_ratios: dict[str, float] = {}
     malformed = valid_calls = observed_calls = 0
     rejected_reasons: dict[str, int] = {}
+    status_counts: dict[str, int] = dict.fromkeys(_SPLIT_STATUSES, 0)
+    prepared_shares: list[float] = []
+    grain = dict.fromkeys(_GRAIN_KEYS, 0)
     valid_dates: dict[str, list[pd.Timestamp]] = {}
     valid_dates_by_ticker: dict[str, list[pd.Timestamp]] = {}
-    section_columns = ["ticker", "quarter", "tag", "text"]
-    if "as_of" in context.store.columns(Tables.earnings_call_sections):
-        section_columns.insert(3, "as_of")
+    call_dates_by_ticker: dict[str, list[pd.Timestamp]] = {}
     for start in range(0, len(analysis_symbols), 25):
         batch = analysis_symbols[start : start + 25]
-        sections = context.store.load(
+        paragraphs = context.store.load(
             Tables.earnings_call_sections,
-            columns=section_columns,
-            where={"ticker": batch, "tag": list(EARNINGS_CALL_SCORED_TAGS)},
+            columns=_PARAGRAPH_COLUMNS,
+            where={"ticker": batch},
+            order_by=["ticker", "quarter", "paragraph"],
             optional=True,
         )
-        if sections is not None:
-            for (ticker, _quarter), call in sections.groupby(["ticker", "quarter"], sort=False):
-                observed_calls += 1
-                quality = assess_earnings_call_sections(dict(zip(call["tag"].astype(str), call["text"], strict=False)))
-                if quality.valid:
-                    valid_calls += 1
-                    if "as_of" in call:
-                        call_date = pd.to_datetime(call["as_of"], errors="coerce").dropna()
-                        if not call_date.empty:
-                            valid_dates_by_ticker.setdefault(str(ticker), []).append(pd.Timestamp(call_date.iloc[0]))
-                else:
-                    malformed += 1
-                    reason = quality.reason or "unknown"
-                    if reason.startswith("only "):
-                        reason = "below minimum cleaned words"
-                    elif reason.startswith("missing sections:"):
-                        reason = "missing required section"
-                    rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+        if paragraphs is None:
+            continue
+        for key, value in _grain_counts(paragraphs).items():
+            grain[key] += value
+        for (ticker, _quarter), call in paragraphs.groupby(["ticker", "quarter"], sort=False):
+            observed_calls += 1
+            call_date = pd.to_datetime(call["as_of"], errors="coerce").dropna()
+            date = pd.Timestamp(call_date.iloc[0]) if not call_date.empty else None
+            if date is not None:
+                call_dates_by_ticker.setdefault(str(ticker), []).append(date)
+            split = split_call(call[["paragraph", "speaker", "content"]].to_dict("records"))
+            status_counts[split.status] += 1
+            reason: str | None = f"split status {split.status}"
+            if split.status == "ok":
+                prepared_words, qa_words = word_count(split.prepared_remarks), word_count(split.qa)
+                prepared_shares.append(prepared_words / (prepared_words + qa_words))
+                quality = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa})
+                reason = None if quality.valid else quality.reason or "unknown"
+            if reason is None:
+                valid_calls += 1
+                if date is not None:
+                    valid_dates_by_ticker.setdefault(str(ticker), []).append(date)
+            else:
+                malformed += 1
+                if reason.startswith("only "):
+                    reason = "below minimum cleaned words"
+                elif reason.startswith("missing sections:"):
+                    reason = "missing required section"
+                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
 
+    def linked(dates_by_symbol: dict[str, list[pd.Timestamp]], symbols: set[str], entity_id: str | None) -> list[pd.Timestamp]:
+        """Event dates of the roster ticker's symbols that belong to its issuer at the event date."""
+        return [
+            date
+            for symbol in symbols
+            for date in dates_by_symbol.get(symbol, [])
+            if entity_id is None or _event_entity(tenure_by_symbol, symbol, date) == entity_id
+        ]
+
+    tickers_by_quarter: dict[int, set[str]] = {}
+    valid_tickers_by_quarter: dict[int, set[str]] = {}
+    release_gap_days: list[int | None] = []
     for ticker in measured_tickers:
         entity_id = roster_entity.get(ticker)
         symbols = aliases_by_entity.get(entity_id, {ticker}) if entity_id is not None else {ticker}
-        release_dates = [
-            date
-            for symbol in symbols
-            for date in release_dates_by_ticker.get(symbol, [])
-            if entity_id is None or _event_entity(tenure_by_symbol, symbol, date) == entity_id
-        ]
+        for date in linked(call_dates_by_ticker, symbols, entity_id):
+            tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
+        ticker_valid_dates = linked(valid_dates_by_ticker, symbols, entity_id)
+        for date in ticker_valid_dates:
+            valid_tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
+        release_dates = linked(release_dates_by_ticker, symbols, entity_id)
+        for date in ticker_valid_dates:
+            release_gap_days.append(min(((date - release).days for release in release_dates), key=abs) if release_dates else None)
         indices = [index for index in (_quarter_index(date) for date in release_dates) if index is not None]
         bounds = (max(2006 * 4, min(indices)), max(indices)) if indices else None
         if bounds is None or bounds[1] < bounds[0]:
             continue
-        valid_dates[ticker] = [
-            date
-            for symbol in symbols
-            for date in valid_dates_by_ticker.get(symbol, [])
-            if entity_id is None or _event_entity(tenure_by_symbol, symbol, date) == entity_id
-        ]
+        valid_dates[ticker] = ticker_valid_dates
         valid_indices = {index for index in (_quarter_index(date) for date in valid_dates[ticker]) if index is not None}
         expected = bounds[1] - bounds[0] + 1
         present = sum(bounds[0] <= index <= bounds[1] for index in valid_indices)
@@ -220,6 +306,17 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     values = pd.Series(ratios, dtype="float64")
     fixed_values = pd.Series(fixed_ratios, dtype="float64").dropna()
     eligible_values = pd.Series(eligible_ratios, dtype="float64").dropna()
+    shares = pd.Series(prepared_shares, dtype="float64")
+    by_quarter = [
+        {
+            "quarter": f"{index // 4}Q{index % 4 + 1}",
+            "tickers_with_call": len(tickers_by_quarter.get(index, set())),
+            "tickers_with_valid_call": len(valid_tickers_by_quarter.get(index, set())),
+            "roster_measured": len(measured_tickers),
+            "share_with_call": len(tickers_by_quarter.get(index, set())) / len(measured_tickers) if measured_tickers else None,
+        }
+        for index in sorted(set(tickers_by_quarter) | set(valid_tickers_by_quarter))
+    ]
     summary = {
         "denominator": "current roster tickers with earnings calls; call and release dates mapped to calendar reporting quarters and point-in-time issuer identity; predecessor symbols linked through CIK lineage; future releases excluded; floored at 2006Q1",
         "roster_tickers": len(roster_tickers),
@@ -233,8 +330,40 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
         "valid_calls": valid_calls,
         "malformed_calls": malformed,
         "rejected_by_reason": rejected_reasons,
+        "split_status_counts": status_counts,
+        "split_ok_rate": status_counts["ok"] / observed_calls if observed_calls else None,
+        "prepared_share_quantiles": {f"q{round(q * 100):02d}": float(shares.quantile(q)) for q in (0.05, 0.5, 0.95)} if len(shares) else {},
+        "grain": grain,
+        "coverage_by_calendar_quarter": by_quarter,
+        "as_of_vs_release_days": _release_gap_buckets(release_gap_days),
     }
     return summary, ratios, valid_dates
+
+
+def _source_findings(coverage: dict[str, Any], settings: Any) -> list[Finding]:
+    """Grain and split-quality findings on the paragraph source."""
+    grain = coverage["grain"]
+    findings: list[Finding] = []
+    for key, score, expected in (
+        ("duplicate_keys", 9, "unique (ticker, quarter, paragraph)"),
+        ("null_paragraph_rows", 9, "every row carries its source paragraph number"),
+        ("null_as_of_rows", 9, "every paragraph carries the call date"),
+        ("calls_with_multiple_as_of", 8, "one as_of per call"),
+        ("calls_missing_first_paragraph", 6, "every call starts at paragraph 1"),
+        ("calls_non_contiguous_paragraphs", 3, "paragraphs 1..n per call"),
+        ("ticker_dates_with_multiple_calls", 8, "one call per (ticker, as_of)"),
+    ):
+        if grain[key]:
+            findings.append(Finding.at(score, f"{key}={grain[key]} of {grain['calls']} calls / {grain['rows']} rows", expected, field=key))
+    ok_rate, ok_min = coverage["split_ok_rate"], float(settings.split_ok_rate_min)
+    if ok_rate is not None and ok_rate < ok_min:
+        findings.append(
+            Finding.at(7, f"split ok rate={ok_rate:.4f}", f">= {ok_min}", field="split_status", status_counts=coverage["split_status_counts"])
+        )
+    q05, q05_min = coverage["prepared_share_quantiles"].get("q05"), float(settings.prepared_share_q05_min)
+    if q05 is not None and q05 < q05_min:
+        findings.append(Finding.at(6, f"prepared word share q05={q05:.4f}", f">= {q05_min}", field="prepared_share"))
+    return findings
 
 
 def _feature_sample(context: Context, table: Table, columns: list[str], recent_sessions: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -293,6 +422,7 @@ def check_earnings_calls(
         )
 
     coverage, ratios, valid_dates = _coverage(context)
+    findings.extend(_source_findings(coverage, settings))
     available = [column for column in expected if column in live]
     recent_sessions = int(settings.recent_sessions)
     sample, latest = _feature_sample(context, spec, available, recent_sessions) if available else (pd.DataFrame(), pd.DataFrame())

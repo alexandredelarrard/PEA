@@ -2,8 +2,7 @@
 
 Each test seeds a real SQLite `DataStore`, recomputes the answer from an unprojected
 `store.load(table)` the way the old code did, and checks the projected read agrees:
-earnings-surprise plan, stored earnings-call quality sets (chunked, scoped), the
-`sp500_tickers` roster behind `load_identity`, and the CUSIP map cache.
+earnings-surprise plan, the `sp500_tickers` roster behind `load_identity`, and the CUSIP map cache.
 """
 
 from __future__ import annotations
@@ -13,18 +12,14 @@ from typing import Any
 
 import pandas as pd
 
-from src.constants.constants import CUSIP_TICKER_OVERRIDES, EARNINGS_CALL_SCORED_TAGS
-from src.data_extract.utils.behavioral import fetch_earnings_calls as fe
-from src.data_extract.utils.behavioral.utils_missing_quarters import stored_call_quarters
+from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.common.entity_lineage import ROSTER_COLUMNS
 from src.data_extract.utils.common.identity import build_identity, load_identity
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
-from src.utils.text_metrics import assess_earnings_call_sections
 
 CONFIG_DIR = "configs"
-_WORDS = " ".join(f"word{i}" for i in range(400))
 
 
 class _Context:
@@ -87,56 +82,6 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
     print("\n=== SANITY CHECK: earnings-surprise resume read ===")
     print(f"  projected read of 3 columns -> plan {plans[0]}; full read -> {expected}")
     print("  OK: identical fetch plan from the projected resume read")
-
-
-def _section_rows() -> pd.DataFrame:
-    """30 tickers (two 25-ticker chunks): a valid call, a call valid for 2 tickers in 3 (else an
-    empty prepared section), and an unscored tag."""
-    prepared, qa = EARNINGS_CALL_SCORED_TAGS[0], EARNINGS_CALL_SCORED_TAGS[1]
-    rows = []
-    for i in range(30):
-        ticker = f"T{i:02d}"
-        rows += [
-            {"ticker": ticker, "quarter": "2025Q1", "tag": prepared, "as_of": "2025-05-01", "text": _WORDS},
-            {"ticker": ticker, "quarter": "2025Q1", "tag": qa, "as_of": "2025-05-01", "text": _WORDS},
-            {"ticker": ticker, "quarter": "2025Q2", "tag": prepared, "as_of": "2025-08-01", "text": _WORDS if i % 3 else ""},
-            {"ticker": ticker, "quarter": "2025Q2", "tag": qa, "as_of": "2025-08-01", "text": _WORDS},
-            {"ticker": ticker, "quarter": "2025Q3", "tag": "participants", "as_of": "2025-11-01", "text": _WORDS},
-        ]
-    return pd.DataFrame(rows)
-
-
-def _full_read_quality(store: Any) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
-    """The old algorithm: one unprojected read, scored tags only, gate per (ticker, quarter)."""
-    df_all = store.load(Tables.earnings_call_sections)
-    df_scored = df_all[df_all["tag"].isin(EARNINGS_CALL_SCORED_TAGS)]
-    valid, malformed = set(), set()
-    for (ticker, quarter), df_call in df_scored.groupby(["ticker", "quarter"]):
-        ok = assess_earnings_call_sections(dict(zip(df_call["tag"].astype(str), df_call["text"], strict=False))).valid
-        (valid if ok else malformed).add((str(ticker), str(quarter)))
-    return valid, malformed
-
-
-def test_stored_call_quarters_match_the_full_read(sqlite_store: Any, monkeypatch: Any) -> None:
-    sqlite_store.save(Tables.earnings_call_sections, _section_rows())
-    expected_valid, expected_malformed = _full_read_quality(sqlite_store)
-    tickers = sorted({t for t, _ in expected_valid | expected_malformed})
-    loads = _spy_loads(monkeypatch, sqlite_store, Tables.earnings_call_sections.name)
-
-    valid, malformed = stored_call_quarters(_context(sqlite_store), tickers)
-    got_valid = {(t, q) for t, qs in valid.items() for q in qs}
-    got_malformed = {(t, q) for t, qs in malformed.items() for q in qs}
-    every_key = fe._existing_section_keys(_context(sqlite_store), None)
-    scoped_key = fe._existing_section_keys(_context(sqlite_store), ["T01", "T03", "ABSENT"])
-
-    assert (got_valid, got_malformed) == (expected_valid, expected_malformed)
-    assert every_key == expected_valid
-    assert scoped_key == {k for k in expected_valid if k[0] in {"T01", "T03"}}
-    assert {tuple(call["columns"]) for call in loads} == {("ticker", "quarter", "tag", "text")}
-    assert all(len(call["where"]["ticker"]) <= 25 for call in loads)
-    print("\n=== SANITY CHECK: stored earnings-call quality ===")
-    print(f"  {len(got_valid)} valid / {len(got_malformed)} malformed calls over {len(tickers)} tickers in {len(loads)} chunked reads")
-    print("  OK: chunked, projected and ticker-scoped reads give the full read's sets")
 
 
 def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any) -> None:

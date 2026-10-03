@@ -7,7 +7,6 @@ local:
     fails_deliver: "sec_fails_to_deliver"
     financial_notes: "sec_financial_notes"
     financial_statements: "sec_financial_statements"
-    call_transcripts: "call_transcripts"
     fundamentals_catalogue_subdir: "fundamentals"
   filename:
     extraction: "extraction_manifest.json"
@@ -16,4 +15,3 @@ local:
     fundamentals_exceptions_filename : "fundamentals_exceptions.json"
     registrant_cutover_filename : "sec/registrant_cutover.json"
     fundamentals_rosters_filename : "fundamentals_rosters.json"
-    

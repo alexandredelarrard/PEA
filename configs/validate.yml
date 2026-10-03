@@ -25,6 +25,10 @@ validate:
     drift_psi_warn: 0.25
     missingness_delta_warn: 0.10
     recent_sessions: 20
+    # Split quality of `earnings_call_sections` through src/utils/earnings_call_split.py. Measured
+    # on 585 defeatbeta calls: 99.5 % split `ok` (582; 3 no_qa), prepared word share q05 = 0.19.
+    split_ok_rate_min: 0.985
+    prepared_share_q05_min: 0.15
 
   defaults:
     redundancy_r: 0.985

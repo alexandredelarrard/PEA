@@ -1,6 +1,6 @@
 """
-Shared anti-429 HTTP toolkit (src/utils/polite_http.py) used by the earnings-call, Wikipedia
-(and, for the proxy resolver, Google Trends) extractors. Tests the transport-agnostic policy:
+Shared anti-429 HTTP toolkit (src/utils/polite_http.py) used by the Sharadar client
+(and, for the proxy resolver, Google Trends). Tests the transport-agnostic policy:
 retry + backoff honouring Retry-After, a PER-HOST run-wide slowdown ratcheted on 429 (so one
 host's throttle can't slow another), get_text/get_json, and the BYO-proxy env resolver.
 """
@@ -29,15 +29,15 @@ def test_http_get_honours_retry_after_and_ratchets_host_pace(monkeypatch):
     waits = []
     monkeypatch.setattr(ph.time, "sleep", lambda s: waits.append(s))
 
-    r = ph.http_get("https://www.fool.com/x", retries=3, backoff=1.0)
+    r = ph.http_get("https://data.nasdaq.com/x", retries=3, backoff=1.0)
     assert r is not None and r.status_code == 200 and r.text == "OK", "should retry past 429"
     assert waits and waits[0] >= 2.0, f"must honour Retry-After=2s (waited {waits})"
-    assert ph.pace_mult("https://www.fool.com/y") > 1.0, "429 must ratchet the host's pace"
+    assert ph.pace_mult("https://data.nasdaq.com/y") > 1.0, "429 must ratchet the host's pace"
 
     print("\n=== SANITY CHECK: polite_http 429 handling ===")
     print(
-        f"  429 -> honoured Retry-After ({waits[0]:.1f}s), ratcheted fool.com pace to "
-        f"x{ph.pace_mult('https://www.fool.com/y'):.1f}, then 200 on retry."
+        f"  429 -> honoured Retry-After ({waits[0]:.1f}s), ratcheted data.nasdaq.com pace to "
+        f"x{ph.pace_mult('https://data.nasdaq.com/y'):.1f}, then 200 on retry."
     )
 
 
@@ -50,7 +50,7 @@ def test_pace_is_per_host(monkeypatch):
     print(
         "  per-host isolation: api-a slowed to "
         f"x{ph.pace_mult('https://api-a.com/z'):.1f}, api-b still x1.0 (Google's throttle "
-        "won't slow Wikimedia). Validated."
+        "won't slow Sharadar). Validated."
     )
 
 
@@ -82,19 +82,19 @@ def test_ssl_failure_is_explained_once_per_host(monkeypatch, caplog):
     monkeypatch.setattr(ph, "session", lambda: types.SimpleNamespace(get=_ssl_boom))
 
     with caplog.at_level("WARNING", logger=ph.logger.name):
-        assert ph._raw_get("https://api.roic.ai/v2/x", impersonate=False) is None
-        assert ph._raw_get("https://api.roic.ai/v2/y", impersonate=False) is None
+        assert ph._raw_get("https://api.example.org/v2/x", impersonate=False) is None
+        assert ph._raw_get("https://api.example.org/v2/y", impersonate=False) is None
         assert ph._raw_get("https://huggingface.co/z", impersonate=False) is None
 
     warns = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    roic = [w for w in warns if "api.roic.ai" in w]
-    assert len(roic) == 1, f"one warning per HOST, not per request (got {len(roic)})"
-    assert "configure_corporate_ca" in roic[0], "the warning must name the fix"
+    api = [w for w in warns if "api.example.org" in w]
+    assert len(api) == 1, f"one warning per HOST, not per request (got {len(api)})"
+    assert "configure_corporate_ca" in api[0], "the warning must name the fix"
     assert any("huggingface.co" in w for w in warns), "a second host must still be reported"
 
     print("\n=== SANITY CHECK: SSL failure diagnostics ===")
     print(
-        f"  2 failing calls to api.roic.ai -> 1 WARNING naming configure_corporate_ca(); "
+        f"  2 failing calls to api.example.org -> 1 WARNING naming configure_corporate_ca(); "
         f"a different host still reported. {len(warns)} warnings total. Validated."
     )
 

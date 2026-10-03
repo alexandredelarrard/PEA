@@ -1150,12 +1150,14 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- behavioral / text / embeddings                         #
     # ----------------------------------------------------------------- #
-    # FREE earnings-call transcripts (Motley Fool), split into high-signal sections
-    # (prepared_remarks / qa / participants). One row per ticker / fiscal quarter /
-    # section; `as_of` = call date, `text` = the prose. NOT projected: `text` IS the
-    # payload the incremental scoring pass needs.
+    # RAW defeatbeta earnings-call transcripts, ONE ROW PER SOURCE PARAGRAPH, keyed
+    # (ticker, fiscal `quarter` label e.g. '2026Q2', `paragraph` = the source
+    # paragraph_number). Columns: `as_of` (the real call date, NOT NULL), `transcript_id`,
+    # `speaker`, `content`. Nothing is split here: prepared remarks / Q&A are cut at
+    # aggregate time in data_aggregate via `src/utils/earnings_call_split.py`, so a
+    # splitter fix needs no refetch. NOT projected: `content` IS the payload.
     earnings_call_sections = Table(
-        "earnings_call_sections", ("ticker", "quarter", "tag"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
+        "earnings_call_sections", ("ticker", "quarter", "paragraph"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
     )
     # Per-call sentiment / text-metrics cache (FinBERT-tone + LM lexicon), one row per
     # ticker / fiscal quarter / section. Holds the EXPENSIVE, call-intrinsic scores (tone

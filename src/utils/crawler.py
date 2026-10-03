@@ -1,4 +1,4 @@
-"""Stateless HTTP crawler for rate-limited public endpoints (Motley Fool, Wikimedia, ...).
+"""Stateless HTTP crawler for rate-limited public endpoints.
 
 Each GET is independent: no cookie jar, a rotated real-browser TLS impersonation (curl_cffi) and header set per
 request, short exponential backoff honouring Retry-After plus `polite_http`'s per-host slowdown. On a block

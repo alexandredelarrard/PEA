@@ -3,7 +3,7 @@
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.utils.behavioral.fetch_earnings_calls import fetch_earnings_calls
+from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import extract_earnings_calls
 from src.utils.step import Step
 
 
@@ -13,6 +13,6 @@ class StepExtractBehavioral(Step):
 
     def run(self, tickers: list[str]) -> None:
 
-        # Earnings-call transcripts -> earnings_call_sections.
-
-        fetch_earnings_calls(self._context, tickers=tickers)
+        # Earnings-call transcripts -> earnings_call_sections; the split, FinBERT sentiment,
+        # text KPIs and embeddings are built at aggregate time from these paragraphs.
+        extract_earnings_calls(self._context, self._config.earnings_calls, tickers=tickers)

@@ -35,11 +35,8 @@ from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
-from src.data_extract.utils.behavioral.fetch_earnings_calls import (
-    download_earnings_calls as _download_earnings_calls,
-)
-from src.data_extract.utils.behavioral.fetch_earnings_calls import (
-    ingest_all_earnings_calls as _ingest_earnings_calls,
+from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
+    extract_earnings_calls as _extract_earnings_calls,
 )
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
@@ -625,23 +622,12 @@ def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> No
 
 # --- Behavioral (retail attention) ---
 @cli.command(
-    help="DOWNLOAD earnings-call transcripts to disk: HuggingFace backbone parquet + Motley Fool quote-page discovery + MF HTML (no DB). HEAVY."
+    help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
+    "paragraph. Incremental: an unchanged source file is a no-op; -F compares every call."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def download_earnings_calls(config_path: str, tickers: str | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    _download_earnings_calls(context, tickers=_tickers(context, tickers))
-
-
-@cli.command(
-    help="INGEST cached earnings-call transcripts (HF parquet + MF HTML) -> "
-    "earnings_call_sections. Incremental: skips (ticker,quarter) already ingested; "
-    "--force re-parses everything. Runs after download-earnings-calls."
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option("-F", "--force", is_flag=True, default=False, help="Re-ingest all cached transcripts (ignore what's already in the DB).")
-def ingest_earnings_calls(config_path: str, tickers: str | None, force: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    _ingest_earnings_calls(context, tickers=_tickers(context, tickers), force=force)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def extract_earnings_calls(config_path: str, tickers: str | None, full: bool) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    _extract_earnings_calls(context, config.earnings_calls, full=full, tickers=_tickers(context, tickers))

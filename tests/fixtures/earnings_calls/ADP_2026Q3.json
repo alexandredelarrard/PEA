@@ -1,0 +1,86 @@
+{
+ "symbol": "ADP",
+ "fiscal_year": 2026,
+ "fiscal_quarter": 3,
+ "report_date": "2026-04-29",
+ "transcripts_id": null,
+ "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+ "case": "substitute analyst ('on for Bryan'); un-named follow-up",
+ "truncation": "kept 35 of 50 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
+ "truth": {
+  "status": "ok",
+  "first_qa_turn": {
+   "paragraph_number": 5,
+   "speaker": "Operator",
+   "starts_with": "[Operator Instructions] Our first question comes from Bryan Bergin"
+  },
+  "analysts": [
+   "Jared Levine",
+   "Mark Marcon",
+   "Jacob Cody Smith",
+   "Dan Dolev",
+   "Tien-Tsin Huang",
+   "Scott Wurtzel",
+   "Jason Kupferberg"
+  ],
+  "management": [
+   "Matthew Keating",
+   "Maria Black",
+   "Peter Hadley"
+  ],
+  "tags": [
+   {
+    "person": "Jared Levine",
+    "contains": "Employer Services retention rate",
+    "tag": "question"
+   },
+   {
+    "person": "Mark Marcon",
+    "contains": "with regards to the financials",
+    "tag": "question"
+   },
+   {
+    "person": "Maria Black",
+    "contains": "broad-based strength",
+    "tag": "answer"
+   }
+  ]
+ },
+ "paragraphs": [
+  {"paragraph_number": 1, "speaker": "Operator", "content": "Good morning. My name is Michelle, and I'll be your conference operator. At this time, I would like to welcome everyone to ADP's Third Quarter Fiscal 2026 Earnings Call. I would like to inform you that this conference is being recorded. [Operator Instructions]. I will now turn the conference over to Matt Keating, Vice President, Investor Relations. Please go ahead."},
+  {"paragraph_number": 2, "speaker": "Matthew Keating", "content": "Thank you, Michelle, and welcome everyone to ADP's Third Quarter Fiscal 2026 Earnings Call. Participating today are Maria Black, our President and CEO; and Peter Hadley, our CFO. Earlier this morning, we released our results for the quarter, our earnings materials are available on the SEC's website and our Investor Relations website at investors.adp.com, where you will also find the investor presentation that accompanies today's call. During our call, we [...] SEC for additional information on factors that could cause actual results to differ materially from our current expectations. I'll now turn it over to Maria."},
+  {"paragraph_number": 3, "speaker": "Maria Black", "content": "Thank you, Matt. This morning, we reported another strong quarter of results with revenue growth, margin expansion and EPS growth all coming in ahead of our expectations and reflecting the significant progress we are making across our strategic priorities at a pivotal time for our industry. Before we get into the details of our performance, I want to share a few thoughts on why this is a defining moment for [...] and we know just as deeply that ADP is strongly positioned to capture the opportunity ahead. And now I'll turn the call over to Peter."},
+  {"paragraph_number": 4, "speaker": "Peter Hadley", "content": "Thank you, Maria, and good morning, everyone. I will start by providing some more color on our third quarter results, and we'll then update our fiscal 2026 outlook. This morning, we reported strong third quarter results that included 7% revenue growth, 80 basis points of adjusted EBIT margin expansion and 10% adjusted EPS growth. These results were all ahead of our expectations, and we are adjusting our full year guidance [...] to deliver sustainable revenue growth, margin expansion and shareholder returns over time. Thank you. And I'll now turn it back to the operator for Q&A."},
+  {"paragraph_number": 5, "speaker": "Operator", "content": "[Operator Instructions] Our first question comes from Bryan Bergin with TD Cowen."},
+  {"paragraph_number": 6, "speaker": "Jared Levine", "content": "This is actually Jared Levine on for Bryan today. I wanted to start in terms of the implied 4Q guidance. I know you're not guiding FY '27 at this time, but anything to call out in terms of using that implied 4Q revenue growth rate as we think about FY '27 growth year? ."},
+  {"paragraph_number": 7, "speaker": "Peter Hadley", "content": "Thank you for the question. Yes. Look, I mean, we guide to a range of outcomes. So the guidance that we've increased our revenue guidance. We're very happy with that increased our margin guidance and our EPS guidance. I think there's still a lot to do in the fourth quarter with respect to bookings, with respect to retention in the PEO. So we're not really going to be more precise [...] only specific point I would call out with respect to being different to Q3, but we feel confident with our guide and our exit point."},
+  {"paragraph_number": 8, "speaker": "Jared Levine", "content": "Understood. And then good to hear about the record 3Q Employer Services retention rate. Can you dig into if that was broad-based or specific any areas and kind of where you still see areas for opportunity to improve that retention rate?"},
+  {"paragraph_number": 9, "speaker": "Maria Black", "content": "Yes. Jared, it's Maria. And equally as pleased with the with the result in retention. It exceeded our expectations and we raised the full year guide as a result of that, and we feel that overall, it was broad-based strength. The notable improvements that we saw across international compliance, enterprise, small business, really saw strength in return and services. It actually hit a new quarterly record for us. So it [...] how we engage with our clients, some of the things that we discussed during the prepared remarks. So really pleased with the result in retention."},
+  {"paragraph_number": 10, "speaker": "Operator", "content": "Our next question comes from Mark Marcon with Baird."},
+  {"paragraph_number": 11, "speaker": "Mark Marcon", "content": "Congratulations on the strong results. I'm wondering if you can talk a little bit about the bookings. You didn't change the forecast range for the year, and it's still relatively wide with 1 quarter to go. Can you just discuss a little bit about what you're seeing with regards to the bookings in the third quarter and year-to-date? And specifically, any areas that you're seeing really good results in, in [...] seeing kind of a 50-50 mix in terms of bookings as it relates to upsells versus brand new logos? And then I've got a follow-up."},
+  {"paragraph_number": 12, "speaker": "Maria Black", "content": "Okay. Thanks, Mark, and good to hear from you. Happy to comment on the overall demand environment and bookings. So first and foremost, we were very pleased with what we saw with respect to bookings in the third quarter. We built on the momentum that we had the first couple of quarters, the first half of the year. So pleased with where we sit heading into the fourth quarter. But [...] that's the -- that's what we have as a backdrop, and we're pretty excited with what we need to get done in the fourth quarter."},
+  {"paragraph_number": 13, "speaker": "Mark Marcon", "content": "That's excellent color, Maria. And then with regards to the financials, One, you mentioned how AI is taking you more efficient. And I couldn't help but notice that the R&D or the program costs were relatively flattish despite the nice increase in terms of revenue. And I'm wondering if you can talk a little bit about some of the efficiencies that you're gaining across the board from AI and particularly [...] new product development and the tools that you might be employing there, both in terms of reduced expenses, but also speeding up the development process."},
+  {"paragraph_number": 14, "speaker": "Peter Hadley", "content": "Thank you, Mark. Yes, look, I think the R&D cost line, just to be clear, has obviously the usual accounting treatment. So again, there's capitalization, there's amortization and so on and so forth. \"I'm not sure what you're looking at, but at least quarter-to-quarter or sequentially then one may not move that much. We have a continued investment. We also allocate within priorities. So we've certainly pivoted more of our [...] P&L. Some of that can be accounting and some of that can be reallocation of dollars either within R&D or between R&D and operating costs."},
+  {"paragraph_number": 15, "speaker": "Operator", "content": "Our next question comes from Jacob Smit with Guggenheim Securities."},
+  {"paragraph_number": 16, "speaker": "Jacob Cody Smith", "content": "Can you provide an update on your traction in the quarter? And just in general, with [indiscernible] unique architecture compared to with standard across legacy HCM platforms. Are we seeing Lyric open up new use cases or customer segments that weren't really serviceable before? And also on a related note, we've heard from enterprise customers that Lyric is being deployed in some cases as the best-of-breed payroll and compliance layer [...] these existing HCM platforms. Can you just talk about how prevalent that buying motion might be whether that's expanding the addressable market beyond pure displacements?"},
+  {"paragraph_number": 17, "speaker": "Maria Black", "content": "Yes. Thanks, Jacob. I appreciate the questions around Lyric. As always, we are incredibly excited about the momentum of Lyric. We didn't call it out in the bookings commentary, but certainly pleased with what we've seen in terms of the pipeline build and the execution on Lyric, call it, year-to-date, had a couple of examples, obviously, in the prepared remarks on the impact of AI within Lyric and some of [...] probably as we head into '27, but really excited to the places that it's taking us and it's definitely changing the conversation in the market."},
+  {"paragraph_number": 18, "speaker": "Jacob Cody Smith", "content": "And just a quick follow-up, too. As Lyric bookings ramp in the large enterprise, how are you thinking about scaling implementation capacity over time, whether that's investing internally or potentially working with system integrated partners in the future?"},
+  {"paragraph_number": 19, "speaker": "Maria Black", "content": "Yes. Jacob, I'm so glad you asked because I left out that part, which is an important piece. The answer to the question is both. So we are scaling internally. But we also have this ability to go to market with system integrators in a more meaningful way than we have in the past. So we've had relationships, both with mid-tier system integrators as well as call it, the more [...] to solve in real time for the future of work. So a big piece of our strategy, really excited to see where it leads us."},
+  {"paragraph_number": 20, "speaker": "Operator", "content": "Our next question comes from Dan Dolev with Mizuho."},
+  {"paragraph_number": 21, "speaker": "Dan Dolev", "content": "Maria. I think Peter, great results. Congrats, well deserved. I wanted to ask about, I know there was a question about AI and R&D, but more about -- I think your competitor mentioned that there was some difficulty selling software modules. I just want to see from your perspective how this looks? I think last time we talked about it, there was no problem whatsoever. Just wanted to sort of check the box on this one."},
+  {"paragraph_number": 22, "speaker": "Maria Black", "content": "Yes, it's a great question. I'm not sure who entirely you're referring to. But certainly from our end, based on our pipelines and our results and again, spending times with our clients, both at the rethink event as well as our meeting of the minds event. I would tell you that software is alive and well, especially core function type of companies, and that's exactly where HCM fits in. Again, [...] is alive and well, definitely a core function and not something that can be replicated easily by any of these new entrants, if you will."},
+  {"paragraph_number": 23, "speaker": "Dan Dolev", "content": "Well, we agree. Congrats."},
+  {"paragraph_number": 24, "speaker": "Operator", "content": "Our next question comes from Tien-Tsin Huang with JPMorgan."},
+  {"paragraph_number": 25, "speaker": "Tien-Tsin Huang", "content": "Just thinking about the outlook revision up and the good results here. Can we go through quickly the attribution of what's driving the change the outlook? It seems like it's higher balances, some improvement in retention is the majority of it? Did I catch that? I just wanted to make sure I covered the -- we covered that."},
+  {"paragraph_number": 26, "speaker": "Peter Hadley", "content": "Yes. Thanks, Tien-Tsin, for the question. Yes, we're very pleased to increase the outlook. I think part of that is obviously the strong performance that we've delivered in Q3. The balance growth, we've increased our balance growth there. We see solid sort of underlying revenue growth opportunity in both PEO and and in Employer Services exiting Q3 going into Q4. Some of that is retention. As you mentioned, some of [...] a little larger than we contemplated for Q3. We're not conflating the same level of contribution from FX to our revenues in the fourth quarter."},
+  {"paragraph_number": 27, "speaker": "Tien-Tsin Huang", "content": "Okay. Perfect. We're going through that, and then the pricing is definitely emerging that you're able to see more value. Maybe just my somewhat related to that, just thinking about competition and bookings. I think Mark asked about it well. But any change in competitive intensity? I know there's a lot of focus here on some of the starts and maybe some of the more AI native or digital native [...] you're seeing? I know your bookings is reaffirmed, which is great. We'd love to get a little more on what's going on in the ground."},
+  {"paragraph_number": 28, "speaker": "Maria Black", "content": "Yes. So it's a great question. I certainly understand the nature of it. I think with respect to any new type of entrants and [indiscernible] and in term of anything that would have entered the market in the last, I don't know, a quarter or 2. I wouldn't say we're seeing anything new and exciting there that's increasing levels of pressure or competition. I would say it's always competitive, especially, [...] go through each one of the markets, but I would say it's relatively competitive, which is exactly the type of sport we like to play."},
+  {"paragraph_number": 29, "speaker": "Operator", "content": "Our next question comes from Scott Wurtzel with Wolf Research."},
+  {"paragraph_number": 30, "speaker": "Scott Wurtzel", "content": "Just one for me. The commentary, I think, on ADP assist. It was great to hear, but I think more broadly now that you've had some of these products and AI features in the market for some time now. What is sort of the overall feedback that you've been hearing from clients regarding these products? And is there anything potentially more on the AI front from a product perspective that clients are looking for?"},
+  {"paragraph_number": 31, "speaker": "Maria Black", "content": "So I'll start, and certainly, Peter, if you have anything to add. I would tell you, Scott, that the feedback is incredible. I cited a couple of examples. I probably could have gone on for 30 more off the top of my head. In terms of use cases, the impact that it's making. I think it speaks volumes. You see it in the client satisfaction. You see it in the [...] it's coming from and a lot more that we can bring to the clients, and we look forward to doing that throughout the coming years."},
+  {"paragraph_number": 32, "speaker": "Operator", "content": "Our next question comes from Jason Kupferberg with Wells Fargo."},
+  {"paragraph_number": 33, "speaker": "Jason Kupferberg", "content": "So obviously, still a lot of debate in the market about how AI could impact seat-based revenue models. I think ADP has said in the past, a 1% change in pace per control impacts ES revenue by about 25 bps. So can we infer from that, that only about 25% of the ES business, excluding float is priced on a per employee per month basis? Or is there more nuance [...] revenues are more tied to client head count there. But maybe if you can clarify all that with some numbers, that would be really helpful."},
+  {"paragraph_number": 34, "speaker": "Peter Hadley", "content": "Thanks for the question, Jason. No, on the employee services side, we have a higher propensity or proportion, if you like, of our revenue that you see this than 25%. So in the down market, it's actually lower than that or about 80% of our revenues are base fee. We have other revenue models in the downmarket in Retirement Services, for example, Insurance Services is more of a commission model [...] say the PEO model probably is less directly exposed to to the seat-based pricing mechanism than maybe the mid-market and upmarket of the ES space."},
+  {"paragraph_number": 35, "speaker": "Jacob Cody Smith", "content": "Okay. So that's good color. And I wanted to just come back on bookings. I know we're reiterating the guide here. It feels like the tone qualitatively all year has been consistently just wanted to get your take on relative confidence in kind of the lower end versus the higher end of the 4% to 7%. I know it can kind of come down to the wire during the last quarter of the fiscal year, but just how you're feeling about that with 2 months to go?"}
+ ]
+}

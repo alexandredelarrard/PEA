@@ -1,0 +1,71 @@
+{
+ "symbol": "COIN",
+ "fiscal_year": 2026,
+ "fiscal_quarter": 2,
+ "report_date": "2026-07-30",
+ "transcripts_id": 3935939,
+ "source": "HF defeatbeta/yahoo-finance-data data/US/stock_earning_call_transcripts.parquet",
+ "case": "live-on-X format: the CFO's welcome turn hands to the first question; no prepared remarks",
+ "truncation": "kept 32 of 72 paragraphs; paragraphs over 95 words keep the first 70 and last 25 words joined by ' [...] '",
+ "truth": {
+  "status": "no_prepared",
+  "first_qa_turn": {
+   "paragraph_number": 2,
+   "speaker": "Alesia Haas",
+   "starts_with": "Hey, everyone. Thanks for joining us live on X today"
+  },
+  "analysts": [
+   "Eric Pan",
+   "Owen Lau",
+   "Speaker 5",
+   "Ken Worthington",
+   "Austin Hankwitz",
+   "Alex Markgraff"
+  ],
+  "management": [
+   "Alesia Haas",
+   "Brian Armstrong"
+  ],
+  "tags": [
+   {
+    "person": "Eric Pan",
+    "contains": "CLARITY Act",
+    "tag": "question"
+   }
+  ]
+ },
+ "paragraphs": [
+  {"paragraph_number": 1, "speaker": "Speaker 0", "content": "During today's discussion, we may make forward-looking statements that may vary materially from our actual results. Please refer to our SEC filings and earnings presentation for information concerning risks, uncertainties, and other factors that could cause these results to differ. In addition, our discussion today may include certain non-GAAP financial measures. Reconciliations to the most directly comparable GAAP financial measures are provided in the earnings presentation on our investor relations website."},
+  {"paragraph_number": 2, "speaker": "Alesia Haas", "content": "Hey, everyone. Thanks for joining us live on X today. I'm Alesia Haas, CFO of Coinbase, and I'm here with our co-founder and CEO, Brian Armstrong. We are also joined today by a group of independent and institutional research analysts. We're excited to connect directly with you, our customers, our community, our shareholders, to talk about our quarter and answer your questions. We're going to take our first question from an independent analyst named Eric Pan. Eric, over to you."},
+  {"paragraph_number": 3, "speaker": "Eric Pan", "content": "Hey there, Eric Pan, Ericnomics here. Great to see you guys again since the System Update in New York. My question is around the CLARITY Act. As the CLARITY Act is at the one-yard line and now out for the Senate floor vote, prediction markets and Galaxy Research have odds of it passing around roughly 30%, and August recess is right around the corner. I really want to be optimistic [...] be more careful, while kind of being in this limbo between CFTC and SEC? Then two, us, the everyday consumers, if it doesn't get passed?"},
+  {"paragraph_number": 4, "speaker": "Brian Armstrong", "content": "Yeah, I'll take that one. First off, I am pretty optimistic that it'll get to a full Senate floor vote. There's a lot of last-minute negotiations happening, which to me is a sign that everyone is invested in getting something over the line. There's just thousands and thousands of hours that have been spent by the Senate staff and the senators themselves on getting a really good work product. Like [...] actually a good thing. It tends to get people to the table at the last minute. There's been lots of phone calls happening this week."},
+  {"paragraph_number": 5, "speaker": "Brian Armstrong", "content": "Of course, there's more steps that would need to happen for it to become law after the Senate floor vote, and you can never say 100% with these things. Anyway, I'm optimistic it can get done. By the way, a big shout-out to the Stand with Crypto advocates who sent, I think, over 1 million emails and phone calls to their representatives to help get that through. Your question was [...] is that we already do many of the things that would be required by the CLARITY Act as just sort of a good best practice."},
+  {"paragraph_number": 6, "speaker": "Brian Armstrong", "content": "More importantly maybe, Chair Atkins and Selig at the SEC and the CFTC respectively, they have publicly said that they're poised to pass clear rules whether CLARITY Act passes or not. I think they've been kind of in a holding pattern. I don't speak for them, but I think they're in a bit of a holding pattern, waiting to see what happens with CLARITY Act, and if it doesn't go [...] make longer-term investments. It's really the American consumers, as you mentioned, who would lose if CLARITY Act doesn't pass. I think Coinbase would be fine."},
+  {"paragraph_number": 7, "speaker": "Eric Pan", "content": "Thank you."},
+  {"paragraph_number": 8, "speaker": "Alesia Haas", "content": "We are moving to our next question, and this is going to come from institutional research analyst Owen Lau at Clear Street."},
+  {"paragraph_number": 9, "speaker": "Owen Lau", "content": "Thank you, Alesia, and also Brian. Could you please talk about the reason Coinbase joining Open USD? Some people think OUSD, it's a major threat to USDC. Obviously, OUSD, it's not even launched yet, so there are no hard figures we can compare with. Why does Coinbase participate in a competing stablecoin? In relation to that, does it increase your leverage to negotiate the contract with Circle? I actually saw that it is auto-renewed on the same terms, but I keep getting this question. Do you need to have partnerships for negotiation? Thanks."},
+  {"paragraph_number": 10, "speaker": "Alesia Haas", "content": "Can I address the partnership with Circle first, Brian, and then we can talk about our platform, if that's okay with you?"},
+  {"paragraph_number": 11, "speaker": "Brian Armstrong", "content": "Yeah, sure."},
+  {"paragraph_number": 12, "speaker": "Alesia Haas", "content": "We have already met the conditions for the Circle contract to renew, so it will renew on the same terms. I want to take away any ambiguity about that for the market, Owen. We will continue to work on growing USDC, partnering with Circle, and driving that ecosystem. Now, why OUSD? Brian, over to you."},
+  {"paragraph_number": 13, "speaker": "Brian Armstrong", "content": "The short reason is that we're a multi-stablecoin platform. We want to provide the stablecoins that all of our customers want to use, and where possible, we want to strike good economic arrangements with that. Now, we have a great partnership with Circle and USDC. We have arguably the strongest economics from that point of view, but we want to make sure that we strike economic deals with every major [...] just creates additional business opportunities and revenue opportunities for us to be a multi-stablecoin platform. Not to mention, I guess, FX trading, things like that."},
+  {"paragraph_number": 14, "speaker": "Owen Lau", "content": "Thank you."},
+  {"paragraph_number": 15, "speaker": "Alesia Haas", "content": "All right. Next question. Brian Jung."},
+  {"paragraph_number": 16, "speaker": "Speaker 5", "content": "Hey, Brian. Hey, Alesia. It's good to see you guys again. I am really curious about your relationship right now that you have with retail. You had your appearance on Market Bubble. You announced Cobie is taking over the Base App. I feel like these are some early signals that Coinbase here wants to really reconnect with the crypto native users. Can you just tell me more about your thoughts on this and what made you really take this kind of pivot recently?"},
+  {"paragraph_number": 17, "speaker": "Brian Armstrong", "content": "Yeah. We have lots of different groups that like to use Coinbase and build on top of the Base chain is even probably a broader group. We try to make an effort to connect with all of them. It's really a pretty diverse group of people that use Coinbase, right? There's the largest G-SIB banks in the world are building on our infrastructure. We also are having AI agents spin [...] of course, there is this crypto native community that you mentioned. That's a very important constituency that we go connect with. They're more internet native."},
+  {"paragraph_number": 18, "speaker": "Brian Armstrong", "content": "Sometimes, I have to make sure I'm 43 now, so I have to get in the weeds on some of the lingo and the norms and whatnot. We have great people on our team to go speak to all of these different constituencies with more depth than I have. You mentioned Cobie. He's one of the folks that just joined recently, and I think he comes from that community, which is really good. I'll continue to go on podcasts that speak to all these different groups, including the crypto native community."},
+  {"paragraph_number": 19, "speaker": "Speaker 5", "content": "I appreciate that. Thanks."},
+  {"paragraph_number": 20, "speaker": "Brian Armstrong", "content": "Yeah."},
+  {"paragraph_number": 21, "speaker": "Alesia Haas", "content": "Thank you. All right. Next question from Ken Worthington."},
+  {"paragraph_number": 22, "speaker": "Ken Worthington", "content": "Hi, Brian and Alesia. Nice seeing you both, thank you for letting me participate here. There were a number of departures from your senior leadership team this quarter. Why did you have these high-profile changes in a short period of time? What is the strategy with regard to HR, faith, legal, and institutional level with new leaders?"},
+  {"paragraph_number": 23, "speaker": "Brian Armstrong", "content": "Yeah. You broke up there for a little bit, I think I got the gist of it. You mentioned strategy. There's nothing that's changing about the strategy, I guess what I'd say is that one of the things I'm most proud about Coinbase is we have a really deep bench of talent, and we have a really good succession planning process. We've had lots of folks that are long tenured. [...] step up into these roles, and I think it's really a strength of ours. Yeah, I'm excited to see what that turns out to be."},
+  {"paragraph_number": 24, "speaker": "Alesia Haas", "content": "Yeah, I just want to underpin my excitement around the bench of talent that we have and all of the folks that you have been introduced to, Dominique, that will lead our people function, Molly leading our new legal function, or Liz. Each of them has been groomed by the outgoing leaders, and I think that we are just excited for next generation of talent. These were all individual decisions, there's nothing from a strategy standpoint to read into these changes. All right. Next question. Austin Hankwitz."},
+  {"paragraph_number": 25, "speaker": "Austin Hankwitz", "content": "Hey, y'all. How's it going? Austin Hankwitz here, co-host of the Rich Habits Podcast and head analyst at Grit Capital. Thanks again so much for letting me tag along. Brian, you all said last quarter that customers don't choose Coinbase because you're the cheapest. They choose you because you're the most trusted. You also said over 90% of agentic stablecoin transaction volume settles on Base, but an AI agent has [...] structurally now push Coinbase toward competing on price in a way that maybe the consumer business never had to? Would love to get your take."},
+  {"paragraph_number": 26, "speaker": "Brian Armstrong", "content": "Well, I'm glad you're thinking about how we're going to serve AI agents as customers along with humans, which I've been thinking a lot about as well. I think the short answer to your question is that actually, I think AI agents are probably going to care about a similar set of things that humans would. Certainly, price is one of those factors, and Base actually delivers sub $0.01, and [...] compliant and has good uptime, just like they might choose AWS or some kind of cloud vendor for different types of infrastructure you could imagine."},
+  {"paragraph_number": 27, "speaker": "Brian Armstrong", "content": "Long way of saying, I think trust will continue to be important in that world, and we're going to be rolling out the red carpet for AI agents and make sure that we're serving them appropriately."},
+  {"paragraph_number": 28, "speaker": "Austin Hankwitz", "content": "Love it."},
+  {"paragraph_number": 29, "speaker": "Alesia Haas", "content": "All right. Our next question, Alex Markgraff from KeyBanc Capital Markets."},
+  {"paragraph_number": 30, "speaker": "Alex Markgraff", "content": "Hey, Brian. Hey, Alesia. Thanks for doing this and including me. Coinbase has launched many new products since December 2025. I think the product velocity has certainly stepped up. I am curious to understand how the team is thinking about driving cross-product adoption and specifically bringing new users in through various entry points that are newer products to the platform. It would be helpful just to understand the strategy there and then if there is any detail on sort of marketing dollar allocation as you think about that approach would be helpful. Thanks."},
+  {"paragraph_number": 31, "speaker": "Alesia Haas", "content": "All right. Why don't I start on this one? Our whole strategy starts with providing safe storage of customer assets and driving our assets on platform. We find when customers store with us, they transact with us. When we get to our growth marketing strategy, it really looks to what product is meeting the market need, and where do we see activity coming from in our retail customer base? Currently, [...] signals that customers who are engaging with these new products, for example, prediction markets, are also driving incremental spot trading volume. We're not seeing cannibalization."},
+  {"paragraph_number": 32, "speaker": "Alesia Haas", "content": "These early days are actually indicating that we're seeing incremental trading coming as we then cross-sell and have more customers adopt more products on our platform."}
+ ]
+}

@@ -1,4 +1,4 @@
-"""Cache, read and incremental-state helpers for the SEC bulk data sets and the earnings-call transcript cache.
+"""Cache, read and incremental-state helpers for the SEC bulk data sets.
 
 Downloads stream to a `.part` file and rename on success; tab-separated zips are read through
 `read_zip_tables`; `pending_periods` / `mark_processed` decide which cached periods a run re-parses;

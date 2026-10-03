@@ -190,11 +190,27 @@ def score_earnings_calls(
     return earliest
 
 
-def acknowledge_earnings_call_invalidations(context: Context) -> int:
-    """Mark malformed-source refreshes handled only after the cube write succeeds.
+def _scorable_keys(context: Context, keys: pd.DataFrame) -> set[tuple[str, str, str]]:
+    """(ticker, quarter, tag) of `keys` that `score_earnings_calls` would score: the call is
+    stored, splits `ok`, passes the quality gate and has a cleaned text for the tag."""
+    paragraphs = load_paragraphs(context.store, sorted(keys["ticker"].astype(str).unique()))
+    if paragraphs is None or paragraphs.empty:
+        return set()
+    calls = keys[["ticker", "quarter"]].astype(str).drop_duplicates()
+    paragraphs = paragraphs.merge(calls, on=["ticker", "quarter"], how="inner")
+    return {(ticker, quarter, tag) for ticker, quarter, _as_of, quality in _valid_calls(paragraphs) for tag in quality.cleaned_sections}
 
-    A crash before acknowledgement leaves the marker pending, so the next run repeats
-    the same inclusive repair instead of losing the historical correction.
+
+def acknowledge_earnings_call_invalidations(context: Context) -> int:
+    """Mark refresh markers handled after the cube write succeeds, except those of calls that
+    are still to be scored.
+
+    A crash before acknowledgement leaves the marker pending, so the next run repeats the same
+    inclusive repair instead of losing the historical correction. A scored section overwrites
+    its marker (same key), so a marker still pending for a scorable call means scoring did not
+    run (no sentiment engine): it stays pending, because `invalid-handled` counts as done and
+    would drop the call from scoring for good. Markers of calls that no longer exist or never
+    split into valid text are handled.
     """
     pending = context.store.load(
         Tables.earnings_call_sentiment,
@@ -204,6 +220,11 @@ def acknowledge_earnings_call_invalidations(context: Context) -> int:
     if pending is None or pending.empty:
         return 0
     pending = pending[pd.to_datetime(pending["as_of"], errors="coerce").notna()].copy()
+    if pending.empty:
+        return 0
+    scorable = _scorable_keys(context, pending)
+    keys = zip(pending["ticker"].astype(str), pending["quarter"].astype(str), pending["tag"].astype(str), strict=True)
+    pending = pending[[key not in scorable for key in keys]].copy()
     if pending.empty:
         return 0
     pending["model"] = EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL

@@ -40,6 +40,7 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     score_earnings_calls,
     sentiment_kpis_streamed,
 )
+from src.data_extract.utils.behavioral.utils_earnings_call_cache import pending_refresh_markers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.earnings_call_split import split_call
@@ -243,6 +244,43 @@ def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, mo
     assert score_earnings_calls(context) is None
     print("\n=== SANITY CHECK: malformed refresh handoff ===")
     print("  a dated invalidation is acknowledged only after the cube write; an undated marker remains pending. Validated.")
+
+
+def test_reissued_valid_call_marker_survives_an_engine_less_build(sqlite_store, monkeypatch) -> None:
+    """A re-issued call that splits `ok` keeps its pending marker until it is actually scored."""
+    sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    marker = pending_refresh_markers(pd.DataFrame({"ticker": ["A"], "quarter": ["2023Q1"], "as_of": [pd.Timestamp("2023-02-01")]}))
+    sqlite_store.save(Tables.earnings_call_sections, sections)
+    sqlite_store.save(Tables.earnings_call_sentiment, marker)
+    context = cast(Context, _Ctx(sqlite_store))
+
+    class _Engine:
+        device = "test"
+
+        @staticmethod
+        def score_texts(texts):
+            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: None)
+    offline = score_earnings_calls(context)
+    acknowledged_offline = acknowledge_earnings_call_invalidations(context)
+    after_offline = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    online = score_earnings_calls(context)
+    acknowledged_online = acknowledge_earnings_call_invalidations(context)
+    after_online = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    assert offline == pd.Timestamp("2023-02-01") and acknowledged_offline == 0
+    assert set(after_offline["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert online == pd.Timestamp("2023-02-01") and acknowledged_online == 0
+    assert set(after_online["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL} and len(after_online) == 2
+    assert len(_per_call_kpis(after_online, sections)) == 1
+    print("\n=== SANITY CHECK: re-issued call scored after an engine-less build (F-002) ===")
+    print(f"  engine None: refresh from {offline.date()}, {acknowledged_offline} markers acknowledged, models {sorted(set(after_offline['model']))}")
+    print(
+        f"  engine back: both sections scored over their markers, models {sorted(set(after_online['model']))}; the call yields a KPI row. Validated."
+    )
 
 
 def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_store, monkeypatch) -> None:

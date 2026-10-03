@@ -117,6 +117,36 @@ def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
     )
 
 
+def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["AAA"], "earnings_date": pd.to_datetime(["2024-05-15"])}))
+    # AAA: a fiscal relabel left 2023Q4 and 2024Q4 on the same call date. BBB: two calls, two dates.
+    paragraphs = pd.concat(
+        [
+            _valid_call("AAA", "2023Q4", "2024-05-15"),
+            _valid_call("AAA", "2024Q4", "2024-05-15"),
+            _valid_call("AAA", "2024Q1", "2024-08-15"),
+            _valid_call("BBB", "2024Q1", "2024-05-15"),
+            _valid_call("BBB", "2024Q2", "2024-08-15"),
+        ],
+        ignore_index=True,
+    )
+    sqlite_store.save(Tables.earnings_call_sections, paragraphs)
+    sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB"]))
+
+    result = check_earnings_calls(cast(Context, SimpleNamespace(store=sqlite_store)), Tables.cube_part_text, config=_config())
+    coverage = cast(dict, result.metrics["coverage"])
+    fields = {finding.field: finding.score for finding in result.findings}
+
+    assert coverage["grain"]["ticker_dates_with_multiple_calls"] == 1
+    assert fields["ticker_dates_with_multiple_calls"] == 8 and result.status == "fail"
+    print("\n=== SANITY CHECK: one call per (ticker, as_of) ===")
+    print(f"  AAA 2023Q4 + 2024Q4 on 2024-05-15 -> ticker_dates_with_multiple_calls={coverage['grain']['ticker_dates_with_multiple_calls']}")
+    print(
+        f"  BBB two calls on two dates -> not counted; finding score {fields['ticker_dates_with_multiple_calls']}; status={result.status}. Validated."
+    )
+
+
 def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_store) -> None:
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
     sqlite_store.save(

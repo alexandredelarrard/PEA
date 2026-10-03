@@ -21,6 +21,10 @@ reads the `transcripts` column only of the groups that hold a new or re-issued c
     paragraphs deleted, its sentiment and embedding rows invalidated, and a pending refresh
     marker written. The date matters: `transcripts_id` is NULL on 2,914 of 33,676 roster calls
     (1,610 of them in 2025), so the id alone cannot see those calls change.
+  * Removal: a reconcile sees every source call of its tickers, so a stored (ticker, quarter)
+    absent from the deduplicated source (dropped upstream, or a relabel that moved its date to
+    another fiscal label) is deleted the same way, derivatives and refresh marker included. An
+    incremental run sees a date window only and never removes anything.
   * Reads run on `read_workers` threads, each with its own file handle; every DB write runs on
     the calling thread, one row group per batch, so a crash loses at most one batch.
 
@@ -105,6 +109,7 @@ class ExtractSummary:
     calls_new: int
     calls_reissued: int
     rows_written: int
+    calls_removed: int = 0
 
 
 @dataclass(frozen=True)
@@ -276,6 +281,23 @@ def diff_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.Dat
     return new[calls.columns].reset_index(drop=True), reissued[[*calls.columns, "old_as_of"]].reset_index(drop=True)
 
 
+def stale_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.DataFrame, list[str]]:
+    """(gone, vanished): stored (ticker, quarter, as_of) whose key is absent from `calls`, and
+    the stored tickers with no source call at all. Only meaningful when `calls` holds the whole
+    source of every ticker in `stored` (a reconcile).
+
+    A ticker whose every call left the source is reported, not removed: a provider symbol
+    change or a partial file reads exactly like that, and it would delete the whole history."""
+    empty = pd.DataFrame({"ticker": pd.Series(dtype=object), "quarter": pd.Series(dtype=object), "as_of": pd.Series(dtype="datetime64[ns]")})
+    if stored is None or stored.empty:
+        return empty, []
+    keys = stored[_KEY].astype(str).assign(as_of=pd.to_datetime(stored["as_of"], errors="coerce").dt.normalize()).drop_duplicates(_KEY)
+    source = calls[_KEY].astype(str)
+    vanished = sorted(set(keys["ticker"]) - set(source["ticker"]))
+    merged = keys[~keys["ticker"].isin(vanished)].merge(source, on=_KEY, how="left", indicator=True)
+    return merged.loc[merged["_merge"] == "left_only", [*_KEY, "as_of"]].reset_index(drop=True), vanished
+
+
 def explode_paragraphs(transcripts: pa.Array, calls: pd.DataFrame) -> pd.DataFrame:
     """Paragraph rows for `calls`, whose i-th row owns `transcripts[i]`."""
     flat = pc.list_flatten(transcripts)
@@ -366,20 +388,37 @@ def _scope(context: Context, tickers: list[str] | None) -> list[str]:
     return sorted({str(t).strip().upper() for t in names if str(t).strip()} - NO_EARNINGS_CALL_TICKERS)
 
 
-def _stored_calls(context: Context, calls: pd.DataFrame, full: bool) -> pd.DataFrame | None:
-    """Stored (ticker, quarter, transcript_id, as_of) of the candidate calls, one row per call.
+def _stored_calls(context: Context, calls: pd.DataFrame, scope: list[str], full: bool) -> pd.DataFrame | None:
+    """Stored (ticker, quarter, transcript_id, as_of), one row per call: every stored call of
+    `scope` on a reconcile, else only the candidates' keys.
 
     Keyed on the candidates' quarters rather than on a date window: a re-issue can move a
     call's date out of any window, and its old paragraphs must still be found."""
-    if calls.empty:
+    if full:
+        where: dict[str, object] = {"ticker": scope, "paragraph": FIRST_PARAGRAPH}
+    elif calls.empty:
         return None
-    where: dict[str, object] = {"ticker": sorted(calls["ticker"].unique()), "paragraph": FIRST_PARAGRAPH}
-    if not full:
-        where["quarter"] = sorted(calls["quarter"].unique())
+    else:
+        where = {"ticker": sorted(calls["ticker"].unique()), "paragraph": FIRST_PARAGRAPH, "quarter": sorted(calls["quarter"].unique())}
     stored = context.store.load(_TABLE, ["ticker", "quarter", "transcript_id", "as_of"], where=where, optional=True)
-    if stored is None:
-        return None
+    if stored is None or full:
+        return stored
     return stored.merge(calls[_KEY], on=_KEY, how="inner")
+
+
+def _remove_calls(context: Context, gone: pd.DataFrame) -> None:
+    """Delete stored calls that left the source: derivatives, then the refresh marker (it shares
+    the sentiment key the invalidation deletes), then the paragraphs, so a crash at any point
+    leaves the call stored and the next reconcile repeats the removal."""
+    invalidate_earnings_call_derivatives(context, gone)
+    context.store.save(Tables.earnings_call_sentiment, pending_refresh_markers(gone))
+    for ticker, group in gone.groupby("ticker", sort=False):
+        context.store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
+
+
+def _sample_keys(calls: pd.DataFrame, limit: int = 10) -> str:
+    keys = [f"{t} {q}" for t, q in calls[_KEY].head(limit).itertuples(index=False)]
+    return ", ".join(keys) + (f" (+{len(calls) - limit} more)" if len(calls) > limit else "")
 
 
 def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFrame) -> int:
@@ -444,8 +483,21 @@ def extract_earnings_calls(
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
         index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
         calls = calls_from_index(index, set(scope), since)
-        new, reissued = diff_calls(calls, _stored_calls(context, calls, is_full))
-        log.info("Earnings calls: %d source calls in scope, %d new, %d re-issued.", len(calls), len(new), len(reissued))
+        stored = _stored_calls(context, calls, scope, is_full)
+        new, reissued = diff_calls(calls, stored)
+        gone, vanished = stale_calls(calls, stored if is_full else None)
+        if vanished:
+            log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])
+        log.info(
+            "Earnings calls: %d source calls in scope, %d new, %d re-issued, %d removed from the source.",
+            len(calls),
+            len(new),
+            len(reissued),
+            len(gone),
+        )
+        if not gone.empty:
+            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(gone), _sample_keys(gone))
+            _remove_calls(context, gone)
 
         needed = pd.concat([new.assign(old_as_of=pd.NaT), reissued], ignore_index=True)
         by_group = {int(g): part for g, part in needed.groupby("row_group", sort=True)}
@@ -477,4 +529,5 @@ def extract_earnings_calls(
         calls_new=len(new),
         calls_reissued=len(reissued),
         rows_written=rows_written,
+        calls_removed=len(gone),
     )

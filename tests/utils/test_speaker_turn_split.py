@@ -43,10 +43,13 @@ def test_fixture_set_is_complete() -> None:
         "IBM_2024Q1",
         "AXON_2025Q4",
         "CRH_2025Q2",
+        "TXN_2025Q1",
+        "BMY_2026Q1",
+        "JPM_2024Q3",
     }
     assert required <= names, sorted(required - names)
-    assert len(names) >= 16
-    print(f"SANITY fixtures: {len(names)} hand-labelled calls present, all 14 named hard/follow-up cases included")
+    assert len(names) >= 19
+    print(f"SANITY fixtures: {len(names)} hand-labelled calls present, all {len(required)} named hard/follow-up/Q&A-only-executive cases included")
 
 
 @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)

@@ -16,8 +16,11 @@ Pure speaker-turn split of one earnings-call transcript, given as source paragra
 Measured on 585 defeatbeta calls (2024-2026, 54 symbols): status ok on 99.3 % (581; 3 no_qa: two
 transcripts without a Q&A session and one fireside interview; 1 no_prepared: a live-on-X call whose
 only prepared text is the safe harbor), every ok call passes assess_earnings_call_sections, prepared
-share of call words q05/q50/q95 = 0.18/0.32/0.54, answer turns spoken by an analyst of the same call
-0.3 %. On a 2,940-call sample (2006-2026): 0 broken decimals introduced (the 130-171 left are the
+share of call words q05/q50/q95 = 0.18/0.32/0.54, answer turns spoken by a questioner of the same call
+2 of 11,594, persons tagged both question and answer 2, question turns over 300 words 11. On the
+5,241 ok live calls since 2024, 3 carry a question-tagged person with >= 1,000 words: two verbose
+analysts and one executive who speaks in a single exchange (CRM 2027Q1). On a 2,940-call sample
+(2006-2026): 0 broken decimals introduced (the 130-171 left are the
 source's own "3. 5"), boilerplate 5.0 % -> 1.5 % of prepared words (the rest carries figures), 9 ok
 calls have no management answer text (defective transcripts) and fail the gate. Precision of the
 removals, 20 random hits each: courtesy, self-introduction, addressed name 20/20; boilerplate,
@@ -667,6 +670,42 @@ def _turn(section: str, tag: str, person: str, text: str, exchange_idx: int, ans
     return {"section": section, "tag": tag, "person": person, "text": text, "exchange_idx": exchange_idx, "answer_idx": answer_idx}
 
 
+_MIN_ANSWER_EXCHANGES = 3  # exchanges a speaker the hand-offs never name must speak in to be management
+_ANALYST_LABEL = re.compile(r"\banalyst")  # "unidentified analyst" pools several askers under one label
+
+
+def _qa_management(turns: list[Turn], analyst_names: set[str]) -> set[str]:
+    """Lower-cased Q&A speakers who are management by evidence: they speak in at least
+    `_MIN_ANSWER_EXCHANGES` exchanges (delimited by logistics turns and asker announcements), no
+    hand-off names them, their label is not an analyst placeholder ("Unidentified Analyst" pools
+    several askers), and none of their turns announces an asker (a host reading the queue).
+
+    An analyst asks within one exchange; an executive who skipped the prepared remarks answers
+    across many. Without this, such an executive is a questioner wherever a hand-off-like turn
+    precedes them: an operator turn that swallowed the analyst's question (TXN 2025Q1), a
+    management redirect ("Cristian, you want to start", BMY 2026Q1), or an interjection that ends
+    in a question mark (JPM 2024Q3), and the sticky-asker rule then keeps them a questioner for
+    the rest of the call. An executive who speaks in fewer exchanges keeps the old rules."""
+    exchanges: dict[str, set[int]] = {}
+    hosts: set[str] = set()
+    ex = 0
+    for per, txt in turns:
+        perl = per.strip().lower()
+        if _is_operator(per, txt):
+            ex += 1
+            continue
+        if _STRONG_HANDOFF.search(txt) or _HANDOFF_NAME.search(txt):  # a host reads the next question
+            hosts.add(perl)
+            ex += 1
+            continue
+        exchanges.setdefault(perl, set()).add(ex)
+    return {
+        per
+        for per, seen in exchanges.items()
+        if len(seen) >= _MIN_ANSWER_EXCHANGES and per not in analyst_names and per not in hosts and not _ANALYST_LABEL.search(per)
+    }
+
+
 def _label(
     turns: list[Turn], section: str, mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None
 ) -> tuple[list[dict], list[str]]:
@@ -681,8 +720,8 @@ def _label(
                 prepared.append(_turn(section, EARNINGS_CALL_TAG_PREPARED, per, body, -1, -1))
         return prepared, []
 
-    mn = mgmt_names or set()
     analyst_names = {n.lower() for n in (_announced(turns) if announced is None else announced)}
+    mn = (mgmt_names or set()) | _qa_management(turns, analyst_names)
     askers: set[str] = set()
     spoken = set(mn)
     out: list[dict] = []
@@ -693,10 +732,12 @@ def _label(
             boundary = True
             continue
         perl = per.strip().lower()
-        if perl in analyst_names or perl in askers:
+        if perl in analyst_names:
             role = "q"
         elif perl in mn:
             role = "a"
+        elif perl in askers:
+            role = "q"
         elif boundary or (saw_answer and perl not in spoken and _is_short_question(txt)):
             role = "q"
         else:
@@ -733,8 +774,9 @@ def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = N
     * prepared_remarks: every non-logistics turn is 'prepared' (exchange_idx = answer_idx = -1),
       kept when its cleaned text has >= `_MIN_TURN` chars.
     * qa: operator / logistics turns delimit exchanges and are dropped. Role per turn:
-        question if the speaker is NAMED by a hand-off or already asked a question in this call,
-        else answer if the speaker is management (`mgmt_names`, lower-cased prepared speakers),
+        question if the speaker is NAMED by a hand-off, else answer if the speaker is management
+        (`mgmt_names`, lower-cased prepared speakers, plus the Q&A speakers `_qa_management` finds
+        answering across exchanges), else question if they already asked a question in this call,
         else question right after a hand-off or when, after an answer, a speaker new to the call
         asks a short question (a host hand-off phrased freely: "We've got X at Y"), else answer.
       Question and answer turns need >= `_MIN_QA_WORDS` cleaned words. A kept question opens a new

@@ -215,6 +215,114 @@ def test_reissued_call_replaces_paragraphs_and_invalidates_derivatives(tmp_path:
     print("  OK: old paragraphs gone, derivatives invalidated, the untouched AAA 2010Q1 cache survives")
 
 
+def _seed_derivatives(store: Any, calls: list[tuple[str, str, str]]) -> None:
+    store.save(
+        Tables.earnings_call_sentiment,
+        pd.DataFrame(
+            [
+                {"ticker": t, "quarter": q, "tag": tag, "as_of": d, "sent_pos": 0.5, "model": "scored"}
+                for t, q, d in calls
+                for tag in ("prepared_remarks", "qa")
+            ]
+        ),
+    )
+    store.save(
+        Tables.earning_calls_embedding,
+        pd.DataFrame([{"ticker": t, "quarter": q, "seq": s, "as_of": d, "text": "turn"} for t, q, d in calls for s in range(3)]),
+    )
+
+
+def _spy_invalidations(monkeypatch: pytest.MonkeyPatch) -> list[set[tuple[str, str]]]:
+    seen: list[set[tuple[str, str]]] = []
+    real = ect.invalidate_earnings_call_derivatives
+
+    def spy(context: Any, calls: pd.DataFrame) -> int:
+        seen.append(set(map(tuple, calls[["ticker", "quarter"]].astype(str).to_numpy())))
+        return real(context, calls)
+
+    monkeypatch.setattr(ect, "invalidate_earnings_call_derivatives", spy)
+    return seen
+
+
+def test_reconcile_deletes_a_call_removed_from_the_source(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, sqlite_store)
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    _seed_derivatives(sqlite_store, [("AAA", "2010Q1", "2010-04-20"), ("AAA", "2026Q1", "2026-04-21")])
+    seen = _spy_invalidations(monkeypatch)
+
+    # AAA 2010Q1 is withdrawn upstream; CCC leaves the source entirely (a symbol change reads the same).
+    second, _ = _source(_write(tmp_path / "b.parquet", [[_AAA[1]], _BFB, _ZZZ]), "f2")
+    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], full=True, source=second)
+
+    calls = set(map(tuple, _sections(sqlite_store)[["ticker", "quarter"]].drop_duplicates().to_numpy()))
+    sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    embedding = sqlite_store.load(Tables.earning_calls_embedding)
+    pending = sentiment[sentiment["model"] == EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL]
+
+    assert summary.full and summary.calls_removed == 1 and summary.calls_new == 0 and summary.calls_reissued == 0
+    assert calls == {("AAA", "2026Q1"), ("BF-B", "2026Q2"), ("CCC", "2012Q1"), ("CCC", "2012Q2")}
+    assert seen == [{("AAA", "2010Q1")}]
+    assert set(map(tuple, pending[["ticker", "quarter"]].to_numpy())) == {("AAA", "2010Q1")}
+    assert {pd.Timestamp(d).date() for d in pending["as_of"]} == {dt.date(2010, 4, 20)}
+    assert set(sentiment.loc[sentiment["model"] == "scored", "quarter"]) == {"2026Q1"}
+    assert set(embedding["quarter"]) == {"2026Q1"}
+
+    print("\n=== SANITY CHECK: call removed from the source (F-001) ===")
+    print(f"  reconcile over a source without AAA 2010Q1 -> {summary.calls_removed} call removed, invalidated {seen}")
+    print(
+        f"  pending marker dated {sorted(pending['as_of'].astype(str).unique())}; CCC (no source call left) kept: {sorted(q for t, q in calls if t == 'CCC')}"
+    )
+    print("  OK: stored table = deduplicated source for every ticker still in the source")
+
+
+def test_reconcile_deletes_the_label_a_relabel_flip_superseded(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two labels on 2020-03-01 and no later call: the highest ordinal (2020Q4) is kept. Once
+    # 2020Q1 arrives on 2020-06-01, the chain keeps 2019Q4 for 2020-03-01 instead.
+    first = [_call("EEE", 2019, 4, "2020-03-01", 21, 2), _call("EEE", 2020, 4, "2020-03-01", 22, 2)]
+    ctx = _ctx(tmp_path, sqlite_store)
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["EEE"], source=_source(_write(tmp_path / "a.parquet", [first]), "f1")[0])
+    before = set(_sections(sqlite_store)["quarter"])
+    _seed_derivatives(sqlite_store, [("EEE", "2020Q4", "2020-03-01")])
+    seen = _spy_invalidations(monkeypatch)
+
+    grown = [[*first, _call("EEE", 2020, 1, "2020-06-01", 23, 2)]]
+    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["EEE"], full=True, source=_source(_write(tmp_path / "b.parquet", grown), "f2")[0])
+    rows = _sections(sqlite_store).drop_duplicates(["ticker", "quarter"])
+    sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+
+    assert before == {"2020Q4"}
+    assert summary.calls_new == 2 and summary.calls_removed == 1
+    assert set(rows["quarter"]) == {"2019Q4", "2020Q1"} and not rows.duplicated(["ticker", "as_of"]).any()
+    assert seen == [{("EEE", "2020Q4")}]
+    assert set(sentiment["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert sqlite_store.load(Tables.earning_calls_embedding, optional=True) is None or sqlite_store.load(Tables.earning_calls_embedding).empty
+
+    print("\n=== SANITY CHECK: relabel flip (F-001) ===")
+    print(f"  run 1 stores {sorted(before)} on 2020-03-01; run 2 keeps 2019Q4 there -> stored {sorted(rows['quarter'])}")
+    print(f"  {summary.calls_removed} superseded label removed and invalidated; 0 dates with two calls")
+    print("  OK: the reconcile restores one call per (ticker, as_of)")
+
+
+def test_incremental_run_never_deletes_a_stored_call(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, sqlite_store)
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    before = _sections(sqlite_store)
+    seen = _spy_invalidations(monkeypatch)
+
+    # AAA 2026Q1 (inside the window) and CCC (outside it) leave the source; AAA 2026Q2 is new.
+    shrunk = [[_AAA[0], _call("AAA", 2026, 2, "2026-07-22", 13, 2)], _BFB, _ZZZ]
+    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "b.parquet", shrunk), "f2")[0])
+    after = _sections(sqlite_store)
+
+    assert not summary.full and summary.calls_removed == 0 and summary.calls_new == 1
+    assert after.merge(before, how="inner").shape[0] == len(before) and len(after) == len(before) + 2
+    assert seen == []
+
+    print("\n=== SANITY CHECK: incremental run removes nothing (F-001) ===")
+    print(f"  window source without AAA 2026Q1 and CCC -> removed {summary.calls_removed}, all {len(before)} stored rows kept")
+    print("  OK: only a reconcile, which sees every source call, may delete")
+
+
 def test_unchanged_revision_is_a_noop_and_full_forces_a_compare(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)

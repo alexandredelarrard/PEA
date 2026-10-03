@@ -36,6 +36,7 @@ _GRAIN_KEYS = (
     "calls_with_multiple_as_of",
     "calls_missing_first_paragraph",
     "calls_non_contiguous_paragraphs",
+    "ticker_dates_with_multiple_calls",
 )
 
 
@@ -78,8 +79,10 @@ def _calendar_quarter_index(date: object) -> int | None:
 
 def _grain_counts(paragraphs: pd.DataFrame) -> dict[str, int]:
     """Paragraph-grain integrity of one read: unique (ticker, quarter, paragraph), one non-null
-    `as_of` per call, and paragraph numbers 1..n per call (the extractor diffs stored calls on
-    paragraph 1 only, so a call without it is invisible to the re-issue check)."""
+    `as_of` per call, paragraph numbers 1..n per call (the extractor diffs stored calls on
+    paragraph 1 only, so a call without it is invisible to the re-issue check), and one call per
+    (ticker, as_of) (a provider fiscal relabel can put a second label on a stored call's date).
+    `paragraphs` must hold every call of its tickers: the reads are batched by ticker."""
     keyed = paragraphs.dropna(subset=["paragraph"])
     calls = keyed.groupby(["ticker", "quarter"], sort=False).agg(
         first=("paragraph", "min"),
@@ -87,6 +90,14 @@ def _grain_counts(paragraphs: pd.DataFrame) -> dict[str, int]:
         distinct=("paragraph", "nunique"),
     )
     dates = paragraphs.groupby(["ticker", "quarter"], sort=False)["as_of"].nunique()
+    call_dates = (
+        paragraphs.assign(as_of=pd.to_datetime(paragraphs["as_of"], errors="coerce").dt.normalize())
+        .dropna(subset=["as_of"])
+        .groupby(["ticker", "quarter"], sort=False)["as_of"]
+        .first()
+        .reset_index()
+    )
+    calls_per_date = call_dates.groupby(["ticker", "as_of"], sort=False)["quarter"].size()
     return {
         "rows": int(len(paragraphs)),
         "calls": int(paragraphs[["ticker", "quarter"]].drop_duplicates().shape[0]),
@@ -96,6 +107,7 @@ def _grain_counts(paragraphs: pd.DataFrame) -> dict[str, int]:
         "calls_with_multiple_as_of": int((dates > 1).sum()),
         "calls_missing_first_paragraph": int((calls["first"] != 1).sum()),
         "calls_non_contiguous_paragraphs": int((calls["last"] - calls["first"] + 1 != calls["distinct"]).sum()),
+        "ticker_dates_with_multiple_calls": int((calls_per_date > 1).sum()),
     }
 
 
@@ -339,6 +351,7 @@ def _source_findings(coverage: dict[str, Any], settings: Any) -> list[Finding]:
         ("calls_with_multiple_as_of", 8, "one as_of per call"),
         ("calls_missing_first_paragraph", 6, "every call starts at paragraph 1"),
         ("calls_non_contiguous_paragraphs", 3, "paragraphs 1..n per call"),
+        ("ticker_dates_with_multiple_calls", 8, "one call per (ticker, as_of)"),
     ):
         if grain[key]:
             findings.append(Finding.at(score, f"{key}={grain[key]} of {grain['calls']} calls / {grain['rows']} rows", expected, field=key))

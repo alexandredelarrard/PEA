@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from sqlalchemy import text
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract.utils.common import edgar_driver
@@ -26,6 +27,8 @@ from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_store import ddl
+from src.data_store import store as store_module
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
@@ -465,3 +468,71 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
         f"\nSANITY: after `-t AAA -F` the table still holds all {len(df_after)} rows; BBB's {int(bbb.sum())} rows "
         f"(zip and EDGAR) are unchanged; log: '{skipped}'."
     )
+
+
+def _postgres_add_column(engine: Any, name: str, df: pd.DataFrame) -> list[str]:
+    """The store's Postgres schema evolution (`ADD COLUMN` for frame columns the table lacks), run on
+    SQLite too, where `store.ensure_columns` is a no-op."""
+    if not store_module.table_exists(engine, name):
+        return []
+    missing = [column for column in df.columns if column not in store_module._reflect(engine, name).c]
+    with engine.begin() as conn:
+        for column in missing:
+            sql_type = ddl.sql_type(column, df[column].dtype, spec=Tables.insider_transactions)
+            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN "{column}" {sql_type}'))
+    return missing
+
+
+def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sqlite_store, monkeypatch, identity, caplog):
+    """R-03: EDGAR creates the table (no `quarter` column, no zip row); its reconcile is a no-op. A
+    zip ingest afterwards adds `quarter` (Postgres schema evolution, emulated here on SQLite), stamps
+    E1 and inserts Z1; EDGAR then re-reads Z1 whole and keeps its quarter."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(store_module, "ensure_columns", _postgres_add_column)
+    sec = _FakeSec(monkeypatch, identity, tmp_path)
+    context = _context(tmp_path, sqlite_store)
+
+    sec.filings = [E1, E2]
+    _run_edgar(context)
+    df_edgar_only = _table(sqlite_store)
+    assert "quarter" not in df_edgar_only.columns and len(df_edgar_only) == 3
+    noop = next(message for message in _messages(caplog, logging.INFO) if "no zip row" in message)
+
+    sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z1])
+    assert _run_zip(context) == 1
+    df_zip = _table(sqlite_store)
+    assert list(_rows_of(df_zip, E1.accession)["quarter"]) == ["2026q2", "2026q2"]
+    pd.testing.assert_frame_equal(_rows_of(df_zip, E1.accession).drop(columns="quarter"), _rows_of(df_edgar_only, E1.accession))
+    assert _rows_of(df_zip, E2.accession)["quarter"].isna().all()
+    assert list(_rows_of(df_zip, Z1.accession)["source"]) == ["zip"]
+
+    z1_edgar = Spec(Z1.accession, Z1.filed, (*Z1.trades, Trade("2026-05-05", "P", 8, 12, 945)))
+    sec.filings = [E1, E2, z1_edgar]
+    _run_edgar(context)
+    df_final = _table(sqlite_store)
+    rows_z1 = _rows_of(df_final, Z1.accession)
+    assert list(rows_z1["source"]) == ["edgar", "edgar"] and list(rows_z1["quarter"]) == ["2026q2", "2026q2"]
+    assert _mixed_accessions(df_final) == 0
+    print(
+        f"\nSANITY: EDGAR-first run saved {len(df_edgar_only)} rows and its reconcile was a no-op ('{noop}'); the zip then stamped "
+        f"quarter 2026q2 on E1 and inserted Z1; EDGAR re-read Z1 (1 zip row -> 2 EDGAR rows, quarter kept); no accession holds two sources."
+    )
+
+
+def test_a_reconcile_failure_never_masks_the_run_error(tmp_path, sqlite_store, monkeypatch, identity, caplog):
+    """R-03: when the EDGAR run fails, an error in the follow-up reconcile is logged and the run's own error propagates."""
+    _FakeSec(monkeypatch, identity, tmp_path)
+    context = _context(tmp_path, sqlite_store)
+
+    def run_fails(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("EDGAR listing failed")
+
+    def reconcile_fails(context: Any, since: pd.Timestamp) -> int:
+        raise KeyError("quarter")
+
+    monkeypatch.setattr(edgar, "run_edgar_fetch", run_fails)
+    monkeypatch.setattr(edgar, "replace_zip_accessions", reconcile_fails)
+    with pytest.raises(RuntimeError, match="EDGAR listing failed"):
+        _run_edgar(context)
+    logged = next(record for record in caplog.records if record.levelno == logging.ERROR)
+    print(f"\nSANITY: the run's RuntimeError propagated; the reconcile's KeyError was logged instead: '{logged.getMessage()}'.")

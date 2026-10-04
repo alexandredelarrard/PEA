@@ -256,7 +256,11 @@ def listing_since(context: Context, years_history: int) -> pd.Timestamp:
 def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     """Finish EDGAR's replacement of zip-sourced accessions filed since `since`: stamp each
     accession's stored zip `quarter` on its EDGAR rows that lack one (rows EDGAR added beyond the
-    zip's keys), then delete the zip rows of every accession EDGAR now holds. Returns the rows deleted."""
+    zip's keys), then delete the zip rows of every accession EDGAR now holds. Returns the rows deleted.
+    A table without a `quarter` column holds no zip row, so there is nothing to replace."""
+    if "quarter" not in context.store.columns(Tables.insider_transactions):
+        context.log.info("insider EDGAR: no zip row stored (no `quarter` column) -> nothing to replace")
+        return 0
     df_rows = context.store.load(
         Tables.insider_transactions, columns=[*INSIDER_KEY, "source", "quarter"], since=since, date_col="filing_date", optional=True
     )
@@ -311,6 +315,20 @@ def fetch_insider_edgar(
     )
     try:
         run_edgar_fetch(context, tickers, years_history, fetch, full=full)
-    finally:
-        log_exclusions(_LOG, "EDGAR run", excluded)
+    except BaseException:
+        _finish_run(context, since, excluded, after_failure=True)
+        raise
+    _finish_run(context, since, excluded, after_failure=False)
+
+
+def _finish_run(context: Context, since: pd.Timestamp, excluded: list[pd.DataFrame], *, after_failure: bool) -> None:
+    """Log the run's exclusions and replace the zip rows it re-read. After a failed run a reconcile
+    error is logged, never raised, so the run's own error is the one that propagates."""
+    log_exclusions(_LOG, "EDGAR run", excluded)
+    if not after_failure:
         replace_zip_accessions(context, since)
+        return
+    try:
+        replace_zip_accessions(context, since)
+    except Exception:
+        _LOG.exception("insider EDGAR: the zip reconcile after a failed run raised; the run's own error follows")

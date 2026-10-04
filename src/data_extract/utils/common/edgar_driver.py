@@ -24,6 +24,7 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.edgar_fillings import archive_url
+from src.data_extract.utils.common.empty_markers import drop_markers_over_data
 from src.data_extract.utils.common.frame_sanitize import finalise_frame, pin_dtypes
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
@@ -336,8 +337,11 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
             context.log.warning("%s: %s built undeclared table '%s'", fetch.desc, ticker, table)
             failed_save = True
             continue
-        df = pd.concat(frames[table], ignore_index=True)
+        df = drop_markers_over_data(context.store, table, pd.concat(frames[table], ignore_index=True), log=context.log)
         df = df.drop_duplicates(subset=[c for c in table.pk if c in df.columns], keep="last")
+        if df.empty:
+            counts[table] = 0
+            continue
         try:
             context.store.save(table, df)
         except Exception as exc:  # noqa: BLE001 -- a failed save is per table; the others still save

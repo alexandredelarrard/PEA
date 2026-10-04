@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import numpy as np
@@ -90,8 +91,11 @@ def frame(rows: list[dict]) -> pd.DataFrame:
 
 
 def _round(value: object) -> float:
+    """Half away from zero at 2 decimals on the shortest decimal text of the float, as the SEC zip rounds."""
     number = float(value) if value is not None else np.nan  # type: ignore[arg-type]
-    return round(number, 2)
+    if not np.isfinite(number):
+        return number
+    return float(Decimal(repr(number)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def _key(r: pd.Series) -> tuple | None:

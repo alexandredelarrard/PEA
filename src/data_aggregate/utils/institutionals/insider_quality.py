@@ -77,6 +77,9 @@ _ROLE_COMPILED = tuple((name, re.compile(pat, re.I)) for name, pat in ROLE_PATTE
 #: Decimals of the repeat-copy key: the SEC zip's precision, so its record and EDGAR's of one trade match.
 COPY_KEY_DECIMALS: int = 2
 
+#: Ulps below a half that still round up: a filed decimal half (105.085) is stored just below it in binary.
+_HALF_ULPS: float = 8.0
+
 #: Columns of the repeat-copy key, built by `_copy_key`.
 COPY_KEY: tuple[str, ...] = ("ticker", "transaction_day", "code", "shares", "price", "owned_after")
 
@@ -305,7 +308,7 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
 
 
 def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
-    """Per row: accession, filing day, the `COPY_KEY` fields (rounded to `COPY_KEY_DECIMALS`) and the `CELL_KEY` fields."""
+    """Per row: accession, filing day, the `COPY_KEY` fields (`round_half_up`) and the `CELL_KEY` fields."""
     nan = pd.Series(np.nan, index=df.index)
     owned = pd.to_numeric(df["shares_owned_after"], errors="coerce") if "shares_owned_after" in df.columns else nan
     txn_day = to_day(df["transaction_date"]) if "transaction_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
@@ -318,12 +321,24 @@ def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
             "transaction_day": txn_day.astype("datetime64[ns]"),
             "code": df["code"],
             "security_type": security,
-            "shares": df["shares_n"].round(COPY_KEY_DECIMALS),
-            "price": pd.to_numeric(pps.reindex(df.index), errors="coerce").round(COPY_KEY_DECIMALS),
-            "owned_after": owned.round(COPY_KEY_DECIMALS),
+            "shares": round_half_up(df["shares_n"]),
+            "price": round_half_up(pps.reindex(df.index)),
+            "owned_after": round_half_up(owned),
         },
         index=df.index,
     )
+
+
+def round_half_up(values: pd.Series, decimals: int = COPY_KEY_DECIMALS) -> pd.Series:
+    """`values` rounded half away from zero at `decimals`, as the SEC zip rounds the filed decimal
+    text; a value within `_HALF_ULPS` below a half counts as that half. NaN stays NaN."""
+    number = pd.to_numeric(values, errors="coerce").astype("float64")
+    scale = 10.0**decimals
+    scaled = number.abs() * scale
+    whole = scaled // 1.0
+    up = (scaled - whole) >= 0.5 - _HALF_ULPS * np.spacing(scaled.fillna(0.0))
+    magnitude = (whole + up) / scale
+    return magnitude.where(number.ge(0.0), -magnitude)
 
 
 def _owner_pairs(df: pd.DataFrame) -> pd.DataFrame:

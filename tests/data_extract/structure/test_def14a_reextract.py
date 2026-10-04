@@ -8,8 +8,10 @@ import pandas as pd
 import pytest
 
 from scripts import def14a_reextract as reextract
+from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_TABLES
 from src.data_store.schema import Tables
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 
 def test_explicit_accession_scope_refuses_a_partial_work_set(monkeypatch):
@@ -78,42 +80,34 @@ def test_rejected_subject_backup_removes_parent_and_all_children(tmp_path, monke
     print("  unrelated accession retained; second removal is an idempotent no-op")
 
 
-def test_target_tasks_use_the_production_registrant_walk(monkeypatch):
+def _jci_scope() -> FilingScope:
+    """JCI: the predecessor 53669 window, then the roster 833444."""
+    return dated_identity(
+        [("JCI", "0000053669", "cik_window", SENTINEL, "2016-09-02"), ("JCI", "0000833444", "cik_window", "2016-09-02", None)],
+        {"JCI": "0000833444"},
+    ).filing_scope("JCI")
+
+
+def test_target_tasks_use_the_production_window_listing(monkeypatch):
     accession = "0000053669-15-000001"
     filing = pd.DataFrame([{"accession_number": accession, "cik": "0000053669", "filing_date": "2015-01-01"}])
-    cutovers = {"JCI": object()}
+    scope = _jci_scope()
     seen = {}
 
-    def list_across(context, ticker, cik, company, years, since, registrations):
-        seen.update(
-            context=context,
-            ticker=ticker,
-            cik=cik,
-            company=company,
-            years=years,
-            since=since,
-            registrations=registrations,
-        )
+    def list_windows(context, listed_scope, company, years, since):
+        seen.update(context=context, scope=listed_scope, company=company, years=years, since=since)
         return filing
 
-    monkeypatch.setattr(reextract, "_list_across_registrants", list_across)
+    monkeypatch.setattr(reextract, "_list_scope_windows", list_windows)
     monkeypatch.setattr(reextract, "_subject_is_accepted", lambda *args: True)
     monkeypatch.setattr(reextract, "_payload_for", lambda *args: "payload")
     context = SimpleNamespace(config=SimpleNamespace(data_extract=SimpleNamespace(years_history=31)))
 
-    tasks, rejected, unresolved = reextract._tasks_for_ticker(
-        context,
-        "JCI",
-        "0000833444",
-        "Johnson Controls",
-        {accession},
-        frozenset({"0000053669", "0000833444"}),
-        cutovers,
-    )
+    tasks, rejected, unresolved = reextract._tasks_for_ticker(context, "JCI", "Johnson Controls", {accession}, scope)
 
     assert len(tasks) == 1 and tasks[0][1]["filing"]["cik"] == "0000053669"
     assert not rejected and not unresolved
-    assert seen["registrations"] is cutovers and seen["since"] is None
+    assert seen["scope"] is scope and seen["since"] is None
     print("\n=== SANITY: targeted DEF 14A follows dated registrant history ===")
     print("  current JCI roster CIK -> predecessor-CIK accession found by production's segment walk")
 
@@ -122,20 +116,12 @@ def test_missing_or_unreadable_targets_are_unresolved(monkeypatch):
     listed = "0000053669-15-000001"
     absent = "0000053669-14-000001"
     filing = pd.DataFrame([{"accession_number": listed, "cik": "0000053669", "filing_date": "2015-01-01"}])
-    monkeypatch.setattr(reextract, "_list_across_registrants", lambda *args: filing)
+    monkeypatch.setattr(reextract, "_list_scope_windows", lambda *args: filing)
     monkeypatch.setattr(reextract, "_subject_is_accepted", lambda *args: True)
     monkeypatch.setattr(reextract, "_payload_for", lambda *args: None)
     context = SimpleNamespace(config=SimpleNamespace(data_extract=SimpleNamespace(years_history=31)))
 
-    tasks, rejected, unresolved = reextract._tasks_for_ticker(
-        context,
-        "JCI",
-        "0000833444",
-        "Johnson Controls",
-        {listed, absent},
-        frozenset({"0000053669", "0000833444"}),
-        {},
-    )
+    tasks, rejected, unresolved = reextract._tasks_for_ticker(context, "JCI", "Johnson Controls", {listed, absent}, _jci_scope())
 
     assert not tasks and not rejected
     assert unresolved == {listed, absent}

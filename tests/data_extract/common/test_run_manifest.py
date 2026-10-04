@@ -15,8 +15,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.run_manifest import changed_scope_tickers, manifest_window, record_run
 from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
+from src.data_extract.utils.common.run_manifest import manifest_window, record_run, scope_changed_tickers
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
@@ -45,21 +45,30 @@ def test_record_run_roundtrip(tmp_path):
     print(f"  wrote/read extraction_manifest.json: {entry}. Validated.")
 
 
-def test_identity_scope_change_is_detected_per_ticker_with_unchanged_universe(tmp_path):
-    ctx = _ctx(tmp_path)
-    prior = {"AAA": "same", "BBB": "old"}
-    current = {"AAA": "same", "BBB": "new"}
-    assert changed_scope_tickers({"identity_scope_fingerprints": prior}, current) == frozenset({"BBB"})
+def test_scope_changed_at_or_after_the_last_run_relists_same_day_included():
+    """P12: relist when `scope_changed_at >= last_run_date`; a change the same day as the run counts."""
+    entry = {"last_run_date": "2026-10-03"}
+    stamps = {
+        "SAME_DAY": pd.Timestamp("2026-10-03 00:00:00"),
+        "AFTER": pd.Timestamp("2026-10-03 14:30:00"),
+        "BEFORE": pd.Timestamp("2026-10-02 23:59:59"),
+        "NO_STAMP": None,
+    }
+    assert scope_changed_tickers(entry, stamps) == frozenset({"SAME_DAY", "AFTER"})
+    assert scope_changed_tickers(None, stamps) == frozenset()
+    assert scope_changed_tickers({"last_run_date": "not a date"}, stamps) == frozenset()
+    print("\nSANITY: same-day and later scope changes relist; earlier, unstamped or unrecorded ones do not.")
 
-    record_run(
-        ctx,
-        "sec_8k",
-        ticker_count=2,
-        rows_added=0,
-        identity_scope_fingerprints=current,
-    )
-    assert get_entry(ctx, "sec_8k")["identity_scope_fingerprints"] == current
-    print("\nSANITY: unchanged ticker count still invalidates only BBB after its identity scope changes.")
+
+def test_the_earnings_call_fingerprint_key_survives_an_edgar_record(tmp_path):
+    """P11: EDGAR fetches no longer write `identity_scope_fingerprints`, but a recorded key is carried, not dropped."""
+    ctx = _ctx(tmp_path)
+    record_run(ctx, "earnings_call_transcripts", ticker_count=1, rows_added=0, identity_scope_fingerprints={"defeatbeta": "abc"})
+    record_run(ctx, "earnings_call_transcripts", ticker_count=1, rows_added=3)
+    assert get_entry(ctx, "earnings_call_transcripts")["identity_scope_fingerprints"] == {"defeatbeta": "abc"}
+    record_run(ctx, "sec_8k", ticker_count=2, rows_added=0, coverage_complete=True, tickers=["AAA", "BBB"])
+    assert "identity_scope_fingerprints" not in get_entry(ctx, "sec_8k")
+    print("\nSANITY: the earnings-call source fingerprint persists; an EDGAR record writes none.")
 
 
 def test_record_run_does_not_clobber_sibling_tables(tmp_path):

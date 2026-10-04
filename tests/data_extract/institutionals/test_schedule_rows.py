@@ -27,7 +27,7 @@ _RESOLVE = "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule
 _SPEC = {"13D": SCHEDULE_13D, "13G": SCHEDULE_13G}
 _FETCH = {"13D": SEC_13D_FETCH, "13G": SEC_13G_FETCH}
 _TABLE = {"13D": Tables.sec_13d, "13G": Tables.sec_13g}
-_SCOPE = EdgarScope(None, {})
+_SCOPE = EdgarScope()
 
 
 def _rows(family: str, filing: Any) -> list[dict]:

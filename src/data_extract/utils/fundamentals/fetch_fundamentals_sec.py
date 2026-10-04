@@ -27,7 +27,6 @@ from src.data_extract.utils.common.edgar_driver import (
     run_edgar_fetch,
 )
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -641,21 +640,13 @@ def build_ticker_fundamentals(
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
-    """One ticker's `fundamentals_facts`, walking every registrant segment in its chain (SPLIT in `FORM_POLICY`).
+    """One ticker's `fundamentals_facts`, listing each CIK window of its scope (SPLIT in `FORM_POLICY`).
 
     Each row's `cik` is the registrant that filed it. Raises when eligible filings yield no usable XBRL on a
-    first walk, or when the segment walks overlap (dedup lost accessions).
+    first walk.
     """
     discovery: dict[str, int] = {}
-    filings = resolve_registrant_filings(
-        ticker,
-        FUNDAMENTALS_FORMS,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=scope.registrants,
-        identity=scope.identity,
-        stats=discovery,
-    )
+    filings = scope.list_filings(ticker, cik, FUNDAMENTALS_FORMS, since=since, done_accessions=done_accessions, stats=discovery)
     rows: list[dict] = []
     # Counted so a walk that drops filings is distinguishable from one that finds none.
     failures: list[tuple[str, str]] = []
@@ -703,16 +694,7 @@ def build_ticker_fundamentals(
     if df.empty:
         return {Tables.fundamentals_facts: df}
     # A filing can tag one field on one window twice, and Postgres rejects an upsert touching a PK row twice.
-    # Registrant segment walks are disjoint by date; the check below enforces it.
-    before = df["accession_number"].nunique()
     df = df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")
-    entry = scope.registrants.get(ticker)
-    if entry is not None and df["accession_number"].nunique() != before:
-        raise ValueError(
-            f"{ticker}: the {' -> '.join(entry.all_ciks())} chain "
-            f"({', '.join(str(b.date()) for b in entry.boundaries)}) lost accessions in dedup "
-            f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap"
-        )
     return {Tables.fundamentals_facts: df}
 
 
@@ -723,13 +705,6 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
     levels = ["sector", "industry_group", "sub_industry"]
     cik_map = load_cik_mapping(context, tickers)
     gics = {str(row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
-    registrants = load_registrants(str(context.config_dir))
-    if registrants:
-        context.log.info(
-            "fundamentals: %d registrant chain(s) declared -- %s",
-            len(registrants),
-            ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}" for t, r in sorted(registrants.items())),
-        )
     fetch = EdgarFetch(
         desc="fundamentals (linkbase)",
         tables=(Tables.fundamentals_facts,),

@@ -184,7 +184,7 @@ def test_filing_text_build_skips_done_accessions_and_pre_since_filings(monkeypat
         "0000320193",
         since=pd.Timestamp("2024-01-01"),
         done_accessions=frozenset({"0001-done"}),
-        scope=EdgarScope(None, {}),
+        scope=EdgarScope(),
     )[Tables.filing_risk_text]
     assert set(out["accession_number"]) == {"0001-new"}
     assert set(out["section"]) == {FILING_SECTION_RISK, FILING_SECTION_MDA}
@@ -198,7 +198,7 @@ def test_filing_text_build_returns_no_rows_for_an_unparseable_filing(monkeypatch
         "edgar.Company",
         lambda ticker: fake_company,
     )
-    out = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.filing_risk_text]
+    out = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.filing_risk_text]
     assert out.empty
 
 

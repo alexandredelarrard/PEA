@@ -20,10 +20,10 @@ already exists unless `--refresh` is passed.
     "$PY" scripts/sweep_fundamentals_resolution.py --roster both
     "$PY" scripts/sweep_fundamentals_resolution.py --roster in_sample -t MCD --refresh
 
-Reads nothing from Postgres. GICS comes from `sp500_tickers` when a DB is reachable and
-from the roster file's own `gics` block otherwise, so the sweep runs on a laptop with no
-container up -- the regime drives `never_use` and the roll-up overrides, so it cannot be
-skipped.
+Each ticker's filings are listed by CIK from its `entity_lineage` filing scope, exactly as
+`build_ticker_fundamentals` lists them, so the identity tables must be reachable. GICS comes from
+`sp500_tickers` when available and resolves with `regime=None` otherwise -- the regime drives
+`never_use` and the roll-up overrides, so it cannot be skipped silently.
 """
 
 from __future__ import annotations
@@ -46,8 +46,10 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_FORMS, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.context import get_config_context  # noqa: E402
 from src.data_extract.utils.common.edgar_driver import FilingStamp  # noqa: E402
-from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings  # noqa: E402
+from src.data_extract.utils.common.identity import FilingScope, load_identity  # noqa: E402
+from src.data_extract.utils.common.registrant import resolve_registrant_filings  # noqa: E402
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import rows_from_xbrl  # noqa: E402
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
 
@@ -81,7 +83,6 @@ def gics_lookup(tickers: list[str]) -> dict[str, dict[str, str | None]]:
     """
     levels = ["sector", "industry_group", "sub_industry"]
     try:
-        from src.context import get_config_context
         from src.data_store.schema import Tables
 
         _, context = get_config_context("./configs", use_cache=False, save=False)
@@ -97,19 +98,14 @@ def gics_lookup(tickers: list[str]) -> dict[str, dict[str, str | None]]:
     }
 
 
-def sweep_ticker(ticker: str, catalogue, gics: dict | None, cutovers: dict | None = None) -> pd.DataFrame:
+def sweep_ticker(ticker: str, catalogue, gics: dict | None, scope: FilingScope) -> pd.DataFrame:
     """One ticker's whole filing history, resolved BOTH ways off one parse per filing.
 
-    Honours `configs/sec/registrant_cutover.json` exactly as `build_ticker_fundamentals` does. It
-    has to: `Company(ticker)` sees only the current registrant, so without it APA arrives
-    with 22 filings instead of ~62 and every rate measured off this ledger would describe a
-    pipeline nobody runs.
+    Lists every CIK window of the ticker's filing scope exactly as `build_ticker_fundamentals` does,
+    so a ticker with a registrant chain (APA) arrives with its predecessor's filings.
     """
-    from edgar import Company
-
-    company = Company(ticker)
-    cik = str(getattr(company, "cik", "")).zfill(10)
-    filings = resolve_registrant_filings(ticker, FUNDAMENTALS_FORMS, since=None, done_accessions=frozenset(), registrants=cutovers)
+    cik = scope.roster_cik
+    filings = resolve_registrant_filings(scope, FUNDAMENTALS_FORMS, since=None, done_accessions=frozenset())
     frames: list[pd.DataFrame] = []
     for filing in filings:
         try:
@@ -170,12 +166,14 @@ def main() -> int:
         wanted = {args.roster: all_rosters[args.roster]}
 
     catalogue = load_catalogue(str(config_dir))
-    cutovers = load_registrants(str(config_dir))
     tickers = [t for names in wanted.values() for t in names]
     gics = gics_lookup(tickers)
-    affected = sorted(set(cutovers) & set(tickers))
-    if affected:
-        print("  registrant chains in play: " + ", ".join(f"{t}@{'/'.join(str(b.date()) for b in cutovers[t].boundaries)}" for t in affected))
+    _, context = get_config_context(str(config_dir), use_cache=False, save=False)
+    identity = load_identity(context, str(config_dir))
+    scopes = {t: identity.filing_scope(t) for t in tickers}
+    chained = sorted(t for t, scope in scopes.items() if len(scope.windows) > 1)
+    if chained:
+        print("  registrant chains in play: " + ", ".join(f"{t}@{'/'.join(w.cik for w in scopes[t].windows)}" for t in chained))
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -192,7 +190,7 @@ def main() -> int:
     started = time.time()
     done = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(sweep_ticker, t, catalogue, gics.get(t), cutovers): t for t in todo}
+        futures = {pool.submit(sweep_ticker, t, catalogue, gics.get(t), scopes[t]): t for t in todo}
         for future in as_completed(futures):
             ticker = futures[future]
             done += 1

@@ -9,7 +9,7 @@ lister. `NameError` is in `PROGRAMMING_ERRORS`, which `run_per_ticker` re-raises
 noticed. Nothing caught it because no test ever entered this loop.
 
 These tests are deliberately shallow: they patch the walk and the row builder and assert only
-what the loop itself owns -- the CIK stamped on a row, and the dedup guard. That is enough to
+what the loop itself owns -- the CIK stamped on a row, and the PK dedup. That is enough to
 turn "this function is never executed in CI" into "it is".
 """
 
@@ -23,8 +23,8 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_fundamentals_sec as mod
+from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.edgar_driver import EdgarScope
-from src.data_extract.utils.common.registrant import Registrant, Segment
 
 
 def _filing(accession: str, cik: str, date: str, form: str = "10-Q"):
@@ -46,25 +46,12 @@ def _xbrl_filing(accession: str, *, error: Exception | None = None):
     )
 
 
-def _registrants() -> dict[str, Registrant]:
-    return {
-        "GOOGL": Registrant(
-            ticker="GOOGL",
-            kind="reorganisation",
-            segments=(
-                Segment(cik="0001288776", valid_from=None, valid_to=pd.Timestamp("2015-10-02"), evidence="Google Inc"),
-                Segment(cik="0001652044", valid_from=pd.Timestamp("2015-10-02"), valid_to=None, evidence="Alphabet Inc"),
-            ),
-        )
-    }
-
-
 @pytest.fixture
 def patched(monkeypatch):
     """Patch the walk and the row builder; the loop body is what is under test."""
 
     def _install(filings, rows_per_filing):
-        monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *a, **k: list(filings))
+        monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", lambda *a, **k: list(filings))
         monkeypatch.setattr(mod, "filing_rows", lambda ticker, stamp, cat, gics, **kwargs: rows_per_filing(ticker, stamp.cik, stamp.filing))
 
     return _install
@@ -88,7 +75,7 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
     post = _filing("0001-post", "0001652044", "2016-04-21")  # Alphabet, post-boundary
     patched([pre, post], lambda t, c, f: [_row(t, c, f, period_end=str(f.filing_date))])
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())[
         mod.Tables.fundamentals_facts
     ]
 
@@ -100,49 +87,32 @@ def test_each_row_carries_the_cik_that_filed_it_not_the_roster(patched):
 def test_a_ticker_with_no_register_entry_still_stamps_a_cik(patched):
     f = _filing("0001-a", "0000320193", "2024-02-01")
     patched([f], lambda t, c, fl: [_row(t, c, fl)])
-    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))[
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())[
         mod.Tables.fundamentals_facts
     ]
     assert list(out["cik"]) == ["0000320193"]
 
 
-def test_the_dedup_overlap_guard_cannot_fire(patched):
-    """The second stale site -- and writing this test showed the guard is unfalsifiable.
-
-    It compares `accession_number.nunique()` before and after `drop_duplicates(subset=PK)`,
-    but `accession_number` is ITSELF part of the PK
-    (`ticker, accession_number, field, duration_type, period_end`), so dedup can only ever
-    collapse rows WITHIN one accession and can never remove an accession. The guard's own
-    comment says it exists to prove the two segment walks are disjoint; it cannot observe
-    that, and it never could -- it was dead code carrying a `NameError` in its message.
-
-    The real check lives where the overlap would actually happen: the SPLIT branch of
-    `resolve_registrant_filings` warns when one accession is kept by two segments. This test
-    pins the dead branch so nobody re-derives confidence from it.
-    """
+def test_pk_dedup_collapses_rows_within_one_accession(patched):
+    """`accession_number` is part of the PK, so the dedup only collapses a field tagged twice inside one filing."""
     from src.data_store.schema import Tables
 
     assert "accession_number" in Tables.fundamentals_facts.pk
-
     a = _filing("0001-dup", "0001288776", "2014-04-24")
-    b = _filing("0001-dup", "0001652044", "2016-04-21")  # same accession, both segments
+    b = _filing("0001-dup", "0001652044", "2016-04-21")
     patched([a, b], lambda t, c, f: [_row(t, c, f)])  # identical PK -> dedup drops one
 
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))[
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())[
         mod.Tables.fundamentals_facts
     ]
-    assert len(out) == 1  # a row WAS dropped
-    print()
-    print("=== SANITY: the guard that cannot fire ===")
-    print(
-        "  2 rows -> 1 after PK dedup, yet distinct accessions stayed 1 -> 1, so the "
-        "`nunique()` comparison is unchanged and the ValueError is unreachable."
-    )
+    assert len(out) == 1
+    print("\n=== SANITY: PK dedup ===")
+    print("  2 rows on one PK -> 1; an accession can never be lost by it")
 
 
-def test_an_empty_walk_returns_empty_frames_without_touching_the_guard(patched):
+def test_an_empty_walk_returns_empty_frames(patched):
     patched([], lambda t, c, f: [])
-    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, _registrants()))
+    out = mod.build_ticker_fundamentals("GOOGL", "0001652044", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())
     assert out[mod.Tables.fundamentals_facts].empty
 
 
@@ -154,7 +124,7 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
         seen["done"] = kwargs["done_accessions"]
         return [_xbrl_filing("0000320193-08-000123")]
 
-    monkeypatch.setattr(mod, "resolve_registrant_filings", resolve)
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", resolve)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     out = mod.build_ticker_fundamentals(
@@ -163,7 +133,7 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
         done_accessions=frozenset({"0000320193-24-000123"}),
         catalogue=cast(Any, None),
         gics_by_ticker={},
-        scope=EdgarScope(None, {}),
+        scope=EdgarScope(),
     )
 
     message = caplog.text.lower()
@@ -180,13 +150,13 @@ def test_resumed_ticker_with_only_legacy_no_xbrl_is_complete_no_new(monkeypatch,
 
 def test_cold_ticker_with_only_eligible_no_xbrl_filings_is_incomplete(monkeypatch, caplog):
     filings = [_xbrl_filing("0000320193-08-000123"), _xbrl_filing("0000320193-08-000456")]
-    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", lambda *args, **kwargs: filings)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     print("\n=== SANITY: a cold all-no-XBRL walk is incomplete ===")
     print("  expected: no persisted coverage + 2 eligible filings without XBRL raises a ticker-level failure")
     with pytest.raises(RuntimeError, match="(?i)no usable xbrl"):
-        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())
 
 
 def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog):
@@ -194,11 +164,11 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
         _xbrl_filing("0000320193-08-000123"),
         _xbrl_filing("0000320193-08-000456", error=ValueError("bad xml")),
     ]
-    monkeypatch.setattr(mod, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", lambda *args, **kwargs: filings)
     caplog.set_level(logging.INFO, logger=mod.__name__)
 
     try:
-        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
+        mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())
     except RuntimeError:
         pass
 
@@ -212,6 +182,6 @@ def test_no_xbrl_and_unreadable_xbrl_are_reported_separately(monkeypatch, caplog
 def test_facts_builder_has_no_employee_side_output(patched):
     filing = _filing("0001-a", "0000320193", "2024-02-01", form="10-K")
     patched([filing], lambda t, c, f: [_row(t, c, f)])
-    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope(None, {}))
+    out = mod.build_ticker_fundamentals("AAPL", "0000320193", catalogue=cast(Any, None), gics_by_ticker={}, scope=EdgarScope())
     assert set(out) == {mod.Tables.fundamentals_facts}
     print("\nSANITY: fundamentals facts own no employee side output.")

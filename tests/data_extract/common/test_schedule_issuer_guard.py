@@ -1,11 +1,9 @@
-"""The issuer/filer guard on 13D/13G must accept EVERY segment CIK, not just the roster's.
+"""The issuer/filer guard on 13D/13G accepts EVERY CIK of the ticker's filing scope, not just the roster's.
 
-Regression test for a defect the register introduced rather than exposed. the 13G build (`schedule_rows.kept_schedule_filings`)
-keeps a schedule only when the issuer CIK read off the filing matches the ticker's own. Before the
-register that was a single-CIK test against a single-CIK listing, and consistent. Widening the
-listing to every segment without widening the comparison rejects exactly the pre-boundary
-schedules the register exists to recover -- measured as `sec-13d` storing +0 rows after resolving
-MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor filings.
+The 13G build (`schedule_rows.kept_schedule_filings`) keeps a schedule only when the issuer CIK read
+off the filing is one of the ticker's scope CIKs. A single-CIK comparison against a multi-CIK listing
+rejects exactly the pre-boundary schedules the lineage exists to recover -- measured as `sec-13d`
+storing +0 rows after resolving MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor filings.
 """
 
 from __future__ import annotations
@@ -17,58 +15,55 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.edgar_driver import EdgarScope
 from src.data_extract.utils.common.registrant import (
     SCHEDULE_SUBJECT_CAP,
-    Registrant,
     ScheduleDiscoveryIncompleteError,
-    Segment,
     filter_schedule_subject_filings,
-    issuer_ciks,
     resolve_schedule_subject_filings,
+)
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+
+#: VTRS as the register holds it: Mylan Inc -> Mylan N.V. -> Viatris.
+_VTRS = EdgarScope(
+    dated_identity(
+        [
+            ("VTRS", "0000069499", "cik_window", SENTINEL, "2015-05-01"),
+            ("VTRS", "0001623613", "cik_window", "2015-05-01", "2020-11-07"),
+            ("VTRS", "0001792044", "cik_window", "2020-11-07", None),
+        ],
+        {"VTRS": "0001792044", "AAPL": "0000320193"},
+    )
 )
 
 
-def _reg() -> dict[str, Registrant]:
-    """VTRS as the register holds it: a three-segment chain."""
-    segs = (
-        Segment(cik="0000069499", valid_from=None, valid_to=pd.Timestamp("2015-05-01"), evidence="Mylan Inc"),
-        Segment(cik="0001623613", valid_from=pd.Timestamp("2015-05-01"), valid_to=pd.Timestamp("2020-11-07"), evidence="Mylan N.V."),
-        Segment(cik="0001792044", valid_from=pd.Timestamp("2020-11-07"), valid_to=None, evidence="Viatris"),
-    )
-    return {"VTRS": Registrant(ticker="VTRS", kind="reorganisation", segments=segs)}
+def _subjects(ticker: str, cik: str) -> frozenset[str]:
+    return frozenset(_VTRS.filing_scope(ticker, cik).event_ciks)
 
 
-def test_every_segment_cik_identifies_the_ticker_as_issuer():
-    got = issuer_ciks("VTRS", "0001792044", _reg())
+def test_every_scope_cik_identifies_the_ticker_as_issuer():
+    got = _subjects("VTRS", "0001792044")
     assert got == {"0000069499", "0001623613", "0001792044"}
     print("\n=== SANITY: the widened guard ===")
-    print(f"  VTRS accepts {len(got)} issuer CIKs, one per segment: {sorted(got)}")
+    print(f"  VTRS accepts {len(got)} issuer CIKs, one per window: {sorted(got)}")
 
 
-def test_a_predecessor_schedule_is_no_longer_rejected():
-    """The exact rejection that produced +0. A 2012 schedule about Mylan Inc carries issuer CIK
-    0000069499; the old test compared it to the roster's 0001792044 and dropped it."""
-    accepted = issuer_ciks("VTRS", "0001792044", _reg())
-    predecessor_issuer = "0000069499"
-    assert predecessor_issuer != "0001792044"  # the old single-CIK test
-    assert predecessor_issuer in accepted  # the new one
+def test_a_predecessor_schedule_is_not_rejected():
+    """A 2012 schedule about Mylan Inc carries issuer CIK 0000069499, not the roster's 0001792044."""
+    assert "0000069499" in _subjects("VTRS", "0001792044")
+    print("\n=== SANITY: a predecessor issuer CIK is in the subject set ===")
 
 
 def test_an_unrelated_issuer_is_still_rejected():
-    """The guard must not become a pass-through: a schedule VTRS FILED about Apple keeps
-    Apple's issuer CIK and must still be dropped."""
-    assert "0000320193" not in issuer_ciks("VTRS", "0001792044", _reg())
+    """A schedule VTRS FILED about Apple keeps Apple's issuer CIK and must still be dropped."""
+    assert "0000320193" not in _subjects("VTRS", "0001792044")
+    print("\n=== SANITY: an unrelated issuer stays outside ===")
 
 
-def test_a_ticker_with_no_register_entry_keeps_exactly_its_roster_cik():
-    assert issuer_ciks("AAPL", "0000320193", _reg()) == {"0000320193"}
-
-
-def test_the_roster_cik_is_kept_even_when_it_is_not_a_segment():
-    """XOM's roster CIK was the holdco while the register named the predecessor. Dropping the
-    roster CIK would have discarded rows the pipeline already resolved correctly."""
-    reg = _reg()
-    assert issuer_ciks("VTRS", "0009999999", reg) == {"0000069499", "0001623613", "0001792044", "0009999999"}
+def test_a_single_cik_ticker_keeps_exactly_its_roster_cik():
+    assert _subjects("AAPL", "0000320193") == {"0000320193"}
+    assert EdgarScope().filing_scope("AAPL", "320193").event_ciks == ("0000320193",)
+    print("\n=== SANITY: a single-CIK scope (with or without identity) is its roster CIK ===")
 
 
 def _candidate(accession: str, subject_cik: str):

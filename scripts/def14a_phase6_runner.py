@@ -213,7 +213,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     # absent from it; resolve CIKs the way the pipeline does instead of from that artifact.
     cik_df = load_cik_mapping(context, tickers)
     cik_map = dict(zip(cik_df["ticker"], cik_df["cik"].astype(str), strict=False))
-    scope, _, _ = load_edgar_scope(context, cik_df, None, identity_aware=False)
+    scope = load_edgar_scope(context)
 
     rows: list[dict] = []
     for t in tickers[: limit or len(tickers)]:

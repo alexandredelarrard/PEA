@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, num_or_null
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
+from src.data_extract.utils.common.registrant import resolve_schedule_subject_filings
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
 
@@ -131,11 +131,12 @@ def kept_schedule_filings(
 ) -> Iterator[tuple[FilingStamp, list[dict[str, Any]]]]:
     """`ticker`'s new schedules of `spec.forms` with their rows, ticker-stamped, oldest first.
 
-    Issuer/filer guard: the listing holds every schedule naming any of the ticker's CIKs, including
-    ones the ticker FILED about another issuer; those are skipped. An unresolvable CIK on either side
-    means unknown and does not reject. A parse failure raises `RuntimeError` naming the accession.
+    The subject set is the scope's event CIKs. Issuer/filer guard: the listing holds every schedule
+    naming any of those CIKs, including ones the ticker FILED about another issuer; those are skipped
+    and counted in `scope.guard`. An unresolvable CIK on either side means unknown and does not
+    reject. A parse failure raises `RuntimeError` naming the accession.
     """
-    ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
+    ticker_ciks = frozenset(scope.filing_scope(ticker, cik).event_ciks)
     for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, spec.forms, since=since, done_accessions=done_accessions):
         stamp = FilingStamp.of(filing, cik)
         try:
@@ -144,6 +145,7 @@ def kept_schedule_filings(
             raise RuntimeError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
         issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""
         if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
+            scope.guard.add(1)
             continue
         for row in rows:
             row["ticker"] = ticker

@@ -456,10 +456,10 @@ def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
     )
     identity = build_identity(lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster=_roster([("AAA", "0000000200")]))
     assert identity.entity_for("AAA", "2020-01-01") == "E0000000200"
-    assert identity.ciks_by_symbol["AAA"] == frozenset({"0000000200"})
+    assert identity.filing_scope("AAA").event_ciks == ("0000000200",)
 
     print("\n=== SANITY CHECK: dei stays out of the tenure resolver ===")
-    print("  a dei AAA row under a foreign CIK neither makes AAA ambiguous nor joins the alias scope")
+    print("  a dei AAA row under a foreign CIK neither makes AAA ambiguous nor joins the filing scope")
 
 
 def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():

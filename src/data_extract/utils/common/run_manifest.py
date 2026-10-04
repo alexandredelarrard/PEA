@@ -2,8 +2,9 @@
 
 Most fetchers call `record_run` for bookkeeping only; their DB frontier stays authoritative. The
 per-ticker EDGAR filing listers also take their `since` from `manifest_window`, which forces a
-full-window relist when the exact ticker membership changed or `full_rescan_days` elapsed. Writes
-are atomic read-modify-write that never clobber sibling tables' entries.
+full-window relist when the exact ticker membership changed or `full_rescan_days` elapsed, and
+relist one ticker whose lineage scope changed since `last_run_date` (`scope_changed_tickers`).
+Writes are atomic read-modify-write that never clobber sibling tables' entries.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -71,10 +72,19 @@ def get_entry(context: Context, table: Table | str) -> dict | None:
     return _load_manifest(context).get(name_of(table))
 
 
-def changed_scope_tickers(entry: dict | None, current: dict[str, str]) -> frozenset[str]:
-    """Tickers whose identity-aware filing scope is new or changed."""
-    prior = (entry or {}).get("identity_scope_fingerprints", {})
-    return frozenset(ticker for ticker, fingerprint in current.items() if prior.get(ticker) != fingerprint)
+def scope_changed_tickers(entry: dict | None, changed_at: Mapping[str, pd.Timestamp | None]) -> frozenset[str]:
+    """Tickers whose lineage scope changed at or after the entry's `last_run_date` (same day included).
+
+    No entry or no `last_run_date` returns nothing: that run already lists the full window.
+    """
+    last_run = (entry or {}).get("last_run_date")
+    if not last_run:
+        return frozenset()
+    try:
+        since = pd.Timestamp(last_run).normalize()
+    except (TypeError, ValueError):
+        return frozenset()
+    return frozenset(ticker for ticker, stamp in changed_at.items() if stamp is not None and pd.notna(stamp) and pd.Timestamp(stamp) >= since)
 
 
 def manifest_window(

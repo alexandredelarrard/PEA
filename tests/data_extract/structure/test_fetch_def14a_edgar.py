@@ -25,6 +25,7 @@ import pytest
 
 from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.edgar_driver import EdgarScope, run_edgar_fetch
+from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.structure import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a.ecd import (
@@ -236,9 +237,9 @@ def test_build_ticker_skips_done_accessions_and_pre_since_filings(monkeypatch):
     ]
     monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
 
-    df = DEF14A_EDGAR_FETCH.build(
-        "BA", "0000012927", since=pd.Timestamp("2024-01-01"), done_accessions=frozenset({"0001-done"}), scope=EdgarScope(None, {})
-    )[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=pd.Timestamp("2024-01-01"), done_accessions=frozenset({"0001-done"}), scope=EdgarScope())[
+        Tables.def14a_edgar
+    ]
 
     assert set(df["accession_number"]) == {"0001-new"}
     assert df["n_peos"].iloc[0] == 2.0  # the real frame really was read
@@ -259,7 +260,7 @@ def test_a_filing_without_xbrl_is_skipped_not_crashed(monkeypatch):
 
     monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [good, empty, raising]))
 
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.def14a_edgar]
     assert set(df["accession_number"]) == {"0001-good"}
     print("\n=== SANITY: unreadable filings ===")
     print("  xbrl() -> None and xbrl() -> raise both skip the row; neither crashes the walk.")
@@ -275,7 +276,7 @@ def test_company_name_falls_back_to_the_filing_index(monkeypatch):
     f.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: stripped))
     monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [f]))
 
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.def14a_edgar]
     assert df["company_name"].iloc[0] == "THE BOEING COMPANY"
     print("\n=== SANITY: company_name fallback ===")
     print(f"  dei tag removed from the frame -> company_name={df['company_name'].iloc[0]!r} from the filing index.")
@@ -294,9 +295,8 @@ def test_ecd_run_never_parses_a_proxy_filed_before_item_402v(tmp_path, sqlite_st
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
     )
-    scope = SimpleNamespace(ticker="BA", roster_cik="0000012927", ciks=("0000012927",), symbols=("BA",), aliases=())
+    scope = FilingScope.roster_only("BA", "12927")
     monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
-    monkeypatch.setattr(edgar_driver, "load_registrants", lambda _config_dir: {})
     filings = [_fake_filing(accession="0001-2021", filing_date="2021-03-10"), _fake_filing(accession="0001-2024", filing_date="2024-03-08")]
     monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
     parsed: list[str] = []

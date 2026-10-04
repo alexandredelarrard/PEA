@@ -1,15 +1,15 @@
-"""The single authority on which CIKs a ticker's filings can come from.
+"""The single authority on which CIKs a ticker's filings are listed from.
 
-Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication while
-`Company(ticker)` resolves only today's CIK. `registrant_cutover.json` declares each such ticker as
-an ordered, contiguous chain of evidenced `[valid_from, valid_to)` segments, validated strictly at
-load. `FORM_POLICY` decides per form whether filings UNION across the chain or SPLIT by date;
-`resolve_registrant_filings` walks it oldest first. The schedule subject-first search lives here too.
+Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication.
+`registrant_cutover.json` declares each such ticker as an ordered, contiguous chain of evidenced
+`[valid_from, valid_to)` segments, validated strictly at load; the lineage build turns it into dated
+CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs or
+SPLIT by its CIK windows; `resolve_registrant_filings` lists by CIK only, never by symbol. The
+schedule subject-first search lives here too.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -35,13 +35,9 @@ from src.data_extract.utils.common.sec_atom import (
 from src.utils.string import pad_cik, pad_cik_series
 
 if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
-    from src.data_extract.utils.common.identity import FilingScope, Identity
+    from src.data_extract.utils.common.identity import CikWindow, FilingScope
 
 logger = logging.getLogger(__name__)
-
-#: `_company_or_none` kinds; each is also the wording of its "could not be resolved" warning.
-_CIK_KIND = "register CIK"
-_ALIAS_KIND = "historical alias"
 
 #: Retained filings after SGML subject-CIK filtering above which discovery raises as incomplete, never returns empty.
 SCHEDULE_SUBJECT_CAP = 2_000
@@ -258,79 +254,33 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
-def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> str:
-    """Stable SHA-256 of one ticker's discovered scope (ticker, roster CIK, CIKs, symbols) and register segments.
-
-    A changed fingerprint makes the EDGAR driver relist that ticker over the full window.
-    """
-    segments = (
-        []
-        if entry is None
-        else [
-            {
-                "cik": segment.cik,
-                "valid_from": None if segment.valid_from is None else pd.Timestamp(segment.valid_from).date().isoformat(),
-                "valid_to": None if segment.valid_to is None else pd.Timestamp(segment.valid_to).date().isoformat(),
-            }
-            for segment in entry.segments
-        ]
-    )
-    payload = {
-        "canonical_ticker": scope.ticker,
-        "roster_cik": scope.roster_cik,
-        "candidate_ciks": list(scope.ciks),
-        "candidate_symbols": list(scope.symbols),
-        "authoritative_segments": segments,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _identity_scope(scope: FilingScope, entry: Registrant | None, policy: Combine) -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
-    """Same-CIK aliases, additive identity CIKs and the CIKs a listed filing may carry.
-
-    A SPLIT form whose identity lineage holds a CIK the register has not dated lists the curated
-    chain, or the roster CIK alone, and warns: failing the ticker would block the whole run.
-    """
-    discovered = set(scope.ciks)
-    curated = set(entry.all_ciks()) if entry is not None else set()
-    missing_from_chain = discovered - curated
-    if policy is Combine.SPLIT and len(discovered) > 1 and missing_from_chain:
-        listed = curated or {scope.roster_cik}
-        logger.warning(
-            "%s: identity discovered registrant CIK(s) %s, including uncurated %s; listing %s only until a complete dated registrant chain is curated",
-            scope.ticker,
-            ", ".join(sorted(discovered)),
-            ", ".join(sorted(missing_from_chain)),
-            ", ".join(sorted(listed)),
-        )
-        return (), (), frozenset(listed)
-    return scope.aliases, tuple(sorted(discovered - {scope.roster_cik} - curated)), frozenset(discovered | curated)
-
-
 @dataclass
 class _FilingWindow:
-    """The filter shared by every walk: issuer lineage, `since` and `done_accessions`; counts skipped stored accessions.
+    """The filter shared by every walk: the scope guard, `since` and `done_accessions`.
 
-    `Company(alias)` resolves a reused symbol to its current holder, so a filing whose CIK is
-    outside `lineage_ciks` (when identity gave one) is dropped and its CIK warned once.
+    A filing whose CIK is outside the listed CIKs is skipped and counted in `stats["foreign_skipped"]`,
+    never raised; a stored accession is counted in `stats["skipped_existing"]`.
     """
 
     ticker: str
     since: pd.Timestamp | None
     done_accessions: frozenset[str]
     stats: dict[str, int] | None
-    lineage_ciks: frozenset[str] | None = None
+    scope_ciks: frozenset[str]
     skipped_existing: set[str] = field(default_factory=set)
+    foreign: set[str] = field(default_factory=set)
     foreign_ciks: set[str] = field(default_factory=set)
 
     def filed(self, filing: Any) -> pd.Timestamp | None:
         """The filing date when `filing` is kept, else None."""
         filer = getattr(filing, "cik", None)
-        if self.lineage_ciks is not None and filer is not None and (cik := pad_cik(filer)) not in self.lineage_ciks:
+        if filer is not None and (cik := pad_cik(filer)) not in self.scope_ciks:
+            self.foreign.add(str(filing.accession_number))
+            if self.stats is not None:
+                self.stats["foreign_skipped"] = len(self.foreign)
             if cik not in self.foreign_ciks:
                 self.foreign_ciks.add(cik)
-                logger.warning("%s: dropped filing(s) from CIK %s, outside the issuer lineage (first: %s)", self.ticker, cik, filing.accession_number)
+                logger.warning("%s: skipped filing(s) from CIK %s, outside the filing scope (first: %s)", self.ticker, cik, filing.accession_number)
             return None
         if filing.accession_number in self.done_accessions:
             if self.stats is not None:
@@ -342,149 +292,70 @@ class _FilingWindow:
 
 
 def resolve_registrant_filings(
-    ticker: str,
+    scope: FilingScope,
     forms: Sequence[str],
     *,
     since: pd.Timestamp | None,
     done_accessions: frozenset[str],
-    registrants: dict[str, Registrant],
-    identity: Identity | None = None,
     stats: dict[str, int] | None = None,
 ) -> list:
-    """Every filing of `forms` for `ticker` across its registrant chain, oldest first.
+    """Every filing of `forms` in `scope`, oldest first, listed by CIK only.
 
-    Policy comes from `FORM_POLICY` (a mixed list raises). UNION walks `Company(ticker)`, then
-    identity aliases and segment / identity CIKs, first writer per accession wins. SPLIT gives each
-    segment only filings inside its dates; with an uncurated identity CIK a SPLIT form lists the
-    curated chain or the roster CIK only (and warns). With identity, a filing whose CIK is outside
-    the issuer lineage is dropped. `since` and `done_accessions` filter before the sort.
+    UNION (`FORM_POLICY`) lists every event CIK; SPLIT lists each CIK window and keeps its filings
+    inside the seam-widened dates. A filing from a CIK outside the listed CIKs is skipped and counted
+    (`stats["foreign_skipped"]`). `since` and `done_accessions` filter before the sort.
     """
     policy = combine_for(forms)
-    entry = registrants.get(ticker)
     forms = list(forms)
     if stats is not None:
         stats.setdefault("skipped_existing", 0)
-    aliases: tuple[str, ...] = ()
-    identity_ciks: tuple[str, ...] = ()
-    lineage_ciks: frozenset[str] | None = None
-    if identity is not None:
-        aliases, identity_ciks, lineage_ciks = _identity_scope(identity.filing_scope(ticker), entry, policy)
-    window = _FilingWindow(ticker=ticker, since=since, done_accessions=done_accessions, stats=stats, lineage_ciks=lineage_ciks)
-    if entry is not None and policy is Combine.SPLIT:
-        return _split_walk(ticker, entry, forms, window.filed)
-    sources = _filing_sources(ticker, entry, policy, aliases, identity_ciks)
-    filings, contributions = _union_walk(sources, forms, window.filed)
-    _log_contributions(ticker, entry, forms, contributions)
+        stats.setdefault("foreign_skipped", 0)
+    walks: list[tuple[str, CikWindow | None]]
+    if policy is Combine.UNION:
+        walks = [(cik, None) for cik in scope.event_ciks]
+    else:
+        walks = [(window.cik, window) for window in scope.windows]
+    keep = _FilingWindow(scope.ticker, since, done_accessions, stats, frozenset(cik for cik, _ in walks))
+    filings, contributions = _walk(scope.ticker, walks, forms, keep.filed)
+    if len(contributions) > 1:
+        logger.info(
+            "%s: %s listed by %s across %s",
+            scope.ticker,
+            ",".join(forms),
+            policy.value,
+            ", ".join(f"{n} from {cik}" for cik, n in contributions.items()),
+        )
     return filings
 
 
-def _filing_sources(
+def _walk(
     ticker: str,
-    entry: Registrant | None,
-    policy: Combine,
-    aliases: tuple[str, ...],
-    identity_ciks: tuple[str, ...],
-) -> list[tuple[str, Any | None]]:
-    """`(label, Company)` pairs in provenance order, the ticker-resolved registrant first.
-
-    Without a register entry: the ticker, its aliases and (UNION only) identity CIKs; with one:
-    "ticker", then chain CIKs and identity CIKs.
-    """
-    if entry is None:
-        additive_ciks = identity_ciks if policy is Combine.UNION else ()
-        return (
-            [(ticker, edgar.Company(ticker))]
-            + [(alias, _company_or_none(alias, ticker, _ALIAS_KIND)) for alias in aliases]
-            + [(cik, _company_or_none(cik, ticker, _CIK_KIND)) for cik in additive_ciks]
-        )
-    union_ciks = tuple(dict.fromkeys((*entry.all_ciks(), *identity_ciks)))
-    return [("ticker", edgar.Company(ticker))] + [(cik, _company_or_none(cik, ticker, _CIK_KIND)) for cik in union_ciks]
-
-
-def _union_walk(
-    sources: list[tuple[str, Any | None]],
+    walks: list[tuple[str, CikWindow | None]],
     forms: list[str],
     keep: Callable[[Any], pd.Timestamp | None],
 ) -> tuple[list, dict[str, int]]:
-    """Kept filings across `sources` sorted by filing date, first writer per accession, and per-label counts."""
-    by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
-    contributions: dict[str, int] = {}
-    for label, company in sources:
-        if company is None:
-            continue
-        for filing in company.get_filings(form=forms):
-            if filing.accession_number in by_accession:
-                continue
-            filed = keep(filing)
-            if filed is None:
-                continue
-            by_accession[filing.accession_number] = (filed, filing)
-            contributions[label] = contributions.get(label, 0) + 1
-    return [filing for _, filing in sorted(by_accession.values(), key=itemgetter(0))], contributions
+    """Kept filings of every walk sorted by filing date, one per accession, and the count per CIK.
 
-
-def _split_walk(ticker: str, entry: Registrant, forms: list[str], keep: Callable[[Any], pd.Timestamp | None]) -> list:
-    """Each segment's kept filings inside its own dates, sorted; a duplicate accession is warned and dropped."""
-    dated: list[tuple[pd.Timestamp, object]] = []
-    seen: dict[str, str] = {}
-    for segment in entry.segments:
-        company = _company_or_none(segment.cik, ticker, _CIK_KIND)
-        for filing in [] if company is None else company.get_filings(form=forms):
-            filed = keep(filing)
-            if filed is None or not segment.covers(filed):
-                continue
-            if filing.accession_number in seen:
-                logger.warning(
-                    "%s: accession %s kept by BOTH segment %s and %s -- the dated split makes that impossible, so the register's boundary is wrong",
-                    ticker,
-                    filing.accession_number,
-                    seen[filing.accession_number],
-                    segment.cik,
-                )
-                continue
-            seen[filing.accession_number] = segment.cik
-            dated.append((filed, filing))
-    return [filing for _, filing in sorted(dated, key=itemgetter(0))]
-
-
-def _log_contributions(ticker: str, entry: Registrant | None, forms: list[str], contributions: dict[str, int]) -> None:
-    """Log when a source other than the ticker-resolved registrant contributed a filing."""
-    if entry is None:
-        if any(label != ticker for label in contributions):
-            logger.info(
-                "%s: identity scope added filings (%s)",
-                ticker,
-                ", ".join(f"{n} from {label}" for label, n in contributions.items()),
-            )
-        return
-    if any(label != "ticker" for label in contributions):
-        logger.info(
-            "%s: %s across the %s boundary (%s)",
-            ticker,
-            ", ".join(f"{n} from {k}" for k, n in contributions.items()),
-            " -> ".join(entry.all_ciks()),
-            ",".join(forms),
-        )
-
-
-def issuer_ciks(
-    ticker: str,
-    roster_cik: str,
-    registrants: dict[str, Registrant],
-    identity: Identity | None = None,
-) -> frozenset[str]:
-    """Every CIK that identifies this ticker as the subject of a schedule.
-
-    The roster CIK, register segment CIKs and identity-lineage CIKs, so the 13D/13G issuer guard
-    accepts a schedule filed about a predecessor.
+    A windowed walk keeps only filings its widened window admits; an accession two windows admit
+    (a joint filing inside the seam margin) goes to the window whose stated dates own it, else the first.
     """
-    ciks = {pad_cik(roster_cik)} if roster_cik else set()
-    entry = registrants.get(ticker)
-    if entry is not None:
-        ciks.update(entry.all_ciks())
-    if identity is not None:
-        ciks.update(identity.ciks_by_entity.get(identity.universe_entity(ticker), frozenset()))
-    return frozenset(c for c in ciks if c)
+    by_accession: dict[str, tuple[pd.Timestamp, Any, str, bool]] = {}
+    for cik, window in walks:
+        company = _company_or_none(cik, ticker)
+        for filing in [] if company is None else company.get_filings(form=forms):
+            prior = by_accession.get(filing.accession_number)
+            if prior is not None and prior[3]:
+                continue
+            filed = keep(filing)
+            if filed is None or (window is not None and not window.admits(filed)):
+                continue
+            owned = window is None or window.owns(filed)
+            if prior is None or owned:
+                by_accession[filing.accession_number] = (filed, filing, cik, owned)
+    contributions: dict[str, int] = {}
+    for _, _, cik, _ in by_accession.values():
+        contributions[cik] = contributions.get(cik, 0) + 1
+    return [filing for _, filing, _, _ in sorted(by_accession.values(), key=itemgetter(0))], contributions
 
 
 class ScheduleDiscoveryIncompleteError(RuntimeError):
@@ -717,12 +588,12 @@ def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str
     return df[keep]
 
 
-def _company_or_none(key: str, ticker: str, kind: str) -> Any | None:
-    """`Company` for a register/identity CIK or a historical alias; an unresolvable one is warned and skipped."""
+def _company_or_none(cik: str, ticker: str) -> Any | None:
+    """`Company` for one scope CIK; an unresolvable CIK is warned and skipped."""
     try:
-        return edgar.Company(int(key) if kind == _CIK_KIND else key)
-    except Exception:  # noqa: BLE001 -- a dead CIK or stale alias, not a bug
-        logger.warning("%s: %s %s could not be resolved", ticker, kind, key)
+        return edgar.Company(int(cik))
+    except Exception:  # noqa: BLE001 -- a dead CIK, not a bug
+        logger.warning("%s: CIK %s could not be resolved", ticker, cik)
         return None
 
 

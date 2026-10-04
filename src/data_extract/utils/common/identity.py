@@ -150,22 +150,25 @@ class SymbolInterval:
 
 @dataclass(frozen=True)
 class FilingScope:
-    """One universe ticker's filing scope.
+    """One universe ticker's filing scope: the only input of an EDGAR listing.
 
     `event_ciks` lists every CIK of the entity (event forms); `windows` the consolidating CIK windows,
-    widened at seams; `scope_changed_at` the lineage timestamp of the last scope change. `ciks`,
-    `symbols` and `aliases` are the tenure-discovered scope the symbol-based listing still reads.
+    widened at seams; `scope_changed_at` the lineage timestamp of the last scope change.
     """
 
     ticker: str
     entity: str
     roster_cik: str
-    ciks: tuple[str, ...]
-    symbols: tuple[str, ...]
-    aliases: tuple[str, ...]
-    event_ciks: tuple[str, ...] = ()
-    windows: tuple[CikWindow, ...] = ()
+    event_ciks: tuple[str, ...]
+    windows: tuple[CikWindow, ...]
     scope_changed_at: pd.Timestamp | None = None
+
+    @classmethod
+    def roster_only(cls, ticker: str, cik: str) -> FilingScope:
+        """The scope of a ticker known only by its roster CIK: one open window, no other CIK."""
+        key = pad_cik(cik)
+        windows = (CikWindow(key, None, None, None, None),) if key else ()
+        return cls(ticker=normalise_ticker(ticker), entity=f"E{key}", roster_cik=key, event_ciks=(key,) if key else (), windows=windows)
 
 
 @dataclass(frozen=True)
@@ -186,12 +189,6 @@ class Identity:
     roster_proxy_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Separately traded share classes deliberately absent from the modelling universe.
     redundant_symbols: frozenset[str]
-    #: Raw symbol -> observed issuer CIKs, retained for filing-scope discovery.
-    ciks_by_symbol: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    #: entity_id -> its stored CIKs (the inverse of `entity_by_cik`); a singleton entity has no key.
-    ciks_by_entity: Mapping[str, frozenset[str]] = field(default_factory=dict)
-    #: entity_id -> sorted (normalised symbol, padded CIK) pairs from `ciks_by_symbol`.
-    scope_pairs_by_entity: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
     #: entity_id -> every CIK on its `cik_window` / `cik_event` rows, plus a universe ticker's roster CIK.
     event_ciks_by_entity: Mapping[str, frozenset[str]] = field(default_factory=dict)
     #: entity_id -> its seam-widened consolidating windows, oldest first.
@@ -222,14 +219,10 @@ class Identity:
         key = normalise_ticker(ticker)
         entity = self.universe_entity(key)
         roster_cik = self.roster_cik[key]
-        pairs = self.scope_pairs_by_entity.get(entity, ())
         return FilingScope(
             ticker=key,
             entity=entity,
             roster_cik=roster_cik,
-            ciks=tuple(sorted(self.ciks_by_entity.get(entity, frozenset()) | {roster_cik} | {cik for _, cik in pairs})),
-            symbols=tuple(sorted({key} | {symbol for symbol, _ in pairs})),
-            aliases=tuple(sorted({symbol for symbol, cik in pairs if cik == roster_cik and symbol and symbol != key})),
             event_ciks=tuple(sorted(self.event_ciks_by_entity.get(entity, frozenset({roster_cik})))),
             windows=self.windows_by_entity.get(entity, ()),
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
@@ -517,9 +510,8 @@ def build_identity(
     entity_by_cik = entity_by_cik_map(lineage)
     roster_cik = roster_cik_map(roster)
     ticker_by_entity = _ticker_by_entity(roster_cik, entity_by_cik, lineage)
-    tenure_by_symbol, manual_tenure_by_symbol, ciks_by_symbol = _tenure_maps(_tenure_evidence(tenure), entity_by_cik)
+    tenure_by_symbol, manual_tenure_by_symbol = _tenure_maps(_tenure_evidence(tenure), entity_by_cik)
     allowlist = d19_allowlist or {}
-    ciks_by_entity, scope_pairs_by_entity = _scope_maps(entity_by_cik, ciks_by_symbol)
     event_ciks, windows = _cik_scopes(lineage, roster_cik, entity_by_cik)
     identity = Identity(
         entity_by_cik=entity_by_cik,
@@ -529,9 +521,6 @@ def build_identity(
         manual_tenure_by_symbol=manual_tenure_by_symbol,
         roster_proxy_by_symbol=_roster_proxies(allowlist, roster_cik, entity_by_cik, tenure_by_symbol),
         redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
-        ciks_by_symbol=ciks_by_symbol,
-        ciks_by_entity=ciks_by_entity,
-        scope_pairs_by_entity=scope_pairs_by_entity,
         event_ciks_by_entity=event_ciks,
         windows_by_entity=windows,
         symbol_intervals=_symbol_intervals(lineage),
@@ -586,21 +575,14 @@ def _ticker_by_entity(roster_cik: Mapping[str, str], entity_by_cik: Mapping[str,
     )
 
 
-def _tenure_maps(
-    tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]
-) -> tuple[dict[str, tuple[TenureRow, ...]], dict[str, tuple[TenureRow, ...]], dict[str, frozenset[str]]]:
-    """(tenure rows by market symbol, the manual subset, issuer CIKs by raw symbol).
-
-    A tenure with no `valid_from` cannot answer a dated test, so it feeds only the CIK map.
-    """
+def _tenure_maps(tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]) -> tuple[dict[str, tuple[TenureRow, ...]], dict[str, tuple[TenureRow, ...]]]:
+    """(tenure rows by market symbol, the manual subset); a tenure with no `valid_from` cannot answer a dated test and is skipped."""
     tenure_by_symbol: dict[str, list[TenureRow]] = {}
     manual_tenure_by_symbol: dict[str, list[TenureRow]] = {}
-    ciks_by_symbol: dict[str, set[str]] = {}
     sources = tenure["source"].astype(str) if "source" in tenure.columns else pd.Series("form345", index=tenure.index)
     starts = pd.to_datetime(tenure["valid_from"])
     ends = pd.to_datetime(tenure["valid_to"])
-    for has_symbol, symbol, cik, start, end, n, source in zip(
-        tenure["symbol"].notna(),
+    for symbol, cik, start, end, n, source in zip(
         tenure["symbol"].astype(str),
         pad_cik_series(tenure["issuer_cik"]),
         starts,
@@ -609,8 +591,6 @@ def _tenure_maps(
         sources,
         strict=False,
     ):
-        if has_symbol:
-            ciks_by_symbol.setdefault(symbol, set()).add(cik)
         if start is pd.NaT:
             continue
         row = (entity_or_singleton(entity_by_cik, cik), start, None if end is pd.NaT else end, int(n))
@@ -621,7 +601,6 @@ def _tenure_maps(
     return (
         {symbol: tuple(rows) for symbol, rows in tenure_by_symbol.items()},
         {symbol: tuple(rows) for symbol, rows in manual_tenure_by_symbol.items()},
-        {symbol: frozenset(symbol_ciks) for symbol, symbol_ciks in ciks_by_symbol.items()},
     )
 
 
@@ -645,23 +624,6 @@ def _roster_proxies(
         if proxy_rows:
             roster_proxy_by_symbol[ticker] = proxy_rows
     return roster_proxy_by_symbol
-
-
-def _scope_maps(
-    entity_by_cik: Mapping[str, str], ciks_by_symbol: Mapping[str, frozenset[str]]
-) -> tuple[dict[str, frozenset[str]], dict[str, tuple[tuple[str, str], ...]]]:
-    """(entity -> its stored CIKs, entity -> sorted (normalised symbol, CIK) filing-scope pairs)."""
-    ciks_by_entity: dict[str, set[str]] = {}
-    for cik, entity in entity_by_cik.items():
-        ciks_by_entity.setdefault(entity, set()).add(cik)
-    scope_pairs: dict[str, set[tuple[str, str]]] = {}
-    for symbol, symbol_ciks in ciks_by_symbol.items():
-        for cik in symbol_ciks:
-            scope_pairs.setdefault(entity_or_singleton(entity_by_cik, cik), set()).add((normalise_ticker(symbol), cik))
-    return (
-        {entity: frozenset(entity_ciks) for entity, entity_ciks in ciks_by_entity.items()},
-        {entity: tuple(sorted(pairs)) for entity, pairs in scope_pairs.items()},
-    )
 
 
 def _tenure_evidence(tenure: pd.DataFrame) -> pd.DataFrame:

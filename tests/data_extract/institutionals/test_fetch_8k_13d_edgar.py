@@ -86,14 +86,13 @@ def test_sec_8k_fetch_declares_its_driver_settings():
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,)
     assert SEC_8K_FETCH.desc == "8-K (edgartools)"
-    assert SEC_8K_FETCH.identity_aware is True
     build = cast(Any, SEC_8K_FETCH.build)
     assert build.func is build_filing_rows
     assert build.keywords["forms"] == SEC_8K_FORMS
     assert build.keywords["table"] == Tables.sec_8k
     assert build.keywords["row_fn"] is _filing_row
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print("  SEC_8K_FETCH -> sec_8k, identity_aware, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
+    print("  SEC_8K_FETCH -> sec_8k, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
 
 
 def _fake_8k_filing(
@@ -869,7 +868,7 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         lambda ticker, subject_ciks, forms, since, done_accessions: [good_filing, bad_filing],
     )
 
-    out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))[Tables.sec_13d]
+    out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope())[Tables.sec_13d]
     assert list(out["accession_number"]) == ["0001-good"]
     assert out.iloc[0]["issuer_name"] == "Apple Inc."
 
@@ -886,7 +885,7 @@ def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
         lambda ticker, subject_ciks, forms, since, done_accessions: [filing],
     )
     with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope(None, {}))
+        build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope())
     print("\n=== SANITY CHECK: known 13D parse failure ===")
     print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
 

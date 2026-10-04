@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
@@ -28,7 +29,11 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.fake_context import extract_config
+
+#: A stand-in identity whose every ticker is listed from its roster CIK alone.
+_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "1"))
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -213,15 +218,15 @@ def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
 def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, listed_since: list[pd.Timestamp | None]) -> None:
     from src.data_extract.utils.structure.def14a import fetch as mod
 
-    def _list(context, ticker, cik, company, years, since, cutovers):
-        del context, ticker, cik, company, years, cutovers
+    def _list(context, scope, company, years, since):
+        del context, scope, company, years
         listed_since.append(since)
         return filing.copy()
 
     monkeypatch.setattr(mod, "LLMExtractor", extractor)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "name": "Example Corp"}]))
-    monkeypatch.setattr(mod, "load_registrants", lambda config_dir: {})
-    monkeypatch.setattr(mod, "_list_across_registrants", _list)
+    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
+    monkeypatch.setattr(mod, "_list_scope_windows", _list)
     monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
     monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
 
@@ -409,7 +414,13 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
     )
-    monkeypatch.setattr(mod, "_list_across_registrants", lambda *_: filing)
+    # PSKY's register chain makes it a multi-window scope, so its proxies' subject headers are checked.
+    psky = dated_identity(
+        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
+        {"PSKY": "0002041610"},
+    )
+    monkeypatch.setattr(mod, "load_identity", lambda context: psky)
+    monkeypatch.setattr(mod, "_list_scope_windows", lambda *_: filing)
     monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
     monkeypatch.setattr(mod, "_payload_for", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
 
@@ -492,6 +503,7 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
             return [SimpleNamespace(ok=True, task=t, parsed=Def14AExtract(ceo_name="Fresh extraction"), error=None) for t in tasks]
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
+    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
     monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
@@ -563,6 +575,7 @@ def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
             return []
 
     monkeypatch.setattr(mod, "list_filings", _fake_list)
+    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
     monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
@@ -629,13 +642,13 @@ def test_flatten_surfaces_the_auditor_block():
 def _stub_proxy_listing(monkeypatch, mod, listed: dict[str, Any]) -> None:
     """Record each ticker's listing `since` (None = the whole `years_history` window); no proxy is listed."""
 
-    def _list(context, ticker, cik, company, years, since, cutovers):
-        del context, cik, company, years, cutovers
-        listed[ticker] = since
+    def _list(context, scope, company, years, since):
+        del context, company, years
+        listed[scope.ticker] = since
         return pd.DataFrame()
 
-    monkeypatch.setattr(mod, "_list_across_registrants", _list)
-    monkeypatch.setattr(mod, "load_registrants", lambda config_dir: {})
+    monkeypatch.setattr(mod, "_list_scope_windows", _list)
+    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
 
 
 def test_same_size_universe_swap_lists_the_new_ticker_over_the_full_window(tmp_path, monkeypatch):
@@ -680,3 +693,35 @@ def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
     assert built == [7]
     print("\n=== SANITY: DEF 14A LLM workers ===")
     print(f"  no `workers` passed -> the extractor ran {built[0]}-wide, i.e. config.gpt.threads (7 in this test config). Validated.")
+
+
+def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatch):
+    """AC-008 (DEF 14A LLM): proxies are listed by CIK for each window of the scope, never by roster CIK alone;
+    each CIK keeps only what its widened window admits, and a multi-window scope checks subject headers."""
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    identity = dated_identity(
+        [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
+        {"PSKY": "0002041610"},
+    )
+    scope = identity.filing_scope("PSKY")
+    listings = {
+        "0000813828": ["2024-04-01", "2025-08-20", "2026-04-01"],
+        "0002041610": ["2025-07-20", "2026-04-02"],
+    }
+    listed: list[str] = []
+
+    def fake_list(context, cik, forms, years, company, since=None):
+        listed.append(cik)
+        return pd.DataFrame([{"cik": cik, "accession_number": f"{cik[-4:]}-{day}", "filing_date": pd.Timestamp(day)} for day in listings[cik]])
+
+    monkeypatch.setattr(mod, "list_filings", fake_list)
+    context: Any = SimpleNamespace(log=logging.getLogger("test.def14a.windows"))
+    out = mod._list_scope_windows(context, scope, "Paramount", 15, None)
+
+    assert listed == ["0000813828", "0002041610"]
+    assert sorted(out["accession_number"]) == ["1610-2025-07-20", "1610-2026-04-02", "3828-2024-04-01", "3828-2025-08-20"]
+    assert mod.accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
+    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "320193")) == frozenset()
+    print("\n=== SANITY: DEF 14A LLM per-window listing ===")
+    print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")

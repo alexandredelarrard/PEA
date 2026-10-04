@@ -1,6 +1,6 @@
 """Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
 
-Per ticker: list its DEF 14A filings over the manifest window (across its registrant chain), carve
+Per ticker: list its DEF 14A filings over the manifest window (one listing per CIK window of its scope), carve
 the relevant sections, send only accessions without stored evidence to the LLM, and upsert that
 ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`, `def14a_director_comp`,
 `def14a_ownership`, `def14a_directors`) before the next ticker. A cross-ticker gender consensus runs
@@ -21,12 +21,8 @@ from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.registrant import (
-    Registrant,
-    header_subject_ciks,
-    issuer_ciks,
-    load_registrants,
-)
+from src.data_extract.utils.common.identity import FilingScope, load_identity
+from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
@@ -126,51 +122,37 @@ def _subject_is_accepted(
     return False
 
 
-def _list_across_registrants(
+def _list_scope_windows(
     context: Context,
-    ticker: str,
-    cik: str,
+    scope: FilingScope,
     company: str,
     years: int,
     since: pd.Timestamp | None,
-    cutovers: dict[str, Registrant],
 ) -> pd.DataFrame:
-    """That ticker's DEF 14A filings by CIK, walking every segment of its registrant chain when it has one.
+    """That ticker's DEF 14A filings, listed by CIK for each window of its filing scope.
 
-    This is the only EDGAR fetcher that resolves by CIK (`sp500_tickers.cik`), not `Company(ticker)`.
-    The chain is a dated SPLIT, never a union (`DEF14A_FORMS` is SPLIT in `registrant.FORM_POLICY`): each
-    segment contributes only filings inside `[valid_from, valid_to)`, so segments are disjoint and a
-    company-year never blends two registrants' boards. Each row's `cik` is the CIK that actually filed it.
+    A dated SPLIT (`DEF14A_FORMS` is SPLIT in `registrant.FORM_POLICY`): each CIK contributes only
+    filings its seam-widened window admits, so a company-year never blends two registrants' boards.
+    Each row's `cik` is the CIK that filed it.
     """
-    entry = cutovers.get(ticker)
-    if entry is None:
-        return list_filings(context, cik, DEF14A_FORMS, years, company, since=since)
-
     frames = []
-    for segment in entry.segments:
-        part = list_filings(context, segment.cik, DEF14A_FORMS, years, company, since=since)
+    for window in scope.windows:
+        part = list_filings(context, window.cik, DEF14A_FORMS, years, company, since=since)
         if part is None or part.empty:
             continue
-        filed = pd.to_datetime(part["filing_date"])
-        part = part[filed.map(segment.covers)]
+        part = part[pd.to_datetime(part["filing_date"]).map(window.admits)]
         if not part.empty:
             frames.append(part)
-            context.log.info(
-                "%s: %d DEF 14A filing(s) from CIK %s (%s .. %s)",
-                ticker,
-                len(part),
-                segment.cik,
-                segment.valid_from.date() if segment.valid_from else "start",
-                segment.valid_to.date() if segment.valid_to else "now",
-            )
     if not frames:
         return pd.DataFrame(columns=["ticker", "cik", "accession_number", "filing_date"])
-    out = pd.concat(frames, ignore_index=True)
-    dupes = int(out["accession_number"].duplicated().sum())
-    if dupes:
-        # The dated split makes this impossible, so a duplicate means the register is wrong; do not dedupe it away.
-        context.log.warning("%s: %d duplicate accession(s) across the %s chain", ticker, dupes, " -> ".join(entry.all_ciks()))
-    return out
+    if len(frames) > 1:
+        context.log.info("%s: DEF 14A listed across %s", scope.ticker, ", ".join(f"{len(part)} from {part['cik'].iloc[0]}" for part in frames))
+    return pd.concat(frames, ignore_index=True).drop_duplicates("accession_number", keep="first")
+
+
+def accepted_subjects(scope: FilingScope) -> frozenset[str]:
+    """Subject CIKs a multi-window ticker's proxy may name (its event CIKs); empty, i.e. no header check, otherwise."""
+    return frozenset(scope.event_ciks) if len(scope.windows) > 1 else frozenset()
 
 
 def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
@@ -290,7 +272,7 @@ def fetch_def14a_llm(
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    Lists each ticker's proxies across its registrant chain over the manifest window and sends
+    Lists each ticker's proxies per CIK window of its filing scope over the manifest window and sends
     only accessions without stored evidence to the LLM; each ticker's rows are upserted before
     the next starts. Skips when no OpenAI key is configured.
 
@@ -323,21 +305,18 @@ def fetch_def14a_llm(
     )
     # `list_filings` keeps filings STRICTLY AFTER its `since`, so the inclusive cutoff steps back one day; None lists all `years`.
     list_since = None if (full or is_full_rescan) else since - pd.Timedelta(days=1)
-    # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.
-    cutovers = load_registrants(str(context.config_dir))
-    if cutovers:
-        context.log.info("DEF 14A: %d registrant cutover(s) in force: %s", len(cutovers), ", ".join(sorted(cutovers)))
+    identity = load_identity(context)
 
     total_new, total_semantic_empty = 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
-        ticker, cik, company = str(r["ticker"]), str(r["cik"]), str(r.get("name", ""))
+        ticker, company = str(r["ticker"]), str(r.get("name", ""))
+        scope = identity.filing_scope(ticker)
         try:
-            filings = _list_across_registrants(context, ticker, cik, company, years, list_since, cutovers)
+            filings = _list_scope_windows(context, scope, company, years, list_since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
-        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
-        tasks = _ticker_tasks(context, ticker, filings, seen, accepted_subjects)
+        tasks = _ticker_tasks(context, ticker, filings, seen, accepted_subjects(scope))
         extracted, semantic_empty = _extract_ticker(context, extractor, ticker, tasks)
         seen.update(extracted)
         total_new += len(extracted)

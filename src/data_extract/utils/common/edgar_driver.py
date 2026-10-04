@@ -8,6 +8,7 @@ fetchers build rows with `build_filing_rows` and supply only a per-filing row fu
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property, partial
@@ -18,16 +19,11 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.edgar_fillings import archive_url
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import (
-    Registrant,
-    identity_scope_fingerprint,
-    load_registrants,
-    resolve_registrant_filings,
-)
-from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
+from src.data_extract.utils.common.registrant import resolve_registrant_filings
+from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run, scope_changed_tickers
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
@@ -39,13 +35,49 @@ class IncompleteEdgarRunError(RuntimeError):
     """A completeness-sensitive EDGAR walk had one or more failed tickers."""
 
 
+@dataclass
+class GuardTally:
+    """Thread-safe count of filings the scope guard skipped during one run."""
+
+    skipped: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def add(self, n: int) -> None:
+        if n:
+            with self._lock:
+                self.skipped += n
+
+
 @dataclass(frozen=True)
 class EdgarScope:
-    """What every per-ticker EDGAR walk of one run resolves filings against: the identity layer
-    (None when the fetch is not identity-aware) and the run's registrant register."""
+    """What every per-ticker EDGAR walk of one run lists filings against.
 
-    identity: Identity | None
-    registrants: dict[str, Registrant]
+    `identity` gives each ticker's `FilingScope`; without it a ticker's scope is its roster CIK alone.
+    `guard` counts the filings skipped as outside a scope.
+    """
+
+    identity: Identity | None = None
+    guard: GuardTally = field(default_factory=GuardTally)
+
+    def filing_scope(self, ticker: str, cik: str) -> FilingScope:
+        """`ticker`'s filing scope from the identity layer, else its roster CIK alone."""
+        return self.identity.filing_scope(ticker) if self.identity is not None else FilingScope.roster_only(ticker, cik)
+
+    def list_filings(
+        self,
+        ticker: str,
+        cik: str,
+        forms: Sequence[str],
+        *,
+        since: pd.Timestamp | None,
+        done_accessions: frozenset[str],
+        stats: dict[str, int] | None = None,
+    ) -> list:
+        """`resolve_registrant_filings` over `ticker`'s scope; guard skips are added to `guard`."""
+        counts: dict[str, int] = {} if stats is None else stats
+        filings = resolve_registrant_filings(self.filing_scope(ticker, cik), forms, since=since, done_accessions=done_accessions, stats=counts)
+        self.guard.add(counts.get("foreign_skipped", 0))
+        return filings
 
 
 @dataclass(frozen=True)
@@ -130,16 +162,14 @@ class EdgarFetch:
 
     `tables[0]` keys the manifest window and the accession dedup set; every table gets a
     `record_run` entry. `build(ticker, cik, since=, done_accessions=, scope=)` returns
-    `{table: frame}`. A failed ticker is fatal to the run manifest;
-    `identity_aware` resolves through the identity layer and relists a ticker whose identity
-    scope changed; `minimum_since` floors the listing window; `completion_table` is saved last
-    and only when every earlier frame saved.
+    `{table: frame}`. A failed ticker is fatal to the run manifest; a ticker whose lineage scope
+    changed since the last run is relisted over the full window; `minimum_since` floors the listing
+    window; `completion_table` is saved last and only when every earlier frame saved.
     """
 
     desc: str
     tables: tuple[Table, ...]
     build: BuildFn
-    identity_aware: bool = True
     minimum_since: pd.Timestamp | None = None
     completion_table: Table | None = None
 
@@ -160,42 +190,30 @@ def build_filing_rows(
     """`ticker`'s new filings of `forms` resolved against `scope` (oldest first, stored accessions
     and pre-`since` filings dropped), `row_fn(ticker, stamp)` rows per filing, one `table` frame
     finalised by `finalise_frame`."""
-    filings = resolve_registrant_filings(
-        ticker,
-        forms,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=scope.registrants,
-        identity=scope.identity,
-    )
+    filings = scope.list_filings(ticker, cik, forms, since=since, done_accessions=done_accessions)
     rows = [row for filing in filings for row in row_fn(ticker, FilingStamp.of(filing, cik))]
     return {table: finalise_frame(table, rows, columns=columns, numeric=numeric)}
 
 
-def load_edgar_scope(
-    context: Context,
-    cik_map: pd.DataFrame,
-    entry: dict | None,
-    *,
-    identity_aware: bool,
-) -> tuple[EdgarScope, dict[str, str] | None, frozenset[str]]:
-    """The run's `EdgarScope` from `context.config_dir`, plus (identity-aware only) each ticker's
-    identity-scope fingerprint and the tickers whose fingerprint changed since manifest `entry`."""
-    registrants = load_registrants(str(context.config_dir))
-    if not identity_aware:
-        return EdgarScope(None, registrants), None, frozenset()
-    identity = load_identity(context)
-    fingerprints: dict[str, str] = {}
-    for ticker in cik_map["ticker"].astype(str):
-        filing_scope = identity.filing_scope(ticker)
-        fingerprints[ticker] = identity_scope_fingerprint(filing_scope, registrants.get(filing_scope.ticker))
-    return EdgarScope(identity, registrants), fingerprints, changed_scope_tickers(entry, fingerprints)
+def load_edgar_scope(context: Context) -> EdgarScope:
+    """The run's `EdgarScope` over the identity layer of `context`."""
+    return EdgarScope(load_identity(context))
+
+
+def relist_tickers(scope: EdgarScope, cik_map: pd.DataFrame, entry: dict | None) -> frozenset[str]:
+    """Tickers whose lineage `scope_changed_at` is at or after the table's last run (manifest `entry`)."""
+    if scope.identity is None:
+        return frozenset()
+    stamps = {
+        ticker: scope.filing_scope(ticker, cik).scope_changed_at for ticker, cik in zip(cik_map["ticker"].astype(str), cik_map["cik"], strict=True)
+    }
+    return scope_changed_tickers(entry, stamps)
 
 
 @dataclass(frozen=True)
 class RunWindow:
     """One run's listing window: `since` for unchanged tickers, `fallback_since` (the whole configured
-    history) for a ticker whose identity scope changed, and whether the run counts as a full rescan."""
+    history) for a ticker whose lineage scope changed, and whether the run counts as a full rescan."""
 
     since: pd.Timestamp
     fallback_since: pd.Timestamp
@@ -307,7 +325,6 @@ def _record_tables(
     cik_map: pd.DataFrame,
     totals: dict[Table, int],
     window: RunWindow,
-    fingerprints: dict[str, str] | None,
 ) -> None:
     """One `record_run` entry per table of `fetch`, zero-row tables included."""
     for table in fetch.tables:
@@ -318,7 +335,6 @@ def _record_tables(
             totals[table],
             is_full_rescan=window.is_full_rescan,
             coverage_complete=True,
-            identity_scope_fingerprints=fingerprints,
             tickers=cik_map["ticker"],
         )
 
@@ -335,24 +351,34 @@ def run_edgar_fetch(
 ) -> None:
     """Run `fetch` for `tickers` (or a preloaded `cik_map`): upsert every ticker's frames and record
     each of `fetch.tables`, even with zero rows. `full` takes the whole `years_history` window;
-    a failed ticker raises before any manifest entry advances."""
+    a failed ticker raises before any manifest entry advances. The summary counts guard skips."""
     context.ensure_edgar_identity()
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
     entry = get_entry(context, fetch.tables[0])
-    scope, fingerprints, changed = load_edgar_scope(context, cik_map, entry, identity_aware=fetch.identity_aware)
+    scope = load_edgar_scope(context)
+    changed = relist_tickers(scope, cik_map, entry)
     if changed:
-        context.log.info("%s: %d ticker identity scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
+        context.log.info("%s: %d ticker lineage scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
     window = _resolve_window(context, fetch, cik_map, entry, years_history, full)
     done = stored_values(context, fetch.tables[0], "accession_number")
     worker = partial(_walk_ticker, context, fetch, scope, window, changed, done)
     results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
     totals, failed = _tally(results, fetch.tables)
     summary = ", ".join(f"+{n} '{t}'" for t, n in totals.items())
-    context.log.info("%s: %d/%d ticker(s) ok, %d failed -> %s", fetch.desc, len(results) - failed, len(cik_map), failed, summary)
+    context.log.info(
+        "%s: %d/%d ticker(s) ok, %d failed -> %s; guard skipped %d filing(s) outside a filing scope for '%s'",
+        fetch.desc,
+        len(results) - failed,
+        len(cik_map),
+        failed,
+        summary,
+        scope.guard.skipped,
+        fetch.tables[0],
+    )
     if failed:
         raise IncompleteEdgarRunError(
             f"{fetch.desc}: {failed}/{len(cik_map)} ticker(s) failed; rows already saved remain "
             "idempotent, but no run manifest was advanced because coverage is incomplete"
         )
-    _record_tables(context, fetch, cik_map, totals, window, fingerprints)
+    _record_tables(context, fetch, cik_map, totals, window)

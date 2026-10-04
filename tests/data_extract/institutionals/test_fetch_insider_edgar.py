@@ -38,7 +38,7 @@ def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch)
         universe=["AAA"],
         identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
-        scope=module.EdgarScope(None, {}),
+        scope=module.EdgarScope(),
     )
     assert out[Tables.insider_transactions_live].empty
     assert out[Tables.insider_transactions_live_coverage].to_dict("records") == [
@@ -62,7 +62,7 @@ def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
         universe=["AAA"],
         identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
-        scope=module.EdgarScope(None, {}),
+        scope=module.EdgarScope(),
     )
     live = out[Tables.insider_transactions_live]
     assert len(live) == 1
@@ -127,3 +127,37 @@ def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
     print(
         "SANITY: issuer ownership discovery retains a Form 4 submitted under its reporting owner's accession CIK and filters a prefix-matched 424B2."
     )
+
+
+def test_live_listing_walks_every_event_cik_of_the_scope(monkeypatch):
+    """AC-029: a predecessor's (or co-registrant's) Forms 3/4/5 are listed from its own CIK, both from
+    its submissions and its owner-inclusive search; a filing from another filer is skipped and counted."""
+    from src.data_extract.utils.common.edgar_driver import EdgarScope
+    from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
+
+    identity = dated_identity(
+        [("XOM", "0000034088", "cik_window", SENTINEL, "2026-07-01"), ("XOM", "0002115436", "cik_window", "2026-07-01", None)],
+        {"XOM": "0002115436"},
+    )
+    built = patch_company(
+        monkeypatch,
+        {
+            34088: [filing("pred-4", "2026-08-03", 34088), filing("foreign-4", "2026-08-04", 825313)],
+            2115436: [filing("succ-4", "2026-08-05", 2115436)],
+        },
+    )
+    searched: list[str] = []
+
+    def owner_search(ticker, cik, **kwargs):
+        searched.append(cik)
+        return [filing(f"owner-{cik[-4:]}", "2026-08-06", int(cik))]
+
+    monkeypatch.setattr(module, "ownership_filings", owner_search)
+    scope = EdgarScope(identity)
+    out = module.insider_filings("XOM", "0002115436", since=None, through=pd.Timestamp("2026-09-01"), done_accessions=frozenset(), scope=scope)
+
+    assert [f.accession_number for f in out] == ["pred-4", "succ-4", "owner-4088", "owner-5436"]
+    assert sorted(built) == [34088, 2115436]
+    assert searched == ["0000034088", "0002115436"]
+    assert scope.guard.skipped == 1
+    print("SANITY: insider live listed both XOM CIKs (submissions and owner search); the foreign Form 4 was skipped and counted.")

@@ -46,13 +46,14 @@ from pathlib import Path
 import pandas as pd
 
 from src.context import Context, get_config_context
-from src.data_extract.utils.common.registrant import Registrant, issuer_ciks, load_registrants
+from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.fetch import (
-    _list_across_registrants,
+    _list_scope_windows,
     _payload_for,
     _subject_is_accepted,
+    accepted_subjects,
 )
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_TABLES, _result_frames
 from src.data_store.schema import Table, Tables
@@ -160,11 +161,9 @@ def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:
 def _tasks_for_ticker(
     ctx: Context,
     ticker: str,
-    cik: str,
     company: str,
     want: set[str],
-    accepted_subject_ciks: frozenset[str],
-    cutovers: dict[str, Registrant],
+    scope: FilingScope,
 ) -> tuple[list[tuple[str, dict]], set[str], set[str]]:
     """Fetch + carve this ticker's target filings on THIS thread; `(payload, meta)` per readable
     one.
@@ -175,18 +174,11 @@ def _tasks_for_ticker(
     across tickers would not corrupt the saves (they group on `meta["ticker"]`) but would make
     the failure log unreadable.
     """
+    accepted_subject_ciks = accepted_subjects(scope)
     try:
-        # Use production's dated registrant walk. A target accession can predate the roster CIK,
+        # Use production's per-window listing. A target accession can predate the roster CIK,
         # and a current-CIK-only listing would silently make that exact repair impossible.
-        filings = _list_across_registrants(
-            ctx,
-            ticker,
-            cik,
-            company,
-            ctx.config.data_extract.years_history,
-            None,
-            cutovers,
-        )
+        filings = _list_scope_windows(ctx, scope, company, ctx.config.data_extract.years_history, None)
     except Exception as e:  # noqa: BLE001 -- one ticker, not the run
         logger.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
         return [], set(), set(want)
@@ -257,7 +249,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
     ok, failed, rejected, unresolved = 0, 0, 0, 0
     batch: list[tuple[str, dict]] = []
     done_tickers = 0
-    cutovers = load_registrants()
+    identity = load_identity(ctx)
 
     def flush(pending: list[tuple[str, dict]]) -> tuple[int, int]:
         """Delete the children of the filings in `pending`, then extract and save them."""
@@ -283,20 +275,11 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
         return n_ok, len(results) - n_ok
 
     for _, r in cik_map.iterrows():
-        ticker, cik, company = r["ticker"], r["cik"], r.get("name", "")
+        ticker, company = r["ticker"], r.get("name", "")
         want = set(work.loc[work["ticker"] == ticker, "accession_number"])
         if not want:
             continue
-        accepted_subjects = issuer_ciks(ticker, cik, cutovers) if ticker in cutovers else frozenset()
-        tasks, rejected_accessions, unresolved_accessions = _tasks_for_ticker(
-            ctx,
-            ticker,
-            cik,
-            company,
-            want,
-            accepted_subjects,
-            cutovers,
-        )
+        tasks, rejected_accessions, unresolved_accessions = _tasks_for_ticker(ctx, ticker, company, want, identity.filing_scope(ticker))
         batch.extend(tasks)
         if rejected_accessions:
             _remove_rejected_subjects(ctx, rejected_accessions)

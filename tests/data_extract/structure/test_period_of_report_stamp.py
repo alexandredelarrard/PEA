@@ -49,7 +49,7 @@ def test_def14a_walk_stores_none_when_period_of_report_raises(monkeypatch: pytes
     filing.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: facts))  # type: ignore[attr-defined]
     _list(monkeypatch, [filing])
 
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.def14a_edgar]
 
     assert len(df) == 1
     row = df.iloc[0]
@@ -66,7 +66,7 @@ def test_filing_text_walk_stores_none_when_period_of_report_raises(monkeypatch: 
     filing.obj = lambda: SimpleNamespace(risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
     _list(monkeypatch, [filing])
 
-    df = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.filing_risk_text]
+    df = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.filing_risk_text]
 
     assert len(df) == 1
     row = df.iloc[0]

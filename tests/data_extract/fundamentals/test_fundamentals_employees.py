@@ -12,7 +12,9 @@ from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
+from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError
+from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
 from src.gpt_extract.utils.schemas_gpt import LlmResult
 
@@ -57,12 +59,11 @@ def build(
     *,
     done_dates: frozenset[pd.Timestamp] = frozenset(),
     manual: dict[str, dict] | None = None,
+    scope: mod.EdgarScope | None = None,
 ) -> mod.EmployeeTickerResult:
-    def listing(ticker, forms, **kwargs):
-        assert ticker == "AAA"
+    def listing(filing_scope, forms, **kwargs):
+        assert filing_scope.ticker == "AAA" and filing_scope.event_ciks == ("0000000001",)
         assert "10-K405" in forms
-        assert kwargs["identity"] is identity
-        assert kwargs["registrants"] == {}
         return filings
 
     class FakeLLM:
@@ -75,8 +76,11 @@ def build(
         def run(self):
             return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
 
-    identity = SimpleNamespace(owns=lambda ticker, cik: ticker == "AAA" and str(cik).zfill(10) == "0000000001")
-    monkeypatch.setattr(mod, "resolve_registrant_filings", listing)
+    identity = SimpleNamespace(
+        owns=lambda ticker, cik: ticker == "AAA" and str(cik).zfill(10) == "0000000001",
+        filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"),
+    )
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", listing)
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
     config = OmegaConf.create(
         {
@@ -87,7 +91,7 @@ def build(
             }
         }
     )
-    context = SimpleNamespace(config=config, log=SimpleNamespace(info=lambda *args: None))
+    context = SimpleNamespace(config=config, log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None))
     return mod.build_ticker_employees(
         context,
         "AAA",
@@ -95,7 +99,7 @@ def build(
         since=None,
         done_dates=done_dates,
         manual=manual or {},
-        scope=mod.EdgarScope(identity, {}),
+        scope=scope or mod.EdgarScope(identity),
     )
 
 
@@ -342,14 +346,20 @@ def test_same_day_amendment_uses_later_supported_count(monkeypatch):
     print("\nSANITY: a same-date amendment replaces the original value at the one-row filing-date grain.")
 
 
-def test_missing_report_period_keeps_filing_date_and_bad_cik_fails_closed(monkeypatch):
+def test_missing_report_period_keeps_filing_date_and_a_foreign_cik_is_skipped_and_counted(monkeypatch):
+    """AC-008 (employees): a listed filing whose CIK the identity layer does not tie to the ticker is skipped and counted, never raised."""
     filing = Filing("no-period", "2024-03-01", "We had 40,000 employees.", report=None)
     result = build(monkeypatch, [filing], {"no-period": answer(40000, "We had 40,000 employees.")})
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]
-    filing.cik = "0000000002"
-    with pytest.raises(ValueError, match="outside the issuer lineage"):
-        build(monkeypatch, [filing], {"no-period": answer(40000, "We had 40,000 employees.")})
-    print("\nSANITY: optional report metadata does not block filing-date storage; reused alias CIKs fail closed.")
+    foreign = Filing("foreign", "2025-03-01", "We had 9 employees.")
+    foreign.cik = "0000000002"
+    foreign.html = lambda: pytest.fail("a foreign filing was read or sent to the LLM")
+    identity = SimpleNamespace(owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "1"))
+    scope = mod.EdgarScope(identity)
+    result = build(monkeypatch, [filing, foreign], {"no-period": answer(40000, "We had 40,000 employees.")}, scope=scope)
+    assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]
+    assert scope.guard.skipped == 1
+    print("\nSANITY: optional report metadata does not block filing-date storage; a foreign CIK is skipped and counted (1), not raised.")
 
 
 def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None) -> SimpleNamespace:
@@ -364,8 +374,7 @@ def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None) -> Simpl
 
 def patch_run(monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> None:
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace(ciks_by_symbol={}))
-    monkeypatch.setattr(mod, "load_registrants", lambda *args: {})
+    monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace())
     monkeypatch.setattr(mod, "load_manual_roster", lambda *args: {})
     monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
 

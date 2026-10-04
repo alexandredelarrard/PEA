@@ -21,7 +21,6 @@ from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, 
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
@@ -285,12 +284,9 @@ def _task_stamp(result: LlmResult) -> FilingStamp:
     return cast(FilingStamp, result.task.meta["stamp"])
 
 
-def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, identity: Identity, max_chars: int) -> LlmTask:
-    """Check the filer belongs to the issuer lineage and package its excerpt as one LLM task."""
+def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
+    """Package one owned filing's excerpt as one LLM task."""
     filing = stamp.filing
-    actual_cik = getattr(filing, "cik", None)
-    if not actual_cik or not identity.owns(ticker, actual_cik):
-        raise ValueError(f"{ticker} {stamp.accession_number}: filing CIK {actual_cik!r} is outside the issuer lineage")
     report = stamp.period_of_report
     report_date = pd.Timestamp(report).normalize() if report is not None else None
     text = filing_body_text(filing)
@@ -312,12 +308,12 @@ def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, identity: Ide
     )
 
 
-def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[LlmResult]:
+def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp]) -> list[LlmResult]:
     """One LLM answer per filing, in filing order; any failed call fails the ticker."""
     extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
     for sequence, stamp in enumerate(stamps):
-        extractor.submit(_employee_task(sequence, ticker, stamp, identity, max_chars))
+        extractor.submit(_employee_task(sequence, ticker, stamp, max_chars))
     results = extractor.run()
     if len(results) != len(stamps) or any(not result.ok for result in results):
         errors = [f"{_task_stamp(result).accession_number}: {result.error}" for result in results if not result.ok]
@@ -325,11 +321,11 @@ def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: 
     return results
 
 
-def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[_Decision]:
+def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> list[_Decision]:
     """One guarded LLM decision per filing; any failed call fails the ticker."""
     config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
     decisions = []
-    for result in _extract_answers(context, config, ticker, stamps, identity):
+    for result in _extract_answers(context, config, ticker, stamps):
         answer = result.parsed
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
@@ -392,26 +388,33 @@ def build_ticker_employees(
     manual: dict[str, dict],
     scope: EdgarScope,
 ) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM."""
+    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM.
+
+    A listed filing whose filer the identity layer does not tie to `ticker` is skipped and counted in `scope.guard`.
+    """
     identity = scope.identity
     if identity is None:
         raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
-    listed = resolve_registrant_filings(
-        ticker,
-        HEADCOUNT_FORMS,
-        since=since,
-        done_accessions=frozenset(),
-        registrants=scope.registrants,
-        identity=identity,
-    )
+    listed = scope.list_filings(ticker, cik, HEADCOUNT_FORMS, since=since, done_accessions=frozenset())
+    owned = [filing for filing in listed if _owned(context, identity, ticker, filing)]
+    scope.guard.add(len(listed) - len(owned))
     stamps = sorted(
-        (stamp for stamp in (FilingStamp.of(filing, cik) for filing in listed) if stamp.filed.normalize() not in done_dates),
+        (stamp for stamp in (FilingStamp.of(filing, cik) for filing in owned) if stamp.filed.normalize() not in done_dates),
         key=_filing_key,
     )
     by_hand = [_manual_decision(stamp, manual[str(stamp.accession_number)]) for stamp in stamps if str(stamp.accession_number) in manual]
     to_read = [stamp for stamp in stamps if str(stamp.accession_number) not in manual]
-    decisions = by_hand + (_llm_decisions(context, ticker, to_read, identity) if to_read else [])
+    decisions = by_hand + (_llm_decisions(context, ticker, to_read) if to_read else [])
     return _decide_ticker(context, ticker, decisions)
+
+
+def _owned(context: Context, identity: Identity, ticker: str, filing: object) -> bool:
+    """Whether the filing's own CIK belongs to `ticker`'s entity; a filing without a CIK is skipped (warned)."""
+    actual_cik = getattr(filing, "cik", None)
+    if actual_cik and identity.owns(ticker, actual_cik):
+        return True
+    context.log.warning("%s %s: filing CIK %r is outside the issuer lineage; skipped", ticker, getattr(filing, "accession_number", "?"), actual_cik)
+    return False
 
 
 def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
@@ -468,7 +471,7 @@ def fetch_fundamentals_employees(
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    scope = EdgarScope(load_identity(context), load_registrants(str(context.config_dir)))
+    scope = EdgarScope(load_identity(context))
     manual = load_manual_roster(str(context.config_dir))
     done = {} if full else _done_dates(context, tickers, since)
     context.log.info(
@@ -491,7 +494,7 @@ def fetch_fundamentals_employees(
     counted = sum(int(result.frame["employees"].notna().sum()) for result in successful)
     context.log.info(
         "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d from the manual roster, %d ambiguous) "
-        "-> %d count row(s), %d NULL row(s)",
+        "-> %d count row(s), %d NULL row(s); guard skipped %d filing(s) outside a filing scope for 'fundamentals_employees'",
         len(successful),
         len(cik_map),
         failed,
@@ -500,6 +503,7 @@ def fetch_fundamentals_employees(
         sum(outcome["status"] == "ambiguous" for outcome in outcomes),
         counted,
         rows - counted,
+        scope.guard.skipped,
     )
     if failed:
         raise IncompleteEdgarRunError(f"fundamentals employees: {failed} ticker(s) failed; decided filings were saved and the rest retry next run")

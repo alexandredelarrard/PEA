@@ -5,13 +5,14 @@
 always qualifies); (2) an amendment emits a row only if it changes >=1 value and lands <= `MAX_AMENDMENT_LAG_DAYS`
 after the original; (3) each row is a complete snapshot of latest-known values, built only from facts filed on or
 before `as_of`, with every null explained by a reason code; (4) stored rows are immutable (`diff_against_stored`);
-(5) same-day filings collapse to one row by `(ticker, date)`, provenance by `FORM_PRECEDENCE`.
+(5) same-day filings collapse to one row by `(ticker, date)`, provenance by `FORM_PRECEDENCE`; (6) across a CIK seam
+one filer per fiscal period, the CIK whose stated window owns the period end (`keep_window_owner_filings`).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
+from src.data_extract.utils.common.identity import CikWindow, Identity, load_identity
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
@@ -31,6 +33,7 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
+from src.utils.string import pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
@@ -721,11 +724,38 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
     return frame
 
 
+# ------------------------------------------------------------------ the seam rule ---
+
+
+def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> pd.DataFrame:
+    """Rule 6: rows of a fiscal period reported by several CIKs keep only the CIK whose stated window owns the period end.
+
+    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no period.
+    """
+    if len(windows) < 2 or facts.empty or "cik" not in facts.columns:
+        return facts
+    ciks = pad_cik_series(facts["cik"]).tolist()
+    periods = [None if pd.isna(day) else pd.Timestamp(day) for day in pd.to_datetime(facts["period_of_report"], errors="coerce")]
+    reported = set(zip(periods, ciks, strict=True))
+    owner = {day: next((window.cik for window in windows if window.owns(day)), None) for day in set(periods) if day is not None}
+    drop = [
+        day is not None and (holder := owner[day]) is not None and cik != holder and (day, holder) in reported
+        for day, cik in zip(periods, ciks, strict=True)
+    ]
+    return facts[[not dropped for dropped in drop]]
+
+
+def _filer_count(facts: pd.DataFrame) -> int:
+    """Distinct filer CIKs in a ticker's facts (0 when the projection has no `cik`)."""
+    return int(pad_cik_series(facts["cik"].dropna()).nunique()) if "cik" in facts.columns else 0
+
+
 # ------------------------------------------------------------------- immutability ---
 
 #: The `fundamentals_facts` columns the replay reads (projected read, one ticker at a time).
 FACT_COLUMNS: tuple[str, ...] = (
     "ticker",
+    "cik",
     "accession_number",
     "field",
     "fiscal_year",
@@ -808,18 +838,32 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
 
     Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
     logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
-    and rebuilds from stored facts, with no network.
+    and rebuilds from stored facts, with no network. A ticker whose facts come from several CIKs reads its
+    windows from the identity layer for the seam rule (`keep_window_owner_filings`).
     """
     from src.data_store.schema import Tables  # local: avoids a package cycle
 
     catalogue = load_catalogue(context.config_dir)
     guards = load_guards(context.config_dir)
     history_rows = codes_rows = 0
+    identity: Identity | None = None
     for ticker in tickers:
         facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
         if facts is None:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
             continue
+        if _filer_count(facts) > 1:
+            identity = identity or load_identity(context)
+            kept = keep_window_owner_filings(facts, identity.filing_scope(ticker).windows)
+            set_aside = sorted(set(facts["accession_number"]) - set(kept["accession_number"]))
+            if set_aside:
+                context.log.info(
+                    "history: %s seam rule set aside %d filing(s) of a period its window owner reports: %s",
+                    ticker,
+                    len(set_aside),
+                    ", ".join(set_aside),
+                )
+            facts = kept
         built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
             continue

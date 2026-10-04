@@ -18,7 +18,6 @@ from src.constants.constants import SEC_INSIDER_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, run_edgar_fetch
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_atom import (
     SEC_INSIDER_FORM_FAMILIES,
     AtomEntry,
@@ -122,24 +121,12 @@ def insider_filings(
     done_accessions: frozenset[str],
     scope: EdgarScope,
 ) -> list[Any]:
-    """Union issuer submissions with the owner-inclusive issuer search."""
-    issuer_filings = resolve_registrant_filings(
-        ticker,
-        SEC_INSIDER_FORMS,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=scope.registrants,
-        identity=scope.identity,
-    )
+    """Union the submissions of every event CIK in the ticker's scope with each CIK's owner-inclusive issuer search."""
+    issuer_filings = scope.list_filings(ticker, cik, SEC_INSIDER_FORMS, since=since, done_accessions=done_accessions)
     discovered: dict[str, Any] = {str(filing.accession_number): filing for filing in issuer_filings}
-    for filing in ownership_filings(
-        ticker,
-        cik,
-        since=since,
-        through=through,
-        done_accessions=done_accessions,
-    ):
-        discovered.setdefault(str(filing.accession_number), filing)
+    for event_cik in scope.filing_scope(ticker, cik).event_ciks:
+        for filing in ownership_filings(ticker, event_cik, since=since, through=through, done_accessions=done_accessions):
+            discovered.setdefault(str(filing.accession_number), filing)
     return sorted(
         discovered.values(),
         key=lambda filing: pd.Timestamp(filing.filing_date),
@@ -273,7 +260,6 @@ def fetch_insider_edgar(
             Tables.insider_transactions_live_coverage,
         ),
         build=partial(build_ticker_insider_edgar, universe=tickers, identity=identity, scan_through=scan_through, rescan_stored=full),
-        identity_aware=False,
         minimum_since=minimum_since,
         completion_table=Tables.insider_transactions_live_coverage,
     )

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from src.data_store import ddl
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 
 INSIDER_COLUMNS = (
     "accession_number",
@@ -66,6 +66,7 @@ DATE_COLUMNS = (
 )
 PK = ("accession_number", "security_type", "row_sequence")
 NEW_READ_COLUMNS = ("owner_ciks", "n_reporting_owners", "original_submission_date", "document_type", "source", "row_sequence")
+REMOVED_TABLES = ("insider_transactions_live", "insider_transactions_live_coverage", "insider_transactions_quarantine")
 OLD_READ_COLUMNS = (
     "accession_number",
     "ticker",
@@ -100,7 +101,6 @@ def test_insider_transactions_registry_is_the_single_table_contract() -> None:
     assert table.read_columns == OLD_READ_COLUMNS + NEW_READ_COLUMNS
     assert "transaction_sk" not in table.read_columns
     assert set(table.read_columns) <= set(INSIDER_COLUMNS)
-    assert Tables.insider_transactions_live.read_columns == OLD_READ_COLUMNS
 
     print("\n=== SANITY: insider_transactions registry ===")
     print(f"  pk {table.pk}, freshness {table.freshness} on {table.freshness_date_col}")
@@ -124,3 +124,20 @@ def test_insider_transactions_schema_sql_matches_the_contract() -> None:
     print("\n=== SANITY: sql/schema.sql insider_transactions block ===")
     print(f"  {len(columns)} columns in contract order, {len(DATE_COLUMNS)} DATE, PK {PK}")
     print("  SANITY: the persisted DDL matches the registry contract; transaction_sk is gone.")
+
+
+def test_the_three_retired_insider_tables_are_gone_from_registry_and_ddl() -> None:
+    registered = {value.name for value in vars(Tables).values() if isinstance(value, Table)}
+    schema_text = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_text)
+
+    assert {"insider_transactions", "insider_footnotes"} <= registered
+    for name in REMOVED_TABLES:
+        assert not hasattr(Tables, name) and name not in registered, name
+        assert name not in blocks and f'"{name}"' not in schema_text, name
+    insider_tables = sorted(name for name in registered if name.startswith("insider_"))
+    assert insider_tables == ["insider_footnotes", "insider_transactions"]
+
+    print("\n=== SANITY: retired insider tables ===")
+    print(f"  registered insider tables: {insider_tables}; none of {REMOVED_TABLES} in the registry or sql/schema.sql")
+    print("  SANITY: one insider transaction table plus its footnotes remain.")

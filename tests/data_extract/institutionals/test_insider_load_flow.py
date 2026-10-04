@@ -9,6 +9,7 @@ parsing, screening, the shared driver and every store read and write are the rea
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
@@ -283,6 +285,47 @@ def test_zip_over_edgar_stamps_quarter_inserts_only_missing_filings_and_reports(
     print(
         f"\nSANITY: zip over EDGAR -> {inserted} zip-only rows inserted, E1's 2 EDGAR rows got only quarter=2026q2, E2 kept NULL quarter, "
         f"R1 excluded; report '{report}'; reruns left all {len(df_rerun)} rows unchanged and no accession holds two sources."
+    )
+
+
+def zip_after_edgar_keeps_the_proof(context: Any, sec: _FakeSec, run_zip: Callable[[Any], int]) -> tuple[dict, pd.Timestamp | None]:
+    """EDGAR run, then a zip quarter through `run_zip`; asserts the EDGAR manifest entry and the
+    frontier it proves are unchanged. Returns the entry and the frontier."""
+    log = logging.getLogger("tests.insider_load_flow")
+    sec.zips["2026q1"] = _zip_tables([Q0])
+    run_zip(context)
+    sec.filings = [E1, E2]
+    _run_edgar(context)
+    before = get_entry(context, Tables.insider_transactions)
+    frontier_before = schedule_complete_through(context, log, Tables.insider_transactions, expected_tickers=UNIVERSE)
+    assert before is not None and before.get("coverage_complete") is True and before.get("tickers") == UNIVERSE
+    assert frontier_before == pd.Timestamp(before["last_run_date"])
+
+    sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z0, Z1])
+    run_zip(context)
+    after = get_entry(context, Tables.insider_transactions)
+    frontier_after = schedule_complete_through(context, log, Tables.insider_transactions, expected_tickers=UNIVERSE)
+
+    proof = ("coverage_complete", "last_run_date", "tickers")
+    kept = {key: (after or {}).get(key) for key in proof}
+    assert kept == {key: before[key] for key in proof}, f"EDGAR proof changed by the zip ingest: {kept}"
+    assert after == before, "the zip ingest leaves the whole EDGAR entry untouched"
+    assert frontier_after == frontier_before, f"frontier moved: {frontier_before} -> {frontier_after}"
+    return before, frontier_after
+
+
+def test_a_zip_ingest_after_an_edgar_run_keeps_the_edgar_completeness_proof(tmp_path, sqlite_store, monkeypatch, identity):
+    """AC-009 (O12): a zip ingest neither erases nor advances the EDGAR run's manifest proof."""
+    sec = _FakeSec(monkeypatch, identity, tmp_path)
+    context = _context(tmp_path, sqlite_store)
+
+    entry, frontier = zip_after_edgar_keeps_the_proof(context, sec, _run_zip)
+
+    assert frontier is not None
+    print(
+        f"\nSANITY: after a zip quarter following the EDGAR run, the insider_transactions manifest entry is unchanged "
+        f"(coverage_complete={entry['coverage_complete']}, last_run_date={entry['last_run_date']}, tickers={entry['tickers']}) "
+        f"and complete_through stays {frontier.date()}."
     )
 
 

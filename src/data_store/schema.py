@@ -826,56 +826,6 @@ class Tables:
             "row_sequence",
         ),
     )
-    # Daily EDGAR tail for the still-open bulk quarter. Its row sequence is local to the
-    # ownership XML and deliberately distinct from the quarterly data set's generated
-    # `transaction_sk`. Consumers overlay only accessions absent from the bulk table.
-    insider_transactions_live = Table(
-        "insider_transactions_live",
-        ("accession_number", "security_type", "source_row_sequence"),
-        date_col="transaction_date",
-        date_type_cols=(
-            "transaction_date",
-            "filing_date",
-            "period_of_report",
-            "deemed_execution_date",
-            "exercise_date",
-            "expiration_date",
-        ),
-        freshness="daily",
-        freshness_date_col="filing_date",
-        read_columns=(
-            "accession_number",
-            "ticker",
-            "owner_cik",
-            "owner_name",
-            "filing_date",
-            "transaction_date",
-            "transaction_code",
-            "shares",
-            "price_per_share",
-            "value_usd",
-            "shares_owned_after",
-            "security_type",
-            "security_title",
-            "direct_indirect",
-            "officer_title",
-            "is_director",
-            "is_officer",
-            "is_ten_pct_owner",
-            "is_10b5_1",
-        ),
-    )
-    # One row per requested universe ticker. A row advances only after that ticker's EDGAR
-    # listing and parsing succeeds, including the legitimate zero-new-filings case. The cube
-    # uses the minimum across its universe, so a partial run cannot claim a current frontier.
-    insider_transactions_live_coverage = Table(
-        "insider_transactions_live_coverage",
-        ("ticker",),
-        date_col="complete_through",
-        date_type_cols=("complete_through",),
-        freshness="daily",
-        read_columns=("ticker", "complete_through", "updated_at"),
-    )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
     # 2023q1 and 2026q1). Footnote text is what distinguishes an exercise-and-sell package from
@@ -883,71 +833,6 @@ class Tables:
     # that predate the `AFF10B5ONE` field. Stored only for accessions whose issuer is in the
     # universe -- the raw file is ~167k rows per quarter for all filers.
     insider_footnotes = Table("insider_footnotes", ("accession_number", "footnote_id"), date_col=None, ticker_col=None)
-    # Rows the IDENTITY SCREEN rejected, kept rather than deleted -- the repo's first
-    # quarantine table. They are the evidence the screen worked, and a later point-in-time
-    # universe may readmit some of them, so `_filter_universe` partitions rather than filters.
-    #
-    # ⚠ `ticker` IS THE TICKER THE ROW WAS CLAIMING, NOT A TICKER WE VOUCH FOR. It is the
-    # filer's own `ISSUERTRADINGSYMBOL` (or the label a previous run stored), which is exactly
-    # the string the old symbol-first screen trusted. Never join this table to `prices` or the
-    # cube on it: 2,075 rows carry `IR` and belong to Trane Technologies.
-    #
-    # `resolved_entity_id` is the entity `issuer_cik` ACTUALLY belongs to and
-    # `universe_entity_id` the entity that ticker names today. The PAIR is stored rather than a
-    # boolean so an `entity_id` shift (a lineage group gaining an older CIK) surfaces as a diff
-    # instead of a silent re-verdict. `universe_entity_id` is NULL when the claimed ticker is
-    # not in today's universe at all -- there is no entity to compare against.
-    #
-    # `reject_reason`:
-    #   `entity_mismatch`         the claimed symbol IS a universe ticker but the CIK's entity
-    #                             is another company's. The defect this table exists for:
-    #                             measured 10,717 rows over 48 tickers, 3,690 of them P/S.
-    #   `entity_not_in_universe`  the claimed ticker is not in today's universe and the CIK's
-    #                             entity holds none either -- a row a PREVIOUS run's universe
-    #                             admitted (measured 8,099: `EA` 6,161, `AVB` 1,788, plus 150
-    #                             across the five insufficient-history spin-offs).
-    #   `no_issuer_cik`           CIK-first cannot resolve at all. Measured ZERO across all
-    #                             4,402,307 filings in the 81 cached quarters, which is why no
-    #                             symbol fallback is built.
-    #
-    # `screened_on` is the row's `filing_date` -- the field `symbol_tenure` is derived from, so
-    # any later dated re-adjudication aligns by construction. The insider verdict is itself
-    # date-independent (Forms 3/4/5 are UNION events); the date is recorded because a verdict
-    # without the date it was taken against is not auditable.
-    #
-    # PK is `insider_transactions`' OWN pk, unextended: a rejected row is one (accession,
-    # security type, sk) line, and every row of one accession shares one `issuer_cik` and so
-    # one verdict. No invented `row_hash`.
-    insider_transactions_quarantine = Table(
-        "insider_transactions_quarantine",
-        ("accession_number", "security_type", "transaction_sk"),
-        date_col="filing_date",
-        date_type_cols=(
-            "transaction_date",
-            "filing_date",
-            "period_of_report",
-            "deemed_execution_date",
-            "exercise_date",
-            "expiration_date",
-            "screened_on",
-        ),
-        read_columns=(
-            "ticker",
-            "issuer_cik",
-            "issuer_name",
-            "filing_date",
-            "transaction_date",
-            "transaction_code",
-            "value_usd",
-            "shares",
-            "security_type",
-            "document_type",
-            "reject_reason",
-            "resolved_entity_id",
-            "universe_entity_id",
-            "screened_on",
-        ),
-    )
     # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing, keyed
     # (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g. a fund
     # + its GP), and `rp_seq` is used rather than CIK since a reporting person without an

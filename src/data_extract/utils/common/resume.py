@@ -9,13 +9,16 @@ markers included); newest first and capped per run.
 `until`; the full history for a new key, an absent table or `full`; the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
 key's stored span.
+
+`archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
+parsed for every key; plus, for a new key with no row yet, every cached period re-parsed for it alone.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -23,10 +26,12 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common import edgar_index
+from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import Registrant, listing_ciks, resolve_registrant_entries
-from src.data_store.schema import Table, Tables
-from src.utils.universe import new_tickers
+from src.data_store.schema import Resume, Table, Tables
+from src.utils.universe import load_universe_tickers, new_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -266,3 +271,103 @@ def series_windows(
     last = {key: edges[1] for key, edges in stats.items()}
     timings = {f"{table.name}.key_stats": read_stats - started, f"{table.name}.holes": time.perf_counter() - read_stats}
     return SeriesWork(windows=windows, key_class=key_class, last=last, timings=timings)
+
+
+@dataclass
+class ArchiveWork:
+    """An archive fetcher's work list.
+
+    `pending` periods are parsed for every key of the run (`screen` is the universe a parse screens
+    against); `rescan` periods, already stored in every table, are re-parsed for `rescan_keys` only.
+    A scoped (`-t`) run parses no pending period: parsing it for a few keys would mark it stored for all.
+    """
+
+    listed: list[str]
+    pending: list[str]
+    rescan: list[str]
+    keys: list[str]
+    rescan_keys: list[str]
+    screen: list[str]
+    scoped: bool
+    held: list[str] = field(default_factory=list)
+
+    def units(self) -> Iterator[tuple[str, list[str]]]:
+        """`(period, keys to keep)` in period order; a period is never in both lists."""
+        by_period = {period: self.keys for period in self.pending} | {period: self.rescan_keys for period in self.rescan if self.rescan_keys}
+        yield from sorted(by_period.items())
+
+
+def _period_column(table: Table) -> str:
+    if table.resume is None or table.resume.period_col is None:
+        raise ValueError(f"{table.name} declares no archive period column")
+    return table.resume.period_col
+
+
+def archive_periods(context: Context, tables: Sequence[Table], published: Sequence[str]) -> tuple[list[str], frozenset[str]]:
+    """`(listed, stored)`: the `published` periods from the latest source start of `tables` on, and the
+    periods stored in every one of `tables` (an absent table stores none)."""
+    starts = [pd.Timestamp(t.resume.source_start).date() for t in tables if t.resume is not None and t.resume.source_start]
+    floor = max(starts) if starts else None
+    listed = [p for p in dict.fromkeys(published) if floor is None or period_end(p) >= floor]
+    stored: frozenset[str] | None = None
+    for table in tables:
+        values = stored_values(context, table, _period_column(table))
+        stored = values if stored is None else stored & values
+    return listed, stored or frozenset()
+
+
+def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collection[str], as_of: pd.Timestamp) -> set[str]:
+    """Keys added inside the longest overlap of `tables` that have no row in any of them."""
+    overlap = max(t.resume.overlap_days for t in tables if t.resume is not None)
+    new = new_tickers(context.store, overlap, as_of) & set(keys)
+    for table in tables:
+        if not new:
+            break
+        key_col = cast(str, cast(Resume, table.resume).key)
+        if key_col in context.store.columns(table):
+            new -= {str(k).upper() for k in context.store.distinct(table, key_col, where={key_col: sorted(new)})}
+    return new
+
+
+def archive_worklist(
+    context: Context,
+    tables: Sequence[Table],
+    published: Sequence[str],
+    cached: Collection[str],
+    keys: Sequence[str],
+    as_of: pd.Timestamp,
+    *,
+    full: bool = False,
+) -> ArchiveWork:
+    """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
+
+    Pending = listed periods missing from any table. Rescan = listed periods stored in every table and
+    cached on disk (any stored period under `full`), for the new rowless keys, or every key under `full`.
+    """
+    keys = sorted({str(k).strip().upper() for k in keys})
+    listed, stored = archive_periods(context, tables, published)
+    missing = [p for p in listed if p not in stored]
+    universe = set(load_universe_tickers(context))
+    scoped = bool(universe - set(keys))
+    rescan_keys = keys if full else sorted(_new_rowless_keys(context, tables, keys, as_of))
+    on_disk = set(cached)
+    rescan = [p for p in listed if p in stored and (full or p in on_disk)] if rescan_keys else []
+    if rescan_keys and not full:
+        absent = [p for p in listed if p in stored and p not in on_disk]
+        if absent:
+            logger.warning(
+                "%s: %d stored period(s) have no cached archive and are not re-parsed for new keys: %s", tables[0].name, len(absent), absent
+            )
+    pending, held = ([], missing) if scoped else (missing, [])
+    if held:
+        logger.info("%s: scoped run leaves %d unparsed period(s) to the full run: %s", tables[0].name, len(held), held)
+    return ArchiveWork(
+        listed=listed,
+        pending=pending,
+        rescan=rescan,
+        keys=keys,
+        rescan_keys=rescan_keys,
+        screen=sorted(universe | set(keys)),
+        scoped=scoped,
+        held=held,
+    )

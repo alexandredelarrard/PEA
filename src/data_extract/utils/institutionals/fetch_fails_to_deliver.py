@@ -3,8 +3,9 @@ fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date), its own table so
 its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
-unsettled balance on each settlement date, not new fails. Resume skips periods already processed
-under the current symbol policy; historical symbols resolve point-in-time; `full` replaces the table.
+unsettled balance on each settlement date, not new fails. Each run parses the periods with no stored
+row (`resume.archive_worklist`), plus every cached period for a new ticker with no row yet; historical
+symbols resolve point-in-time; an unscoped `full` run replaces the table.
 """
 
 from __future__ import annotations
@@ -18,13 +19,7 @@ from tqdm import tqdm
 
 from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import (
-    cache_dir,
-    ensure_zip,
-    mark_processed,
-    pending_periods,
-    read_zip_text,
-)
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
 from src.data_extract.utils.common.identity import (
     Identity,
     load_identity,
@@ -32,13 +27,13 @@ from src.data_extract.utils.common.identity import (
     resolve_symbol_rows,
 )
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import archive_worklist
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
-_POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
+_RAW_COLS = ["date", "source_symbol", "cusip", "fails_quantity", "fails_value", "period"]
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
@@ -111,7 +106,7 @@ def _period_urls(period: str) -> tuple[str, ...]:
 
 def _cached_periods(cache: Path) -> set[str]:
     """Period tags present in the local SEC FTD ZIP cache."""
-    return {path.stem.removeprefix("cnsfails") for path in cache.glob("cnsfails*.zip")}
+    return cached_periods(cache, prefix="cnsfails")
 
 
 def _canonicalise_ftd(
@@ -153,72 +148,91 @@ def _validate_full_frame(
         raise ValueError(f"FTD full rebuild staged non-universe ticker(s): {outside}")
 
 
+def _read_period(
+    context: Context, cache: Path, period: str, symbols: frozenset[str], *, rebuild: bool = False, stored: bool = False
+) -> pd.DataFrame | None:
+    """One period's raw rows for `symbols`, tagged with the period; None when the archive is not
+    served or unreadable. A full rebuild raises instead on an unreadable archive or an unserved stored period."""
+    path = ensure_zip(
+        context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180, log=logger
+    )
+    if path is None:
+        if rebuild and stored:
+            raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period {period}")
+        return None
+    raw = read_zip_text(path, log=logger)
+    if raw is None:
+        if rebuild:
+            raise ValueError(f"FTD full rebuild cannot read cached period {period}")
+        return None
+    df = _parse_ftd(raw)
+    return df[df["source_symbol"].isin(symbols)].assign(period=period)
+
+
+def _concat_raw(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    kept = [df for df in frames if not df.empty]
+    return pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=_RAW_COLS)
+
+
+def _rebuild(context: Context, cache: Path, periods: list[str], resolver: Identity, universe: frozenset[str]) -> int:
+    """Re-parse every listed period for the whole universe and replace the table, after validation."""
+    stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period")
+    candidates = resolver.candidate_symbols(universe)
+    frames: list[pd.DataFrame] = []
+    parsed: set[str] = set()
+    for period in tqdm(periods, desc="SEC fails-to-deliver (full)"):
+        df = _read_period(context, cache, period, candidates, rebuild=True, stored=period in stored_periods)
+        if df is None:
+            continue
+        parsed.add(period)
+        frames.append(df)
+    accepted, unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, universe)
+    _validate_full_frame(accepted, universe, parsed, _cached_periods(cache))
+    logger.info(f"FTD: {len(unresolved)} unresolved raw row(s) excluded")
+    return context.store.replace(Tables.sec_fails_to_deliver, accepted)
+
+
 def fetch_fails_to_deliver(
     context: Context,
     tickers: list[str],
-    years_history: int = 15,
+    years_history: int,
     full: bool = False,
     identity: Identity | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> int:
-    """Resolve SEC FTD history point-in-time and incrementally save or fully replace it."""
-
+    """Parse the FTD periods missing from the table (and every cached period for a new ticker), resolve
+    symbols point-in-time and upsert; an unscoped `full` run re-parses everything and replaces the table."""
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     resolver = identity or load_identity(context)
-    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    candidates = resolver.candidate_symbols(universe)
-    policy_scope = set(candidates) | {_POLICY_MARKER}
-    # A full rebuild must reproduce every stored period.
-    stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period") if full else frozenset()
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    cached = _cached_periods(cache)
+    published = sorted(cached | set(_periods(years_history + 1, run_date)))
+    work = archive_worklist(context, (Tables.sec_fails_to_deliver,), published, cached, tickers, run_date, full=full)
+    if full and not work.scoped:
+        saved = _rebuild(context, cache, sorted(set(work.listed) | cached), resolver, frozenset(work.keys))
+        logger.info(f"sec_fails_to_deliver replaced ({len(work.listed)} files listed) {saved} rows")
+        return saved
 
-    saved = 0
-    initial_cached = _cached_periods(cache)
-    periods = sorted(initial_cached | set(_periods(years_history + 1)))
-    pending = pending_periods(context, cache, Tables.sec_fails_to_deliver, periods, policy_scope, reparse=full)
-    raw_frames: list[pd.DataFrame] = []
-    parsed_periods: set[str] = set()
-    for period in tqdm(pending, desc="SEC fails-to-deliver"):
-        path = ensure_zip(
-            context,
-            cache / FTD_ZIP_NAME_TEMPLATE.format(period=period),
-            _period_urls(period),
-            label=f"FTD {period}",
-            timeout=180,
-            log=logger,
-        )
-        if path is None:
-            if full and period in stored_periods:
-                raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period {period}")
+    # Pending periods keep every run key's rows, rescanned ones only the rescan keys'.
+    groups = {"pending": (frozenset(work.keys), work.pending), "rescan": (frozenset(work.rescan_keys), work.rescan)}
+    accepted_frames: list[pd.DataFrame] = []
+    unresolved_count = 0
+    for name, (keys, periods) in groups.items():
+        if not keys or not periods:
             continue
-        raw = read_zip_text(path, log=logger)
-        if raw is None:
-            if full:
-                raise ValueError(f"FTD full rebuild cannot read cached period {period}")
-            continue
-        df = _parse_ftd(raw)
-        parsed_periods.add(period)
-        df = df[df["source_symbol"].isin(candidates)].copy()
-        if df.empty:
-            continue
-        df["period"] = period
-        raw_frames.append(df)
-
-    raw_complete = (
-        pd.concat(raw_frames, ignore_index=True)
-        if raw_frames
-        else pd.DataFrame(columns=["date", "source_symbol", "cusip", "fails_quantity", "fails_value", "period"])
+        candidates = resolver.candidate_symbols(keys)
+        frames = [
+            df
+            for period in tqdm(periods, desc=f"SEC fails-to-deliver ({name})")
+            if (df := _read_period(context, cache, period, candidates)) is not None
+        ]
+        accepted, unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, keys)
+        accepted_frames.append(accepted)
+        unresolved_count += len(unresolved)
+    accepted = (
+        pd.concat(accepted_frames, ignore_index=True).drop_duplicates(["ticker", "date"]) if accepted_frames else pd.DataFrame(columns=_OUT_COLS)
     )
-    accepted, unresolved = _canonicalise_ftd(context, raw_complete, resolver, universe)
-
-    if full:
-        final_cached = _cached_periods(cache)
-        _validate_full_frame(accepted, universe, parsed_periods, final_cached)
-        saved = context.store.replace(Tables.sec_fails_to_deliver, accepted)
-    elif not accepted.empty:
-        saved = context.store.save(Tables.sec_fails_to_deliver, accepted)
-
-    unresolved_count = len(unresolved)
-    mark_processed(cache, Tables.sec_fails_to_deliver, policy_scope)
-    logger.info(f"sec_fails_to_deliver completed ({len(periods)} files scanned) +{saved}")
+    saved = context.store.save(Tables.sec_fails_to_deliver, accepted) if not accepted.empty else 0
+    logger.info(f"sec_fails_to_deliver completed ({len(work.pending)} pending + {len(work.rescan)} rescanned period(s)) +{saved}")
     logger.info(f"FTD: {unresolved_count} unresolved raw row(s) excluded")
-    record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved, is_full_rescan=full)
     return saved

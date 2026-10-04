@@ -1,18 +1,18 @@
 """Cache, read and incremental-state helpers for the SEC bulk data sets.
 
 Downloads go through `sec_io.download` (a `.part` file renamed on success); tab-separated zips are read through
-`read_zip_tables`; `pending_periods` / `mark_processed` decide which cached periods a run re-parses;
-`archive_available_at` / `stored_period_clock` give each archive its availability date.
+`read_zip_tables`; `cached_periods` lists the archives on disk; `archive_available_at` /
+`stored_period_clock` give each archive its availability date. Which periods a run parses is
+decided by `resume.archive_worklist` from the stored rows alone.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import zipfile
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -20,7 +20,6 @@ import pandas as pd
 
 from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
-from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
 
@@ -28,10 +27,9 @@ __all__ = [
     "ZipRead",
     "archive_available_at",
     "cache_dir",
+    "cached_periods",
     "ensure_zip",
     "is_cached",
-    "mark_processed",
-    "pending_periods",
     "period_end",
     "quarter_periods",
     "read_zip_tables",
@@ -184,55 +182,16 @@ def read_zip_text(path: Path, *, encoding: str = "latin-1", log: logging.Logger 
         return None
 
 
-def _sidecar(cache: Path, table: Table | str) -> Path:
-    return cache / f"{name_of(table)}_universe.json"
-
-
-def _processed_scope(cache: Path, table: Table | str) -> set[str]:
-    """The scope a bulk table was last built against; empty when the sidecar is absent or unreadable."""
-    path = _sidecar(cache, table)
-    if not path.exists():
-        return set()
-    try:
-        return set(json.loads(path.read_text(encoding="utf-8")).get("universe", []))
-    except Exception:  # noqa: BLE001
-        return set()
-
-
-def mark_processed(cache: Path, table: Table | str, scope: Collection[str]) -> None:
-    """Record the scope a bulk table was built against, so a converged re-run skips stored periods."""
-    payload = {"universe": sorted(scope), "saved": datetime.now(UTC).date().isoformat()}
-    _sidecar(cache, table).write_text(json.dumps(payload), encoding="utf-8")
-
-
-def pending_periods(
-    context: Context,
-    cache: Path,
-    table: Table | str | Sequence[Table | str],
-    periods: Sequence[str],
-    scope: Collection[str],
-    *,
-    reparse: bool = False,
-    column: str = "period",
-) -> list[str]:
-    """The `periods` a bulk fetcher must parse.
-
-    All of them on `reparse` or when `scope` gained members since `mark_processed`; otherwise those
-    with no row stored under `column`. Several tables union their stored periods and share the
-    sidecar of the first.
-    """
-    tables = [table] if isinstance(table, Table | str) else list(table)
-    added = set(scope) - _processed_scope(cache, tables[0])
-    if reparse or added:
-        reason = "reparse" if reparse else f"{len(added)} new scope member(s)"
-        logger.info("%s: %s -> parsing all %d period(s), cached zips are not re-downloaded", name_of(tables[0]), reason, len(periods))
-        return list(periods)
-    stored = stored_values(context, tables, column)
-    return [period for period in periods if period not in stored]
+def cached_periods(cache: Path, *, prefix: str = "", suffix: str = ".zip") -> set[str]:
+    """Period tags of the non-empty archives cached in `cache`, named `{prefix}{period}{suffix}`."""
+    return {path.name[len(prefix) : -len(suffix)] for path in cache.glob(f"{prefix}*{suffix}") if is_cached(path)}
 
 
 def period_end(tag: str) -> date:
-    """Last calendar day covered by a `YYYYqN` or `YYYY_MM` archive tag."""
+    """Last calendar day covered by a `YYYYqN`, `YYYY_MM` or semi-monthly `YYYYMMa`/`YYYYMMb` archive tag."""
+    if tag[-1] in "ab":
+        month_end = pd.Period(year=int(tag[:4]), month=int(tag[4:6]), freq="M").end_time.date()
+        return month_end.replace(day=15) if tag[-1] == "a" else month_end
     month = int(tag[-2:]) if "_" in tag else int(tag[-1]) * 3
     return pd.Period(year=int(tag[:4]), month=month, freq="M").end_time.date()
 

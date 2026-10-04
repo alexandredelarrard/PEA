@@ -5,8 +5,9 @@ SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS and DERIV_TRANS are mapped to the can
 frame (`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame`, screened CIK-first, and
 upserted one row per (accession, table, SK); FOOTNOTES follow the kept accessions.
 
-Zips are cached and downloaded only when missing; a stored quarter is skipped unless the universe
-gained tickers or `reparse` is set, in which case cached zips are re-parsed.
+Zips are cached and downloaded only when missing. The quarters parsed come from
+`resume.archive_worklist`: those with no stored row, plus every cached quarter for a new ticker with
+no row yet (its rows only); `reparse` re-reads every stored quarter too.
 """
 
 from __future__ import annotations
@@ -28,14 +29,13 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cache_dir,
+    cached_periods,
     ensure_zip,
-    mark_processed,
-    pending_periods,
     quarter_periods,
     read_zip_tables,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
@@ -200,28 +200,46 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
     return quarantined, deleted
 
 
-def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
-    """Download (cached) the insider data sets, parse and screen each pending quarter, upsert
-    `insider_transactions`, `insider_footnotes` and the quarantine, then sweep stored rows.
-    Returns the number of transaction rows upserted.
+def _keep_keys(parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """A rescanned quarter's output cut to `keys`: their kept rows, the rejects that claimed them, and the
+    footnotes of the kept accessions."""
+    df_kept, df_quarantine, df_notes = parsed
+    wanted = set(keys)
+    df_kept = df_kept[df_kept["ticker"].isin(wanted)] if "ticker" in df_kept.columns else df_kept
+    df_quarantine = df_quarantine[df_quarantine["ticker"].isin(wanted)] if "ticker" in df_quarantine.columns else df_quarantine
+    df_notes = filter_footnotes(df_notes, set(df_kept["accession_number"].dropna().unique())) if not df_kept.empty else empty_footnotes()
+    return df_kept, df_quarantine, df_notes
+
+
+def fetch_insider_transactions(
+    context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
+) -> int:
+    """Download (cached) the insider data sets, parse and screen each quarter of the work list, upsert
+    `insider_transactions`, `insider_footnotes` and the quarantine, then (unscoped runs only) sweep stored
+    rows. Returns the number of transaction rows upserted.
 
     `reparse` re-reads every quarter the source has back to `SEC_INSIDER_FIRST_YEAR`, even those
     already stored, so a parse change reaches the oldest rows too.
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    span = (pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR)
-    pending = pending_periods(context, cache, Tables.insider_transactions, quarters, tickers, reparse=reparse, column="quarter")
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    span = (run_date.year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
+    quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR, run_date)
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
 
+    rescanned = set(work.rescan)
     saved = notes_saved = quarantined = 0
-    for quarter in tqdm(pending, desc="insider data sets"):
+    for quarter, keys in tqdm(list(work.units()), desc="insider data sets"):
         url_template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
         path = ensure_zip(context, cache / f"{quarter}.zip", url_template.format(quarter=quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue
-        df_kept, df_quarantine, df_notes = _parse_quarter(tables, quarter, tickers, identity)
+        # Screened against the whole universe, so a row of another universe ticker is never quarantined;
+        # a rescanned quarter then keeps only its keys' rows.
+        parsed = _parse_quarter(tables, quarter, work.screen, identity)
+        df_kept, df_quarantine, df_notes = _keep_keys(parsed, keys) if quarter in rescanned else parsed
         if not df_quarantine.empty:
             quarantined += context.store.save(Tables.insider_transactions_quarantine, df_quarantine)
         if not df_kept.empty:
@@ -229,20 +247,21 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
         if not df_notes.empty:
             notes_saved += context.store.save(Tables.insider_footnotes, df_notes)
 
-    swept, deleted = _screen_stored_rows(context, tickers, identity)
-    quarantined += swept
-    mark_processed(cache, Tables.insider_transactions, tickers)
+    deleted = 0
+    if work.scoped:
+        logger.info("insider: scoped run -> stored-row sweep skipped (it screens against the run's tickers)")
+    else:
+        swept, deleted = _screen_stored_rows(context, tickers, identity)
+        quarantined += swept
     logger.info(
-        "insider_transactions: upserted %d rows (+%d footnotes) over %d quarters (%s -> %s); quarantined %d, deleted %d",
+        "insider_transactions: upserted %d rows (+%d footnotes) over %d pending + %d rescanned quarters (%s -> %s); quarantined %d, deleted %d",
         saved,
         notes_saved,
-        len(quarters),
+        len(work.pending),
+        len(work.rescan),
         quarters[0],
         quarters[-1],
         quarantined,
         deleted,
     )
-    record_run(context, Tables.insider_transactions, len(tickers), saved)
-    record_run(context, Tables.insider_footnotes, len(tickers), notes_saved)
-    record_run(context, Tables.insider_transactions_quarantine, len(tickers), quarantined)
     return saved

@@ -229,9 +229,12 @@ def short_interest(config_path: str, tickers: str | None, full: bool, repair: bo
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def fails_to_deliver(config_path: str, tickers: str | None, full: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full)
+@AS_OF_OPTION
+def fails_to_deliver(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_fails_to_deliver(
+        context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of)
+    )
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -499,9 +502,12 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
     default=False,
     help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
 )
-def financial_statements(config_path: str, tickers: str | None, reparse: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
+@AS_OF_OPTION
+def financial_statements(config_path: str, tickers: str | None, reparse: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_financial_statements(
+        context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), reparse=reparse, as_of=_run_date(as_of)
+    )
 
 
 @cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the daily EDGAR tail.")
@@ -519,7 +525,7 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
 def insider_transactions(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
-    fetch_insider_transactions(context, tickers=names, reparse=reparse)
+    fetch_insider_transactions(context, tickers=names, years_history=int(config.data_extract.years_history), reparse=reparse, as_of=_run_date(as_of))
     fetch_insider_edgar(
         context, tickers=names, years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of), no_cap=no_cap
     )
@@ -580,9 +586,17 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     default=False,
     help="Rewrite notes available_at metadata using the historical estimate or cached download date; do not reparse ZIPs.",
 )
-def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_financial_notes(context, tickers=_tickers(context, tickers), reparse=reparse, repair_availability=repair_availability)
+@AS_OF_OPTION
+def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_financial_notes(
+        context,
+        tickers=_tickers(context, tickers),
+        years_history=int(config.data_extract.years_history),
+        reparse=reparse,
+        repair_availability=repair_availability,
+        as_of=_run_date(as_of),
+    )
 
 
 # --- Structure (governance) ---

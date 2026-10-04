@@ -1,9 +1,8 @@
-"""Shared SEC bulk helpers: one zip reader with a per-site corrupt policy, and the incremental
-pending-period / processed-scope state used by statements, notes, insider and fails-to-deliver."""
+"""Shared SEC bulk helpers: one zip reader with a per-site corrupt policy, the cached-archive listing
+and the period calendar used by statements, notes, insider and fails-to-deliver."""
 
 from __future__ import annotations
 
-import json
 import logging
 import zipfile
 from datetime import date
@@ -16,8 +15,8 @@ import pytest
 
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
-    mark_processed,
-    pending_periods,
+    cached_periods,
+    period_end,
     read_zip_tables,
     stored_period_clock,
 )
@@ -95,40 +94,27 @@ def test_chunked_keep_concatenates_matches_and_returns_bare_frame_when_none_matc
     print("  4 of 10 rows kept across 3 chunks with a fresh index; no match -> a bare empty frame; keep without chunksize rejected. Validated.")
 
 
-def test_pending_periods_skips_stored_only_when_converged(tmp_path: Path) -> None:
-    store = FakeStore({"pension_facts": pd.DataFrame({"quarter": ["2026q1"]})})
-    context = SimpleNamespace(store=store)
-    periods = ["2026q1", "2026q2"]
-
-    assert pending_periods(context, tmp_path, Tables.pension_facts, periods, ["AAPL"], column="quarter") == periods  # no sidecar yet
-    mark_processed(tmp_path, Tables.pension_facts, ["MSFT", "AAPL"])
-    sidecar = json.loads((tmp_path / "pension_facts_universe.json").read_text(encoding="utf-8"))
-    assert sidecar["universe"] == ["AAPL", "MSFT"]
-
-    assert pending_periods(context, tmp_path, Tables.pension_facts, periods, ["AAPL"], column="quarter") == ["2026q2"]
-    assert pending_periods(context, tmp_path, Tables.pension_facts, periods, ["AAPL", "NVDA"], column="quarter") == periods
-    queries = len(store.queries)
-    assert pending_periods(context, tmp_path, Tables.pension_facts, periods, ["AAPL"], reparse=True, column="quarter") == periods
-    assert len(store.queries) == queries  # reparse never reads the store
-    print("\n=== SANITY CHECK: pending periods ===")
-    print("  first run -> all; converged -> only the unstored 2026q2; new scope member or reparse -> all, reparse with no DB read. Validated.")
+def test_cached_periods_lists_non_empty_archives_by_their_tag(tmp_path: Path) -> None:
+    for name, payload in {
+        "cnsfails202401a.zip": b"x",
+        "cnsfails202401b.zip": b"",
+        "2026_08_notes.zip": b"x",
+        "notes_num_universe.json": b"{}",
+    }.items():
+        (tmp_path / name).write_bytes(payload)
+    assert cached_periods(tmp_path, prefix="cnsfails") == {"202401a"}  # the empty 202401b is not an archive
+    assert cached_periods(tmp_path, suffix="_notes.zip") == {"2026_08"}
+    print("\n=== SANITY CHECK: cached archive listing ===")
+    print("  tags come from the archive names; an empty file and a non-zip file are not listed. Validated.")
 
 
-def test_pending_periods_unions_tables_and_keys_the_sidecar_on_the_first(tmp_path: Path) -> None:
-    store = FakeStore(
-        {
-            "notes_num": pd.DataFrame({"period": ["2026_07"]}),
-            "notes_text": pd.DataFrame({"period": ["2026_08"]}),
-        }
-    )
-    context = SimpleNamespace(store=store)
-    mark_processed(tmp_path, Tables.notes_num, ["AAPL"])
-    tables = (Tables.notes_num, Tables.notes_text)
-    assert pending_periods(context, tmp_path, tables, ["2026_07", "2026_08", "2026_09"], ["AAPL"]) == ["2026_09"]
-    (tmp_path / "notes_num_universe.json").write_text("{not json", encoding="utf-8")
-    assert pending_periods(context, tmp_path, tables, ["2026_07", "2026_08"], ["AAPL"]) == ["2026_07", "2026_08"]
-    print("\n=== SANITY CHECK: multi-table pending periods ===")
-    print("  stored periods union across notes_num + notes_text; an unreadable sidecar re-parses everything. Validated.")
+def test_period_end_covers_quarterly_monthly_and_semi_monthly_tags() -> None:
+    assert period_end("2026q1") == date(2026, 3, 31)
+    assert period_end("2026_02") == date(2026, 2, 28)
+    assert period_end("200907a") == date(2009, 7, 15)
+    assert period_end("200907b") == date(2009, 7, 31)
+    print("\n=== SANITY CHECK: archive period ends ===")
+    print("  YYYYqN -> quarter end, YYYY_MM -> month end, FTD 'a' -> the 15th, 'b' -> month end. Validated.")
 
 
 def test_stored_period_clock_is_shared_and_rejects_conflicts() -> None:

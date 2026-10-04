@@ -1,13 +1,13 @@
-"""`resume.document_worklist` (M2, EDGAR documents) on the real `DataStore` (SQLite) and a seeded local
-index: the eight AC-002 cases, the per-key done set of role-marker tables and the cap. Each case
-plans from the table's own rows, its `schema.Resume` contract and the run date only."""
+"""The resume planners on the real `DataStore` (SQLite): `document_worklist` (M2, EDGAR documents, on a
+seeded local index), `series_windows` (M1) and `archive_worklist` (M3, bulk archives), each with the
+AC-002 cases. Each case plans from the table's own rows, its `schema.Resume` contract and the run date only."""
 
 from __future__ import annotations
 
 import pandas as pd
 
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
-from src.data_extract.utils.common.resume import DONE_PER_KEY, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_worklist
+from src.data_extract.utils.common.resume import DONE_PER_KEY, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, archive_worklist, document_worklist
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
@@ -307,3 +307,119 @@ def test_m1_merge_unions_each_key_s_windows(tmp_path, sqlite_store):
     assert _spans(merged, "AAA") == [("2026-09-08", "2026-09-30")]
     print("\n=== SANITY CHECK: prices + dividends windows ===")
     print("  dividends lag to 09-15 -> the one download for AAA starts at 09-08, covering both tables.")
+
+
+# --------------------------------------------------------------------------- #
+# M3: bulk archives (`archive_worklist`)                                        #
+# --------------------------------------------------------------------------- #
+_NOTES = (Tables.notes_num, Tables.notes_text)
+
+
+def _archive_ctx(tmp_path, store, tickers: list[str], added_on: dict[str, str] | None = None):
+    ctx = fake_context(tmp_path, store, tickers, redundant_ticks=[])
+    if added_on is not None:
+        _universe(ctx, {t: str(i + 1) for i, t in enumerate(tickers)}, added_on=added_on)
+    return ctx
+
+
+def _save_notes(store, table, ticker: str, periods: list[str]) -> None:
+    rows = [{"adsh": f"{ticker}-{p}", "tag": "t", "ddate": pd.Timestamp("2026-06-30"), "qtrs": 0, "ticker": ticker, "period": p} for p in periods]
+    store.save(table, pd.DataFrame(rows))
+
+
+def _save_pension(store, ticker: str, quarters: list[str]) -> None:
+    rows = [{"cik": ticker, "tag": "t", "ddate": pd.Timestamp("2025-12-31"), "qtrs": 0, "ticker": ticker, "quarter": q} for q in quarters]
+    store.save(Tables.pension_facts, pd.DataFrame(rows))
+
+
+def _archive(ctx, tables, published: list[str], keys: list[str], cached: set[str] | None = None, **kwargs):
+    return archive_worklist(ctx, tables, published, set(published) if cached is None else cached, keys, _AS_OF, **kwargs)
+
+
+def test_notes_period_counts_only_when_in_both_tables(tmp_path, sqlite_store):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAPL"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAPL", ["2026_07"])
+    _save_notes(sqlite_store, Tables.notes_text, "AAPL", ["2026_07", "2026_08"])
+
+    work = _archive(ctx, _NOTES, ["2026_07", "2026_08"], ["AAPL"])
+
+    assert work.pending == ["2026_08"] and work.rescan == []
+    print("\n=== SANITY CHECK: M3 notes period stored in one table only ===")
+    print("  2026_08 holds notes_text rows but no notes_num row -> parsed again (the old union skipped it).")
+
+
+def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_path, sqlite_store):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAPL"])
+
+    ftd = _archive(ctx, (Tables.sec_fails_to_deliver,), ["200906b", "200907a", "202609a"], ["AAPL"])
+    notes = _archive(ctx, _NOTES, ["2026_07", "2026_08"], ["AAPL"])
+
+    assert ftd.pending == ["200907a", "202609a"]  # 200906b ends before the 2009-07-01 source start
+    assert notes.pending == ["2026_07", "2026_08"] and not ftd.scoped
+    print("\n=== SANITY CHECK: M3 absent tables ===")
+    print(f"  FTD -> {ftd.pending} (200906b clamped by source_start); notes -> {notes.pending}.")
+
+
+def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqlite_store, caplog):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW", "OLD"], added_on={"NEW": "2026-09-01", "OLD": "2026-09-02"})
+    _save_pension(sqlite_store, "AAA", ["2025q4", "2026q1", "2026q2"])
+    _save_pension(sqlite_store, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
+
+    with caplog.at_level("WARNING"):
+        work = _archive(ctx, (Tables.pension_facts,), ["2025q4", "2026q1", "2026q2", "2026q3"], ["AAA", "NEW", "OLD"], cached={"2026q1", "2026q2"})
+
+    assert work.pending == ["2026q3"]  # the newest published period, parsed for every key
+    assert work.rescan_keys == ["NEW"] and work.rescan == ["2026q1", "2026q2"]  # 2025q4 is stored but not on disk
+    assert dict(work.units()) == {"2026q1": ["NEW"], "2026q2": ["NEW"], "2026q3": ["AAA", "NEW", "OLD"]}
+    assert "2025q4" in caplog.text
+    print("\n=== SANITY CHECK: M3 new key ===")
+    print(f"  units {dict(work.units())}: NEW alone re-reads the cached stored quarters; OLD (new, with a row) does not;")
+    print("  the stored but uncached 2025q4 is named in a WARNING and never downloaded for a new key.")
+
+
+def test_m3_new_key_window_ends_after_the_overlap(tmp_path, sqlite_store):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW"], added_on={"NEW": "2026-06-01"})  # 121 days before as_of
+    _save_pension(sqlite_store, "AAA", ["2026q1"])
+
+    work = _archive(ctx, (Tables.pension_facts,), ["2026q1"], ["AAA", "NEW"])
+
+    assert work.rescan_keys == [] and work.pending == []
+    print("\n=== SANITY CHECK: M3 new-key window ===")
+    print("  NEW was added 121 days ago, past the 95-day pension_facts overlap -> no re-parse; -t NEW -F is the way back.")
+
+
+def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA"])
+    _save_pension(sqlite_store, "AAA", ["2026q1", "2026q2"])
+    published = ["2026q1", "2026q2", "2026q3"]
+
+    night1 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])  # 2026q3: no universe row, or its ZIP failed
+    night2 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
+    sqlite_store.delete(Tables.pension_facts, {"quarter": "2026q1"})
+    night3 = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
+
+    assert night1.pending == night2.pending == ["2026q3"]
+    assert night3.pending == ["2026q1", "2026q3"]
+    print("\n=== SANITY CHECK: M3 zero-row / failed / deleted period ===")
+    print("  a period with no stored row (zero universe rows or a failed download) is listed every night (accepted);")
+    print("  deleting 2026q1 lists it again.")
+
+
+def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_store):
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "BBB"])
+    _save_pension(sqlite_store, "AAA", ["2026q1"])
+    _save_pension(sqlite_store, "BBB", ["2026q1"])
+    published = ["2026q1", "2026q2"]
+
+    scoped = _archive(ctx, (Tables.pension_facts,), published, ["AAA"])
+    everyone = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"])
+    scoped_full = _archive(ctx, (Tables.pension_facts,), published, ["AAA"], full=True)
+    full = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "BBB"], full=True, cached=set())
+
+    assert scoped.scoped and list(scoped.units()) == [] and scoped.held == ["2026q2"]
+    assert not everyone.scoped and dict(everyone.units()) == {"2026q2": ["AAA", "BBB"]}
+    assert dict(scoped_full.units()) == {"2026q1": ["AAA"]}
+    assert dict(full.units()) == {"2026q1": ["AAA", "BBB"], "2026q2": ["AAA", "BBB"]}  # -F reads stored periods even when not cached
+    print("\n=== SANITY CHECK: M3 -t then full ===")
+    print("  -t AAA parses nothing (2026q2 parsed for AAA alone would hide it from BBB) and leaves 2026q2 to the")
+    print("  full run, which parses only 2026q2; -t AAA -F re-reads the stored quarters for AAA; -F re-reads everything.")

@@ -316,7 +316,7 @@ def resolve_registrant_filings(
     else:
         walks = [(window.cik, window) for window in scope.windows]
     keep = _FilingWindow(scope.ticker, since, done_accessions, stats, frozenset(cik for cik, _ in walks))
-    filings, contributions = _walk(scope.ticker, walks, forms, keep.filed)
+    filings, contributions = _walk(scope.ticker, walks, forms, keep.filed, scope.windows)
     if len(contributions) > 1:
         logger.info(
             "%s: %s listed by %s across %s",
@@ -333,11 +333,13 @@ def _walk(
     walks: list[tuple[str, CikWindow | None]],
     forms: list[str],
     keep: Callable[[Any], pd.Timestamp | None],
+    windows: Sequence[CikWindow] = (),
 ) -> tuple[list, dict[str, int]]:
     """Kept filings of every walk sorted by filing date, one per accession, and the count per CIK.
 
-    A windowed walk keeps only filings its widened window admits; an accession two windows admit
-    (a joint filing inside the seam margin) goes to the window whose stated dates own it, else the first.
+    A windowed walk keeps only filings its widened window admits. An accession two walks list (a joint
+    filing, or a successor listing its predecessor's history) goes to the CIK whose stated window owns
+    its date, else the first walk, so the stamp is the window owner's CIK.
     """
     by_accession: dict[str, tuple[pd.Timestamp, Any, str, bool]] = {}
     for cik, window in walks:
@@ -349,7 +351,7 @@ def _walk(
             filed = keep(filing)
             if filed is None or (window is not None and not window.admits(filed)):
                 continue
-            owned = window is None or window.owns(filed)
+            owned = window.owns(filed) if window is not None else any(w.cik == cik and w.owns(filed) for w in windows)
             if prior is None or owned:
                 by_accession[filing.accession_number] = (filed, filing, cik, owned)
     contributions: dict[str, int] = {}

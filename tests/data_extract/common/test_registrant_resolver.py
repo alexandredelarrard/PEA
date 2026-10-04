@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.entity_lineage import derive_entity_lineage
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for, resolve_registrant_filings
@@ -230,6 +231,27 @@ def test_a_joint_filing_inside_the_margin_goes_to_the_window_that_owns_its_date(
     out = resolve_registrant_filings(_XOM.filing_scope("XOM"), ["10-Q"], since=None, done_accessions=frozenset(), stats=stats)
     assert [f.accession_number for f in out] == ["joint-before", "joint-after"]
     print("\n=== SANITY CHECK: a joint filing inside the margin is listed once ===")
+
+
+def test_an_event_filing_listed_by_two_ciks_is_stamped_with_the_cik_whose_window_owns_its_date(monkeypatch):
+    """F-006 (XOM shape): a holdco's listing also returns its predecessor's history under the holdco CIK.
+    When the holdco CIK sorts first, the event union must still stamp each accession with its window owner."""
+    holdco, predecessor = "0000000001", "0000000002"
+    identity = dated_identity(
+        [("HC", predecessor, "cik_window", SENTINEL, "2026-07-01"), ("HC", holdco, "cik_window", "2026-07-01", None)], {"HC": holdco}
+    )
+    patch_company(
+        monkeypatch,
+        {
+            1: [filing("old-8k", "1996-05-01", 1), filing("new-8k", "2026-08-01", 1)],
+            2: [filing("old-8k", "1996-05-01", 2)],
+        },
+    )
+    out = resolve_registrant_filings(identity.filing_scope("HC"), ["8-K"], since=None, done_accessions=frozenset())
+    stamps = {f.accession_number: FilingStamp.of(f, holdco).cik for f in out}
+    assert stamps == {"old-8k": predecessor, "new-8k": holdco}, stamps
+    print("\n=== SANITY CHECK: F-006 event stamp follows the window owner ===")
+    print(f"  {stamps}: the 1996 8-K carries the predecessor CIK although the holdco CIK is walked first")
 
 
 def test_split_over_a_five_window_chain_assigns_each_filing_once(monkeypatch):

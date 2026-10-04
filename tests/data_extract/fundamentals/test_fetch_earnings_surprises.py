@@ -15,10 +15,11 @@ import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch
+from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
+from src.data_store.schema import Tables
 
 
-def test_plan_fetch_incremental():
+def test_plan_fetch_incremental(sqlite_store):
     today = pd.Timestamp.today().normalize()
     existing = pd.DataFrame(
         {
@@ -35,7 +36,10 @@ def test_plan_fetch_incremental():
         }
     )
     tickers = ["FRESH", "STALE", "NOACTUAL", "NEW"]
-    plan = dict(_plan_fetch(tickers, existing, full_limit=44, refetch_window_days=80))
+    sqlite_store.save(Tables.earnings_surprises, existing.assign(earnings_date=existing["earnings_date"].dt.strftime("%Y-%m-%d")))
+    context: Any = types.SimpleNamespace(store=sqlite_store)
+    last_reported, next_expected = _resume_dates(context)
+    plan = dict(_plan_fetch(tickers, last_reported, next_expected, full_limit=44, refetch_window_days=80))
 
     assert "FRESH" not in plan, "recently-reported ticker must be skipped"
     assert plan["STALE"] == _RECENT_LIMIT, "stale ticker -> small top-up pull"
@@ -49,38 +53,25 @@ def test_plan_fetch_incremental():
 
 
 def test_plan_fetch_no_existing_pulls_all():
-    plan = dict(_plan_fetch(["A", "B", "C"], None, full_limit=20, refetch_window_days=80))
+    plan = dict(_plan_fetch(["A", "B", "C"], {}, {}, full_limit=20, refetch_window_days=80))
     assert plan == {"A": 20, "B": 20, "C": 20}
     print("\n=== SANITY CHECK: cold start ===")
-    print("  no history file -> every ticker gets a full pull.")
+    print("  no stored row -> every ticker gets a full pull.")
 
 
-def test_the_no_data_branch_returns_after_recording_exactly_one_run(monkeypatch):
-    """The `not parts` branch: no cache and nothing fetched.
-
-    It recorded the run and then FELL THROUGH to `new["ticker"].nunique()` on a column-less
-    frame -- `KeyError: 'ticker'` every single time -- so the double `record_run` the branch
-    also carried was never observed. Both are the missing `return`.
-    """
-    calls: list[tuple] = []
-    saved: list = []
-
+def test_a_run_that_fetches_nothing_returns_without_saving(sqlite_store, monkeypatch):
+    """No stored row and no Yahoo calendar: the plan reads the empty table through `key_stats`,
+    nothing is saved and the run returns (no manifest is written)."""
+    infos: list[str] = []
     context: Any = types.SimpleNamespace(
-        store=types.SimpleNamespace(load=lambda *a, **k: None, save=lambda table, df: saved.append((table, df))),
-        log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
-        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15)),
+        store=sqlite_store,
+        log=types.SimpleNamespace(info=lambda msg, *a: infos.append(msg % a if a else msg), warning=lambda *a, **k: None),
     )
-
-    monkeypatch.setattr(surprises, "record_run", lambda ctx, table, n_tickers, rows, **k: calls.append((table.name, n_tickers, rows)))
     monkeypatch.setattr(surprises, "_download_one", lambda tkr, limit: None)
 
-    # No exception is the assertion: this raised KeyError('ticker') before the `return`.
-    surprises.fetch_earnings_surprises(context, ["AAPL", "MSFT"], pause=0.0)
+    surprises.fetch_earnings_surprises(context, ["AAPL", "MSFT"], years_history=15, pause=0.0)
 
-    assert len(calls) == 1, f"expected exactly one recorded run, got {calls}"
-    assert calls[0][2] == 0, "an empty run must record rows_added=0"
-    assert saved == [], "nothing to save -- the empty upsert is skipped with the crash"
-
-    print("\n=== SANITY CHECK: earnings-surprises empty branch ===")
-    print(f"  no cache + no Yahoo calendar -> returned cleanly, record_run called {len(calls)} time(s): {calls}")
-    print("  -> One run recorded with rows_added=0; the KeyError('ticker') fall-through is gone.")
+    assert not sqlite_store.exists(Tables.earnings_surprises)
+    assert infos[0] == "Earnings surprises: 2/2 tickers to fetch (0 already current)" and infos[-1] == "Earnings surprises: nothing new fetched."
+    print("\n=== SANITY CHECK: earnings-surprises empty run ===")
+    print(f"  cold table + no Yahoo calendar -> planned 2 full pulls, saved nothing, returned: {infos[-1]!r}")

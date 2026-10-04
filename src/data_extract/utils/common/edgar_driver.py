@@ -24,8 +24,8 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.edgar_fillings import archive_url
-from src.data_extract.utils.common.empty_markers import drop_markers_over_data
-from src.data_extract.utils.common.frame_sanitize import finalise_frame, pin_dtypes
+from src.data_extract.utils.common.empty_markers import drop_markers_over_data, marker_frame
+from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
@@ -46,10 +46,6 @@ _MARKER_KEY_FILL: dict[str, dict[str, object]] = {"insider_transactions_live": {
 #: (an insider marker's listing CIK may be an owner's, never the issuer's).
 _MARKER_STAMP_COLS: dict[str, tuple[str | None, str]] = {"insider_transactions_live": (None, "document_type")}
 _UNIT_COLUMNS = ["cik", "company", "form", "filed", "accession"]
-
-
-class IncompleteEdgarRunError(RuntimeError):
-    """A completeness-sensitive EDGAR walk had one or more failed tickers (fundamentals employees only)."""
 
 
 @dataclass(frozen=True)
@@ -243,22 +239,18 @@ def parse_filing_rows(
 def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     """One empty-filing marker for `table`: key, accession, filing date, CIK, form and the declared
     sentinel; every other column is left to its typed NULL."""
-    if table.resume is None or table.empty_marker is None or table.resume.frontier_col is None:
+    if table.resume is None or table.resume.frontier_col is None:
         raise ValueError(f"{table.name}: a marker needs a resume contract with a frontier column and an empty_marker")
-    column, sentinel = table.empty_marker
-    filed = stamp.filed.normalize()
     cik_col, form_col = _MARKER_STAMP_COLS.get(table.name, ("cik", "form"))
-    row: dict[str, object] = {table.resume.key or "ticker": ticker, "accession_number": stamp.accession_number, table.resume.frontier_col: filed}
-    row[form_col] = str(stamp.form)
+    row: dict[str, object] = {
+        table.resume.key or "ticker": ticker,
+        "accession_number": stamp.accession_number,
+        table.resume.frontier_col: stamp.filed.normalize(),
+        form_col: str(stamp.form),
+    }
     if cik_col is not None:
         row[cik_col] = stamp.cik
-    row[column] = sentinel
-    fill = _MARKER_KEY_FILL.get(table.name, {})
-    for key_col in table.pk:
-        if key_col not in row:
-            row[key_col] = fill.get(key_col, filed if key_col in table.date_type_cols else sentinel)
-    dates = [c for c in row if c in table.date_type_cols or c == table.resume.frontier_col]
-    return pin_dtypes(pd.DataFrame([row]), dates=dates)
+    return marker_frame(table, row, _MARKER_KEY_FILL.get(table.name))
 
 
 def _has_key_rows(df: pd.DataFrame | None, table: Table, ticker: str) -> bool:

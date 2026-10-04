@@ -34,7 +34,7 @@ _SCHEMA = pa.schema(
         ("transcripts", pa.list_(_PARAGRAPH)),
     ]
 )
-_CFG = OmegaConf.create({"lookback_days": 45, "read_workers": 2, "reconcile_days": 7})
+_CFG = OmegaConf.create({"read_workers": 2})
 
 
 def _call(symbol: str, year: int, quarter: int, date: str, tid: int | None, n: int, tag: str = "v1") -> dict[str, Any]:
@@ -53,7 +53,7 @@ def _write(path: Path, groups: list[list[dict[str, Any]]], schema: pa.Schema = _
 
 
 class _Opener:
-    """Counts opens, so a no-op run can prove it never touched the file."""
+    """Counts opens of the fixture file."""
 
     def __init__(self, path: Path) -> None:
         self.path, self.opens = path, 0
@@ -63,9 +63,9 @@ class _Opener:
         return open(self.path, "rb")
 
 
-def _source(path: Path, fingerprint: str) -> tuple[ect.TranscriptSource, _Opener]:
+def _source(path: Path, tag: str) -> tuple[ect.TranscriptSource, _Opener]:
     opener = _Opener(path)
-    return ect.TranscriptSource(revision=f"rev-{fingerprint}", fingerprint=fingerprint, opener=opener), opener
+    return ect.TranscriptSource(revision=f"rev-{tag}", opener=opener), opener
 
 
 def _ctx(tmp_path: Path, store: Any) -> Any:
@@ -73,10 +73,7 @@ def _ctx(tmp_path: Path, store: Any) -> Any:
         store=store,
         log=logging.getLogger("test_earnings_call_transcripts"),
         paths={"DATA_STORE": tmp_path},
-        config=types.SimpleNamespace(
-            local=types.SimpleNamespace(filename=types.SimpleNamespace(extraction="extraction_manifest.json")),
-            data_extract=types.SimpleNamespace(redundant_ticks=["GOOG"]),
-        ),
+        config=types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=["GOOG"])),
     )
 
 
@@ -125,7 +122,7 @@ def test_first_run_writes_raw_paragraphs_with_repo_ticker_and_call_date(tmp_path
     rows = _sections(sqlite_store)
     calls = rows.groupby(["ticker", "quarter"]).agg(n=("paragraph", "size"), as_of=("as_of", "first"), tid=("transcript_id", "first"))
 
-    assert summary.full and not summary.noop and summary.calls_new == 5 and summary.calls_reissued == 0
+    assert summary.full and summary.calls_new == 5 and summary.calls_reissued == 0
     assert summary.rows_written == len(rows) == 3 + 5 + 4 + 2 + 2
     assert sorted(rows["ticker"].unique()) == ["AAA", "BF-B", "CCC"]  # BRK-B holds no call; ZZZ is out of scope
     assert calls.loc[("BF-B", "2026Q2"), "n"] == 4 and pd.isna(calls.loc[("BF-B", "2026Q2"), "tid"])
@@ -155,7 +152,7 @@ def test_incremental_run_writes_only_the_new_call(tmp_path: Path, sqlite_store: 
 
     assert not summary.full and summary.calls_new == 1 and summary.calls_reissued == 0
     assert summary.rows_written == 6 and len(after) == len(before) + 6
-    assert summary.row_groups == 2  # CCC's 2012 group is older than frontier - lookback
+    assert summary.row_groups == 2  # CCC's 2012 group is older than the frontier minus the contract overlap
     assert after.merge(before, how="inner").shape[0] == len(before)  # nothing else rewritten
 
     print("\n=== SANITY CHECK: incremental diff ===")
@@ -323,24 +320,68 @@ def test_incremental_run_never_deletes_a_stored_call(tmp_path: Path, sqlite_stor
     print("  OK: only a reconcile, which sees every source call, may delete")
 
 
-def test_unchanged_revision_is_a_noop_and_full_forces_a_compare(tmp_path: Path, sqlite_store: Any) -> None:
+def test_a_repeated_run_writes_nothing_and_full_forces_a_compare(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)
     ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], source=_source(path, "f1")[0])
 
     again, opener = _source(path, "f1")
-    noop = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], source=again)
+    repeated = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], source=again)
     forced = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "CCC"], full=True, source=_source(path, "f1")[0])
     rescoped = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0])
 
-    assert noop.noop and noop.rows_written == 0 and opener.opens == 0
-    assert forced.full and not forced.noop and forced.calls_new == 0 and forced.calls_reissued == 0 and forced.rows_written == 0
-    assert rescoped.full and rescoped.calls_new == 1 and rescoped.rows_written == 4  # a scope change reconciles
+    assert not repeated.full and repeated.calls_new == 0 and repeated.rows_written == 0 and opener.opens >= 1
+    assert forced.full and forced.calls_new == 0 and forced.calls_reissued == 0 and forced.rows_written == 0
+    assert not rescoped.full and rescoped.calls_new == 1 and rescoped.rows_written == 4  # BF-B's call sits inside the window
 
-    print("\n=== SANITY CHECK: revision no-op (AC-003) ===")
-    print(f"  same file hash -> no-op, {opener.opens} file opens; -F -> full compare, {forced.rows_written} rows")
-    print(f"  adding BF-B to the scope -> full reconcile, {rescoped.calls_new} new call")
-    print("  OK: an unchanged source costs two metadata requests and writes nothing")
+    print("\n=== SANITY CHECK: no file-hash no-op ===")
+    print(
+        f"  same file again -> incremental read ({repeated.row_groups} groups), {repeated.rows_written} rows; -F -> full compare, {forced.rows_written} rows"
+    )
+    print(f"  adding BF-B (rowless, not new) -> incremental, {rescoped.calls_new} call inside the window")
+    print("  OK: no manifest or fingerprint decides anything; the stored frontier does")
+
+
+def test_a_new_and_a_reissued_call_land_without_any_manifest(tmp_path: Path, sqlite_store: Any) -> None:
+    ctx = _ctx(tmp_path, sqlite_store)
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(_write(tmp_path / "a.parquet", _BASE), "f1")[0])
+    changed = [[_AAA[0], _call("AAA", 2026, 1, "2026-04-21", 99, 3, tag="v2"), _call("AAA", 2026, 2, "2026-07-22", 13, 6)], _BFB, _CCC, _ZZZ]
+    path = _write(tmp_path / "b.parquet", changed)
+
+    first = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
+    second = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f2")[0])
+
+    assert first.calls_new == 1 and first.calls_reissued == 1 and first.rows_written == 6 + 3
+    assert second.calls_new == 0 and second.calls_reissued == 0 and second.rows_written == 0
+    assert not list(tmp_path.rglob("*manifest*"))
+    print("\n=== SANITY CHECK: earnings calls without the manifest ===")
+    print(
+        f"  new AAA 2026Q2 + re-issued AAA 2026Q1 -> new {first.calls_new}, re-issued {first.calls_reissued}, {first.rows_written} rows; same run again -> {second.rows_written} rows"
+    )
+    print("  OK: the stored calls alone decide what is new; no manifest file is written")
+
+
+@pytest.mark.parametrize(("added_on", "backfilled"), [("2026-09-20", True), ("2000-01-01", False)])
+def test_only_a_new_ticker_is_read_from_the_start(tmp_path: Path, sqlite_store: Any, added_on: str, backfilled: bool) -> None:
+    ctx = _ctx(tmp_path, sqlite_store)
+    path = _write(tmp_path / "a.parquet", _BASE)
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], source=_source(path, "f1")[0])
+    sqlite_store.save(
+        Tables.sp500_tickers,
+        pd.DataFrame(
+            {"ticker": ["AAA", "BF-B", "CCC"], "added_on": [pd.Timestamp("2000-01-01"), pd.Timestamp("2000-01-01"), pd.Timestamp(added_on)]}
+        ),
+    )
+
+    summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B", "CCC"], source=_source(path, "f1")[0], as_of=pd.Timestamp("2026-10-01"))
+    ccc = _sections(sqlite_store).query("ticker == 'CCC'")
+
+    assert not summary.full
+    assert (len(ccc), summary.calls_new) == ((4, 2) if backfilled else (0, 0))
+    print(f"\n=== SANITY CHECK: new-ticker history (added_on {added_on}) ===")
+    print(
+        f"  CCC's 2012 calls {'read from the start' if backfilled else 'left to the window (rowless, not new)'}: {len(ccc)} rows, {summary.row_groups} groups"
+    )
 
 
 def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
@@ -457,9 +498,11 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
     assert set(per_ticker.index) == {"AAPL", "MSFT"} and per_ticker.min() >= 40
     assert rows["quarter"].str.fullmatch(r"\d{4}Q[1-4]").all() and (first == 1).all()
     assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(ect.HISTORY_START)
-    assert again.noop and again.rows_written == 0
+    assert again.rows_written == 0
 
     print("\n=== SANITY CHECK: live defeatbeta smoke (test store) ===")
     print(f"  revision {summary.revision[:12]}: {summary.row_groups} row groups, calls {per_ticker.to_dict()}, {summary.rows_written} rows")
-    print(f"  as_of {pd.to_datetime(rows['as_of']).min().date()} -> {pd.to_datetime(rows['as_of']).max().date()}; re-run no-op={again.noop}")
-    print("  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; same revision is a no-op")
+    print(
+        f"  as_of {pd.to_datetime(rows['as_of']).min().date()} -> {pd.to_datetime(rows['as_of']).max().date()}; re-run wrote {again.rows_written} rows"
+    )
+    print("  OK: pinned HF read lands every call with paragraph 1 and a fiscal label; a re-run writes nothing")

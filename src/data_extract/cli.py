@@ -304,7 +304,8 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
 
 @cli.command(
     name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees, skipping filing dates that already have a row (NULL decisions included), over the registrant lineage.",
+    help="SEC 10-K prose -> fundamentals_employees, skipping filing dates that already have a row (NULL decisions included), over the registrant lineage. "
+    "A ticker that fails is logged and retried next run; the task exits 0.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -468,8 +469,8 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, 
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def earnings_surprises(config_path: str, tickers: str | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_earnings_surprises(context, tickers=_tickers(context, tickers))
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_earnings_surprises(context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history))
 
 
 @cli.command(help="SEC Financial Statement Data Sets -> pension_facts (num/sub XBRL). SEC-bulk.")
@@ -573,8 +574,8 @@ def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def def14a(config_path: str, tickers: str | None, full: bool) -> None:
-    """`--full` is needed after a registrant chain grows: the incremental gates are run-wide (global `last_run_date`,
-    any-rows ticker check), so a same-day rerun would skip the newly exposed history."""
+    """Every run lists each ticker's whole `years_history`; `--full` also re-sends the proxies marked as
+    answered without evidence (a proxy with stored evidence is never re-sent)."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
 
@@ -742,7 +743,7 @@ def markers(config_path: str, table_name: str | None, count_only: bool, delete: 
 # --- Behavioral (retail attention) ---
 @cli.command(
     help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
-    "paragraph. Incremental: an unchanged source file is a no-op; -F compares every call."
+    "paragraph. Incremental from the stored frontier minus the contract overlap; -F compares every call and removes calls gone from the source."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

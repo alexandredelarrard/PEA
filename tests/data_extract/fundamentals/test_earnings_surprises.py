@@ -10,10 +10,14 @@ test_plan_fetch_uses_forward_date — unseen -> full; future forward -> skip; pa
 
 from __future__ import annotations
 
+import types
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch
+from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
+from src.data_store.schema import Tables
 
 _COLS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_pct"]
 
@@ -23,7 +27,7 @@ def _row(t, days_from_today, actual):
     return {"ticker": t, "earnings_date": d, "eps_estimate": 1.0, "eps_actual": actual, "surprise_pct": np.nan}
 
 
-def test_plan_fetch_uses_forward_date():
+def test_plan_fetch_uses_forward_date(sqlite_store):
     full = 24
     existing = pd.DataFrame(
         [
@@ -37,7 +41,10 @@ def test_plan_fetch_uses_forward_date():
         columns=_COLS,
     )
 
-    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], existing, full_limit=full, refetch_window_days=95))
+    sqlite_store.save(Tables.earnings_surprises, existing.assign(earnings_date=existing["earnings_date"].dt.strftime("%Y-%m-%d")))
+    context: Any = types.SimpleNamespace(store=sqlite_store)
+    last_reported, next_expected = _resume_dates(context)
+    plan = dict(_plan_fetch(["A", "B", "C", "D", "E"], last_reported, next_expected, full_limit=full, refetch_window_days=95))
 
     assert plan.get("A") == full, "unseen ticker -> full pull"
     assert "B" not in plan, "next earnings still in the future -> skip"

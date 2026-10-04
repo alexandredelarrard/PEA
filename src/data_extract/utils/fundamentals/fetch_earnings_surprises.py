@@ -7,7 +7,6 @@ actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is
 from __future__ import annotations
 
 import time
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -16,7 +15,6 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 
 _RENAME = {
@@ -50,20 +48,27 @@ def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
     return df[_COLUMNS]
 
 
-def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None, full_limit: int, refetch_window_days: int) -> list[tuple[str, int]]:
+def _resume_dates(context: Context) -> tuple[dict[str, pd.Timestamp], dict[str, pd.Timestamp]]:
+    """`(last_reported, next_expected)` per ticker: the latest `earnings_date` with an actual EPS, and
+    the latest stored `earnings_date` (a forward row included), from two `GROUP BY` reads."""
+    store, table = context.store, Tables.earnings_surprises
+    reported = store.key_stats(table, "ticker", "earnings_date", where={"eps_actual": store.NOT_NULL})
+    stored = store.key_stats(table, "ticker", "earnings_date")
+    return dict(zip(reported["key"], reported["last"], strict=True)), dict(zip(stored["key"], stored["last"], strict=True))
+
+
+def _plan_fetch(
+    tickers: list[str],
+    last_reported: dict[str, pd.Timestamp],
+    next_expected: dict[str, pd.Timestamp],
+    full_limit: int,
+    refetch_window_days: int,
+) -> list[tuple[str, int]]:
     """`(ticker, limit)` fetch plan: full pull for unseen tickers, `_RECENT_LIMIT` once the stored forward date has passed.
 
     Tickers with no stored forward row fall back to `refetch_window_days` since the last reported date; the rest
     are skipped.
     """
-    last_reported: dict[str, pd.Timestamp] = {}
-    next_expected: dict[str, pd.Timestamp] = {}
-    if existing is not None and not existing.empty:
-        reported = existing.dropna(subset=["eps_actual"])
-        if not reported.empty:
-            last_reported = cast(dict[str, pd.Timestamp], reported.groupby("ticker")["earnings_date"].max().to_dict())
-        next_expected = cast(dict[str, pd.Timestamp], existing.groupby("ticker")["earnings_date"].max().to_dict())
-
     today = pd.Timestamp.today().normalize()
     plan = []
     for t in tickers:
@@ -81,21 +86,16 @@ def _plan_fetch(tickers: list[str], existing: pd.DataFrame | None, full_limit: i
     return plan
 
 
-def fetch_earnings_surprises(
-    context: Context,
-    tickers: list[str],
-    years_history: int = 15,
-    pause: float = 0.3,
-    refetch_window_days: int = 95,  # > one quarter; fallback only when no forward date is known
-) -> None:
-    """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped."""
+def fetch_earnings_surprises(context: Context, tickers: list[str], years_history: int, pause: float = 0.3) -> None:
+    """Incrementally refresh `earnings_surprises` for `tickers`; per-ticker failures are logged and skipped.
 
-    existing = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date", "eps_actual"], optional=True)
-    if existing is not None:
-        existing["earnings_date"] = pd.to_datetime(existing["earnings_date"], format="%Y-%m-%d")
-
-    full_limit = (years_history + 1) * 4
-    plan = _plan_fetch(tickers, existing, full_limit, refetch_window_days)
+    The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
+    window is the table's contract overlap.
+    """
+    resume = Tables.earnings_surprises.resume
+    refetch_window_days = resume.overlap_days if resume is not None else 95
+    last_reported, next_expected = _resume_dates(context)
+    plan = _plan_fetch(tickers, last_reported, next_expected, (years_history + 1) * 4, refetch_window_days)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []
@@ -121,16 +121,12 @@ def fetch_earnings_surprises(
             len(plan),
             empty[:15],
         )
-
-    parts = [df for df in (existing, *new_frames) if df is not None and not df.empty]
-    if not parts:
-        context.log.warning("No earnings-surprise data available (nothing fetched, no cache).")
-        record_run(context, Tables.earnings_surprises, len(tickers), 0)
+    if not new_frames:
+        context.log.info("Earnings surprises: nothing new fetched.")
+        return
 
     # upsert on (ticker, earnings_date): a now-filled actual overwrites its forward-estimate row
-    if new_frames:
-        new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
-        new = new.loc[new["earnings_date"] >= MIGRATION_DATE].reset_index(drop=True)
-        context.store.save(Tables.earnings_surprises, new)
-        context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")
-        record_run(context, Tables.earnings_surprises, len(tickers), len(new))
+    new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
+    new = new.loc[new["earnings_date"] >= MIGRATION_DATE].reset_index(drop=True)
+    context.store.save(Tables.earnings_surprises, new)
+    context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")

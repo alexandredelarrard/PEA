@@ -3,11 +3,13 @@
 Both paths extract the same two canonical string frames from `INSIDER_FIELDS`: one row per
 transaction line (keyed by `row_sequence`) and one row per reporting owner. `build_insider_frame`
 types them with one numeric parser, one value rule and one owner rule; only the date formats
-differ by source. `screen_insider_rows` then resolves each row CIK-first.
+differ by source. `screen_insider_rows` then resolves each row CIK-first; rejected rows are never
+stored, only summarised by `log_exclusions`.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Sequence
 from typing import Literal, NamedTuple
 
@@ -65,9 +67,11 @@ INSIDER_COLUMNS = [
     "fetched_at",
 ]
 FOOTNOTE_COLUMNS = ["accession_number", "footnote_id", "footnote_text"]
-#: Quarantine rows carry every `insider_transactions` column plus the verdict.
-VERDICT_COLUMNS = ["reject_reason", "resolved_entity_id", "universe_entity_id", "screened_on"]
-QUARANTINE_COLUMNS = INSIDER_COLUMNS + VERDICT_COLUMNS
+#: The columns of a rejected in-scope row that the identity-exclusion warning reads.
+EXCLUSION_COLUMNS = ["accession_number", "transaction_code", "claimed_ticker", "reject_reason"]
+#: Reject reasons in warning order, and the transaction codes counted as open-market trades.
+REJECT_REASONS = ("entity_mismatch", "entity_not_in_universe", "no_issuer_cik")
+OPEN_MARKET_CODES = frozenset({"P", "S"})
 
 #: Yes/no source text (`AFF10B5ONE`, `aff10b5One`, relationship checkboxes); anything else is unknown.
 FLAG_TRUE = frozenset({"1", "true", "y", "yes"})
@@ -293,59 +297,39 @@ def repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def insider_verdicts(df: pd.DataFrame, universe: Collection[str], identity: Identity) -> pd.DataFrame:
-    """Resolve each row CIK-first and attach `claimed_ticker`, the resolved `ticker`, both entity
-    ids, `screened_on` (= `filing_date`) and `reject_reason` (NA on kept rows)."""
+    """Resolve each row CIK-first and attach `claimed_ticker`, the resolved `ticker` and
+    `reject_reason` (NA on kept rows)."""
     universe = set(universe)
     raw = df["issuer_cik"]
     unique_ciks = [value for value in pd.unique(raw) if value is not None and not pd.isna(value)]
     to_ticker = {value: identity.entity_ticker(value) for value in unique_ciks}
-    to_entity = {value: identity.entity_of(value) for value in unique_ciks}
 
     claimed = df["ticker"].astype("string")
     resolved = raw.map(to_ticker).astype("string")
-    # `universe_entity` raises on a ticker absent from the roster, so only roster tickers are asked.
-    known = {ticker: identity.universe_entity(ticker) for ticker in set(claimed.dropna()) & set(identity.roster_cik)}
-
-    screened_on = df["filing_date"] if "filing_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
-    out = df.assign(
-        claimed_ticker=claimed,
-        ticker=resolved,
-        resolved_entity_id=raw.map(to_entity).astype("string"),
-        universe_entity_id=claimed.map(known).astype("string"),
-        screened_on=screened_on,
-    )
     keep = resolved.isin(universe)
     reason = pd.Series(pd.NA, index=df.index, dtype="string")
     reason[~keep] = "entity_not_in_universe"
     reason[~keep & claimed.isin(universe)] = "entity_mismatch"
     reason[~keep & (raw.isna() | (raw.astype("string").str.strip() == ""))] = "no_issuer_cik"
-    return out.assign(reject_reason=reason)
-
-
-def quarantine_frame(rejected: pd.DataFrame) -> pd.DataFrame:
-    """Rejected rows in `insider_transactions_quarantine` shape; `ticker` is the CLAIMED symbol."""
-    if rejected is None or rejected.empty:
-        return pd.DataFrame(columns=QUARANTINE_COLUMNS)
-    out = rejected.assign(ticker=rejected["claimed_ticker"])
-    return out[[column for column in QUARANTINE_COLUMNS if column in out.columns]]
+    return df.assign(claimed_ticker=claimed, ticker=resolved, reject_reason=reason)
 
 
 def screen_insider_rows(df: pd.DataFrame, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Repair transaction dates, resolve CIK-first, and split into (kept, quarantine).
+    """Repair transaction dates, resolve CIK-first, and split into (kept, rejected in scope).
 
-    No date filter: Forms 3/4/5 are union events. The quarantine is scoped to rows that claimed a
-    universe ticker, resolve to a roster company, or carry no CIK; other filers are dropped.
+    No date filter: Forms 3/4/5 are union events. Rejected rows are in scope when they claimed a
+    universe ticker, resolve to a roster company, or carry no CIK; other filers are dropped silently.
     """
     if df.empty:
-        return df, pd.DataFrame(columns=QUARANTINE_COLUMNS)
+        return df, pd.DataFrame(columns=EXCLUSION_COLUMNS)
     scored = insider_verdicts(repair_transaction_dates(df), universe, identity)
     keep, in_scope = _screen_masks(scored, universe)
-    return scored[keep], quarantine_frame(scored[~keep & in_scope])
+    return scored[keep], scored[~keep & in_scope]
 
 
 def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Series, pd.Series]:
-    """(kept, quarantine-scoped) masks over `insider_verdicts` output; both read only the issuer
-    CIK and the claimed ticker."""
+    """(kept, in-scope) masks over `insider_verdicts` output; both read only the issuer CIK and the
+    claimed ticker."""
     keep = scored["reject_reason"].isna()
     in_scope = scored["claimed_ticker"].isin(set(universe)) | scored["ticker"].notna() | (scored["reject_reason"] == "no_issuer_cik")
     return keep, in_scope
@@ -353,10 +337,44 @@ def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Ser
 
 def screened_accessions(df_filing: pd.DataFrame, universe: Sequence[str], identity: Identity) -> set[str]:
     """Accessions of a canonical filing-level frame (`accession_number`, `issuer_cik`, raw `ticker`)
-    that `screen_insider_rows` keeps or quarantines; it drops every row of any other accession."""
+    that `screen_insider_rows` keeps or rejects in scope; it drops every row of any other accession."""
     scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
     keep, in_scope = _screen_masks(scored, universe)
     return set(scored.loc[keep | in_scope, "accession_number"])
+
+
+def exclusion_rows(df_rejected: pd.DataFrame) -> pd.DataFrame:
+    """The `EXCLUSION_COLUMNS` of rejected rows, the only part the exclusion warning keeps."""
+    return df_rejected.reindex(columns=EXCLUSION_COLUMNS)
+
+
+def top_counts(values: pd.Series, n: int) -> str:
+    """`"T1 n1, T2 n2, ..."`: the `n` most frequent values, ties in value order; a missing value reads `<none>`."""
+    counts = values.astype("string").fillna("<none>").value_counts().rename_axis("value").reset_index(name="n")
+    df_top = counts.sort_values(["n", "value"], ascending=[False, True]).head(n)
+    return ", ".join(f"{value} {count}" for value, count in zip(df_top["value"], df_top["n"], strict=True))
+
+
+def exclusion_message(label: str, df_excluded: pd.DataFrame) -> str:
+    """The identity-exclusion summary: filings, rows and P/S rows, filings per reject reason, and
+    the 10 claimed tickers with the most excluded filings."""
+    df_filings = df_excluded.drop_duplicates("accession_number")
+    n_open_market = int(df_excluded["transaction_code"].isin(OPEN_MARKET_CODES).sum())
+    by_reason = df_filings["reject_reason"].value_counts()
+    reasons = ", ".join(f"{reason} {int(by_reason[reason])}" for reason in REJECT_REASONS if reason in by_reason.index)
+    return (
+        f"insider {label}: excluded {len(df_filings)} filing(s), {len(df_excluded)} row(s), {n_open_market} P/S row(s) whose issuer CIK "
+        f"is not a universe entity; by reason: {reasons}; top claimed: {top_counts(df_filings['claimed_ticker'], 10)}"
+    )
+
+
+def log_exclusions(log: logging.Logger, label: str, frames: Sequence[pd.DataFrame]) -> None:
+    """One WARNING summarising the excluded rows in `frames`, or one INFO line when there are none."""
+    non_empty = [frame for frame in frames if not frame.empty]
+    if not non_empty:
+        log.info("insider %s: no filing excluded by the identity screen", label)
+        return
+    log.warning(exclusion_message(label, pd.concat(non_empty, ignore_index=True)))
 
 
 # --------------------------------------------------------------------------- #

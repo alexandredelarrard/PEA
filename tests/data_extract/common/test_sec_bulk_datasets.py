@@ -169,7 +169,7 @@ def test_insider_incremental_state_converges(tmp_path):
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
-        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
+        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
     context = SimpleNamespace(store=ds)
     assert stored_values(context, "insider_transactions", "quarter") == {"2024q1"}

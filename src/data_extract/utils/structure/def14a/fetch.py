@@ -23,7 +23,7 @@ from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
-from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
+from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run, scope_changed_tickers
 from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
@@ -272,7 +272,8 @@ def fetch_def14a_llm(
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    Lists each ticker's proxies per CIK window of its filing scope over the manifest window and sends
+    Lists each ticker's proxies per CIK window of its filing scope over the manifest window (the whole
+    window for a ticker whose lineage scope changed since the table's last run) and sends
     only accessions without stored evidence to the LLM; each ticker's rows are upserted before
     the next starts. Skips when no OpenAI key is configured.
 
@@ -284,7 +285,9 @@ def fetch_def14a_llm(
     de = context.config.data_extract
     cik_map = load_cik_mapping(context, tickers)
     requested = cik_map["ticker"].astype(str).tolist()
-    if not full and _is_up_to_date(context, requested):
+    identity = load_identity(context)
+    changed = scope_changed_tickers(get_entry(context, Tables.def14a_llm), {t: identity.filing_scope(t).scope_changed_at for t in requested})
+    if not full and not changed and _is_up_to_date(context, requested):
         context.log.info("DEF 14A LLM already up to date — every requested ticker present — skipping")
         return
     try:
@@ -305,14 +308,15 @@ def fetch_def14a_llm(
     )
     # `list_filings` keeps filings STRICTLY AFTER its `since`, so the inclusive cutoff steps back one day; None lists all `years`.
     list_since = None if (full or is_full_rescan) else since - pd.Timedelta(days=1)
-    identity = load_identity(context)
+    if changed:
+        context.log.info("DEF 14A LLM: %d ticker lineage scope(s) changed -> full-window relist: %s", len(changed), ", ".join(sorted(changed)))
 
     total_new, total_semantic_empty = 0, 0
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, company = str(r["ticker"]), str(r.get("name", ""))
         scope = identity.filing_scope(ticker)
         try:
-            filings = _list_scope_windows(context, scope, company, years, list_since)
+            filings = _list_scope_windows(context, scope, company, years, None if ticker in changed else list_since)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue

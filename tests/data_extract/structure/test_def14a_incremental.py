@@ -669,6 +669,35 @@ def test_same_size_universe_swap_lists_the_new_ticker_over_the_full_window(tmp_p
     print(f"  AA/BB -> AA/CC: CC listed with since={listed['CC']} (the whole 15y window), not the last run date {last_run.date()}. Validated.")
 
 
+def test_a_ticker_whose_lineage_changed_since_the_last_run_is_relisted_over_the_full_window(tmp_path, monkeypatch):
+    """F-005: a lineage expansion (new predecessor window) after the table's last run relists that ticker over
+    the whole `years_history` window; an unchanged ticker keeps the manifest cutoff."""
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    today = pd.Timestamp.today().normalize()
+    last_run = today - pd.Timedelta(days=10)
+    record_run(context, Tables.def14a_llm, ticker_count=2, rows_added=0, is_full_rescan=True, run_date=last_run, tickers=["AA", "CC"])
+    identity = dated_identity(
+        [("AA", "0000000001", "cik_window", SENTINEL, None), ("CC", "0000000002", "cik_window", SENTINEL, None)],
+        {"AA": "0000000001", "CC": "0000000002"},
+        changed_at={"AA": today - pd.Timedelta(days=30), "CC": today - pd.Timedelta(days=2)},
+    )
+    listed: dict[str, Any] = {}
+    _stub_proxy_listing(monkeypatch, mod, listed)
+    monkeypatch.setattr(mod, "load_identity", lambda context: identity)
+    monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
+
+    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
+
+    assert listed == {"AA": last_run - pd.Timedelta(days=1), "CC": None}, listed
+    print("\n=== SANITY: DEF 14A relists a ticker whose lineage changed ===")
+    print(
+        f"  CC's scope changed after the last run ({last_run.date()}) -> since=None (whole window); AA keeps since={listed['AA'].date()}. Validated."
+    )
+
+
 def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 

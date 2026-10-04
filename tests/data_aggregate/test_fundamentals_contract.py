@@ -44,9 +44,9 @@ def test_fundamentals_requests_its_45_session_tail_refresh(monkeypatch):
         step.run(full=False)
 
     assert captured["refresh"] == FUNDAMENTALS_REFRESH_TRADING_DAYS == 45
-    assert PART_REFRESH_TRADING_DAYS == 5
+    assert PART_REFRESH_TRADING_DAYS == 7
     print("\n=== SANITY CHECK: fundamentals incremental repair window ===")
-    print("  fundamentals requests 45 sessions while the shared sibling-part refresh remains 5. Validated.")
+    print("  fundamentals requests 45 sessions while the shared sibling-part refresh is 7. Validated.")
 
 
 class _SourceStore:

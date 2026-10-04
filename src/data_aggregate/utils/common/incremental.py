@@ -44,21 +44,13 @@ from src.data_store.store import DataStore
 # tell the caller "your column set no longer matches the stored table -- re-run full".
 COLUMNS_CHANGED = -1
 
-#: How many trading days of a backward-looking part's own tail every incremental run
-#: recomputes and REWRITES, rather than only appending after.
+#: How many trading days of its own tail every incremental part run recomputes and REWRITES.
 #:
-#: One trading week. The bound that matters is the price fetcher's own re-pull floor
-#: (`PRICE_REFRESH_TRADING_DAYS = 7` business days): a part must rewrite at least as far back
-#: as its inputs can still change underneath it, or a corrected price would sit in `prices`
-#: with the stale feature built from its predecessor left in the part forever. 5 trading days
-#: covers 7 business days of calendar (they are the same span; the fetcher counts BDays from
-#: the settled close, the part counts sessions on the trading index).
-#:
-#: The cost is bounded and small: 5 dates x ~491 tickers re-computed and re-written per part
-#: per run, against parts of ~3.3M rows. `store.append_tail(inclusive=True)` DELETEs `>=` the
-#: cutoff before appending, so re-running the same day is idempotent -- it never duplicates
-#: and never leaves a stale row behind.
-PART_REFRESH_TRADING_DAYS = 5
+#: Seven sessions cover the price fetcher's 7-day re-pull overlap, and let a filing recovered
+#: within a week replace the features first built without it. Fundamentals (45) and targets
+#: (their maturing-label horizon) rewrite wider tails. `store.append_tail(inclusive=True)`
+#: deletes `>=` the cutoff before appending, so a same-day re-run is idempotent.
+PART_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +89,7 @@ def plan_window(
     ⚠ `warmup + extra_back + refresh`, not `warmup + extra_back`. The warm-up has to be
     measured from the earliest REWRITTEN date, not from `last`, or the oldest refreshed date
     gets only `warmup - refresh` days of look-back context and is computed differently from
-    the way a full rebuild would compute it. For momentum that would be 1,320 - 5 = 1,315
-    days against a binding look-back of 1,260: it happens to survive today purely on margin,
-    and would break silently the moment either number moved. Adding `refresh` removes the
-    coupling instead of relying on the slack.
+    the way a full rebuild would compute it.
     """
     if full:
         return PartWindow(None, None)
@@ -149,10 +138,8 @@ def write_part(
 
       1. an explicit `refresh_from` -- the target step's maturing-label window (~90 trading
          days), which is always the widest and so takes precedence;
-      2. `window.refresh_from` -- the backward-looking part's own trailing rewrite;
-      3. `window.last`, strictly after -- the pre-refresh behaviour, kept for the parts that
-         opt out (fundamentals / text / extras, all driven by filing-space sources rather
-         than the daily price grid).
+      2. `window.refresh_from` -- the part's own trailing rewrite (`plan_window(refresh=...)`);
+      3. `window.last`, strictly after -- only when the caller asked for no refresh at all.
 
     Cases 1 and 2 write INCLUSIVELY, so the cutoff date's own row is replaced rather than
     skipped. `store.append_tail(inclusive=True)` DELETEs `>=` the cutoff first, which makes

@@ -48,7 +48,7 @@ from omegaconf import DictConfig
 
 from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import (
@@ -136,7 +136,12 @@ class StepCubeInstitutionals(Step):
         `frames` and `shares` are locals and die with the frame on return, which is what the
         `del` before `write_part` used to buy."""
         window = plan_window(
-            self._store, Tables.cube_part_institutionals, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store)
+            self._store,
+            Tables.cube_part_institutionals,
+            full=full,
+            warmup=self._warmup(),
+            trading_index=load_trading_calendar(self._store),
+            refresh=PART_REFRESH_TRADING_DAYS,
         )
 
         price_frames = self._load_frames()
@@ -470,15 +475,6 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
-        expected_tickers = sorted(set(map(str, frames.universe)))
-        complete_13d = self._schedule_complete_through(
-            Tables.sec_13d,
-            expected_tickers=expected_tickers,
-        )
-        complete_13g = self._schedule_complete_through(
-            Tables.sec_13g,
-            expected_tickers=expected_tickers,
-        )
         return build_ownership_feature_panel(
             frames,
             sec_13d,
@@ -486,22 +482,9 @@ class StepCubeInstitutionals(Step):
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             availability=self._availability,
-            complete_through_13d=complete_13d,
-            complete_through_13g=complete_13g,
+            complete_through_13d=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d),
+            complete_through_13g=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g),
             sink=sink,
-        )
-
-    def _schedule_complete_through(
-        self,
-        table: Table,
-        *,
-        expected_tickers: Sequence[str],
-    ) -> pd.Timestamp | None:
-        return institutional_frontiers.schedule_complete_through(
-            self._context,
-            self._log,
-            table,
-            expected_tickers=expected_tickers,
         )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:

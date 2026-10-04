@@ -19,11 +19,12 @@ incremental run able to replace that row.
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.transformers import step_cube_institutionals
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import (
@@ -34,6 +35,7 @@ from src.data_aggregate.utils.common.incremental import (
     write_part,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
+from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
     ALL,
@@ -45,6 +47,7 @@ from src.data_store.schema import (
     resolve,
 )
 from src.data_store.store import DataStore
+from tests.conftest import make_frames
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):
@@ -344,63 +347,99 @@ def test_write_part_strict_append_when_no_refresh():
     assert tail["date"].min() > LAST
 
 
-def test_institutionals_historical_correction_requires_forced_full():
-    """A routine institutionals update appends new dates only; rebuilding history is explicit.
+INSIDER_CAL = pd.bdate_range("2015-01-01", "2015-12-31")
 
-    Filing sources can revise an already stored date.  Rewriting that history during a normal
-    update would make a nominally incremental run silently change the training sample, while
-    treating an absent source observation as zero would manufacture information.  The
-    institutionals step therefore keeps strict append semantics and requires ``full=True``
-    for an intentional historical correction.
-    """
-    calendar = pd.bdate_range("2026-08-03", periods=8)
-    new_end = calendar[-1]
-    stored = pd.DataFrame(
-        {
-            "date": calendar[:-1],
-            "ticker": "T0",
-            "f": [1.0, 1.0, 1.0, 1.0, 1.0, float("nan"), 7.0],
-        }
-    )
-    store = _StatefulGovernanceStore(stored)
-    candidate = stored.copy()
-    candidate.loc[candidate["date"] == calendar[1], "f"] = 99.0
-    candidate = pd.concat(
-        [candidate, pd.DataFrame({"date": [new_end], "ticker": ["T0"], "f": [float("nan")]})],
-        ignore_index=True,
-    )
 
-    incremental = plan_window(
-        cast(DataStore, store),
-        Tables.cube_part_institutionals,
-        warmup=5,
-        full=False,
-        trading_index=calendar,
-    )
-    write_part(cast(DataStore, store), Tables.cube_part_institutionals, candidate, incremental)
+def _purchase(accession: str, ticker: str, owner: str, filed: pd.Timestamp) -> dict:
+    """One open-market purchase row with the columns the insider builder reads."""
+    return {
+        "accession_number": accession,
+        "ticker": ticker,
+        "owner_cik": owner,
+        "owner_name": f"Owner {owner}",
+        "filing_date": filed,
+        "transaction_date": filed - pd.Timedelta(days=1),
+        "transaction_code": "P",
+        "shares": 1_000.0,
+        "price_per_share": 100.0,
+        "value_usd": 100_000.0,
+        "shares_owned_after": 11_000.0,
+        "security_type": "nonderiv",
+        "security_title": "Common Stock",
+        "direct_indirect": "D",
+        "officer_title": "",
+        "is_director": 1.0,
+        "is_officer": 0.0,
+        "is_ten_pct_owner": 0.0,
+        "is_10b5_1": np.nan,
+    }
 
-    assert store.rows.loc[store.rows["date"] == calendar[1], "f"].item() == 1.0
-    assert pd.isna(store.rows.loc[store.rows["date"] == calendar[-3], "f"].item())
-    assert pd.isna(store.rows.loc[store.rows["date"] == new_end, "f"].item())
-    assert store.rows.duplicated(["date", "ticker"]).sum() == 0
 
-    forced = plan_window(
-        cast(DataStore, store),
-        Tables.cube_part_institutionals,
-        warmup=5,
-        full=True,
-        trading_index=calendar,
+def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: pd.DatetimeIndex, insider: pd.DataFrame, *, full: bool) -> None:
+    """Run the real `StepCubeInstitutionals.run` on `calendar` with only the insider panel fed."""
+    tickers = ["AAA", "BBB"]
+    close = pd.DataFrame(100.0, index=calendar, columns=tickers)
+    shares = pd.DataFrame(
+        [{"ticker": t, "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in tickers]
     )
-    write_part(cast(DataStore, store), Tables.cube_part_institutionals, candidate, forced)
-    assert store.rows.loc[store.rows["date"] == calendar[1], "f"].item() == 99.0
-    assert store.rows.duplicated(["date", "ticker"]).sum() == 0
+    frames = make_frames(calendar, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=close)
+    monkeypatch.setattr(step_cube_institutionals, "load_trading_calendar", lambda _store: calendar)
+    step = cast(Any, object.__new__(StepCubeInstitutionals))
+    step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
+    step._part = PART_BY_NAME["cube_part_institutionals"]
+    step._load_frames = lambda: frames
+    step._load_shares_out = lambda: shares
+    step._load_source = lambda table, universe=None: None
+    for panel in (
+        "_institutional_panel",
+        "_superinvestor_panel",
+        "_short_flow_panel",
+        "_ownership_panel",
+        "_conditioning_panel",
+        "_cross_source_panel",
+    ):
+        setattr(step, panel, lambda *args, **kwargs: None)
+    step._insider_panel = lambda f, s, sink: build_insider_feature_panel(f, insider, shares_out_history=s, sink=sink)
+    step.run(full=full)
 
-    print("\n=== SANITY: institutionals append versus forced full ===")
-    print(
-        f"  normal update kept the stored {calendar[1].date()} value and appended "
-        f"{new_end.date()} as NaN; full=True then applied the historical correction."
-    )
-    print("  missing remained NaN, no fake zero appeared, and keys stayed unique. Validated.")
+
+def _sorted(rows: pd.DataFrame) -> pd.DataFrame:
+    return rows.sort_values(["date", "ticker"]).reset_index(drop=True)
+
+
+def test_institutionals_rewrites_its_last_7_sessions(monkeypatch):
+    """AC-014: a filing dated D-3 that arrives one night late is in the cube after the next run.
+
+    Night 1 builds through D-1 without the filing; night 2 sees it and an incremental run must
+    rewrite D-3..D so the part equals a full rebuild on every date."""
+    day = INSIDER_CAL[-1]
+    late = _purchase("late", "AAA", "0009", INSIDER_CAL[-4])
+    early = [_purchase(f"e{i}", t, f"000{i}", INSIDER_CAL[20 * i + 10]) for i in range(1, 8) for t in ("AAA", "BBB")]
+    night_1 = pd.DataFrame(early)
+    night_2 = pd.DataFrame([*early, late])
+
+    store = _StatefulGovernanceStore(pd.DataFrame())
+    _run_institutionals(monkeypatch, store, INSIDER_CAL[:-1], night_1, full=False)
+    before = _sorted(store.rows)
+    _run_institutionals(monkeypatch, store, INSIDER_CAL, night_2, full=False)
+
+    reference = _StatefulGovernanceStore(pd.DataFrame())
+    _run_institutionals(monkeypatch, reference, INSIDER_CAL, night_2, full=True)
+    got, want = _sorted(store.rows), _sorted(reference.rows)
+
+    refreshed = INSIDER_CAL[-1 - 1 - PART_REFRESH_TRADING_DAYS]
+    tail = want["date"] >= INSIDER_CAL[-4]
+    stale = before[before["date"] >= INSIDER_CAL[-4]].set_index(["date", "ticker"])
+    fresh = want.set_index(["date", "ticker"]).reindex(stale.index)[stale.columns]
+    n_stale = int((stale.ne(fresh) & ~(stale.isna() & fresh.isna())).to_numpy().sum())
+    assert n_stale > 0, "the late filing must move cells night 1 already stored"
+    pd.testing.assert_frame_equal(got, want)
+    assert got.duplicated(["date", "ticker"]).sum() == 0
+    assert PART_REFRESH_TRADING_DAYS == 7
+    print("\n=== SANITY CHECK: institutionals rewrites its last 7 sessions (AC-014) ===")
+    print(f"  night 1 stored through {INSIDER_CAL[-2].date()} without the {INSIDER_CAL[-4].date()} filing; {n_stale} of its cells were stale")
+    print(f"  night 2 ({day.date()}) rewrote from {refreshed.date()}: {int(tail.sum())} rows on {INSIDER_CAL[-4].date()}..{day.date()}")
+    print("  CONCLUSION: the incremental part equals a full rebuild on every date, the late filing included. Validated.")
 
 
 def test_explicit_refresh_from_wins_over_the_part_default():

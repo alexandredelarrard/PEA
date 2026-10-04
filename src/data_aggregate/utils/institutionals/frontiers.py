@@ -69,10 +69,15 @@ def insider_complete_through(
     return None
 
 
-def schedule_complete_through(store: DataStore, table: Table) -> pd.Timestamp | None:
-    """The 13D/13G "absence means zero through date D" frontier: `table`'s latest `filing_date`.
+def schedule_complete_through(store: DataStore, table: Table, last_session: pd.Timestamp | None) -> pd.Timestamp | None:
+    """The 13D/13G "absence means zero through date D" frontier, read from `table` alone.
 
-    Marker rows count, since each is an index-listed filing that was read. None for an absent or
-    empty table.
+    D is `last_session` when the table's latest `filing_date` (markers included) lies within its
+    resume overlap of that session, else the latest `filing_date`. None for an absent or empty table.
     """
-    return store.max_date(table, "filing_date")
+    latest = store.max_date(table, "filing_date")
+    if latest is None or last_session is None or table.resume is None:
+        return latest
+    last = _normalized_timestamp(last_session)
+    fresh = latest >= last - pd.Timedelta(days=table.resume.overlap_days)
+    return max(latest, last) if fresh else latest

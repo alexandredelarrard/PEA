@@ -96,20 +96,28 @@ def _marker(table: Table, ticker: str, accession: str, filed: pd.Timestamp) -> p
     return marker_row(table, ticker, stamp)
 
 
-def test_schedule_frontier_is_the_tables_latest_filing_date(sqlite_store) -> None:
-    """The 13D/13G zero frontier is read from the table, markers included; no manifest."""
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g) is None
+def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_store) -> None:
+    """The 13D/13G zero frontier is read from the table, markers included; no manifest.
+
+    A table whose latest filing lies within its 7-day overlap of the last price session is
+    complete through that session; a staler table is complete only through its latest filing."""
+    last = pd.Timestamp("2026-09-11")
+    assert schedule_complete_through(sqlite_store, Tables.sec_13g, last) is None
 
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", pd.Timestamp("2026-09-01"), "1")]))
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g) == pd.Timestamp("2026-09-01")
+    stale = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    assert stale == pd.Timestamp("2026-09-01"), "10 days behind the last session: only through the filing"
 
-    sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", pd.Timestamp("2026-09-03")))
-    assert schedule_complete_through(sqlite_store, Tables.sec_13g) == pd.Timestamp("2026-09-03")
+    sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", pd.Timestamp("2026-09-04")))
+    fresh = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    assert fresh == last, "a marker 7 days back keeps the table fresh through the last session"
+    assert schedule_complete_through(sqlite_store, Tables.sec_13g, None) == pd.Timestamp("2026-09-04")
     assert len(sqlite_store.load(Tables.sec_13g)) == 1, "consumers still never see the marker"
 
     print("\n=== SANITY CHECK: Schedule absence frontier from the DB ===")
-    print("  empty table -> None; real row 2026-09-01 -> 2026-09-01; a later marker (a read, empty filing) -> 2026-09-03")
-    print("  CONCLUSION: the frontier is the table's own filing-date frontier, markers included, and no file is read. Validated.")
+    print(f"  last session {last.date()}: empty table -> None; latest filing 2026-09-01 (stale) -> {stale.date()}")
+    print(f"  a marker on 2026-09-04 (within the 7-day overlap) -> {fresh.date()}")
+    print("  CONCLUSION: a fresh table is complete through the last session, a stale one through its latest filing. Validated.")
 
 
 def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
@@ -117,12 +125,12 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
     it identical or turns NaN into 0, compared with today's frontier (None)."""
     idx = pd.bdate_range("2026-03-02", periods=140)
     tickers = ["AAA", "BBB", "CCC"]
-    rows_13d = [("AAA", "d1", idx[20], "1"), ("BBB", "d2", idx[90], "2"), ("BBB", "d3", idx[-1], "3")]
+    rows_13d = [("AAA", "d1", idx[20], "1"), ("BBB", "d2", idx[90], "2"), ("BBB", "d3", idx[-4], "3")]
     rows_13g = [("AAA", "g1", idx[10], "1"), ("CCC", "g2", idx[70], "4"), ("AAA", "g3", idx[-2], "5")]
     sqlite_store.save(Tables.sec_13d, _schedule_rows(Tables.sec_13d, rows_13d))
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, rows_13g))
-    frontier_13d = schedule_complete_through(sqlite_store, Tables.sec_13d)
-    frontier_13g = schedule_complete_through(sqlite_store, Tables.sec_13g)
+    frontier_13d = schedule_complete_through(sqlite_store, Tables.sec_13d, idx[-1])
+    frontier_13g = schedule_complete_through(sqlite_store, Tables.sec_13g, idx[-1])
     assert frontier_13d is not None and frontier_13g is not None
     frames = make_frames(idx, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=pd.DataFrame(100.0, index=idx, columns=tickers))
     sec_13d, sec_13g = sqlite_store.load(Tables.sec_13d, project=True), sqlite_store.load(Tables.sec_13g, project=True)

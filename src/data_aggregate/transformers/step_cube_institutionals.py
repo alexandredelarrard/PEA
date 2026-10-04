@@ -475,6 +475,7 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
+        last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
         return build_ownership_feature_panel(
             frames,
             sec_13d,
@@ -482,8 +483,8 @@ class StepCubeInstitutionals(Step):
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             availability=self._availability,
-            complete_through_13d=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d),
-            complete_through_13g=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g),
+            complete_through_13d=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session),
+            complete_through_13g=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session),
             sink=sink,
         )
 

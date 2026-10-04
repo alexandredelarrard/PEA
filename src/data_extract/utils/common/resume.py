@@ -42,6 +42,8 @@ KEY_ESTABLISHED = "established"
 #: Done-set scopes: accessions stored under the key itself, or anywhere in the table.
 DONE_PER_KEY = "key"
 DONE_TABLE = "table"
+#: Days a new ticker with no row re-parses the cached archives, for every archive (as the 13F backfill).
+ARCHIVE_NEW_KEY_DAYS = 7
 
 
 @dataclass
@@ -317,9 +319,8 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
 
 
 def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collection[str], as_of: pd.Timestamp) -> set[str]:
-    """Keys added inside the longest overlap of `tables` that have no row in any of them."""
-    overlap = max(t.resume.overlap_days for t in tables if t.resume is not None)
-    new = new_tickers(context.store, overlap, as_of) & set(keys)
+    """Keys added in the last `ARCHIVE_NEW_KEY_DAYS` days that have no row in any of `tables`."""
+    new = new_tickers(context.store, ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
     for table in tables:
         if not new:
             break

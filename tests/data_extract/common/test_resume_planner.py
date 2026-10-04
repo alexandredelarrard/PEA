@@ -361,7 +361,7 @@ def test_m3_absent_tables_list_every_published_period_from_the_source_start(tmp_
 
 
 def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqlite_store, caplog):
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW", "OLD"], added_on={"NEW": "2026-09-01", "OLD": "2026-09-02"})
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW", "OLD"], added_on={"NEW": "2026-09-27", "OLD": "2026-09-28"})
     _save_pension(sqlite_store, "AAA", ["2025q4", "2026q1", "2026q2"])
     _save_pension(sqlite_store, "OLD", ["2026q2"])  # new, but already holds a row: not re-parsed
 
@@ -377,15 +377,20 @@ def test_m3_new_key_re_parses_every_cached_period_for_itself_only(tmp_path, sqli
     print("  the stored but uncached 2025q4 is named in a WARNING and never downloaded for a new key.")
 
 
-def test_m3_new_key_window_ends_after_the_overlap(tmp_path, sqlite_store):
-    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "NEW"], added_on={"NEW": "2026-06-01"})  # 121 days before as_of
+def test_m3_new_key_window_is_seven_days_for_every_archive(tmp_path, sqlite_store):
+    added = {"D6": "2026-09-24", "D8": "2026-09-22"}  # 6 and 8 days before as_of 2026-09-30
+    ctx = _archive_ctx(tmp_path, sqlite_store, ["AAA", "D6", "D8"], added_on=added)
     _save_pension(sqlite_store, "AAA", ["2026q1"])
+    _save_notes(sqlite_store, Tables.notes_num, "AAA", ["2026_07"])
+    _save_notes(sqlite_store, Tables.notes_text, "AAA", ["2026_07"])
 
-    work = _archive(ctx, (Tables.pension_facts,), ["2026q1"], ["AAA", "NEW"])
+    pension = _archive(ctx, (Tables.pension_facts,), ["2026q1"], ["AAA", "D6", "D8"])  # 95-day table overlap
+    notes = _archive(ctx, _NOTES, ["2026_07"], ["AAA", "D6", "D8"])  # 62-day table overlap
 
-    assert work.rescan_keys == [] and work.pending == []
+    assert pension.rescan_keys == notes.rescan_keys == ["D6"]
     print("\n=== SANITY CHECK: M3 new-key window ===")
-    print("  NEW was added 121 days ago, past the 95-day pension_facts overlap -> no re-parse; -t NEW -F is the way back.")
+    print("  D6 (added 6 days ago, no row) is re-parsed; D8 (8 days ago) is not, although the pension overlap is 95 days")
+    print("  and the notes overlap 62: the new-key window is 7 days for every archive; -t D8 -F is the way back.")
 
 
 def test_m3_zero_row_failed_and_deleted_periods_are_parsed_again(tmp_path, sqlite_store):

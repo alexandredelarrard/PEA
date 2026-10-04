@@ -66,7 +66,7 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
 def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str, Any]) -> None:
     store, calls = harness["store"], harness["calls"]
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "NEW"], "added_on": pd.to_datetime(["2000-01-01", "2024-06-20"])}))
+    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "NEW"], "added_on": pd.to_datetime(["2000-01-01", "2024-06-28"])}))
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1")]))
 
     saved = ins.fetch_insider_transactions(harness["ctx"], ["AAA", "NEW"], years_history=15, as_of=_AS_OF)

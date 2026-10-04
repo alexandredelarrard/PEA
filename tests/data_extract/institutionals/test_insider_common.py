@@ -87,7 +87,7 @@ def test_parse_number_is_one_rule_for_both_sources():
     raw = pd.Series(["1,000", "$5", "12.5", "", None, "4.0973523936194694e-06", "junk", " 7 "], dtype="object")
     out = parse_number(raw)
     assert list(out.iloc[:3]) == [1000.0, 5.0, 12.5]
-    assert out.iloc[[3, 4, 6]].isna().all() and out.dtype == "float64"
+    assert out.take([3, 4, 6]).isna().all() and out.dtype == "float64"
     assert out.iloc[5] == float("4.0973523936194694e-06"), "Python float, bit for bit"
     assert out.iloc[7] == 7.0
     print(
@@ -128,7 +128,7 @@ def test_build_applies_one_value_rule_and_never_null_role_flags():
     owners = _owners([("a", "1", None, "Director,TenPercentOwner"), ("b", "2", None, ""), ("c", "3", None, None)])
     out = build_insider_frame(df_str, owners, date_formats=BULK_DATE_FORMATS)
     assert list(out["value_usd"].iloc[:3]) == [200.0, 200.0, 50.0] and pd.isna(out["value_usd"].iloc[3])
-    assert out.loc[0, ROLES].tolist() == [1.0, 0.0, 1.0, 0.0]
+    assert list(out.loc[0, ROLES]) == [1.0, 0.0, 1.0, 0.0]
     assert (out.loc[1:, ROLES] == 0.0).all().all(), "blank, absent or missing relationship -> 0, never NaN"
     assert out["ticker"].iloc[0] == "EXM" and out["ticker"].iloc[1:3].isna().all()
     assert out["n_reporting_owners"].tolist() == [1, 1, 1, 0] and out["owner_cik"].iloc[:3].tolist() == ["0000000001", "0000000002", "0000000003"]
@@ -157,13 +157,13 @@ def test_owner_summary_picks_the_primary_owner_by_role_rank_then_lowest_cik():
         ]
     )
     out = owner_summary(owners).set_index("accession_number")
-    joint, tie, bare = out.loc["joint"], out.loc["tie"], out.loc["bare"]
+    joint, tie, bare = (out.loc[accession].to_dict() for accession in ("joint", "tie", "bare"))
     assert (joint["owner_cik"], joint["officer_title"]) == ("0000000009", "CFO")
     assert joint["owner_ciks"] == "0000000003,0000000005,0000000009" and joint["n_reporting_owners"] == 3
-    assert joint[ROLES].tolist() == [1.0, 1.0, 1.0, 0.0], "flags are OR'ed across owners"
+    assert [joint[role] for role in ROLES] == [1.0, 1.0, 1.0, 0.0], "flags are OR'ed across owners"
     assert tie["owner_cik"] == "0000000100" and tie["owner_ciks"] == "0000000100,0000000200" and tie["n_reporting_owners"] == 2
     assert pd.isna(bare["owner_cik"]) and pd.isna(bare["owner_ciks"]) and bare["n_reporting_owners"] == 0
-    assert bare[ROLES].tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert [bare[role] for role in ROLES] == [0.0, 0.0, 0.0, 0.0]
     print(
         "SANITY: the officer outranks a lower-CIK 10% owner and a director (primary 0000000009, title CFO); equal roles go to the lowest CIK "
         "(0000000100, missing CIK last); owner_ciks is sorted, deduplicated and padded; flags are OR'ed; an owner without role or CIK gives n 0."

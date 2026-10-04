@@ -191,7 +191,9 @@ class Tables:
     #
     # Only universe entities and hand-adjudicated CIKs are stored. A CIK with no row IS its own
     # entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has never seen.
-    # `scope_changed_at` (per ticker) is the build time at which that ticker's CIK rows last changed.
+    # `scope_changed_at` (per ticker) is the build time at which that ticker's rows last changed, kept
+    # apart for the two row kinds: CIK rows carry the stamp of their last CIK change (EDGAR relist),
+    # symbol rows their own stamp of their last tape-readable symbol change (FTD re-resolution).
     #
     # ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5 carry an
     # issuer CIK and no class.

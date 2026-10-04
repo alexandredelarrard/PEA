@@ -87,7 +87,7 @@ Run `seed-universe` before stages that resolve the default ticker set.
 | --- | --- | --- |
 | Universe/prices | `seed-universe`, `price-history`, `dividends`, `splits`, `macro` | Price history is heavy; split adjustment is retroactive, so a full price refresh can be required after a split. |
 | Institutionals | `thirteen-f`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G is heavy. `thirteen-f` writes the S&P 500 slice and the roster managers' complete books in one oldest-first walk; `thirteen-f-managers` only catches each roster CIK up from its stored `sec13f_manager_holdings` frontier. Use the dedicated vote command only after 8-K narratives exist. |
-| Identity | `identity-tables` | Rebuilds `symbol_tenure` and `entity_lineage` together from one pass over the cached Form 3/4/5 zips plus database evidence; a table whose rebuilt frame matches the stored one is not rewritten. |
+| Identity | `insider-download`, `notes-download [-F]`, `identity-tables [--approve-rekey OLD:NEW]`, `identity-propagate [-t] [--dry-run]` | Run in this order before any identity-consuming SEC command. The downloads cache the Form 3/4/5 and Notes zips; `notes-download` also captures cover-page symbols (`-F` re-captures every cached zip). `identity-tables` rebuilds `symbol_tenure` and `entity_lineage` offline. `identity-propagate` purges rows whose filer CIK left the ticker's entity, re-parses the bulk families and re-resolves FTD for changed tickers, and rebuilds purged tickers' history; `--dry-run` only lists the pending removals. `validate identity` is the read-only check. |
 | Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-employees`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts and employees are independent SEC network walks; SEC and merged history rebuilds are local once inputs exist. |
 | Structure/text | `def14a`, `def14a-edgar`, `sec-8k-votes`, `filing-text` | LLM-backed DEF 14A and vote extraction spend API calls; deterministic DEF 14A XBRL is separate. |
 | Earnings calls | `extract-earnings-calls [-F] [-t]` | Reads the defeatbeta HuggingFace parquet into `earnings_call_sections`. An unchanged source file is a no-op; `-F` compares every scoped call. |
@@ -139,7 +139,7 @@ See [modelling and portfolio](../reference/modelling-and-portfolio.md).
 1. Start the database.
 2. Create the root .env with SEC_USER_AGENT and required provider keys.
 3. Seed the universe.
-4. Build `identity-tables` before any identity-consuming SEC extraction.
+4. Run `insider-download`, `notes-download`, `identity-tables` and `identity-propagate`, in that order, before any identity-consuming SEC extraction.
 5. Run required extraction sources, starting with price history.
 6. Deduce peers.
 7. Build all cube parts and assemble the cube with a full run.
@@ -178,7 +178,7 @@ The generated `.cache/corporate_ca_bundle.pem` is ignored by Git and visible ins
 
 The compose stack mounts the repository, persistent `data/`, and DAG directory separately. Inside containers, use the service hostname `db`, not localhost. Operational pools throttle SEC bulk, SEC API, and aggregate tasks; light sources, including earnings calls, run in the default pool.
 
-In the extraction DAG, `identity-tables` runs after `insider-transactions` and before every identity-consuming SEC task, including facts, standalone employees, deterministic and LLM proxy extraction, 8-K/13D/13G, and filing text. The independent 13F manager chain is not an issuer-identity consumer. Sharadar merge waits for both SEC facts/history and employee extraction.
+In the extraction DAG the identity stage comes first: `[insider_download, notes_download] >> identity_tables >> identity_propagate >>` the 13 identity consumers (insider parse, Notes, pension, FTD, short interest, facts, standalone employees, LLM and deterministic DEF 14A, 8-K, 13D, 13G, filing text). The derived `sec_8k_votes` and `fundamentals_sharadar` follow their parents; Sharadar merge waits for both SEC facts/history and employee extraction. The independent 13F manager chain and the other identity-independent sources run beside the stage. After every fetcher, `identity_check` (`validate identity`, report under `reports/validate/identity-nightly`) runs before `extraction_status`: foreign rows or a broken lineage invariant fail it, the ALL_SUCCESS gate is left unrun and aggregation is not triggered. `StepExtractAllData` runs the same stage (downloads, build, propagation) before its domain steps. A standalone consumer command or `StepExtractInstitutionals` run reads the stored lineage, so run the four identity commands first.
 
 For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-infrastructure.md) and [nightly refresh](../flows/nightly-data-refresh.md).
 
@@ -201,7 +201,21 @@ Run facts in bounded ticker chunks with `-F`, then replay SEC history locally. A
 
 ### Registrant boundaries
 
-Bulk datasets must be reparsed from cache after expanding a registrant chain; the ticker universe size has not changed, so ordinary incremental logic cannot discover the new CIK history. Network listing fetchers then walk the affected register tickers serially. Take before/after impact snapshots and per-table dumps.
+A register or manual-lineage edit needs no hand-run reparse. After the edit, which must cite an SEC filing accession, run `identity-tables`, read `identity-propagate --dry-run`, then run `identity-propagate`: bulk families re-parse the changed tickers from cache, foreign rows are purged with one WARNING per table, and each EDGAR fetcher relists the changed tickers over its full window on its next run. Finish with `validate identity`.
+
+**Rollback.** Purged rows are not archived. A wrong purge is undone by fixing the lineage (`configs/sec/registrant_cutover.json`, `entity_lineage_manual.json` or `symbol_tenure_manual.json`), rerunning `identity-tables` and `identity-propagate`, and re-fetching: the changed tickers' new stamp makes the EDGAR fetchers relist them and the bulk families re-parse them. Re-fetching `def14a_*` LLM rows costs API calls; `sec_short_interest` rows are never purged (S1).
+
+### Identity cutover (one-off, user-run)
+
+The dated lineage changes both identity tables' primary keys, and `CREATE TABLE IF NOT EXISTS` would keep the old shape. Run once, in order, one heavy process at a time:
+
+1. `rtk "$PY" -m src validate identity -o reports/validate/YYYY-MM-DD-identity-before`: foreign rows are expected in `sec_8k` and `fundamentals_facts` only.
+2. Drop `symbol_tenure` and `entity_lineage` and recreate both from the committed blocks in [sql/schema.sql](../../sql/schema.sql), keeping the non-unique `ix_entity_lineage_entity_id` index.
+3. `insider-download`; `notes-download -F` (the `dei` backfill over every cached Notes zip, about 16–45 minutes and 3.4 GiB); `identity-tables`.
+4. `identity-propagate`. The first run stamps every ticker, so every table is checked: it purges the foreign `sec_8k` and `fundamentals_facts` rows and rebuilds those tickers' history.
+5. Full rebuilds: `sec-8k-items -F` then `sec-8k-votes`; `fundamentals-history-sec --rebuild-history` and `fundamentals-history-merged -F`; `financial-notes --reparse` and `financial-statements --reparse`; `insider-transactions --reparse`; `fails-to-deliver -F`; a targeted `fundamentals-facts -F -t` for the eight contaminated tickers. `sec_short_interest` (S1) and the `def14a_*` LLM tables are not rebuilt. Curate the symbol conflicts listed in the [TODO](../TODO.md) first if their FTD history must survive.
+6. Rebuild the cube, run the aggregate regression gate, and attribute each changed feature to a remediated ticker.
+7. `validate identity -o reports/validate/YYYY-MM-DD-identity-after`: zero foreign rows.
 
 ### 13D/13G
 

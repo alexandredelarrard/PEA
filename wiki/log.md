@@ -170,3 +170,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Coverage: `EdgarFetch` has no partial-success flag; `sec_atom.py` owns Atom paging and the entry filter; the 13F listing sorts amendments after same-day originals; the 13F manager catch-up decides per filing from stored (period, filing date) pairs and splits transient from deterministic read failures; review residuals and minor simplifications deferred to the TODO
 - Pages: [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-01-edgar-extract-refactor/` (`06-final.md`)
+
+## 2026-10-04: refresh — entity-safe EDGAR filing scope and dated lineage
+
+- Profile: internal/standard
+- source_commit: 2d3566c (branch `harness/entity-symbol-lineage`)
+- Coverage: `symbol_tenure` evidence partitions (`form345`, `manual`, `dei`); dated `entity_lineage` (`cik_window`, `cik_event`, `symbol` rows, sentinel open start, split change stamps); listing by CIK only with guard skip-and-count, 31-day seam margin and the same-period rule; register-only CIK windows; symbol tapes and S1; `identity-propagate`; `validate identity` and the manual-decision flags; new identity commands, DAG order, cutover and rollback; lineage follow-ups and the database-only resume item in the TODO
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-02-entity-symbol-lineage/` (`03-implementation.md`)
+- Operational boundary: the live identity tables keep the old shape until the user-run cutover.

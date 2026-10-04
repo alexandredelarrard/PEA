@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
+from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
@@ -52,6 +54,7 @@ class Spec:
     filed: str
     trades: tuple[Trade, ...]
     issuer_cik: str = AAA_CIK
+    symbol: str = "AAA"
 
 
 def _bulk_date(iso: str) -> str:
@@ -65,8 +68,8 @@ def _zip_tables(specs: list[Spec]) -> tuple[pd.DataFrame, ...]:
             {
                 "ACCESSION_NUMBER": spec.accession,
                 "ISSUERCIK": spec.issuer_cik,
-                "ISSUERNAME": "AAA CORP",
-                "ISSUERTRADINGSYMBOL": "AAA",
+                "ISSUERNAME": f"{spec.symbol} CORP",
+                "ISSUERTRADINGSYMBOL": spec.symbol,
                 "DOCUMENT_TYPE": "4",
                 "FILING_DATE": _bulk_date(spec.filed),
                 "PERIOD_OF_REPORT": _bulk_date(spec.trades[0].date),
@@ -117,7 +120,8 @@ def _xml(spec: Spec) -> str:
     )
     return (
         f"<ownershipDocument><documentType>4</documentType><periodOfReport>{spec.trades[0].date}</periodOfReport>"
-        f"<issuer><issuerCik>{spec.issuer_cik}</issuerCik><issuerName>AAA CORP</issuerName><issuerTradingSymbol>AAA</issuerTradingSymbol></issuer>"
+        f"<issuer><issuerCik>{spec.issuer_cik}</issuerCik><issuerName>{spec.symbol} CORP</issuerName>"
+        f"<issuerTradingSymbol>{spec.symbol}</issuerTradingSymbol></issuer>"
         f"<reportingOwner><reportingOwnerId><rptOwnerCik>{OWNER_CIK}</rptOwnerCik><rptOwnerName>DOE JANE</rptOwnerName></reportingOwnerId>"
         "<reportingOwnerRelationship><isOfficer>1</isOfficer></reportingOwnerRelationship></reportingOwner>"
         f"<nonDerivativeTable>{rows}</nonDerivativeTable></ownershipDocument>"
@@ -154,7 +158,7 @@ class _FakeSec:
 
     def _list(self, ticker: str, cik: str, *, since: pd.Timestamp | None, through: pd.Timestamp, done_accessions: frozenset[str], scope: Any) -> list:
         self.listing_since.append(since)
-        return [_Filing(spec) for spec in self.filings if spec.accession not in done_accessions]
+        return [_Filing(spec) for spec in self.filings if spec.symbol == ticker and spec.accession not in done_accessions]
 
 
 @pytest.fixture(scope="module")
@@ -178,13 +182,20 @@ def identity() -> Identity:
     )
 
 
-def _context(tmp_path: Path, store: Any) -> Any:
-    store.save(Tables.sp500_tickers, pd.DataFrame({col: ["1" if col == "cik" else f"{col}-AAA"] for col in CIK_MAPPING_COLS} | {"ticker": ["AAA"]}))
+def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
+    """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
+    store.save(
+        Tables.sp500_tickers,
+        pd.DataFrame(
+            {col: [str(i + 1) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
+            | {"ticker": list(universe)}
+        ),
+    )
     return SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
-        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
+        config=extract_config(data_extract={"manifest_full_rescan_days": 30, "redundant_ticks": []}),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
     )
@@ -389,4 +400,68 @@ def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, s
     print(
         f"\nSANITY: EDGAR re-read zip filing A (3 zip rows -> {len(rows_a)} EDGAR rows) and B (1 -> 2), keeping quarter 2026q2 on every row; "
         f"C stays zip, N is new with NULL quarter, X excluded with a WARNING; an EDGAR rerun changed none of the {len(df_after)} rows."
+    )
+
+
+BBB_CIK = "0000000002"
+B0 = Spec("0000000002-26-000010", "2026-02-03", (Trade("2026-01-30", "P", 8, 6, 80),), issuer_cik=BBB_CIK, symbol="BBB")
+B1 = Spec("0000000002-26-000100", "2026-05-04", (Trade("2026-05-01", "S", 3, 7, 77),), issuer_cik=BBB_CIK, symbol="BBB")
+
+
+@pytest.fixture(scope="module")
+def identity_two() -> Identity:
+    """AAA (CIK 1) and BBB (CIK 2), both universe companies."""
+    pairs = (("AAA", AAA_CIK), ("BBB", BBB_CIK))
+    return build_identity(
+        lineage=pd.DataFrame([{"cik": cik, "entity_id": f"E{cik}", "source": "roster", "confidence": None, "evidence": "test"} for _, cik in pairs]),
+        tenure=pd.DataFrame(
+            [
+                {
+                    "symbol": s,
+                    "issuer_cik": cik,
+                    "valid_from": pd.Timestamp("2006-01-03"),
+                    "valid_to": None,
+                    "n_filings": 100,
+                    "source": "form345",
+                    "evidence": "",
+                }
+                for s, cik in pairs
+            ]
+        ),
+        roster=pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs]),
+    )
+
+
+def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
+    """R-01: `insider-transactions -t AAA -F` re-reads AAA only; the stored-row sweep, which adjudicates
+    against the whole universe, is skipped, so BBB's zip and EDGAR rows survive unchanged."""
+    caplog.set_level(logging.INFO)
+    sec = _FakeSec(monkeypatch, identity_two, tmp_path)
+    # Two tickers: one worker, since the in-memory SQLite store shares one connection across threads.
+    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
+    context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
+    sweep = "insider: stored-row sweep -- "
+
+    sec.zips["2026q1"] = _zip_tables([Q0, B0])
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    sec.filings = [E1, B1]
+    edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
+    df_before = _table(sqlite_store)
+    bbb = df_before["ticker"].eq("BBB")
+    assert set(df_before.loc[bbb, "source"]) == {"zip", "edgar"}, "BBB holds a zip and an EDGAR filing"
+    assert any(message.startswith(sweep) for message in _messages(caplog, logging.INFO)), "the full-universe run sweeps"
+
+    caplog.clear()
+    ins.fetch_insider_transactions(context, tickers=["AAA"], years_history=1, reparse=True)
+    edgar.fetch_insider_edgar(context, tickers=["AAA"], years_history=15, full=True)
+    df_after = _table(sqlite_store)
+
+    infos = _messages(caplog, logging.INFO)
+    assert not any(message.startswith(sweep) for message in infos), "a subset run never sweeps"
+    skipped = next(message for message in infos if "sweep skipped" in message)
+    pd.testing.assert_frame_equal(df_after[df_after["ticker"].eq("BBB")].reset_index(drop=True), df_before[bbb].reset_index(drop=True))
+    assert set(df_after["accession_number"]) == set(df_before["accession_number"])
+    print(
+        f"\nSANITY: after `-t AAA -F` the table still holds all {len(df_after)} rows; BBB's {int(bbb.sum())} rows "
+        f"(zip and EDGAR) are unchanged; log: '{skipped}'."
     )

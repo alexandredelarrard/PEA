@@ -1,18 +1,30 @@
-"""Institutional extraction refreshes identity immediately before symbol-only tapes."""
+"""Institutional extraction consumes the identity built upstream; it never rebuilds it."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import inspect
 from types import SimpleNamespace
 from typing import Any, cast
 
+from src.data_extract.transformers import step_extract_fundamentals, step_extract_structure
 from src.data_extract.transformers import step_extract_institutionals as module
 from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
 )
 
+#: names that build, download for or propagate the identity; none belongs in a domain step.
+IDENTITY_STAGE_NAMES = (
+    "scan_form345_cache",
+    "build_symbol_tenure",
+    "build_entity_lineage",
+    "propagate_identity",
+    "download_insider_transactions",
+    "download_financial_notes",
+    "refresh=True",
+)
 
-def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch):
+
+def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatch):
     order: list[str] = []
     identity = object()
 
@@ -33,34 +45,13 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
         monkeypatch.setattr(module, name, mark(name))
     # 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
     monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].desc))
-    monkeypatch.setattr(module, "cache_dir", lambda *args: Path("cache"))
-    scan = SimpleNamespace(owner_pairs=object())
-    tenure = object()
 
-    def form345_scan(cache):
-        assert cache == Path("cache")
-        order.append("form345_scan")
-        return scan
-
-    def symbol_tenure(context, given_scan, config_dir):
-        assert given_scan is scan
-        order.append("symbol_tenure")
-        return tenure
-
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir):
-        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
-        order.append("entity_lineage")
-
-    monkeypatch.setattr(module, "scan_form345_cache", form345_scan)
-    monkeypatch.setattr(module, "build_symbol_tenure", symbol_tenure)
-    monkeypatch.setattr(module, "build_entity_lineage", entity_lineage)
-
-    def refresh(*args, **kwargs):
-        assert kwargs == {"refresh": True}
-        order.append("identity_refresh")
+    def load(*args, **kwargs):
+        assert not kwargs.get("refresh"), "the identity is refreshed once, by the identity stage"
+        order.append("identity_load")
         return identity
 
-    monkeypatch.setattr(module, "load_identity", refresh)
+    monkeypatch.setattr(module, "load_identity", load)
 
     def short(*args, **kwargs):
         assert kwargs["identity"] is identity
@@ -73,19 +64,27 @@ def test_identity_refresh_runs_after_insiders_and_before_regsho_ftd(monkeypatch)
     monkeypatch.setattr(module, "fetch_short_interest", short)
     monkeypatch.setattr(module, "fetch_fails_to_deliver", fails)
 
-    config = SimpleNamespace(
-        data_extract=SimpleNamespace(years_history=15),
-        local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="sec_insider_transactions")),
-    )
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     context = SimpleNamespace(config=config, config_dir="./configs")
     step = cast(Any, object.__new__(StepExtractInstitutionals))
     step._context = context
     step.config = config
     step.run(["AAA"])
 
-    assert order.index("fetch_insider_transactions") < order.index("symbol_tenure")
-    assert order[-6:] == ["form345_scan", "symbol_tenure", "entity_lineage", "identity_refresh", "regsho", "ftd"]
+    assert order[:5] == ["fetch_13f", "upsert_roster_snapshot", "fetch_13f_managers", "fetch_insider_transactions", "fetch_insider_edgar"]
+    assert order[-3:] == ["identity_load", "regsho", "ftd"]
+    assert len(order) == 11, order
 
-    print("\n=== SANITY CHECK: institutional identity refresh order ===")
-    print("  insider cache -> one Form 345 scan -> symbol_tenure -> entity_lineage (same scan + tenure frame) -> refresh -> RegSHO -> FTD")
-    print("  OK: both symbol-only consumers share the same newly refreshed resolver")
+    print("\n=== SANITY CHECK: institutional identity consumption ===")
+    print(f"  {len(order)} calls: 13F -> roster -> managers -> insider parse -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO -> FTD")
+    print("  OK: no identity build inside the step; both symbol tapes share the one resolver the identity stage refreshed")
+
+
+def test_domain_steps_contain_no_identity_stage():
+    steps = (module, step_extract_fundamentals, step_extract_structure)
+    found = {step.__name__: [name for name in IDENTITY_STAGE_NAMES if name in inspect.getsource(step)] for step in steps}
+    assert all(not names for names in found.values()), found
+
+    print("\n=== SANITY CHECK: consume-only domain steps (AC-011, AC-038) ===")
+    print(f"  {len(steps)} step modules scanned for {len(IDENTITY_STAGE_NAMES)} identity-stage names: none found")
+    print("  OK: institutionals, fundamentals and structure only read the lineage built and propagated upstream")

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
@@ -29,8 +33,11 @@ REQUIRED_COMMANDS = {
     "thirteen-f",
     "financial-statements",
     "insider-transactions",
+    "insider-download",
+    "notes-download",
     "financial-notes",
     "identity-tables",
+    "identity-propagate",
     "superinvestors",
     "thirteen-f-managers",
     "fundamentals",
@@ -84,59 +91,173 @@ def test_freshness_inventory_comes_only_from_schema():
     print("  OK: schema.py is the sole table/cadence/date-column source of truth")
 
 
+#: identity producers, in stage order: the two cache downloads, the build, the propagation.
+IDENTITY_DOWNLOADS = {"insider_download", "notes_download"}
+#: every task that reads the lineage; each must start after `identity_propagate`.
+IDENTITY_CONSUMERS = {
+    "insider_transactions",
+    "financial_notes",
+    "financial_statements",
+    "fails_to_deliver",
+    "short_interest",
+    "fundamentals",
+    "fundamentals_employees",
+    "def14a",
+    "def14a_edgar",
+    "sec_8k_items",
+    "sec_13d",
+    "sec_13g",
+    "filing_text",
+}
+#: derived from consumer tables; each must start after its parents.
+DERIVED_PARENTS = {
+    "sec_8k_votes": {"sec_8k_items", "def14a"},
+    "fundamentals_sharadar": {"fundamentals", "fundamentals_employees"},
+}
+IDENTITY_INDEPENDENT = {
+    "thirteen_f",
+    "superinvestors",
+    "thirteen_f_managers",
+    "macro",
+    "earnings_surprises",
+    "splits",
+    "price_history",
+    "dividends",
+    "extract_earnings_calls",
+}
+
+
+class _StubTask:
+    """Records `>>` edges the way Airflow does for a task or a list of tasks."""
+
+    def __init__(self, graph: dict[str, set[str]], params: dict[str, dict], **kwargs: object) -> None:
+        self.task_id = str(kwargs["task_id"])
+        self._graph = graph
+        graph.setdefault(self.task_id, set())
+        params[self.task_id] = dict(kwargs)
+
+    def _link(self, upstream: object, downstream: object) -> None:
+        for up in upstream if isinstance(upstream, list) else [upstream]:
+            for down in downstream if isinstance(downstream, list) else [downstream]:
+                self._graph[up.task_id].add(down.task_id)
+
+    def __rshift__(self, other: object) -> object:
+        self._link(self, other)
+        return other
+
+    def __rrshift__(self, other: object) -> object:
+        self._link(other, self)
+        return self
+
+
+def _load_dag_graph(monkeypatch) -> tuple[dict[str, set[str]], dict[str, dict]]:
+    """Execute the DAG module against a stub `airflow` package; returns (edges, task kwargs)."""
+    graph: dict[str, set[str]] = {}
+    params: dict[str, dict] = {}
+
+    def operator(**kwargs: object) -> _StubTask:
+        return _StubTask(graph, params, **kwargs)
+
+    airflow = types.ModuleType("airflow")
+    airflow.DAG = lambda **kwargs: SimpleNamespace(**kwargs)  # type: ignore[attr-defined]
+    bash = types.ModuleType("airflow.operators.bash")
+    bash.BashOperator = operator  # type: ignore[attr-defined]
+    trigger = types.ModuleType("airflow.operators.trigger_dagrun")
+    trigger.TriggerDagRunOperator = operator  # type: ignore[attr-defined]
+    rule = types.ModuleType("airflow.utils.trigger_rule")
+    rule.TriggerRule = SimpleNamespace(ALL_SUCCESS="all_success")  # type: ignore[attr-defined]
+    modules = {
+        "airflow": airflow,
+        "airflow.operators": types.ModuleType("airflow.operators"),
+        "airflow.operators.bash": bash,
+        "airflow.operators.trigger_dagrun": trigger,
+        "airflow.utils": types.ModuleType("airflow.utils"),
+        "airflow.utils.trigger_rule": rule,
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location("_extraction_dag_under_test", DAG_FILE)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    return graph, params
+
+
+def _descendants(graph: dict[str, set[str]], start: str) -> set[str]:
+    seen: set[str] = set()
+    stack = list(graph[start])
+    while stack:
+        node = stack.pop()
+        if node not in seen:
+            seen.add(node)
+            stack.extend(graph[node])
+    return seen
+
+
+def _topological_order(graph: dict[str, set[str]]) -> list[str]:
+    indegree = dict.fromkeys(graph, 0)
+    for downs in graph.values():
+        for down in downs:
+            indegree[down] += 1
+    ready = sorted(node for node, degree in indegree.items() if degree == 0)
+    order: list[str] = []
+    while ready:
+        node = ready.pop(0)
+        order.append(node)
+        for down in sorted(graph[node]):
+            indegree[down] -= 1
+            if indegree[down] == 0:
+                ready.append(down)
+    return order
+
+
 def test_retries_dependencies_and_hard_gates_are_wired():
     source = _source(DAG_FILE)
-    tree = ast.parse(source)
-    identity_consumer_assignment = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "identity_consumers" for target in node.targets)
-    )
-    assert isinstance(identity_consumer_assignment.value, ast.List)
-    identity_consumers = {element.id for element in identity_consumer_assignment.value.elts if isinstance(element, ast.Name)}
-    expected_identity_consumers = {
-        "short_interest",
-        "fails_to_deliver",
-        "financial_statements",
-        "financial_notes",
-        "fundamentals",
-        "fundamentals_employees",
-        "def14a",
-        "def14a_edgar",
-        "sec_8k_items",
-        "sec_13d",
-        "sec_13g",
-        "filing_text",
-    }
-    identity_independent = {
-        "insider_transactions",
-        "thirteen_f",
-        "superinvestors",
-        "thirteen_f_managers",
-        "macro",
-        "earnings_surprises",
-        "splits",
-        "price_history",
-        "dividends",
-        "extract_earnings_calls",
-    }
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
     assert "splits >> price_history" in source
-    assert identity_consumers == expected_identity_consumers
-    assert identity_consumers.isdisjoint(identity_independent)
-    assert "sec_8k_votes" not in identity_consumers
-    assert "insider_transactions >> identity_tables >> identity_consumers" in source
-    assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
-    assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
-    assert "all_fetchers >> extraction_status >> trigger_aggregation" in source
     assert "trigger_rule=TriggerRule.ALL_SUCCESS" in source
     assert "trigger_rule=TriggerRule.ALL_SUCCESS" in _source(AGG_DAG_FILE)
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
-    print("  identity producer -> 12 direct consumers; 8-K votes inherit through item/proxy parents")
-    print("  fundamentals facts + employees are siblings; merged history waits for both")
-    print("  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier")
+    print("  three retries per task, sec_api tasks take both pool slots, both DAG triggers wait for ALL_SUCCESS")
+    print("  OK: a failed source never lets aggregation start")
+
+
+def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(monkeypatch):
+    graph, params = _load_dag_graph(monkeypatch)
+    order = _topological_order(graph)
+    assert len(order) == len(graph), "the extraction DAG has a cycle"
+    position = {task: index for index, task in enumerate(order)}
+    after_build = _descendants(graph, "identity_tables")
+    after_propagation = _descendants(graph, "identity_propagate")
+
+    # downloads -> identity build -> propagation -> every consumer
+    for download in IDENTITY_DOWNLOADS:
+        assert "identity_tables" in graph[download], f"{download} must feed identity_tables"
+    assert graph["identity_tables"] == {"identity_propagate", "extraction_status"}
+    assert IDENTITY_CONSUMERS <= graph["identity_propagate"], sorted(IDENTITY_CONSUMERS - graph["identity_propagate"])
+    for derived, parents in DERIVED_PARENTS.items():
+        assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
+        assert derived in after_propagation
+    # sources that read no lineage keep running beside the identity stage
+    assert IDENTITY_INDEPENDENT.isdisjoint(after_build), sorted(IDENTITY_INDEPENDENT & after_build)
+    assert not (IDENTITY_DOWNLOADS | {"identity_tables"}) & after_propagation
+
+    # the hard gate: every task upstream, default ALL_SUCCESS, so an identity or propagation failure blocks it
+    upstream_of_status = {task for task in graph if "extraction_status" in _descendants(graph, task)}
+    assert upstream_of_status == set(graph) - {"extraction_status", "trigger_data_aggregation"}
+    assert "trigger_rule" not in params["extraction_status"]
+    assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
+    assert graph["extraction_status"] == {"trigger_data_aggregation"}
+    for task in IDENTITY_DOWNLOADS:
+        assert params[task]["pool"] == "sec_bulk"
+
+    print("\n=== SANITY CHECK: identity stage order (AC-011, AC-037-039) ===")
+    print(f"  {len(graph)} tasks, acyclic; downloads {sorted(IDENTITY_DOWNLOADS)} -> identity_tables -> identity_propagate")
+    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> extraction_status")
+    first = min(position[task] for task in IDENTITY_DOWNLOADS)
+    print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
+    print(f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build or propagation leaves the gate unrun")
 
 
 def _raises_incomplete(node: ast.AST) -> bool:

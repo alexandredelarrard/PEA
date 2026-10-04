@@ -6,8 +6,9 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher), so parallelism is tu
 big group: the light sources fan out freely, while the heavy / long / rate-limited ones are capped by
 Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — big SEC zip downloads: fails_to_deliver, financial_statements,
-                          insider_transactions, financial_notes  (disk + SEC bandwidth bound)
+  * sec_bulk (2 slots)  — big SEC zip downloads: insider_download, notes_download, fails_to_deliver,
+                          financial_statements, insider_transactions, financial_notes  (disk + SEC
+                          bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time
   * default             — light / fast: macro, short_interest, earnings_surprises,
@@ -15,7 +16,9 @@ Airflow POOLS (created in airflow-init):
                           price_history)
 
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
-the data_aggregation DAG. Fetchers and the schema-driven freshness gate each get three attempts;
+the data_aggregation DAG. Identity stage: the Form 3/4/5 and Notes zip downloads -> identity_tables ->
+identity_propagate -> every task that reads the lineage; a failed build or propagation leaves the
+gate unrun. Fetchers and the schema-driven freshness gate each get three attempts;
 the final gate is a hard block.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
@@ -84,19 +87,25 @@ splits = fetch("splits")
 price_history = fetch("price-history")
 dividends = fetch("dividends")
 
-# 2) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
+# 2) identity stage: cache the Form 3/4/5 zips and the Notes zips (+ cover-page dei symbols), build
+#    symbol_tenure + entity_lineage offline, then carry lineage changes into the stored rows
+insider_download = fetch("insider-download", pool="sec_bulk")
+notes_download = fetch("notes-download", pool="sec_bulk")
+identity_tables = fetch("identity-tables")
+identity_propagate = fetch("identity-propagate")
+
+# 3) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
 thirteen_f = fetch("thirteen-f", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions", pool="sec_bulk")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
-identity_tables = fetch("identity-tables")
 superinvestors = fetch("superinvestors")  # light, needs 13F
 thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
 #   ^ institutionals step: thirteen_f, insider_transactions, fails_to_deliver,
 #     superinvestors, short-interest, sec_8k_items, sec_13d and sec_13g (below)
 
-# 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
+# 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 fundamentals = fetch("fundamentals", pool="sec_api")
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
@@ -108,10 +117,10 @@ sec_13d = fetch("sec-13d", pool="sec_api")  # SC 13D activist filings
 sec_13g = fetch("sec-13g", pool="sec_api")  # SC 13G passive 5%+ stakes
 filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 
-# 4) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
+# 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
 
-# 5) final schema-driven freshness gate; a red gate retries and never permits aggregation.
+# 6) final schema-driven freshness gate; a red gate retries and never permits aggregation.
 extraction_status = fetch("extraction-status", task_id="extraction_status")
 
 trigger_aggregation = TriggerDagRunOperator(
@@ -136,7 +145,10 @@ all_fetchers = [
     financial_statements,
     insider_transactions,
     financial_notes,
+    insider_download,
+    notes_download,
     identity_tables,
+    identity_propagate,
     fundamentals,
     fundamentals_employees,
     fundamentals_sharadar,
@@ -153,6 +165,7 @@ all_fetchers = [
 ]
 
 identity_consumers = [
+    insider_transactions,
     short_interest,
     fails_to_deliver,
     financial_statements,
@@ -169,7 +182,7 @@ identity_consumers = [
 
 seed_universe >> all_fetchers
 splits >> price_history
-insider_transactions >> identity_tables >> identity_consumers
+[insider_download, notes_download] >> identity_tables >> identity_propagate >> identity_consumers
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar

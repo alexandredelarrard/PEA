@@ -69,6 +69,8 @@ _RAW_KPI_COLS = [
 ]
 _HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
 _KPI_COLS = list(EARNINGS_CALL_FEATURES)
+#: `symbol_tenure` sources the issuer attach reads; cover-page `dei` rows stay out so features do not move.
+_TENURE_SOURCES = ("form345", "manual")
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +337,18 @@ def _issuer_history_zscore(per_call: pd.DataFrame, value_col: str) -> pd.Series:
             if pd.notna(values.iloc[position]) and std > 0:
                 out.loc[row_index] = (values.iloc[position] - prior.mean()) / std
     return out
+
+
+def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """(`form345`/`manual` tenure rows, distinct `entity_lineage` (cik, entity_id) pairs) for `attach_issuer_identity`."""
+    tenure = context.store.load(
+        Tables.symbol_tenure,
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"],
+        where={"source": list(_TENURE_SOURCES)},
+        optional=True,
+    )
+    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
+    return tenure, None if lineage is None else lineage.drop_duplicates(ignore_index=True)
 
 
 def attach_issuer_identity(

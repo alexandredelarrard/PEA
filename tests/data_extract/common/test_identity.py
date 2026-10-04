@@ -1,6 +1,7 @@
 """
-`identity.py` -- the two-axis resolver, its five load-time raises and the live acceptance
-table of every (ticker, issuer CIK) group the 2.3 screen flagged.
+`identity.py` -- the lineage accessor (`filing_scope`, `ticker_for_cik`, `ticker_for_symbol`), the
+tenure resolver, its load-time raises and the live acceptance table of every (ticker, issuer CIK)
+group the 2.3 screen flagged.
 
 The raises are the point of the synthetic half. One of them,
 `TwoUniverseTickersOneEntityError`, is the only failure in this design that RELABELS a company's
@@ -23,13 +24,14 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.entity_lineage import TwoUniverseTickersOneEntityError
+from src.data_extract.utils.common.entity_lineage import (
+    CikInTwoEntitiesError,
+    IdentityError,
+    TwoUniverseTickersOneEntityError,
+)
 from src.data_extract.utils.common.identity import (
     AmbiguousSymbolTenureError,
-    CikInTwoEntitiesError,
     Identity,
-    IdentityError,
-    UniverseEntityDisagreementError,
     UnknownUniverseTickerError,
     build_identity,
     load_identity,
@@ -283,21 +285,181 @@ def test_ambiguity_is_entity_grain_not_cik_grain():
     print("  -> Measured live: 2,432 symbols ambiguous over all history, 10 at today.")
 
 
-def test_dominant_entity_is_not_the_latest_observation():
-    """A filer's single mistyped ISSUERTRADINGSYMBOL opens a tenure that is both CURRENT and
-    WRONG. `COO` and `SPG` each carry one against a thousand real filings."""
-    identity = build_identity(
-        lineage=_lineage([("0000000100", "E0000000100", "roster")]),
-        tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 1000), ("AAA", "0000000700", pd.Timestamp("2026-01-01"), None, 1)]),
-        roster=_roster([("AAA", "0000000100")]),
-        d19_allowlist={"AAA": "test"},
-    )
-    assert identity.dominant_entity("AAA") == "E0000000100"
+# --------------------------------------------------------------------------- #
+# dated entity_lineage accessor                                                 #
+# --------------------------------------------------------------------------- #
 
-    print("\n=== SANITY CHECK: whose symbol is this NOW ===")
-    print("  1,000 filings (2006-) vs a 1-filing typo opened 2026 -> the 1,000 wins")
-    print("  OK: weight of filings, not recency, decides the D19 comparison")
-    print("  -> A latest-observation rule hands COO and SPG to a typo.")
+_CHANGED_AAA = pd.Timestamp("2026-10-03 10:00:00")
+_CHANGED_BBB = pd.Timestamp("2026-09-01 08:00:00")
+
+
+def _dated_lineage(rows: list[tuple[str, str, str, str, str, str, str | None, str]]) -> pd.DataFrame:
+    """`entity_lineage` rows: (entity, ticker, cik, role, symbol, valid_from, valid_to, status)."""
+    stamps = {"E0000000100": _CHANGED_AAA, "E0000000900": _CHANGED_BBB}
+    return pd.DataFrame(
+        [
+            {
+                "entity_id": entity,
+                "canonical_ticker": ticker,
+                "cik": cik,
+                "role": role,
+                "symbol": symbol,
+                "valid_from": start,
+                "valid_to": end,
+                "status": status,
+                "sources": "test",
+                "oracle": "register",
+                "confidence": None,
+                "n_observations": 10,
+                "evidence": "test",
+                "scope_changed_at": stamps.get(entity, _CHANGED_BBB),
+            }
+            for entity, ticker, cik, role, symbol, start, end, status in rows
+        ]
+    )
+
+
+def _dated() -> Identity:
+    """AAA: CIK 100 to the 2015-10-02 seam, CIK 200 after it, event-only CIK 300. BBB: one open window.
+    CCC: two windows a year apart (no seam). Symbol rows carry noise, conflict and a two-entity overlap."""
+    lineage = _dated_lineage(
+        [
+            ("E0000000100", "AAA", "0000000100", "cik_window", "", "1900-01-01", "2015-10-02", "curated"),
+            ("E0000000100", "AAA", "0000000200", "cik_window", "", "2015-10-02", None, "curated"),
+            ("E0000000100", "AAA", "0000000300", "cik_event", "", "1900-01-01", None, "curated"),
+            ("E0000000100", "AAA", "0000000100", "symbol", "AAA", "2006-01-01", "2015-10-02", "corroborated"),
+            ("E0000000100", "AAA", "0000000200", "symbol", "AAA", "2015-10-02", None, "single_source"),
+            ("E0000000100", "AAA", "0000000100", "symbol", "OLDX", "2001-01-01", "2006-01-01", "noise"),
+            ("E0000000100", "AAA", "0000000100", "symbol", "ZZZ", "2010-01-01", "2012-01-01", "conflict"),
+            ("E0000000100", "AAA", "0000000200", "symbol", "DUP", "2018-01-01", None, "single_source"),
+            ("E0000000900", "BBB", "0000000900", "cik_window", "", "1900-01-01", None, "single_source"),
+            ("E0000000900", "BBB", "0000000900", "symbol", "BBB", "2006-01-01", None, "corroborated"),
+            ("E0000000900", "BBB", "0000000900", "symbol", "ZZZ", "2011-06-01", "2013-01-01", "single_source"),
+            ("E0000000900", "BBB", "0000000900", "symbol", "DUP", "2019-01-01", None, "single_source"),
+            ("E0000000700", "CCC", "0000000700", "cik_window", "", "1900-01-01", "2010-01-01", "curated"),
+            ("E0000000700", "CCC", "0000000710", "cik_window", "", "2011-01-01", None, "curated"),
+        ]
+    )
+    return build_identity(
+        lineage=lineage,
+        tenure=_tenure([("AAA", "0000000200", pd.Timestamp("2015-10-02"), None, 10), ("BBB", "0000000900", pd.Timestamp("2006-01-01"), None, 10)]),
+        roster=_roster([("AAA", "0000000200"), ("BBB", "0000000900"), ("CCC", "0000000710")]),
+    )
+
+
+def test_ticker_for_cik_follows_dated_windows_and_the_seam_margin():
+    """Consolidating: the CIK's window, widened 31 days at a seam, must hold the filing date. Event: any entity CIK."""
+    identity = _dated()
+    consolidating = {
+        ("100", "2010-06-30"): "AAA",  # predecessor inside its window
+        ("100", "2015-11-01"): "AAA",  # 30 days after the seam: inside the margin
+        ("100", "2015-11-02"): None,  # 31 days after: the widened end is excluded
+        ("200", "2015-09-01"): "AAA",  # successor 31 days before the seam: widened start included
+        ("200", "2015-08-31"): None,
+        ("200", "2020-01-01"): "AAA",
+        ("300", "2020-01-01"): None,  # event-only CIK never consolidates
+        ("700", "2010-01-15"): None,  # a year-long gap is not a seam: no margin
+        ("710", "2010-12-15"): None,
+        ("555", "2020-01-01"): None,  # not an entity CIK
+    }
+    for (cik, filed), expected in consolidating.items():
+        assert identity.ticker_for_cik(cik, filed, "consolidating") == expected, (cik, filed)
+    assert identity.ticker_for_cik("0000000100", None, "consolidating") is None
+    assert identity.ticker_for_cik(300, None, "event") == "AAA"
+    assert identity.ticker_for_cik("100", "1990-01-01", "event") == "AAA"
+    assert identity.ticker_for_cik("555", "2020-01-01", "event") is None
+
+    print("\n=== SANITY CHECK: windowed ticker_for_cik ===")
+    print("  predecessor inside its window -> AAA; 30 days past the seam -> AAA; 31 days -> None")
+    print("  successor 31 days before the seam -> AAA, 32 days -> None; event-only CIK -> event forms only")
+    print("  OK: a predecessor's consolidating filing outside its window (and margin) is not the ticker's")
+
+
+def test_filing_scope_lists_event_ciks_widened_windows_and_scope_timestamp():
+    identity = _dated()
+    scope = identity.filing_scope("AAA")
+    assert scope.event_ciks == ("0000000100", "0000000200", "0000000300")
+    old, new = scope.windows
+    assert (old.cik, old.valid_from, old.valid_to, old.listed_to) == ("0000000100", None, pd.Timestamp("2015-10-02"), pd.Timestamp("2015-11-02"))
+    assert (new.cik, new.valid_from, new.listed_from, new.listed_to) == ("0000000200", pd.Timestamp("2015-10-02"), pd.Timestamp("2015-09-01"), None)
+    assert old.owns(pd.Timestamp("2015-10-01")) and not old.owns(pd.Timestamp("2015-10-02")) and old.admits(pd.Timestamp("2015-10-20"))
+    assert scope.scope_changed_at == _CHANGED_AAA
+    (only,) = identity.filing_scope("BBB").windows
+    assert (only.listed_from, only.listed_to) == (None, None) and identity.filing_scope("BBB").scope_changed_at == _CHANGED_BBB
+    ccc = identity.filing_scope("CCC").windows
+    assert [(w.listed_from, w.listed_to) for w in ccc] == [(None, pd.Timestamp("2010-01-01")), (pd.Timestamp("2011-01-01"), None)]
+
+    print("\n=== SANITY CHECK: filing_scope ===")
+    print(f"  AAA event CIKs {scope.event_ciks}; windows {[(w.cik, w.listed_from, w.listed_to) for w in scope.windows]}")
+    print("  seam widened 31 days on both sides; a year-long gap is left alone; open start stays open")
+    print(f"  scope_changed_at {scope.scope_changed_at} (per entity); OK")
+
+
+def test_an_entity_without_window_rows_reads_its_roster_cik_as_one_open_window():
+    """A membership-only lineage frame (no `role`) and a roster CIK with no lineage row both list the roster CIK alone."""
+    identity = _simple()
+    scope = identity.filing_scope("AAA")
+    assert scope.event_ciks == ("0000000100", "0000000200")
+    assert [(w.cik, w.listed_from, w.listed_to) for w in scope.windows] == [("0000000200", None, None)]
+    assert identity.ticker_for_cik("100", "2010-01-01", "consolidating") is None
+    assert identity.ticker_for_cik("100", "2010-01-01", "event") == "AAA"
+    assert identity.ticker_for_cik("200", "2010-01-01", "consolidating") == "AAA"
+    assert identity.ticker_for_symbol("AAA", "2020-01-01") is None  # no symbol rows to answer from
+
+    print("\n=== SANITY CHECK: roster-only scope ===")
+    print("  no cik_window row -> the roster CIK is the one open window; other entity CIKs are event-only")
+
+
+def test_ticker_for_symbol_ignores_noise_and_leaves_conflict_unresolved():
+    identity = _dated()
+    expected = {
+        ("AAA", "2010-01-01"): "AAA",
+        ("aaa", "2020-01-01"): "AAA",  # normalised spelling
+        ("AAA", "2005-12-31"): None,  # before the first interval
+        ("OLDX", "2003-01-01"): None,  # noise only
+        ("ZZZ", "2011-01-01"): None,  # conflict
+        ("ZZZ", "2011-07-01"): None,  # conflict covers the day, another entity too
+        ("ZZZ", "2012-06-01"): "BBB",  # the conflict interval has ended
+        ("DUP", "2018-06-01"): "AAA",
+        ("DUP", "2020-01-01"): None,  # two entities, neither in conflict
+        ("BBB", None): None,  # no date, no answer
+        ("QQQ", "2020-01-01"): None,
+    }
+    for (symbol, day), ticker in expected.items():
+        assert identity.ticker_for_symbol(symbol, day) == ticker, (symbol, day)
+
+    print("\n=== SANITY CHECK: ticker_for_symbol ===")
+    print("  noise rows are ignored; a conflict row on the date, or two entities, leaves the symbol unresolved")
+    print("  dated half-open intervals decide; no date is no answer")
+
+
+def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
+    """`dei` cover-page evidence feeds the lineage build only; the resolver reads `form345`/`manual`."""
+    tenure = pd.concat(
+        [
+            _tenure([("AAA", "0000000200", pd.Timestamp("2015-01-01"), None, 900)]),
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": "AAA",
+                        "issuer_cik": "0000000555",
+                        "valid_from": "2016-01-01",
+                        "valid_to": None,
+                        "n_filings": 3,
+                        "source": "dei",
+                        "evidence": "",
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    identity = build_identity(lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster=_roster([("AAA", "0000000200")]))
+    assert identity.entity_for("AAA", "2020-01-01") == "E0000000200"
+    assert identity.ciks_by_symbol["AAA"] == frozenset({"0000000200"})
+
+    print("\n=== SANITY CHECK: dei stays out of the tenure resolver ===")
+    print("  a dei AAA row under a foreign CIK neither makes AAA ambiguous nor joins the alias scope")
 
 
 def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():
@@ -494,7 +656,6 @@ def test_closed_manual_predecessor_does_not_own_a_reused_symbol_today():
         _roster([("IR", "0000000200")]),
     )
 
-    assert identity.dominant_entity("IR") == "E0000000200"
     assert (
         identity.resolve_symbol_ticker(
             "IR",
@@ -597,25 +758,18 @@ def test_d19_roster_proxy_is_dated_and_redundant_share_class_is_excluded():
 # --------------------------------------------------------------------------- #
 
 
-def test_d19_disagreement_raises_and_the_allowlist_suppresses_only_its_own_ticker():
-    frames: dict[str, Any] = dict(
+def test_d19_is_the_lineage_builds_check_and_is_not_repeated_at_load():
+    """D19 stops `identity-tables` (`test_entity_lineage.test_a_d19_disagreement_still_stops_the_build`);
+    a consumer loading the stored tables does not re-run it."""
+    identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000900", "E0000000900", "roster")]),
         tenure=_tenure([("AAA", "0000000700", pd.Timestamp("2006-01-01"), None, 500), ("BBB", "0000000800", pd.Timestamp("2006-01-01"), None, 500)]),
         roster=_roster([("AAA", "0000000100"), ("BBB", "0000000900")]),
     )
-    with pytest.raises(UniverseEntityDisagreementError) as excinfo:
-        build_identity(**frames)
-    assert "AAA" in str(excinfo.value) and "BBB" in str(excinfo.value)
+    assert identity.universe_entity("AAA") == "E0000000100" and identity.universe_entity("BBB") == "E0000000900"
 
-    with pytest.raises(UniverseEntityDisagreementError, match="BBB"):
-        build_identity(**frames, d19_allowlist={"AAA": "adjudicated in writing"})
-    build_identity(**frames, d19_allowlist={"AAA": "reason", "BBB": "reason"})  # both explained
-
-    print("\n=== SANITY CHECK: D19, the XOM check ===")
-    print("  roster CIK and symbol_tenure naming different entities -> raises, naming both")
-    print("  an allow-list entry suppresses ONE ticker and leaves the other raising")
-    print("  OK: the free cross-check between a Wikipedia CIK and the filings themselves")
-    print("  -> XOM's shell CIK returned 0 proxies for months; this is what catches that.")
+    print("\n=== SANITY CHECK: D19 runs once, in the build ===")
+    print("  roster CIKs disagreeing with symbol_tenure load without a raise; the build owns the check")
 
 
 @pytest.mark.parametrize("empty", ["lineage", "tenure", "roster"])

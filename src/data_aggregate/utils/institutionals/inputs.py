@@ -15,6 +15,8 @@ from src.data_store.store import DataStore
 from src.utils.string import pad_cik
 
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
+#: `symbol_tenure` sources behind the proven-tenure mask; cover-page `dei` rows stay out so features do not move.
+TENURE_SOURCES = ("form345", "manual")
 
 
 def load_full_price_frames(
@@ -98,7 +100,7 @@ def load_symbol_lineage(
     log: logging.Logger,
     universe: Sequence[str],
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Load the issuer lineage used to validate already-canonical source rows."""
+    """Load the issuer lineage (`form345`/`manual` tenure on the roster CIKs) used to validate already-canonical source rows."""
     tickers = sorted(set(map(str, universe)))
     ticker_ciks = store.load(
         Tables.sp500_tickers,
@@ -115,7 +117,7 @@ def load_symbol_lineage(
     symbol_tenure = store.load(
         Tables.symbol_tenure,
         columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
-        where={"issuer_cik": ciks},
+        where={"issuer_cik": ciks, "source": list(TENURE_SOURCES)},
         optional=True,
     )
     aliases = len(set(symbol_tenure["symbol"].astype(str))) if symbol_tenure is not None else 0

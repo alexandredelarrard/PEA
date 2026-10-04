@@ -194,3 +194,54 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
         "  OLD history follows E1 into NEW, reused OLD/E2 events are excluded (also from the per-quarter table), "
         "and BRK-B is structural, not a source failure. Validated."
     )
+
+
+def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sqlite_store) -> None:
+    """The dated `entity_lineage` holds several rows per CIK and `symbol_tenure` gains `dei` rows; coverage must not move."""
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW"]}))
+    sqlite_store.save(
+        Tables.entity_lineage,
+        pd.DataFrame(
+            {
+                "cik": ["1", "1", "1", "2", "2"],
+                "entity_id": ["E1", "E1", "E1", "E2", "E2"],
+                "role": ["cik_window", "symbol", "symbol", "cik_window", "symbol"],
+                "symbol": ["", "OLD", "NEW", "", "OLD"],
+                "valid_from": ["1900-01-01", "2020-01-01", "2024-01-01", "1900-01-01", "2024-04-01"],
+            }
+        ),
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["OLD", "OLD", "NEW", "NEW"],
+                "issuer_cik": ["1", "2", "1", "9"],
+                "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01", "2023-06-01"],
+                "valid_to": ["2024-04-01", None, None, None],
+                "n_filings": [10, 10, 10, 2],
+                "source": ["form345", "form345", "manual", "dei"],
+                "evidence_period": ["", "", "", "2025q1"],
+            }
+        ),
+    )
+    events = [("OLD", "2023-11-15", "2023Q4"), ("NEW", "2024-02-15", "2024Q1"), ("OLD", "2024-08-15", "2024Q3")]
+    sqlite_store.save(
+        Tables.earnings_surprises,
+        pd.DataFrame({"ticker": [event[0] for event in events], "earnings_date": [event[1] for event in events]}),
+    )
+    sqlite_store.save(
+        Tables.earnings_call_sections,
+        pd.concat([_valid_call(ticker, quarter, date) for ticker, date, quarter in events], ignore_index=True),
+    )
+
+    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store)))
+
+    assert summary["tickers_measured"] == 1
+    assert ratios["NEW"] == 1.0
+    assert [str(date.date()) for date in valid_dates["NEW"]] == ["2023-11-15", "2024-02-15"]
+    print("\n=== SANITY CHECK: dated lineage and dei rows ===")
+    print(
+        "  five lineage rows over two CIKs read as two (cik, entity) pairs; a dei NEW row under a foreign CIK is "
+        "not read, so NEW keeps its entity and its OLD history (2 valid calls, coverage 1.0). Validated."
+    )

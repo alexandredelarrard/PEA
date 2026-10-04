@@ -41,6 +41,8 @@ _GRAIN_KEYS = (
     "ticker_dates_with_multiple_calls",
 )
 _FLOOR_QUARTER = 2006 * 4  # quarter index of 2006Q1, the coverage floor
+#: `symbol_tenure` sources the coverage identity reads, the same as the earnings-call features.
+_TENURE_SOURCES = ("form345", "manual")
 
 
 def _settings(config: Any) -> Any:
@@ -398,9 +400,11 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     tenure = context.store.load(
         Tables.symbol_tenure,
         columns=["symbol", "issuer_cik", "valid_from", "valid_to"],
+        where={"source": list(_TENURE_SOURCES)},
         optional=True,
     )
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
+    lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
     assert roster is not None
     roster_tickers = roster["ticker"].astype(str).tolist()
     measured_tickers = [ticker for ticker in roster_tickers if ticker not in NO_EARNINGS_CALL_TICKERS]

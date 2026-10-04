@@ -571,6 +571,49 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
     print("  half-open tenures preserve OLD->NEW deltas; unknown or ambiguous mappings are excluded. Validated.")
 
 
+def test_issuer_identity_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sqlite_store) -> None:
+    """The dated `entity_lineage` has several rows per CIK and `symbol_tenure` gains `dei` rows; the attach must not move."""
+    calls = pd.DataFrame({"ticker": ["OLD", "NEW"], "quarter": ["2023Q4", "2024Q1"], "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"])})
+    sqlite_store.save(
+        Tables.entity_lineage,
+        pd.DataFrame(
+            {
+                "cik": ["1", "1", "2", "2"],
+                "entity_id": ["E1"] * 4,
+                "role": ["cik_window", "symbol", "cik_window", "symbol"],
+                "symbol": ["", "OLD", "", "NEW"],
+                "valid_from": ["1900-01-01", "2020-01-01", "2024-01-01", "2024-01-01"],
+            }
+        ),
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["OLD", "NEW", "NEW"],
+                "issuer_cik": ["1", "2", "9"],
+                "valid_from": ["2020-01-01", "2024-01-01", "2023-06-01"],
+                "valid_to": ["2024-01-01", None, None],
+                "n_filings": [10, 10, 2],
+                "source": ["form345", "manual", "dei"],
+                "evidence_period": ["", "", "2025q1"],
+            }
+        ),
+    )
+
+    tenure, lineage = ec.load_issuer_identity(cast(Context, SimpleNamespace(store=sqlite_store)))
+    identified = attach_issuer_identity(calls, tenure, lineage)
+    unfiltered = attach_issuer_identity(calls, sqlite_store.load(Tables.symbol_tenure), lineage)
+
+    assert tenure is not None and lineage is not None
+    assert sorted(tenure["issuer_cik"].astype(str)) == ["1", "2"] and len(lineage) == 2
+    assert identified["issuer_id"].tolist() == ["E1", "E1"]
+    assert unfiltered["ticker"].tolist() == ["OLD"]  # what a dei row would cost without the source filter
+    print("\n=== SANITY CHECK: issuer identity inputs ===")
+    print("  four lineage rows -> two (cik, entity) pairs; the dei NEW row under a foreign CIK is not read,")
+    print("  so both calls keep issuer E1 (read unfiltered, the NEW call would be dropped). Validated.")
+
+
 def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
     calendar = pd.bdate_range("2024-01-01", periods=100)
     calls = pd.DataFrame(

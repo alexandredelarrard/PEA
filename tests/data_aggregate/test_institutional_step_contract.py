@@ -188,8 +188,36 @@ def test_symbol_lineage_loader_projects_current_issuers() -> None:
 
     assert tenure is not None and roster is not None
     assert calls[0]["where"] == {"ticker": ["FISV"]}
-    assert calls[1]["where"] == {"issuer_cik": ["0000798354"]}
+    assert calls[1]["where"] == {"issuer_cik": ["0000798354"], "source": ["form345", "manual"]}
     print("SANITY: the input layer projected FISV's current CIK and its FI/FISV lineage without relabelling canonical source rows twice.")
+
+
+def test_symbol_lineage_loader_reads_only_form345_and_manual_tenure(sqlite_store: Any) -> None:
+    """E3: cover-page `dei` rows in `symbol_tenure` stay out of the proven-tenure mask, so short-flow features do not move."""
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["FISV"], "cik": ["0000798354"]}))
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["FISV", "FI", "FI", "FISV"],
+                "issuer_cik": ["0000798354"] * 4,
+                "valid_from": ["2006-01-03", "2023-06-07", "2023-06-01", "2009-01-01"],
+                "valid_to": ["2023-06-07", "2025-11-11", "2025-12-01", "2026-01-01"],
+                "n_filings": [500, 40, 12, 60],
+                "source": ["form345", "manual", "dei", "dei"],
+                "evidence_period": ["", "", "2025q4", "2025q4"],
+            }
+        ),
+    )
+
+    tenure, roster = step_module.institutional_inputs.load_symbol_lineage(sqlite_store, logging.getLogger(__name__), ["FISV"])
+
+    assert tenure is not None and roster is not None
+    assert sorted(zip(tenure["symbol"], pd.to_datetime(tenure["valid_from"]).dt.strftime("%Y-%m-%d"), strict=True)) == [
+        ("FI", "2023-06-07"),
+        ("FISV", "2006-01-03"),
+    ]
+    print("SANITY: of four FISV/FI tenure rows the loader kept the form345 and manual ones; the two dei rows stay out of the mask.")
 
 
 def test_insider_outlier_proof_uses_the_current_step_contract() -> None:

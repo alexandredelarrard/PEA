@@ -39,6 +39,7 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     acknowledge_earnings_call_invalidations,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
+    load_issuer_identity,
     score_earnings_calls,
     sentiment_kpis_streamed,
 )
@@ -101,9 +102,7 @@ class StepCubeText(Step):
         if per_call is None or per_call.empty:
             return pd.DataFrame(columns=["date", "ticker"]), changed
 
-        tenure = self._store.load(Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"], optional=True)
-        lineage = self._store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
-        per_call = attach_issuer_identity(per_call, tenure, lineage)
+        per_call = attach_issuer_identity(per_call, *load_issuer_identity(self._context))
         embedding = embedding_kpis_streamed(self._context, per_call[["ticker", "quarter", "issuer_id"]])
         if embedding is not None and not embedding.empty:
             per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")

@@ -35,7 +35,7 @@ FACTS_SINCE = pd.Timestamp("2023-01-01")
 MARKERS_PER_TABLE = {
     Tables.sec_13d: 3,
     Tables.sec_13g: 4,
-    Tables.insider_transactions_live: 4,
+    Tables.insider_transactions: 4,
     Tables.def14a_llm: 3,
     Tables.sec_8k_votes: 3,
     Tables.fundamentals_facts: 3,
@@ -44,14 +44,11 @@ MARKERS_PER_TABLE = {
 
 def _copy_live_rows(live: DataStore, sqlite: DataStore) -> pd.DataFrame:
     """Copy the five tickers' source rows into `sqlite`; return their wide close prices."""
-    for table in (Tables.sec_13d, Tables.sec_13g, Tables.def14a_llm, Tables.sec_8k_votes):
+    for table in (Tables.sec_13d, Tables.sec_13g, Tables.insider_transactions, Tables.def14a_llm, Tables.sec_8k_votes):
         sqlite.save(table, cast(pd.DataFrame, live.load(table, where={"ticker": TICKERS})))
     facts = cast(pd.DataFrame, live.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": HISTORY_TICKERS}))
     facts = facts[pd.to_datetime(facts["filing_date"]) >= FACTS_SINCE]
     sqlite.save(Tables.fundamentals_facts, facts)
-    # The live DB keeps one merged insider table; its rows stand in for the live-tail table here.
-    insider = cast(pd.DataFrame, live.load(Tables.insider_transactions, where={"ticker": TICKERS}))
-    sqlite.save(Tables.insider_transactions_live, insider.rename(columns={"row_sequence": "source_row_sequence"}))
     prices = cast(pd.DataFrame, live.load(Tables.prices, columns=["date", "ticker", "close_split", "close_total"], where={"ticker": TICKERS}))
     prices = prices[pd.to_datetime(prices["date"]) >= GRID_START]
     return prices.assign(date=pd.to_datetime(prices["date"]))
@@ -68,7 +65,7 @@ def _marker_dates(store: DataStore, table: Table, n: int) -> list[tuple[str, pd.
 
 def _add_markers(store: DataStore) -> int:
     """Save one marker per synthetic accession, built the way each fetcher builds it."""
-    forms = {Tables.sec_13d: "SC 13D", Tables.sec_13g: "SC 13G", Tables.insider_transactions_live: "4", Tables.fundamentals_facts: "10-Q"}
+    forms = {Tables.sec_13d: "SC 13D", Tables.sec_13g: "SC 13G", Tables.insider_transactions: "4", Tables.fundamentals_facts: "10-Q"}
     n_saved = 0
     for table, n in MARKERS_PER_TABLE.items():
         for i, (ticker, day) in enumerate(_marker_dates(store, table, n)):
@@ -101,7 +98,8 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
         )
 
     def insider(store: DataStore) -> pd.DataFrame:
-        return build_insider_feature_panel(frames, store.load(Tables.insider_transactions_live, project=True))
+        complete_through = schedule_complete_through(store, Tables.insider_transactions, close.index.max())
+        return build_insider_feature_panel(frames, store.load(Tables.insider_transactions, project=True), complete_through=complete_through)
 
     def governance(store: DataStore) -> pd.DataFrame:
         proxies, _ = impute_def14a(cast(pd.DataFrame, store.load(Tables.def14a_llm)))
@@ -133,7 +131,9 @@ def test_markers_never_change_a_cube_cell(sqlite_store: DataStore) -> None:
     except Exception as exc:  # noqa: BLE001 -- a missing live table means no real data to test on
         pytest.skip(f"live source rows unavailable: {type(exc).__name__}: {exc}")
     builders = _builders(prices)
-    frontiers = {t: schedule_complete_through(sqlite_store, t, prices["date"].max()) for t in (Tables.sec_13d, Tables.sec_13g)}
+    frontiers = {
+        t: schedule_complete_through(sqlite_store, t, prices["date"].max()) for t in (Tables.sec_13d, Tables.sec_13g, Tables.insider_transactions)
+    }
     before = {name: _canonical(build(sqlite_store)) for name, build in builders.items()}
 
     n_markers = _add_markers(sqlite_store)
@@ -153,5 +153,5 @@ def test_markers_never_change_a_cube_cell(sqlite_store: DataStore) -> None:
     print(f"  markers stored: {', '.join(f'{t.name}={n}' for t, n in stored.items())} (total {n_markers})")
     for name, frame in before.items():
         print(f"  {name:<20} {frame.shape[0]:>7,} rows x {frame.shape[1]:>3} cols: identical")
-    print(f"  13D/13G frontiers unchanged: {', '.join(f'{t.name}={d.date() if d is not None else None}' for t, d in frontiers.items())}")
+    print(f"  13D/13G/insider frontiers unchanged: {', '.join(f'{t.name}={d.date() if d is not None else None}' for t, d in frontiers.items())}")
     print("  CONCLUSION: the store's marker filter keeps every consumer cell-identical. Validated.")

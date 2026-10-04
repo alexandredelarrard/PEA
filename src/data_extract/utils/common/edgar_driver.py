@@ -41,10 +41,12 @@ logger = logging.getLogger(__name__)
 _MISSING_SHOWN = 20
 #: Primary-key columns a marker fills besides the key, the accession and the marker column; a
 #: date key column takes the filing date, anything else the marker's own sentinel.
-_MARKER_KEY_FILL: dict[str, dict[str, object]] = {"insider_transactions_live": {"source_row_sequence": 0}}
+_MARKER_KEY_FILL: dict[str, dict[str, object]] = {"insider_transactions": {"row_sequence": 0}}
 #: Where a marker stamps the listing CIK and the form, per table (default `cik` / `form`); None = not stamped
 #: (an insider marker's listing CIK may be an owner's, never the issuer's).
-_MARKER_STAMP_COLS: dict[str, tuple[str | None, str]] = {"insider_transactions_live": (None, "document_type")}
+_MARKER_STAMP_COLS: dict[str, tuple[str | None, str]] = {"insider_transactions": (None, "document_type")}
+#: Constant non-key columns a marker carries, per table (an insider marker is an EDGAR read).
+_MARKER_EXTRA: dict[str, dict[str, object]] = {"insider_transactions": {"source": "edgar"}}
 _UNIT_COLUMNS = ["cik", "company", "form", "filed", "accession"]
 
 
@@ -136,10 +138,6 @@ class FilingsFn(Protocol):
     def __call__(self, ticker: str, df_units: pd.DataFrame) -> dict[str, Any]: ...
 
 
-class CoverageFn(Protocol):
-    def __call__(self, ticker: str, as_of: pd.Timestamp, failed_dates: list[pd.Timestamp]) -> pd.DataFrame: ...
-
-
 @dataclass(frozen=True)
 class EdgarFetch:
     """One per-filing EDGAR fetch, declared once and walked by `run_edgar_fetch`.
@@ -147,9 +145,9 @@ class EdgarFetch:
     `parse(ticker, cik, stamp, scope)` returns `{table: frame}` for one filing; `is_subject` (same
     arguments) rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
-    key or table-wide. `filings(ticker, df_units)` may supply richer `Filing` objects by accession.
-    `coverage(ticker, as_of, failed_dates)` builds a row of `coverage_table`, saved after the done
-    table. `runtime_floor(context)` floors the listing at run time.
+    key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
+    df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context)` floors the
+    listing at run time.
     """
 
     desc: str
@@ -161,8 +159,7 @@ class EdgarFetch:
     identity_aware: bool = True
     done_scope: str = DONE_TABLE
     filings: FilingsFn | None = None
-    coverage: CoverageFn | None = None
-    coverage_table: Table | None = None
+    done_where: dict[str, object] | None = None
     runtime_floor: Callable[[Context], pd.Timestamp | None] | None = None
 
     @property
@@ -237,8 +234,8 @@ def parse_filing_rows(
 
 
 def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
-    """One empty-filing marker for `table`: key, accession, filing date, CIK, form and the declared
-    sentinel; every other column is left to its typed NULL."""
+    """One empty-filing marker for `table`: key, accession, filing date, CIK, form, the table's
+    constant marker columns and the declared sentinel; every other column is left to its typed NULL."""
     if table.resume is None or table.resume.frontier_col is None:
         raise ValueError(f"{table.name}: a marker needs a resume contract with a frontier column and an empty_marker")
     cik_col, form_col = _MARKER_STAMP_COLS.get(table.name, ("cik", "form"))
@@ -250,6 +247,7 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     }
     if cik_col is not None:
         row[cik_col] = stamp.cik
+    row |= _MARKER_EXTRA.get(table.name, {})
     return marker_frame(table, row, _MARKER_KEY_FILL.get(table.name))
 
 
@@ -344,27 +342,13 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
     return counts, failed_save
 
 
-def _save_coverage(context: Context, fetch: EdgarFetch, ticker: str, as_of: pd.Timestamp, failed: pd.DataFrame) -> None:
-    """Save the key's coverage row (after its done table); a failed save is logged."""
-    if fetch.coverage is None or fetch.coverage_table is None:
-        return
-    df = fetch.coverage(ticker, as_of, [pd.Timestamp(d) for d in failed["filed"]] if not failed.empty else [])
-    try:
-        context.store.save(fetch.coverage_table, df)
-    except Exception as exc:  # noqa: BLE001 -- coverage stays behind; the documents are already saved
-        context.log.warning("%s: %s coverage save failed (%s)", fetch.desc, ticker, exc)
-
-
-def _walk_key(
-    context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dict[str, pd.DataFrame], as_of: pd.Timestamp, ticker: str, cik: str
-) -> KeyOutcome:
+def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
     """The pool worker: read then save one key's listed documents."""
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
     frames, failed, markers = _read_key(fetch, scope, ticker, cik, df_units)
     saved, failed_save = _save_key(context, fetch, ticker, frames)
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
-    _save_coverage(context, fetch, ticker, as_of, failed)
     return KeyOutcome(listed=len(df_units), failed=failed, markers=markers, saved=saved)
 
 
@@ -374,11 +358,10 @@ def _run_pass(
     scope: EdgarScope,
     cik_map: pd.DataFrame,
     units: dict[str, pd.DataFrame],
-    as_of: pd.Timestamp,
     max_workers: int | None,
 ) -> dict[str, KeyOutcome]:
     """One pool pass over `cik_map`'s keys; a key whose worker failed outright keeps all its documents failed."""
-    worker = partial(_walk_key, context, fetch, scope, units, as_of)
+    worker = partial(_walk_key, context, fetch, scope, units)
     results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
     outcomes: dict[str, KeyOutcome] = {}
     for ticker, result in zip(cik_map["ticker"].astype(str), results, strict=True):
@@ -393,7 +376,6 @@ def _retry_rounds(
     scope: EdgarScope,
     cik_map: pd.DataFrame,
     outcomes: dict[str, KeyOutcome],
-    as_of: pd.Timestamp,
     max_workers: int | None,
 ) -> None:
     """Re-read only the failed documents of keys below the read-rate threshold, up to the configured rounds, in place."""
@@ -409,7 +391,7 @@ def _retry_rounds(
             "%s: retry round %d/%d for %d key(s), %d document(s), after %.0fs", fetch.desc, round_no, policy.rounds, len(due), n_documents, wait
         )
         _sleep(wait)
-        again = _run_pass(context, fetch, scope, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, as_of, max_workers)
+        again = _run_pass(context, fetch, scope, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, max_workers)
         for ticker, outcome in again.items():
             previous = outcomes[ticker]
             saved = {t: previous.saved.get(t, 0) + outcome.saved.get(t, 0) for t in {*previous.saved, *outcome.saved}}
@@ -479,6 +461,7 @@ def plan_fetch(
         years_history=years_history,
         runtime_floor=fetch.runtime_floor(context) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
+        done_where=fetch.done_where,
         full=full,
         cap=_document_cap(context, no_cap),
     )
@@ -513,8 +496,8 @@ def run_edgar_fetch(
         edgar_index.refresh(context, run_date, years_history)
     work = plan_fetch(context, fetch, cik_map, scope, run_date, years_history, full=full, no_cap=no_cap)
     context.log.info("%s: %d document(s) to read for %d key(s) %s", fetch.desc, work.size, len(work.units), work.counts)
-    keys = cik_map if fetch.coverage is not None else cik_map[cik_map["ticker"].astype(str).isin(work.units)]
-    outcomes = _run_pass(context, fetch, scope, keys, work.units, run_date, max_workers)
-    _retry_rounds(context, fetch, scope, keys, outcomes, run_date, max_workers)
+    keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
+    outcomes = _run_pass(context, fetch, scope, keys, work.units, max_workers)
+    _retry_rounds(context, fetch, scope, keys, outcomes, max_workers)
     _log_coverage(context, fetch, work, outcomes)
     return FetchSummary(work=work, outcomes=outcomes)

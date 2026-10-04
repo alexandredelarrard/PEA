@@ -114,6 +114,9 @@ venv.bak/
 
 # Data folders (not versioned)
 *.pkl
+*.txt
+*.psv
+*.csv
 data/
 
 *pgdata.tar.gz
@@ -121,7 +124,11 @@ data/
 # work with LLM
 specs/
 reports/
-**/specs/**
-**/reports/**
+reports/worktrees
+_out/
+pull/
+_cache/
+plots/
+_scripts/
 
 .codegraph/

@@ -1,4 +1,5 @@
-"""Daily insider EDGAR orchestration and coverage semantics."""
+"""Daily insider EDGAR parse: one filing -> `insider_transactions` rows (source='edgar'), the
+owner-role rule and the run's exclusion collector."""
 
 from __future__ import annotations
 
@@ -32,55 +33,61 @@ class _Filing:
         return _FORM4_XML
 
 
-def test_coverage_runs_through_the_run_date_or_the_day_before_the_oldest_unread_filing():
-    clean = module.insider_coverage("AAA", pd.Timestamp("2026-09-22"), [])
-    behind = module.insider_coverage("AAA", pd.Timestamp("2026-09-22"), [pd.Timestamp("2026-09-10"), pd.Timestamp("2026-09-05")])
-    assert clean["complete_through"].tolist() == [pd.Timestamp("2026-09-22")]
-    assert behind["complete_through"].tolist() == [pd.Timestamp("2026-09-04")]
-    assert list(clean.columns) == ["ticker", "complete_through", "updated_at"]
-    print("SANITY: a clean AAA run covers through the run date; one with unread filings stops the day before the oldest (2026-09-04).")
+def _parse(ticker: str, cik: str, universe: list[str], excluded: list[pd.DataFrame]) -> dict:
+    scope = module.EdgarScope(identity_for({"AAA": "1", "BBB": "2"}), {})
+    return module.parse_insider(ticker, cik, module.FilingStamp.of(_Filing(), cik), scope, universe=universe, excluded=excluded)
 
 
-def test_one_filing_parses_to_one_live_row_with_its_acceptance_time(monkeypatch):
+def test_one_filing_parses_to_one_edgar_row_with_its_acceptance_time(monkeypatch):
     monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame, pd.DataFrame()))
-    scope = module.EdgarScope(identity_for({"AAA": "1"}), {})
-    out = module.parse_insider("AAA", "0000000001", module.FilingStamp.of(_Filing(), "0000000001"), scope, universe=["AAA"])
-    live = out[Tables.insider_transactions_live]
-    assert len(live) == 1
-    assert live.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
-    assert live.iloc[0]["accession_number"] == _Filing.accession_number
-    assert live.iloc[0]["value_usd"] == 200.0
-    print("SANITY: one Form 4 parsed to one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
+    excluded: list[pd.DataFrame] = []
+    out = _parse("AAA", "0000000001", ["AAA"], excluded)
+    rows = out[Tables.insider_transactions]
+    assert set(out) == {Tables.insider_transactions, Tables.insider_footnotes}
+    assert len(rows) == 1 and excluded == []
+    assert rows.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
+    assert rows.iloc[0]["accession_number"] == _Filing.accession_number
+    assert rows.iloc[0]["value_usd"] == 200.0
+    assert rows.iloc[0]["source"] == "edgar" and "quarter" not in rows.columns, "the EDGAR frame never carries the zip quarter"
+    print("SANITY: one Form 4 parsed to one insider_transactions PK row (source=edgar, no quarter) with the 16:05 acceptance time.")
 
 
 def test_a_filing_on_another_issuer_parses_to_nothing():
-    """Listed under AAA because AAA reported it as an owner: no rows, so the driver stores AAA's marker."""
-    scope = module.EdgarScope(identity_for({"AAA": "1", "BBB": "2"}), {})
-    assert module.parse_insider("BBB", "0000000002", module.FilingStamp.of(_Filing(), "0000000002"), scope, universe=["AAA", "BBB"]) == {}
+    """Listed under BBB because BBB reported it as an owner: no rows, so the driver stores BBB's marker."""
+    assert _parse("BBB", "0000000002", ["AAA", "BBB"], []) == {}
     print("SANITY: a Form 4 whose XML issuer is AAA parses to nothing for BBB (BBB only an owner -> one marker).")
 
 
-def test_live_audit_clocks_are_timestamps_not_dates():
-    live = pd.DataFrame(
+def test_rejected_rows_go_to_the_run_collector_not_to_a_table(monkeypatch):
+    rejected = pd.DataFrame(
+        {"accession_number": ["X"], "transaction_code": ["P"], "claimed_ticker": ["AAA"], "reject_reason": ["entity_mismatch"], "extra": [1]}
+    )
+    monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame.iloc[0:0], rejected))
+    excluded: list[pd.DataFrame] = []
+    out = _parse("AAA", "0000000001", ["AAA"], excluded)
+    assert out[Tables.insider_transactions].empty
+    assert len(excluded) == 1 and list(excluded[0].columns) == ["accession_number", "transaction_code", "claimed_ticker", "reject_reason"]
+    print("SANITY: a rejected filing is stored nowhere; only its four warning columns reach the run's exclusion collector.")
+
+
+def test_the_fetch_counts_only_edgar_rows_as_done_per_key():
+    fetch = module.insider_fetch(["AAA"])
+    assert fetch.done == Tables.insider_transactions and fetch.done_where == {"source": "edgar"} and fetch.done_scope == "key"
+    assert set(fetch.tables) == {Tables.insider_transactions, Tables.insider_footnotes}
+    print("SANITY: the EDGAR leg writes the single table and its done set is per key on source='edgar' rows (markers included).")
+
+
+def test_edgar_audit_clocks_are_timestamps_not_dates():
+    frame = pd.DataFrame(
         {
             "accession_number": ["A"],
             "security_type": ["nonderiv"],
-            "source_row_sequence": [1],
+            "row_sequence": [1],
             "acceptance_datetime": [pd.Timestamp("2026-07-02 16:05:00")],
             "fetched_at": [pd.Timestamp("2026-07-02 16:06:00")],
         }
     )
-    coverage = pd.DataFrame(
-        {
-            "ticker": ["AAA"],
-            "complete_through": [pd.Timestamp("2026-07-02")],
-            "updated_at": [pd.Timestamp("2026-07-02 16:06:00")],
-        }
-    )
-    live_types = dict(columns_from_frame(Tables.insider_transactions_live, live))
-    coverage_types = dict(columns_from_frame(Tables.insider_transactions_live_coverage, coverage))
-    assert live_types["acceptance_datetime"] == "TIMESTAMP"
-    assert live_types["fetched_at"] == "TIMESTAMP"
-    assert coverage_types["complete_through"] == "DATE"
-    assert coverage_types["updated_at"] == "TIMESTAMP"
-    print("SANITY: filing acceptance/fetch/update clocks retain intraday TIMESTAMP precision; only the inclusive coverage frontier is a DATE.")
+    types = dict(columns_from_frame(Tables.insider_transactions, frame))
+    assert types["acceptance_datetime"] == "TIMESTAMP"
+    assert types["fetched_at"] == "TIMESTAMP"
+    print("SANITY: filing acceptance and fetch clocks keep intraday TIMESTAMP precision in insider_transactions.")

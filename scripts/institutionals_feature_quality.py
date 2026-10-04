@@ -54,8 +54,6 @@ SOURCE_TABLES: tuple[Table, ...] = (
     Tables.superinvestor_roster,
     Tables.cusip_ticker_map,
     Tables.insider_transactions,
-    Tables.insider_transactions_live,
-    Tables.insider_transactions_live_coverage,
     Tables.short_interest,
     Tables.sec_fails_to_deliver,
     Tables.sec_13d,

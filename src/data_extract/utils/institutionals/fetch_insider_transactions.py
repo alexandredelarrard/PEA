@@ -1,13 +1,15 @@
 """Officer / director / 10%-owner transactions from the SEC quarterly Insider Transactions Data
 Sets (bulk TSV zips, Forms 3/4/5).
 
-SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS and DERIV_TRANS are mapped to the canonical string
-frame (`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame`, screened CIK-first, and
-upserted one row per (accession, table, SK); FOOTNOTES follow the kept accessions.
+SUBMISSION, (NON)DERIV_TRANS and every REPORTINGOWNER row are mapped to the canonical string frames
+(`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame` and screened CIK-first. EDGAR is
+authoritative: a filing EDGAR already stored only gets the zip `quarter`; every other filing is
+upserted with `source='zip'`, one row per (accession, table, `row_sequence`); FOOTNOTES follow the
+kept accessions. Each quarter logs how many of its filings EDGAR missed.
 
 Zips are cached and downloaded only when missing. The quarters parsed come from
-`resume.archive_worklist`: those with no stored row, plus every cached quarter for a new ticker with
-no row yet (its rows only); `reparse` re-reads every stored quarter too.
+`resume.archive_worklist`: those no stored row carries, plus every cached quarter for a new ticker
+with no zip-covered row yet (its rows only); `reparse` re-reads every stored quarter too.
 """
 
 from __future__ import annotations
@@ -40,18 +42,30 @@ from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
-    InsiderField,
+    INSIDER_KEY,
+    OWNER_STRING_COLUMNS,
+    accession_batches,
     build_insider_frame,
     empty_footnotes,
+    exclusion_rows,
     filter_footnotes,
     insider_verdicts,
-    quarantine_frame,
+    log_exclusions,
     screen_insider_rows,
     screened_accessions,
+    top_counts,
 )
 from src.data_store.schema import Tables
+from src.utils.string import normalise_ticker
+from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
+
+#: Fields compared on rows both sources hold; zip numbers carry two decimals, hence the tolerance.
+_COMPARED_FIELDS = ("transaction_code", "transaction_date", "shares", "price_per_share", "shares_owned_after", "owner_cik")
+_NUMBER_FIELDS = frozenset({"shares", "price_per_share", "shares_owned_after"})
+_DATE_FIELDS = frozenset({"transaction_date"})
+_NUMBER_TOLERANCE = 0.005
 
 #: SUBMISSION / REPORTINGOWNER columns `INSIDER_FIELDS` maps; remarks and addresses are never read.
 _MEMBER_COLUMNS = {
@@ -76,38 +90,38 @@ def _col(df: pd.DataFrame, name: str) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Pure parse: zip members -> canonical string frame                            #
 # --------------------------------------------------------------------------- #
-def _bulk_text(df: pd.DataFrame, field: InsiderField) -> pd.Series:
-    """One canonical field from its TSV column; a reporting owner without a relationship has no role."""
-    column = _col(df, field.bulk or "")
-    return column.fillna("") if field.kind == "role" else column
-
-
 def _member_strings(df: pd.DataFrame, scope: str) -> pd.DataFrame:
     """The canonical string columns of one member (`scope`), keyed on `accession_number`."""
     fields = [field for field in INSIDER_FIELDS if field.scope == scope and field.bulk]
-    return pd.DataFrame({"accession_number": _col(df, "ACCESSION_NUMBER"), **{field.name: _bulk_text(df, field) for field in fields}})
+    return pd.DataFrame({"accession_number": _col(df, "ACCESSION_NUMBER"), **{field.name: _col(df, field.bulk or "") for field in fields}})
 
 
 def _transaction_strings(df: pd.DataFrame | None, sk_col: str, security_type: str) -> pd.DataFrame:
-    """One string row per (non-)derivative transaction line."""
+    """One string row per keyed (non-)derivative transaction line. `row_sequence` is the rank of the
+    numeric SEC transaction id inside the accession's table, which is the filing's XML order;
+    a line without an id cannot be keyed and is dropped."""
     if df is None or df.empty or "ACCESSION_NUMBER" not in df.columns:
         return pd.DataFrame()
-    return _member_strings(df, "transaction").assign(security_type=security_type, transaction_sk=_col(df, sk_col))
+    sk = pd.to_numeric(_col(df, sk_col), errors="coerce")
+    df_lines = _member_strings(df, "transaction").assign(security_type=security_type, _sk=sk)[sk.notna()]
+    sequence = df_lines.groupby("accession_number")["_sk"].rank(method="first").astype("int64")
+    return df_lines.assign(row_sequence=sequence).drop(columns="_sk")
 
 
-def extract_bulk_strings(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
-    """SUBMISSION + REPORTINGOWNER (first owner per accession) + (NON)DERIV_TRANS -> canonical
-    string rows; rows without a `transaction_sk` cannot be keyed and are dropped."""
+def extract_bulk_strings(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """SUBMISSION + (NON)DERIV_TRANS -> transaction string rows, and REPORTINGOWNER -> one owner
+    string row per reporting owner of those accessions."""
+    empty = (pd.DataFrame(), pd.DataFrame(columns=OWNER_STRING_COLUMNS))
     if sub is None or sub.empty:
-        return pd.DataFrame()
+        return empty
     df_trans = pd.concat(
         [_transaction_strings(nonderiv, "NONDERIV_TRANS_SK", "nonderiv"), _transaction_strings(deriv, "DERIV_TRANS_SK", "deriv")], ignore_index=True
     )
     if df_trans.empty:
-        return pd.DataFrame()
-    df_owner = _member_strings(own, "owner").drop_duplicates("accession_number", keep="first")
-    df_str = df_trans.merge(_member_strings(sub, "filing"), on="accession_number", how="inner").merge(df_owner, on="accession_number", how="left")
-    return df_str.dropna(subset=["transaction_sk"])
+        return empty
+    df_str = df_trans.merge(_member_strings(sub, "filing"), on="accession_number", how="inner")
+    df_owners = _member_strings(own, "owner")
+    return df_str, df_owners[df_owners["accession_number"].isin(set(df_str["accession_number"]))].reset_index(drop=True)
 
 
 def _footnote_strings(notes: pd.DataFrame | None) -> pd.DataFrame:
@@ -128,19 +142,20 @@ def _accession_rows(df: pd.DataFrame, accessions: set[str]) -> pd.DataFrame:
 
 
 def _parse_quarter(
-    tables: tuple[pd.DataFrame, ...], quarter: str, universe: Sequence[str], identity: Identity
+    tables: tuple[pd.DataFrame, ...], quarter: str, universe: Sequence[str], identity: Identity, fetched_at: pd.Timestamp
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """One quarter's members -> (kept transactions, quarantine rows, footnotes of kept accessions).
-    Members are first cut to the accessions the screen can keep or quarantine."""
+    """One quarter's members -> (kept transactions, rejected in-scope rows, footnotes of kept
+    accessions). Members are first cut to the accessions the screen can keep or reject in scope;
+    rows are stamped `source='zip'`, `quarter` and `fetched_at`."""
     sub, own, nonderiv, deriv, notes = tables
     accessions = screened_accessions(_member_strings(sub, "filing"), universe, identity)
-    df_str = extract_bulk_strings(*(_accession_rows(df, accessions) for df in (sub, own, nonderiv, deriv)))
-    df_built = build_insider_frame(df_str, value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS)
-    df_kept, df_quarantine = screen_insider_rows(df_built.assign(quarter=quarter), universe, identity)
+    df_str, df_owners = extract_bulk_strings(*(_accession_rows(df, accessions) for df in (sub, own, nonderiv, deriv)))
+    df_built = build_insider_frame(df_str, df_owners, date_formats=BULK_DATE_FORMATS)
+    df_kept, df_rejected = screen_insider_rows(df_built.assign(source="zip", quarter=quarter, fetched_at=fetched_at), universe, identity)
     if df_kept.empty:
-        return df_kept, df_quarantine, empty_footnotes()
+        return df_kept, df_rejected, empty_footnotes()
     df_notes = filter_footnotes(_footnote_strings(notes), set(df_kept["accession_number"].dropna().unique()))
-    return df_kept[[column for column in INSIDER_COLUMNS if column in df_kept.columns]], df_quarantine, df_notes
+    return df_kept[[column for column in INSIDER_COLUMNS if column in df_kept.columns]], df_rejected, df_notes
 
 
 # --------------------------------------------------------------------------- #
@@ -173,50 +188,166 @@ def _rejected_stored_accessions(context: Context, universe: Sequence[str], ident
     )
 
 
-def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity, chunk: int = 2_000) -> tuple[int, int]:
-    """Re-adjudicate stored rows against today's universe; quarantine then delete the rejects
-    (the upsert cannot remove rows). Returns `(quarantined, deleted)`.
+def _sweep_universe(context: Context, tickers: Sequence[str]) -> list[str]:
+    """The loaded analysis universe when the normalised `tickers` equal it, else `[]` (sweep skipped).
+    The sweep adjudicates against that loaded list, never the raw run tickers: on a `--tickers`
+    subset every other company's rows would read as rejects."""
+    universe = load_universe_tickers(context)
+    if universe and {normalise_ticker(ticker) for ticker in tickers} == set(universe):
+        return universe
+    logger.info("insider: stored-row sweep skipped -- the run's %d ticker(s) are not the %d-ticker universe", len(tickers), len(universe))
+    return []
+
+
+def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity) -> int:
+    """Re-adjudicate stored rows against today's universe, delete the rejects (the upsert cannot
+    remove rows) and log their exclusion summary. Returns the rows deleted.
 
     Exhaustive over the table, unlike the parse screen. One accession shares one `issuer_cik` and
     so one verdict, which lets the delete key on `accession_number` alone.
     """
     accessions = _rejected_stored_accessions(context, universe, identity)
-    if not accessions:
-        return 0, 0
+    excluded: list[pd.DataFrame] = []
+    deleted = 0
+    for batch in accession_batches(accessions):
+        df_rows = context.store.load(
+            Tables.insider_transactions,
+            columns=["accession_number", "transaction_code", "ticker", "issuer_cik"],
+            where={"accession_number": batch},
+            optional=True,
+        )
+        if df_rows is None:
+            continue
+        df_scored = insider_verdicts(df_rows, universe, identity)
+        df_rejected = df_scored[df_scored["reject_reason"].notna()]
+        if df_rejected.empty:  # re-adjudicated clean on the full row: leave it
+            continue
+        excluded.append(exclusion_rows(df_rejected))
+        deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(df_rejected["accession_number"].unique())})
+    log_exclusions(logger, "stored-row sweep", excluded)
+    return deleted
 
-    quarantined = deleted = 0
-    for start in range(0, len(accessions), chunk):
-        batch = accessions[start : start + chunk]
-        rows = context.store.load(Tables.insider_transactions, where={"accession_number": batch}, optional=True)
-        if rows is None or rows.empty:
-            continue
-        rejected = insider_verdicts(rows, universe, identity)
-        rejected = rejected[rejected["reject_reason"].notna()]
-        if rejected.empty:  # re-adjudicated clean on the full row: leave it
-            continue
-        quarantined += context.store.save(Tables.insider_transactions_quarantine, quarantine_frame(rejected))
-        deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(rejected["accession_number"].unique())})
-    logger.info("insider: stored-row sweep -- quarantined %d row(s) over %d accession(s), deleted %d", quarantined, len(accessions), deleted)
-    return quarantined, deleted
+
+def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str]) -> pd.DataFrame:
+    """`columns` of the stored rows of `accessions`, read in `accession_batches`."""
+    frames: list[pd.DataFrame] = []
+    for batch in accession_batches(accessions):
+        df_batch = context.store.load(Tables.insider_transactions, columns=columns, where={"accession_number": batch}, optional=True)
+        if df_batch is not None:
+            frames.append(df_batch)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+
+
+def store_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) -> int:
+    """Save one parsed quarter. A filing EDGAR already stored gets only `quarter`: its stored keys
+    are re-saved with it, so the merge-upsert changes nothing else and adds no row. Every other
+    filing is upserted from the zip. Returns the zip rows saved."""
+    if df_kept.empty:
+        return 0
+    df_stored = _stored_rows(context, sorted(df_kept["accession_number"].unique()), [*INSIDER_KEY, "source"])
+    edgar_accessions = set(df_stored.loc[df_stored["source"].eq("edgar"), "accession_number"])
+    df_stamp = df_stored.loc[df_stored["accession_number"].isin(edgar_accessions), INSIDER_KEY].assign(quarter=quarter)
+    if not df_stamp.empty:
+        context.store.save(Tables.insider_transactions, df_stamp)
+    df_zip = df_kept[~df_kept["accession_number"].isin(edgar_accessions)]
+    return context.store.save(Tables.insider_transactions, df_zip) if not df_zip.empty else 0
+
+
+def _same(left: pd.Series, right: pd.Series, field: str) -> pd.Series:
+    """Per-row agreement of one compared field; two missing values agree."""
+    both_missing = left.isna() & right.isna()
+    if field in _NUMBER_FIELDS:
+        gap = (pd.to_numeric(left, errors="coerce") - pd.to_numeric(right, errors="coerce")).abs()
+        return both_missing | gap.le(_NUMBER_TOLERANCE)
+    if field in _DATE_FIELDS:
+        return both_missing | pd.to_datetime(left, errors="coerce").eq(pd.to_datetime(right, errors="coerce"))
+    return both_missing | left.astype("string").eq(right.astype("string")).fillna(False)
+
+
+def _report_shared_rows(quarter: str, df_zip: pd.DataFrame, df_edgar: pd.DataFrame) -> None:
+    """INFO: EDGAR-only filings, and on the filings both sources hold, the rows whose compared
+    fields disagree plus the key rows present on one side only."""
+    zip_accessions = set(df_zip["accession_number"])
+    shared = zip_accessions & set(df_edgar["accession_number"])
+    columns = [*INSIDER_KEY, *_COMPARED_FIELDS]
+    df_pair = df_zip.loc[df_zip["accession_number"].isin(shared), columns].merge(
+        df_edgar.loc[df_edgar["accession_number"].isin(shared), columns], on=INSIDER_KEY, how="outer", suffixes=("_zip", "_edgar"), indicator=True
+    )
+    df_both = df_pair[df_pair["_merge"].eq("both")]
+    agree = pd.Series(True, index=df_both.index)
+    for field in _COMPARED_FIELDS:
+        agree &= _same(df_both[f"{field}_zip"], df_both[f"{field}_edgar"], field)
+    n_mismatched = int((~agree).sum())
+    logger.info(
+        "insider %s: %d EDGAR-only filing(s); %d / %d shared row(s) mismatched (%.1f%%) on %s; %d key row(s) on one side only",
+        quarter,
+        len(set(df_edgar["accession_number"]) - zip_accessions),
+        n_mismatched,
+        len(df_both),
+        100.0 * n_mismatched / len(df_both) if len(df_both) else 0.0,
+        ", ".join(_COMPARED_FIELDS),
+        int(df_pair["_merge"].ne("both").sum()),
+    )
+
+
+def report_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) -> None:
+    """Log how many of the quarter's filings EDGAR missed: N = zip filings filed on or after the
+    quarter's earliest EDGAR filing date, X = those EDGAR did not store (WARNING), then the shared
+    row agreement (INFO). A quarter without EDGAR rows logs one INFO line only."""
+    period = pd.Period(quarter.upper(), freq="Q")
+    df_edgar = context.store.load(
+        Tables.insider_transactions,
+        columns=[*INSIDER_KEY, "filing_date", *_COMPARED_FIELDS],
+        where={"source": "edgar"},
+        since=period.start_time,
+        until=period.end_time.normalize(),
+        date_col="filing_date",
+        optional=True,
+    )
+    if df_edgar is None:
+        logger.info("insider %s: loaded from zip (no EDGAR coverage)", quarter)
+        return
+    df_zip = df_kept.reindex(columns=[*INSIDER_KEY, "filing_date", "ticker", *_COMPARED_FIELDS])
+    first_filed = pd.to_datetime(df_edgar["filing_date"]).min()
+    df_window = df_zip[pd.to_datetime(df_zip["filing_date"]).ge(first_filed)].drop_duplicates("accession_number")
+    df_missing = df_window[~df_window["accession_number"].isin(set(df_edgar["accession_number"]))]
+    logger.warning(
+        "insider %s: %d / %d filings missing from EDGAR (%.1f%%), added from zip; top: %s",
+        quarter,
+        len(df_missing),
+        len(df_window),
+        100.0 * len(df_missing) / len(df_window) if len(df_window) else 0.0,
+        top_counts(df_missing["ticker"], 5) or "none",
+    )
+    _report_shared_rows(quarter, df_zip, df_edgar)
+
+
+def zip_urls(quarter: str) -> tuple[str, str]:
+    """Both SEC hosting paths for one quarter's zip, the likelier first: the new path from
+    `SEC_INSIDER_SWAP_YEAR` on, else the old one. The SEC moves quarters between the two paths, so
+    `ensure_zip` falls back to the other on a miss."""
+    old, new = (template.format(quarter=quarter) for template in (SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_URL_NEW_TEMPLATE))
+    return (new, old) if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else (old, new)
 
 
 def _keep_keys(parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """A rescanned quarter's output cut to `keys`: their kept rows, the rejects that claimed them, and the
     footnotes of the kept accessions."""
-    df_kept, df_quarantine, df_notes = parsed
+    df_kept, df_rejected, df_notes = parsed
     wanted = set(keys)
     df_kept = df_kept[df_kept["ticker"].isin(wanted)] if "ticker" in df_kept.columns else df_kept
-    df_quarantine = df_quarantine[df_quarantine["ticker"].isin(wanted)] if "ticker" in df_quarantine.columns else df_quarantine
+    df_rejected = df_rejected[df_rejected["claimed_ticker"].isin(wanted)] if "claimed_ticker" in df_rejected.columns else df_rejected
     df_notes = filter_footnotes(df_notes, set(df_kept["accession_number"].dropna().unique())) if not df_kept.empty else empty_footnotes()
-    return df_kept, df_quarantine, df_notes
+    return df_kept, df_rejected, df_notes
 
 
 def fetch_insider_transactions(
     context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
 ) -> int:
-    """Download (cached) the insider data sets, parse and screen each quarter of the work list, upsert
-    `insider_transactions`, `insider_footnotes` and the quarantine, then (unscoped runs only) sweep stored
-    rows. Returns the number of transaction rows upserted.
+    """Download (cached) the insider data sets and ingest each quarter of the work list with
+    `store_zip_quarter` (a pending quarter also logs its `report_zip_quarter` lines), save the kept
+    footnotes, log one identity-exclusion summary for the run, then, on a full-universe run only, sweep
+    stored rows against the loaded universe. Returns the zip rows saved.
 
     `reparse` re-reads every quarter the source has back to `SEC_INSIDER_FIRST_YEAR`, even those
     already stored, so a parse change reaches the oldest rows too.
@@ -229,39 +360,37 @@ def fetch_insider_transactions(
     work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
 
     rescanned = set(work.rescan)
-    saved = notes_saved = quarantined = 0
-    for quarter, keys in tqdm(list(work.units()), desc="insider data sets"):
-        url_template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
-        path = ensure_zip(context, cache / f"{quarter}.zip", url_template.format(quarter=quarter), label=f"insider {quarter}", log=logger)
+    units = list(work.units())
+    saved = notes_saved = 0
+    excluded: list[pd.DataFrame] = []
+    fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    for quarter, keys in tqdm(units, desc="insider data sets"):
+        path = ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue
-        # Screened against the whole universe, so a row of another universe ticker is never quarantined;
+        # Screened against the whole universe, so a row of another universe ticker is never rejected;
         # a rescanned quarter then keeps only its keys' rows.
-        parsed = _parse_quarter(tables, quarter, work.screen, identity)
-        df_kept, df_quarantine, df_notes = _keep_keys(parsed, keys) if quarter in rescanned else parsed
-        if not df_quarantine.empty:
-            quarantined += context.store.save(Tables.insider_transactions_quarantine, df_quarantine)
-        if not df_kept.empty:
-            saved += context.store.save(Tables.insider_transactions, df_kept)
+        parsed = _parse_quarter(tables, quarter, work.screen, identity, fetched_at)
+        df_kept, df_rejected, df_notes = _keep_keys(parsed, keys) if quarter in rescanned else parsed
+        excluded.append(exclusion_rows(df_rejected))
+        if quarter not in rescanned:
+            report_zip_quarter(context, quarter, df_kept)
+        saved += store_zip_quarter(context, quarter, df_kept)
         if not df_notes.empty:
             notes_saved += context.store.save(Tables.insider_footnotes, df_notes)
+    log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
 
-    deleted = 0
-    if work.scoped:
-        logger.info("insider: scoped run -> stored-row sweep skipped (it screens against the run's tickers)")
-    else:
-        swept, deleted = _screen_stored_rows(context, tickers, identity)
-        quarantined += swept
+    sweep_universe = _sweep_universe(context, tickers)
+    deleted = _screen_stored_rows(context, sweep_universe, identity) if sweep_universe else 0
     logger.info(
-        "insider_transactions: upserted %d rows (+%d footnotes) over %d pending + %d rescanned quarters (%s -> %s); quarantined %d, deleted %d",
+        "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending + %d rescanned quarter(s) of %s -> %s; sweep deleted %d",
         saved,
         notes_saved,
         len(work.pending),
         len(work.rescan),
         quarters[0],
         quarters[-1],
-        quarantined,
         deleted,
     )
     return saved

@@ -9,9 +9,8 @@ import pandas as pd
 import pytest
 
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
-from scripts.prove_insider_outliers import _panel as build_proof_panel
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, write_part
 from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
 from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
 from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
@@ -192,39 +191,54 @@ def test_symbol_lineage_loader_projects_current_issuers() -> None:
     print("SANITY: the input layer projected FISV's current CIK and its FI/FISV lineage without relabelling canonical source rows twice.")
 
 
-def test_insider_outlier_proof_uses_the_current_step_contract() -> None:
-    insider = pd.DataFrame({"ticker": ["AAA", "BBB"], "value_usd": [10.0, 20.0]})
-    scoped_insider = insider.loc[insider["ticker"].eq("AAA")].copy()
-    passthrough = pd.DataFrame({"ticker": ["BBB"]})
-    panel = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAA"]})
-    calls: list[tuple[object, object]] = []
-
-    def original_load(table: object, universe: object = None) -> pd.DataFrame:
-        calls.append((table, universe))
-        return passthrough
-
-    step = SimpleNamespace(_load_source=original_load)
-    frames = object()
+def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = _bare_step()
+    fake_step = cast(Any, step)
+    fake_step._cfg = {"institutionals": {"decay_halflife": {"insider": 21}}}
+    fake_step._availability = None
+    insider = pd.DataFrame({"ticker": ["AAA"], "filing_date": [pd.Timestamp("2026-09-01")]})
     shares = pd.DataFrame({"ticker": ["AAA"]})
+    frames = SimpleNamespace(universe=("BBB", "AAA"), trading_index=pd.DatetimeIndex(["2026-09-30", "2026-10-01"]))
+    sink = ConditioningSink()
+    frontier = pd.Timestamp("2026-10-02")
+    loads: list[tuple[object, object]] = []
+    frontiers: list[tuple[object, object]] = []
+    built: dict[str, Any] = {}
 
-    def build(actual_frames: object, actual_shares: pd.DataFrame, sink: ConditioningSink) -> pd.DataFrame:
-        assert actual_frames is frames
-        assert actual_shares is shares
-        assert isinstance(sink, ConditioningSink)
-        substituted = step._load_source(Tables.insider_transactions, ["AAA"])
-        pd.testing.assert_frame_equal(substituted, scoped_insider)
-        assert substituted is not insider
-        assert step._load_source(Tables.insider_transactions_live, ["AAA"]) is None
-        assert step._load_source(Tables.short_interest, ["AAA"]) is passthrough
-        return panel
+    def load_source(table: object, universe: object = None) -> pd.DataFrame:
+        loads.append((table, universe))
+        return insider
 
-    step._insider_panel = build
-    got = build_proof_panel(cast(Any, step), insider, cast(Any, frames), shares)
+    def schedule_complete_through(store: object, table: object, last_session: object) -> pd.Timestamp:
+        frontiers.append((table, last_session))
+        return frontier
 
-    assert got is panel
-    assert step._load_source is original_load
-    assert calls == [(Tables.short_interest, ["AAA"])]
-    print("SANITY: the insider outlier proof supplies a fresh sink, disables live overlay, forwards universe scope, and restores the loader.")
+    def build(actual_frames: object, actual_insider: object, **kwargs: Any) -> pd.DataFrame:
+        built.update(frames=actual_frames, insider=actual_insider, **kwargs)
+        return pd.DataFrame({"date": [frontier], "ticker": ["AAA"]})
+
+    fake_step._load_source = load_source
+    fake_step._store = object()
+    monkeypatch.setattr(step_module.institutional_frontiers, "schedule_complete_through", schedule_complete_through)
+    monkeypatch.setattr(step_module, "build_insider_feature_panel", build)
+
+    out = step._insider_panel(cast(Any, frames), shares, sink)
+
+    assert out is not None and len(out) == 1
+    assert loads == [(Tables.insider_transactions, ("BBB", "AAA"))]
+    assert frontiers == [(Tables.insider_transactions, pd.Timestamp("2026-10-01"))]
+    assert built == {
+        "frames": frames,
+        "insider": insider,
+        "shares_out_history": shares,
+        "decay_halflife": 21.0,
+        "availability": None,
+        "complete_through": frontier,
+        "sink": sink,
+    }
+    print(
+        "SANITY: the insider panel read only insider_transactions, took complete_through from the table's DB frontier at the last session, and passed the builder the same arguments."
+    )
 
 
 def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -348,6 +362,7 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
         "full": True,
         "warmup": 390,
         "trading_index": trading_index,
+        "refresh": PART_REFRESH_TRADING_DAYS,
     }
     assert got_window is window
     assert loads == {"frames": 1, "shares": 1, "splits": 1, "calendar": 1}

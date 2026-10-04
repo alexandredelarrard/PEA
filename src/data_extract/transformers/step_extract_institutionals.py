@@ -41,7 +41,7 @@ class StepExtractInstitutionals(Step):
         # Per-CIK catch-up after the snapshot, so a manager added today gets its whole window; no universe filter by design.
         fetch_13f_managers(self._context, years_history=years_history)
 
-        # Quarterly bulk first, then the daily EDGAR pass fills only the open-quarter gap.
+        # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR reads the indexed filings after the last zip quarter.
         fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history)
         fetch_insider_edgar(self._context, tickers=tickers, years_history=years_history)
 

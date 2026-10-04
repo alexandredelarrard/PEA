@@ -17,16 +17,19 @@ from src.data_store.schema import Table
 __all__ = ["matches_stored", "stored_values"]
 
 
-def stored_values(context: Context, tables: Table | str | Sequence[Table | str], column: str) -> frozenset[str]:
-    """Distinct non-null `column` values already stored across `tables`, as strings.
+def stored_values(
+    context: Context, tables: Table | str | Sequence[Table | str], column: str, *, where: dict[str, object] | None = None
+) -> frozenset[str]:
+    """Distinct non-null `column` values already stored across `tables`, as strings, on the rows
+    matching `where` (the `store.distinct` filter).
 
-    A table that is absent or lacks `column` contributes nothing, so a first run starts empty.
+    A table that is absent or lacks `column` or a `where` column contributes nothing, so a first run starts empty.
     """
     names = [tables] if isinstance(tables, Table | str) else tables
     values: set[str] = set()
     for table in names:
-        if column in context.store.columns(table):
-            values.update(str(value) for value in context.store.distinct(table, column))
+        if {column, *(where or {})} <= set(context.store.columns(table)):
+            values.update(str(value) for value in context.store.distinct(table, column, where=where))
     return frozenset(values)
 
 

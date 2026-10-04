@@ -12,6 +12,7 @@ import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -112,12 +113,7 @@ def test_insider_parse_and_universe_filter_synthetic():
             "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
         }
     )
-    out = build_insider_frame(
-        ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()),
-        value_rule="shares_x_price_first",
-        numeric_rule="to_numeric",
-        date_formats=BULK_DATE_FORMATS,
-    )
+    out = build_insider_frame(*ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()), date_formats=BULK_DATE_FORMATS)
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
@@ -154,10 +150,8 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = build_insider_frame(
-        ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
-    )
-    assert not df.empty and df["transaction_sk"].notna().all()
+    df = build_insider_frame(*ins.extract_bulk_strings(*tables[:4]), date_formats=BULK_DATE_FORMATS)
+    assert not df.empty and df["row_sequence"].ge(1).all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()
     aapl = df[df["ticker"] == "AAPL"]
@@ -168,19 +162,19 @@ def test_insider_parse_real_zip():
 
 
 def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
-    """Quarter-skip comes from the DB: a stored quarter is skipped, and a new ticker with no row gets
-    every cached quarter re-parsed for itself only; once it holds a row nothing is re-parsed."""
+    """Quarter-skip comes from the DB: a stored quarter is skipped, and a new ticker with no zip-covered
+    row gets every cached quarter re-parsed for itself only; once it holds one nothing is re-parsed."""
     from src.data_extract.utils.common.resume import archive_worklist
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
-        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
+        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
     ds.save(
         "sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "NVDA"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01", "2024-06-25"])})
     )
-    context = SimpleNamespace(store=ds, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
+    context: Any = SimpleNamespace(store=ds, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
     quarters, as_of = ["2024q1", "2024q2"], pd.Timestamp("2024-07-01")
 
     work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
@@ -188,15 +182,23 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
 
     ds.save(
         "insider_transactions",
-        pd.DataFrame([{"accession_number": "a2", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "NVDA", "quarter": "2024q1"}]),
+        pd.DataFrame(
+            [{"accession_number": "e1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "source": "edgar", "quarter": None}]
+        ),
+    )
+    edgar_only = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
+    assert dict(edgar_only.units()) == {"2024q1": ["NVDA"], "2024q2": ["AAPL", "MSFT", "NVDA"]}, "an EDGAR row carries no quarter"
+
+    ds.save(
+        "insider_transactions",
+        pd.DataFrame([{"accession_number": "a2", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "quarter": "2024q1"}]),
     )
     again = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
     assert dict(again.units()) == {"2024q2": ["AAPL", "MSFT", "NVDA"]}
 
     print("\n=== SANITY: insider work list from the DB ===")
-    print(
-        "  2024q1 stored -> skipped for established keys; new NVDA re-reads cached 2024q1 alone; once NVDA has a row only 2024q2 is left. Validated."
-    )
+    print("  2024q1 stored -> skipped for established keys; new NVDA re-reads cached 2024q1 alone, still after an EDGAR row (no quarter);")
+    print("  once NVDA has a zip-covered row only 2024q2 is left. Validated.")
 
 
 # --------------------------------------------------------------------------- #

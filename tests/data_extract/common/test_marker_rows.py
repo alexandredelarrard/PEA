@@ -57,9 +57,16 @@ _CASES: dict[str, tuple[Table, dict[str, object], tuple[str, str, str]]] = {
         {"rp_seq": 0, "percent_of_class": 5.5, "date_of_event": pd.Timestamp("2026-09-01"), "cusip": "000000AA1"},
         ("percent_of_class", "date_of_event", "cusip"),
     ),
-    "insider_transactions_live": (
-        Tables.insider_transactions_live,
-        {"security_type": "nonderiv", "source_row_sequence": 1, "shares": 10.0, "transaction_date": pd.Timestamp("2026-09-01"), "owner_name": "X"},
+    "insider_transactions": (
+        Tables.insider_transactions,
+        {
+            "security_type": "nonderiv",
+            "row_sequence": 1,
+            "source": "edgar",
+            "shares": 10.0,
+            "transaction_date": pd.Timestamp("2026-09-01"),
+            "owner_name": "X",
+        },
         ("shares", "transaction_date", "owner_name"),
     ),
 }
@@ -104,11 +111,13 @@ def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_
 def test_marker_key_fill_for_the_composite_keys() -> None:
     stamp = FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="10-Q"), "0000000001")
     facts = marker_row(Tables.fundamentals_facts, "AAA", stamp).iloc[0]
-    insider = marker_row(Tables.insider_transactions_live, "AAA", stamp).iloc[0]
+    insider = marker_row(Tables.insider_transactions, "AAA", stamp).iloc[0]
     proxy = marker_row(Tables.def14a_edgar, "AAA", stamp).iloc[0]
 
     assert (facts["field"], facts["duration_type"], facts["period_end"]) == ("_empty", "_empty", pd.Timestamp(_FILED))
-    assert (insider["security_type"], insider["source_row_sequence"]) == ("_empty", 0) and "issuer_cik" not in insider.index
+    assert (insider["security_type"], insider["row_sequence"], insider["source"]) == ("_empty", 0, "edgar") and "issuer_cik" not in insider.index
     assert proxy["form"] == "_empty" and proxy["cik"] == "0000000001"
     print("\n=== SANITY CHECK: marker key fill ===")
-    print("  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0), no issuer CIK; DEF 14A: form '_empty'.")
+    print(
+        "  fundamentals: field/duration_type '_empty', period_end = filing date; insider: ('_empty', 0, source 'edgar'), no issuer CIK; DEF 14A: form '_empty'."
+    )

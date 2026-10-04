@@ -851,58 +851,32 @@ class Tables:
         ),
         resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR",)),
     )
-    # SEC Insider Transactions Data Sets (Forms 3/4/5): one row per reported transaction
-    # (non-derivative + derivative), keyed by accession + table + SK.
+    # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
+    # that table). One table for both sources: EDGAR daily rows are authoritative
+    # (`source='edgar'`); quarterly zips add only filings EDGAR lacks (`source='zip'`).
+    # `quarter` is the zip quarter that covered the filing, NULL until one has.
     #
-    # FIRST USABLE DATE 2006-01-03 -- but on `filing_date`, not on `transaction_date`. The bulk
-    # data set itself begins 2006q1 (a source start, not a fetch limit), while min
-    # (transaction_date) is 1990-05-07: a Form 3 holding or a late Form 5 legitimately reports a
-    # trade decades older than the filing that discloses it. Cutting the history on
-    # `transaction_date` would therefore keep a thin, non-representative pre-2006 tail.
-    #
-    # `is_10b5_1` is a FLOAT, not a bool, and the distinction is the point: NaN means the
-    # quarter's SUBMISSION.tsv had no `AFF10B5ONE` column at all, which is every quarter before
-    # 2023q1 (measured across all 81 cached zips). A False there would assert that 68 quarters
-    # of insiders traded outside a plan, which is not something the source says. Even within the
-    # column's own era the raw values are mixed-encoding -- 2026q1: '0' 42,435, 'false' 11,525,
-    # '1' 3,620, 'true' 1,162, NaN 10,517 -- so all four spellings are normalised.
-    #
-    # The derivative block (`exercise_price`, `exercise_date`, `expiration_date`,
-    # `underlying_*`) is NULL on every `security_type='nonderiv'` row by construction, not by
-    # omission -- so ANY fill rate for it must be taken over `security_type='deriv'` alone.
-    # Over the whole table it cannot exceed 29.3%, because nonderiv is 1,374,331 of 1,942,795
-    # rows.
-    #
-    # ⚠ ON `exercise_price`, NULL AND 0 ARE THE SAME STATEMENT for anything that is not an
-    # option. An RSU converts one-for-one at no cost, so no strike exists; filers express that
-    # either by omitting the field or by writing an explicit 0, and both are common. Measured:
-    #
-    #   security kind (deriv rows)      NULL      = 0     > 0
-    #   option                         1,741      921  217,478   -> 99.2% filled, 0.4% of them 0
-    #   RSU / phantom / performance  219,565  100,772   27,987   -> 78.3% of non-nulls are 0
-    #
-    # Reading `exercise_price = 0` as a zero-strike option is wrong, and so is imputing the
-    # NULL as missing. On options the same 0 is rare enough (0.4%) to be a filer error.
-    # The deriv-row fill rate falls 73.8% (2006) -> 41.6% (2025) purely because executive
-    # compensation shifted from options to RSUs; the data did not degrade.
+    # History starts 2006-01-03 on `filing_date` (the zip data sets begin 2006q1);
+    # `transaction_date` legitimately reaches further back.
+    # `is_10b5_1` is a float: NaN means unknown (before the filing field existed), not False.
+    # The derivative columns are NULL on every nonderiv row by construction.
+    # ⚠ For anything that is not an option, `exercise_price` NULL and 0 mean the same thing.
     insider_transactions = Table(
         "insider_transactions",
-        ("accession_number", "security_type", "transaction_sk"),
+        ("accession_number", "security_type", "row_sequence"),
         date_col="transaction_date",
-        date_type_cols=("transaction_date", "filing_date", "period_of_report", "deemed_execution_date", "exercise_date", "expiration_date"),
-        freshness="quarterly",
+        date_type_cols=(
+            "transaction_date",
+            "filing_date",
+            "period_of_report",
+            "deemed_execution_date",
+            "exercise_date",
+            "expiration_date",
+            "original_submission_date",
+        ),
+        freshness="daily",
         freshness_date_col="filing_date",
-        # insider_features + insider_quality. Wider than it looks, and every column earns it:
-        # `security_type`/`security_title` scope the read to common stock (a preferred row at
-        # par put BAC's reference price at $57.80), `price_per_share` + `shares` are what the
-        # consensus screen repairs `value_usd` from, `accession_number`/`transaction_date`
-        # link an exercise-and-sell package, and `shares_owned_after`/`direct_indirect` are
-        # the two legs of the direct/indirect ownership split. Dropping any of them does not
-        # degrade a feature, it deletes it.
-        # `transaction_form_type` / `acquired_disposed` are deliberately ABSENT: the fetcher
-        # writes both, but no cube builder reads either (measured 2026-09-14 -- the only
-        # non-fetcher hits are two test fixtures), and a projection with no reader is a claim
-        # that some builder needs the column.
+        # What insider_quality and insider_features read.
         read_columns=(
             "accession_number",
             "ticker",
@@ -923,42 +897,18 @@ class Tables:
             "is_officer",
             "is_ten_pct_owner",
             "is_10b5_1",
+            "owner_ciks",
+            "n_reporting_owners",
+            "original_submission_date",
+            "document_type",
+            "source",
+            "row_sequence",
         ),
-        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2006-01-01"),
-    )
-    # Daily EDGAR tail for the still-open bulk quarter. Its row sequence is local to the
-    # ownership XML and deliberately distinct from the quarterly data set's generated
-    # `transaction_sk`. Consumers overlay only accessions absent from the bulk table.
-    insider_transactions_live = Table(
-        "insider_transactions_live",
-        ("accession_number", "security_type", "source_row_sequence"),
-        date_col="transaction_date",
-        date_type_cols=(
-            "transaction_date",
-            "filing_date",
-            "period_of_report",
-            "deemed_execution_date",
-            "exercise_date",
-            "expiration_date",
-        ),
-        freshness="daily",
-        freshness_date_col="filing_date",
-        read_columns=insider_transactions.read_columns,
-        # Starts the day after the bulk frontier, resolved at run time. A marker row also
-        # takes `source_row_sequence` = 0.
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_345),
+        # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
+        # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
+        # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_345, period_col="quarter", source_start="2006-01-01"),
         empty_marker=("security_type", _EMPTY),
-    )
-    # One row per requested universe ticker. A row advances only after that ticker's EDGAR
-    # listing and parsing succeeds, including the legitimate zero-new-filings case. The cube
-    # uses the minimum across its universe, so a partial run cannot claim a current frontier.
-    insider_transactions_live_coverage = Table(
-        "insider_transactions_live_coverage",
-        ("ticker",),
-        date_col="complete_through",
-        date_type_cols=("complete_through",),
-        freshness="daily",
-        read_columns=("ticker", "complete_through", "updated_at"),
     )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
@@ -967,71 +917,6 @@ class Tables:
     # that predate the `AFF10B5ONE` field. Stored only for accessions whose issuer is in the
     # universe -- the raw file is ~167k rows per quarter for all filers.
     insider_footnotes = Table("insider_footnotes", ("accession_number", "footnote_id"), date_col=None, ticker_col=None)
-    # Rows the IDENTITY SCREEN rejected, kept rather than deleted -- the repo's first
-    # quarantine table. They are the evidence the screen worked, and a later point-in-time
-    # universe may readmit some of them, so `_filter_universe` partitions rather than filters.
-    #
-    # ⚠ `ticker` IS THE TICKER THE ROW WAS CLAIMING, NOT A TICKER WE VOUCH FOR. It is the
-    # filer's own `ISSUERTRADINGSYMBOL` (or the label a previous run stored), which is exactly
-    # the string the old symbol-first screen trusted. Never join this table to `prices` or the
-    # cube on it: 2,075 rows carry `IR` and belong to Trane Technologies.
-    #
-    # `resolved_entity_id` is the entity `issuer_cik` ACTUALLY belongs to and
-    # `universe_entity_id` the entity that ticker names today. The PAIR is stored rather than a
-    # boolean so an `entity_id` shift (a lineage group gaining an older CIK) surfaces as a diff
-    # instead of a silent re-verdict. `universe_entity_id` is NULL when the claimed ticker is
-    # not in today's universe at all -- there is no entity to compare against.
-    #
-    # `reject_reason`:
-    #   `entity_mismatch`         the claimed symbol IS a universe ticker but the CIK's entity
-    #                             is another company's. The defect this table exists for:
-    #                             measured 10,717 rows over 48 tickers, 3,690 of them P/S.
-    #   `entity_not_in_universe`  the claimed ticker is not in today's universe and the CIK's
-    #                             entity holds none either -- a row a PREVIOUS run's universe
-    #                             admitted (measured 8,099: `EA` 6,161, `AVB` 1,788, plus 150
-    #                             across the five insufficient-history spin-offs).
-    #   `no_issuer_cik`           CIK-first cannot resolve at all. Measured ZERO across all
-    #                             4,402,307 filings in the 81 cached quarters, which is why no
-    #                             symbol fallback is built.
-    #
-    # `screened_on` is the row's `filing_date` -- the field `symbol_tenure` is derived from, so
-    # any later dated re-adjudication aligns by construction. The insider verdict is itself
-    # date-independent (Forms 3/4/5 are UNION events); the date is recorded because a verdict
-    # without the date it was taken against is not auditable.
-    #
-    # PK is `insider_transactions`' OWN pk, unextended: a rejected row is one (accession,
-    # security type, sk) line, and every row of one accession shares one `issuer_cik` and so
-    # one verdict. No invented `row_hash`.
-    insider_transactions_quarantine = Table(
-        "insider_transactions_quarantine",
-        ("accession_number", "security_type", "transaction_sk"),
-        date_col="filing_date",
-        date_type_cols=(
-            "transaction_date",
-            "filing_date",
-            "period_of_report",
-            "deemed_execution_date",
-            "exercise_date",
-            "expiration_date",
-            "screened_on",
-        ),
-        read_columns=(
-            "ticker",
-            "issuer_cik",
-            "issuer_name",
-            "filing_date",
-            "transaction_date",
-            "transaction_code",
-            "value_usd",
-            "shares",
-            "security_type",
-            "document_type",
-            "reject_reason",
-            "resolved_entity_id",
-            "universe_entity_id",
-            "screened_on",
-        ),
-    )
     # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing, keyed
     # (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g. a fund
     # + its GP), and `rp_seq` is used rather than CIK since a reporting person without an

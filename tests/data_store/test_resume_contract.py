@@ -30,8 +30,6 @@ SIDE_TABLES = frozenset(
         Tables.fundamentals_reason_codes.name,
         Tables.cusip_ticker_map.name,
         Tables.insider_footnotes.name,
-        Tables.insider_transactions_quarantine.name,
-        Tables.insider_transactions_live_coverage.name,
         Tables.sec_13d_transactions.name,
         # children flattened out of each `def14a_llm` answer
         Tables.def14a_directors.name,

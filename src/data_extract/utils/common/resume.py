@@ -3,7 +3,7 @@
 
 `document_worklist` (EDGAR document tables): the local EDGAR index rows of the table's forms for
 each key's registrant lineage, from the floor on, minus the accessions already stored (empty-filing
-markers included); newest first and capped per run.
+markers included; optionally only on the rows of one source); newest first and capped per run.
 
 `series_windows` (dated per-key series): per key, its own last date minus the overlap through
 `until`; the full history for a new key, an absent table or `full`; the table-wide frontier minus
@@ -11,7 +11,7 @@ the overlap for a rowless key; plus one window per run of calendar sessions miss
 key's stored span.
 
 `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables,
-parsed for every key; plus, for a new key with no row yet, every cached period re-parsed for it alone.
+parsed for every key; plus, for a new key with no archive row yet, every cached period re-parsed for it alone.
 """
 
 from __future__ import annotations
@@ -71,14 +71,14 @@ def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtim
     return max(floors)
 
 
-def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope: str) -> dict[str, set[str]]:
-    """Accessions already stored, markers included: per key (`DONE_PER_KEY`, one two-column read) or one
-    table-wide set shared by every key (`DONE_TABLE`, one `SELECT DISTINCT`)."""
+def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope: str, where: dict[str, object] | None = None) -> dict[str, set[str]]:
+    """Accessions already stored on the rows matching `where`, markers included: per key (`DONE_PER_KEY`,
+    one two-column read) or one table-wide set shared by every key (`DONE_TABLE`, one `SELECT DISTINCT`)."""
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
     if scope == DONE_TABLE:
-        everywhere = {str(a) for a in context.store.distinct(table, "accession_number")}
+        everywhere = {str(a) for a in context.store.distinct(table, "accession_number", where=where)}
         return {key: everywhere for key in keys}
-    df = context.store.load(table, columns=[key_col, "accession_number"], where={key_col: list(keys)}, markers=True, optional=True)
+    df = context.store.load(table, columns=[key_col, "accession_number"], where={**(where or {}), key_col: list(keys)}, markers=True, optional=True)
     done: dict[str, set[str]] = {key: set() for key in keys}
     if df is not None:
         for key, group in df.groupby(key_col, sort=False):
@@ -132,11 +132,13 @@ def document_worklist(
     years_history: int,
     runtime_floor: pd.Timestamp | None = None,
     done_scope: str = DONE_TABLE,
+    done_where: dict[str, object] | None = None,
     full: bool = False,
     cap: int | None = None,
 ) -> DocumentWork:
     """The documents `table` still lacks for `keys` (`ticker`, `cik`): index rows from the floor on,
-    resolved through each key's registrant lineage, minus stored accessions (ignored under `full`)."""
+    resolved through each key's registrant lineage, minus the accessions stored on the rows matching
+    `done_where` (ignored under `full`)."""
     started = time.perf_counter()
     floor = document_floor(table, as_of, years_history, runtime_floor)
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
@@ -144,7 +146,7 @@ def document_worklist(
     df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
-    done = {key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope)
+    done = {key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where)
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = new_tickers(context.store, overlap, as_of) if overlap else set()
@@ -319,14 +321,18 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
 
 
 def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collection[str], as_of: pd.Timestamp) -> set[str]:
-    """Keys added in the last `ARCHIVE_NEW_KEY_DAYS` days that have no row in any of `tables`."""
+    """Keys added in the last `ARCHIVE_NEW_KEY_DAYS` days that have no archive row in any of `tables`.
+
+    An archive row carries its period; a row without one (an EDGAR row or marker of a table both
+    legs write) does not make the key's archive history stored."""
     new = new_tickers(context.store, ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
     for table in tables:
         if not new:
             break
         key_col = cast(str, cast(Resume, table.resume).key)
-        if key_col in context.store.columns(table):
-            new -= {str(k).upper() for k in context.store.distinct(table, key_col, where={key_col: sorted(new)})}
+        if {key_col, _period_column(table)} <= set(context.store.columns(table)):
+            where = {key_col: sorted(new), _period_column(table): context.store.NOT_NULL}
+            new -= {str(k).upper() for k in context.store.distinct(table, key_col, where=where)}
     return new
 
 

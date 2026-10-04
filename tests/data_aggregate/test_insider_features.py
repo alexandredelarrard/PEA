@@ -332,7 +332,14 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
             transaction_date="2024-06-01",
         ),
         _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-06-01", is_10b5_1=0.0),
-        _txn(accession_number="0001234567-23-000002", transaction_code="S", filing_date="2024-06-03", transaction_date="2024-06-01", is_10b5_1=0.0),
+        _txn(
+            accession_number="0001234567-23-000002",
+            transaction_code="S",
+            filing_date="2024-06-03",
+            transaction_date="2024-06-01",
+            is_10b5_1=0.0,
+            shares_owned_after=12_000.0,
+        ),
     ]
     out, _ = clean_transactions(_frame(rows))
     packaged = out.set_index("accession_number")["in_exercise_package"]
@@ -535,7 +542,7 @@ def test_distinct_buyers_counts_people_not_filings():
                     transaction_date=d,
                     shares=3.0,
                     value_usd=300.0,
-                    shares_owned_after=10_003.0,
+                    shares_owned_after=10_003.0 + int(owner),
                 )
             )
     fh, close = _prices()
@@ -578,9 +585,23 @@ def test_cluster_is_two_distinct_buyers_not_two_filings():
 def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     rows = [
         _txn(accession_number="d", transaction_code="S", filing_date="2024-03-01", transaction_date="2024-02-28", is_10b5_1=0.0, value_usd=100_000.0),
-        _txn(accession_number="p", transaction_code="S", filing_date="2024-03-01", transaction_date="2024-02-28", is_10b5_1=1.0, value_usd=300_000.0),
         _txn(
-            accession_number="u", transaction_code="S", filing_date="2024-03-01", transaction_date="2024-02-28", is_10b5_1=np.nan, value_usd=900_000.0
+            accession_number="p",
+            transaction_code="S",
+            filing_date="2024-03-01",
+            transaction_date="2024-02-28",
+            is_10b5_1=1.0,
+            value_usd=300_000.0,
+            shares_owned_after=12_000.0,
+        ),
+        _txn(
+            accession_number="u",
+            transaction_code="S",
+            filing_date="2024-03-01",
+            transaction_date="2024-02-28",
+            is_10b5_1=np.nan,
+            value_usd=900_000.0,
+            shares_owned_after=13_000.0,
         ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
@@ -640,7 +661,14 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     ]
     rows += [
         _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
-        _txn(accession_number="s2", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=1.0),
+        _txn(
+            accession_number="s2",
+            transaction_code="S",
+            filing_date="2024-07-01",
+            transaction_date="2024-06-28",
+            is_10b5_1=1.0,
+            shares_owned_after=12_000.0,
+        ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
@@ -791,7 +819,14 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     ]
     rows += [
         _txn(accession_number="s1", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=0.0),
-        _txn(accession_number="s2", transaction_code="S", filing_date="2024-07-01", transaction_date="2024-06-28", is_10b5_1=1.0),
+        _txn(
+            accession_number="s2",
+            transaction_code="S",
+            filing_date="2024-07-01",
+            transaction_date="2024-06-28",
+            is_10b5_1=1.0,
+            shares_owned_after=12_000.0,
+        ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()

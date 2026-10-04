@@ -29,7 +29,7 @@ def test_aggregate_insiders_filters_to_open_market_and_nets_value():
             "shares": [100, 40, 900, 5_000],
             "value_usd": [1_000.0, 400.0, 9_000.0, 50_000.0],
             "shares_owned_after": [1_100, 360, 2_900, 5_000],
-            "transaction_sk": [1, 2, 3, 4],
+            "row_sequence": [1, 2, 3, 4],
         }
     )
     out = _aggregate_insiders(df).set_index("ticker")
@@ -55,7 +55,7 @@ def test_aggregate_insiders_pct_moved_against_pooled_prior_stake():
             "shares": [100, 40, 900, 5_000],
             "value_usd": [1_000.0, 400.0, 9_000.0, 50_000.0],
             "shares_owned_after": [1_100, 360, 2_900, 5_000],
-            "transaction_sk": [1, 2, 3, 4],
+            "row_sequence": [1, 2, 3, 4],
         }
     )
     out = _aggregate_insiders(df).set_index("ticker")
@@ -79,7 +79,7 @@ def test_aggregate_insiders_pct_moved_skips_unknown_balances():
             "shares": [100, 50],
             "value_usd": [2_000.0, 1_000.0],
             "shares_owned_after": [900, float("nan")],  # 2nd seller's post-sale balance unknown
-            "transaction_sk": [10, 11],
+            "row_sequence": [1, 2],
         }
     )
     out = _aggregate_insiders(df).set_index("ticker")

@@ -534,14 +534,20 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool, a
     )
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the daily EDGAR tail.")
+@cli.command(
+    help="SEC insider transactions (Forms 3/4/5) into one table: the quarterly zips no stored row carries add the filings "
+    "EDGAR lacks (a new ticker also re-parses the cached zips), then EDGAR reads every indexed filing after the last stored "
+    "zip quarter that the ticker has not stored from EDGAR. Stored rows are re-screened and rejects deleted only on a "
+    "full-universe run (no -t). -F re-parses every cached zip (only the -t tickers' rows under -t), then re-reads every "
+    "EDGAR filing after the last zip quarter, including those already stored."
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(
     "--reparse",
     is_flag=True,
     default=False,
-    help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
+    help="Re-read every cached quarter even when already ingested (implied by -F). For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @AS_OF_OPTION
@@ -549,7 +555,9 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool, a
 def insider_transactions(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
-    fetch_insider_transactions(context, tickers=names, years_history=int(config.data_extract.years_history), reparse=reparse, as_of=_run_date(as_of))
+    fetch_insider_transactions(
+        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=reparse or full, as_of=_run_date(as_of)
+    )
     fetch_insider_edgar(
         context, tickers=names, years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of), no_cap=no_cap
     )

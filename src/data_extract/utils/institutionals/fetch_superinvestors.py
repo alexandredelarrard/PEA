@@ -3,9 +3,9 @@ fetch_superinvestors.py (src/data_extract/utils/institutionals/fetch_superinvest
 --------------------------------------------------------------------------------
 WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), one row per
 (snapshot_date, dataroma_code) so membership is point-in-time, with CIKs resolved via SEC EDGAR
-company search. Hand resolutions live in configs/sec/superinvestor_overrides.json. Entry points:
+company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
+loaded by `src/utils/superinvestor_roster.py`, which is also the read side. Entry points:
 `seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster).
-The read side is `src/utils/superinvestor_roster.py`.
 """
 
 from __future__ import annotations
@@ -15,10 +15,8 @@ import logging
 import re
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from functools import cache, partial
-from pathlib import Path
+from functools import partial
 from urllib.parse import quote
 
 import pandas as pd
@@ -28,10 +26,15 @@ from urllib3.exceptions import InsecureRequestWarning
 
 from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
-from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.utils.superinvestor_roster import (
+    OVERRIDES_CONFIG_FILENAME,
+    SUPERINVESTORS_CONFIG_SUBDIR,
+    load_superinvestor_overrides,
+    roster_history_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,49 +84,15 @@ _STOP_TOKENS = {
 DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
 # The seed captures. Wayback resolves `/web/<year>/<url>` to that year's nearest capture.
 _WAYBACK_URL = "https://web.archive.org/web/{year}/" + DATAROMA_HOME_URL
-_ROSTER_HISTORY_FILE = Path("superinvestors") / "dataroma_roster_history.json"
 
 # Resolution provenance, stored per row.
 RESOLUTION_EDGAR = "edgar"
 RESOLUTION_OVERRIDE = "override"
 RESOLUTION_UNRESOLVED = "unresolved"
 
-# Hand resolutions (CIK overrides and recorded-unresolvable codes) live in configs/sec/superinvestor_overrides.json.
-OVERRIDES_CONFIG_SUBDIR = "sec"
-OVERRIDES_CONFIG_FILENAME = "superinvestor_overrides.json"
-
-
-@dataclass(frozen=True)
-class SuperinvestorOverrides:
-    """`cik_by_code` wins over any stored or EDGAR resolution; `unresolvable` names the codes
-    allowed to stay NULL, each with its reason."""
-
-    cik_by_code: dict[str, str]
-    unresolvable: dict[str, str]
-
 
 class SuperinvestorResolutionError(RuntimeError):
     """A roster manager resolved to no CIK and is not a recorded exception."""
-
-
-def load_superinvestor_overrides(config_dir: str | None = None) -> SuperinvestorOverrides:
-    """The superinvestor hand resolutions, cached per resolved config directory."""
-    return _overrides_at(resolve_config_dir(config_dir))
-
-
-@cache
-def _overrides_at(config_dir: str) -> SuperinvestorOverrides:
-    """`load_superinvestor_overrides`, keyed on a resolved absolute path. Raises when a CIK is
-    blank or a code is both overridden and recorded unresolvable."""
-    path = Path(config_dir) / OVERRIDES_CONFIG_SUBDIR / OVERRIDES_CONFIG_FILENAME
-    blob = json.loads(path.read_text(encoding="utf-8"))
-    cik_by_code = {code: pad_cik(entry["cik"]) for code, entry in blob["cik_overrides"].items()}
-    unresolvable = {code: str(reason) for code, reason in blob["unresolvable"].items()}
-    blank = sorted(code for code, cik in cik_by_code.items() if not cik)
-    both = sorted(set(cik_by_code) & set(unresolvable))
-    if blank or both:
-        raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}")
-    return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,7 +196,7 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
             f"{len(unexpected)} roster manager(s) resolved to no CIK and are not recorded "
             "exceptions: "
             + ", ".join(f'"{c}" ({names[c]})' for c in unexpected)
-            + f". Add the code -> CIK under `cik_overrides` in {OVERRIDES_CONFIG_SUBDIR}/"
+            + f". Add the code -> CIK under `cik_overrides` in {SUPERINVESTORS_CONFIG_SUBDIR}/"
             f"{OVERRIDES_CONFIG_FILENAME}, or record it under `unresolvable` with the reason "
             "it cannot be resolved."
         )
@@ -353,8 +322,8 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
     """One-off: write the committed Wayback captures, one row per (snapshot_date, dataroma_code).
     The capture file is keyed by year, so each snapshot is dated 1 January of its year."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
-    path = context.paths["DATA_STORE"] / _ROSTER_HISTORY_FILE
-    history: dict[str, dict[str, str]] = json.loads(path.read_text(encoding="utf-8"))
+    config_dir = getattr(context, "config_dir", None)
+    history: dict[str, dict[str, str]] = json.loads(roster_history_path(config_dir).read_text(encoding="utf-8"))
 
     # Newest name first, so a renamed code resolves on its most recent name.
     name_history: dict[str, list[str]] = {}
@@ -368,7 +337,7 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
     )
 
     known, _ = _stored_resolutions(context)
-    overrides = load_superinvestor_overrides(str(context.config_dir))
+    overrides = load_superinvestor_overrides(config_dir)
     resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known)
     rows: list[dict] = []
     for year in sorted(history):
@@ -384,7 +353,7 @@ def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
     known, past_names = _stored_resolutions(context)
-    overrides = load_superinvestor_overrides(str(context.config_dir))
+    overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
     rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver)
     return _write(context, rows, overrides.unresolvable)

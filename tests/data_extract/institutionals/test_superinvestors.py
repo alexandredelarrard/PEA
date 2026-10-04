@@ -13,11 +13,13 @@ exists to remove.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
@@ -26,7 +28,7 @@ CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "configs")
 OVERRIDES = si.load_superinvestor_overrides(CONFIG_DIR)
 
 #: The hand resolutions as the Python literals held them at commit 8c0506a, before they moved
-#: to configs/sec/superinvestor_overrides.json. The config must resolve to exactly these.
+#: to config. The overrides config must resolve to exactly these.
 CIK_OVERRIDES_AT_8C0506A = {
     "BRK": "0001067983",
     "HA": "0000827280",
@@ -259,4 +261,43 @@ def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_st
         f"  scraped 2 managers -> {len(stored)} rows in superinvestor_roster "
         f"(resolution {df['resolution'].value_counts().to_dict()}); re-running the same day "
         "upserts the same PK rather than duplicating. Validated on the real store."
+    )
+
+
+def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
+    """The seed reads the roster history and the overrides from `<config_dir>/superinvestors/`,
+    never from the data store: a decoy history under DATA_STORE must be ignored."""
+    config_dir = tmp_path / "configs"
+    (config_dir / "superinvestors").mkdir(parents=True)
+    (config_dir / "superinvestors" / "overrides.json").write_text(
+        json.dumps({"cik_overrides": {"AAA": {"cik": "1234"}}, "unresolvable": {"ZZZ": "fixture: never filed a 13F-HR"}}), encoding="utf-8"
+    )
+    (config_dir / "superinvestors" / "dataroma_roster_history.json").write_text(
+        json.dumps({"2015": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"}, "2016": {"AAA": "Alice - Alpha Fund"}}), encoding="utf-8"
+    )
+    data_store = tmp_path / "data_store"
+    (data_store / "superinvestors").mkdir(parents=True)
+    (data_store / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps({"2014": {"DECOY": "Decoy - Fund"}}), encoding="utf-8")
+
+    queried: list[str] = []
+
+    def empty_edgar(url):
+        queried.append(url)
+        return SimpleNamespace(text="no company-info")
+
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir), paths={"DATA_STORE": data_store}))
+    df = si.seed_roster_history(ctx, get_fn=empty_edgar)
+    got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
+    assert got == {
+        ("2015-01-01", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+        ("2015-01-01", "ZZZ", None, si.RESOLUTION_UNRESOLVED),
+        ("2016-01-01", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+    }
+    assert "DECOY" not in set(sqlite_store.load(si.Tables.superinvestor_roster)["dataroma_code"])
+    assert len(queried) == 1 and "company=Zeta" in queried[0]  # only the non-overridden code searched EDGAR
+    print("\n=== SANITY: roster config location ===")
+    print(
+        f"  seed wrote {len(df)} rows from <config_dir>/superinvestors/dataroma_roster_history.json; AAA took the "
+        "fixture override CIK (no EDGAR call) and ZZZ stayed NULL as the fixture's recorded exception; "
+        "the DATA_STORE decoy was never read. Validated on the real store."
     )

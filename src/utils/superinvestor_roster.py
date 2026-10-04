@@ -19,15 +19,23 @@ today's 81 names to 2013 silently drops the 23 managers Dataroma has since
 dropped, six of whom carry real 13F history and two of whom (Arlington Value,
 Wintergreen) are exactly the concentrated managers a concentration selector ranks
 highest. Survivorship bias correlated with the selection rule is the worst kind.
+
+Also owns the roster config under `<config_dir>/superinvestors/`: the hand resolutions
+(`overrides.json`) and the committed Dataroma history (`dataroma_roster_history.json`).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
 
+from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -35,6 +43,49 @@ from src.utils.string import pad_cik
 logger = logging.getLogger(__name__)
 
 _COLS = ["snapshot_date", "dataroma_code", "manager_name", "cik"]
+
+SUPERINVESTORS_CONFIG_SUBDIR = "superinvestors"
+OVERRIDES_CONFIG_FILENAME = "overrides.json"
+ROSTER_HISTORY_FILENAME = "dataroma_roster_history.json"
+
+
+@dataclass(frozen=True)
+class SuperinvestorOverrides:
+    """`cik_by_code` wins over any stored or EDGAR resolution; `unresolvable` names the codes
+    allowed to stay NULL, each with its reason."""
+
+    cik_by_code: dict[str, str]
+    unresolvable: dict[str, str]
+
+
+def superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
+    """The absolute `<config_dir>/superinvestors` directory; `None` means the default configs dir."""
+    return Path(config_dir or DEFAULT_CONFIG_DIR).resolve() / SUPERINVESTORS_CONFIG_SUBDIR
+
+
+def roster_history_path(config_dir: str | Path | None = None) -> Path:
+    """The committed Dataroma roster history file under `superinvestors_config_dir`."""
+    return superinvestors_config_dir(config_dir) / ROSTER_HISTORY_FILENAME
+
+
+def load_superinvestor_overrides(config_dir: str | Path | None = None) -> SuperinvestorOverrides:
+    """The superinvestor hand resolutions, cached per resolved config directory."""
+    return _overrides_at(str(superinvestors_config_dir(config_dir)))
+
+
+@cache
+def _overrides_at(superinvestors_dir: str) -> SuperinvestorOverrides:
+    """`load_superinvestor_overrides`, keyed on the resolved `superinvestors` directory. Raises when a
+    CIK is blank or a code is both overridden and recorded unresolvable."""
+    path = Path(superinvestors_dir) / OVERRIDES_CONFIG_FILENAME
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    cik_by_code = {code: pad_cik(entry["cik"]) for code, entry in blob["cik_overrides"].items()}
+    unresolvable = {code: str(reason) for code, reason in blob["unresolvable"].items()}
+    blank = sorted(code for code, cik in cik_by_code.items() if not cik)
+    both = sorted(set(cik_by_code) & set(unresolvable))
+    if blank or both:
+        raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}")
+    return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable)
 
 
 def _load(context: Context) -> pd.DataFrame | None:

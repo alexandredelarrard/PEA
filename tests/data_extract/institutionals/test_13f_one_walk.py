@@ -121,7 +121,6 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
     monkeypatch.setattr(f13, "Filings", _FakeFilings)
     monkeypatch.setattr(f13, "get_filings", lambda **kwargs: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips: CMAP)
-    monkeypatch.setattr(f13, "record_run", lambda *args, **kwargs: None)
 
 
 def _stored(store: Any, table: Any) -> pd.DataFrame:
@@ -170,7 +169,7 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(sqlite_sto
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=600)
 
     hr = _stored(sqlite_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
@@ -196,7 +195,7 @@ def test_amendment_wins_in_both_tables_whatever_the_listing_order(sqlite_store, 
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=save_every)
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
 
     book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
     assert len(book) == 2
@@ -227,7 +226,7 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_st
     monkeypatch.setattr(f13, "_save_batch", _save_then_crash)
 
     with pytest.raises(ConnectionError):
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=1)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=1)
 
     watermark = pd.Timestamp(sqlite_store.max_date(Tables.sec13f_hr, "filing_date"))
     assert watermark == pd.Timestamp("2026-05-10"), watermark
@@ -240,7 +239,7 @@ def test_empty_roster_still_writes_hr_and_warns(sqlite_store, monkeypatch, caplo
     _patch_walk(monkeypatch, [_roster_original(), _other_filer()])
 
     with caplog.at_level(logging.WARNING):
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15)
 
     assert len(sqlite_store.load(Tables.sec13f_hr)) == 3
     assert not sqlite_store.exists(Tables.sec13f_manager_holdings.name)
@@ -293,7 +292,6 @@ def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_Fa
             return listings[self.cik]
 
     monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
-    monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
 
@@ -433,7 +431,6 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
 
     monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(f13m, "_save_book", _spy_save_book)
-    monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
     saved = f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
@@ -466,7 +463,7 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqli
     _seed_roster(sqlite_store, [ROSTER])
     if path == "walk":
         _patch_walk(monkeypatch, filings)
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=600)
     else:
         _patch_company(monkeypatch, {ROSTER: filings})
         f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)

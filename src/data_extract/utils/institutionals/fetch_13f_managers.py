@@ -20,7 +20,6 @@ from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _latest_per_key, _read_filing, _save_book
 from src.data_store.schema import Tables
@@ -169,5 +168,4 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
             _IMPLIED_PRICE_BAND,
         )
     logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_manager_holdings)
-    record_run(context, Tables.sec13f_manager_holdings, len(ciks), saved)
     return saved

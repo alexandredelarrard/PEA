@@ -8,6 +8,7 @@ local:
     financial_notes: "sec_financial_notes"
     financial_statements: "sec_financial_statements"
     sec_edgar_index: "sec_edgar_index"
+    sec_13f_datasets: "sec_13f_datasets"
     fundamentals_catalogue_subdir: "fundamentals"
   filename:
     extraction: "extraction_manifest.json"

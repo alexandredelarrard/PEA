@@ -66,6 +66,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
+from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
@@ -256,16 +257,36 @@ def macro(config_path: str) -> None:
     "watermark and advances nothing -- a gap BEHIND max(filing_date) is "
     "unreachable by the normal 7-day lookback. ONE EDGAR WALK AT A TIME.",
 )
-def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None) -> None:
-    """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None)."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
+@AS_OF_OPTION
+def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None, as_of: datetime | None) -> None:
+    """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None).
+    A `-t` run reads no filing past the stored frontier, so it leaves the next window unchanged."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
     window = None
     if filing_window:
         parts = filing_window.split(":")
         if len(parts) != 2 or not all(parts):
             raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
         window = (parts[0], parts[1])
-    fetch_13f(context, tickers=_tickers(context, tickers), filing_window=window)
+    fetch_13f(
+        context,
+        tickers=_tickers(context, tickers),
+        years_history=int(config.data_extract.years_history),
+        filing_window=window,
+        as_of=_run_date(as_of),
+    )
+
+
+@cli.command(name="thirteen-f-backfill", help="13F history of NEW universe tickers from the SEC 13F data sets (cached ZIPs). Own DAG.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@AS_OF_OPTION
+def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    """Tickers added inside `sec13f_hr`'s overlap, each from its own earliest stored period back to 2013 Q2.
+    `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=_run_date(as_of), full=full)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")

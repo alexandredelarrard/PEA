@@ -10,8 +10,8 @@ from src.data_extract.utils.institutionals.fetch_insider_transactions import ext
 from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_FIELDS,
-    LIVE_DATE_FORMATS,
     OWNER_STRING_COLUMNS,
+    XML_DATE_FORMATS,
     build_insider_frame,
     normalize_flag,
     owner_summary,
@@ -98,7 +98,7 @@ def test_parse_number_is_one_rule_for_both_sources():
 
 def test_parse_sec_date_tries_formats_in_order():
     raw = pd.Series(["03-FEB-2026", "2026-02-03", "junk", None], dtype="object")
-    mixed = parse_sec_date(raw, formats=LIVE_DATE_FORMATS)
+    mixed = parse_sec_date(raw, formats=XML_DATE_FORMATS)
     explicit = parse_sec_date(raw, formats=BULK_DATE_FORMATS)
     expected = [pd.Timestamp("2026-02-03"), pd.Timestamp("2026-02-03")]
     assert list(mixed.iloc[:2]) == expected and list(explicit.iloc[:2]) == expected
@@ -193,7 +193,7 @@ def test_one_form4_gives_one_canonical_frame_on_both_paths():
     pd.testing.assert_frame_equal(own_bulk.astype(object), own_xml.astype(object))
 
     typed_bulk = build_insider_frame(df_bulk, own_bulk, date_formats=BULK_DATE_FORMATS)
-    typed_xml = build_insider_frame(df_xml, own_xml, date_formats=LIVE_DATE_FORMATS)
+    typed_xml = build_insider_frame(df_xml, own_xml, date_formats=XML_DATE_FORMATS)
     left = typed_bulk[shared + ["value_usd", *ROLES, "owner_cik", "owner_ciks", "n_reporting_owners"]].astype(object)
     right = typed_xml[left.columns].astype(object)
     pd.testing.assert_frame_equal(left.where(left.notna(), None), right.where(right.notna(), None))

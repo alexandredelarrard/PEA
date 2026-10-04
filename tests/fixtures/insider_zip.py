@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import read_zip_tables
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, LIVE_DATE_FORMATS, build_insider_frame
+from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "insider"
@@ -52,4 +52,4 @@ def zip_frame(path: Path) -> pd.DataFrame:
 def xml_frame(accession: str) -> pd.DataFrame:
     """The EDGAR path's typed frame for one fixture accession."""
     df_str, df_owners, _ = extract_xml_strings((FIXTURE_DIR / f"{accession}.xml").read_text(encoding="utf-8"), accession)
-    return build_insider_frame(df_str, df_owners, date_formats=LIVE_DATE_FORMATS)
+    return build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)

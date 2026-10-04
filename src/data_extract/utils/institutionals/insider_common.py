@@ -81,9 +81,9 @@ OPEN_MARKET_CODES = frozenset({"P", "S"})
 #: Yes/no source text (`AFF10B5ONE`, `aff10b5One`, relationship checkboxes); anything else is unknown.
 FLAG_TRUE = frozenset({"1", "true", "y", "yes"})
 FLAG_FALSE = frozenset({"0", "false", "n", "no"})
-#: Date formats tried in order: SEC bulk TSVs ship `03-FEB-2026` (ISO as fallback); live XML ships ISO dates.
+#: Date formats tried in order: SEC bulk TSVs ship `03-FEB-2026` (ISO as fallback); EDGAR XML ships ISO dates.
 BULK_DATE_FORMATS = ("%d-%b-%Y", "ISO8601")
-LIVE_DATE_FORMATS = ("mixed",)
+XML_DATE_FORMATS = ("mixed",)
 #: Role flag -> regex matched in the lower-cased comma-joined relationship text.
 ROLE_PATTERNS = {"is_director": "director", "is_officer": "officer", "is_ten_pct_owner": "ten|10", "is_other": "other"}
 #: Primary-owner precedence: an owner ranks by its best role in this order; no role ranks last.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.insider_common import LIVE_DATE_FORMATS, build_insider_frame
+from src.data_extract.utils.institutionals.insider_common import XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 
 ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]
@@ -14,7 +14,7 @@ ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]
 def parse_ownership_xml(xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The EDGAR path: ownership XML -> canonical strings -> typed frame, plus footnotes."""
     df_str, df_owners, footnotes = extract_xml_strings(xml, "0000093556-26-000001")
-    return build_insider_frame(df_str, df_owners, date_formats=LIVE_DATE_FORMATS), footnotes
+    return build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS), footnotes
 
 
 FORM4_XML = """<?xml version="1.0"?>

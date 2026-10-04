@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.institutionals.fetch_insider_transactions import extract_bulk_strings
-from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, LIVE_DATE_FORMATS, OWNER_SUMMARY_COLUMNS, build_insider_frame
+from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, OWNER_SUMMARY_COLUMNS, XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 from tests.fixtures.insider_zip import fixture_accessions, xml_frame, zip_frame, zip_path
 
@@ -161,7 +161,7 @@ def test_a_known_joint_filing_stores_identical_values_from_zip_rows_and_from_xml
     )
     df_zip = build_insider_frame(df_str, df_owners, date_formats=BULK_DATE_FORMATS).sort_values(KEY, ignore_index=True)
     xml_str, xml_owners, _ = extract_xml_strings(KNOWN_XML, ACCESSION)
-    df_xml = build_insider_frame(xml_str, xml_owners, date_formats=LIVE_DATE_FORMATS).sort_values(KEY, ignore_index=True)
+    df_xml = build_insider_frame(xml_str, xml_owners, date_formats=XML_DATE_FORMATS).sort_values(KEY, ignore_index=True)
 
     compared = sorted((set(df_zip.columns) & set(df_xml.columns)) - {"filing_date"})
     pd.testing.assert_frame_equal(_cells(df_zip, compared), _cells(df_xml, compared))

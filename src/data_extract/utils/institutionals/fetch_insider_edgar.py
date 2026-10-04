@@ -32,8 +32,8 @@ from src.data_extract.utils.common.sec_atom import (
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     INSIDER_KEY,
-    LIVE_DATE_FORMATS,
     OWNER_STRING_COLUMNS,
+    XML_DATE_FORMATS,
     accession_batches,
     build_insider_frame,
     empty_footnotes,
@@ -149,6 +149,7 @@ def insider_filings(
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
+    """The filing header's acceptance time, timezone-naive; NaT when the header has none."""
     filing_obj = cast(Any, filing)
     try:
         raw = getattr(filing_obj.header, "acceptance_datetime", None)
@@ -191,21 +192,21 @@ def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame,
     return df_str, df_owners, df_notes, pd.DataFrame(metadata)
 
 
-def _screen_live_rows(
+def _screen_edgar_rows(
     df_str: pd.DataFrame, df_owners: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Type the string rows, attach filing metadata and `source='edgar'`, then screen into (kept, rejected in scope)."""
-    df_built = build_insider_frame(df_str, df_owners, date_formats=LIVE_DATE_FORMATS)
+    df_built = build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)
     df_built = df_built.merge(df_meta.drop_duplicates("accession_number", keep="last"), on="accession_number", how="left")
     return screen_insider_rows(df_built.assign(source="edgar"), universe, identity)
 
 
-def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _edgar_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Ownership filings -> (kept transactions, footnotes of kept accessions, rejected in-scope rows)."""
     df_str, df_owners, df_notes, df_meta = _ticker_strings(filings)
     if df_str.empty:
         return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
-    df_kept, df_rejected = _screen_live_rows(df_str, df_owners, df_meta, universe, identity)
+    df_kept, df_rejected = _screen_edgar_rows(df_str, df_owners, df_meta, universe, identity)
     df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"])) if not df_kept.empty else empty_footnotes()
     return df_kept, df_kept_notes, df_rejected
 
@@ -232,14 +233,14 @@ def build_ticker_insider_edgar(
     filings = insider_filings(
         ticker, cik, since=since, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
     )
-    df_kept, df_notes, df_rejected = live_insider_frames(filings, universe=universe, identity=identity)
+    df_kept, df_notes, df_rejected = _edgar_frames(filings, universe=universe, identity=identity)
     if not df_rejected.empty:
         excluded.append(exclusion_rows(df_rejected))
 
     df_rows = pd.DataFrame(columns=_EDGAR_COLUMNS)
     if not df_kept.empty:
-        df_live = df_kept.assign(fetched_at=fetched_at)
-        df_rows = df_live[[column for column in _EDGAR_COLUMNS if column in df_live.columns]].drop_duplicates(subset=INSIDER_KEY, keep="last")
+        df_stamped = df_kept.assign(fetched_at=fetched_at)
+        df_rows = df_stamped[[column for column in _EDGAR_COLUMNS if column in df_stamped.columns]].drop_duplicates(subset=INSIDER_KEY, keep="last")
     return {Tables.insider_transactions: df_rows, Tables.insider_footnotes: df_notes}
 
 

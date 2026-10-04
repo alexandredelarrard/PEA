@@ -123,7 +123,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 `insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then lists EDGAR per ticker, from that ticker's own latest stored `filing_date` minus 7 days.
 
-- **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded.
+- **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
 
   ~~~bash
   rtk "$PY" -m src data_extract insider-transactions --reparse

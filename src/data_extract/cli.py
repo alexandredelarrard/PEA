@@ -460,8 +460,9 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
 @cli.command(
     help="SEC insider transactions (Forms 3/4/5) into one table: pending quarterly zips add the filings EDGAR lacks, "
     "then EDGAR lists each ticker from its own latest stored filing date - 7 days (the configured history when none is "
-    "stored), so a -t run never moves another ticker's window. -F re-parses every cached zip, then re-reads "
-    "the EDGAR window including filings already stored from EDGAR."
+    "stored), so a -t run never moves another ticker's window. Stored rows are re-screened and rejects deleted only on a "
+    "full-universe run (no -t). -F re-parses every cached zip, then re-reads the EDGAR window including filings already "
+    "stored from EDGAR."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

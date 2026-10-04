@@ -468,21 +468,33 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(
+    "--bulk-only",
+    is_flag=True,
+    default=False,
+    help="Parse the quarterly zips only; the daily EDGAR tail is left to `insider-edgar` (the DAG runs it in the sec_api pool).",
+)
 def insider_transactions(
     config_path: str,
     tickers: str | None,
     reparse: bool,
     full: bool,
+    bulk_only: bool,
 ) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     fetch_insider_transactions(context, tickers=names, reparse=reparse)
-    fetch_insider_edgar(
-        context,
-        tickers=names,
-        years_history=int(config.data_extract.years_history),
-        full=full,
-    )
+    if not bulk_only:
+        fetch_insider_edgar(context, tickers=names, years_history=int(config.data_extract.years_history), full=full)
+
+
+@cli.command(name="insider-edgar", help="SEC insider transactions: the daily EDGAR tail (Forms 3/4/5) after the latest bulk quarter. SEC-API.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def insider_edgar(config_path: str, tickers: str | None, full: bool) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    fetch_insider_edgar(context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), full=full)
 
 
 @cli.command(

@@ -21,6 +21,7 @@ from src.data_extract.utils.fundamentals.build_history import TickerHistory
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
+from src.utils import filer_tables
 from tests.data_extract.fake_context import extract_config
 
 SENTINEL = "1900-01-01"
@@ -225,6 +226,35 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge(sqlite_store, tmp_path, 
         assert counts == {TMUS: 2, TMO_USA: 2}, (table.name, counts)
     print("\n=== SANITY CHECK: sibling CIK (AC-022) ===")
     print("  TMUS: T-Mobile USA (event CIK of the entity) 2 rows kept per table; the foreign 0001727074 filing purged")
+
+
+def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store, tmp_path, monkeypatch, stubs):
+    """D-7: the purge's pre-filter is the validator's. A junk CIK string ('N/A', '-') is not a filer, so its rows stay."""
+    context = _context(sqlite_store, tmp_path)
+    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+        filings = [("alb-1", ALB, "2024-02-01"), ("junk-1", "N/A", "2023-02-01"), ("junk-2", " - ", "2023-03-01"), ("ab-1", AB, "2019-03-01")]
+        sqlite_store.save(table, _filings(table, "ALB", filings))
+    _record_all(context)
+    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
+
+    result = prop.propagate_identity(context, list(ROSTER))
+
+    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+        keys = _keys(sqlite_store, table)
+        assert {("ALB", "alb-1"), ("ALB", "junk-1"), ("ALB", "junk-2")} <= keys, (table.name, keys)
+        assert ("ALB", "ab-1") not in keys, table.name
+    assert set(result.removals["cik"]) == {AB}, result.removals
+    assert filer_tables.judged_cik_mask(pd.Series(["N/A", " - ", "", None, "789019", 320193.0], dtype=object)).tolist() == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
+    print("\n=== SANITY CHECK: junk-CIK pre-filter (D-7) ===")
+    print("  'N/A' and ' - ' rows kept in sec_8k and fundamentals_facts; only AB's foreign filing purged")
+    print("  OK: a CIK with no digit is never judged, by the purge exactly as by the validator.")
 
 
 def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store, tmp_path, monkeypatch, stubs):

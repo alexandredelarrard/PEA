@@ -270,3 +270,31 @@ def test_the_approved_governance_cutovers_are_in_the_live_register():
     for ticker, (ciks, boundary) in expected.items():
         print(f"  {ticker}: {' -> '.join(ciks)} at {boundary}")
     print("  OK: the three evidence-backed chains are exact and dated.")
+
+
+def test_the_revision_4_register_decisions_are_in_the_live_register():
+    """P18: MRK, TPL, DOW and PLD are dated chains; the two reverse mergers name their basis, and DD
+    carries the annotations that keep it from being a precedent for them."""
+    registrants = load_registrants(CONFIG_DIR)
+    raw = json.loads((Path(CONFIG_DIR) / "sec" / "registrant_cutover.json").read_text(encoding="utf-8"))
+    expected = {
+        "MRK": (("0000064978", "0000310158"), "2009-11-03", "reverse_merger_accounting_predecessor"),
+        "TPL": (("0000097517", "0001811074"), "2021-01-11", None),
+        "DOW": (("0000029915", "0001751788"), "2019-04-01", None),
+        "PLD": (("0000899881", "0001045609"), "2011-06-03", "reverse_acquisition_accounting_predecessor"),
+    }
+
+    for ticker, (ciks, boundary, basis) in expected.items():
+        assert registrants[ticker].all_ciks() == ciks, ticker
+        assert [str(value.date()) for value in registrants[ticker].boundaries] == [boundary], ticker
+        assert raw[ticker].get("basis") == basis, ticker
+        assert all("2026-10-04" in s.evidence for s in registrants[ticker].segments), ticker
+    assert raw["DD"]["lineage_basis"] == "successor_security"
+    assert raw["DD"]["comparability"] == "mixed_pre_separation_businesses"
+    assert registrants["DD"].all_ciks() == ("0000030554", "0001666700")
+
+    print("\n=== SANITY CHECK: revision-4 register decisions (P18) ===")
+    for ticker, (ciks, boundary, basis) in expected.items():
+        print(f"  {ticker}: {' -> '.join(ciks)} at {boundary}  basis={basis}")
+    print("  DD: lineage_basis=successor_security, comparability=mixed_pre_separation_businesses")
+    print("  OK: four new dated chains load; the metadata fields are carried in the file and ignored by the loader.")

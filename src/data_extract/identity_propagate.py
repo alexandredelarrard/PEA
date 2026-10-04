@@ -25,7 +25,16 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import resolve_ticker_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
 from src.data_store.schema import Table, Tables
-from src.utils.filer_tables import PURGE_TABLES, PURGE_TABLES_BY_NAME, REMOVAL_COLUMNS, FilerTable, filing_window, own_filer_mask, removal_records
+from src.utils.filer_tables import (
+    PURGE_TABLES,
+    PURGE_TABLES_BY_NAME,
+    REMOVAL_COLUMNS,
+    FilerTable,
+    filing_window,
+    judged_cik_mask,
+    own_filer_mask,
+    removal_records,
+)
 from src.utils.string import normalise_ticker, pad_cik
 
 #: Tickers read per scoped load, and keys per targeted delete.
@@ -62,15 +71,14 @@ def _own_ciks(identity: Identity) -> dict[str, frozenset[str]]:
 
 
 def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks: Mapping[str, frozenset[str]]) -> pd.DataFrame:
-    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity (a null CIK is never judged)."""
+    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity (a CIK with no digit is never judged)."""
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     frames: list[pd.DataFrame] = []
     for start in range(0, len(tickers), _TICKER_CHUNK):
         rows = context.store.load(spec.table, columns=columns, where={"ticker": list(tickers[start : start + _TICKER_CHUNK])}, optional=True)
         if rows is None or rows.empty:
             continue
-        raw = rows[spec.cik_col].astype("string").str.strip()
-        rows = rows[raw.notna() & raw.ne("")]
+        rows = rows[judged_cik_mask(rows[spec.cik_col])]
         foreign = rows[~own_filer_mask(rows["ticker"], rows[spec.cik_col].map(pad_cik), own_ciks)]
         if not foreign.empty:
             frames.append(foreign)

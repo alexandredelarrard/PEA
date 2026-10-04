@@ -182,6 +182,8 @@
   },
   "DD": {
     "kind": "reorganisation",
+    "lineage_basis": "successor_security",
+    "comparability": "mixed_pre_separation_businesses",
     "segments": [
       {
         "cik": "0000030554",
@@ -207,6 +209,21 @@
         "cik": "0001744489",
         "valid_from": "2019-02-06",
         "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001744489. Its own archive starts 2018-06-25 (268 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 32 10-K/10-Q from 2019-05-08."
+      }
+    ]
+  },
+  "DOW": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000029915",
+        "valid_to": "2019-04-01",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). The Dow Chemical Company (TDCC, CIK 0000029915), the DOW registrant until the separation of Dow Inc. from DowDuPont. From 2017-08-31 TDCC was a DowDuPont subsidiary that kept filing its own 10-K/10-Q; those are the accounts of the business Dow Inc. took over. Successor filing: Dow Inc. (CIK 0001751788) 8-K accession 0001193125-19-095067 filed 2019-04-02: 'This Current Report on Form 8-K serves as notice that Dow is the successor issuer to TDCC' ... 'In connection with the Separation, effective as of April 1, 2019'. boundary = the separation date the filing states. After the boundary TDCC files as Dow Inc.'s subsidiary; the dated split excludes those filings."
+      },
+      {
+        "cik": "0001751788",
+        "valid_from": "2019-04-01",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Dow Inc., successor issuer to TDCC from 2019-04-01 per its own 8-K 0001193125-19-095067 (and 8-K 0001193125-19-094612 filed 2019-04-01 on the completed distribution)."
       }
     ]
   },
@@ -345,6 +362,22 @@
       }
     ]
   },
+  "MRK": {
+    "kind": "reorganisation",
+    "basis": "reverse_merger_accounting_predecessor",
+    "segments": [
+      {
+        "cik": "0000064978",
+        "valid_to": "2009-11-03",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Old Merck & Co., Inc. (CIK 0000064978, now Merck Sharp & Dohme), the MRK registrant and the ACCOUNTING PREDECESSOR in the 2009 reverse merger with Schering-Plough. No Rule 12g-3 successor filing exists: Schering-Plough (CIK 0000310158) was the legal acquirer and renamed itself Merck & Co., Inc. Date filing: CIK 0000310158 8-K accession 0001193125-09-223917 filed 2009-11-04 (Date of report November 4, 2009 (November 3, 2009)): 'This Current Report on Form 8-K is being filed in connection with the consummation on November 3, 2009 (the Closing Date), of the transaction'. boundary = the closing date the filing states. Before it, CIK 0000310158's 10-K/10-Q are Schering-Plough's own accounts and the dated split excludes them."
+      },
+      {
+        "cik": "0000310158",
+        "valid_from": "2009-11-03",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Merck & Co., Inc. (formerly Schering-Plough Corporation, CIK 0000310158), the legal acquirer, owns MRK from the 2009-11-03 closing per its own 8-K 0001193125-09-223917."
+      }
+    ]
+  },
   "MRVL": {
     "kind": "reorganisation",
     "segments": [
@@ -372,6 +405,22 @@
         "cik": "0001341439",
         "valid_from": "2006-01-31",
         "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Oracle Corporation (new holding company), successor issuer from 2006-01-31 per its own 8-K12G3 0001193125-06-020874."
+      }
+    ]
+  },
+  "PLD": {
+    "kind": "reorganisation",
+    "basis": "reverse_acquisition_accounting_predecessor",
+    "segments": [
+      {
+        "cik": "0000899881",
+        "valid_to": "2011-06-03",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Old ProLogis (ProLogis, CIK 0000899881), the ACCOUNTING ACQUIRER in the 2011 merger with AMB Property Corporation (a reverse acquisition). No Rule 12g-3 successor filing exists: AMB (CIK 0001045609) was the legal acquirer and renamed itself Prologis, Inc. Date filing: CIK 0001045609 8-K accession 0000950123-11-057596 filed 2011-06-08 (Items 2.01, 3.03, 5.03): 'This Current Report on Form 8-K is being filed in connection with the consummation on June 3, 2011 (the Closing Date) of the transaction'. boundary = the closing date the filing states. Before it, CIK 0001045609's 10-K/10-Q are AMB's own accounts and the dated split excludes them."
+      },
+      {
+        "cik": "0001045609",
+        "valid_from": "2011-06-03",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Prologis, Inc. (formerly AMB Property Corporation, CIK 0001045609), the legal acquirer, owns PLD from the 2011-06-03 closing per its own 8-K 0000950123-11-057596."
       }
     ]
   },
@@ -423,6 +472,21 @@
         "cik": "0001757898",
         "valid_from": "2019-02-12",
         "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001757898. Its own archive starts 2018-11-06 (142 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 30 10-K/10-Q from 2019-05-30."
+      }
+    ]
+  },
+  "TPL": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000097517",
+        "valid_to": "2021-01-11",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Texas Pacific Land Trust (CIK 0000097517), the TPL registrant until the reorganisation from a business trust into a Delaware corporation. Successor filing: Texas Pacific Land Corporation (CIK 0001811074) 8-K accession 0001213900-21-001303 filed 2021-01-11 (Items 2.01, 3.03, 5.01): 'Prior to the market opening on January 11, 2021, TPL Trust distributed all of the shares' of TPL Corporation to its holders. No 8-K12B was found. boundary = the reorganisation date the filing states."
+      },
+      {
+        "cik": "0001811074",
+        "valid_from": "2021-01-11",
+        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Texas Pacific Land Corporation, the TPL registrant from 2021-01-11 per its own 8-K 0001213900-21-001303."
       }
     ]
   },

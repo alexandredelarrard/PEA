@@ -73,11 +73,14 @@ CUTOVER_WINDOW_YEARS = 2
 #: Synergy Health deal re-filings) and then nothing until 2015-12-31. STERIS plc replaced
 #: STERIS Corporation as the registrant on 2015-11-02, so the six quarters between were filed
 #: by the predecessor under its own CIK.
+#: DOW: the same shape. Sharadar's DOW series is Dow Inc.'s own (a 2017Q4 carve-out row, then
+#: 2018Q3 on); the 2018Q1 and 2018Q2 10-Qs were filed by the predecessor, The Dow Chemical
+#: Company (CIK 0000029915), which the register's 2019-04-01 seam puts in DOW's window.
 #:
-#: Measured over all 17 register tickers stored: BKR and STE are the ONLY two with a hole
-#: inside their window; the other 15 span their boundary cleanly.
+#: BKR, STE and DOW are the only register tickers stored with a hole inside their window.
 CUTOVER_KNOWN_HOLES: dict[str, tuple[str, ...]] = {
     "BKR": ("2017Q1", "2017Q2"),
+    "DOW": ("2018Q1", "2018Q2"),
     "STE": ("2014Q2", "2014Q3", "2014Q4", "2015Q1", "2015Q2", "2015Q3"),
 }
 

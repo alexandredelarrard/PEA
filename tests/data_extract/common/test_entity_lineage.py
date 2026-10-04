@@ -831,6 +831,45 @@ def test_a_register_entry_turns_a_backlogged_multi_cik_entity_into_dated_windows
     print("  OK: every successor-filing entry yields dated register windows and leaves the backlog")
 
 
+#: P18 register decisions: (predecessor, successor, seam, the successor's own pre-seam symbol or None).
+REVISION_4_SEAMS = {
+    "MRK": ("0000064978", "0000310158", "2009-11-03", "SGP"),
+    "PLD": ("0000899881", "0001045609", "2011-06-03", "AMB"),
+    "TPL": ("0000097517", "0001811074", "2021-01-11", None),
+    "DOW": ("0000029915", "0001751788", "2019-04-01", None),
+}
+
+
+def test_the_revision_4_register_dates_the_reverse_mergers_from_the_accounting_predecessor(tmp_path):
+    """P18: MRK, PLD, TPL and DOW get dated register windows. In the two reverse mergers the legal acquirer filed
+    under its own symbol before the seam, yet the accounting predecessor owns the whole pre-seam window."""
+    rows, owners = [], {}
+    for i, (ticker, (predecessor, successor, seam, own_symbol)) in enumerate(REVISION_4_SEAMS.items()):
+        rows += [(ticker, predecessor, "2000-01-03", seam, 50), (ticker, successor, seam, None, 50)]
+        if own_symbol:
+            rows.append((own_symbol, successor, "2000-01-03", seam, 40))
+        owners[predecessor] = owners[successor] = {f"{i:04d}{k:06d}" for k in range(10)}
+    tenure = _tenure(rows)
+    roster = _roster([(ticker, successor) for ticker, (_, successor, _, _) in REVISION_4_SEAMS.items()])
+
+    before = derive_entity_lineage(tenure, roster, _owner_pairs(owners), _config(tmp_path))
+    after = derive_entity_lineage(tenure, roster, _owner_pairs(owners), CONFIG_DIR)
+    windows = _rows(after, role="cik_window").set_index("cik")
+    for ticker, (predecessor, successor, seam, _) in REVISION_4_SEAMS.items():
+        assert predecessor not in set(_rows(before, role="cik_window")["cik"]), ticker
+        assert windows.loc[predecessor, "valid_from"] == L.SENTINEL_START and windows.loc[predecessor, "valid_to"] == pd.Timestamp(seam), ticker
+        assert windows.loc[successor, "valid_from"] == pd.Timestamp(seam) and pd.isna(windows.loc[successor, "valid_to"]), ticker
+        assert windows.loc[predecessor, "oracle"] == windows.loc[successor, "oracle"] == "register", ticker
+        assert windows.loc[predecessor, "canonical_ticker"] == windows.loc[successor, "canonical_ticker"] == ticker
+    assert after.backlog[after.backlog["kind"].eq("multi_cik_no_window") & after.backlog["canonical_ticker"].isin(REVISION_4_SEAMS)].empty
+
+    print("\n=== SANITY CHECK: revision-4 register windows (P18) ===")
+    for ticker, (predecessor, successor, seam, own_symbol) in REVISION_4_SEAMS.items():
+        note = f"; {successor} typed {own_symbol} before the seam and still owns nothing before it" if own_symbol else ""
+        print(f"  {ticker:4s} {predecessor} [1900-01-01, {seam}) -> {successor} [{seam}, open){note}")
+    print("  OK: without the register no predecessor window exists; with it each seam is dated and the accounting predecessor owns the past")
+
+
 def test_a_manual_verdict_clears_the_cpt_grey_band():
     """CIK 0000096345 typed `(CPT)` once; the curated `own_entity` verdict keeps it out without a backlog row."""
     camden, typo = "0000906345", "0000096345"

@@ -17,7 +17,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, own_filer_mask, removal_records
+from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, judged_cik_mask, own_filer_mask, removal_records
 from src.utils.identity_flags import FLAG_COLUMNS, MARGIN, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.result import CheckResult, Finding
@@ -83,7 +83,7 @@ def _foreign_in_table(context: Context, spec: FilerTable, tickers: Sequence[str]
     for ticker in tickers:
         filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
         padded = filers.map(pad_cik)
-        foreign = filers[padded.ne("") & ~own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)].tolist()
+        foreign = filers[judged_cik_mask(filers) & ~own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)].tolist()
         if not foreign:
             continue
         rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign})

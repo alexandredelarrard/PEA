@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.data_store.schema import Table, Tables
-from src.utils.string import normalise_ticker
+from src.utils.string import normalise_ticker, pad_cik_series
 
 #: One row per (table, ticker, filer CIK) a propagation removes; `cik` is empty for a symbol tape.
 REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
@@ -50,6 +50,11 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.pension_facts, "cik", "filed", "adsh"),
 )
 PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
+
+
+def judged_cik_mask(ciks: pd.Series) -> pd.Series:
+    """True where a stored filer CIK is judged at all: one with no digit (null, blank, 'N/A') never is."""
+    return pad_cik_series(ciks).ne("").astype(bool)
 
 
 def own_filer_mask(tickers: pd.Series, ciks: pd.Series, own_ciks: Mapping[str, frozenset[str]]) -> pd.Series:

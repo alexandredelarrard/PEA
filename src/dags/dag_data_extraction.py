@@ -7,10 +7,10 @@ big group: the light sources fan out freely, while the heavy / long / rate-limit
 Airflow POOLS (created in airflow-init):
 
   * sec_bulk (2 slots)  — big SEC zip downloads: insider_download, notes_download, fails_to_deliver,
-                          financial_statements, insider_transactions, financial_notes  (disk + SEC
-                          bandwidth bound)
+                          financial_statements, insider_transactions (bulk parse only), financial_notes
+                          (disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
-                          slots, so only one EDGAR walk runs at a time
+                          slots, so only one EDGAR walk runs at a time (insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises,
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
@@ -99,7 +99,7 @@ identity_propagate = fetch("identity-propagate")
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
 thirteen_f = fetch("thirteen-f", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
-insider_transactions = fetch("insider-transactions", pool="sec_bulk")
+insider_transactions = fetch("insider-transactions --bulk-only", pool="sec_bulk", task_id="insider_transactions")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
 superinvestors = fetch("superinvestors")  # light, needs 13F
 thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
@@ -108,6 +108,7 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 fundamentals = fetch("fundamentals", pool="sec_api")
+insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 daily tail, after the bulk quarters
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("def14a", pool="sec_api")  # + LLM
@@ -153,6 +154,7 @@ all_fetchers = [
     thirteen_f,
     financial_statements,
     insider_transactions,
+    insider_edgar,
     financial_notes,
     insider_download,
     notes_download,
@@ -192,6 +194,7 @@ identity_consumers = [
 seed_universe >> all_fetchers
 splits >> price_history
 [insider_download, notes_download] >> identity_tables >> identity_propagate >> identity_consumers
+insider_transactions >> insider_edgar  # the live tail resumes from the bulk table's latest quarter
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar

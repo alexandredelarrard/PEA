@@ -86,3 +86,34 @@ def test_steps_import_and_dag_parses() -> None:
     assert set(COMMANDS) <= set(cli_mod.cli.commands)
     print("\n=== SANITY: step imports + DAG ===")
     print(f"  both steps import; the DAG parses and still schedules all {len(COMMANDS)} EDGAR commands by their unchanged CLI names.")
+
+
+@pytest.fixture
+def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")] if names else ["ALL"])
+    monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
+    monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda context, **kwargs: calls.append(("edgar", kwargs)))
+    return calls
+
+
+def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands(insider_calls: list[tuple[str, dict[str, Any]]]) -> None:
+    """D-8: `--bulk-only` parses the zips without the EDGAR walk, `insider-edgar` walks only; the bare command still does both."""
+    runner = CliRunner()
+    invocations = (
+        ["insider-transactions", "--bulk-only", "-t", "aapl"],
+        ["insider-edgar", "-t", "aapl", "-F"],
+        ["insider-transactions", "-t", "aapl"],
+    )
+    for args in invocations:
+        result = runner.invoke(cli_mod.cli, args)
+        assert result.exit_code == 0, result.output
+
+    assert [kind for kind, _ in insider_calls] == ["bulk", "edgar", "bulk", "edgar"]
+    assert insider_calls[1][1] == {"tickers": ["AAPL"], "years_history": 15, "full": True}
+    assert insider_calls[3][1]["full"] is False and insider_calls[0][1]["tickers"] == ["AAPL"]
+    print("\n=== SANITY: insider commands (D-8) ===")
+    print("  insider-transactions --bulk-only -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
+    print("  insider-transactions -> both, as before. OK: the DAG can schedule the walk in its own pool.")

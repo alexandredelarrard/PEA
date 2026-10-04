@@ -33,6 +33,7 @@ REQUIRED_COMMANDS = {
     "thirteen-f",
     "financial-statements",
     "insider-transactions",
+    "insider-edgar",
     "insider-download",
     "notes-download",
     "financial-notes",
@@ -63,7 +64,7 @@ def test_required_sources_are_scheduled_without_retired_attention_sources():
     source = _source(DAG_FILE)
     tree = ast.parse(source)
     scheduled = {
-        call.args[0].value
+        call.args[0].value.split()[0]
         for call in ast.walk(tree)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Name)
@@ -263,6 +264,25 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     first = min(position[task] for task in IDENTITY_DOWNLOADS)
     print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
     print(f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build or propagation leaves the gate unrun")
+
+
+def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(monkeypatch):
+    """D-8: the Form 3/4/5 bulk parse stays in `sec_bulk`; its live EDGAR tail is its own `sec_api` task, so it never
+    overlaps another EDGAR walk."""
+    graph, params = _load_dag_graph(monkeypatch)
+    bulk, walk = params["insider_transactions"], params["insider_edgar"]
+
+    assert bulk["pool"] == "sec_bulk" and " insider-transactions --bulk-only -c " in str(bulk["bash_command"])
+    assert walk["pool"] == "sec_api" and walk["pool_slots"] == 2 and " insider-edgar -c " in str(walk["bash_command"])
+    assert "insider_edgar" in graph["insider_transactions"], "the live tail resumes from the bulk table's latest quarter"
+    assert "insider_edgar" in _descendants(graph, "identity_propagate") and "identity_check" in graph["insider_edgar"]
+    edgar_in_bulk = [task for task, kwargs in params.items() if kwargs.get("pool") == "sec_bulk" and "edgar" in str(kwargs.get("bash_command"))]
+    assert not edgar_in_bulk, edgar_in_bulk
+
+    print("\n=== SANITY CHECK: insider tasks by pool (D-8) ===")
+    print(f"  insider_transactions: {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
+    print(f"  insider_edgar:        {walk['pool']} ({walk['pool_slots']} slots) -> {walk['bash_command'].split(' -m src data_extract ')[1]}")
+    print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity propagation.")
 
 
 def _raises_incomplete(node: ast.AST) -> bool:

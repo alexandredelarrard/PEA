@@ -218,9 +218,9 @@ def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str]
     """`columns` of the stored rows of `accessions`, read in `accession_batches`."""
     frames: list[pd.DataFrame] = []
     for batch in accession_batches(accessions):
-        df = context.store.load(Tables.insider_transactions, columns=columns, where={"accession_number": batch}, optional=True)
-        if df is not None:
-            frames.append(df)
+        df_batch = context.store.load(Tables.insider_transactions, columns=columns, where={"accession_number": batch}, optional=True)
+        if df_batch is not None:
+            frames.append(df_batch)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
 
 

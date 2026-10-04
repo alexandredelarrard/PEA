@@ -266,7 +266,7 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
     visible_from = `day` and an open interval. Linked amendment rows never enter the copy
     collapse. Returns `(frame, counts)`.
     """
-    df = df_scoped.assign(
+    df_rows = df_scoped.assign(
         anchor=df_scoped["day"], visible_from=df_scoped["day"], visible_until=pd.Series(pd.NaT, index=df_scoped.index, dtype=df_scoped["day"].dtype)
     )
     counts: dict = {
@@ -281,27 +281,27 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
         "amendment_cells_identical": 0,
         "amendment_rows_identical": 0,
     }
-    if "accession_number" not in df.columns:
-        return df, counts
+    if "accession_number" not in df_rows.columns:
+        return df_rows, counts
 
-    df_key = _copy_key(df, pps)
-    links, counts["amendments_ambiguous"] = _link_amendments(df, df_key)
+    df_key = _copy_key(df_rows, pps)
+    links, counts["amendments_ambiguous"] = _link_amendments(df_rows, df_key)
     counts["amendments_linked"] = len(links)
     df_plan, cell_counts = _supersede_plan(df_key, links)
     counts.update(cell_counts)
     linked = df_key["accession_number"].isin(links.index)
-    drop_copy, df_owners, copy_counts = _collapse_copies(df, df_key, eligible=~linked)
+    drop_copy, df_owners, copy_counts = _collapse_copies(df_rows, df_key, eligible=~linked)
     counts.update(copy_counts)
 
     if not df_plan.empty:
-        df.loc[df_plan.index, "anchor"] = df_plan["anchor"].to_numpy()
-        df.loc[df_plan.index, "visible_until"] = df_plan["visible_until"].to_numpy()
+        df_rows.loc[df_plan.index, "anchor"] = df_plan["anchor"].to_numpy()
+        df_rows.loc[df_plan.index, "visible_until"] = df_plan["visible_until"].to_numpy()
     for column in ("owner_ciks", "n_reporting_owners"):
-        if column in df.columns and not df_owners.empty:
-            df[column] = df[column].astype(object)
-            df.loc[df_owners.index, column] = df_owners[column]
-    identical = df.index.isin(df_plan.index[df_plan["identical"]]) if not df_plan.empty else np.zeros(len(df), dtype=bool)
-    return df[~(drop_copy.to_numpy() | identical)], counts
+        if column in df_rows.columns and not df_owners.empty:
+            df_rows[column] = df_rows[column].astype(object)
+            df_rows.loc[df_owners.index, column] = df_owners[column]
+    identical = df_rows.index.isin(df_plan.index[df_plan["identical"]]) if not df_plan.empty else np.zeros(len(df_rows), dtype=bool)
+    return df_rows[~(drop_copy.to_numpy() | identical)], counts
 
 
 def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:

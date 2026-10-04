@@ -173,7 +173,7 @@ def build_insider_feature_panel(
         return _empty_panel()
 
     df_trades, diag = clean_transactions(insider)
-    unpriced_events = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
+    df_unpriced = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     if df_trades.empty:
         return pd.DataFrame(columns=["date", "ticker"])
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
@@ -214,7 +214,7 @@ def build_insider_feature_panel(
         net_mask = _net_buy_mask(idx, columns, listed, insider_floor, pd.Timestamp(complete_through), availability)
         fields[net_name] = fields[net_name].reindex(index=idx, columns=columns).fillna(0.0).where(net_mask)
 
-    unpriced_masks = _unpriced_masks(unpriced_events, idx)
+    unpriced_masks = _unpriced_masks(df_unpriced, idx)
     _mask_unknown_windows(fields, unpriced_masks)
 
     if sink is not None:

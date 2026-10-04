@@ -126,6 +126,54 @@ CREATE TABLE IF NOT EXISTS "entity_lineage" (
 );
 CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("entity_id");
 
+-- [reference] security_master  (pk: security_id, source, source_symbol, valid_from)
+-- WHICH SECURITY a market-tape line is, its issuer CIK, class and lineage role, and WHEN: the
+-- security grain under entity_lineage's issuer grain. One row per (security, source symbol
+-- interval, role interval); `security_id` is "C" + CUSIP-9. Derived offline by identity-tables
+-- from the stored FTD lines, the lineage, the roster, sec_company_tickers and
+-- configs/sec/security_master_manual.json.
+--
+-- `lineage_role` in {canonical_predecessor, canonical_current, secondary_class,
+-- acquired_constituent, excluded}; an excluded row names its reason in `lineage_reason`.
+-- Classes need POSITIVE evidence: a line with none is `unclassified` and excluded.
+-- `valid_from`/`valid_to` are half-open TRADE dates. `conversion_ratio` is the dated number of
+-- canonical-class shares one share of the line is worth (BRK-A 30, then 1,500; 1 elsewhere).
+
+CREATE TABLE IF NOT EXISTS "security_master" (
+    "security_id" TEXT NOT NULL,
+    "canonical_company" TEXT,
+    "issuer_cik" TEXT,
+    "source" TEXT NOT NULL,
+    "source_symbol" TEXT NOT NULL,
+    "market_symbol" TEXT,
+    "exchange" TEXT,
+    "cusip" TEXT,
+    "security_class" TEXT,
+    "conversion_ratio" DOUBLE PRECISION,
+    "lineage_role" TEXT,
+    "valid_from" DATE NOT NULL,
+    "valid_to" DATE,
+    "lineage_reason" TEXT,
+    "source_accession" TEXT,
+    "evidence" TEXT,
+    "n_observations" BIGINT,
+    "scope_changed_at" TIMESTAMP,
+    PRIMARY KEY ("security_id", "source", "source_symbol", "valid_from")
+);
+
+-- [reference] sec_company_tickers  (pk: cik, ticker)
+-- SEC's current ticker list with exchanges, one snapshot per sec-tickers run. No dates: read
+-- only for sibling share-class discovery and `exchange`, never for dating or CIK resolution.
+
+CREATE TABLE IF NOT EXISTS "sec_company_tickers" (
+    "cik" TEXT NOT NULL,
+    "ticker" TEXT NOT NULL,
+    "name" TEXT,
+    "exchange" TEXT,
+    "fetched_at" TIMESTAMP,
+    PRIMARY KEY ("cik", "ticker")
+);
+
 -- [extract] prices  (pk: ticker, date)
 -- TWO price columns, written from ONE yfinance response so they cannot drift apart.
 --   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
@@ -200,6 +248,30 @@ CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
     "period" TEXT,
     PRIMARY KEY ("ticker", "date")
 );
+
+-- [extract] sec_fails_to_deliver_security  (pk: cusip, date)
+-- SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line, no summing. `date` is the
+-- settlement date as filed, `trade_date` its settlement-cycle conversion; `price` and
+-- `fails_value` are NULL where the file has '.'. ftd-download stores the in-scope lines with the
+-- four stamp columns NULL.
+
+CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver_security" (
+    "date" DATE NOT NULL,
+    "trade_date" DATE,
+    "cusip" TEXT NOT NULL,
+    "source_symbol" TEXT,
+    "description" TEXT,
+    "price" DOUBLE PRECISION,
+    "fails_quantity" DOUBLE PRECISION,
+    "fails_value" DOUBLE PRECISION,
+    "period" TEXT,
+    "security_id" TEXT,
+    "ticker" TEXT,
+    "lineage_role" TEXT,
+    "security_class" TEXT,
+    PRIMARY KEY ("cusip", "date")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_fails_to_deliver_security_ticker ON "sec_fails_to_deliver_security" ("ticker");
 
 -- [extract] prices_macro  (pk: ticker, date)
 

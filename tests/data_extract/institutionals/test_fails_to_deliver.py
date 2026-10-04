@@ -408,3 +408,80 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
         f"{row['f_ic_ftd_to_adv20']['LO']:.6f} on estimated Jan 30; "
         f"the Jan 29 prefix is absent. Validated."
     )
+
+
+# --------------------------------------------------------------------------- Q2a: ftd-download raw ingest
+
+_HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
+
+
+def test_parse_ftd_lines_keeps_every_source_line_raw():
+    raw = _HEADER + (
+        "20170906|000111AAA|ABC|100|ABC CORP|10.00\n"
+        "20170907|000111AAA|ABC|200|ABC CORP|.\n"
+        "20240529|000111BBB|ABC/PR|5|ABC CORP PFD|25.5\n"
+        "20240529|000111BBB|ABC/PR|5|ABC CORP PFD|25.5\n"
+    )
+    lines = ftd._parse_ftd_lines(raw)
+    assert lines.columns.tolist() == list(ftd.SECURITY_COLUMNS[:8])
+    assert len(lines) == 3, "an exact duplicate source line is one row; nothing else is summed"
+    first = lines.iloc[0]
+    assert (first["source_symbol"], first["description"], first["price"], first["fails_quantity"], first["fails_value"]) == (
+        "ABC",
+        "ABC CORP",
+        10.0,
+        100.0,
+        1000.0,
+    )
+    assert lines["trade_date"].dt.strftime("%Y-%m-%d").tolist() == ["2017-09-01", "2017-09-05", "2024-05-28"]
+    assert pd.isna(lines.iloc[1]["price"]) and pd.isna(lines.iloc[1]["fails_value"])
+    assert lines.iloc[2]["source_symbol"] == "ABC/PR"
+    print("\n=== SANITY CHECK: raw FTD lines ===")
+    print("  description and PRICE kept, '.' -> NULL dollars, symbol as filed, trade date by the T+3/T+2/T+1 cycle; no summing")
+
+
+def _scope_lineage() -> pd.DataFrame:
+    rows = [
+        ("E0000000777", "ABC", "0000000777", "cik_window", "", "1900-01-01", None, "single_source", "roster"),
+        ("E0000000777", "ABC", "0000000777", "symbol", "ABC", "2006-01-04", None, "corroborated", "form345,roster"),
+    ]
+    columns = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
+    frame = pd.DataFrame(rows, columns=columns)
+    frame["valid_from"] = pd.to_datetime(frame["valid_from"])
+    frame["valid_to"] = pd.to_datetime(frame["valid_to"])
+    return frame
+
+
+def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_store, monkeypatch, tmp_path):
+    ctx = _context(sqlite_store, tmp_path)
+    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
+    raw_by_period = {
+        "201501a": _HEADER + "20150105|000111CCC|ABCWS|7|ABC CORP WT|1.0\n20150105|999999ZZZ|ZZZ|9|OTHER CO|3.0\n",
+        "201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|000111BBB|ABCPRA|5|ABC CORP PFD|25.0\n",
+    }
+    calls: list[str] = []
+    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a", "201501b"])
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw_by_period))
+    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+
+    def read(path, log=None):
+        period = path.stem.removeprefix("cnsfails")
+        calls.append(period)
+        return raw_by_period[period]
+
+    monkeypatch.setattr(ftd, "read_zip_text", read)
+    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+
+    saved = ftd.download_fails_to_deliver(ctx, years_history=1)
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver_security).sort_values("cusip").reset_index(drop=True)
+    assert stored["cusip"].tolist() == ["000111AAA", "000111BBB", "000111CCC"], stored
+    assert saved == 3 and stored["lineage_role"].isna().all() and stored["ticker"].isna().all()
+    assert not stored.duplicated(["cusip", "date"]).any()
+    assert calls.count("201501a") == 2, "the period read before the CUSIP-6 was voted is re-read from cache"
+
+    calls.clear()
+    assert ftd.download_fails_to_deliver(ctx, years_history=1) == 0
+    assert calls == [], "a converged scope re-reads nothing"
+    print("\n=== SANITY CHECK: ftd-download raw in-scope ingest ===")
+    print("  pass 1 keeps the lineage symbol ABC; its vote adds CUSIP-6 000111, so the earlier warrant row is re-read from cache")
+    print("  unrelated ZZZ never stored; stamp columns NULL until the master; a converged re-run reads no zip")

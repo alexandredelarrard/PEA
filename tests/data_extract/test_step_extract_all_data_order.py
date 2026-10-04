@@ -13,7 +13,18 @@ from src.data_extract import step_extract_all_data as module
 from src.data_extract.step_extract_all_data import StepExtractAllData
 
 DOMAIN_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "structure", "behavioral")
-IDENTITY_STAGE = ("insider_download", "notes_download", "form345_scan", "symbol_tenure", "entity_lineage", "identity_refresh", "propagate")
+IDENTITY_STAGE = (
+    "insider_download",
+    "notes_download",
+    "ftd_download",
+    "sec_tickers",
+    "form345_scan",
+    "symbol_tenure",
+    "entity_lineage",
+    "security_master",
+    "identity_refresh",
+    "propagate",
+)
 
 
 def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
@@ -32,6 +43,8 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
 
     monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download"))
     monkeypatch.setattr(module, "download_financial_notes", mark("notes_download"))
+    monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
+    monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
     monkeypatch.setattr(module, "cache_dir", lambda context, name: Path("cache") / name)
 
     def form345_scan(cache):
@@ -42,9 +55,15 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
         assert given_scan is scan
         return mark("symbol_tenure", tenure)()
 
+    lineage = object()
+
     def entity_lineage(context, given_tenure, owner_pairs, config_dir, redundant_symbols=frozenset()):
         assert given_tenure is tenure and owner_pairs is scan.owner_pairs and redundant_symbols == {"GOOG"}
-        return mark("entity_lineage")()
+        return mark("entity_lineage", lineage)()
+
+    def security_master(context, given_lineage, config_dir):
+        assert given_lineage is lineage, "the security master is derived from the lineage just built"
+        return mark("security_master")()
 
     def refresh(context, refresh=False):
         assert refresh, "the identity stage must reload the resolver it just rebuilt"
@@ -57,6 +76,7 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     monkeypatch.setattr(module, "scan_form345_cache", form345_scan)
     monkeypatch.setattr(module, "build_symbol_tenure", symbol_tenure)
     monkeypatch.setattr(module, "build_entity_lineage", entity_lineage)
+    monkeypatch.setattr(module, "build_security_master", security_master)
     monkeypatch.setattr(module, "load_identity", refresh)
     monkeypatch.setattr(module, "propagate_identity", propagate)
 
@@ -86,7 +106,7 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch):
     print("  OK: every consumer, and the derived tables they rebuild, run on the propagated lineage")
 
 
-@pytest.mark.parametrize("boom", ["entity_lineage", "propagate"])
+@pytest.mark.parametrize("boom", ["entity_lineage", "security_master", "propagate"])
 def test_identity_or_propagation_failure_stops_before_any_consumer(monkeypatch, boom):
     order: list[str] = []
     with pytest.raises(RuntimeError, match=boom):

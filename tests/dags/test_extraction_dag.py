@@ -36,6 +36,8 @@ REQUIRED_COMMANDS = {
     "insider-edgar",
     "insider-download",
     "notes-download",
+    "ftd-download",
+    "sec-tickers",
     "financial-notes",
     "identity-tables",
     "identity-propagate",
@@ -92,8 +94,8 @@ def test_freshness_inventory_comes_only_from_schema():
     print("  OK: schema.py is the sole table/cadence/date-column source of truth")
 
 
-#: identity producers, in stage order: the two cache downloads, the build, the propagation.
-IDENTITY_DOWNLOADS = {"insider_download", "notes_download"}
+#: identity producers, in stage order: the cache downloads (Form 3/4/5, Notes, FTD, SEC current tickers), the build, the propagation.
+IDENTITY_DOWNLOADS = {"insider_download", "notes_download", "ftd_download", "sec_tickers"}
 #: every task that reads the lineage; each must start after `identity_propagate`.
 IDENTITY_CONSUMERS = {
     "insider_transactions",

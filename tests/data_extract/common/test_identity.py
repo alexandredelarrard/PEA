@@ -593,7 +593,8 @@ def test_load_identity_caches_per_context_and_not_across_them():
             self._frames = frames
 
         def load(self, table, **kwargs):
-            return self._frames[getattr(table, "name", str(table))]
+            name = getattr(table, "name", str(table))
+            return self._frames.get(name) if kwargs.get("optional") else self._frames[name]
 
     class _Ctx:
         def __init__(self, frames):

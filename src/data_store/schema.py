@@ -225,6 +225,62 @@ class Tables:
         ),
     )
 
+    # WHICH SECURITY a market-tape line is, its issuer CIK, class and lineage role, and WHEN -- the
+    # security grain under `entity_lineage`'s issuer grain. One row per (security, source symbol
+    # interval, role interval); `security_id` is `"C" + CUSIP-9` (a natural key, so a full re-derive
+    # reproduces it). Derived offline by `identity-tables` from the stored FTD lines, the lineage, the
+    # roster, `sec_company_tickers` and `configs/sec/security_master_manual.json`.
+    #
+    # `lineage_role` in {canonical_predecessor, canonical_current, secondary_class,
+    # acquired_constituent, excluded}; an `excluded` row names its reason in `lineage_reason`
+    # (preferred, debt, warrant, unit, right, transition_placeholder, unclassified, superseded,
+    # cancelled_security). Classes need POSITIVE evidence: a line with none is `unclassified`.
+    # Securities of co-registrant subsidiaries are not stored.
+    #
+    # `valid_from`/`valid_to` are half-open TRADE dates (FTD settlement dates converted by the
+    # settlement cycle). `conversion_ratio` is the dated number of canonical-class shares one share
+    # of the line is worth (BRK-A 30, then 1,500; 1 elsewhere) and applies only when share counts
+    # of several classes are summed. `exchange` is known only for current lines (SEC snapshot).
+    # `scope_changed_at` (per canonical company) is the build time at which its rows last changed.
+    security_master = Table(
+        "security_master",
+        ("security_id", "source", "source_symbol", "valid_from"),
+        KIND_REFERENCE,
+        ticker_col=None,
+        date_type_cols=("valid_from", "valid_to"),
+        read_columns=(
+            "security_id",
+            "canonical_company",
+            "issuer_cik",
+            "source",
+            "source_symbol",
+            "market_symbol",
+            "exchange",
+            "cusip",
+            "security_class",
+            "conversion_ratio",
+            "lineage_role",
+            "valid_from",
+            "valid_to",
+            "lineage_reason",
+            "source_accession",
+            "evidence",
+            "n_observations",
+            "scope_changed_at",
+        ),
+    )
+
+    # SEC's current ticker list with exchanges (`company_tickers_exchange.json`), one snapshot per
+    # `sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
+    # and `exchange` in the security master, never for dating or CIK resolution.
+    sec_company_tickers = Table(
+        "sec_company_tickers",
+        ("cik", "ticker"),
+        KIND_REFERENCE,
+        ticker_col=None,
+        read_columns=("cik", "ticker", "name", "exchange", "fetched_at"),
+    )
+
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
@@ -274,6 +330,33 @@ class Tables:
         date_type_cols=("date",),
         freshness="biweekly",
         read_columns=("date", "ticker", "fails_quantity", "period"),
+    )
+    # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
+    # on the CUSIP the file reports. `ftd-download` stores the in-scope lines (lineage symbols
+    # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
+    # `security_class` NULL; the security master is derived from these rows. `date` is the
+    # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
+    # where the file has '.', and so is `fails_value`.
+    sec_fails_to_deliver_security = Table(
+        "sec_fails_to_deliver_security",
+        ("cusip", "date"),
+        date_col="date",
+        date_type_cols=("date", "trade_date"),
+        read_columns=(
+            "date",
+            "trade_date",
+            "cusip",
+            "source_symbol",
+            "description",
+            "price",
+            "fails_quantity",
+            "fails_value",
+            "period",
+            "security_id",
+            "ticker",
+            "lineage_role",
+            "security_class",
+        ),
     )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,

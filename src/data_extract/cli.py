@@ -42,6 +42,8 @@ from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
+from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
+from src.data_extract.utils.common.security_master import build_security_master
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
@@ -66,7 +68,7 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
@@ -508,10 +510,30 @@ def insider_download(config_path: str) -> None:
 
 
 @cli.command(
+    name="ftd-download",
+    help="Cache the SEC fails-to-deliver zips and store their in-scope lines raw, per CUSIP "
+    "(sec_fails_to_deliver_security), for the security master. SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def ftd_download(config_path: str, full: bool) -> None:
+    """`--full` re-reads every cached zip and replaces the raw table; the default reads only periods not yet stored."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    download_fails_to_deliver(context, years_history=int(config.data_extract.years_history), full=full)
+
+
+@cli.command(name="sec-tickers", help="Snapshot SEC's current tickers with exchanges (one GET) into sec_company_tickers. SEC-bulk.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def sec_tickers(config_path: str) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    download_sec_company_tickers(context)
+
+
+@cli.command(
     name="identity-tables",
-    help="symbol_tenure + entity_lineage: WHICH COMPANY a ticker was, and when. "
-    "OFFLINE reference build -- derived from the cached Form 345 zips and the "
-    "DB, no network. Run after `insider-download` and `notes-download`.",
+    help="symbol_tenure + entity_lineage + security_master: WHICH COMPANY a ticker was, and when, and "
+    "which security each FTD line is. OFFLINE reference build -- derived from the cached Form 345 zips "
+    "and the DB, no network. Run after `insider-download`, `notes-download`, `ftd-download` and `sec-tickers`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(
@@ -522,8 +544,9 @@ def insider_download(config_path: str) -> None:
     help="Apply one exact older-CIK entity-id change that the build excluded and backlogged (WARNING log).",
 )
 def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
-    """Builds `symbol_tenure` then `entity_lineage` together: lineage candidates are read off tenure, so a stale
-    tenure silently narrows lineage. Market-wide, so the manifest records `ticker_count=0`.
+    """Builds `symbol_tenure`, `entity_lineage` then `security_master` together: lineage candidates are read off
+    tenure and the master's issuers off the lineage, so a stale input silently narrows the next. Market-wide,
+    so the manifest records `ticker_count=0`.
     """
     _, context = get_config_context(config_path, use_cache=False, save=False)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
@@ -538,7 +561,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
         parsed_rekeys.add((old, new))
     scan = scan_form345_cache(cache)
     tenure = build_symbol_tenure(context, scan, config_path)
-    build_entity_lineage(
+    lineage = build_entity_lineage(
         context,
         tenure,
         scan.owner_pairs,
@@ -546,6 +569,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
         approved_rekeys=frozenset(parsed_rekeys),
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )
+    build_security_master(context, lineage, config_path)
 
 
 @cli.command(

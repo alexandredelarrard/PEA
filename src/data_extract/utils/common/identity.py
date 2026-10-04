@@ -3,7 +3,7 @@
 `entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
 its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `ticker_for_symbol` answer from those
 rows; `tickers_for_ciks` and `symbol_rows_to_tickers` apply them to whole frames for the bulk data sets
-and the symbol tapes. `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant
+and the symbol tapes. `security_on` answers from `security_master` (security grain: CUSIP, class, role). `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant
 violations raise at load, never per row. An unknown CIK is its own singleton entity `E{cik}`.
 """
 
@@ -14,6 +14,7 @@ import weakref
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pandas as pd
@@ -34,6 +35,7 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
+from src.data_extract.utils.common.security_master import squash
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_market_symbol
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -121,6 +123,21 @@ class SymbolInterval:
 
 
 @dataclass(frozen=True)
+class SecurityHit:
+    """One `security_master` row's answer: which security, whose canonical company, in which role and class, at what ratio."""
+
+    security_id: str
+    canonical_company: str | None
+    lineage_role: str
+    security_class: str
+    conversion_ratio: float
+
+
+#: One dated master interval: (valid_from, valid_to or None when open, the hit).
+SecurityInterval = tuple[pd.Timestamp, pd.Timestamp | None, SecurityHit]
+
+
+@dataclass(frozen=True)
 class FilingScope:
     """One universe ticker's filing scope: the only input of an EDGAR listing.
 
@@ -169,6 +186,10 @@ class Identity:
     scope_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
     #: entity_id -> the latest `scope_changed_at` on its symbol rows (the symbol tapes' change stamp).
     symbols_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
+    #: CUSIP-9 -> its dated `security_master` intervals.
+    securities_by_cusip: Mapping[str, tuple[SecurityInterval, ...]] = field(default_factory=dict)
+    #: (source, squashed source symbol) -> its dated `security_master` intervals.
+    securities_by_symbol: Mapping[tuple[str, str], tuple[SecurityInterval, ...]] = field(default_factory=dict)
 
     # entity_lineage
 
@@ -248,6 +269,20 @@ class Identity:
             if any(row.status != "noise" and row.tape_symbol and row.entity in entities for row in rows)
         }
         return requested | dated
+
+    def security_on(self, *, cusip: str | None = None, symbol: str | None = None, source: str, day: object) -> SecurityHit | None:
+        """The security a tape line is on trade date `day`, by CUSIP when given, else by `(source, symbol)`.
+
+        None when nothing covers the day, or when two securities do (a symbol `conflict`).
+        """
+        stamp = _as_timestamp(day)
+        if stamp is None:
+            return None
+        rows = self.securities_by_cusip.get(str(cusip).strip().upper(), ()) if cusip else self.securities_by_symbol.get((source, squash(symbol)), ())
+        hits = [hit for start, end, hit in rows if _covers(start, end, stamp)]
+        if len({hit.security_id for hit in hits}) != 1:
+            return None
+        return hits[0]
 
     def owns(self, ticker: str, cik, on_date=None) -> bool:
         """Is this CIK's filing about this universe ticker's company?
@@ -402,6 +437,7 @@ def build_identity(
     tenure: pd.DataFrame,
     roster: pd.DataFrame,
     redundant_symbols: frozenset[str] | None = None,
+    master: pd.DataFrame | None = None,
 ) -> Identity:
     """Validate the tables and return the frozen resolver; pure, no DB or config reads.
 
@@ -427,6 +463,7 @@ def build_identity(
         symbol_intervals=_symbol_intervals(lineage),
         scope_changed_at_by_entity=_scope_changed_at(lineage, symbols=False),
         symbols_changed_at_by_entity=_scope_changed_at(lineage, symbols=True),
+        **_security_maps(master),
     )
     _log_identity(identity)
     return identity
@@ -595,6 +632,27 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
     return {symbol: tuple(values) for symbol, values in out.items()}
 
 
+def _security_maps(master: pd.DataFrame | None) -> dict[str, Any]:
+    """`securities_by_cusip` and `securities_by_symbol` from `security_master` rows (newest interval first)."""
+    if master is None or master.empty:
+        return {}
+    by_cusip: dict[str, list[SecurityInterval]] = {}
+    by_symbol: dict[tuple[str, str], list[SecurityInterval]] = {}
+    ordered = master.sort_values(["valid_from", "security_id", "source_symbol"], ascending=[False, True, True], kind="mergesort")
+    for record in cast(list[Any], ordered.to_dict("records")):
+        row = SimpleNamespace(**record)
+        company = row.canonical_company if isinstance(row.canonical_company, str) else None
+        hit = SecurityHit(str(row.security_id), company, str(row.lineage_role), str(row.security_class), float(row.conversion_ratio))
+        interval = (pd.Timestamp(row.valid_from), _as_timestamp(row.valid_to), hit)
+        if isinstance(row.cusip, str) and row.cusip:
+            by_cusip.setdefault(row.cusip, []).append(interval)
+        by_symbol.setdefault((str(row.source), squash(row.source_symbol)), []).append(interval)
+    return {
+        "securities_by_cusip": {key: tuple(values) for key, values in by_cusip.items()},
+        "securities_by_symbol": {key: tuple(values) for key, values in by_symbol.items()},
+    }
+
+
 def _scope_changed_at(lineage: pd.DataFrame, *, symbols: bool) -> dict[str, pd.Timestamp]:
     """`{entity_id: latest scope_changed_at}` over its symbol rows (`symbols`) or its CIK rows."""
     if "scope_changed_at" not in lineage.columns:
@@ -609,7 +667,7 @@ def _log_identity(identity: Identity) -> None:
     """One line of map sizes for the resolver just built."""
     logger.info(
         "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); %d windowed entity(ies); "
-        "%d symbol(s) with lineage intervals; %d symbol(s) with tenure; %d manual symbol(s); %d redundant symbol(s)",
+        "%d symbol(s) with lineage intervals; %d symbol(s) with tenure; %d manual symbol(s); %d redundant symbol(s); %d master CUSIP(s)",
         len(identity.entity_by_cik),
         len(set(identity.entity_by_cik.values())),
         len(identity.roster_cik),
@@ -618,6 +676,7 @@ def _log_identity(identity: Identity) -> None:
         len(identity.tenure_by_symbol),
         len(identity.manual_tenure_by_symbol),
         len(identity.redundant_symbols),
+        len(identity.securities_by_cusip),
     )
 
 
@@ -629,12 +688,14 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     lineage = context.store.load(Tables.entity_lineage, project=True)
     tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(TENURE_SOURCES)})
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
+    master = context.store.load(Tables.security_master, project=True, optional=True)
     assert lineage is not None and tenure is not None and roster is not None
     identity = build_identity(
         lineage=lineage,
         tenure=tenure,
         roster=roster,
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
+        master=master,
     )
     _CACHE[context] = identity
     return identity

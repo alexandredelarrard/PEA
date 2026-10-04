@@ -182,6 +182,7 @@ _ACCESSOR = {
     "src/data_extract/utils/common/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
     "src/data_extract/utils/common/sec_utils.py",
+    "src/data_extract/utils/common/security_master.py",
 }
 #: The roster seeder writes `sp500_tickers`; 13F managers are listed by their own CIK, not an issuer (00-run N1).
 _ROSTER_WRITER = "src/data_extract/utils/prices/fetch_tickers.py"

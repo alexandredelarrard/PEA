@@ -6,7 +6,8 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher), so parallelism is tu
 big group: the light sources fan out freely, while the heavy / long / rate-limited ones are capped by
 Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — big SEC zip downloads: insider_download, notes_download, fails_to_deliver,
+  * sec_bulk (2 slots)  — big SEC zip downloads: insider_download, notes_download, ftd_download,
+                          sec_tickers (one GET), fails_to_deliver,
                           financial_statements, insider_transactions (bulk parse only), financial_notes
                           (disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
@@ -16,7 +17,8 @@ Airflow POOLS (created in airflow-init):
                           price_history)
 
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
-the data_aggregation DAG. Identity stage: the Form 3/4/5 and Notes zip downloads -> identity_tables ->
+the data_aggregation DAG. Identity stage: the Form 3/4/5, Notes and FTD zip downloads and the SEC
+current-tickers snapshot -> identity_tables (tenure, lineage, security master) ->
 identity_propagate -> every task that reads the lineage; a failed build or propagation leaves the
 gate unrun. After every fetcher, `identity_check` (`python -m src validate identity`) fails on rows
 filed by a CIK outside the ticker's entity. Fetchers and both gates each get three attempts;
@@ -88,10 +90,13 @@ splits = fetch("splits")
 price_history = fetch("price-history")
 dividends = fetch("dividends")
 
-# 2) identity stage: cache the Form 3/4/5 zips and the Notes zips (+ cover-page dei symbols), build
-#    symbol_tenure + entity_lineage offline, then carry lineage changes into the stored rows
+# 2) identity stage: cache the Form 3/4/5 zips, the Notes zips (+ cover-page dei symbols) and the FTD zips
+#    (+ raw in-scope lines), snapshot SEC's current tickers, build symbol_tenure + entity_lineage +
+#    security_master offline, then carry lineage changes into the stored rows
 insider_download = fetch("insider-download", pool="sec_bulk")
 notes_download = fetch("notes-download", pool="sec_bulk")
+ftd_download = fetch("ftd-download", pool="sec_bulk")
+sec_tickers = fetch("sec-tickers", pool="sec_bulk")
 identity_tables = fetch("identity-tables")
 identity_propagate = fetch("identity-propagate")
 
@@ -158,6 +163,8 @@ all_fetchers = [
     financial_notes,
     insider_download,
     notes_download,
+    ftd_download,
+    sec_tickers,
     identity_tables,
     identity_propagate,
     fundamentals,
@@ -193,7 +200,7 @@ identity_consumers = [
 
 seed_universe >> all_fetchers
 splits >> price_history
-[insider_download, notes_download] >> identity_tables >> identity_propagate >> identity_consumers
+[insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >> identity_consumers
 insider_transactions >> insider_edgar  # the live tail resumes from the bulk table's latest quarter
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope

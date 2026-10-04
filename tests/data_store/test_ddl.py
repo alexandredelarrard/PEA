@@ -57,3 +57,34 @@ def test_generated_schema_overlays_missing_registry_date_columns():
 
     print("\n=== SANITY CHECK: generated notes DDL ===")
     print("  live reflection may lag, but both generated table blocks still include registry-declared available_at DATE. Validated.")
+
+
+#: Q2a tables: the security master, the SEC current-tickers snapshot and the per-security FTD rows.
+Q2A_TABLES = {
+    "security_master": (
+        ("security_id", "source", "source_symbol", "valid_from"),
+        ('"valid_from" DATE NOT NULL', '"valid_to" DATE', '"conversion_ratio" DOUBLE PRECISION', '"issuer_cik" TEXT', '"scope_changed_at" TIMESTAMP'),
+    ),
+    "sec_company_tickers": (("cik", "ticker"), ('"cik" TEXT NOT NULL', '"exchange" TEXT', '"fetched_at" TIMESTAMP')),
+    "sec_fails_to_deliver_security": (
+        ("cusip", "date"),
+        ('"date" DATE NOT NULL', '"trade_date" DATE', '"price" DOUBLE PRECISION', '"description" TEXT', '"lineage_role" TEXT'),
+    ),
+}
+
+
+def test_q2a_tables_are_registered_and_spliced_into_schema_sql() -> None:
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    for name, (pk, columns) in Q2A_TABLES.items():
+        table = getattr(Tables, name)
+        assert table.name == name and table.pk == pk, (name, table.pk)
+        persisted = blocks[name]
+        assert f"PRIMARY KEY ({', '.join(chr(34) + c + chr(34) for c in pk)})" in persisted, persisted
+        for column in columns:
+            assert column in persisted, (name, column)
+        generated = ddl.table_ddl(table, [(c, "TEXT") for c in table.read_columns])
+        assert generated.split("(", 1)[0] == persisted.split("(", 1)[0]
+    assert "entity_lineage" in blocks and "sec_fails_to_deliver" in blocks and "ix_entity_lineage_entity_id" in schema_sql
+    print("\n=== SANITY CHECK: Q2a DDL ===")
+    print(f"  {', '.join(Q2A_TABLES)} registered with their PKs and hand-spliced into sql/schema.sql; existing blocks and indexes kept")

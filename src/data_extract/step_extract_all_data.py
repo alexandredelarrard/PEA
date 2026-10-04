@@ -1,7 +1,8 @@
 """Super step orchestrating the data-extraction sub-steps over one universe from `sp500_tickers`.
 
 The universe is seeded via the S&P 500 scraper only when the table is empty. Order: identity stage
-(Form 3/4/5 and Notes zip downloads -> symbol_tenure + entity_lineage -> propagation) -> prices ->
+(Form 3/4/5, Notes and FTD zip downloads, SEC current tickers -> symbol_tenure + entity_lineage +
+security_master -> propagation) -> prices ->
 institutionals -> fundamentals (Sharadar then SEC) -> structure -> behavioral. Every domain step only
 reads the propagated lineage. Institutionals must run before structure: the vote parser reads the
 `sec_8k` Item 5.07 narratives institutionals stores.
@@ -24,8 +25,11 @@ from src.data_extract.transformers.step_extract_structure import StepExtractStru
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.identity import load_identity
+from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
+from src.data_extract.utils.common.security_master import build_security_master
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_store.schema import Tables
@@ -54,18 +58,22 @@ class StepExtractAllData(Step):
         return universe
 
     def _refresh_identity(self, tickers: list[str]) -> None:
-        """Cache the identity evidence, rebuild `symbol_tenure` + `entity_lineage`, then propagate the changes."""
+        """Cache the identity evidence, rebuild `symbol_tenure`, `entity_lineage` and `security_master`, then propagate the changes."""
+        years_history = int(self._config.data_extract.years_history)
         download_insider_transactions(self._context)
-        download_financial_notes(self._context, years_history=int(self._config.data_extract.years_history))
+        download_financial_notes(self._context, years_history=years_history)
+        download_fails_to_deliver(self._context, years_history=years_history)
+        download_sec_company_tickers(self._context)
         scan = scan_form345_cache(cache_dir(self._context, self._config.local.paths.insider_transactions))
         tenure = build_symbol_tenure(self._context, scan, self._context.config_dir)
-        build_entity_lineage(
+        lineage = build_entity_lineage(
             self._context,
             tenure,
             scan.owner_pairs,
             str(self._context.config_dir),
             redundant_symbols=frozenset(self._config.data_extract.redundant_ticks),
         )
+        build_security_master(self._context, lineage, str(self._context.config_dir))
         propagate_identity(self._context, tickers, identity=load_identity(self._context, refresh=True))
 
     def run(self) -> None:

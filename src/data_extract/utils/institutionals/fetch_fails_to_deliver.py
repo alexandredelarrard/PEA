@@ -5,7 +5,9 @@ SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date),
 its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
 unsettled balance on each settlement date, not new fails. Resume skips periods already processed
 under the current symbol policy; each (symbol, settlement date) resolves through the dated `entity_lineage`
-symbol intervals (`ticker_for_symbol`); `full` replaces the table.
+symbol intervals (`ticker_for_symbol`); `full` replaces the table. `download_fails_to_deliver` (the
+`ftd-download` stage) caches the ZIPs and stores the in-scope source lines raw, per CUSIP, in
+`sec_fails_to_deliver_security` for the security master.
 """
 
 from __future__ import annotations
@@ -35,11 +37,37 @@ from src.data_extract.utils.common.identity import (
 )
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.security_master import (
+    cusip_votes,
+    lineage_scope_symbols,
+    load_security_manual,
+    squash,
+    trade_dates,
+)
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
 _OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
+#: Column order of `sec_fails_to_deliver_security`; the last four are stamped from the security master.
+SECURITY_COLUMNS = (
+    "date",
+    "trade_date",
+    "cusip",
+    "source_symbol",
+    "description",
+    "price",
+    "fails_quantity",
+    "fails_value",
+    "period",
+    "security_id",
+    "ticker",
+    "lineage_role",
+    "security_class",
+)
+_LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
+#: Scope members of the raw ingest that are CUSIP-6 prefixes, not symbols.
+_PREFIX_TAG = "cusip6:"
 _POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
@@ -96,6 +124,38 @@ def _parse_ftd(raw: str) -> pd.DataFrame:
     if out.empty:
         return out
     return out.groupby(["date", "source_symbol", "cusip"], as_index=False, dropna=False)[["fails_quantity", "fails_value"]].sum(min_count=1)
+
+
+def _parse_ftd_lines(raw: str) -> pd.DataFrame:
+    """Every source line of one FTD file, raw: symbol as filed, description, PRICE ('.' -> NULL), trade date.
+
+    Exact duplicate lines collapse to one; nothing is summed.
+    """
+    columns = list(SECURITY_COLUMNS[:8])
+    if not raw or "|" not in raw:
+        return pd.DataFrame(columns=columns)
+    df = pd.read_csv(io.StringIO(raw), sep="|", dtype=str, engine="python", on_bad_lines="skip", quoting=3)
+    cols = {c.strip().upper(): c for c in df.columns}
+
+    def col(name: str) -> pd.Series:
+        return df[cols[name]].astype("string").str.strip() if name in cols else pd.Series(pd.NA, index=df.index, dtype="string")
+
+    price = pd.to_numeric(col("PRICE").where(lambda s: s != "."), errors="coerce")
+    qty = pd.to_numeric(col("QUANTITY (FAILS)"), errors="coerce")
+    out = pd.DataFrame(
+        {
+            "date": pd.to_datetime(col("SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
+            "cusip": col("CUSIP").str.upper(),
+            "source_symbol": col("SYMBOL").str.upper(),
+            "description": col("DESCRIPTION"),
+            "price": price,
+            "fails_quantity": qty,
+            "fails_value": qty * price,
+        }
+    ).dropna(subset=["date", "cusip"])
+    out = out[out["cusip"].ne("")].drop_duplicates(ignore_index=True)
+    out["trade_date"] = trade_dates(out["date"])
+    return out[columns]
 
 
 # --------------------------------------------------------------------------- #
@@ -249,3 +309,87 @@ def fetch_fails_to_deliver(
     logger.info(f"FTD: {unresolved_count} unresolved raw row(s) excluded")
     record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved, is_full_rescan=full)
     return saved
+
+
+def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, frozenset[str], frozenset[str]]:
+    """`(lineage, squashed lineage symbols, CUSIP-6 prefixes)`; prefixes come from the stored master and the manual config."""
+    lineage = context.store.load(Tables.entity_lineage, columns=_LINEAGE_SCOPE_COLUMNS, optional=True)
+    if lineage is None:
+        return None, frozenset(), frozenset()
+    master = context.store.load(Tables.security_master, columns=["cusip"], optional=True)
+    manual = load_security_manual(getattr(context, "config_dir", None))
+    cusips = set() if master is None else set(master["cusip"].dropna().astype(str))
+    cusips |= set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna())
+    return lineage, lineage_scope_symbols(lineage), frozenset(c[:6] for c in cusips if c)
+
+
+def _in_scope(lines: pd.DataFrame, symbols: frozenset[str], prefixes: frozenset[str]) -> pd.DataFrame:
+    keys = lines["source_symbol"].map(squash)
+    return lines[keys.isin(symbols) | lines["cusip"].str[:6].isin(prefixes)]
+
+
+def _read_period(context: Context, cache: Path, period: str, *, download: bool) -> pd.DataFrame | None:
+    """One period's raw lines from the cache (downloading it once when `download`); None when unavailable."""
+    path: Path | None = cache / FTD_ZIP_NAME_TEMPLATE.format(period=period)
+    if download:
+        path = ensure_zip(context, path, _period_urls(period), label=f"FTD {period}", timeout=180, log=logger)
+    raw = None if path is None else read_zip_text(path, log=logger)
+    return None if raw is None else _parse_ftd_lines(raw).assign(period=period)
+
+
+def download_fails_to_deliver(context: Context, years_history: int = 15, full: bool = False) -> int:
+    """Cache the FTD ZIPs and store their in-scope source lines raw in `sec_fails_to_deliver_security`.
+
+    Scope: lineage symbols plus the CUSIP-6 of the master's securities; a CUSIP-6 newly voted for by a
+    lineage symbol interval re-reads every cached period for it. Stamp columns stay NULL. `full` replaces
+    the table from every cached period. Returns the rows written.
+    """
+    cache = cache_dir(context, context.config.local.paths.fails_deliver)
+    table = Tables.sec_fails_to_deliver_security
+    lineage, symbols, prefixes = _ingest_scope(context)
+    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1)))
+    if lineage is None:
+        cached = [
+            p
+            for p in periods
+            if ensure_zip(context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=p), _period_urls(p), label=f"FTD {p}", timeout=180, log=logger)
+        ]
+        logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are ingested after identity-tables has run", len(cached))
+        return 0
+    scope = set(symbols) | {_PREFIX_TAG + p for p in prefixes}
+    pending = pending_periods(context, cache, table, periods, scope, reparse=full)
+    frames = []
+    for period in tqdm(pending, desc="FTD download"):
+        frame = _read_period(context, cache, period, download=True)
+        if frame is not None:
+            frames.append(_in_scope(frame, symbols, prefixes))
+    kept = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS[:9]))
+    voted = cusip_votes(kept, lineage) if not kept.empty else pd.DataFrame(columns=["cusip"])
+    added = frozenset(str(c)[:6] for c in voted["cusip"]) - prefixes
+    if added:
+        logger.info("FTD download: %d CUSIP-6 prefix(es) newly voted for (%s); re-reading every cached period", len(added), ", ".join(sorted(added)))
+        for period in sorted(_cached_periods(cache)):
+            frame = _read_period(context, cache, period, download=False)
+            if frame is not None:
+                kept = pd.concat([kept, _in_scope(frame, frozenset(), added)], ignore_index=True)
+        scope |= {_PREFIX_TAG + p for p in added}
+    kept = kept.drop_duplicates(["cusip", "date", "source_symbol", "fails_quantity"], ignore_index=True)
+    duplicate = kept.duplicated(["cusip", "date"], keep="first")
+    if duplicate.any():
+        logger.warning("FTD download: %d line(s) repeat a (cusip, settlement date) key with other values; the first is kept", int(duplicate.sum()))
+        kept = kept[~duplicate]
+    rows = kept.assign(security_id=None, ticker=None, lineage_role=None, security_class=None)[list(SECURITY_COLUMNS)]
+    if full:
+        written = context.store.replace(table, rows)
+    else:
+        written = context.store.save(table, rows) if not rows.empty else 0
+    mark_processed(cache, table, scope)
+    record_run(context, table, 0, written, is_full_rescan=full)
+    logger.info(
+        "FTD download: %d period(s) read, %d in-scope line(s) stored (%d symbol(s), %d CUSIP-6 prefix(es) in scope)",
+        len(pending),
+        written,
+        len(symbols),
+        len(prefixes | added),
+    )
+    return written

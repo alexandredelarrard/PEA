@@ -321,6 +321,14 @@ def report_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) ->
     _report_shared_rows(quarter, df_zip, df_edgar)
 
 
+def zip_urls(quarter: str) -> tuple[str, str]:
+    """Both SEC hosting paths for one quarter's zip, the likelier first: the new path from
+    `SEC_INSIDER_SWAP_YEAR` on, else the old one. The SEC moves quarters between the two paths, so
+    `ensure_zip` falls back to the other on a miss."""
+    old, new = (template.format(quarter=quarter) for template in (SEC_INSIDER_URL_TEMPLATE, SEC_INSIDER_URL_NEW_TEMPLATE))
+    return (new, old) if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else (old, new)
+
+
 def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the insider data sets and ingest each pending quarter with
     `store_zip_quarter` and its `report_zip_quarter` lines, save the kept footnotes, log one
@@ -341,8 +349,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     excluded: list[pd.DataFrame] = []
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter in tqdm(pending, desc="insider data sets"):
-        url_template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
-        path = ensure_zip(context, cache / f"{quarter}.zip", url_template.format(quarter=quarter), label=f"insider {quarter}", log=logger)
+        path = ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue

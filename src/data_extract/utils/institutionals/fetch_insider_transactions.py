@@ -55,6 +55,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     top_counts,
 )
 from src.data_store.schema import Tables
+from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
@@ -186,14 +187,15 @@ def _rejected_stored_accessions(context: Context, universe: Sequence[str], ident
     )
 
 
-def _is_full_universe(context: Context, tickers: Sequence[str]) -> bool:
-    """True when `tickers` is the whole analysis universe, the only scope the stored-row sweep may
-    adjudicate against: on a `--tickers` subset every other company's rows would read as rejects."""
+def _sweep_universe(context: Context, tickers: Sequence[str]) -> list[str]:
+    """The loaded analysis universe when the normalised `tickers` equal it, else `[]` (sweep skipped).
+    The sweep adjudicates against that loaded list, never the raw run tickers: on a `--tickers`
+    subset every other company's rows would read as rejects."""
     universe = load_universe_tickers(context)
-    if universe and {str(ticker).strip().upper() for ticker in tickers} == set(universe):
-        return True
+    if universe and {normalise_ticker(ticker) for ticker in tickers} == set(universe):
+        return universe
     logger.info("insider: stored-row sweep skipped -- the run's %d ticker(s) are not the %d-ticker universe", len(tickers), len(universe))
-    return False
+    return []
 
 
 def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity) -> int:
@@ -322,8 +324,8 @@ def report_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) ->
 def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the insider data sets and ingest each pending quarter with
     `store_zip_quarter` and its `report_zip_quarter` lines, save the kept footnotes, log one
-    identity-exclusion summary for the run, then, on a full-universe run only, sweep stored rows.
-    Returns the zip rows saved.
+    identity-exclusion summary for the run, then, on a full-universe run only, sweep stored rows
+    against the loaded universe. Returns the zip rows saved.
 
     `reparse` re-reads every quarter the source has back to `SEC_INSIDER_FIRST_YEAR`, even those
     already stored, so a parse change reaches the oldest rows too. The run manifest is left to the
@@ -352,7 +354,8 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
             notes_saved += context.store.save(Tables.insider_footnotes, df_notes)
     log_exclusions(logger, f"zip run ({len(pending)} quarter(s))", excluded)
 
-    deleted = _screen_stored_rows(context, tickers, identity) if _is_full_universe(context, tickers) else 0
+    sweep_universe = _sweep_universe(context, tickers)
+    deleted = _screen_stored_rows(context, sweep_universe, identity) if sweep_universe else 0
     mark_processed(cache, Tables.insider_transactions, tickers)
     logger.info(
         "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending quarter(s) of %s -> %s; sweep deleted %d",

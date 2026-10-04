@@ -470,6 +470,29 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     )
 
 
+def test_un_normalised_universe_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
+    """F-002: `[" bbb ", "aaa"]` equals the universe once normalised, so the sweep runs, and it must
+    adjudicate against the loaded universe, not the raw spelling, so every universe company's rows survive."""
+    caplog.set_level(logging.INFO)
+    sec = _FakeSec(monkeypatch, identity_two, tmp_path)
+    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
+    context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
+    sec.zips["2026q1"] = _zip_tables([Q0, B0])
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    sec.filings = [E1, B1]
+    edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
+    df_before = _table(sqlite_store)
+
+    caplog.clear()
+    ins.fetch_insider_transactions(context, tickers=[" bbb ", "aaa"], years_history=1)
+    df_after = _table(sqlite_store)
+
+    sweep = next(message for message in _messages(caplog, logging.INFO) if message.startswith("insider: stored-row sweep -- "))
+    assert "0 of" in sweep, sweep
+    pd.testing.assert_frame_equal(df_after, df_before)
+    print(f"\nSANITY: tickers [' bbb ', 'aaa'] ran the sweep against the loaded universe and kept all {len(df_after)} rows; log: '{sweep}'.")
+
+
 def test_a_ticker_subset_edgar_run_never_moves_another_tickers_listing_window(tmp_path, sqlite_store, monkeypatch, identity_two):
     """R-07: each ticker lists from its OWN latest stored `filing_date` - 7 days, so a `-t AAA` EDGAR run
     cannot push BBB's window past a BBB filing filed in between; the next full run lists and stores it."""

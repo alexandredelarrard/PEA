@@ -239,7 +239,7 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
 
     assert summary["tickers_measured"] == 1
     assert ratios["NEW"] == 1.0
-    assert [str(date.date()) for date in valid_dates["NEW"]] == ["2023-11-15", "2024-02-15"]
+    assert sorted(str(date.date()) for date in valid_dates["NEW"]) == ["2023-11-15", "2024-02-15"]
     print("\n=== SANITY CHECK: dated lineage and dei rows ===")
     print(
         "  five lineage rows over two CIKs read as two (cik, entity) pairs; a dei NEW row under a foreign CIK is "

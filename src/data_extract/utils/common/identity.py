@@ -314,6 +314,18 @@ def tickers_for_ciks(identity: Identity, ciks: pd.Series, filed: pd.Series, poli
     return pd.Series(tickers.astype(object).where(tickers.notna(), None).to_numpy(), index=ciks.index, dtype=object)
 
 
+def _symbol_row_verdict(identity: Identity, symbol: str, day: pd.Timestamp, requested: frozenset[str]) -> tuple[str | None, SymbolRowVerdict]:
+    """The tape ticker of one (symbol, date) pair and its verdict against the requested universe."""
+    ticker = identity.ticker_for_symbol(symbol, day, tape=True)
+    if ticker is None:
+        return ticker, "unresolved"
+    if ticker not in requested:
+        return ticker, "outside_universe"
+    if symbol in identity.redundant_symbols and symbol not in requested and identity.ticker_for_symbol(ticker, day, tape=True) == ticker:
+        return ticker, "redundant_share_class"
+    return ticker, "resolved"
+
+
 def symbol_rows_to_tickers(
     identity: Identity,
     frame: pd.DataFrame,
@@ -335,14 +347,7 @@ def symbol_rows_to_tickers(
     tickers: list[str | None] = []
     verdicts: list[SymbolRowVerdict] = []
     for symbol, day in pairs.itertuples(index=False, name=None):
-        ticker = identity.ticker_for_symbol(symbol, day, tape=True)
-        verdict: SymbolRowVerdict = "resolved"
-        if ticker is None:
-            verdict = "unresolved"
-        elif ticker not in requested:
-            verdict = "outside_universe"
-        elif symbol in identity.redundant_symbols and symbol not in requested and identity.ticker_for_symbol(ticker, day, tape=True) == ticker:
-            verdict = "redundant_share_class"
+        ticker, verdict = _symbol_row_verdict(identity, symbol, day, requested)
         tickers.append(ticker if verdict == "resolved" else None)
         verdicts.append(verdict)
     pairs["ticker"] = pd.Series(tickers, index=pairs.index, dtype=object)

@@ -140,6 +140,24 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 Check the run log: per zip quarter, the `X / N filings missing from EDGAR` WARNING and its mismatch INFO line; one identity-exclusion WARNING per run; and the EDGAR run's manifest entry (`coverage_complete`, tickers equal to the cube universe), which is the cube's insider frontier. There is no parity command or promotion step: EDGAR always wins on overlap.
 
+After a refill, check that every quarter was ingested before trusting the frontier. A quarter that no SEC path serves is skipped with only per-URL WARNINGs, the per-ticker EDGAR windows then start after it, and the EDGAR run still records `coverage_complete`. Compare the stored quarters with the expected ones (2006q1 to the last published quarter):
+
+~~~bash
+rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT count(DISTINCT quarter), min(quarter), max(quarter) FROM insider_transactions"
+~~~
+
+If a quarter is missing, one normal run (no `-F`, no `-t`) ingests it: it is still pending because no row carries its `quarter`. Its first `missing from EDGAR` WARNING then reads near 100 %, an artefact of the hole, not an EDGAR loss.
+
+Run from a worktree with `ROOT_PATH` set to the main repo root, so the run uses the cached zips and writes the manifest entry under the main `data/` (otherwise it re-downloads every zip into the worktree and the cube built from the main tree has no insider frontier):
+
+~~~powershell
+$env:ROOT_PATH = "<main repo root>"; rtk $PY -m src data_extract insider-transactions -F
+~~~
+
+~~~bash
+ROOT_PATH="<main repo root>" rtk "$PY" -m src data_extract insider-transactions -F
+~~~
+
 ## Source-coverage evidence
 
 Run [source coverage report](../../scripts/source_coverage_report.py) after an ownership backfill:

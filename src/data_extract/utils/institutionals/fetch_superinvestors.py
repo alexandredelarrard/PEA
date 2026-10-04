@@ -6,6 +6,8 @@ WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), on
 company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
 loaded by `src/utils/superinvestor_roster.py`, which is also the read side. Entry points:
 `seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster).
+The committed history is built by `quarterly_capture_candidates` + `history_from_captures`, driven by
+`scripts/build_dataroma_roster_history.py`.
 """
 
 from __future__ import annotations
@@ -14,9 +16,10 @@ import json
 import logging
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from functools import partial
+from typing import Any, NamedTuple
 from urllib.parse import quote
 
 import pandas as pd
@@ -82,8 +85,23 @@ _STOP_TOKENS = {
 }
 
 DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
-# The seed captures. Wayback resolves `/web/<year>/<url>` to that year's nearest capture.
-_WAYBACK_URL = "https://web.archive.org/web/{year}/" + DATAROMA_HOME_URL
+# Every Wayback capture of the Dataroma home page, uncollapsed: one `timestamp status original` line each.
+WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx?url=dataroma.com/m/home.php&fl=timestamp,statuscode,original"
+# A capture's archived bytes as served (`id_`: no Wayback rewrite).
+_WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
+# First day of the committed roster history.
+ROSTER_HISTORY_START = date(2012, 1, 1)
+# A capture is valid only if it lists at least this share of the previous accepted snapshot's managers.
+ROSTER_CAPTURE_MIN_RATIO = 0.8
+ROSTER_HISTORY_README = [
+    "Dataroma superinvestor roster history: one snapshot per calendar quarter, the newest valid Wayback capture of "
+    "dataroma.com/m/home.php in that quarter.",
+    "captured_at is the capture instant (UTC); `data_extract superinvestors --seed` dates the snapshot at its day. "
+    "source_url is the raw (id_) capture; managers maps Dataroma code -> name in page order.",
+    f"A capture is valid when it lists at least one manager and at least {ROSTER_CAPTURE_MIN_RATIO:.0%} of the previous "
+    "snapshot's count; a quarter with no valid capture is absent (a logged gap).",
+    "Generated file, do not hand-edit: scripts/build_dataroma_roster_history.py --cache-dir DIR --until YYYY-MM-DD.",
+]
 
 # Resolution provenance, stored per row.
 RESOLUTION_EDGAR = "edgar"
@@ -93,6 +111,23 @@ RESOLUTION_UNRESOLVED = "unresolved"
 
 class SuperinvestorResolutionError(RuntimeError):
     """A roster manager resolved to no CIK and is not a recorded exception."""
+
+
+class WaybackCapture(NamedTuple):
+    """One Wayback capture of the Dataroma home page: its UTC `YYYYMMDDhhmmss` timestamp and archived URL."""
+
+    timestamp: str
+    original: str
+
+    @property
+    def raw_url(self) -> str:
+        """The capture's unmodified archived bytes."""
+        return _WAYBACK_RAW_URL.format(timestamp=self.timestamp, original=self.original)
+
+    @property
+    def captured_at(self) -> str:
+        """The capture instant as `YYYY-MM-DDTHH:MM:SSZ`."""
+        return datetime.strptime(self.timestamp, "%Y%m%d%H%M%S").strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --------------------------------------------------------------------------- #
@@ -203,18 +238,63 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
     return unresolved
 
 
+def quarterly_capture_candidates(cdx: str, since: date = ROSTER_HISTORY_START, until: date | None = None) -> dict[str, list[WaybackCapture]]:
+    """`{"YYYYQn": [capture, newest first]}` in chronological quarter order, over the status-200 lines of a
+    `timestamp status original` CDX captured on days in [since, until]; a repeated timestamp counts once."""
+    by_quarter: dict[str, list[WaybackCapture]] = {}
+    seen: set[str] = set()
+    for line in filter(None, (raw.strip() for raw in cdx.splitlines())):
+        timestamp, status, original = line.split()
+        day = datetime.strptime(timestamp[:8], "%Y%m%d").date()
+        if status != "200" or timestamp in seen or day < since or (until is not None and day > until):
+            continue
+        seen.add(timestamp)
+        by_quarter.setdefault(f"{day.year}Q{(day.month - 1) // 3 + 1}", []).append(WaybackCapture(timestamp, original))
+    return {quarter: sorted(caps, key=lambda c: c.timestamp, reverse=True) for quarter, caps in sorted(by_quarter.items())}
+
+
+def _first_valid_capture(
+    quarter: str, captures: list[WaybackCapture], parse: Callable[[WaybackCapture], dict[str, str]], floor: float
+) -> tuple[WaybackCapture, dict[str, str]] | None:
+    """The first capture whose roster is non-empty and holds at least `floor` managers; each rejection is logged."""
+    for capture in captures:
+        managers = parse(capture)
+        if managers and len(managers) >= floor:
+            return capture, managers
+        logger.warning("Roster history %s: rejected capture %s (%d managers, floor %.1f)", quarter, capture.timestamp, len(managers), floor)
+    return None
+
+
+def history_from_captures(candidates: Mapping[str, list[WaybackCapture]], parse: Callable[[WaybackCapture], dict[str, str]]) -> dict[str, Any]:
+    """The committed roster history document: per quarter (chronological), the newest capture whose
+    `parse(capture) -> {code: name}` is valid (see `ROSTER_CAPTURE_MIN_RATIO`); a quarter without one is a logged gap."""
+    snapshots: list[dict[str, Any]] = []
+    for quarter in sorted(candidates):
+        floor = ROSTER_CAPTURE_MIN_RATIO * len(snapshots[-1]["managers"]) if snapshots else 0.0
+        accepted = _first_valid_capture(quarter, candidates[quarter], parse, floor)
+        if accepted is None:
+            logger.warning("Roster history %s: no valid capture among %d -- gap", quarter, len(candidates[quarter]))
+            continue
+        capture, managers = accepted
+        snapshots.append({"captured_at": capture.captured_at, "source_url": capture.raw_url, "managers": managers})
+    logger.info("Roster history: %d snapshots from %d quarters with captures", len(snapshots), len(candidates))
+    return {"_README": list(ROSTER_HISTORY_README), "snapshots": snapshots}
+
+
 # --------------------------------------------------------------------------- #
 # IO: Dataroma fetch (its cert chain is incomplete -> verified-then-relaxed)     #
 # --------------------------------------------------------------------------- #
-def _http_get(url: str) -> requests.Response:
-    """GET with SSL verification, retrying unverified (logged) on SSLError; the data is public and read-only."""
+def _http_get(url: str, headers: Mapping[str, str] | None = None) -> requests.Response:
+    """GET (default `BROWSER_HEADERS`) with SSL verification, retrying unverified (logged) on SSLError;
+    the data is public and read-only."""
+    headers = dict(headers or BROWSER_HEADERS)
     try:
-        r = requests.get(url, headers=BROWSER_HEADERS, timeout=60)
+        r = requests.get(url, headers=headers, timeout=60)
     except requests.exceptions.SSLError:
-        logger.warning("Dataroma SSL chain incomplete -> retrying unverified (%s)", url)
+        logger.warning("SSL verification failed -> retrying unverified (%s)", url)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", InsecureRequestWarning)
-            r = requests.get(url, headers=BROWSER_HEADERS, timeout=60, verify=False)
+            r = requests.get(url, headers=headers, timeout=60, verify=False)
     r.raise_for_status()
     return r
 
@@ -319,30 +399,34 @@ def _write(context: Context, rows: list[dict], unresolvable: Mapping[str, str]) 
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
 def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
-    """One-off: write the committed Wayback captures, one row per (snapshot_date, dataroma_code).
-    The capture file is keyed by year, so each snapshot is dated 1 January of its year."""
+    """One-off: write the committed Wayback snapshots, one row per (snapshot_date, dataroma_code); each
+    snapshot is dated at its capture day and keeps its capture URL as `source_url`."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     config_dir = getattr(context, "config_dir", None)
-    history: dict[str, dict[str, str]] = json.loads(roster_history_path(config_dir).read_text(encoding="utf-8"))
+    history = json.loads(roster_history_path(config_dir).read_text(encoding="utf-8"))
+    snapshots: list[dict[str, Any]] = sorted(history["snapshots"], key=lambda s: s["captured_at"])
 
     # Newest name first, so a renamed code resolves on its most recent name.
     name_history: dict[str, list[str]] = {}
-    for year in sorted(history, reverse=True):
-        for code, name in history[year].items():
+    for snap in reversed(snapshots):
+        for code, name in snap["managers"].items():
             names = name_history.setdefault(code, [])
             if name not in names:
                 names.append(name)
     logger.info(
-        "Roster history: %d snapshots, %d manager-rows, %d distinct codes", len(history), sum(len(v) for v in history.values()), len(name_history)
+        "Roster history: %d snapshots, %d manager-rows, %d distinct codes",
+        len(snapshots),
+        sum(len(s["managers"]) for s in snapshots),
+        len(name_history),
     )
 
     known, _ = _stored_resolutions(context)
     overrides = load_superinvestor_overrides(config_dir)
     resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known)
     rows: list[dict] = []
-    for year in sorted(history):
-        roster = [{"code": c, "name": n} for c, n in history[year].items()]
-        rows += snapshot_rows(roster, date(int(year), 1, 1), _WAYBACK_URL.format(year=year), resolver)
+    for snap in snapshots:
+        roster = [{"code": c, "name": n} for c, n in snap["managers"].items()]
+        rows += snapshot_rows(roster, datetime.fromisoformat(snap["captured_at"]).date(), snap["source_url"], resolver)
     return _write(context, rows, overrides.unresolvable)
 
 

@@ -273,7 +273,20 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
         json.dumps({"cik_overrides": {"AAA": {"cik": "1234"}}, "unresolvable": {"ZZZ": "fixture: never filed a 13F-HR"}}), encoding="utf-8"
     )
     (config_dir / "superinvestors" / "dataroma_roster_history.json").write_text(
-        json.dumps({"2015": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"}, "2016": {"AAA": "Alice - Alpha Fund"}}), encoding="utf-8"
+        json.dumps(
+            {
+                "_README": ["fixture"],
+                "snapshots": [
+                    {
+                        "captured_at": "2015-03-30T10:00:00Z",
+                        "source_url": "wayback-a",
+                        "managers": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"},
+                    },
+                    {"captured_at": "2016-03-15T10:00:00Z", "source_url": "wayback-b", "managers": {"AAA": "Alice - Alpha Fund"}},
+                ],
+            }
+        ),
+        encoding="utf-8",
     )
     data_store = tmp_path / "data_store"
     (data_store / "superinvestors").mkdir(parents=True)
@@ -289,9 +302,9 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
     df = si.seed_roster_history(ctx, get_fn=empty_edgar)
     got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
     assert got == {
-        ("2015-01-01", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
-        ("2015-01-01", "ZZZ", None, si.RESOLUTION_UNRESOLVED),
-        ("2016-01-01", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+        ("2015-03-30", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+        ("2015-03-30", "ZZZ", None, si.RESOLUTION_UNRESOLVED),
+        ("2016-03-15", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
     }
     assert "DECOY" not in set(sqlite_store.load(si.Tables.superinvestor_roster)["dataroma_code"])
     assert len(queried) == 1 and "company=Zeta" in queried[0]  # only the non-overridden code searched EDGAR

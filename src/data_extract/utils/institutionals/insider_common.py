@@ -343,9 +343,9 @@ def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Ser
 def screened_accessions(df_filing: pd.DataFrame, universe: Sequence[str], identity: Identity) -> set[str]:
     """Accessions of a canonical filing-level frame (`accession_number`, `issuer_cik`, raw `ticker`)
     that `screen_insider_rows` keeps or rejects in scope; it drops every row of any other accession."""
-    scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
-    keep, in_scope = _screen_masks(scored, universe)
-    return set(scored.loc[keep | in_scope, "accession_number"])
+    df_scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
+    keep, in_scope = _screen_masks(df_scored, universe)
+    return set(df_scored.loc[keep | in_scope, "accession_number"])
 
 
 def accession_batches(accessions: Sequence[str]) -> Iterator[list[str]]:
@@ -361,8 +361,8 @@ def exclusion_rows(df_rejected: pd.DataFrame) -> pd.DataFrame:
 
 def top_counts(values: pd.Series, n: int) -> str:
     """`"T1 n1, T2 n2, ..."`: the `n` most frequent values, ties in value order; a missing value reads `<none>`."""
-    counts = values.astype("string").fillna("<none>").value_counts().rename_axis("value").reset_index(name="n")
-    df_top = counts.sort_values(["n", "value"], ascending=[False, True]).head(n)
+    df_counts = values.astype("string").fillna("<none>").value_counts().rename_axis("value").reset_index(name="n")
+    df_top = df_counts.sort_values(["n", "value"], ascending=[False, True]).head(n)
     return ", ".join(f"{value} {count}" for value, count in zip(df_top["value"], df_top["n"], strict=True))
 
 

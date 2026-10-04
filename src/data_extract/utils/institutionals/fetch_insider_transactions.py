@@ -196,20 +196,20 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
     excluded: list[pd.DataFrame] = []
     deleted = 0
     for batch in accession_batches(accessions):
-        rows = context.store.load(
+        df_rows = context.store.load(
             Tables.insider_transactions,
             columns=["accession_number", "transaction_code", "ticker", "issuer_cik"],
             where={"accession_number": batch},
             optional=True,
         )
-        if rows is None:
+        if df_rows is None:
             continue
-        scored = insider_verdicts(rows, universe, identity)
-        rejected = scored[scored["reject_reason"].notna()]
-        if rejected.empty:  # re-adjudicated clean on the full row: leave it
+        df_scored = insider_verdicts(df_rows, universe, identity)
+        df_rejected = df_scored[df_scored["reject_reason"].notna()]
+        if df_rejected.empty:  # re-adjudicated clean on the full row: leave it
             continue
-        excluded.append(exclusion_rows(rejected))
-        deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(rejected["accession_number"].unique())})
+        excluded.append(exclusion_rows(df_rejected))
+        deleted += context.store.delete(Tables.insider_transactions, where={"accession_number": sorted(df_rejected["accession_number"].unique())})
     log_exclusions(logger, "stored-row sweep", excluded)
     return deleted
 

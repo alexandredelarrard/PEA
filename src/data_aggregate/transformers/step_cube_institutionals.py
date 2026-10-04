@@ -341,13 +341,8 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, shares: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
         """Fourteen Form 3/4/5 features: size-scaled open-market buying, cluster breadth,
         CEO/CFO/director legs, the buyer's own-history surprise, and the 10b5-1 split of
-        selling. Point-in-time on the filing date (a Form 4 is due within ~2 business days).
-
-        ⚠ THE DOLLAR FIGURES ARE SCOPED AND REPAIRED BEFORE THEY ARE SUMMED. Read raw,
-        `value_usd` averages **$447,771,735,138** per Form 4 line -- 49.4% of which is ONE
-        convertible-note row -- and the sells total $182,982,720tn against a real ~$1.45tn.
-        After the scope cut and the price repair the mean is **$2,339,662** and the median
-        $114,116. See `insider_quality` for which population each figure belongs to.
+        selling. Point-in-time on the filing date. The dollar figures are scoped and repaired
+        by `insider_quality` before they are summed, never read raw from `value_usd`.
 
         The completeness frontier is the last EDGAR run that covered exactly this universe,
         read from the run manifest; without that proof absence stays unknown."""

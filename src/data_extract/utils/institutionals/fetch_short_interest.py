@@ -4,6 +4,8 @@ fetch_short_interest.py (src/data_extract/utils/institutionals/fetch_short_inter
 FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_interest`
 [date, ticker, short_volume, total_volume]; despite the table name it is not reported short
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
+One day file covers every symbol, so a run reads the union of the sessions any universe key needs
+(`resume.series_windows`: forward overlap, interior holes, new keys in full).
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
 `full` mode therefore preserves stored dates the source no longer serves.
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
@@ -28,12 +30,12 @@ from src.data_extract.utils.common.identity import (
     log_symbol_resolutions,
     resolve_symbol_rows,
 )
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import series_windows, session_dates, trading_calendar
+from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.errors import TableEmptyError
 from src.data_store.schema import Tables
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
-SHORT_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +71,16 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _resume_day(context: Context, years_history: int = 15, full: bool = False) -> pd.Timestamp:
-    """The first day to download: `SHORT_REFRESH_TRADING_DAYS` before the global stored max (a day
-    file carries every symbol, and the overlap repairs a failed interior day), or the full
-    `years_history` window on a cold table or `full` run.
-    """
-
-    today = pd.Timestamp.today().normalize()
-    stored_max = context.store.max_date(Tables.short_interest)
-    if stored_max is None or full:
-        return today - pd.DateOffset(years=years_history)
-    return stored_max - pd.tseries.offsets.BDay(SHORT_REFRESH_TRADING_DAYS)
+def _plan_days(context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None) -> pd.DatetimeIndex:
+    """The day files to read: the union of every key's windows, as trading sessions (business days past the calendar)."""
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    until = last_completed_session(as_of)
+    calendar = trading_calendar(context)
+    work = series_windows(context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar)
+    days = pd.DatetimeIndex([])
+    for since, end, _keys in work.groups():
+        days = days.union(session_dates(calendar, since, end))
+    return days
 
 
 def _canonicalise_regsho(
@@ -173,19 +174,19 @@ def _validate_full_frame(frame: pd.DataFrame, universe: frozenset[str]) -> None:
 def fetch_short_interest(
     context: Context,
     tickers: list[str],
-    years_history: int = 15,
+    years_history: int,
     pause: float = 0.05,
     full: bool = False,
     identity: Identity | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> None:
     """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates."""
 
-    today = pd.Timestamp.today().normalize()
-    days = pd.bdate_range(_resume_day(context, years_history, full), today)
+    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
+    days = _plan_days(context, sorted(universe), years_history, full, as_of)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
 
     resolver = identity or load_identity(context)
-    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     candidates = resolver.candidate_symbols(universe)
 
     frames: list[pd.DataFrame] = []
@@ -216,8 +217,7 @@ def fetch_short_interest(
     if not full:
         context.store.save(Tables.short_interest, fresh)
         logger.info(f"Saved {len(fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
-        logger.info(f"RegSHO: {len(unresolved)} unresolved raw row(s) excluded")
-        record_run(context, Tables.short_interest, len(tickers), len(fresh))
+        logger.info(f"RegSHO: {len(unresolved)} unresolved raw row(s) excluded; {len(failed_days)} day file(s) not served")
         return
 
     if not successful_days:
@@ -238,4 +238,4 @@ def fetch_short_interest(
         f"legacy_unresolved={legacy_stats['unresolved']} refreshed={len(fresh)} "
         f"fresh_unresolved={len(unresolved)} preserved_failed_date_rows={len(failed_stored)}"
     )
-    record_run(context, Tables.short_interest, len(tickers), written, is_full_rescan=True)
+    logger.info(f"RegSHO full: {written} row(s) written to '{Tables.short_interest}'")

@@ -167,3 +167,143 @@ def test_the_cap_keeps_the_newest_documents(tmp_path, sqlite_store, caplog):
     assert any("exceeds the per-run cap of 3" in r.getMessage() for r in caplog.records)
     print("\n=== SANITY CHECK: cap ===")
     print("  5 listed, cap 3 -> the 3 newest across keys (each key oldest first), ERROR names the uncapped 5.")
+
+
+# --------------------------------------------------------------------------- #
+# M1: `series_windows` (dated per-key series)                                 #
+# --------------------------------------------------------------------------- #
+_UNTIL = pd.Timestamp("2026-09-30")
+_SESSIONS = pd.bdate_range("2026-08-03", _UNTIL)
+
+
+def _bars(ticker: str, dates) -> pd.DataFrame:
+    return pd.DataFrame({"ticker": ticker, "date": pd.DatetimeIndex(dates), "close_split": 1.0, "close_total": 1.0})
+
+
+def _series(ctx, keys: list[str], *, as_of: pd.Timestamp = _AS_OF, full: bool = False, table=Tables.prices):
+    from src.data_extract.utils.common.resume import series_windows, trading_calendar
+
+    return series_windows(ctx, table, keys, as_of, until=_UNTIL, years_history=5, full=full, calendar=trading_calendar(ctx))
+
+
+def _spans(work, key: str) -> list[tuple[str, str]]:
+    return [(str(a.date()), str(b.date())) for a, b in work.windows[key]]
+
+
+def test_m1_absent_table_gives_every_key_its_full_window(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+
+    work = _series(ctx, ["AAA", "BBB"])
+
+    assert _spans(work, "AAA") == _spans(work, "BBB") == [("2021-09-30", "2026-09-30")]
+    assert work.key_class == {"AAA": KEY_NEW, "BBB": KEY_NEW} and len(work.groups()) == 1
+    print("\n=== SANITY CHECK: M1 absent table ===")
+    print("  no prices table -> both keys from as_of - 5y to the last session, in ONE download group.")
+
+
+def test_m1_a_new_key_alone_gets_its_full_window(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "NEW"])
+    _universe(ctx, {"AAA": "1", "NEW": "2"}, added_on={"NEW": "2026-09-28"})
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+    sqlite_store.save(Tables.prices, _bars("NEW", _SESSIONS[-3:]))
+
+    work = _series(ctx, ["AAA", "NEW"])
+
+    assert _spans(work, "NEW") == [("2021-09-30", "2026-09-30")]
+    assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
+    assert work.key_class == {"AAA": KEY_ESTABLISHED, "NEW": KEY_NEW} and len(work.groups()) == 2
+    print("\n=== SANITY CHECK: M1 new key ===")
+    print("  NEW (added 2026-09-28, inside the 7-day overlap) -> full window; AAA stays forward from 2026-09-23.")
+
+
+def test_m1_forward_window_is_the_key_s_own_last_date_minus_the_overlap(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "LAG"])
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+    sqlite_store.save(Tables.prices, _bars("LAG", _SESSIONS[_SESSIONS <= pd.Timestamp("2026-09-10")]))
+
+    work = _series(ctx, ["AAA", "LAG"])
+
+    assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
+    assert _spans(work, "LAG") == [("2026-09-03", "2026-09-30")]
+    print("\n=== SANITY CHECK: M1 forward window ===")
+    print("  each key resumes from its OWN last date - 7 days: AAA from 09-23, the lagging LAG from 09-03.")
+
+
+def test_m1_a_rowless_established_key_resumes_from_the_table_frontier(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "OLD"])
+    _universe(ctx, {"AAA": "1", "OLD": "2"}, added_on={})
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+
+    work = _series(ctx, ["AAA", "OLD"])
+
+    assert _spans(work, "OLD") == [("2026-09-23", "2026-09-30")] and work.key_class["OLD"] == KEY_ROWLESS
+    print("\n=== SANITY CHECK: M1 rowless key (D1a) ===")
+    print("  OLD has no row and is not new -> table-wide last date - overlap, not the full history.")
+
+
+def test_m1_a_three_session_hole_becomes_a_three_session_window(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    hole = _SESSIONS[(_SESSIONS >= pd.Timestamp("2026-08-17")) & (_SESSIONS <= pd.Timestamp("2026-08-19"))]
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+    sqlite_store.save(Tables.prices, _bars("BBB", _SESSIONS.difference(hole)))
+
+    work = _series(ctx, ["AAA", "BBB"])
+
+    assert _spans(work, "BBB") == [("2026-08-17", "2026-08-19"), ("2026-09-23", "2026-09-30")]
+    assert _spans(work, "AAA") == [("2026-09-23", "2026-09-30")]
+    groups = [(str(a.date()), str(b.date()), keys) for a, b, keys in work.groups()]
+    assert groups == [("2026-08-17", "2026-08-19", ["BBB"]), ("2026-09-23", "2026-09-30", ["AAA", "BBB"])]
+    print("\n=== SANITY CHECK: M1 hole ===")
+    print(f"  BBB misses 3 sessions {list(hole.strftime('%m-%d'))} -> one extra 3-session window; groups {groups}.")
+
+
+def test_m1_zero_row_units_do_not_apply():
+    """A daily series has no 'read but empty' unit: a session with no bar is a hole and is re-fetched, never marked."""
+    assert all(t.empty_marker is None for t in (Tables.prices, Tables.dividends, Tables.prices_splits, Tables.short_interest))
+    print("\n=== SANITY CHECK: M1 zero-row unit ===")
+    print("  not applicable: no M1 table declares an empty-filing marker.")
+
+
+def test_m1_a_failed_night_is_re_listed_and_deleted_rows_are_re_fetched(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS[_SESSIONS <= pd.Timestamp("2026-09-28")]))
+    sqlite_store.save(Tables.prices, _bars("BBB", _SESSIONS))  # the calendar keeps every session
+
+    night1 = _series(ctx, ["AAA"])
+    night2 = _series(ctx, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))  # night 1 saved nothing
+    sqlite_store.delete(Tables.prices, {"ticker": "AAA", "date": [pd.Timestamp("2026-08-20"), pd.Timestamp("2026-09-28")]})
+    night3 = _series(ctx, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=2))
+
+    assert _spans(night1, "AAA") == _spans(night2, "AAA") == [("2026-09-21", "2026-09-30")]
+    assert _spans(night3, "AAA") == [("2026-08-20", "2026-08-20"), ("2026-09-18", "2026-09-30")]
+    print("\n=== SANITY CHECK: M1 failed night + deleted rows ===")
+    print("  a failed night leaves the frontier, so night 2 lists the same window; deleting 08-20 (interior) and")
+    print("  09-28 (the tail) re-lists exactly those: a 1-session hole and a forward window from the new last date.")
+
+
+def test_m1_a_ticker_run_then_a_full_run_re_pulls_nothing(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
+    sqlite_store.save(Tables.prices, _bars("BBB", _SESSIONS))
+
+    scoped = _series(ctx, ["AAA"])
+    ((since, until),) = scoped.windows["AAA"]
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS[(_SESSIONS >= since) & (_SESSIONS <= until)]))
+    everyone = _series(ctx, ["AAA", "BBB"])
+
+    assert list(scoped.windows) == ["AAA"]
+    assert _spans(everyone, "AAA") == _spans(everyone, "BBB") == [("2026-09-23", "2026-09-30")]
+    assert _spans(_series(ctx, ["AAA", "BBB"], full=True), "BBB") == [("2021-09-30", "2026-09-30")]
+    print("\n=== SANITY CHECK: M1 -t then full ===")
+    print("  -t AAA plans only AAA; the following full run is forward-only for both; -F re-lists the whole window.")
+
+
+def test_m1_merge_unions_each_key_s_windows(tmp_path, sqlite_store):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+    sqlite_store.save(Tables.dividends, pd.DataFrame({"ticker": "AAA", "date": _SESSIONS[_SESSIONS <= pd.Timestamp("2026-09-15")], "dividends": 0.0}))
+
+    merged = _series(ctx, ["AAA"]).merge(_series(ctx, ["AAA"], table=Tables.dividends))
+
+    assert _spans(merged, "AAA") == [("2026-09-08", "2026-09-30")]
+    print("\n=== SANITY CHECK: prices + dividends windows ===")
+    print("  dividends lag to 09-15 -> the one download for AAA starts at 09-08, covering both tables.")

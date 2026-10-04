@@ -14,7 +14,7 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Table
 
-__all__ = ["matches_stored", "resume_since", "stored_values"]
+__all__ = ["matches_stored", "stored_values"]
 
 
 def stored_values(context: Context, tables: Table | str | Sequence[Table | str], column: str) -> frozenset[str]:
@@ -47,29 +47,3 @@ def _canonical_rows(df: pd.DataFrame, columns: list[str], table: Table) -> pd.Da
     for column in table.date_type_cols:
         df_canonical[column] = pd.to_datetime(df_canonical[column], errors="coerce")
     return df_canonical.astype("string").sort_values(list(table.pk), kind="mergesort", ignore_index=True)
-
-
-def resume_since(
-    context: Context,
-    table: Table | str,
-    tickers: list[str],
-    years_history: int,
-    ticker_col: str = "ticker",
-    date_col: str = "date",
-    include_missing: bool = True,
-) -> pd.Timestamp:
-    """Earliest per-ticker last-stored date across `tickers`, never earlier than `years_history` back.
-
-    The caller re-fetches every ticker from this one date and relies on the upsert to no-op current ones.
-    `include_missing=True` lets a ticker with no row pull the window to the full history; pass False
-    where absence is permanent (e.g. a dividend non-payer)."""
-
-    history_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    last_by_ticker = context.store.max_date_by(table, ticker_col, date_col)
-    if not last_by_ticker:
-        return history_start
-    if include_missing:
-        stored = [last_by_ticker.get(t, history_start) for t in tickers]
-    else:
-        stored = [last_by_ticker[t] for t in tickers if t in last_by_ticker]
-    return max(min(stored, default=history_start), history_start)

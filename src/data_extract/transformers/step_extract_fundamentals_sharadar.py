@@ -16,6 +16,7 @@ that table is empty.
 
 from __future__ import annotations
 
+import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
@@ -33,7 +34,7 @@ class StepExtractFundamentalsSharadar(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
 
-    def run(self, tickers: list[str], *, full: bool = False, config_dir: str | None = None) -> None:
+    def run(self, tickers: list[str], *, full: bool = False, config_dir: str | None = None, as_of: pd.Timestamp | None = None) -> None:
         """The five stages, in dependency order. `full` re-pulls the whole configured window
         instead of resuming, and makes the merge DELETE before it rebuilds.
 
@@ -58,10 +59,10 @@ class StepExtractFundamentalsSharadar(Step):
         #    the two sources are limited by different things -- the SEC walk by patience,
         #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
         #    costs one request and is counted, never retried.
-        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full)
+        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full, as_of=as_of)
 
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
-        fetch_sharadar_actions(self._context, years_history=years, full=full)
+        fetch_sharadar_actions(self._context, years_history=years, full=full, as_of=as_of)
 
         # 4. S&P 500 membership events. Ingested only -- `src/utils/universe.py` still
         #    resolves the universe from `sp500_tickers`, and the survivorship-bias fix that

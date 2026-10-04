@@ -37,6 +37,7 @@ from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
     ALL,
+    Resume,
     Tables,
     name_of,
     projection,
@@ -417,14 +418,14 @@ def test_explicit_refresh_from_wins_over_the_part_default():
 def test_refresh_never_narrows_the_written_span():
     """A guard on the constant: the part must rewrite at least as far back as the price
     fetcher can still change its inputs, or a corrected price leaves a stale feature behind.
-    The fetcher's floor is 7 BUSINESS days, which is 5 trading sessions of span."""
-    from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS
+    The fetcher re-pulls each key's last 7 calendar days (the `prices` resume contract)."""
+    overlap_days = cast(Resume, Tables.prices.resume).overlap_days
 
-    fetcher_span = pd.Timestamp("2026-09-04") - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
+    fetcher_span = pd.Timestamp("2026-09-04") - pd.Timedelta(days=overlap_days)
     part_span = window_start(pd.bdate_range("2026-01-01", "2026-09-04"), pd.Timestamp("2026-09-04"), PART_REFRESH_TRADING_DAYS)
     print(f"\n  fetcher re-pulls from {fetcher_span.date()}; part rewrites from {part_span.date()}")
     assert part_span <= fetcher_span + pd.Timedelta(days=2), (
-        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's {PRICE_REFRESH_TRADING_DAYS} BDay re-pull floor"
+        f"part refresh ({PART_REFRESH_TRADING_DAYS} sessions) must cover the fetcher's {overlap_days}-day re-pull overlap"
     )
 
 

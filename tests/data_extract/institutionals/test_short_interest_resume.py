@@ -1,10 +1,8 @@
-"""RegSHO short-volume fetch: resume window, universe filter, upsert shape.
+"""RegSHO short-volume fetch: day-file plan, universe filter, upsert shape.
 
-Resume is on the GLOBAL max date, not per ticker: one RegSHO file covers the whole
-market, so once day D is stored every ticker has D. A per-ticker frontier would let
-a single lagging symbol (index churn, a renamed ticker) drag the loop back over
-thousands of already-held day-files on every run -- the reason `fails_to_deliver`
-is a separate table in the first place (schema.py).
+One RegSHO file covers the whole market, so the run reads the UNION of the sessions any universe key
+needs (`resume.series_windows` on `sec_short_interest`): each key's own last date minus the overlap,
+its interior holes against the `prices` calendar, and the full window for a new key.
 """
 
 from __future__ import annotations
@@ -68,31 +66,57 @@ def _regsho(day: str, rows: list[tuple[str, int, int]]) -> str:
     return head + "".join(f"{day}|{t}|{s}|0|{v}|Q\n" for t, s, v in rows)
 
 
-def test_resume_day_replays_a_bounded_tail_from_the_global_max(sqlite_store):
-    ctx = _context(sqlite_store)
-    # cold table -> full years_history window
-    cold = si._resume_day(ctx, years_history=10)
-    assert cold == pd.Timestamp.today().normalize() - pd.DateOffset(years=10)
+_AS_OF = pd.Timestamp("2024-06-29")  # last completed session: Friday 2024-06-28
+_SESSIONS = pd.bdate_range("2024-05-01", "2024-06-28")
 
-    sqlite_store.replace(
-        Tables.short_interest,
+
+def _si(ticker: str, dates) -> pd.DataFrame:
+    return pd.DataFrame({"ticker": ticker, "date": pd.DatetimeIndex(dates), "short_volume": 1.0, "total_volume": 2.0})
+
+
+def _seed_universe(store, tickers: list[str], added_on: dict[str, str]) -> None:
+    store.save(
+        Tables.sp500_tickers,
         pd.DataFrame(
             {
-                "ticker": ["AAA", "BBB", "BBB"],
-                "date": pd.to_datetime(["2024-05-01", "2024-06-03", "2024-06-04"]),
-                "short_volume": [1.0, 2.0, 3.0],
-                "total_volume": [10.0, 20.0, 30.0],
+                "ticker": tickers,
+                "cik": [str(i) for i in range(len(tickers))],
+                "added_on": [pd.Timestamp(added_on.get(t, "2000-01-01")) for t in tickers],
             }
         ),
     )
-    # GLOBAL max is 2024-06-04 (BBB's) -- AAA lagging at 05-01 must NOT pull it back
-    assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-05-24")
 
-    print("\n=== SANITY CHECK: RegSHO resume day ===")
-    print(
-        f"  cold table -> {cold.date()} (years_history); stored max 2024-06-04 -> "
-        "2024-05-24 (7-session repair tail). AAA at 2024-05-01 does not widen it. Validated."
-    )
+
+def test_the_day_plan_is_the_union_of_every_key_s_windows(sqlite_store):
+    ctx = _context(sqlite_store)
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS, "close_split": 1.0}))  # the calendar
+    cold = si._plan_days(ctx, ["AAA"], 1, False, _AS_OF)
+
+    hole = _SESSIONS[(_SESSIONS >= pd.Timestamp("2024-05-14")) & (_SESSIONS <= pd.Timestamp("2024-05-15"))]
+    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS.difference(hole)))
+    sqlite_store.save(Tables.short_interest, _si("LAG", _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-10")]))
+    _seed_universe(sqlite_store, ["AAA", "LAG", "NEW"], {"NEW": "2024-06-27"})
+    warm = si._plan_days(ctx, ["AAA", "LAG"], 1, False, _AS_OF)
+    with_new = si._plan_days(ctx, ["AAA", "LAG", "NEW"], 1, False, _AS_OF)
+
+    assert cold.equals(_SESSIONS)  # no table: every calendar session from the 1-year floor
+    assert list(warm.strftime("%m-%d")) == ["05-14", "05-15"] + list(_SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-03")].strftime("%m-%d"))
+    assert with_new.equals(_SESSIONS)  # NEW (added inside the overlap) reads back to the floor
+    print("\n=== SANITY CHECK: RegSHO day plan ===")
+    print(f"  cold -> {len(cold)} sessions; AAA's 2-session hole + LAG's own window from 06-03 -> {len(warm)} day files;")
+    print(f"  a new key widens the union to the whole window ({len(with_new)} sessions). Each day file is read once.")
+
+
+def test_days_after_the_calendar_are_business_days(sqlite_store):
+    ctx = _context(sqlite_store)
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-26")], "close_split": 1.0}))
+    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-26")]))
+
+    days = si._plan_days(ctx, ["AAA"], 1, False, _AS_OF)
+
+    assert list(days.strftime("%m-%d")) == ["06-19", "06-20", "06-21", "06-24", "06-25", "06-26", "06-27", "06-28"]
+    print("\n=== SANITY CHECK: RegSHO days past the calendar ===")
+    print("  prices end 06-26 -> 06-27 and 06-28 are still requested as business days.")
 
 
 def test_stored_rows_returns_empty_for_an_empty_bounded_prefix(sqlite_store):
@@ -130,19 +154,11 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
 
-    # ⚠ THE WINDOW MUST NOT BE `today .. today`. `fetch_short_interest` builds
-    # `pd.bdate_range(_resume_day(...), today)`, and a bdate_range whose start AND end are the
-    # same WEEKEND day is EMPTY -- so on a Saturday or Sunday no day-file was fetched, nothing
-    # was stored, and `len(stored) == 2` failed. That is exactly what happened in the
-    # 2026-09-06 (Sunday) full-suite run, where this test passed in isolation on the Monday
-    # and looked like ordering pollution.
-    #
-    # A 5-business-day window is non-empty on every day of the week, and serving the day-file
-    # only ONCE keeps the assertion on "one new row" exact regardless of how many days the
-    # range holds.
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5))
+    # A 5-business-day window is non-empty on every weekday; the day file is served once.
+    monkeypatch.setattr(
+        si, "_plan_days", lambda *a, **k: pd.bdate_range(pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5), pd.Timestamp.today())
+    )
     served: list[pd.Timestamp] = []
 
     def _one_day(day, session=None):
@@ -154,7 +170,7 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
 
     monkeypatch.setattr(si, "_fetch_day", _one_day)
 
-    si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], pause=0.0, identity=_identity())
+    si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], years_history=1, pause=0.0, identity=_identity())
 
     # the fetcher returns None -- it resumes from the DB and writes to it, so the stored
     # table is the only contract worth asserting on
@@ -172,19 +188,15 @@ def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
 
 
 def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):
-    """A holiday / all-404 window must not crash: `store.save` warns on the empty frame, the
-    run is still recorded, and nothing is written."""
-    recorded: list = []
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: recorded.append(a))
-    monkeypatch.setattr(si, "_fetch_day", lambda day: None)
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize())
+    """A holiday / all-404 window must not crash: `store.save` warns on the empty frame and nothing is written."""
+    monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2024-06-24", "2024-06-28"))
 
-    assert si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], pause=0.0, identity=_identity()) is None
+    assert si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], years_history=1, pause=0.0, identity=_identity()) is None
     assert not sqlite_store.exists(Tables.short_interest)  # nothing written, nothing created
-    assert recorded, "an empty window must still record the run"
 
     print("\n=== SANITY CHECK: RegSHO empty window ===")
-    print("  every day-file missing -> no crash, no table created, run still recorded. Validated.")
+    print("  every day-file missing -> no crash, no table created; the frontier is unchanged, so they are planned again. Validated.")
 
 
 def test_parse_keeps_source_symbol_until_identity_resolution():
@@ -227,8 +239,7 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
     )
     sqlite_store.replace(Tables.short_interest, stored)
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2020-03-02", "2020-03-06"))
 
     def _fetch(day: pd.Timestamp, session=None) -> str | None:
         del session
@@ -238,9 +249,9 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
 
     monkeypatch.setattr(si, "_fetch_day", _fetch)
     universe = ["AAA", "FISV", "TT", "IR", "WTW"]
-    si.fetch_short_interest(context, universe, pause=0.0, full=True, identity=identity)
+    si.fetch_short_interest(context, universe, years_history=10, pause=0.0, full=True, identity=identity)
     first = sqlite_store.load(Tables.short_interest).sort_values(["date", "ticker"]).reset_index(drop=True)
-    si.fetch_short_interest(context, universe, pause=0.0, full=True, identity=identity)
+    si.fetch_short_interest(context, universe, years_history=10, pause=0.0, full=True, identity=identity)
     second = sqlite_store.load(Tables.short_interest).sort_values(["date", "ticker"]).reset_index(drop=True)
 
     assert set(first["ticker"]) == {"AAA", "FISV", "IR", "TT"}
@@ -274,11 +285,11 @@ def test_full_refresh_all_source_failures_abort_without_erasing_history(sqlite_s
         ),
     )
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2020-03-02", "2020-03-06"))
     monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
 
     with pytest.raises(RuntimeError, match="preserving the table by aborting"):
-        si.fetch_short_interest(context, ["AAA"], pause=0.0, full=True, identity=identity)
+        si.fetch_short_interest(context, ["AAA"], years_history=10, pause=0.0, full=True, identity=identity)
     saved = sqlite_store.load(Tables.short_interest)
     assert len(saved) == 1 and saved.iloc[0]["ticker"] == "AAA"
 

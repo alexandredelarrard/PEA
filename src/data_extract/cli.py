@@ -73,10 +73,8 @@ from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insi
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
-from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
-from src.data_extract.utils.prices.fetch_prices import fetch_price_history
-from src.data_extract.utils.prices.fetch_splits import fetch_splits
+from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
@@ -113,6 +111,11 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
 def _run_date(as_of: datetime | None) -> pd.Timestamp:
     """The `--as-of` date at midnight, or today."""
     return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
+
+
+def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
+    """The `--as-of` date for market-data fetchers, or None so they end at the last session completed now."""
+    return None if as_of is None else _run_date(as_of)
 
 
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
@@ -174,41 +177,50 @@ def seed_universe(config_path: str, refresh: bool, as_of: datetime | None) -> No
 
 
 # --- Prices / market / macro ---
-@cli.command(help="Daily price history, OHLCV (yfinance). HEAVY.", help_priority=2)
+@cli.command(
+    help="Daily OHLCV, dividend and split ex-dates from one yfinance download (prices, prices_dividends, prices_splits). HEAVY.", help_priority=2
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def price_history(config_path: str, tickers: str | None, full: bool) -> None:
-    """`--full` re-pulls the whole window: split adjustment is retroactive and an incremental upsert never revisits restated bars."""
+@AS_OF_OPTION
+def price_history(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+    """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_price_history(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
+    years_history = int(context.config.data_extract.years_history)
+    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
 
 
-@cli.command(help="Cash-dividend ex-dates (yfinance). HEAVY.")
+@cli.command(help="Alias of price-history (one download serves all three tables); kept until the DAG tasks merge.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-def dividends(config_path: str, tickers: str | None) -> None:
+@AS_OF_OPTION
+def dividends(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_dividends(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history)
+    years_history = int(context.config.data_extract.years_history)
+    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, as_of=_market_as_of(as_of))
 
 
-@cli.command(help="Share-split ex-dates (yfinance) -> prices_splits. HEAVY.")
+@cli.command(help="Alias of price-history (one download serves all three tables); kept until the DAG tasks merge.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def splits(config_path: str, tickers: str | None, full: bool) -> None:
-    """Fills holes in `sharadar_actions`; use `--full` on a cold table, since resuming from an empty frontier misses all history."""
+@AS_OF_OPTION
+def splits(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_splits(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
+    years_history = int(context.config.data_extract.years_history)
+    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(help="FINRA RegSHO short interest / short volume.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
+@AS_OF_OPTION
+def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
+    years_history = int(context.config.data_extract.years_history)
+    fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(help="SEC fails-to-deliver (settlement fails). SEC-bulk.")
@@ -385,10 +397,12 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool) -> None:
+@AS_OF_OPTION
+def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    StepExtractFundamentalsSharadar(context=context, config=config).run(tickers=_tickers(context, tickers), full=full, config_dir=config_path)
+    step = StepExtractFundamentalsSharadar(context=context, config=config)
+    step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=_run_date(as_of))
 
 
 @cli.command(
@@ -404,9 +418,10 @@ def sharadar_tickers(config_path: str) -> None:
 @cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sharadar_actions(config_path: str, full: bool) -> None:
+@AS_OF_OPTION
+def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history))
+    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=_run_date(as_of))
 
 
 @cli.command(

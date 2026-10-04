@@ -40,7 +40,6 @@ from src.constants.constants_price import (
     MACRO_SPREAD_SERIES,
 )
 from src.context import Context
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.schema import Tables
 from src.utils.ssl_setup import configure_corporate_ca
@@ -270,7 +269,6 @@ def fetch_macro(context: Context, years_history: int) -> None:
 
     if _is_up_to_date(context):
         context.log.info("Macro series already up to date - skipping (DB table '%s')", Tables.prices_macro)
-        record_run(context, Tables.prices_macro, 0, 0)
         return
 
     long = build_macro_frame(context, years_history)
@@ -286,5 +284,3 @@ def fetch_macro(context: Context, years_history: int) -> None:
     missing = [s for s in MACRO_ALL_SERIES if s not in stored]
     if missing:
         context.log.warning("series expected by the registry but not stored: %s", missing)
-
-    record_run(context, Tables.prices_macro, len(stored), len(long))

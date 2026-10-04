@@ -173,7 +173,7 @@ class FakeStore:
 
     def max_date_by(self, table: Any, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
         """Per-key latest stored date. The grouped counterpart of `max_date` -- what
-        `resume_since` and the macro freshness gate resolve their frontier with, so the double
+        the macro freshness gate and the Phase 4 resume reads resolve their frontier with, so the double
         needs it or those paths are untestable without a DB. Empty dict when the table or
         either column is absent, matching the real store's "nothing stored yet" contract."""
         df = self.t.get(name_of(table))

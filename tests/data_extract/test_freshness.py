@@ -9,9 +9,8 @@ from typing import Any, cast
 import pandas as pd
 
 from src.data_extract import cli as extraction_cli
-from src.data_extract.utils.prices import fetch_dividends as dividends_fetcher
-from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS
-from src.data_store.schema import Tables
+from src.data_extract.utils.prices import fetch_prices as prices_fetcher
+from src.data_store.schema import Resume, Tables
 
 
 def _context(store) -> Any:
@@ -59,11 +58,10 @@ def test_notes_tables_declare_monthly_archive_availability():
 
 
 def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypatch):
-    today = pd.Timestamp.today().normalize()
-    sqlite_store.replace(
-        Tables.dividends,
-        pd.DataFrame({"ticker": ["AAA"], "date": [today], "dividends": [0.0]}),
-    )
+    as_of = pd.Timestamp("2026-09-30")
+    last = pd.Timestamp("2026-09-28")
+    sqlite_store.replace(Tables.prices, pd.DataFrame({"ticker": ["AAA"], "date": [last], "close_split": [1.0]}))
+    sqlite_store.replace(Tables.dividends, pd.DataFrame({"ticker": ["AAA"], "date": [last], "dividends": [0.0]}))
     captured: list[pd.Timestamp] = []
 
     def _download(tickers, since, until, *args, **kwargs):
@@ -71,13 +69,12 @@ def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypat
         captured.append(pd.Timestamp(since))
         return pd.DataFrame()
 
-    monkeypatch.setattr(dividends_fetcher, "download_ohlcv", _download)
-    monkeypatch.setattr(dividends_fetcher, "record_run", lambda *args, **kwargs: None)
-    dividends_fetcher.fetch_dividends(_context(sqlite_store), ["AAA"], years_history=15, pause=0.0)
+    monkeypatch.setattr(prices_fetcher, "download_ohlcv", _download)
+    prices_fetcher.fetch_prices_and_actions(_context(sqlite_store), ["AAA"], years_history=15, as_of=as_of, pause=0.0)
 
-    expected = today - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
-    assert captured == [expected]
+    overlap = pd.Timedelta(days=cast(Resume, Tables.dividends.resume).overlap_days)
+    assert captured == [last - overlap]
 
     print("\n=== SANITY CHECK: dividend repair window ===")
-    print(f"  current frontier still replays from {expected.date()} ({PRICE_REFRESH_TRADING_DAYS} business days)")
+    print(f"  prices and dividends at {last.date()} -> one download from {(last - overlap).date()} (the {overlap.days}-day overlap)")
     print("  OK: a recent interior dividend-grid hole can self-heal on the next run")

@@ -103,12 +103,11 @@ def canonical_symbols(tickers: pd.Series) -> pd.Series:
 
 
 class NotEntitledError(RuntimeError):
-    """HTTP 403 -- the subscription does not cover this ticker/table.
+    """HTTP 403 -- the subscription does not cover this ticker/table."""
 
-    An exception rather than a `None` return because `None` already means "no data / the
-    request failed", and a caller that cannot tell those apart cannot report the entitlement
-    summary the run is required to end with.
-    """
+
+class SharadarRequestError(RuntimeError):
+    """A page still failed after the retrying GET; the request's rows are incomplete and none are returned."""
 
 
 def _api_key() -> str:
@@ -175,11 +174,11 @@ def _page(context: Context, url: str, params: dict) -> str | None:
 
 def sharadar_get(
     context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters
-) -> pd.DataFrame | None:
+) -> pd.DataFrame:
     """`GET {SHARADAR_BASE_URL}/data/{table}` with `filters`, paged, as a DataFrame.
 
-    `None` means the request failed; an EMPTY frame means the filters matched no rows.
-    `NotEntitledError` is raised on 403.
+    An EMPTY frame means the filters matched no rows. `NotEntitledError` is raised on 403 and
+    `SharadarRequestError` when any page fails, so a partial result is never returned.
 
     The caller MUST pass an explicit `date.gte` for any table with a date column: the API
     defaults `from` to "1 year ago" and `sort` to `date.desc`, so omitting either silently
@@ -198,7 +197,7 @@ def sharadar_get(
         params = {"api_key": key, "limit": _PAGE_LIMIT, "offset": offset, **filters}
         text = _page(context, url, params)
         if text is None:
-            return pd.concat(frames, ignore_index=True) if frames else None
+            raise SharadarRequestError(f"Sharadar {table}: page at offset {offset} failed ({filters.get('ticker', 'market-wide')})")
         page = _parse_csv(text, keep_default_na=keep_default_na)
         if page.empty:
             break

@@ -4,6 +4,11 @@
 `document_worklist` (EDGAR document tables): the local EDGAR index rows of the table's forms for
 each key's registrant lineage, from the floor on, minus the accessions already stored (empty-filing
 markers included); newest first and capped per run.
+
+`series_windows` (dated per-key series): per key, its own last date minus the overlap through
+`until`; the full history for a new key, an absent table or `full`; the table-wide frontier minus
+the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
+key's stored span.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 import pandas as pd
 
@@ -19,7 +25,7 @@ from src.context import Context
 from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.registrant import Registrant, listing_ciks, resolve_registrant_entries
-from src.data_store.schema import Table
+from src.data_store.schema import Table, Tables
 from src.utils.universe import new_tickers
 
 logger = logging.getLogger(__name__)
@@ -154,3 +160,109 @@ def document_worklist(
     units, uncapped = _cap(units, cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
     return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings)
+
+
+@dataclass
+class SeriesWork:
+    """A series work list: per key, disjoint `(since, until)` windows; plus each key's class and stored last date."""
+
+    windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]
+    key_class: dict[str, str]
+    last: dict[str, pd.Timestamp] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def groups(self) -> list[tuple[pd.Timestamp, pd.Timestamp, list[str]]]:
+        """Keys sharing an identical window, one group per window, oldest `since` first."""
+        by_window: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
+        for key, spans in self.windows.items():
+            for span in spans:
+                by_window.setdefault(span, []).append(key)
+        return [(since, until, sorted(keys)) for (since, until), keys in sorted(by_window.items())]
+
+    def merge(self, other: SeriesWork) -> SeriesWork:
+        """The union of two work lists (each key's windows unioned); key classes and `last` stay this work's."""
+        keys = set(self.windows) | set(other.windows)
+        windows = {key: _union_spans(self.windows.get(key, []) + other.windows.get(key, [])) for key in keys}
+        return SeriesWork(windows=windows, key_class=other.key_class | self.key_class, last=self.last, timings=self.timings | other.timings)
+
+
+def _union_spans(spans: list[tuple[pd.Timestamp, pd.Timestamp]]) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Overlapping or touching `(since, until)` spans merged, sorted."""
+    merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for since, until in sorted(spans):
+        if merged and since <= merged[-1][1] + pd.Timedelta(days=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], until))
+        else:
+            merged.append((since, until))
+    return merged
+
+
+def trading_calendar(context: Context) -> pd.DatetimeIndex:
+    """The distinct dates of `prices`, sorted; empty when the table is absent."""
+    return pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.prices, "date"))).normalize().unique().sort_values()
+
+
+def session_dates(calendar: pd.DatetimeIndex, since: pd.Timestamp, until: pd.Timestamp) -> pd.DatetimeIndex:
+    """Calendar sessions in `[since, until]`, plus business days after the calendar's last session."""
+    inside = calendar[(calendar >= since) & (calendar <= until)]
+    after = calendar.max() + pd.Timedelta(days=1) if len(calendar) else since
+    return inside.union(pd.bdate_range(max(after, since), until)) if after <= until else inside
+
+
+def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timestamp, edge: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Runs of calendar sessions in `[first, edge)` with no stored row, as `(first missing, last missing)` spans."""
+    span = calendar[(calendar >= first) & (calendar < edge)]
+    missing = ~span.isin(pd.DatetimeIndex(pd.to_datetime(stored)).normalize())
+    if not missing.any():
+        return []
+    positions = pd.Series(range(len(span)))[missing]
+    runs = (positions.diff() != 1).cumsum()
+    return [(span[int(run.iloc[0])], span[int(run.iloc[-1])]) for _, run in positions.groupby(runs)]
+
+
+def series_windows(
+    context: Context,
+    table: Table,
+    keys: Sequence[str],
+    as_of: pd.Timestamp,
+    *,
+    until: pd.Timestamp,
+    years_history: int,
+    full: bool = False,
+    calendar: pd.DatetimeIndex | None,
+) -> SeriesWork:
+    """Per-key fetch windows for a dated series `table` from one `key_stats` read (plus one date read
+    for the keys with interior holes against the daily `calendar`; None for a non-daily series, which
+    gets no hole windows). Never earlier than the history floor."""
+    started = time.perf_counter()
+    if table.resume is None or table.resume.key is None:
+        raise ValueError(f"{table.name} declares no per-key resume contract")
+    key_col, date_col = table.resume.key, cast(str, table.resume.frontier_col)
+    overlap = pd.Timedelta(days=table.resume.overlap_days)
+    floor = document_floor(table, as_of, years_history)
+    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)})
+    stats = {str(k): (pd.Timestamp(f), pd.Timestamp(lst), int(n)) for k, f, lst, n in df_stats[["key", "first", "last", "n"]].itertuples(index=False)}
+    new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
+    table_max = context.store.max_date(table, date_col)
+    windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
+    key_class: dict[str, str] = {}
+    holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    for key in keys:
+        if full or table_max is None or key in new:
+            key_class[key], since = KEY_NEW, floor
+        elif key not in stats:
+            key_class[key], since = KEY_ROWLESS, max(table_max - overlap, floor)
+        else:
+            first, last, n = stats[key]
+            key_class[key], since = KEY_ESTABLISHED, max(last - overlap, floor)
+            if calendar is not None and n < calendar.searchsorted(last, side="right") - calendar.searchsorted(first, side="left"):
+                holed[key] = (max(first, floor), since)
+        windows[key] = [(since, until)] if since <= until else []
+    read_stats = time.perf_counter()
+    if holed:
+        df_dates = cast(pd.DataFrame, context.store.load(table, columns=[key_col, date_col], where={key_col: list(holed)}, markers=True))
+        for key, group in df_dates.groupby(key_col, sort=False):
+            windows[str(key)] = _union_spans(windows[str(key)] + _hole_spans(cast(pd.DatetimeIndex, calendar), group[date_col], *holed[str(key)]))
+    last = {key: edges[1] for key, edges in stats.items()}
+    timings = {f"{table.name}.key_stats": read_stats - started, f"{table.name}.holes": time.perf_counter() - read_stats}
+    return SeriesWork(windows=windows, key_class=key_class, last=last, timings=timings)

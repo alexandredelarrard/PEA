@@ -235,7 +235,7 @@ def test_provider_failure_writes_nothing_and_is_retried_next_run(tmp_path, monke
     print(f"  day D saved no parent and no marker; D+1 listed the whole window again and queued {accession} again. Validated.")
 
 
-def test_legacy_empty_parent_is_repaired_on_the_next_run(tmp_path, monkeypatch):
+def test_legacy_empty_parent_is_repaired_by_a_full_run(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
@@ -257,17 +257,17 @@ def test_legacy_empty_parent_is_repaired_on_the_next_run(tmp_path, monkeypatch):
     )
     _install_daily_fetch_doubles(monkeypatch, _extractor_double([response], tasked), _listed_filing(accession, yesterday), listed_since)
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
 
     assert listed_since == [None]
-    assert tasked == [accession], "the legacy empty key must not count as completed"
+    assert tasked == [accession], "under -F the legacy empty key must not count as completed"
     parent = context.store.load(Tables.def14a_llm)
     directors = context.store.load(Tables.def14a_directors)
     assert parent is not None and len(parent) == 1
     assert parent.iloc[0]["ceo_name_proxy"] == "Jane CEO" and float(parent.iloc[0]["board_size"]) == 1.0
     assert directors is not None and len(directors) == 1 and directors.iloc[0]["accession_number"] == accession
 
-    print("\n=== SANITY: legacy empty parent repairs on D+1 ===")
+    print("\n=== SANITY: legacy empty parent repairs under -F ===")
     print(f"  {accession} was re-listed, re-extracted, and upserted to one evidenced parent plus one director. Validated.")
 
 
@@ -672,14 +672,35 @@ def test_an_evidence_free_answer_never_overwrites_a_stored_parent(tmp_path, monk
     _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
     before = context.store.load(Tables.def14a_llm, markers=True).iloc[0]
     tasked: list[str] = []
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER, _EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
 
     after = context.store.load(Tables.def14a_llm, markers=True)
     assert len(after) == 1 and after.iloc[0]["def14a_json"] == before["def14a_json"] != "_empty"
     assert after.iloc[0]["company_name"] == "Legacy Co"
-    assert tasked == [accession, accession]
+    assert tasked == [accession]
     print("\n=== SANITY: never mark over data (def14a_llm) ===")
-    print("  a stored evidence-free parent keeps its row: the evidence-free answer's marker is dropped, so the proxy is sent again on each run.")
+    print("  -F re-sends a stored evidence-free parent; the evidence-free answer's marker is dropped and the parent row is untouched.")
+
+
+def test_a_stored_evidence_free_parent_is_skipped_unless_full(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "stored-evidence-free"
+    filed = pd.Timestamp("2025-04-01")
+    _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
+    tasked: list[str] = []
+    payloads: list[str] = []
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER, _EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
+    monkeypatch.setattr(mod, "_payload_for", lambda *_: payloads.append(accession) or "=== BOARD OF DIRECTORS ===")
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    nightly = (list(tasked), list(payloads))
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
+
+    assert nightly == ([], []), "a saved row counts as done on a nightly run"
+    assert tasked == [accession] and payloads == [accession]
+    print("\n=== SANITY: stored evidence-free parent (user decision 2026-10-04) ===")
+    print(f"  nightly run: {len(nightly[0])} LLM task, {len(nightly[1])} document read; -F: re-sent once ({tasked}).")

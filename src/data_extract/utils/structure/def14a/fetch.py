@@ -1,11 +1,12 @@
 """Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
 
 Per ticker: list its DEF 14A filings over `years_history` (across its registrant chain), carve the
-relevant sections, send only accessions that are neither stored with evidence nor marked to the LLM,
+relevant sections, send only accessions with no saved `def14a_llm` row to the LLM,
 and upsert that ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`,
 `def14a_director_comp`, `def14a_ownership`, `def14a_directors`) before the next ticker. An answer
 without evidence from a proxy that was read is stored as one `def14a_llm` marker; a failed read or
-LLM call writes nothing and is listed again next run. A cross-ticker gender consensus runs once
+LLM call writes nothing and is listed again next run. `full` re-sends the saved rows without
+evidence. A cross-ticker gender consensus runs once
 after the loop. Skips with a warning when no OpenAI key is configured.
 """
 
@@ -186,7 +187,7 @@ def _list_across_registrants(
 def _completed_accessions(context: Context) -> set[str]:
     """Accessions whose parent row carries real extracted evidence, not merely a PK.
 
-    Evidence-free parents stay in the table but do not count as completed, so a later run re-extracts them.
+    Evidence-free parents stay in the table but do not count as completed, so a `full` run re-extracts them.
     A table created by a marker-only save may lack evidence columns; only the stored ones are read.
     """
     stored_columns = set(context.store.columns(Tables.def14a_llm))
@@ -206,15 +207,9 @@ def _completed_accessions(context: Context) -> set[str]:
     }
 
 
-def _marked_accessions(context: Context) -> set[str]:
-    """Accessions stored as an empty-filing marker: read, answered without evidence, not sent again.
-    A table without the marker column holds no marker."""
-    assert Tables.def14a_llm.empty_marker is not None
-    column, sentinel = Tables.def14a_llm.empty_marker
-    if column not in context.store.columns(Tables.def14a_llm):
-        return set()
-    stored = context.store.load(Tables.def14a_llm, columns=["accession_number"], where={column: sentinel}, markers=True, optional=True)
-    return set() if stored is None else {str(a) for a in stored["accession_number"].dropna()}
+def _stored_accessions(context: Context) -> set[str]:
+    """Every accession with a saved `def14a_llm` row: evidence-backed, evidence-free or a marker."""
+    return {str(a) for a in context.store.distinct(Tables.def14a_llm, "accession_number")}
 
 
 def _frames_off_data(context: Context, result: LlmResult) -> dict[Table, pd.DataFrame]:
@@ -304,12 +299,12 @@ def fetch_def14a_llm(
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
     Lists each ticker's proxies across its registrant chain over `years_history` and sends only
-    accessions neither stored with evidence nor marked to the LLM; each ticker's rows are upserted
-    before the next starts. Skips when no OpenAI key is configured.
+    accessions with no saved row to the LLM; each ticker's rows are upserted before the next starts. Skips when no OpenAI key is configured.
 
     `model` / `max_chars` / `cache` default to `config.gpt` and `workers` (concurrent LLM calls)
     to `config.gpt.threads`; an explicit keyword pins one without touching config. `full` also
-    sends the marked accessions again; a proxy with stored evidence is never re-sent.
+    re-sends the saved accessions without evidence (markers included); a proxy with stored evidence
+    is never re-sent.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
     de = context.config.data_extract
@@ -320,8 +315,8 @@ def fetch_def14a_llm(
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         return
 
-    # Evidence-backed accessions are never re-sent, marked ones only under `full`; a legacy evidence-free parent stays retryable.
-    seen = _completed_accessions(context) | (set() if full else _marked_accessions(context))
+    # A saved row is done; `full` re-sends every accession without evidence (legacy evidence-free rows and markers).
+    seen = _completed_accessions(context) if full else _stored_accessions(context)
     years = int(de.years_history)
     # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.
     cutovers = load_registrants(str(context.config_dir))

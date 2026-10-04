@@ -4,12 +4,12 @@ Filings follow the legal registrant, whose CIK changes on a reorganisation or do
 `Company(ticker)` resolves only today's CIK. `registrant_cutover.json` declares each such ticker as
 an ordered, contiguous chain of evidenced `[valid_from, valid_to)` segments, validated strictly at
 load. `FORM_POLICY` decides per form whether filings UNION across the chain or SPLIT by date;
-`resolve_registrant_filings` walks it oldest first. The schedule subject-first search lives here too.
+`resolve_registrant_entries` applies it to local EDGAR index rows and `resolve_registrant_filings`
+to `Company` listings, both oldest first.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -18,20 +18,12 @@ from enum import StrEnum
 from functools import cache
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.sec_atom import (
-    SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
-    AtomEntry,
-    AtomPageError,
-    atom_filing,
-    iter_atom_pages,
-    keep_atom_entry,
-)
 from src.utils.string import pad_cik, pad_cik_series
 
 if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
@@ -42,11 +34,6 @@ logger = logging.getLogger(__name__)
 #: `_company_or_none` kinds; each is also the wording of its "could not be resolved" warning.
 _CIK_KIND = "register CIK"
 _ALIAS_KIND = "historical alias"
-
-#: Retained filings after SGML subject-CIK filtering above which discovery raises as incomplete, never returns empty.
-SCHEDULE_SUBJECT_CAP = 2_000
-# Atom pagination offset at which a date window is split instead of paging deeper (SEC 503s beyond it).
-SCHEDULE_ATOM_SAFE_OFFSET = 5_000
 
 #: `configs/sec/registrant_cutover.json`, read only through `load_registrants`.
 REGISTRANT_CONFIG_SUBDIR = "sec"
@@ -258,34 +245,6 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
-def identity_scope_fingerprint(scope: FilingScope, entry: Registrant | None) -> str:
-    """Stable SHA-256 of one ticker's discovered scope (ticker, roster CIK, CIKs, symbols) and register segments.
-
-    A changed fingerprint makes the EDGAR driver relist that ticker over the full window.
-    """
-    segments = (
-        []
-        if entry is None
-        else [
-            {
-                "cik": segment.cik,
-                "valid_from": None if segment.valid_from is None else pd.Timestamp(segment.valid_from).date().isoformat(),
-                "valid_to": None if segment.valid_to is None else pd.Timestamp(segment.valid_to).date().isoformat(),
-            }
-            for segment in entry.segments
-        ]
-    )
-    payload = {
-        "canonical_ticker": scope.ticker,
-        "roster_cik": scope.roster_cik,
-        "candidate_ciks": list(scope.ciks),
-        "candidate_symbols": list(scope.symbols),
-        "authoritative_segments": segments,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _identity_scope(scope: FilingScope, entry: Registrant | None, policy: Combine) -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
     """Same-CIK aliases, additive identity CIKs and the CIKs a listed filing may carry.
 
@@ -467,6 +426,82 @@ def _log_contributions(ticker: str, entry: Registrant | None, forms: list[str], 
         )
 
 
+def listing_ciks(ticker: str, roster_cik: str, registrants: dict[str, Registrant], identity: Identity | None = None) -> tuple[str, ...]:
+    """Every CIK whose index rows may list `ticker`'s filings, roster first (the candidate superset)."""
+    entry = registrants.get(ticker)
+    ciks = [pad_cik(roster_cik)] + list(entry.all_ciks() if entry is not None else ())
+    if identity is not None:
+        ciks.extend(identity.filing_scope(ticker).ciks)
+    return tuple(dict.fromkeys(c for c in ciks if c))
+
+
+def resolve_registrant_entries(
+    ticker: str,
+    roster_cik: str,
+    df_entries: pd.DataFrame,
+    forms: Sequence[str],
+    *,
+    registrants: dict[str, Registrant],
+    identity: Identity | None = None,
+) -> pd.DataFrame:
+    """`ticker`'s index rows of `forms` (`cik`, `company`, `form`, `filed`, `accession`), one per accession, oldest first.
+
+    The `FORM_POLICY` rules of `resolve_registrant_filings`, applied to index rows: UNION lists the
+    roster CIK, the register chain and (identity-aware) the identity CIKs, first CIK in that order
+    winning a co-indexed accession; SPLIT lists each register segment's CIK inside its dates, else
+    the roster CIK alone (warning when identity found an uncurated CIK).
+    """
+    policy = combine_for(forms)
+    entry = registrants.get(ticker)
+    df = df_entries[df_entries["form"].isin(list(forms))]
+    if entry is not None and policy is Combine.SPLIT:
+        return _split_entries(ticker, entry, df)
+    ciks = _entry_ciks(ticker, pad_cik(roster_cik), entry, policy, identity)
+    rank = {cik: i for i, cik in enumerate(ciks)}
+    kept = df[df["cik"].isin(rank)].assign(_rank=lambda d: d["cik"].map(rank))
+    kept = kept.sort_values(["_rank", "filed"], kind="mergesort").drop_duplicates("accession", keep="first")
+    if (kept["_rank"] > 0).any():
+        logger.info(
+            "%s: %d index row(s) from non-roster CIK(s) %s (%s)", ticker, int((kept["_rank"] > 0).sum()), ", ".join(ciks[1:]), ",".join(forms)
+        )
+    return kept.drop(columns="_rank").sort_values(["filed", "accession"], ignore_index=True)
+
+
+def _entry_ciks(ticker: str, roster_cik: str, entry: Registrant | None, policy: Combine, identity: Identity | None) -> tuple[str, ...]:
+    """The CIKs a non-split listing reads, in first-writer order; with identity, only CIKs on the issuer lineage."""
+    ciks = [roster_cik]
+    if policy is Combine.UNION and entry is not None:
+        ciks.extend(entry.all_ciks())
+    if identity is None:
+        return tuple(dict.fromkeys(ciks))
+    _, identity_ciks, lineage = _identity_scope(identity.filing_scope(ticker), entry, policy)
+    if policy is Combine.UNION:
+        ciks.extend(identity_ciks)
+    return tuple(dict.fromkeys(c for c in ciks if c in lineage))
+
+
+def _split_entries(ticker: str, entry: Registrant, df: pd.DataFrame) -> pd.DataFrame:
+    """Each segment's rows inside its own dates; an accession kept by two segments is warned and dropped."""
+    filed = pd.to_datetime(df["filed"])
+    parts = []
+    for segment in entry.segments:
+        inside = df["cik"].eq(segment.cik)
+        if segment.valid_from is not None:
+            inside &= filed >= segment.valid_from
+        if segment.valid_to is not None:
+            inside &= filed < segment.valid_to
+        parts.append(df[inside])
+    kept = pd.concat(parts, ignore_index=True) if parts else df.iloc[:0]
+    duplicated = kept["accession"].duplicated(keep="first")
+    if duplicated.any():
+        logger.warning(
+            "%s: accession(s) %s kept by two segments -- the dated split makes that impossible, so the register's boundary is wrong",
+            ticker,
+            ", ".join(kept.loc[duplicated, "accession"].astype(str)),
+        )
+    return kept[~duplicated].sort_values(["filed", "accession"], ignore_index=True)
+
+
 def issuer_ciks(
     ticker: str,
     roster_cik: str,
@@ -487,10 +522,6 @@ def issuer_ciks(
     return frozenset(c for c in ciks if c)
 
 
-class ScheduleDiscoveryIncompleteError(RuntimeError):
-    """A subject-first schedule search could not prove its result complete."""
-
-
 def header_subject_ciks(filing: object) -> frozenset[str]:
     """Read schedule subject CIKs from the SGML header, before ``filing.obj()``.
 
@@ -499,186 +530,6 @@ def header_subject_ciks(filing: object) -> frozenset[str]:
     companies = getattr(header, "subject_companies", ()) or ()
     raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
     return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
-
-
-def filter_schedule_subject_filings(
-    candidates: Sequence[object],
-    subject_ciks: frozenset[str],
-    *,
-    cap: int = SCHEDULE_SUBJECT_CAP,
-) -> tuple[list[object], dict[str, int]]:
-    """Keep issuer-side schedules cheaply; unknown headers pass to the full issuer guard."""
-    kept: list[object] = []
-    stats = {"candidates": len(candidates), "subject_matches": 0, "unknown_headers": 0}
-    for filing in candidates:
-        try:
-            subjects = header_subject_ciks(filing)
-        except Exception:  # noqa: BLE001 -- the full object guard is the safe fallback
-            subjects = frozenset()
-        if subjects:
-            if subjects.isdisjoint(subject_ciks):
-                continue
-            stats["subject_matches"] += 1
-        else:
-            stats["unknown_headers"] += 1
-        kept.append(filing)
-        if len(kept) > cap:
-            raise ScheduleDiscoveryIncompleteError(
-                f"subject-first schedule discovery retained more than {cap} filing(s) after "
-                "header filtering; aborting this ticker as incomplete instead of publishing "
-                "a partial result"
-            )
-    return kept, stats
-
-
-@dataclass(frozen=True)
-class _ScheduleQuery:
-    """What one subject-first schedule search keeps from the Atom feed."""
-
-    ticker: str
-    target_forms: frozenset[str]
-    done_accessions: frozenset[str]
-
-
-@dataclass
-class WindowResult:
-    """One exhausted date window: candidate filings by accession, pages read, owner rows excluded."""
-
-    candidates: dict[str, object] = field(default_factory=dict)
-    pages: int = 0
-    owner_rows_excluded: int = 0
-
-    def absorb(self, other: WindowResult) -> None:
-        """Add `other`'s pages and owner rows; its candidates overwrite same-accession entries."""
-        self.candidates.update(other.candidates)
-        self.pages += other.pages
-        self.owner_rows_excluded += other.owner_rows_excluded
-
-
-def _is_multi_year(start: pd.Timestamp, end: pd.Timestamp) -> bool:
-    return int((end - start).days) + 1 > 366
-
-
-def _window_children(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Inclusive child windows covering `[start, end]`: one-year chunks when the span exceeds 366 days, else two halves."""
-    if not _is_multi_year(start, end):
-        older_end = (start + (end - start) / 2).normalize()
-        return [(start, older_end), (older_end + pd.Timedelta(days=1), end)]
-    children: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    cursor = start
-    while cursor <= end:
-        chunk_end = min(cursor + pd.DateOffset(years=1) - pd.Timedelta(days=1), end)
-        children.append((cursor, chunk_end))
-        cursor = chunk_end + pd.Timedelta(days=1)
-    return children
-
-
-def _collect_window(query: _ScheduleQuery, cik: str, family: str, window_start: pd.Timestamp, window_end: pd.Timestamp) -> WindowResult:
-    """Exhaust one inclusive date window, splitting it into child windows before unsafe deep pagination.
-
-    Any page failure raises `ScheduleDiscoveryIncompleteError`; after a split the children's candidates replace the pages read.
-    """
-    result = WindowResult()
-    try:
-        for offset, entries in iter_atom_pages(cik, family, window_start, window_end, query.ticker, legacy_retry=True):
-            result.pages += 1
-            _absorb_page(query, cik, entries, window_start, window_end, result)
-            next_offset = offset + SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
-            if len(entries) == SEC_INSIDER_OWNER_ATOM_PAGE_SIZE and next_offset >= SCHEDULE_ATOM_SAFE_OFFSET:
-                return _split_window(query, cik, family, window_start, window_end, next_offset, result)
-    except AtomPageError as exc:  # completeness is the contract
-        raise ScheduleDiscoveryIncompleteError(
-            f"{query.ticker}: schedule search failed for subject CIK {cik}, form {family}, offset {exc.offset}: {exc.__cause__!r}"
-        ) from exc.__cause__
-    return result
-
-
-def _absorb_page(
-    query: _ScheduleQuery, cik: str, entries: list[AtomEntry | None], window_start: pd.Timestamp, window_end: pd.Timestamp, result: WindowResult
-) -> None:
-    """Add one page's kept subject-issuer entries to `result.candidates` (first seen wins) and count
-    the owner-side rows it excludes."""
-    for entry in entries:
-        if not keep_atom_entry(entry, query.target_forms, query.done_accessions, window_start, window_end) or entry.accession in result.candidates:
-            continue
-        # Only subject-issuer rows carry a file number; the SGML subject-CIK guard stays the final authority.
-        if entry.file_number is None:
-            result.owner_rows_excluded += 1
-            continue
-        result.candidates[cast(str, entry.accession)] = atom_filing(entry, cik=cik, company=query.ticker)
-
-
-def _split_window(
-    query: _ScheduleQuery,
-    cik: str,
-    family: str,
-    window_start: pd.Timestamp,
-    window_end: pd.Timestamp,
-    offset: int,
-    read: WindowResult,
-) -> WindowResult:
-    """Replace a window that reached the safe offset by its exhausted children; a single day raises."""
-    if window_start >= window_end:
-        raise ScheduleDiscoveryIncompleteError(
-            f"{query.ticker}: schedule search reached the safe pagination limit "
-            f"inside the unsplittable date {window_start.date()} for subject CIK "
-            f"{cik}, form {family}"
-        )
-    logger.info(
-        "%s: schedule search reached offset %d for subject CIK %s, form %s; partitioning %s..%s into complete one-year windows"
-        if _is_multi_year(window_start, window_end)
-        else "%s: schedule search reached offset %d for subject CIK %s, form %s; bisecting %s..%s into complete date windows",
-        query.ticker,
-        offset,
-        cik,
-        family,
-        window_start.date(),
-        window_end.date(),
-    )
-    merged = WindowResult(pages=read.pages, owner_rows_excluded=read.owner_rows_excluded)
-    for child_start, child_end in _window_children(window_start, window_end):
-        merged.absorb(_collect_window(query, cik, family, child_start, child_end))
-    return merged
-
-
-def resolve_schedule_subject_filings(
-    ticker: str,
-    subject_ciks: frozenset[str],
-    forms: Sequence[str],
-    *,
-    since: pd.Timestamp | None,
-    done_accessions: frozenset[str],
-    through: pd.Timestamp | None = None,
-) -> list[object]:
-    """Discover schedules by issuer CIK through SEC's owner-inclusive Atom search, then filter SGML headers.
-
-    Every page must load and parse; otherwise this raises so the run manifest cannot advance.
-    """
-    end_date = pd.Timestamp(through or pd.Timestamp.today()).normalize()
-    if since is None:
-        raise ScheduleDiscoveryIncompleteError(
-            f"{ticker}: subject-first schedule discovery requires a finite start date so deep result sets can be split without truncation"
-        )
-    start_date = pd.Timestamp(since).normalize()
-    query = _ScheduleQuery(ticker=ticker, target_forms=frozenset(forms), done_accessions=done_accessions)
-    total = WindowResult()
-    for cik in sorted(subject_ciks):
-        for family in sorted({form.removesuffix("/A") for form in forms}):
-            total.absorb(_collect_window(query, cik, family, start_date, end_date))
-    filtered, stats = filter_schedule_subject_filings(list(total.candidates.values()), subject_ciks)
-    filtered.sort(key=lambda filing: pd.Timestamp(cast(Any, filing).filing_date))
-    logger.info(
-        "%s: subject-first schedules -- %d page(s), %d owner-side row(s) excluded from Atom metadata, "
-        "%d candidate(s), %d subject match(es), %d unknown header(s), %d retained for full parsing",
-        ticker,
-        total.pages,
-        total.owner_rows_excluded,
-        stats["candidates"],
-        stats["subject_matches"],
-        stats["unknown_headers"],
-        len(filtered),
-    )
-    return filtered
 
 
 def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str, filed_col: str, registrants: dict[str, Registrant]) -> pd.DataFrame:

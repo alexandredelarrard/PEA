@@ -1,8 +1,9 @@
-"""Tests for the shared EDGAR fetch driver
-(`src/data_extract/utils/common/edgar_driver.py`): the registrant filing listing it
-resolves through and the per-ticker thread-pool driver that the 8-K / 13D / DEF 14A /
-filing-text fetchers all delegate to. Offline -- a real `DataStore` on SQLite plus a stub
-`Company`, no network.
+"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/common/edgar_driver.py`) and the
+`Company`-based registrant listing (`resolve_registrant_filings`) the LLM fetchers still use.
+
+The driver tests run offline on a real `DataStore` (SQLite), a seeded local EDGAR index and fake
+filings: per-filing units, empty-filing markers, in-task retry rounds and exit 0 (AC-011 check 4,
+AC-012).
 """
 
 from __future__ import annotations
@@ -14,72 +15,92 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import edgar_driver, frame_sanitize
-from src.data_extract.utils.common.edgar_driver import (
-    EdgarFetch,
-    EdgarScope,
-    FilingStamp,
-    IncompleteEdgarRunError,
-    build_filing_rows,
-    run_edgar_fetch,
-)
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_extract.utils.common.registrant import Registrant, Segment, resolve_registrant_filings
-from src.data_extract.utils.common.run_manifest import get_entry as _get_entry
-from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_store import schema
-from src.data_store.schema import Table, Tables
-from tests.data_extract.fake_context import extract_config
+from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table
+from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 
-_T_MAIN = Table("driver_main", ("ticker", "accession_number"), date_col="filing_date")
+_T_DOC = Table(
+    "driver_doc",
+    ("ticker", "accession_number", "item"),
+    date_col="filing_date",
+    resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K",)),
+    empty_marker=("item", "_empty"),
+)
 _T_CHILD = Table("driver_child", ("ticker", "accession_number"), date_col="filing_date")
-_T_EMPTY = Table("driver_empty", ("ticker", "accession_number"), date_col="filing_date")
-get_entry: Any = _get_entry
+_AS_OF = pd.Timestamp("2026-09-30")
 
 
 @pytest.fixture(autouse=True)
 def _register_test_tables(monkeypatch):
-    """`store.resolve` only accepts registered tables, by design. These three exist so the
-    driver is exercised on its own multi-table contract rather than on a real fetcher's."""
-    for table in (_T_MAIN, _T_CHILD, _T_EMPTY):
+    """`store.resolve` only accepts registered tables, by design; these exercise the driver on its own contract."""
+    for table in (_T_DOC, _T_CHILD):
         monkeypatch.setitem(schema.BY_NAME, table.name, table)
+
+
+@pytest.fixture
+def waits(monkeypatch) -> list[float]:
+    """The retry-round waits, recorded instead of slept."""
+    recorded: list[float] = []
+    monkeypatch.setattr(edgar_driver, "_sleep", recorded.append)
+    return recorded
 
 
 def _filing(accession: str, filing_date: str):
     return types.SimpleNamespace(accession_number=accession, filing_date=filing_date)
 
 
-def _ctx(tmp_path, store, tickers) -> Any:
-    """A Context stand-in carrying the four attributes the driver touches.
-
-    `sp500_tickers` is seeded with EVERY column `load_cik_mapping` projects, not just the two
-    the driver itself reads: the projection is server-side, so a column missing from this
-    fixture fails as a `KeyError` inside the SELECT rather than as a missing value."""
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {col: [str(i + 1) if col == "cik" else f"{col}-{t}" for i, t in enumerate(tickers)] for col in CIK_MAPPING_COLS} | {"ticker": tickers}
-        ),
-    )
-    warnings: list[str] = []
-    ctx = types.SimpleNamespace(
-        store=store,
-        paths={"DATA_STORE": tmp_path},
-        log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda msg, *a: warnings.append(msg % a)),
-        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
-        ensure_edgar_identity=lambda: None,
-        config_dir=tmp_path,
-    )
-    ctx.warnings = warnings
-    return ctx
+def _accession(i: int) -> str:
+    return f"0000000001-26-{i:06d}"
 
 
-def _fetch(tables, build, desc="test", *, identity_aware=False, completion_table=None) -> EdgarFetch:
-    """An `EdgarFetch` that is not identity-aware unless the test sets it."""
-    return EdgarFetch(desc=desc, tables=tables, build=build, identity_aware=identity_aware, completion_table=completion_table)
+def _seed(ctx, n: int, *, cik: int = 1, start: str = "2026-01-02") -> list[str]:
+    """`n` 8-K index rows under `cik`, one per day from `start`; their accessions."""
+    days = pd.date_range(start, periods=n, freq="D")
+    rows = [(cik, "Fixture Co", "8-K", day.date().isoformat(), _accession(i)) for i, day in enumerate(days)]
+    seed_index(ctx, rows)
+    return [row[4] for row in rows]
 
 
-def _rows(table, ticker, accession):
-    return pd.DataFrame([{"ticker": ticker, "accession_number": accession, "filing_date": pd.Timestamp("2024-01-02"), "src": str(table)}])
+class _Source:
+    """Per-accession behaviour of the fake SEC: `fail_reads` (transient reads left), `kinds` (`parse`,
+    `empty`, `bug`), else one row in each table; `reads` records every read."""
+
+    def __init__(self) -> None:
+        self.fail_reads: dict[str, int] = {}
+        self.kinds: dict[str, str] = {}
+        self.reads: list[str] = []
+
+    def parse(self, ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
+        accession = stamp.accession_number
+        self.reads.append(accession)
+        if self.fail_reads.get(accession, 0) > 0:
+            self.fail_reads[accession] -= 1
+            raise TransientReadError(f"{accession}: HTTP 503")
+        kind = self.kinds.get(accession, "rows")
+        if kind == "parse":
+            raise ParseFailureError(f"{accession}: unparseable")
+        if kind == "empty":
+            return {_T_DOC: pd.DataFrame(columns=["ticker", "accession_number", "item", "filing_date"])}
+        if kind == "bug":
+            raise NameError("name 'cols' is not defined")
+        row = {"ticker": ticker, "accession_number": accession, "item": "8.01", "filing_date": stamp.filed.normalize()}
+        child = {k: row[k] for k in ("ticker", "accession_number", "filing_date")}
+        return {_T_CHILD: pd.DataFrame([child]), _T_DOC: pd.DataFrame([row])}
+
+
+def _fetch(source: _Source) -> EdgarFetch:
+    return EdgarFetch(desc="driver test", tables=(_T_CHILD, _T_DOC), forms=("8-K",), parse=source.parse, done_table=_T_DOC, identity_aware=False)
+
+
+def _run(ctx, source: _Source, tickers: list[str], as_of: pd.Timestamp = _AS_OF, **kwargs: Any):
+    return run_edgar_fetch(ctx, tickers, 15, _fetch(source), as_of=as_of, refresh_index=False, max_workers=1, **kwargs)
+
+
+def _stored(store, table: Table = _T_DOC) -> set[str]:
+    return set(store.distinct(table, "accession_number"))
 
 
 # --------------------------------------------------------------------------- #
@@ -246,331 +267,199 @@ def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
 
 
 # --------------------------------------------------------------------------- #
-# run_edgar_fetch                                                              #
+# run_edgar_fetch: per-filing units, markers, retry rounds, exit 0             #
 # --------------------------------------------------------------------------- #
-def test_run_edgar_fetch_saves_every_declared_table_and_records_each(tmp_path, sqlite_store, monkeypatch):
-    # One ticker on purpose: `sqlite_store` shares ONE connection across the pool's threads,
-    # so concurrent writes to it are not a reliable assertion. The cold-table CREATE race is
-    # covered at the store level by `tests/data_store/test_ensure_table_lock.py`.
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+def test_failed_documents_are_saved_partially_and_exit_zero(tmp_path, sqlite_store, waits):
+    """AC-011 check 4, second half: 200 listed, 70 keep failing -> 130 saved, no raise, the 70 named."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 200)
+    source = _Source()
+    failing = accessions[::2][:70]
+    source.fail_reads = dict.fromkeys(failing, 10**6)
 
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1"), _T_CHILD: _rows(_T_CHILD, ticker, f"{ticker}-1"), _T_EMPTY: pd.DataFrame()}
+    summary = _run(ctx, source, ["AAA"])
 
-    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_CHILD, _T_EMPTY), build))
-
-    assert sqlite_store.row_count(_T_MAIN) == 1
-    assert sqlite_store.row_count(_T_CHILD) == 1
-    # the table no ticker produced rows for STILL gets a manifest entry, else it would
-    # read as "never run" and full-rescan forever
-    assert get_entry(ctx, _T_EMPTY)["rows_added"] == 0
-    assert get_entry(ctx, _T_MAIN)["rows_added"] == 1
-    assert get_entry(ctx, _T_MAIN)["ticker_count"] == 1
-
-    print("\n=== SANITY CHECK: driver multi-table save + manifest ===")
-    print("  main + child rows saved; all 3 declared tables recorded, including the one no ticker produced rows for (rows_added=0). Validated.")
+    assert _stored(sqlite_store) == set(accessions) - set(failing)
+    assert sorted(summary.missing["AAA"]) == sorted(failing)
+    assert waits == [60.0, 120.0, 240.0]  # three in-task rounds, growing waits
+    line = next(w for w in ctx.warnings if "AAA read 130/200" in w)
+    assert all(a in line for a in failing[:20]) and "(+50 more)" in line
+    print("\n=== SANITY CHECK: partial save, exit 0 ===")
+    print(f"  200 listed, 70 always 503 -> {len(_stored(sqlite_store))} saved after 3 rounds (waits {waits}); no exception.")
+    print(f"  coverage line: {line[:110]}...")
 
 
-def test_a_failing_ticker_is_isolated_but_the_run_does_not_record_a_partial_success(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
+def test_failing_documents_recover_inside_the_retry_rounds(tmp_path, sqlite_store, waits):
+    """AC-011 check 4, first half: 70 of 200 fail on the first pass, then succeed -> 200 stored after one round."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 200)
+    source = _Source()
+    source.fail_reads = dict.fromkeys(accessions[:70], 1)
 
-    def build(ticker, cik, *, since, done_accessions, scope):
-        if ticker == "AAPL":
-            raise RuntimeError("discovery page failed")
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+    summary = _run(ctx, source, ["AAA"])
 
-    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
-        run_edgar_fetch(ctx, ["AAPL", "MSFT"], 15, _fetch((_T_MAIN,), build, "schedule test"))
-
-    assert list(sqlite_store.load(_T_MAIN)["ticker"]) == ["MSFT"]
-    assert get_entry(ctx, _T_MAIN) is None
-    print("\n=== SANITY CHECK: incomplete run ===")
-    print("  AAPL raised; MSFT's row still landed (pool not aborted), but the manifest did not advance")
-    print("  OK: partial discovery cannot masquerade as a complete empty history")
+    assert _stored(sqlite_store) == set(accessions)
+    assert summary.missing == {} and waits == [60.0]
+    assert len(source.reads) == 270  # 200 on the first pass, then only the 70 failed ones
+    print("\n=== SANITY CHECK: retry rounds recover ===")
+    print(f"  70/200 failed once -> round 1 re-read only those 70 -> {len(_stored(sqlite_store))} stored; {len(source.reads)} reads.")
 
 
-def test_completeness_sensitive_success_marks_a_trustworthy_frontier(tmp_path, sqlite_store):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+def test_gradual_recovery_lists_only_what_is_missing_each_night(tmp_path, sqlite_store, waits):
+    """AC-012 gradual: night 1 saves 130 of 200, night 2's work list is 70 and saves 60, night 3's is 10."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 200)
+    source = _Source()
+    failing = accessions[:70]
+    source.fail_reads = dict.fromkeys(failing, 10**6)
+    _run(ctx, source, ["AAA"])
 
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+    source.fail_reads = dict.fromkeys(failing[:10], 10**6)
+    night2 = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))
+    night3 = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=2))
 
-    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, "schedule test"))
-
-    entry = get_entry(ctx, _T_MAIN)
-    assert entry is not None and entry.get("coverage_complete") is True
-    assert entry.get("tickers") == ["AAPL"]
-    print("\n=== SANITY CHECK: complete schedule frontier ===")
-    print("  every ticker discovered and saved -> coverage_complete=true in the manifest")
-    print("  OK: aggregation can distinguish this run from a legacy or partial walk")
+    assert night2.work.size == 70 and night3.work.size == 10
+    assert night3.missing["AAA"] == failing[:10]
+    assert len([a for a in source.reads if a not in failing]) == 130  # a stored filing is never read again
+    print("\n=== SANITY CHECK: gradual recovery ===")
+    print(f"  night 1: 130 stored; night 2 work list {night2.work.size}; night 3 work list {night3.work.size}; each stored filing read once.")
 
 
-def test_run_edgar_fetch_reraises_a_programming_error_instead_of_warning(tmp_path, sqlite_store, monkeypatch):
-    """The contrast with `..._isolates_a_failing_ticker` above, and the reason that test's
-    `RuntimeError` is not a `NameError`.
+def test_a_long_outage_heals_on_the_first_good_night(tmp_path, sqlite_store, waits):
+    """AC-012 long outage: 10 nights of 503 (past the 7-day overlap), then night 11 reads every filing."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 40, start="2026-08-01")
+    source = _Source()
+    for night in range(10):
+        source.fail_reads = dict.fromkeys(accessions, 10**6)
+        summary = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=night))
+        assert summary.work.size == 40 and not _stored(sqlite_store)
+    source.fail_reads = {}
 
-    A `NameError` in `xbrl_linkbase.statement_arcs` was logged as "fundamentals: NEM failed"
-    by the very handler that isolates a bad ticker, so three tickers lost every fact they had
-    while the run reported success for 10.6 h. A defect in this repo is not a bad ticker: it
-    will hit every remaining ticker too, so the pool must abort and the run must fail.
-    """
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
+    night11 = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=10))
 
-    def build(ticker, cik, *, since, done_accessions, scope):
-        if ticker == "AAPL":
-            raise NameError("name 'cols' is not defined")
-        return {_T_MAIN: _rows(_T_MAIN, ticker, f"{ticker}-1")}
+    assert night11.work.size == 40 and _stored(sqlite_store) == set(accessions)
+    print("\n=== SANITY CHECK: long outage ===")
+    print(f"  10 nights of 503 stored nothing and raised nothing; night 11 read all {len(_stored(sqlite_store))} filings from 2026-08-01 on.")
+
+
+def test_an_empty_or_unparseable_filing_is_one_marker_never_listed_again(tmp_path, sqlite_store, waits):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 3)
+    source = _Source()
+    source.kinds = {accessions[0]: "empty", accessions[1]: "parse"}
+
+    summary = _run(ctx, source, ["AAA"])
+    again = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))
+
+    shown = sqlite_store.load(_T_DOC, markers=True)
+    markers = shown[shown["item"] == "_empty"]
+    assert sorted(markers["accession_number"]) == sorted(accessions[:2])
+    assert markers["form"].tolist() == ["8-K", "8-K"] and set(markers["ticker"]) == {"AAA"}
+    assert sqlite_store.load(_T_DOC)["accession_number"].tolist() == [accessions[2]]
+    assert summary.outcomes["AAA"].markers == 2 and again.work.size == 0
+    print("\n=== SANITY CHECK: empty-filing markers ===")
+    print(f"  empty + unparseable -> {len(markers)} marker rows (item '_empty'), hidden from load; the next run lists {again.work.size}.")
+
+
+def test_done_table_is_saved_last_so_a_failed_save_leaves_the_filing_listed(tmp_path, sqlite_store, waits, monkeypatch):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 2)
+    order: list[str] = []
+    crash = [True]
+    real_save = sqlite_store.save
+
+    def save(table, df, pk=None):
+        if str(table).startswith("driver_"):
+            order.append(str(table))
+        if table is _T_CHILD and crash[0]:
+            raise RuntimeError("deadlock detected")
+        return real_save(table, df, pk)
+
+    monkeypatch.setattr(sqlite_store, "save", save)
+    first = _run(ctx, _Source(), ["AAA"])
+    assert not sqlite_store.exists(_T_DOC)  # every child save crashed (rounds included) -> the done table was withheld
+    crash[0] = False
+    second = _run(ctx, _Source(), ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))
+
+    assert first.missing["AAA"] == accessions and second.work.size == 2
+    assert _stored(sqlite_store) == set(accessions)
+    assert set(order[:-2]) == {"driver_child"} and order[-2:] == ["driver_child", "driver_doc"]
+    print("\n=== SANITY CHECK: done table last ===")
+    print(f"  {len(order) - 2} crashed child saves never reached the done table; the next run saved {order[-2:]} in that order.")
+
+
+def test_a_programming_error_fails_the_run(tmp_path, sqlite_store, waits):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 2)
+    source = _Source()
+    source.kinds = {accessions[0]: "bug"}
 
     with pytest.raises(NameError, match="cols"):
-        run_edgar_fetch(ctx, ["AAPL", "MSFT"], 15, _fetch((_T_MAIN,), build))
-
-    assert ctx.warnings == []  # not downgraded to a warning
-    assert get_entry(ctx, _T_MAIN) is None  # nothing recorded -> the run retries
-
-    print("\n=== SANITY CHECK: driver re-raises a programming error ===")
-    print(
-        f"  build raised NameError -> run_edgar_fetch propagated it; warnings logged: {len(ctx.warnings)}, manifest entry: {get_entry(ctx, _T_MAIN)}."
-    )
-    print("  -> A repo defect now FAILS the run; a bad ticker (RuntimeError, test above) is still isolated.")
+        _run(ctx, source, ["AAA"])
+    print("\n=== SANITY CHECK: programming error ===")
+    print("  a NameError inside parse propagated: the driver's only non-zero exit.")
 
 
-def test_run_edgar_fetch_survives_a_save_failure_without_aborting_the_pool(tmp_path, sqlite_store, monkeypatch):
-    """The regression guard for the pre-refactor bug: every fetcher saved OUTSIDE its
-    per-ticker try, so one DB error propagated through `future.result()` and killed the
-    whole pool."""
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+def test_the_document_cap_reads_the_newest_first_and_logs_the_uncapped_size(tmp_path, sqlite_store, waits, caplog):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"], max_documents_per_run=5)
+    accessions = _seed(ctx, 12)
 
-    real_save = sqlite_store.save
+    with caplog.at_level("ERROR"):
+        summary = _run(ctx, _Source(), ["AAA"])
+    uncapped = _run(ctx, _Source(), ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1), no_cap=True)
 
-    def flaky_save(table, df, pk=None):
-        if table is _T_MAIN:
-            raise RuntimeError("deadlock detected")
-        return real_save(table, df, pk)
-
-    monkeypatch.setattr(sqlite_store, "save", flaky_save)
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, "x"), _T_CHILD: _rows(_T_CHILD, ticker, "x")}
-
-    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_CHILD), build))
-
-    assert not sqlite_store.exists(_T_MAIN)  # the failing save is caught per table
-    assert sqlite_store.row_count(_T_CHILD) == 1  # the sibling table still landed
-    assert get_entry(ctx, _T_MAIN) is None and get_entry(ctx, _T_CHILD) is None
-
-    print("\n=== SANITY CHECK: driver survives a save failure ===")
-    print("  save to driver_main raised; driver_child still saved, the pool completed, and no manifest entry advanced. Validated.")
+    assert summary.work.uncapped == 12 and summary.work.size == 5
+    assert _stored(sqlite_store) == set(accessions)
+    assert any("12 document(s) exceeds the per-run cap of 5" in r.getMessage() for r in caplog.records)
+    assert uncapped.work.size == 7 and set(summary.work.units["AAA"]["accession"]) == set(accessions[-5:])
+    print("\n=== SANITY CHECK: per-run cap ===")
+    print(f"  12 listed, cap 5 -> the 5 newest read and an ERROR logged; --no-cap read the other {uncapped.work.size}.")
 
 
-def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+def test_full_rereads_stored_documents(tmp_path, sqlite_store, waits):
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    _seed(ctx, 4)
+    source = _Source()
+    _run(ctx, source, ["AAA"])
 
-    def failed_save(table, df, pk=None):
-        raise RuntimeError("deadlock detected")
+    full = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1), full=True)
 
-    monkeypatch.setattr(sqlite_store, "save", failed_save)
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, "x")}
-
-    with pytest.raises(IncompleteEdgarRunError, match="no run manifest was advanced"):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, "schedule test"))
-
-    assert not sqlite_store.exists(_T_MAIN)
-    assert get_entry(ctx, _T_MAIN) is None
-    print("\n=== SANITY CHECK: schedule persistence failure ===")
-    print("  discovery succeeded but persistence failed; the completeness frontier was withheld")
-    print("  OK: a storage failure cannot turn an unknown Schedule history into an observed zero")
+    assert full.work.size == 4 and len(source.reads) == 8
+    print("\n=== SANITY CHECK: -F ===")
+    print(f"  4 stored; -F lists and re-reads all {full.work.size} (stored accessions ignored).")
 
 
-def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    real_save = sqlite_store.save
-
-    def flaky_save(table, df, pk=None):
-        if table is _T_MAIN:
-            raise RuntimeError("deadlock detected")
-        return real_save(table, df, pk)
-
-    monkeypatch.setattr(sqlite_store, "save", flaky_save)
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {
-            _T_MAIN: _rows(_T_MAIN, ticker, "x"),
-            _T_EMPTY: _rows(_T_EMPTY, ticker, "coverage"),
-        }
-
-    with pytest.raises(IncompleteEdgarRunError):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_EMPTY), build, completion_table=_T_EMPTY))
-
-    assert not sqlite_store.exists(_T_MAIN)
-    assert not sqlite_store.exists(_T_EMPTY)
-    assert any("coverage not advanced" in warning for warning in ctx.warnings)
-    print("\n=== SANITY CHECK: explicit coverage commits last ===")
-    print("  the transaction save failed, so the completion row was withheld and the ticker remains visibly stale. Validated.")
-
-
-def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    sqlite_store.save(_T_MAIN, _rows(_T_MAIN, "AAPL", "already-stored"))
-
-    seen: dict = {}
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        seen["since"] = since
-        seen["done"] = done_accessions
-        return {}
-
-    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
-
-    # first run -> no manifest entry -> the full years_history fallback window
-    assert seen["since"].year == (pd.Timestamp.today() - pd.DateOffset(years=15)).year
-    assert seen["done"] == frozenset({"already-stored"})
-
-    print("\n=== SANITY CHECK: driver window + dedup wiring ===")
-    print(f"  cold manifest -> since={seen['since'].date()} (15y back); done_accessions read from the table: {sorted(seen['done'])}. Validated.")
-
-
-def test_identity_scope_change_rewinds_only_the_changed_ticker(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT"])
-    ctx.config_dir = tmp_path
-    prior_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
-    record_run(
-        ctx,
-        _T_MAIN,
-        ticker_count=2,
-        rows_added=0,
-        is_full_rescan=True,
-        run_date=prior_date,
-        coverage_complete=True,
-        identity_scope_fingerprints={"AAPL": "same", "MSFT": "old"},
-        tickers=["AAPL", "MSFT"],
-    )
-    identity = types.SimpleNamespace(filing_scope=lambda ticker: types.SimpleNamespace(ticker=ticker))
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_identity", lambda context: identity)
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_registrants", lambda config_dir: {})
-    monkeypatch.setattr(
-        "src.data_extract.utils.common.edgar_driver.identity_scope_fingerprint",
-        lambda scope, entry: {"AAPL": "same", "MSFT": "new"}[scope.ticker],
-    )
-    seen: dict[str, pd.Timestamp] = {}
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        seen[ticker] = since
-        return {}
-
-    run_edgar_fetch(
-        ctx,
-        ["AAPL", "MSFT"],
-        15,
-        _fetch((_T_MAIN,), build, "identity test", identity_aware=True),
-    )
-
-    assert seen["AAPL"] == prior_date
-    assert seen["MSFT"].year == (pd.Timestamp.today() - pd.DateOffset(years=15)).year
-    assert get_entry(ctx, _T_MAIN)["identity_scope_fingerprints"] == {"AAPL": "same", "MSFT": "new"}
-    assert get_entry(ctx, _T_MAIN)["tickers"] == ["AAPL", "MSFT"]
-    print("\nSANITY: unchanged AAPL stayed incremental while only changed-scope MSFT relisted the full window.")
-
-
-def test_run_edgar_fetch_rejects_an_undeclared_table(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-
-    def build(ticker, cik, *, since, done_accessions, scope):
-        return {_T_MAIN: _rows(_T_MAIN, ticker, "x"), _T_CHILD: _rows(_T_CHILD, ticker, "x")}
-
-    with pytest.raises(IncompleteEdgarRunError):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
-
-    assert sqlite_store.row_count(_T_MAIN) == 1
-    assert not sqlite_store.exists(_T_CHILD)  # not declared -> not written
-    assert get_entry(ctx, _T_MAIN) is None  # a misdeclared fetch never advances the manifest
-
-    print("\n=== SANITY CHECK: driver ignores an undeclared table ===")
-    print("  build returned driver_child but only driver_main was declared -> child not written (it would never get a manifest entry). Validated.")
-
-
-def _identity_for_one_ticker(ticker: str, cik: str):
-    """A real `Identity` for one roster ticker that owns its own symbol."""
-    from src.data_extract.utils.common.identity import build_identity
-
-    return build_identity(
-        lineage=pd.DataFrame([{"cik": cik, "entity_id": f"E{cik}", "source": "roster"}]),
-        tenure=pd.DataFrame(
-            [{"symbol": ticker, "issuer_cik": cik, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 10, "source": "form345"}]
-        ),
-        roster=pd.DataFrame([{"ticker": ticker, "cik": cik}]),
-    )
-
-
-def test_run_edgar_fetch_honours_the_cli_config_dir_in_fingerprint_and_walk(tmp_path, sqlite_store, monkeypatch):
-    """`-c` must reach BOTH the identity-scope fingerprint and the filing walk: a register entry
-    that exists only in the run's config dir adds its predecessor CIK to the 8-K walk."""
+def test_run_edgar_fetch_honours_the_cli_config_dir_registrant_chain(tmp_path, sqlite_store, waits):
+    """`-c` reaches the listing: a register entry that exists only in the run's config dir lists its predecessor CIK."""
     import json
 
-    from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-
-    roster_cik, predecessor = "0000000001", "0009999991"
-    chain_dir, empty_dir = tmp_path / "cfg_chain", tmp_path / "cfg_empty"
+    chain_dir = tmp_path / "cfg_chain"
     (chain_dir / "sec").mkdir(parents=True)
-    empty_dir.mkdir()
     blob = {
-        "AAPL": {
+        "AAA": {
             "kind": "reorganisation",
             "segments": [
-                {"cik": predecessor, "valid_to": "2020-01-01", "evidence": "test-only predecessor"},
-                {"cik": roster_cik, "valid_from": "2020-01-01", "evidence": "test-only successor"},
+                {"cik": "0009999991", "valid_to": "2020-01-01", "evidence": "test-only predecessor"},
+                {"cik": "0000000001", "valid_from": "2020-01-01", "evidence": "test-only successor"},
             ],
         }
     }
     (chain_dir / "sec" / "registrant_cutover.json").write_text(json.dumps(blob), encoding="utf-8")
-    identity = _identity_for_one_ticker("AAPL", roster_cik)
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_driver.load_identity", lambda context: identity)
-    constructed: list[object] = []
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    seed_index(ctx, [(1, "AAA Inc", "8-K", "2026-03-02", _accession(1)), (9999991, "Old AAA", "8-K", "2019-03-01", "0009999991-19-000001")])
+    plain = _run(ctx, _Source(), ["AAA"])
+    ctx.config_dir = chain_dir
 
-    def _company(key):
-        constructed.append(key)
-        return types.SimpleNamespace(get_filings=lambda form: [])
+    chained = _run(ctx, _Source(), ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))
 
-    monkeypatch.setattr("edgar.Company", _company)
-    fingerprints: dict[str, str] = {}
-    for label, config_dir in (("empty", empty_dir), ("chain", chain_dir)):
-        ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-        ctx.config_dir = config_dir
-        constructed.clear()
-        run_edgar_fetch(ctx, ["AAPL"], 15, SEC_8K_FETCH)
-        fingerprints[label] = get_entry(ctx, Tables.sec_8k)["identity_scope_fingerprints"]["AAPL"]
-        walked = list(constructed)
-
-    assert fingerprints["chain"] != fingerprints["empty"], "the fingerprint ignored the run's config dir"
-    assert int(predecessor) in walked, f"the walk ignored the run's config dir: Company() built for {walked}"
-    print("\n=== SANITY CHECK: -c reaches fingerprint and walk ===")
-    print(f"  fingerprint changed with the temp register ({fingerprints['empty'][:8]} -> {fingerprints['chain'][:8]});")
-    print(f"  8-K walk built Company() for {walked}: the predecessor {predecessor} from the temp register was walked.")
+    assert plain.work.size == 1 and chained.work.size == 1
+    assert chained.work.units["AAA"]["accession"].tolist() == ["0009999991-19-000001"]
+    print("\n=== SANITY CHECK: -c reaches the listing ===")
+    print("  without the register only the roster CIK is listed; with the run's register the predecessor's 8-K is listed too.")
 
 
-# --------------------------------------------------------------------------- #
-# build_filing_rows                                                            #
-# --------------------------------------------------------------------------- #
-def test_build_filing_rows_stamps_once_dedups_on_pk_and_coerces_after_dedup(monkeypatch):
-    listed = [
-        types.SimpleNamespace(accession_number="a-1", form="8-K", filing_date="2024-01-02", cik="320193"),
-        types.SimpleNamespace(accession_number="a-2", form="8-K/A", filing_date="2024-02-02", cik=None),
-    ]
-    seen_listing: dict = {}
-
-    def fake_listing(ticker, forms, *, since, done_accessions, registrants, identity):
-        seen_listing.update(ticker=ticker, forms=list(forms), since=since, done=done_accessions, identity=identity)
-        return listed
-
-    stamps: list[str] = []
-    real_of = FilingStamp.of.__func__
-
-    def counting_of(cls, filing, roster_cik):
-        stamps.append(filing.accession_number)
-        return real_of(cls, filing, roster_cik)
-
+def test_parse_filing_rows_dedups_on_pk_and_coerces_after_dedup(monkeypatch):
     coerced_lengths: list[int] = []
     real_to_numeric = pd.to_numeric
 
@@ -578,37 +467,22 @@ def test_build_filing_rows_stamps_once_dedups_on_pk_and_coerces_after_dedup(monk
         coerced_lengths.append(len(values))
         return real_to_numeric(values, **kwargs)
 
-    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", fake_listing)
-    monkeypatch.setattr(FilingStamp, "of", classmethod(counting_of))
     monkeypatch.setattr(frame_sanitize.pd, "to_numeric", spy_to_numeric)
 
     def row_fn(ticker, stamp):
-        # two rows on one PK per filing: the LAST must survive the dedup
+        # two rows on one PK: the LAST must survive the dedup
         return [
-            {"ticker": ticker, "accession_number": stamp.accession_number, "cik": stamp.cik, "value": "not a number"},
-            {"ticker": ticker, "accession_number": stamp.accession_number, "cik": stamp.cik, "value": "7"},
+            {"ticker": ticker, "accession_number": stamp.accession_number, "item": "8.01", "cik": stamp.cik, "value": "not a number"},
+            {"ticker": ticker, "accession_number": stamp.accession_number, "item": "8.01", "cik": stamp.cik, "value": "7"},
         ]
 
-    out = build_filing_rows(
-        "AAPL",
-        "0000320193",
-        since=pd.Timestamp("2024-01-01"),
-        done_accessions=frozenset({"x"}),
-        scope=EdgarScope(None, {}),
-        forms=["8-K"],
-        table=_T_MAIN,
-        columns=["ticker", "accession_number", "cik", "value"],
-        row_fn=row_fn,
-        numeric=("value",),
-    )[_T_MAIN]
+    stamp = FilingStamp.of(fake_filing("a-1", 320193, "2024-01-02"), "0000320193")
+    columns = ["ticker", "accession_number", "item", "cik", "value"]
+    out = parse_filing_rows("AAPL", "0000320193", stamp, EdgarScope(None, {}), table=_T_DOC, columns=columns, row_fn=row_fn, numeric=("value",))[
+        _T_DOC
+    ]
 
-    assert stamps == ["a-1", "a-2"]  # one stamp per filing
-    assert seen_listing == {"ticker": "AAPL", "forms": ["8-K"], "since": pd.Timestamp("2024-01-01"), "done": frozenset({"x"}), "identity": None}
-    assert list(out["accession_number"]) == ["a-1", "a-2"]  # 4 rows -> 2 after the PK dedup
-    assert list(out["value"]) == [7.0, 7.0]  # the last row won, then was coerced
-    assert coerced_lengths == [2]  # coercion saw only the de-duplicated rows
-    assert list(out["cik"]) == ["0000320193", "0000320193"]  # filer CIK, roster fallback when absent
-    print("\n=== SANITY CHECK: build_filing_rows ===")
-    print(
-        f"  2 filings -> {len(stamps)} stamps; 4 rows -> {len(out)} after PK dedup; to_numeric ran on {coerced_lengths[0]} rows (after dedup). Validated."
-    )
+    assert list(out["value"]) == [7.0] and coerced_lengths == [1]
+    assert list(out["cik"]) == ["0000320193"]
+    print("\n=== SANITY CHECK: parse_filing_rows ===")
+    print(f"  2 rows on one PK -> {len(out)} after dedup; to_numeric ran on {coerced_lengths[0]} row (after dedup). Validated.")

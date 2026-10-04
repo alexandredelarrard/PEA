@@ -139,37 +139,22 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     print("  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier")
 
 
-def _raises_incomplete(node: ast.AST) -> bool:
-    return any(
-        isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call) and getattr(sub.exc.func, "id", None) == "IncompleteEdgarRunError"
-        for sub in ast.walk(node)
-    )
+def _raises(node: ast.AST, name: str) -> bool:
+    return any(isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call) and getattr(sub.exc.func, "id", None) == name for sub in ast.walk(node))
 
 
-def test_scheduled_edgar_walks_require_complete_ticker_coverage():
+def _calls(node: ast.AST) -> list[str]:
+    return [sub.func.id for sub in ast.walk(node) if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)]
+
+
+def test_scheduled_edgar_walks_save_what_they_read_and_exit_zero():
     root = DAG_FILE.parents[2]
     driver = ast.parse(_source(root / EDGAR_DRIVER_FILE))
-    fields = {
-        node.target.id
-        for cls in ast.walk(driver)
-        if isinstance(cls, ast.ClassDef) and cls.name == "EdgarFetch"
-        for node in cls.body
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-    }
-    assert "require_complete" not in fields, "EdgarFetch must not offer a partial-success mode"
     run = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "run_edgar_fetch")
-    order = [
-        "raise"
-        if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Name) and stmt.test.id == "failed" and _raises_incomplete(stmt)
-        else "record"
-        for stmt in run.body
-        if (isinstance(stmt, ast.If) and _raises_incomplete(stmt))
-        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and getattr(stmt.value.func, "id", None) == "_record_tables")
-    ]
-    assert order == ["raise", "record"], f"a failed ticker must raise IncompleteEdgarRunError before any manifest entry is recorded: {order}"
-    record = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "_record_tables")
-    coverage = [kw.value for call in ast.walk(record) if isinstance(call, ast.Call) for kw in call.keywords if kw.arg == "coverage_complete"]
-    assert len(coverage) == 1 and isinstance(coverage[0], ast.Constant) and coverage[0].value is True
+    assert not _raises(run, "IncompleteEdgarRunError"), "a failed document must not fail the task"
+    calls = _calls(run)
+    assert "record_run" not in calls and "_record_tables" not in calls, "the driver must not write the run manifest"
+    assert calls.index("_run_pass") < calls.index("_retry_rounds") < calls.index("_log_coverage")
 
     missing = [
         path
@@ -181,10 +166,9 @@ def test_scheduled_edgar_walks_require_complete_ticker_coverage():
     ]
     assert not missing, f"scheduled EDGAR walks no longer declare an EdgarFetch spec: {missing}"
 
-    print("\n=== SANITY CHECK: strict EDGAR walks ===")
-    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers run the one strict driver path: no flag, a failed")
-    print("  ticker raises IncompleteEdgarRunError before _record_tables, and recorded runs are coverage_complete=True")
-    print("  OK: one failed ticker makes the source task retry without advancing its manifest")
+    print("\n=== SANITY CHECK: EDGAR walks save what they read ===")
+    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled EDGAR fetchers declare an EdgarFetch; run_edgar_fetch reads, retries in")
+    print("  rounds and logs coverage, never raises IncompleteEdgarRunError and writes no run manifest.")
 
 
 def test_earnings_calls_are_one_task_outside_the_retired_scrape_pool():

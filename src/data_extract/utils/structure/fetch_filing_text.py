@@ -3,7 +3,8 @@
 Writes `sec_filing_text`, one row per (ticker, accession, section). Primary path: edgartools' typed
 `TenK`/`TenQ` section parser; fallback: a regex carve over the filing text, used only for a section the
 structured parse missed or returned as a sub-`FILING_TEXT_MIN_CHARS` stub. A transient SEC failure
-raises and fails the filing; a parse failure falls back as above.
+raises and fails the filing; a parse failure falls back as above; a filing with no readable section
+becomes an empty-filing marker.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import re
 from functools import partial
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
 from src.data_store.schema import Tables
@@ -156,5 +157,6 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
 FILING_TEXT_FETCH = EdgarFetch(
     desc="10-K/10-Q text (edgartools)",
     tables=(Tables.filing_risk_text,),
-    build=partial(build_filing_rows, forms=FILING_TEXT_FORMS, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
+    forms=tuple(FILING_TEXT_FORMS),
+    parse=partial(parse_filing_rows, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
 )

@@ -16,8 +16,9 @@ import pandas as pd
 
 from src.constants.constants import SEC_13G_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch
+from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_header
-from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, build_schedule_rows
+from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
 from src.data_store.schema import Tables
 
 # `sec_13d`'s columns minus the four Item narratives, plus `rule_designation`.
@@ -153,8 +154,13 @@ SCHEDULE_13G = ScheduleSpec(
     blank_to_none=True,
 )
 
+#: Done per key: a schedule a universe company FILED is a marker under that company, never a reason
+#: to skip it for the universe company it is about.
 SEC_13G_FETCH = EdgarFetch(
     desc="SC 13G (edgartools)",
     tables=(Tables.sec_13g,),
-    build=partial(build_schedule_rows, spec=SCHEDULE_13G, table=Tables.sec_13g),
+    forms=tuple(SEC_13G_FORMS),
+    parse=partial(parse_schedule, spec=SCHEDULE_13G, table=Tables.sec_13g),
+    is_subject=schedule_is_subject,
+    done_scope=DONE_PER_KEY,
 )

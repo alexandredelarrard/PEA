@@ -1,16 +1,14 @@
-"""Characterization of the registrant filing walks and the owner-inclusive schedule search.
+"""Characterization of the registrant filing walks: the `Company` listing and the local-index rows.
 
-Pins provenance order, accession dedup, log text, the SPLIT duplicate-accession warning and the
-schedule window partition/bisect result against one unsplit window. Offline: stub `Company`,
-stub `Filing` and a fake SEC Atom server.
+Pins provenance order, accession dedup, log text and the SPLIT duplicate-accession warning, and
+that `resolve_registrant_entries` applies the same rules to index rows. Offline: stub `Company`.
 """
 
 from __future__ import annotations
 
 import logging
 import types
-from typing import Any, cast
-from urllib.parse import parse_qs, urlparse
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -18,15 +16,13 @@ import pytest
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import (
     Registrant,
-    ScheduleDiscoveryIncompleteError,
     Segment,
+    resolve_registrant_entries,
     resolve_registrant_filings,
-    resolve_schedule_subject_filings,
 )
 
 LOGGER = "src.data_extract.utils.common.registrant"
 BOUNDARY = pd.Timestamp("2026-07-01")
-SUBJECT_CIK = "0001364742"
 
 
 def _filing(accession: str, filing_date: str) -> types.SimpleNamespace:
@@ -233,154 +229,75 @@ def test_split_duplicate_accession_warns_and_keeps_the_first_segment(monkeypatch
 
 
 # --------------------------------------------------------------------------- #
-# (d) schedule windows                                                          #
+# (d) the same rules on local EDGAR index rows                                 #
 # --------------------------------------------------------------------------- #
-class _FakeFiling:
-    def __init__(self, *, cik: int, company: str, form: str, filing_date: str, accession_no: str) -> None:
-        self.cik = cik
-        self.company = company
-        self.form = form
-        self.filing_date = filing_date
-        self.accession_number = accession_no
-        subject = SUBJECT_CIK if not accession_no.startswith("other") else "0000320193"
-        self.header = types.SimpleNamespace(subject_companies=[types.SimpleNamespace(company_information=types.SimpleNamespace(cik=subject))])
-
-
-def _schedule_book() -> list[tuple[str, str, str, bool]]:
-    """(accession, date, form, has_file_number): dense 2021, sparse elsewhere, 2020-01-01..2023-12-31."""
-    book: list[tuple[str, str, str, bool]] = []
-    for index, day in enumerate(pd.date_range("2021-01-01", "2021-12-31", freq="D")):
-        form = "SC 13G/A" if index % 3 else "SC 13G"
-        book.append((f"dense-{index:03d}", day.strftime("%Y-%m-%d"), form, index % 4 != 0))
-    for index, day in enumerate(pd.date_range("2020-01-05", "2023-12-25", freq="21D")):
-        book.append((f"sparse-{index:03d}", day.strftime("%Y-%m-%d"), "SC 13G", index % 5 != 0))
-    book.append(("other-1", "2022-03-03", "SC 13G", True))
-    book.append(("form-424B2", "2022-03-04", "424B2", True))
-    return book
-
-
-def _atom_server(book: list[tuple[str, str, str, bool]], requested: list[str]) -> Any:
-    def download(url: str) -> str:
-        requested.append(url)
-        query = parse_qs(urlparse(url).query)
-        start, count = int(query["start"][0]), int(query["count"][0])
-        lo, hi = query["datea"][0], query["dateb"][0]
-        rows = sorted((row for row in book if lo <= row[1].replace("-", "") <= hi), key=lambda row: row[1], reverse=True)
-        parts = [
-            "<entry><content>"
-            f"<accession-number>{accession}</accession-number><filing-date>{date}</filing-date>"
-            f"<filing-type>{form}</filing-type>{'<file-number>005-1</file-number>' if numbered else ''}"
-            "</content></entry>"
-            for accession, date, form, numbered in rows[start : start + count]
+def _rows(*rows: tuple[str, str, str, str]) -> pd.DataFrame:
+    """Index rows `(cik, form, filed, accession)`."""
+    return pd.DataFrame(
+        [
+            {"cik": cik, "company": "Fixture", "form": form, "filed": pd.Timestamp(filed), "accession": accession}
+            for cik, form, filed, accession in rows
         ]
-        return f'<feed xmlns="http://www.w3.org/2005/Atom">{"".join(parts)}</feed>'
-
-    return download
-
-
-def _run_schedule(monkeypatch, caplog, safe_offset: int) -> tuple[list[str], list[str], list[str]]:
-    requested: list[str] = []
-    monkeypatch.setattr("edgar.Filing", _FakeFiling)
-    monkeypatch.setattr("edgar.httprequests.download_text", _atom_server(_schedule_book(), requested))
-    monkeypatch.setattr("src.data_extract.utils.common.registrant.SCHEDULE_ATOM_SAFE_OFFSET", safe_offset)
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger=LOGGER):
-        filings = resolve_schedule_subject_filings(
-            "BLK",
-            frozenset({SUBJECT_CIK}),
-            ["SC 13G", "SC 13G/A"],
-            since=pd.Timestamp("2020-01-01"),
-            through=pd.Timestamp("2023-12-31"),
-            done_accessions=frozenset({"dense-001"}),
-        )
-    return [cast(Any, filing).accession_number for filing in filings], requested, _messages(caplog, logging.INFO)
-
-
-def test_schedule_partition_and_bisect_match_one_big_window(monkeypatch, caplog):
-    big, big_requests, big_logs = _run_schedule(monkeypatch, caplog, safe_offset=10_000)
-    split, split_requests, split_logs = _run_schedule(monkeypatch, caplog, safe_offset=100)
-
-    assert big == split
-    assert len(big) == 328
-    assert big_requests[0] == (
-        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001364742&type=SC+13G"
-        "&datea=20200101&dateb=20231231&owner=include&start=0&count=100&output=atom"
     )
-    assert len(big_requests) == 5
-    assert [
-        parse_qs(urlparse(url).query)["datea"][0] + ".." + parse_qs(urlparse(url).query)["dateb"][0] + "@" + parse_qs(urlparse(url).query)["start"][0]
-        for url in split_requests
-    ] == [
-        "20200101..20231231@0",
-        "20200101..20201231@0",
-        "20210101..20211231@0",
-        "20210101..20210702@0",
-        "20210101..20210402@0",
-        "20210403..20210702@0",
-        "20210703..20211231@0",
-        "20210703..20211001@0",
-        "20211002..20211231@0",
-        "20220101..20221231@0",
-        "20230101..20231231@0",
-    ]
-    assert split_logs[0] == (
-        "BLK: schedule search reached offset 100 for subject CIK 0001364742, form SC 13G; "
-        "partitioning 2020-01-01..2023-12-31 into complete one-year windows"
+
+
+def test_index_union_lists_roster_chain_and_identity_ciks_first_writer_wins():
+    identity = _identity("XOM", "0000034088", {"0000034088": "E1", "0000099999": "E1"}, ("XOM", "0000034088"))
+    df = _rows(
+        ("0000034088", "8-K", "2026-05-01", "pred"),
+        ("0002115436", "8-K", "2026-07-07", "suc"),
+        ("0000099999", "8-K", "2025-01-01", "lineage"),
+        ("0002115436", "8-K", "2026-08-03", "shared"),
+        ("0000034088", "8-K", "2026-08-03", "shared"),
+        ("0000555555", "8-K", "2026-08-04", "foreign"),
+        ("0000034088", "10-K", "2026-02-01", "other-form"),
     )
-    assert split_logs[1] == (
-        "BLK: schedule search reached offset 100 for subject CIK 0001364742, form SC 13G; bisecting 2021-01-01..2021-12-31 into complete date windows"
+
+    out = resolve_registrant_entries("XOM", "0000034088", df, ["8-K"], registrants=_xom_register(), identity=identity)
+
+    assert out["accession"].tolist() == ["lineage", "pred", "suc", "shared"]
+    assert out.loc[out["accession"] == "shared", "cik"].item() == "0000034088"  # roster CIK is the first writer
+    print("\n=== SANITY: index UNION ===")
+    print("  roster + chain + identity CIK listed, oldest first; a co-indexed accession once (roster wins); a foreign CIK and other forms dropped")
+
+
+def test_index_split_keeps_each_segment_inside_its_dates_and_warns_on_overlap(caplog):
+    df = _rows(
+        ("0000034088", "10-Q", "2026-05-01", "pred-in"),
+        ("0000034088", "10-Q", "2026-08-03", "pred-after"),
+        ("0002115436", "10-Q", "2026-06-01", "suc-before"),
+        ("0002115436", "10-Q", "2026-08-03", "suc-in"),
     )
-    assert big_logs[-1] == (
-        "BLK: subject-first schedules -- 5 page(s), 106 owner-side row(s) excluded from Atom metadata, "
-        "329 candidate(s), 328 subject match(es), 0 unknown header(s), 328 retained for full parsing"
+
+    out = resolve_registrant_entries("XOM", "0000034088", df, ["10-Q"], registrants=_xom_register())
+
+    assert out["accession"].tolist() == ["pred-in", "suc-in"]
+    overlap = Registrant(
+        ticker="T",
+        kind="reorganisation",
+        segments=(
+            Segment(cik="0000000001", valid_from=None, valid_to=pd.Timestamp("2026-08-01"), evidence="fixture"),
+            Segment(cik="0000000001", valid_from=pd.Timestamp("2026-06-01"), valid_to=None, evidence="fixture"),
+        ),
     )
-    assert split_logs[-1] == (
-        "BLK: subject-first schedules -- 11 page(s), 201 owner-side row(s) excluded from Atom metadata, "
-        "329 candidate(s), 328 subject match(es), 0 unknown header(s), 328 retained for full parsing"
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        dup = resolve_registrant_entries("T", "0000000001", _rows(("0000000001", "10-Q", "2026-07-01", "dup")), ["10-Q"], registrants={"T": overlap})
+    assert dup["accession"].tolist() == ["dup"]
+    assert any("kept by two segments" in m for m in _messages(caplog, logging.WARNING))
+    print("\n=== SANITY: index SPLIT ===")
+    print(
+        "  each segment lists only its own dates: the predecessor's post-boundary 10-Q and the successor's pre-boundary one are dropped; an overlap warns and keeps one"
     )
-    print("\n=== SANITY: schedule window split ===")
-    print(f"  one window: {len(big_requests)} pages; split: {len(split_requests)} pages; same {len(big)} accessions")
-    print("  owner rows on discarded pre-split pages stay counted (106 -> 201); page order pinned")
 
 
-def test_schedule_unsplittable_day_is_incomplete(monkeypatch):
-    book = [(f"same-{index:03d}", "2022-05-05", "SC 13G", True) for index in range(150)]
-    requested: list[str] = []
-    monkeypatch.setattr("edgar.Filing", _FakeFiling)
-    monkeypatch.setattr("edgar.httprequests.download_text", _atom_server(book, requested))
-    monkeypatch.setattr("src.data_extract.utils.common.registrant.SCHEDULE_ATOM_SAFE_OFFSET", 100)
-    with pytest.raises(ScheduleDiscoveryIncompleteError, match="inside the unsplittable date 2022-05-05 for subject CIK 0001364742, form SC 13G"):
-        resolve_schedule_subject_filings(
-            "BLK",
-            frozenset({SUBJECT_CIK}),
-            ["SC 13G"],
-            since=pd.Timestamp("2022-05-05"),
-            through=pd.Timestamp("2022-05-05"),
-            done_accessions=frozenset(),
-        )
-    print("\n=== SANITY: one day over the safe offset -> hard incomplete ===")
+def test_index_split_form_without_register_lists_the_roster_cik_only(caplog):
+    identity = _identity("ABC", "0000000001", {"0000000001": "E1", "0000000002": "E1"}, ("ABC", "0000000001"))
+    df = _rows(("0000000001", "10-K", "2025-02-01", "roster"), ("0000000002", "10-K", "2024-02-01", "uncurated"))
 
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        out = resolve_registrant_entries("ABC", "0000000001", df, ["10-K"], registrants={}, identity=identity)
 
-def test_schedule_requires_a_finite_start(monkeypatch):
-    monkeypatch.setattr("edgar.httprequests.download_text", lambda url: pytest.fail("no request without a start date"))
-    with pytest.raises(ScheduleDiscoveryIncompleteError, match="requires a finite start date"):
-        resolve_schedule_subject_filings("BLK", frozenset({SUBJECT_CIK}), ["SC 13G"], since=None, done_accessions=frozenset())
-    print("\n=== SANITY: no start date -> hard incomplete before any request ===")
-
-
-def test_schedule_empty_payload_is_incomplete(monkeypatch):
-    monkeypatch.setattr("edgar.httprequests.download_text", lambda url: None)
-    with pytest.raises(ScheduleDiscoveryIncompleteError) as raised:
-        resolve_schedule_subject_filings(
-            "BLK",
-            frozenset({SUBJECT_CIK}),
-            ["SC 13G"],
-            since=pd.Timestamp("2022-01-01"),
-            through=pd.Timestamp("2022-02-01"),
-            done_accessions=frozenset(),
-        )
-    assert (
-        str(raised.value)
-        == "BLK: schedule search failed for subject CIK 0001364742, form SC 13G, offset 0: ValueError('SEC Atom response was empty')"
-    )
-    print("\n=== SANITY: empty Atom payload -> hard incomplete with the pinned message ===")
+    assert out["accession"].tolist() == ["roster"]
+    assert any("uncurated" in m for m in _messages(caplog, logging.WARNING))
+    print("\n=== SANITY: index SPLIT without a register ===")
+    print("  an identity CIK the register has not dated is not listed for a consolidating form, and the run warns")

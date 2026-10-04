@@ -7,7 +7,8 @@ SC 13D/13D-A filings via edgartools into `sec_13d` (one row per ticker, accessio
 "SC 13D" and "SCHEDULE 13D" form strings (exact match). Numerics are trusted only from structured
 XML without placeholder zeros, so the table never claims an undisclosed 0% stake; pre-XML item
 prose is regex-carved from the filing text and normalized for encoding/whitespace only. SEC reads go
-through `sec_io`; a transient failure raises and fails the filing.
+through `sec_io`; a transient failure raises and fails the filing, a parse failure of the schedule
+or its trade exhibit raises `ParseFailureError` (an empty-filing marker).
 """
 
 from __future__ import annotations
@@ -22,8 +23,10 @@ from bs4 import BeautifulSoup
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
-from src.data_extract.utils.common.sec_io import TransientReadError, filing_attachments, filing_text
-from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, kept_schedule_filings
+from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
+from src.data_extract.utils.common.resume import DONE_PER_KEY
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_attachments, filing_text
+from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
 from src.data_store.schema import Table, Tables
 
 _COLS = [
@@ -381,10 +384,10 @@ def _filing_transactions(ticker: str, cik: str, stamp: FilingStamp, filing_rows:
     fallback_person = names[0] if len(names) == 1 else None
     try:
         trades = _extract_transaction_rows(stamp.filing, fallback_person, stamp.filed)
-    except TransientReadError:
+    except (TransientReadError, *PROGRAMMING_ERRORS):
         raise
     except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-        raise RuntimeError(f"{SCHEDULE_13D.label} accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
+        raise ParseFailureError(f"{SCHEDULE_13D.label} accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
     issuer_cik = filing_rows[0].get("cik") if filing_rows else cik
     for seq, trade in enumerate(trades):
         trade.update(ticker=ticker, cik=issuer_cik, accession_number=stamp.accession_number, filing_date=stamp.filed, trade_seq=seq)
@@ -403,24 +406,21 @@ SCHEDULE_13D = ScheduleSpec(
 )
 
 
-def build_ticker_13d_edgar(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    scope: EdgarScope,
-) -> dict[Table, pd.DataFrame]:
-    """`ticker`'s new issuer-side 13D filings: one `sec_13d` row per reporting person plus each
-    filing's Item 5(c) trades in `sec_13d_transactions`. A filing whose `.obj()` parse or trade
-    exhibit fails raises, failing the ticker."""
-    rows: list[dict] = []
-    txn_rows: list[dict] = []
-    walk = kept_schedule_filings(ticker, cik, since=since, done_accessions=done_accessions, scope=scope, spec=SCHEDULE_13D)
-    for stamp, filing_rows in walk:
-        rows.extend(filing_rows)
-        txn_rows.extend(_filing_transactions(ticker, cik, stamp, filing_rows))
-    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(txn_rows, columns=_TRANSACTION_COLS)}
+def parse_13d(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> dict[Table, pd.DataFrame]:
+    """One issuer-side 13D: a `sec_13d` row per reporting person plus its Item 5(c) trades in
+    `sec_13d_transactions`; both empty when the parsed issuer is another company."""
+    rows = schedule_ticker_rows(ticker, cik, stamp, scope, SCHEDULE_13D)
+    trades = _filing_transactions(ticker, cik, stamp, rows) if rows else []
+    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(trades, columns=_TRANSACTION_COLS)}
 
 
-SEC_13D_FETCH = EdgarFetch(desc="SC 13D (edgartools)", tables=(Tables.sec_13d, Tables.sec_13d_transactions), build=build_ticker_13d_edgar)
+#: `sec_13d` is the done table, saved after `sec_13d_transactions`; done per key, as for 13G.
+SEC_13D_FETCH = EdgarFetch(
+    desc="SC 13D (edgartools)",
+    tables=(Tables.sec_13d_transactions, Tables.sec_13d),
+    forms=tuple(SEC_13D_FORMS),
+    parse=parse_13d,
+    done_table=Tables.sec_13d,
+    is_subject=schedule_is_subject,
+    done_scope=DONE_PER_KEY,
+)

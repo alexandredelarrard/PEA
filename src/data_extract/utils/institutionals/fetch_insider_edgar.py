@@ -1,7 +1,10 @@
 """Daily EDGAR ownership filings for the open quarterly-bulk gap.
 
 The live table is provisional. Quarterly ZIP rows remain canonical whenever an accession is
-present in both sources; the aggregation loader performs that accession-level overlay.
+present in both sources; the aggregation loader performs that accession-level overlay. The local
+EDGAR index lists a Form 3/4/5 under its issuer and under every reporting owner, so a filing whose
+XML issuer is not the key's company (the key is only an owner) becomes an empty-filing marker, as
+does a holdings-only filing with no transaction row.
 """
 
 from __future__ import annotations
@@ -12,22 +15,15 @@ from functools import partial
 from typing import Any, cast
 
 import pandas as pd
-from edgar import Filing
 
 from src.constants.constants import SEC_INSIDER_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, run_edgar_fetch
-from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.registrant import resolve_registrant_filings
-from src.data_extract.utils.common.sec_atom import (
-    SEC_INSIDER_FORM_FAMILIES,
-    AtomEntry,
-    AtomPageError,
-    atom_filing,
-    iter_atom_pages,
-    keep_atom_entry,
-)
-from src.data_extract.utils.common.sec_io import TransientReadError, filing_header, filing_xml
+from src.data_extract.utils.common import edgar_index
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, run_edgar_fetch
+from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.registrant import issuer_ciks, listing_ciks, resolve_registrant_entries
+from src.data_extract.utils.common.resume import DONE_PER_KEY
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     LIVE_DATE_FORMATS,
@@ -52,99 +48,20 @@ _LIVE_COLUMNS = (
 _LOG = logging.getLogger(__name__)
 
 
-def ownership_filings(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None,
-    through: pd.Timestamp,
-    done_accessions: frozenset[str],
-) -> list[Filing]:
-    """List issuer ownership filings, including forms submitted under an owner's CIK."""
-    start_date = pd.Timestamp(since).normalize() if since is not None else None
-    end_date = pd.Timestamp(through).normalize()
-    filings: dict[str, Filing] = {}
-    for family in SEC_INSIDER_FORM_FAMILIES:
-        filings.update(_family_filings(ticker, cik, family, start_date, end_date, done_accessions))
-    return sorted(filings.values(), key=lambda filing: filing.filing_date)
-
-
-def _family_filings(
-    ticker: str,
-    cik: str,
-    family: str,
-    start_date: pd.Timestamp | None,
-    end_date: pd.Timestamp,
-    done_accessions: frozenset[str],
-) -> dict[str, Filing]:
-    """Page one form family newest-first until a short page or an entry older than `start_date`.
-
-    A failed page logs a warning and ends this family with the pages already read.
-    """
-    filings: dict[str, Filing] = {}
-    try:
-        for _offset, entries in iter_atom_pages(pad_cik(cik), family, start_date, end_date, ticker):
-            page, oldest = _page_filings(entries, ticker, cik, start_date, end_date, done_accessions)
-            filings.update(page)
-            if start_date is not None and oldest < start_date:
-                break
-    except AtomPageError as exc:  # preserve other discovery channels
-        _LOG.warning("ownership filing search failed for %s form %s at offset %d: %r", ticker, family, exc.offset, exc.__cause__)
-    return filings
-
-
-def _page_filings(
-    entries: list[AtomEntry | None],
-    ticker: str,
-    cik: str,
-    start_date: pd.Timestamp | None,
-    end_date: pd.Timestamp,
-    done_accessions: frozenset[str],
-) -> tuple[dict[str, Filing], pd.Timestamp]:
-    """Kept insider filings on one page by accession, and the page's oldest dated entry (capped at `end_date`)."""
-    target_forms = frozenset(SEC_INSIDER_FORMS)
-    filings: dict[str, Filing] = {}
-    oldest = end_date
-    for entry in entries:
-        if entry is None:
-            continue
-        oldest = min(oldest, entry.filing_date)
-        if keep_atom_entry(entry, target_forms, done_accessions, start_date, end_date):
-            filings[cast(str, entry.accession)] = atom_filing(entry, cik=cik, company=ticker)
-    return filings, oldest
-
-
 def insider_filings(
+    context: Context,
     ticker: str,
     cik: str,
     *,
     since: pd.Timestamp | None,
     through: pd.Timestamp,
-    done_accessions: frozenset[str],
     scope: EdgarScope,
 ) -> list[Any]:
-    """Union issuer submissions with the owner-inclusive issuer search."""
-    issuer_filings = resolve_registrant_filings(
-        ticker,
-        SEC_INSIDER_FORMS,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=scope.registrants,
-        identity=scope.identity,
-    )
-    discovered: dict[str, Any] = {str(filing.accession_number): filing for filing in issuer_filings}
-    for filing in ownership_filings(
-        ticker,
-        cik,
-        since=since,
-        through=through,
-        done_accessions=done_accessions,
-    ):
-        discovered.setdefault(str(filing.accession_number), filing)
-    return sorted(
-        discovered.values(),
-        key=lambda filing: pd.Timestamp(filing.filing_date),
-    )
+    """`ticker`'s Forms 3/4/5 in the local EDGAR index filed in `[since, through]`, oldest first (issuer and owner roles)."""
+    df_index = edgar_index.entries(context, set(listing_ciks(ticker, cik, scope.registrants, scope.identity)), SEC_INSIDER_FORMS, since=since)
+    df_rows = resolve_registrant_entries(ticker, cik, df_index, SEC_INSIDER_FORMS, registrants=scope.registrants, identity=scope.identity)
+    df_rows = df_rows[df_rows["filed"] <= pd.Timestamp(through).normalize()]
+    return [edgar_index.index_filing(r.cik, r.company, r.form, r.filed, r.accession) for r in df_rows.itertuples(index=False)]
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
@@ -161,29 +78,39 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
+def _filing_strings(filing: Any) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One ownership filing -> (canonical string transactions, footnotes), keyed on its accession.
+
+    A filing without ownership XML raises `ParseFailureError`."""
+    xml = filing_xml(filing)
+    if not xml:
+        raise ParseFailureError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
+    df_str, df_notes = extract_xml_strings(xml)
+    accession = str(filing.accession_number)
+    return df_str.assign(accession_number=accession), df_notes.assign(accession_number=accession)
+
+
+def _filing_metadata(filing: Any) -> dict[str, object]:
+    return {
+        "accession_number": str(filing.accession_number),
+        "filing_date": pd.Timestamp(filing.filing_date).normalize(),
+        "acceptance_datetime": _acceptance_datetime(filing),
+    }
+
+
 def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Ownership filings -> (canonical string transactions, footnotes, filing metadata), keyed on accession."""
     transaction_frames: list[pd.DataFrame] = []
     footnote_frames: list[pd.DataFrame] = []
     metadata: list[dict[str, object]] = []
     for filing in filings:
-        xml = filing_xml(filing)
-        if not xml:
-            raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
-        df_str, df_notes = extract_xml_strings(xml)
+        df_str, df_notes = _filing_strings(filing)
         if df_str.empty:
             continue
-        accession = str(filing.accession_number)
-        transaction_frames.append(df_str.assign(accession_number=accession))
+        transaction_frames.append(df_str)
         if not df_notes.empty:
-            footnote_frames.append(df_notes.assign(accession_number=accession))
-        metadata.append(
-            {
-                "accession_number": accession,
-                "filing_date": pd.Timestamp(filing.filing_date).normalize(),
-                "acceptance_datetime": _acceptance_datetime(filing),
-            }
-        )
+            footnote_frames.append(df_notes)
+        metadata.append(_filing_metadata(filing))
     df_str = pd.concat(transaction_frames, ignore_index=True) if transaction_frames else pd.DataFrame()
     df_notes = pd.concat(footnote_frames, ignore_index=True) if footnote_frames else empty_footnotes()
     return df_str, df_notes, pd.DataFrame(metadata)
@@ -197,61 +124,86 @@ def _screen_live_rows(df_str: pd.DataFrame, df_meta: pd.DataFrame, universe: Seq
     return screen_insider_rows(df_built, universe, identity)
 
 
-def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Ownership filings -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
-    df_str, df_notes, df_meta = _ticker_strings(filings)
-    if df_str.empty:
-        return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
+def _screened_frames(
+    df_str: pd.DataFrame, df_notes: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """String rows -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
     df_kept, df_quarantine = _screen_live_rows(df_str, df_meta, universe, identity)
     df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"])) if not df_kept.empty else empty_footnotes()
     return df_kept, df_kept_notes, df_quarantine
 
 
-def build_ticker_insider_edgar(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    universe: Sequence[str],
-    identity: Identity,
-    scan_through: pd.Timestamp,
-    scope: EdgarScope,
-    rescan_stored: bool = False,
-) -> dict[Table, pd.DataFrame]:
-    """Build live rows for one ticker and a coverage row even when no filing was found.
+def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
+    df_str, df_notes, df_meta = _ticker_strings(filings)
+    if df_str.empty:
+        return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
+    return _screened_frames(df_str, df_notes, df_meta, universe, identity)
 
-    `rescan_stored` (a `--full` run) ignores `done_accessions` and re-reads stored filings.
-    """
-    fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
-    filings = insider_filings(
-        ticker, cik, since=since, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
-    )
-    df_kept, df_notes, df_quarantine = live_insider_frames(filings, universe=universe, identity=identity)
 
+def _owner_role(df_str: pd.DataFrame, ticker: str, cik: str, scope: EdgarScope) -> bool:
+    """True when the XML names an issuer CIK outside the key's lineage (the key is only a reporting owner)."""
+    issuer = pad_cik(df_str["issuer_cik"].dropna().iloc[0]) if "issuer_cik" in df_str and df_str["issuer_cik"].notna().any() else ""
+    lineage = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
+    return bool(issuer and lineage and issuer not in lineage)
+
+
+def parse_insider(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, *, universe: Sequence[str]) -> dict[Table, pd.DataFrame]:
+    """One ownership filing -> live rows (kept by the identity screen), their footnotes and the
+    quarantine; nothing for a holdings-only filing or one where the key is only an owner."""
+    if scope.identity is None:
+        raise ValueError("insider live fetch needs an identity-aware scope")
+    df_str, df_notes = _filing_strings(stamp.filing)
+    if df_str.empty or _owner_role(df_str, ticker, cik, scope):
+        return {}
+    df_meta = pd.DataFrame([_filing_metadata(stamp.filing)])
+    df_kept, df_notes, df_quarantine = _screened_frames(df_str, df_notes, df_meta, universe, scope.identity)
     live = pd.DataFrame(columns=_LIVE_COLUMNS)
     if not df_kept.empty:
-        df_live = df_kept.assign(fetched_at=fetched_at)
-        live = df_live[[column for column in _LIVE_COLUMNS if column in df_live.columns]].drop_duplicates(
+        df_live = df_kept.assign(fetched_at=pd.Timestamp.now(tz="UTC").tz_localize(None))
+        live = df_live[[c for c in _LIVE_COLUMNS if c in df_live.columns]].drop_duplicates(
             subset=list(Tables.insider_transactions_live.pk), keep="last"
         )
-    coverage = pd.DataFrame([{"ticker": ticker, "complete_through": scan_through, "updated_at": fetched_at}])
     return {
-        Tables.insider_transactions_live: live,
         Tables.insider_footnotes: df_notes,
-        Tables.insider_transactions_quarantine: df_quarantine if not df_quarantine.empty else pd.DataFrame(),
-        Tables.insider_transactions_live_coverage: coverage,
+        Tables.insider_transactions_quarantine: df_quarantine,
+        Tables.insider_transactions_live: live,
     }
 
 
-def _bulk_frontier(context: Context) -> pd.Timestamp | None:
+def insider_coverage(ticker: str, as_of: pd.Timestamp, failed_dates: list[pd.Timestamp]) -> pd.DataFrame:
+    """The key's coverage row: complete through the day before its oldest unread filing, else through `as_of`."""
+    through = min(failed_dates) - pd.Timedelta(days=1) if failed_dates else as_of
+    return pd.DataFrame(
+        [{"ticker": ticker, "complete_through": pd.Timestamp(through).normalize(), "updated_at": pd.Timestamp.now(tz="UTC").tz_localize(None)}]
+    )
+
+
+def bulk_frontier_floor(context: Context) -> pd.Timestamp | None:
+    """The day after the last quarter of the bulk data set (the live table covers only what follows)."""
     _, latest_quarter = context.store.bounds(Tables.insider_transactions, "quarter")
     if latest_quarter is None:
         return None
     try:
-        return pd.Period(str(latest_quarter).upper(), freq="Q").end_time.normalize()
+        return pd.Period(str(latest_quarter).upper(), freq="Q").end_time.normalize() + pd.Timedelta(days=1)
     except (TypeError, ValueError):
         return None
+
+
+def insider_fetch(tickers: Sequence[str]) -> EdgarFetch:
+    """The live Forms 3/4/5 fetch for universe `tickers`; done per key (an owner-role marker under one
+    company never hides the filing from its issuer)."""
+    return EdgarFetch(
+        desc="insider Forms 3/4/5 (EDGAR live)",
+        tables=(Tables.insider_footnotes, Tables.insider_transactions_quarantine, Tables.insider_transactions_live),
+        forms=tuple(SEC_INSIDER_FORMS),
+        parse=partial(parse_insider, universe=list(tickers)),
+        done_table=Tables.insider_transactions_live,
+        done_scope=DONE_PER_KEY,
+        coverage=insider_coverage,
+        coverage_table=Tables.insider_transactions_live_coverage,
+        runtime_floor=bulk_frontier_floor,
+    )
 
 
 def fetch_insider_edgar(
@@ -260,24 +212,8 @@ def fetch_insider_edgar(
     years_history: int,
     *,
     full: bool = False,
+    as_of: pd.Timestamp | None = None,
+    no_cap: bool = False,
 ) -> None:
-    """Fill the open-quarter tail and advance coverage only for successful tickers."""
-    identity = load_identity(context)
-    scan_through = pd.Timestamp.today().normalize()
-    bulk_frontier = _bulk_frontier(context)
-    minimum_since = bulk_frontier + pd.Timedelta(days=1) if bulk_frontier is not None else None
-
-    fetch = EdgarFetch(
-        desc="insider Forms 3/4/5 (EDGAR live)",
-        tables=(
-            Tables.insider_transactions_live,
-            Tables.insider_footnotes,
-            Tables.insider_transactions_quarantine,
-            Tables.insider_transactions_live_coverage,
-        ),
-        build=partial(build_ticker_insider_edgar, universe=tickers, identity=identity, scan_through=scan_through, rescan_stored=full),
-        identity_aware=False,
-        minimum_since=minimum_since,
-        completion_table=Tables.insider_transactions_live_coverage,
-    )
-    run_edgar_fetch(context, tickers, years_history, fetch, full=full)
+    """Fill the open-quarter tail from the local index; each key's coverage row advances to its oldest unread filing."""
+    run_edgar_fetch(context, tickers, years_history, insider_fetch(tickers), full=full, as_of=as_of, no_cap=no_cap)

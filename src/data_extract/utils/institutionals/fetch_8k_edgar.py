@@ -2,23 +2,30 @@
 fetch_8k_edgar.py (src/data_extract/utils/institutionals/fetch_8k_edgar.py)
 ------------------------------------------------------------------------
 SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
-Item codes come from the filing index; `has_earnings` / `has_press_release` and
-the per-item text come from edgartools' typed `CurrentReport` (`sec_io.filing_obj`).
-A transient SEC failure raises and fails the filing; a parse failure keeps a best-effort row.
-Financial statements in attached earnings releases are out of scope.
+Item codes come from EDGAR's submissions metadata (the issuer's `Company` listing, read only for
+keys with documents to fetch); `has_earnings` / `has_press_release` and the per-item text come from
+edgartools' typed `CurrentReport` (`sec_io.filing_obj`). A filing with no item code becomes an
+empty-filing marker. A transient SEC failure raises and fails the filing; a parse failure keeps a
+best-effort row. Financial statements in attached earnings releases are out of scope.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from functools import partial
 from typing import Any
 
+import pandas as pd
+
 from src.constants.constants import SEC_8K_FORMS
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common import sec_io
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
 from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Tables
+
+logger = logging.getLogger(__name__)
 
 _COLS = [
     "ticker",
@@ -163,9 +170,37 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     return rows
 
 
-#: `build_filing_rows` collapses a repeated item code ("5.02,5.02") into one PK row.
+def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
+    """The listed 8-Ks as edgartools `EntityFiling`s (item codes, primary document), by accession.
+
+    One `Company` listing per CIK holding listed units; an unresolvable CIK is warned and its units
+    fall back to the plain index filing. A transient SEC failure raises."""
+    wanted = set(df_units["accession"].astype(str))
+    out: dict[str, Any] = {}
+    for cik in df_units["cik"].astype(str).unique():
+        try:
+            company = sec_io.company(int(cik))
+        except TransientReadError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- a dead CIK, not a bug
+            logger.warning("8-K: %s CIK %s could not be resolved (%s)", ticker, cik, exc)
+            continue
+        out.update({str(f.accession_number): f for f in sec_io.company_filings(company, SEC_8K_FORMS) if str(f.accession_number) in wanted})
+    if missing := sorted(wanted - out.keys()):
+        logger.warning(
+            "8-K: %s %d indexed filing(s) absent from the submissions listing, read without item codes: %s",
+            ticker,
+            len(missing),
+            ", ".join(missing[:20]),
+        )
+    return out
+
+
+#: `parse_filing_rows` collapses a repeated item code ("5.02,5.02") into one PK row.
 SEC_8K_FETCH = EdgarFetch(
     desc="8-K (edgartools)",
     tables=(Tables.sec_8k,),
-    build=partial(build_filing_rows, forms=SEC_8K_FORMS, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
+    forms=tuple(SEC_8K_FORMS),
+    parse=partial(parse_filing_rows, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
+    filings=submission_filings,
 )

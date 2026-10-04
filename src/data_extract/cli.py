@@ -39,15 +39,17 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
+from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
 from src.data_extract.utils.common.entity_lineage import build_entity_lineage
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fundamentals_fetch
 from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
@@ -67,7 +69,7 @@ from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
+from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar, insider_fetch
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
@@ -80,7 +82,7 @@ from src.data_extract.utils.structure.def14a import fetch_def14a_llm
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
-from src.data_store.schema import Tables, freshness_tables
+from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
@@ -92,6 +94,8 @@ YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
 AS_OF_OPTION = click.option(
     "--as-of", "as_of", type=click.DateTime(formats=["%Y-%m-%d"]), default=None, hidden=True, help="Run date YYYY-MM-DD (default: today)."
 )
+# The one-time EDGAR backlog run lifts `data_extract.max_documents_per_run`; nightly runs keep it.
+NO_CAP_OPTION = click.option("--no-cap", "no_cap", is_flag=True, default=False, help="Lift the per-run document cap (one-time backlog runs only).")
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -284,9 +288,18 @@ def superinvestors(config_path: str, seed: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals_facts(config_path: str, tickers: str | None, full: bool) -> None:
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fundamentals_sec(context, tickers=_tickers(context, tickers), full=full, years_history=int(config.data_extract.years_history))
+    fetch_fundamentals_sec(
+        context,
+        tickers=_tickers(context, tickers),
+        full=full,
+        years_history=int(config.data_extract.years_history),
+        as_of=_run_date(as_of),
+        no_cap=no_cap,
+    )
 
 
 @cli.command(
@@ -339,7 +352,9 @@ def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_hist
     "about. There is no build_version column: the rebuild IS the version.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool) -> None:
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     if rebuild:
@@ -353,7 +368,9 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
         context.log.warning(
             "fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names)
         )
-    fetch_fundamentals_sec(context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history))
+    fetch_fundamentals_sec(
+        context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=_run_date(as_of), no_cap=no_cap
+    )
     build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
 
 
@@ -479,20 +496,14 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def insider_transactions(
-    config_path: str,
-    tickers: str | None,
-    reparse: bool,
-    full: bool,
-) -> None:
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def insider_transactions(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     fetch_insider_transactions(context, tickers=names, reparse=reparse)
     fetch_insider_edgar(
-        context,
-        tickers=names,
-        years_history=int(config.data_extract.years_history),
-        full=full,
+        context, tickers=names, years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of), no_cap=no_cap
     )
 
 
@@ -573,11 +584,10 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(
-        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_8K_FETCH, full=full
-    )
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _run_document_command(config_path, tickers, years, SEC_8K_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
@@ -593,11 +603,10 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(
-        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13D_FETCH, full=full
-    )
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _run_document_command(config_path, tickers, years, SEC_13D_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
@@ -605,31 +614,129 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool) -> None:
-    """Passive counterpart of `sec-13d`. Chunk a from-scratch backfill with `-t` + `-F`: the manifest's incremental
-    test is "did the universe change size", which a chunked walk defeats."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(
-        context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=SEC_13G_FETCH, full=full
-    )
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    """Passive counterpart of `sec-13d`. A schedule a universe company only FILED is stored as an empty-filing marker under it."""
+    _run_document_command(config_path, tickers, years, SEC_13G_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def filing_text(config_path: str, tickers: str | None, years: int | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=FILING_TEXT_FETCH)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def filing_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _run_document_command(config_path, tickers, years, FILING_TEXT_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def def14a_edgar(config_path: str, tickers: str | None, years: int | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    _run_document_command(config_path, tickers, years, DEF14A_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+
+
+def _run_document_command(
+    config_path: str, tickers: str | None, years: int | None, fetch: EdgarFetch, *, full: bool, as_of: datetime | None, no_cap: bool
+) -> None:
+    """One declared EDGAR document fetch over the --tickers subset (or the universe)."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(context, tickers=_tickers(context, tickers), years_history=years or config.data_extract.years_history, fetch=DEF14A_EDGAR_FETCH)
+    run_edgar_fetch(
+        context,
+        tickers=_tickers(context, tickers),
+        years_history=years or config.data_extract.years_history,
+        fetch=fetch,
+        full=full,
+        as_of=_run_date(as_of),
+        no_cap=no_cap,
+    )
+
+
+# --- EDGAR index, work-list dry run and empty-filing markers ---
+@cli.command(
+    name="edgar-index", help="Download the local EDGAR filing index (closed quarters once, the current quarter again) and print rows per quarter."
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option("--build", is_flag=True, default=False, help="Download every quarter of the window again, closed ones included.")
+@AS_OF_OPTION
+def edgar_index_command(config_path: str, build: bool, as_of: datetime | None) -> None:
+    """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    context.ensure_edgar_identity()
+    edgar_index.refresh(context, _run_date(as_of), int(config.data_extract.years_history), rebuild=build)
+    for quarter, n_rows in edgar_index.quarter_counts(context).items():
+        click.echo(f"{quarter}\t{n_rows}")
+
+
+def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFetch]:
+    """Every EDGAR document fetch, keyed by its done table's name."""
+    fetches = (
+        SEC_8K_FETCH,
+        SEC_13D_FETCH,
+        SEC_13G_FETCH,
+        FILING_TEXT_FETCH,
+        DEF14A_EDGAR_FETCH,
+        fundamentals_fetch(context, load_cik_mapping(context, tickers)),
+        insider_fetch(tickers),
+    )
+    return {fetch.done.name: fetch for fetch in fetches}
+
+
+@cli.command(name="resume-plan", help="READ-ONLY: each EDGAR document table's work list for the run date, by key class, from the cached index.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--table", "table_name", default=None, help="One done table (e.g. sec_8k); default: every document table.")
+@click.option("--timings", is_flag=True, default=False, help="Also print the plan-read timings.")
+@AS_OF_OPTION
+def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    names = _tickers(context, tickers)
+    cik_map = load_cik_mapping(context, names)
+    fetches = _document_fetches(context, names)
+    if table_name is not None and table_name not in fetches:
+        raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
+    for name, fetch in fetches.items():
+        if table_name is not None and name != table_name:
+            continue
+        scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
+        work = plan_fetch(context, fetch, cik_map, scope, _run_date(as_of), int(config.data_extract.years_history))
+        report: dict[str, object] = {
+            "table": name,
+            "documents": work.size,
+            "uncapped": work.uncapped,
+            "keys": len(work.units),
+            "by_class": work.counts,
+        }
+        if timings:
+            report["timings_s"] = {k: round(v, 2) for k, v in work.timings.items()}
+        click.echo(json.dumps(report, sort_keys=True))
+
+
+@cli.command(help="Count (or, for a rollback only, delete) empty-filing marker rows by their declared sentinel.")
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option("--table", "table_name", default=None, help="One marker table; default: every table that declares a marker.")
+@click.option("--count", "count_only", is_flag=True, default=False, help="Count only (the default without --delete).")
+@click.option("--delete", "delete", is_flag=True, default=False, help="Delete the marker rows (rollback only).")
+def markers(config_path: str, table_name: str | None, count_only: bool, delete: bool) -> None:
+    if count_only and delete:
+        raise click.UsageError("--count and --delete are exclusive")
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    tables: list[Table] = [resolve(table_name)] if table_name else list(marker_tables())
+    for table in tables:
+        if table.empty_marker is None:
+            raise click.BadParameter(f"{table.name} declares no empty-filing marker", param_hint="--table")
+        column, sentinel = table.empty_marker
+        df = context.store.load(table, columns=[column], where={column: sentinel}, markers=True, optional=True)
+        count = 0 if df is None else len(df)
+        deleted = context.store.delete(table, {column: sentinel}) if delete and count else 0
+        click.echo(json.dumps({"table": table.name, "markers": count, "deleted": deleted}, sort_keys=True))
 
 
 # --- Behavioral (retail attention) ---

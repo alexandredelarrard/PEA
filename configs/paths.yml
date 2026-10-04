@@ -7,6 +7,7 @@ local:
     fails_deliver: "sec_fails_to_deliver"
     financial_notes: "sec_financial_notes"
     financial_statements: "sec_financial_statements"
+    sec_edgar_index: "sec_edgar_index"
     fundamentals_catalogue_subdir: "fundamentals"
   filename:
     extraction: "extraction_manifest.json"

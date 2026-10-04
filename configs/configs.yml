@@ -23,6 +23,18 @@ data_extract:
     attempts: 3
     waits: [5, 20]
     retry_after_cap: 120
+  # EDGAR document fetchers (`utils/common/edgar_driver.py`): a key whose read rate in a run is
+  # below `threshold`, with at least `min_failed` failed documents, re-reads only those documents
+  # in up to `rounds` in-task rounds, waiting `waits` seconds before each; the rest is listed again
+  # on the next run, which always exits 0.
+  retry_rounds:
+    rounds: 3
+    waits: [60, 120, 240]
+    threshold: 0.985
+    min_failed: 2
+  # Per-fetch cap on documents read in one run, newest first; a larger work list logs an ERROR and
+  # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
+  max_documents_per_run: 5000
   # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
   # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
   # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at

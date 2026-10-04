@@ -28,7 +28,8 @@ def test_replay_initializes_edgar_and_returns_a_typed_empty_frame(monkeypatch):
         lambda context, tickers: pd.DataFrame({"ticker": ["AAA"], "cik": ["1"]}),
     )
     monkeypatch.setattr(module, "load_identity", lambda context: object())
-    monkeypatch.setattr(module, "load_edgar_scope", lambda *args, **kwargs: (object(), None, frozenset()))
+    monkeypatch.setattr(module, "load_edgar_scope", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module.edgar_index, "refresh", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         module,

@@ -5,7 +5,8 @@ Strictly as-filed: every value is a number the filer tagged, on the period shape
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
 field, `entity_scope` picks the consolidated-registrant facts, and this module turns both into rows. A field or
 period with no usable value is emitted as a value-less row carrying a `dc_code`, so every null has a reason.
-Resumes from the stored accession set via `run_edgar_fetch`, never a rescan.
+`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL, an unreadable one or one
+with no consolidated facts becomes an empty-filing marker.
 """
 
 from __future__ import annotations
@@ -27,8 +28,8 @@ from src.data_extract.utils.common.edgar_driver import (
     run_edgar_fetch,
 )
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
-from src.data_extract.utils.common.sec_io import filing_xbrl
+from src.data_extract.utils.common.registrant import load_registrants
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -483,46 +484,28 @@ def _row(
     }
 
 
-def filing_rows(
-    ticker: str,
-    stamp: FilingStamp,
-    catalogue: Catalogue,
-    gics: dict[str, str | None] | None,
-    *,
-    failures: list[tuple[str, str]] | None = None,
-    no_xbrl: list[str] | None = None,
-) -> list[dict]:
-    """Every catalogue field, for every period, from one filing (`stamp.filing`, filed by `stamp.cik`).
+def filing_rows(ticker: str, stamp: FilingStamp, catalogue: Catalogue, gics: dict[str, str | None] | None) -> list[dict]:
+    """Every catalogue field, for every period, from one filing (`stamp.filing`, filed by `stamp.cik`); [] without XBRL.
 
-    An unreadable filing (a transient SEC failure after the `sec_io` retries included) returns [] and is
-    appended to `failures` as `(accession, error)`; a filing with no XBRL returns [] and is appended to `no_xbrl`. The two excepts differ on purpose: edgartools' `xbrl()`
-    parse swallows everything, while `PROGRAMMING_ERRORS` from our own `rows_from_xbrl` are re-raised and
-    only data failures are counted.
+    The two failure classes differ on purpose: edgartools' `xbrl()` parses the filer's XBRL, so any
+    exception from it is an unreadable filing (`ParseFailureError`; `TransientReadError` passes
+    through), while `PROGRAMMING_ERRORS` from our own `rows_from_xbrl` are re-raised.
     """
     filing = stamp.filing
     try:
         xbrl = filing_xbrl(filing)
+    except TransientReadError:
+        raise
     except Exception as exc:  # noqa: BLE001 -- the filer's XBRL, not our code
-        _note_failure(failures, filing, exc)
-        return []
+        raise ParseFailureError(f"{stamp.accession_number}: XBRL unreadable ({type(exc).__name__}: {exc})") from exc
     if xbrl is None:
-        if no_xbrl is not None:
-            no_xbrl.append(str(getattr(filing, "accession_number", "unknown")))
         return []
     try:
         return rows_from_xbrl(ticker, stamp, xbrl, catalogue, gics)
     except PROGRAMMING_ERRORS:
         raise  # our bug, not the filer's
     except Exception as exc:  # noqa: BLE001 -- one bad filing
-        _note_failure(failures, filing, exc)
-        return []
-
-
-def _note_failure(failures: list[tuple[str, str]] | None, filing, exc: Exception) -> None:
-    """Record one unreadable filing; the accession is read defensively off a possibly broken object."""
-    if failures is None:
-        return
-    failures.append((str(getattr(filing, "accession_number", "unknown")), str(exc)))
+        raise ParseFailureError(f"{stamp.accession_number}: facts unresolvable ({type(exc).__name__}: {exc})") from exc
 
 
 def rows_from_xbrl(
@@ -632,98 +615,37 @@ def rows_from_xbrl(
     return rows
 
 
-def build_ticker_fundamentals(
+def parse_fundamentals(
     ticker: str,
     cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
+    stamp: FilingStamp,
     scope: EdgarScope,
+    *,
     catalogue: Catalogue,
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
-    """One ticker's `fundamentals_facts`, walking every registrant segment in its chain (SPLIT in `FORM_POLICY`).
-
-    Each row's `cik` is the registrant that filed it. Raises when eligible filings yield no usable XBRL on a
-    first walk, or when the segment walks overlap (dedup lost accessions).
-    """
-    discovery: dict[str, int] = {}
-    filings = resolve_registrant_filings(
-        ticker,
-        FUNDAMENTALS_FORMS,
-        since=since,
-        done_accessions=done_accessions,
-        registrants=scope.registrants,
-        identity=scope.identity,
-        stats=discovery,
-    )
-    rows: list[dict] = []
-    # Counted so a walk that drops filings is distinguishable from one that finds none.
-    failures: list[tuple[str, str]] = []
-    no_xbrl: list[str] = []
-    for filing in filings:
-        # The stamp takes the filing's own registrant CIK, falling back to the roster's.
-        rows.extend(
-            filing_rows(
-                ticker,
-                FilingStamp.of(filing, cik),
-                catalogue,
-                gics_by_ticker.get(ticker),
-                failures=failures,
-                no_xbrl=no_xbrl,
-            )
-        )
-    if failures:
-        logger.warning(
-            "%s: %d of %d filing(s) unreadable -- %s", ticker, len(failures), len(filings), ", ".join(f"{acc} ({err})" for acc, err in failures)
-        )
-    already_stored = discovery.get("skipped_existing", len(done_accessions))
-    producing = len({str(row["accession_number"]) for row in rows})
-    logger.info(
-        "%s: %d filing(s) resolved: %d already stored, %d no XBRL, %d unreadable, %d produced facts",
-        ticker,
-        already_stored + len(filings),
-        already_stored,
-        len(no_xbrl),
-        len(failures),
-        producing,
-    )
-    if filings and not rows:
-        if already_stored == 0:
-            raise RuntimeError(
-                f"{ticker}: no usable XBRL from {len(filings)} eligible filing(s) ({len(no_xbrl)} no XBRL, {len(failures)} unreadable)"
-            )
-        logger.info(
-            "%s: complete/no new facts (%d already stored, %d no XBRL, %d unreadable)",
-            ticker,
-            already_stored,
-            len(no_xbrl),
-            len(failures),
-        )
-    df = pd.DataFrame(rows, columns=_COLS)
-    if df.empty:
-        return {Tables.fundamentals_facts: df}
-    # A filing can tag one field on one window twice, and Postgres rejects an upsert touching a PK row twice.
-    # Registrant segment walks are disjoint by date; the check below enforces it.
-    before = df["accession_number"].nunique()
-    df = df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")
-    entry = scope.registrants.get(ticker)
-    if entry is not None and df["accession_number"].nunique() != before:
-        raise ValueError(
-            f"{ticker}: the {' -> '.join(entry.all_ciks())} chain "
-            f"({', '.join(str(b.date()) for b in entry.boundaries)}) lost accessions in dedup "
-            f"({before} -> {df['accession_number'].nunique()}); the segment walks overlap"
-        )
-    return {Tables.fundamentals_facts: df}
+    """One filing's `fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
+    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=_COLS)
+    return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
 
 
-def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: int, *, full: bool = False) -> None:
-    # `context.config_dir` carries the CLI's `-c`, so a non-default config reaches the catalogue.
+def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
+    """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of `cik_map`'s tickers."""
     catalogue = load_catalogue(str(context.config_dir))
-    # All three GICS levels (regimes are declared at different levels); `cik_map` is reused by the driver.
     levels = ["sector", "industry_group", "sub_industry"]
-    cik_map = load_cik_mapping(context, tickers)
     gics = {str(row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
+    return EdgarFetch(
+        desc="fundamentals (linkbase)",
+        tables=(Tables.fundamentals_facts,),
+        forms=tuple(FUNDAMENTALS_FORMS),
+        parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
+    )
+
+
+def fetch_fundamentals_sec(
+    context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
+) -> None:
+    """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`)."""
     registrants = load_registrants(str(context.config_dir))
     if registrants:
         context.log.info(
@@ -731,17 +653,15 @@ def fetch_fundamentals_sec(context: Context, tickers: list[str], years_history: 
             len(registrants),
             ", ".join(f"{t} @{'/'.join(str(b.date()) for b in r.boundaries)}" for t, r in sorted(registrants.items())),
         )
-    fetch = EdgarFetch(
-        desc="fundamentals (linkbase)",
-        tables=(Tables.fundamentals_facts,),
-        build=partial(build_ticker_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
-    )
+    cik_map = load_cik_mapping(context, tickers)
     run_edgar_fetch(
         context,
         tickers,
         years_history,
-        fetch,
+        fundamentals_fetch(context, cik_map),
         full=full,
         cik_map=cik_map,
         max_workers=int(context.config.data_extract.fundamentals_workers),
+        as_of=as_of,
+        no_cap=no_cap,
     )

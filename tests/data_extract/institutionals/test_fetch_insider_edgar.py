@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, cast
 
 import pandas as pd
 
 from src.data_extract.utils.institutionals import fetch_insider_edgar as module
 from src.data_store.ddl import columns_from_frame
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import identity_for
 
 _FORM4_XML = """<ownershipDocument><documentType>4</documentType>
   <issuer><issuerCik>0000000001</issuerCik><issuerTradingSymbol>AAA</issuerTradingSymbol></issuer>
@@ -22,6 +22,8 @@ _FORM4_XML = """<ownershipDocument><documentType>4</documentType>
 
 class _Filing:
     accession_number = "0000000001-26-000001"
+    cik = 1
+    form = "4"
     filing_date = pd.Timestamp("2026-07-02")
     header = SimpleNamespace(acceptance_datetime="2026-07-02 16:05:00")
 
@@ -30,46 +32,32 @@ class _Filing:
         return _FORM4_XML
 
 
-def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch):
-    monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [])
-    out = module.build_ticker_insider_edgar(
-        "AAA",
-        "1",
-        universe=["AAA"],
-        identity=cast(Any, object()),
-        scan_through=pd.Timestamp("2026-09-22"),
-        scope=module.EdgarScope(None, {}),
-    )
-    assert out[Tables.insider_transactions_live].empty
-    assert out[Tables.insider_transactions_live_coverage].to_dict("records") == [
-        {
-            "ticker": "AAA",
-            "complete_through": pd.Timestamp("2026-09-22"),
-            "updated_at": out[Tables.insider_transactions_live_coverage].iloc[0]["updated_at"],
-        }
-    ]
-    print(
-        "SANITY: a successful AAA scan with zero new filings wrote no transaction sentinel but advanced AAA's explicit coverage through 2026-09-22."
-    )
+def test_coverage_runs_through_the_run_date_or_the_day_before_the_oldest_unread_filing():
+    clean = module.insider_coverage("AAA", pd.Timestamp("2026-09-22"), [])
+    behind = module.insider_coverage("AAA", pd.Timestamp("2026-09-22"), [pd.Timestamp("2026-09-10"), pd.Timestamp("2026-09-05")])
+    assert clean["complete_through"].tolist() == [pd.Timestamp("2026-09-22")]
+    assert behind["complete_through"].tolist() == [pd.Timestamp("2026-09-04")]
+    assert list(clean.columns) == ["ticker", "complete_through", "updated_at"]
+    print("SANITY: a clean AAA run covers through the run date; one with unread filings stops the day before the oldest (2026-09-04).")
 
 
-def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
-    monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [_Filing(), _Filing()])
+def test_one_filing_parses_to_one_live_row_with_its_acceptance_time(monkeypatch):
     monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame, pd.DataFrame()))
-    out = module.build_ticker_insider_edgar(
-        "AAA",
-        "1",
-        universe=["AAA"],
-        identity=cast(Any, object()),
-        scan_through=pd.Timestamp("2026-09-22"),
-        scope=module.EdgarScope(None, {}),
-    )
+    scope = module.EdgarScope(identity_for({"AAA": "1"}), {})
+    out = module.parse_insider("AAA", "0000000001", module.FilingStamp.of(_Filing(), "0000000001"), scope, universe=["AAA"])
     live = out[Tables.insider_transactions_live]
     assert len(live) == 1
     assert live.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
     assert live.iloc[0]["accession_number"] == _Filing.accession_number
     assert live.iloc[0]["value_usd"] == 200.0
-    print("SANITY: listing the same accession twice produced one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
+    print("SANITY: one Form 4 parsed to one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
+
+
+def test_a_filing_on_another_issuer_parses_to_nothing():
+    """Listed under AAA because AAA reported it as an owner: no rows, so the driver stores AAA's marker."""
+    scope = module.EdgarScope(identity_for({"AAA": "1", "BBB": "2"}), {})
+    assert module.parse_insider("BBB", "0000000002", module.FilingStamp.of(_Filing(), "0000000002"), scope, universe=["AAA", "BBB"]) == {}
+    print("SANITY: a Form 4 whose XML issuer is AAA parses to nothing for BBB (BBB only an owner -> one marker).")
 
 
 def test_live_audit_clocks_are_timestamps_not_dates():
@@ -96,34 +84,3 @@ def test_live_audit_clocks_are_timestamps_not_dates():
     assert coverage_types["complete_through"] == "DATE"
     assert coverage_types["updated_at"] == "TIMESTAMP"
     print("SANITY: filing acceptance/fetch/update clocks retain intraday TIMESTAMP precision; only the inclusive coverage frontier is a DATE.")
-
-
-def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):
-    feeds = {
-        "3": "",
-        "4": """
-          <entry><content><accession-number>0001182379-26-000004</accession-number>
-          <filing-date>2026-06-02</filing-date><filing-type>4</filing-type></content></entry>
-          <entry><content><accession-number>0000000000-26-000001</accession-number>
-          <filing-date>2026-06-02</filing-date><filing-type>424B2</filing-type></content></entry>
-        """,
-        "5": "",
-    }
-
-    def download(url: str) -> str:
-        family = next(form for form in feeds if f"type={form}&" in url)
-        return f'<feed xmlns="http://www.w3.org/2005/Atom">{feeds[family]}</feed>'
-
-    monkeypatch.setattr("edgar.httprequests.download_text", download)
-    filings = module.ownership_filings(
-        "DLR",
-        "0001494877",
-        since=pd.Timestamp("2026-04-01"),
-        through=pd.Timestamp("2026-06-30"),
-        done_accessions=frozenset(),
-    )
-    assert [filing.accession_number for filing in filings] == ["0001182379-26-000004"]
-    assert filings[0].cik == 1494877
-    print(
-        "SANITY: issuer ownership discovery retains a Form 4 submitted under its reporting owner's accession CIK and filters a prefix-matched 424B2."
-    )

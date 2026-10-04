@@ -21,7 +21,7 @@ import logging
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import combinations, pairwise
 from pathlib import Path
 from typing import Any
 
@@ -578,19 +578,18 @@ def _apply_symbol_handoff(union: _Union, provenance: _Provenance, index: _Eviden
     joins = 0
     for symbol in symbols:
         holders = sorted(holders_by_symbol.get(symbol, []), key=lambda cik: (_first_of(index, cik, symbol), cik))
-        for i, pred in enumerate(holders):
-            for succ in holders[i + 1 :]:
-                in_universe = (union.find(pred) in roots, union.find(succ) in roots)
-                if not any(in_universe) or union.find(pred) == union.find(succ):
-                    continue
-                switch = _switch(index, pred, succ, frozenset({symbol}))
-                if switch.boundary is None:
-                    continue
-                newcomer = succ if in_universe[0] else pred
-                if union.union(pred, succ, source=f"symbol_handoff[{symbol}]"):
-                    joins += 1
-                    provenance.claim(newcomer, "symbol_handoff", None, f"{symbol} handed {pred} -> {succ}: {switch.detail}")
-                    roots = {union.find(cik) for cik in roster_cik.values()}
+        for pred, succ in combinations(holders, 2):
+            in_universe = (union.find(pred) in roots, union.find(succ) in roots)
+            if not any(in_universe) or union.find(pred) == union.find(succ):
+                continue
+            switch = _switch(index, pred, succ, frozenset({symbol}))
+            if switch.boundary is None:
+                continue
+            newcomer = succ if in_universe[0] else pred
+            if union.union(pred, succ, source=f"symbol_handoff[{symbol}]"):
+                joins += 1
+                provenance.claim(newcomer, "symbol_handoff", None, f"{symbol} handed {pred} -> {succ}: {switch.detail}")
+                roots = {union.find(cik) for cik in roster_cik.values()}
     return joins
 
 
@@ -917,21 +916,12 @@ def _classify_symbol(rows: list[dict[str, Any]], entity_of: Mapping[str, str]) -
     by_start = sorted(rows, key=lambda row: pd.Timestamp(row["valid_from"]))
     curated = [row for row in by_start if row["curated"]]
     roster = [row for row in by_start if row["roster"] and not row["curated"]]
-    for anchors, targets in (
-        (curated, [row for row in rows if not row["curated"]]),
-        (roster, [row for row in rows if not row["curated"] and not row["roster"]]),
-    ):
-        for row in targets:
-            for holder in anchors:
-                if row["status"]:
-                    break
-                if holder["entity"] != row["entity"] and _gap_days(row, holder) < 0:
-                    _clip(row, holder)
+    _clip_by_anchors([row for row in rows if not row["curated"]], curated)
+    _clip_by_anchors([row for row in rows if not row["curated"] and not row["roster"]], roster)
     live = [row for row in rows if not row["status"] and not row["curated"] and not row["roster"]]
-    for i, row in enumerate(live):
-        for other in live[i + 1 :]:
-            if other["entity"] != row["entity"] and _gap_days(row, other) < REUSE_GAP_DAYS:
-                row["status"] = other["status"] = "conflict"
+    for row, other in combinations(live, 2):
+        if other["entity"] != row["entity"] and _gap_days(row, other) < REUSE_GAP_DAYS:
+            row["status"] = other["status"] = "conflict"
     for row in rows:
         if row["curated"]:
             row["status"] = "curated"
@@ -939,6 +929,16 @@ def _classify_symbol(rows: list[dict[str, Any]], entity_of: Mapping[str, str]) -
             filed = frozenset(row["sources"]) & set(EVIDENCE_SOURCES)
             row["status"] = "corroborated" if len(filed) == len(EVIDENCE_SOURCES) else "single_source"
     return rows
+
+
+def _clip_by_anchors(targets: list[dict[str, Any]], anchors: list[dict[str, Any]]) -> None:
+    """Clip each unclassified target by every overlapping anchor of another entity, in anchor order."""
+    for row in targets:
+        for holder in anchors:
+            if row["status"]:
+                break
+            if holder["entity"] != row["entity"] and _gap_days(row, holder) < 0:
+                _clip(row, holder)
 
 
 def _clip(row: dict[str, Any], holder: Mapping[str, Any]) -> None:

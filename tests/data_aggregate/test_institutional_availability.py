@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 import pytest
 
@@ -112,7 +114,8 @@ def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_st
     fresh = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
     assert fresh == last, "a marker 7 days back keeps the table fresh through the last session"
     assert schedule_complete_through(sqlite_store, Tables.sec_13g, None) == pd.Timestamp("2026-09-04")
-    assert len(sqlite_store.load(Tables.sec_13g)) == 1, "consumers still never see the marker"
+    assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1, "consumers still never see the marker"
+    assert stale is not None and fresh is not None
 
     print("\n=== SANITY CHECK: Schedule absence frontier from the DB ===")
     print(f"  last session {last.date()}: empty table -> None; latest filing 2026-09-01 (stale) -> {stale.date()}")

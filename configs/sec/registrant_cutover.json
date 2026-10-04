@@ -48,6 +48,21 @@
     "Wikipedia, so a roster refresh would silently overwrite hand-established evidence. And",
     "Wikipedia can itself be wrong in this exact way -- it had already moved XOM to the holdco."
   ],
+  "ACN": {
+    "kind": "domestication",
+    "segments": [
+      {
+        "cik": "0001134538",
+        "valid_to": "2009-09-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). Accenture Ltd (Bermuda, CIK 0001134538), the ACN registrant until the 2009 redomicile to Ireland. Successor filing: Accenture plc (CIK 0001467373) 8-K12B accession 0001193125-09-185098 filed 2009-09-01 (Date of Report September 1, 2009; companion 8-K12G3 0001193125-09-185115 the same day): 'Accenture plc, as successor to Accenture Ltd' ... 'Accenture Ltd expects to file a Form 15 with the Commission to terminate the registration of the Accenture Ltd Class A and Class X common shares' ... 'Pursuant to Rule 12g-3(a) promulgated under the Exchange Act, the Accenture plc Class A ordinary shares are deemed registered under Section 12(b)'. boundary = the transaction date the filing states. Accenture SCA (CIK 0001143908) is a subsidiary co-registrant, not a predecessor, and is not in this entry."
+      },
+      {
+        "cik": "0001467373",
+        "valid_from": "2009-09-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Accenture plc (Ireland), successor issuer to Accenture Ltd from 2009-09-01 per its own 8-K12B 0001193125-09-185098."
+      }
+    ]
+  },
   "APA": {
     "kind": "reorganisation",
     "segments": [
@@ -140,13 +155,13 @@
       {
         "cik": "0001364742",
         "valid_from": "2006-08-10",
-        "valid_to": "2024-08-07",
-        "evidence": "PROPOSED 2026-09-10. BlackRock Finance, Inc. (CIK 0001364742), the pre-boundary registrant. Found by the co-indexed filer scan on 15 of the successor's registrant-filed documents nearest the boundary. It filed 19 proxies of its own before the seam (last 2024-04-04), so it was the public registrant, and its filing rate went 7541 -> 8 (0.001x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2023 Revenues of 11,012,000,000 is BlackRock Finance, Inc.'s own reported figure (8 of 8 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2024-08-07. It kept filing until 2024-08-06, only -3 months past the successor's first (2024-11-06) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 73 of its filings are kept (2006-11-14 .. 2024-08-06). The successor contributes 8 filings from 2024-11-06; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
+        "valid_to": "2024-10-01",
+        "evidence": "RE-DATED 2026-10-04 (P6b, decision P14): boundary moved from 2024-08-07 to 2024-10-01, the closing date stated by the successor's own 8-K12B, accession 0001193125-24-229601 filed 2024-10-01 by CIK 0002012383: 'This Current Report on Form 8-K is being filed in connection with the completion on October 1, 2024 (the Closing Date)' ... 'Old BlackRock changed its name from BlackRock, Inc. to BlackRock Finance, Inc.' ... 'filed for the purpose of establishing New BlackRock as the successor issuer to Old BlackRock pursuant to Rule 12g-3(a)'. Form 3/4/5 and dei evidence agree (CIK 0001364742 last dei 2024-10-01, CIK 0002012383 first 2024-10-01). The old date was the day after the predecessor's last consolidating filing; no consolidating filing falls between the two dates, so the split is unchanged for 10-K/10-Q. PRIOR TEXT (2026-09-10): BlackRock Finance, Inc. (CIK 0001364742), the pre-boundary registrant. Found by the co-indexed filer scan on 15 of the successor's registrant-filed documents nearest the boundary. It filed 19 proxies of its own before the seam (last 2024-04-04), so it was the public registrant, and its filing rate went 7541 -> 8 (0.001x) across it. Chosen over 0 other collapsing predecessor(s) by the comparative-column test: the successor's FY2023 Revenues of 11,012,000,000 is BlackRock Finance, Inc.'s own reported figure (8 of 8 shared annual facts agree), so that entity is the accounting acquirer and the successor in substance. boundary = the day after the predecessor's LAST consolidating filing, 2024-08-07. It kept filing until 2024-08-06, only -3 months past the successor's first (2024-11-06) -- a pre-merger co-registrant overlap, not a continuing subsidiary -- so it was the public company throughout and ALL 73 of its filings are kept (2006-11-14 .. 2024-08-06). The successor contributes 8 filings from 2024-11-06; its 0 earlier filing(s) are the shell's own pre-merger reports and are deliberately excluded."
       },
       {
         "cik": "0002012383",
-        "valid_from": "2024-08-07",
-        "evidence": "PROPOSED 2026-09-10. The successor, CIK 0002012383. Its own archive starts 2024-02-20 (234 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 8 10-K/10-Q from 2024-11-06."
+        "valid_from": "2024-10-01",
+        "evidence": "RE-DATED 2026-10-04 (P6b, P14): successor issuer from 2024-10-01 per its own 8-K12B 0001193125-24-229601 (BlackRock Funding, Inc. renamed BlackRock, Inc. at the merger effective time). PRIOR TEXT (2026-09-10): The successor, CIK 0002012383. Its own archive starts 2024-02-20 (234 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 8 10-K/10-Q from 2024-11-06."
       }
     ]
   },
@@ -165,6 +180,21 @@
       }
     ]
   },
+  "DD": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000030554",
+        "valid_to": "2017-08-31",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). E. I. du Pont de Nemours and Company (CIK 0000030554, EDGAR name DUPONT E I DE NEMOURS & CO to 2022-11-04, now EIDP, Inc.), the DD registrant until the Dow-DuPont merger of equals. Successor filing: DowDuPont Inc. (CIK 0001666700, now DuPont de Nemours, Inc.) 8-K12B accession 0001193125-17-274834 filed 2017-09-01: 'Effective August 31, 2017, DowDuPont Inc. (f/k/a Diamond-Orion Holdco, Inc.) (the Company) completed the previously announced merger of equals transaction' ... 'Upon the consummation of the Mergers, each of Dow and DuPont became subsidiaries of the Company' ... 'This Current Report on Form 8-K establishes the Company as the successor issuer to Dow and DuPont pursuant to Rule 12g-3(c)'. boundary = the effective date the filing states. ⚠ The filing names TWO predecessors; only DuPont carries this ticker's DD symbol and price history. Dow (CIK 0000029915) belongs to DOW's entity and is not in this entry. After the boundary CIK 0000030554 filed as a subsidiary (of DowDuPont, then Corteva); the dated split excludes those filings."
+      },
+      {
+        "cik": "0001666700",
+        "valid_from": "2017-08-31",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). DowDuPont Inc., renamed DuPont de Nemours, Inc. in 2019, successor issuer from 2017-08-31 per its own 8-K12B 0001193125-17-274834."
+      }
+    ]
+  },
   "DIS": {
     "kind": "reorganisation",
     "segments": [
@@ -177,6 +207,21 @@
         "cik": "0001744489",
         "valid_from": "2019-02-06",
         "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001744489. Its own archive starts 2018-06-25 (268 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 32 10-K/10-Q from 2019-05-08."
+      }
+    ]
+  },
+  "DUK": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000030371",
+        "valid_to": "2006-04-03",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). Duke Energy Corporation, the North Carolina registrant (CIK 0000030371; EDGAR former name DUKE ENERGY CORP to 2006-04-03, then Duke Power Co LLC, now Duke Energy Carolinas, LLC). Successor filing: Duke Energy Corporation (formerly Duke Energy Holding Corp., CIK 0001326160) 8-K12B accession 0001193125-06-072085 filed 2006-04-04: 'On April 3, 2006, pursuant to the Agreement and Plan of Merger ... by and among the registrant (formerly known as Duke Energy Holding Corp.), Duke Energy Corporation, a North Carolina corporation (Duke Energy NC), Cinergy Corp.' ... 'Pursuant to Rule 12g-3(c) under the Securities Exchange Act of 1934 ... the registrants common stock is deemed to be registered under Section 12(b)'. boundary = the merger date the filing states. After it the CIK files as the utility subsidiary Duke Energy Carolinas; the dated split excludes those filings. Cinergy is an acquired company and is not in this entry."
+      },
+      {
+        "cik": "0001326160",
+        "valid_from": "2006-04-03",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Duke Energy Corporation (Delaware holding company), successor issuer from 2006-04-03 per its own 8-K12B 0001193125-06-072085."
       }
     ]
   },
@@ -207,6 +252,21 @@
         "cik": "0001711269",
         "valid_from": "2018-06-04",
         "evidence": "HAND-ADJUDICATED 2026-09-28. EVERGY INC, CIK 0001711269, is the post-close registrant from 2018-06-04. The dated split retains Westar before the close and Evergy on/after it; event forms continue to use the register's union policy."
+      }
+    ]
+  },
+  "FERG": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001832433",
+        "valid_to": "2024-08-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P14). Ferguson plc (Jersey, CIK 0001832433, now Ferguson (Jersey) Limited). Successor filing: Ferguson Enterprises Inc. (Delaware, CIK 0002011641) 8-K12B accession 0001193125-24-190512 filed 2024-08-01: 'at 12:01 a.m. Eastern Time (5:01 a.m. U.K. Time) on August 1, 2024 (the Effective Time)' ... 'As a result of the Merger, the Company became the successor issuer to Ferguson plc, which was renamed Ferguson (Jersey) Limited and changed its status to a private company.' boundary = the effective date the filing states; it matches the chain the Form 3/4/5 + dei evidence suggested (0001832433 to 2024-08-01)."
+      },
+      {
+        "cik": "0002011641",
+        "valid_from": "2024-08-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P14). Ferguson Enterprises Inc., successor issuer to Ferguson plc from 2024-08-01 per its own 8-K12B 0001193125-24-190512."
       }
     ]
   },
@@ -285,6 +345,51 @@
       }
     ]
   },
+  "MRVL": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0001058057",
+        "valid_to": "2021-04-20",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P14). Marvell Technology Group Ltd. (Bermuda, CIK 0001058057). Successor filing: Marvell Technology, Inc. (Delaware, CIK 0001835632) 8-K12B accession 0001193125-21-122938 filed 2021-04-20: 'On April 20, 2021 (the Merger Effective Date), Marvell Technology Group Ltd. (Marvell) completed the previously announced acquisition of Inphi Corporation' ... 'As a result of the Mergers, Marvell and Inphi became wholly owned subsidiaries of MTI' ... 'This Current Report ... establishes MTI as the successor issuer to Marvell and Inphi pursuant to Rule 12g-3(c)'. boundary = the Merger Effective Date; it matches the chain the Form 3/4/5 + dei evidence suggested (0001058057 to 2021-04-20). Inphi is an acquired company, not a predecessor of this ticker, and is not in this entry."
+      },
+      {
+        "cik": "0001835632",
+        "valid_from": "2021-04-20",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P14). Marvell Technology, Inc., successor issuer to Marvell Technology Group Ltd. from 2021-04-20 per its own 8-K12B 0001193125-21-122938."
+      }
+    ]
+  },
+  "ORCL": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000777676",
+        "valid_to": "2006-01-31",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). Oracle Systems Corporation (CIK 0000777676; EDGAR former name ORACLE CORP /DE/ to 2006-02-01), the ORCL registrant before the 2006 Siebel transaction. Successor filing: Oracle Corporation (formerly Ozark Holding Inc., CIK 0001341439) 8-K12G3 accession 0001193125-06-020874 filed 2006-02-06: 'Subsequent to the special meeting, on January 31, 2006, Siebel Merger Sub (a wholly-owned subsidiary of Oracle) me[rged]' ... 'Upon consummation of the Oracle Merger, all of the officers and directors of Oracle Systems immediately before such merger became the officers and directors of Oracle' ... 'Pursuant to Rule 12g-3(c) under Exchange Act, the Oracle common stock ... [is] deemed to be registered under Section 12(g)'. boundary = the merger date the filing states. Siebel Systems is an acquired company and is not in this entry."
+      },
+      {
+        "cik": "0001341439",
+        "valid_from": "2006-01-31",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Oracle Corporation (new holding company), successor issuer from 2006-01-31 per its own 8-K12G3 0001193125-06-020874."
+      }
+    ]
+  },
+  "PSA": {
+    "kind": "domestication",
+    "segments": [
+      {
+        "cik": "0000318380",
+        "valid_to": "2007-06-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). Public Storage, Inc. (California, CIK 0000318380). Successor filing: Public Storage (Maryland real estate investment trust, CIK 0001393311) 8-K12G3 accession 0001193125-07-128949 filed 2007-06-04 (also 8-K12G3/A 0001193125-07-130356 and 8-K12B 0001193125-07-130364, 2007-06-06): 'On June 1, 2007, we completed our previously announced reorganization from a California corporation to a Maryland real estate investment trust' ... 'As the successor entity, the Trust hereby formally adopts the registration statements and all other filings of our predecessor, Public Storage, Inc.' boundary = the reorganisation date the filing states. The 2023 UPREIT reorganisation (8-K12B 0001193125-23-211436, 'New PSA became the successor issuer to Old PSA') was filed under the same CIK 0001393311 and needs no segment."
+      },
+      {
+        "cik": "0001393311",
+        "valid_from": "2007-06-01",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Public Storage (Maryland REIT), successor from 2007-06-01 per its own 8-K12G3 0001193125-07-128949."
+      }
+    ]
+  },
   "PSKY": {
     "kind": "reorganisation",
     "segments": [
@@ -333,6 +438,21 @@
         "cik": "0001466258",
         "valid_from": "2009-07-01",
         "evidence": "Ingersoll-Rand plc (Ireland), the re-registration effective 2009-07-01; renamed Trane Technologies plc in March 2020 with NO CIK change, which is why the chain stops here -- a further `rename` segment would walk one CIK twice. Measured 2026-09-11: 1,155 filings under `IR` 2009-07-09 .. 2020-02-24, then 470 under `TT` from 2020-03-10. The boundary is the reorganisation's own effective date and is both gapless and non-overlapping: the predecessor's last filing is 2009-06-03 and the successor's first is 2009-07-09. This is also TT's roster CIK, so the entry ADDS the 2006-2009 Bermuda history the ticker walk cannot reach and substitutes nothing."
+      }
+    ]
+  },
+  "VMC": {
+    "kind": "reorganisation",
+    "segments": [
+      {
+        "cik": "0000103973",
+        "valid_to": "2007-11-16",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). Vulcan Materials Company, the pre-2007 registrant (CIK 0000103973; EDGAR former name VULCAN MATERIALS CO to 2007-11-15, now Legacy Vulcan Corp.). Successor filing: Vulcan Materials Company (new holding company, CIK 0001396009) 8-K12B accession 0000950123-07-015677 filed 2007-11-16 (Date of Report November 16, 2007; amended by 0000950123-07-015871 and 0000950123-08-006959): 'Upon completion of the Vulcan Merger, pursuant to the terms and conditions of the Merger Agreement, Legacy Vulcan became a wholly owned subsidiary of Vulcan' ... 'Pursuant to Rule 12g-3(c) under the Exchange Act, the Vulcan Common Stock ... [is] deemed to be registered under Section 12(b) ... The Vulcan Common Stock will trade on the NYSE under the ticker symbol VMC.' boundary = the date of report. Florida Rock is an acquired company and is not in this entry."
+      },
+      {
+        "cik": "0001396009",
+        "valid_from": "2007-11-16",
+        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Vulcan Materials Company (holding company), successor issuer from 2007-11-16 per its own 8-K12B 0000950123-07-015677."
       }
     ]
   },

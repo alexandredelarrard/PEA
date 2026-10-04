@@ -153,5 +153,11 @@
     "own_entity": ["0000084023"],
     "evidence": "One filing, 2007-10-25, carrying TECH as the symbol under CIK 0000084023 (RIM DRIVE WHEEL INC). Bio-Techne's own CIK is 0000842023 -- the same digits with one dropped. Same reasoning as AKAM: refusing costs one filing, admitting would pull an unrelated registrant's whole book onto TECH.",
     "decided": "2026-09-11"
+  },
+
+  "CPT/tape-cable-electronics-cik-typo": {
+    "own_entity": ["0000096345"],
+    "evidence": "One Form 4, accession 0000906345-06-000003 filed 2006-01-12, carrying (CPT) as the symbol under issuer CIK 0000096345, which EDGAR names TAPE CABLE ELECTRONICS CO INC. The accession was submitted by Camden Property Trust's own filer CIK (0000906345, the 0000906345- prefix), and Camden's 61 other (CPT) filings of 2006-01-12 .. 2007-06-14 carry issuer CIK 0000906345: the filed issuer CIK is Camden's with one digit dropped, so this is a CIK typo, not a Camden CIK. Owner overlap 1 shared, jaccard 0.032 (grey band). Recorded as its own entity, as for AKAM and TECH: refusing costs one filing, admitting would pull an unrelated CIK into Camden's scope.",
+    "decided": "2026-10-04"
   }
 }

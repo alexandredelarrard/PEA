@@ -752,6 +752,66 @@ def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
     print("  OK: all six CIK assignments are register-sourced without owner overlap.")
 
 
+#: ticker: (predecessor, successor, seam) -- each dated from the successor's own 8-K12B / 8-K12G3.
+SUCCESSOR_FILINGS = {
+    "ACN": ("0001134538", "0001467373", "2009-09-01"),
+    "DD": ("0000030554", "0001666700", "2017-08-31"),
+    "DUK": ("0000030371", "0001326160", "2006-04-03"),
+    "FERG": ("0001832433", "0002011641", "2024-08-01"),
+    "MRVL": ("0001058057", "0001835632", "2021-04-20"),
+    "ORCL": ("0000777676", "0001341439", "2006-01-31"),
+    "PSA": ("0000318380", "0001393311", "2007-06-01"),
+    "VMC": ("0000103973", "0001396009", "2007-11-16"),
+}
+
+
+def test_a_register_entry_turns_a_backlogged_multi_cik_entity_into_dated_windows(tmp_path):
+    """The live register dates the seams that owner overlap alone leaves as `multi_cik_no_window` backlog."""
+    rows, owners = [], {}
+    for i, (ticker, (predecessor, successor, seam)) in enumerate(SUCCESSOR_FILINGS.items()):
+        rows += [(ticker, predecessor, "2000-01-03", seam, 50), (ticker, successor, seam, None, 50)]
+        owners[predecessor] = owners[successor] = {f"{i:04d}{k:06d}" for k in range(10)}
+    tenure, roster = _tenure(rows), _roster([(ticker, successor) for ticker, (_, successor, _) in SUCCESSOR_FILINGS.items()])
+
+    before = derive_entity_lineage(tenure, roster, _owner_pairs(owners), _config(tmp_path))
+    pending = before.backlog[before.backlog["kind"].eq("multi_cik_no_window")]
+    assert sorted(pending["canonical_ticker"]) == sorted(SUCCESSOR_FILINGS)
+
+    after = derive_entity_lineage(tenure, roster, _owner_pairs(owners), CONFIG_DIR)
+    windows = _rows(after, role="cik_window").set_index("cik")
+    for ticker, (predecessor, successor, seam) in SUCCESSOR_FILINGS.items():
+        assert windows.loc[predecessor, "valid_from"] == L.SENTINEL_START and windows.loc[predecessor, "valid_to"] == pd.Timestamp(seam), ticker
+        assert windows.loc[successor, "valid_from"] == pd.Timestamp(seam) and pd.isna(windows.loc[successor, "valid_to"]), ticker
+        assert windows.loc[predecessor, "oracle"] == windows.loc[successor, "oracle"] == "register", ticker
+    assert after.backlog[after.backlog["kind"].eq("multi_cik_no_window") & after.backlog["canonical_ticker"].isin(SUCCESSOR_FILINGS)].empty
+    blk = {segment.cik: segment for segment in load_registrants(CONFIG_DIR)["BLK"].segments}
+    assert blk["0001364742"].valid_to == blk["0002012383"].valid_from == pd.Timestamp("2024-10-01")
+
+    print("\n=== SANITY CHECK: register entries close the multi-CIK backlog ===")
+    print(f"  without the register: {len(pending)} multi_cik_no_window items {sorted(pending['canonical_ticker'])}")
+    for ticker, (predecessor, successor, seam) in SUCCESSOR_FILINGS.items():
+        print(f"  {ticker:5s} {predecessor} [1900-01-01, {seam}) -> {successor} [{seam}, open)")
+    print("  BLK 0001364742 -> 0002012383 at 2024-10-01 (the 8-K12B closing date)")
+    print("  OK: every successor-filing entry yields dated register windows and leaves the backlog")
+
+
+def test_a_manual_verdict_clears_the_cpt_grey_band():
+    """CIK 0000096345 typed `(CPT)` once; the curated `own_entity` verdict keeps it out without a backlog row."""
+    camden, typo = "0000906345", "0000096345"
+    tenure = _tenure([("CPT", camden, "2007-05-15", None, 684), ("CPT", typo, "2006-01-12", "2006-01-13", 1)])
+    owners = {camden: {f"{i:010d}" for i in range(31)}, typo: {"0000000000"}}
+    shared, jaccard = score_overlap(owners[typo], owners[camden])
+    assert classify_overlap(shared, jaccard) == "grey"
+    build = derive_entity_lineage(tenure, _roster([("CPT", camden)]), _owner_pairs(owners), CONFIG_DIR)
+    assert build.backlog[build.backlog["kind"].eq("grey_band")].empty
+    assert set(_rows(build, cik=typo)["entity_id"]) == {"E0000096345"} and set(_rows(build, cik=typo)["oracle"]) == {"manual"}
+    assert set(_rows(build, cik=camden)["entity_id"]) == {"E0000906345"}
+
+    print("\n=== SANITY CHECK: CPT grey band settled ===")
+    print(f"  overlap shared={shared} jaccard={jaccard:.3f} -> grey; curated own_entity -> no backlog, {typo} is its own entity")
+    print("  OK: the one-digit-off CIK stays out of Camden's entity by a recorded decision")
+
+
 def test_d19_allowlist_is_loaded_from_the_curated_file():
     allow = load_d19_allowlist(CONFIG_DIR)
     assert {"BF-B", "BRK-B", "FOXA", "NWSA", "LEN", "VMRK"} <= set(allow)

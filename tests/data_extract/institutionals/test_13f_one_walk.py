@@ -292,7 +292,7 @@ def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_Fa
         def get_filings(self, form: Any) -> list[_FakeFiling]:
             return listings[self.cik]
 
-    monkeypatch.setattr(f13m, "Company", _FakeCompany)
+    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
@@ -431,7 +431,7 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
         sent.append(book.copy())
         return real_save_book(context, book)
 
-    monkeypatch.setattr(f13m, "Company", _FakeCompany)
+    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(f13m, "_save_book", _spy_save_book)
     monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
@@ -547,8 +547,10 @@ def test_a_parse_failure_skips_only_its_filing_and_the_quarter_saves(sqlite_stor
     )
 
 
-@pytest.mark.parametrize("fail_error", [RuntimeError, ConnectionError, TimeoutError])
-def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error):
+# `sec_io` retries a "429" up to its 3 attempts, so that failure must last 3 reads to outlive the
+# policy; a network error edgartools already retried fails at once.
+@pytest.mark.parametrize(("fail_error", "fail_reads"), [(RuntimeError, 3), (ConnectionError, 1), (TimeoutError, 1)])
+def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error, fail_reads):
     original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
     amendment = _FakeFiling(
         ROSTER,
@@ -557,7 +559,7 @@ def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite
         [_line("037833100", "APPLE INC", 2_000.0, 20)],
         form="13F-HR/A",
         accession="0000000001-26-000002",
-        fail_reads=1,
+        fail_reads=fail_reads,
         fail_error=fail_error,
     )
     other_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", [_line("037833100", "APPLE INC", 500.0, 5)], accession="0000000001-26-000000")

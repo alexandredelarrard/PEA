@@ -34,6 +34,7 @@ from src.data_extract.utils.common.bulk_cache import (
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik_series
@@ -129,13 +130,11 @@ def _period_year(tag: str) -> int:
 def _scrape_available_periods(context: Context) -> list[str] | None:
     """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator)."""
     try:
-        r = context.sec_session.get(_LANDING_URL, timeout=60)
-        if r.status_code != 200:
-            return None
-        tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
-        return sorted(set(tags)) or None
+        r = sec_get(context, _LANDING_URL, timeout=60)
     except Exception:  # noqa: BLE001 (best-effort)
         return None
+    tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
+    return sorted(set(tags)) or None
 
 
 def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:

@@ -3,7 +3,8 @@ fetch_8k_edgar.py (src/data_extract/utils/institutionals/fetch_8k_edgar.py)
 ------------------------------------------------------------------------
 SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
 Item codes come from the filing index; `has_earnings` / `has_press_release` and
-the per-item text come from edgartools' typed `CurrentReport` (`filing.obj()`).
+the per-item text come from edgartools' typed `CurrentReport` (`sec_io.filing_obj`).
+A transient SEC failure raises and fails the filing; a parse failure keeps a best-effort row.
 Financial statements in attached earnings releases are out of scope.
 """
 
@@ -15,6 +16,7 @@ from typing import Any
 
 from src.constants.constants import SEC_8K_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
 from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Tables
 
@@ -96,7 +98,9 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     if not _RESULTS_FOLLOW_RE.search(item_text) or has_vote_table(item_text):
         return item_text
     try:
-        primary_text = str(filing.text() or "")
+        primary_text = str(filing_text(filing) or "")
+    except TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- best-effort filing recovery
         return item_text
     for heading in _ITEM_507_HEADING_RE.finditer(primary_text):
@@ -108,10 +112,10 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
 
 
 def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
-    """One 8-K -> one row per item code. A failed `.obj()` parse keeps the item rows with both
-    flags NaN (not None, so a cold table never infers the column as TEXT)."""
+    """One 8-K -> one row per item code. A failed parse keeps the item rows with both flags NaN
+    (not None, so a cold table never infers the column as TEXT); a transient read raises."""
     filing = stamp.filing
-    # Item codes come off the filing index, read before `.obj()` so a code-less filing skips the parse.
+    # Item codes come off the filing index, read before the parse so a code-less filing skips it.
     items = getattr(filing, "items", "") or ""
     item_list = [i.strip() for i in str(items).split(",") if i.strip()]
     if not item_list:
@@ -120,10 +124,12 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     has_earnings = has_press_release = float("nan")
     obj = None
     try:
-        obj = filing.obj()
+        obj = filing_obj(filing)
         has_earnings = float(bool(obj.has_earnings))
         has_press_release = float(bool(obj.has_press_release))
-    except Exception:  # noqa: BLE001 -- best-effort only
+    except TransientReadError:
+        raise
+    except Exception:  # noqa: BLE001 -- best-effort only (a parse failure or a missing flag)
         pass
 
     base = {

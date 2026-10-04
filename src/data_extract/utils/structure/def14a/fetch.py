@@ -28,7 +28,8 @@ from src.data_extract.utils.common.registrant import (
     load_registrants,
 )
 from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
+from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.flatten import (
@@ -56,9 +57,11 @@ logger = logging.getLogger(__name__)
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
     """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
-    document cannot be fetched; re-raises when there is no distinct `.txt` URL."""
+    document is not served; re-raises a transient failure, and when there is no distinct `.txt` URL."""
     try:
         return sec_get(context, filing["doc_url"]).text
+    except TransientReadError:
+        raise
     except Exception:
         txt_url = filing.get("txt_url")
         if not txt_url or txt_url == filing["doc_url"]:
@@ -98,12 +101,16 @@ def _subject_is_accepted(
     filing: pd.Series,
     accepted_subject_ciks: frozenset[str],
 ) -> bool:
-    """Reject only a known subject that is outside the accepted registrant entity."""
+    """Reject only a known subject that is outside the accepted registrant entity. A header SEC could
+    not serve skips the filing this run (it is not queued, so a later run reads it again)."""
     accession = str(filing["accession_number"])
     filer_cik = pad_cik(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
+    except TransientReadError as exc:
+        context.log.warning("%s: DEF 14A accession %s subject header unreadable (%s); skipped this run", ticker, accession, exc)
+        return False
     except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
         context.log.info(
             "%s: DEF 14A accession %s subject header unavailable (%s); continuing",

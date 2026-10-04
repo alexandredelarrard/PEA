@@ -13,18 +13,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import httpx
 import pandas as pd
 import pyarrow.compute as pc
 from edgar import Filings, get_filings
-from edgar.httprequests import is_unreachable
 from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.rate_limit import is_rate_limited
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -189,21 +187,17 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     return out.dropna(subset=["period"])[_BOOK_COLS]
 
 
-def _is_transient(exc: Exception) -> bool:
-    """A throttle / 5xx / timeout (the shared matcher), or a request that never reached SEC."""
-    return is_rate_limited(exc) or is_unreachable(exc) or isinstance(exc, ConnectionError | TimeoutError | httpx.TransportError)
-
-
 def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
-    (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch."""
+    (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
+    The failure is transient exactly when `sec_io` gave up on a throttle, 5xx or network error."""
     try:
-        infotable = stamp.filing.obj().infotable
+        infotable = filing_obj(stamp.filing).infotable
         if infotable is None or infotable.empty:
             return pd.DataFrame()
         return _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
     except Exception as e:  # noqa: BLE001
-        return ReadFailure(transient=_is_transient(e), reason=f"{type(e).__name__}: {e}")
+        return ReadFailure(transient=isinstance(e, TransientReadError), reason=f"{type(e).__name__}: {e}")
 
 
 def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
@@ -326,6 +320,7 @@ def fetch_13f(
     `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs. One
     EDGAR walk at a time; oldest-first, so an amendment overwrites its original."""
     context.ensure_edgar_identity()
+    configure(context)
     since, until = _resolve_window(context, years_history, lookback_days, filing_window)
     roster_ciks = roster_cik_union(context)
     if not roster_ciks:

@@ -27,6 +27,7 @@ from src.data_extract.utils.common.sec_atom import (
     iter_atom_pages,
     keep_atom_entry,
 )
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_header, filing_xml
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     LIVE_DATE_FORMATS,
@@ -82,7 +83,7 @@ def _family_filings(
     """
     filings: dict[str, Filing] = {}
     try:
-        for _offset, entries in iter_atom_pages(pad_cik(cik), family, start_date, end_date, ticker, retry=False):
+        for _offset, entries in iter_atom_pages(pad_cik(cik), family, start_date, end_date, ticker):
             page, oldest = _page_filings(entries, ticker, cik, start_date, end_date, done_accessions)
             filings.update(page)
             if start_date is not None and oldest < start_date:
@@ -147,9 +148,11 @@ def insider_filings(
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
-    filing_obj = cast(Any, filing)
+    """The header's acceptance time (NaT when the header has none); a transient read raises."""
     try:
-        raw = getattr(filing_obj.header, "acceptance_datetime", None)
+        raw = getattr(filing_header(filing), "acceptance_datetime", None)
+    except TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- optional EDGAR header metadata
         raw = None
     value = pd.to_datetime(cast(Any, raw), errors="coerce")
@@ -164,7 +167,7 @@ def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame,
     footnote_frames: list[pd.DataFrame] = []
     metadata: list[dict[str, object]] = []
     for filing in filings:
-        xml = filing.xml()
+        xml = filing_xml(filing)
         if not xml:
             raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
         df_str, df_notes = extract_xml_strings(xml)

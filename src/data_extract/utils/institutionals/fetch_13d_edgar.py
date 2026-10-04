@@ -6,7 +6,8 @@ SC 13D/13D-A filings via edgartools into `sec_13d` (one row per ticker, accessio
 `sec_13d_transactions` (one row per Item 5(c) trade). `SEC_13D_FORMS` must list both the
 "SC 13D" and "SCHEDULE 13D" form strings (exact match). Numerics are trusted only from structured
 XML without placeholder zeros, so the table never claims an undisclosed 0% stake; pre-XML item
-prose is regex-carved from `filing.text()` and normalized for encoding/whitespace only.
+prose is regex-carved from the filing text and normalized for encoding/whitespace only. SEC reads go
+through `sec_io`; a transient failure raises and fails the filing.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from bs4 import BeautifulSoup
 from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_attachments, filing_text
 from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, kept_schedule_filings
 from src.data_store.schema import Table, Tables
 
@@ -283,7 +285,7 @@ def _attachment_html(att: Any) -> str | None:
 
 def _trade_cue_html(filing: Any) -> Iterator[str]:
     """The HTML of each attachment that carries a "Trade Date" cue, in attachment order."""
-    for att in getattr(filing, "attachments", None) or []:
+    for att in filing_attachments(filing) or []:
         html = _attachment_html(att)
         if html is not None and _TRADE_HEADER_CUE.search(html):
             yield html
@@ -330,7 +332,7 @@ def _is_placeholder_numerics(rp: Any) -> bool:
 
 def _item_texts(filing: Any, obj: Any, has_structured: bool) -> dict[str, Any]:
     """Item 3/4/5/6 narrative: the structured XML parse when the filing has one, else the bodies
-    carved out of `filing.text()` (a text that cannot be read yields no items)."""
+    carved out of the filing text (a text that cannot be parsed yields no items; a transient read raises)."""
     items = getattr(obj, "items", None)
     if has_structured and items:
         item5_parts = [
@@ -346,7 +348,9 @@ def _item_texts(filing: Any, obj: Any, has_structured: bool) -> dict[str, Any]:
             "item6_contracts_understandings": getattr(items, "item6_contracts", None),
         }
     try:
-        raw_text = filing.text()
+        raw_text = filing_text(filing)
+    except TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- best-effort only
         raw_text = None
     sections = _extract_13d_item_sections(raw_text) if raw_text else {}
@@ -377,6 +381,8 @@ def _filing_transactions(ticker: str, cik: str, stamp: FilingStamp, filing_rows:
     fallback_person = names[0] if len(names) == 1 else None
     try:
         trades = _extract_transaction_rows(stamp.filing, fallback_person, stamp.filed)
+    except TransientReadError:
+        raise
     except Exception as exc:  # noqa: BLE001 -- filing parser boundary
         raise RuntimeError(f"{SCHEDULE_13D.label} accession {stamp.accession_number} transaction exhibit could not be parsed") from exc
     issuer_cik = filing_rows[0].get("cik") if filing_rows else cik

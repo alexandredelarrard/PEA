@@ -19,6 +19,7 @@ import edgar.httprequests
 import pandas as pd
 
 from src.data_extract.utils.common.rate_limit import call_with_retries
+from src.data_extract.utils.common.sec_io import sec_call
 
 ATOM_NAMESPACE = {"atom": "http://www.w3.org/2005/Atom"}
 SEC_INSIDER_FORM_FAMILIES = ("3", "4", "5")
@@ -60,13 +61,14 @@ def atom_page_url(cik: str, family: str, date_from: pd.Timestamp | None, date_to
     )
 
 
-def fetch_atom_entries(url: str, label: str, *, retry: bool) -> list[ElementTree.Element]:
+def fetch_atom_entries(url: str, label: str, *, legacy_retry: bool = False) -> list[ElementTree.Element]:
     """The `<entry>` elements of one page. Raises on a failed request, an empty payload or bad XML.
 
-    `retry` routes the request through `call_with_retries` (labelled `label`).
+    The request runs under the `sec_io` retry policy, or, with `legacy_retry` (the schedule
+    search), under `call_with_retries`'s longer waits instead (labelled `label`).
     """
     download = partial(edgar.httprequests.download_text, url)
-    payload = call_with_retries(download, label=label) if retry else download()
+    payload = call_with_retries(download, label=label) if legacy_retry else sec_call(download, label=label)
     if payload is None:
         raise ValueError("SEC Atom response was empty")
     return ElementTree.fromstring(payload).findall("atom:entry", ATOM_NAMESPACE)
@@ -91,7 +93,7 @@ def parse_atom_entry(entry: ElementTree.Element) -> AtomEntry | None:
 
 
 def iter_atom_pages(
-    cik: str, family: str, date_from: pd.Timestamp | None, date_to: pd.Timestamp, label: str, *, retry: bool
+    cik: str, family: str, date_from: pd.Timestamp | None, date_to: pd.Timestamp, label: str, *, legacy_retry: bool = False
 ) -> Iterator[tuple[int, list[AtomEntry | None]]]:
     """`(offset, decoded entries)` per page, ending after the first short (or empty) page. Lazy: a
     caller that stops iterating requests no further page. A failed page raises `AtomPageError`
@@ -100,7 +102,7 @@ def iter_atom_pages(
     while True:
         url = atom_page_url(cik, family, date_from, date_to, start)
         try:
-            entries = fetch_atom_entries(url, f"{label} {family} offset {start}", retry=retry)
+            entries = fetch_atom_entries(url, f"{label} {family} offset {start}", legacy_retry=legacy_retry)
         except Exception as exc:  # noqa: BLE001 -- each caller owns its failure policy
             raise AtomPageError(start) from exc
         yield start, [parse_atom_entry(raw) for raw in entries]

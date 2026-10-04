@@ -23,6 +23,7 @@ from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_io import configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -109,6 +110,7 @@ def filing_body_text(filing: Filing) -> str:
     """Primary-document text (visible HTML table cells included, no OCR), else the full submission; "" if none.
 
     edgartools raises AttributeError for a filing with no primary document; that is absorbed as a filing property.
+    Each read runs under the `sec_io` retry policy; a transient failure raises.
     """
     readers: tuple[tuple[str, Callable[[str], str]], ...] = (
         ("html", html_to_text),
@@ -117,7 +119,7 @@ def filing_body_text(filing: Filing) -> str:
     )
     for method, to_text in readers:
         try:
-            raw = getattr(filing, method)()
+            raw = sec_call(getattr(filing, method), label=f"{getattr(filing, 'accession_number', '?')} {method}")
         except AttributeError:  # edgartools dereferences a missing primary document
             continue
         if raw and (text := to_text(raw)).strip():
@@ -463,6 +465,7 @@ def fetch_fundamentals_employees(
     value from there instead of the LLM, on `--full` too.
     """
     context.ensure_edgar_identity()
+    configure(context)
     cik_map = load_cik_mapping(context, tickers)
     missing = set(tickers) - set(cik_map["ticker"])
     if missing:

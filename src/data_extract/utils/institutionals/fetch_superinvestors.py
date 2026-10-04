@@ -29,7 +29,7 @@ from urllib3.exceptions import InsecureRequestWarning
 from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.sec_utils import sec_get
+from src.data_extract.utils.common.sec_io import sec_get
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 

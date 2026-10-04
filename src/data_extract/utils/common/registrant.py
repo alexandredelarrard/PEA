@@ -20,9 +20,9 @@ from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-import edgar
 import pandas as pd
 
+from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.sec_atom import (
     SEC_INSIDER_OWNER_ATOM_PAGE_SIZE,
@@ -393,12 +393,12 @@ def _filing_sources(
     if entry is None:
         additive_ciks = identity_ciks if policy is Combine.UNION else ()
         return (
-            [(ticker, edgar.Company(ticker))]
+            [(ticker, sec_io.company(ticker))]
             + [(alias, _company_or_none(alias, ticker, _ALIAS_KIND)) for alias in aliases]
             + [(cik, _company_or_none(cik, ticker, _CIK_KIND)) for cik in additive_ciks]
         )
     union_ciks = tuple(dict.fromkeys((*entry.all_ciks(), *identity_ciks)))
-    return [("ticker", edgar.Company(ticker))] + [(cik, _company_or_none(cik, ticker, _CIK_KIND)) for cik in union_ciks]
+    return [("ticker", sec_io.company(ticker))] + [(cik, _company_or_none(cik, ticker, _CIK_KIND)) for cik in union_ciks]
 
 
 def _union_walk(
@@ -412,7 +412,7 @@ def _union_walk(
     for label, company in sources:
         if company is None:
             continue
-        for filing in company.get_filings(form=forms):
+        for filing in sec_io.company_filings(company, forms):
             if filing.accession_number in by_accession:
                 continue
             filed = keep(filing)
@@ -429,7 +429,7 @@ def _split_walk(ticker: str, entry: Registrant, forms: list[str], keep: Callable
     seen: dict[str, str] = {}
     for segment in entry.segments:
         company = _company_or_none(segment.cik, ticker, _CIK_KIND)
-        for filing in [] if company is None else company.get_filings(form=forms):
+        for filing in [] if company is None else sec_io.company_filings(company, forms):
             filed = keep(filing)
             if filed is None or not segment.covers(filed):
                 continue
@@ -492,8 +492,10 @@ class ScheduleDiscoveryIncompleteError(RuntimeError):
 
 
 def header_subject_ciks(filing: object) -> frozenset[str]:
-    """Read schedule subject CIKs from the SGML header, before ``filing.obj()``."""
-    header = getattr(filing, "header", None)
+    """Read schedule subject CIKs from the SGML header, before ``filing.obj()``.
+
+    An unreadable header raises (`sec_io.TransientReadError` when SEC served an error page)."""
+    header = sec_io.filing_header(filing)
     companies = getattr(header, "subject_companies", ()) or ()
     raw_ciks = (getattr(company, "cik", None) or getattr(getattr(company, "company_information", None), "cik", "") for company in companies)
     return frozenset(normalized for cik in raw_ciks if (normalized := pad_cik(cik)))
@@ -578,7 +580,7 @@ def _collect_window(query: _ScheduleQuery, cik: str, family: str, window_start: 
     """
     result = WindowResult()
     try:
-        for offset, entries in iter_atom_pages(cik, family, window_start, window_end, query.ticker, retry=True):
+        for offset, entries in iter_atom_pages(cik, family, window_start, window_end, query.ticker, legacy_retry=True):
             result.pages += 1
             _absorb_page(query, cik, entries, window_start, window_end, result)
             next_offset = offset + SEC_INSIDER_OWNER_ATOM_PAGE_SIZE
@@ -718,9 +720,12 @@ def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str
 
 
 def _company_or_none(key: str, ticker: str, kind: str) -> Any | None:
-    """`Company` for a register/identity CIK or a historical alias; an unresolvable one is warned and skipped."""
+    """`Company` for a register/identity CIK or a historical alias; an unresolvable one is warned and
+    skipped, a transient SEC failure raises."""
     try:
-        return edgar.Company(int(key) if kind == _CIK_KIND else key)
+        return sec_io.company(int(key) if kind == _CIK_KIND else key)
+    except sec_io.TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- a dead CIK or stale alias, not a bug
         logger.warning("%s: %s %s could not be resolved", ticker, kind, key)
         return None

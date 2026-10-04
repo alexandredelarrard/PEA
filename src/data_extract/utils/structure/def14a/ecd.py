@@ -62,6 +62,8 @@ import logging
 
 import pandas as pd
 
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_xbrl
+
 logger = logging.getLogger(__name__)
 
 #: The frame column edgartools builds for each dimension it finds on the instance.
@@ -105,10 +107,12 @@ def ecd_facts(filing) -> pd.DataFrame | None:
     """The filing's inline-XBRL facts, or None when it has none.
 
     This is the same frame `ProxyStatement._facts_dataframe` builds, so a caller that already
-    holds the filing downloads nothing extra.
+    holds the filing downloads nothing extra. A transient SEC failure raises instead of reading as "no facts".
     """
     try:
-        xbrl = filing.xbrl()
+        xbrl = filing_xbrl(filing)
+    except TransientReadError:
+        raise
     except Exception as e:  # noqa: BLE001 -- best-effort
         logger.info("%s: filing.xbrl() failed (%s: %s)", getattr(filing, "accession_number", "?"), type(e).__name__, e)
         return None

@@ -1,7 +1,8 @@
 """Characterization of the insider owner-inclusive Atom paging policy.
 
 Pins the request URLs, the stop on a page whose oldest entry predates `since`, the stop of one
-form family on a failed page (other families continue) and the `since=None` URL. Offline.
+form family on a page that still fails after the `sec_io` retries (other families continue) and
+the `since=None` URL. Offline.
 """
 
 from __future__ import annotations
@@ -100,11 +101,13 @@ def test_failed_page_stops_only_that_family_and_keeps_earlier_pages(monkeypatch,
         filings = module.ownership_filings("DLR", "1494877", since=None, through=pd.Timestamp("2026-06-30"), done_accessions=frozenset())
 
     assert requested[0] == f"{URL_PREFIX}&type=3&datea=&dateb=20260630&owner=include&start=0&count=100&output=atom"
-    assert [parse_qs(urlparse(url).query)["start"][0] for url in requested] == ["0", "0", "100", "0"]
+    # The failing page is requested 3 times: the `sec_io` policy retries a 503 before giving up.
+    assert [parse_qs(urlparse(url).query)["start"][0] for url in requested] == ["0", "0", "100", "100", "100", "0"]
     assert len(filings) == 101
     assert "five" in {filing.accession_number for filing in filings}
     assert [record.getMessage() for record in caplog.records] == [
-        "ownership filing search failed for DLR form 4 at offset 100: RuntimeError('503 Service Unavailable')"
+        "ownership filing search failed for DLR form 4 at offset 100: "
+        "TransientReadError('DLR 4 offset 100: SEC read failed after 3 attempt(s): RuntimeError: 503 Service Unavailable')"
     ]
     print("\n=== SANITY: failed Atom page ===")
-    print("  family 4 stops at offset 100 with a warning; its page 0 and family 5 are kept (silent truncation is the known TODO)")
+    print("  offset 100 retried 3 times, then family 4 stops with a warning; its page 0 and family 5 are kept (truncation is the known TODO)")

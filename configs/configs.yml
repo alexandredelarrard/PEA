@@ -16,6 +16,13 @@ data_extract:
   # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
   # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
   manifest_full_rescan_days: 30
+  # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
+  # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
+  # waiting `waits` seconds between them (the last repeats); a Retry-After lengthens a wait up to the cap.
+  sec_retry:
+    attempts: 3
+    waits: [5, 20]
+    retry_after_cap: 120
   # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
   # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
   # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at

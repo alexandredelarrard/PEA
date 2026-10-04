@@ -1,6 +1,6 @@
 """Cache, read and incremental-state helpers for the SEC bulk data sets.
 
-Downloads stream to a `.part` file and rename on success; tab-separated zips are read through
+Downloads go through `sec_io.download` (a `.part` file renamed on success); tab-separated zips are read through
 `read_zip_tables`; `pending_periods` / `mark_processed` decide which cached periods a run re-parses;
 `archive_available_at` / `stored_period_clock` give each archive its availability date.
 """
@@ -21,6 +21,7 @@ import pandas as pd
 from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.incremental import stored_values
+from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
 
 __all__ = [
@@ -38,7 +39,6 @@ __all__ = [
     "stored_period_clock",
 ]
 
-_CHUNK = 1 << 20  # 1 MiB streaming chunks
 _DEFAULT_TIMEOUT = 300  # seconds
 _RELEASE_DAY = 12  # estimated release: this day of the month after the period end
 
@@ -89,8 +89,9 @@ def ensure_zip(
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.
 
-    Streams to a `.part` file and renames only on success. `urls` may be several candidates tried
-    in order. Returns None when no candidate serves the archive (normal for the newest period).
+    Downloads through `sec_io.download` (retried, rate-limited, `.part` renamed only on success).
+    `urls` may be several candidates tried in order. Returns None when no candidate serves the
+    archive (normal for the newest period) or every candidate failed after the retry policy.
     """
     if is_cached(path):
         return path
@@ -99,18 +100,13 @@ def ensure_zip(
 
     for url in candidates:
         try:
-            response = context.sec_session.get(url, timeout=timeout, stream=True)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("%s: download failed (%s): %s", label, url, exc)
+            status = download(context, url, path, timeout=timeout)
+        except TransientReadError as exc:
+            log.warning("%s: download failed after retries (%s): %s", label, url, exc)
             continue
-        if response.status_code != 200:
-            log.warning("%s: not available at %s (HTTP %s)", label, url, response.status_code)
+        if status != 200:
+            log.warning("%s: not available at %s (HTTP %s)", label, url, status)
             continue
-        tmp = path.with_suffix(".part")
-        with open(tmp, "wb") as fh:
-            for chunk in response.iter_content(chunk_size=_CHUNK):
-                fh.write(chunk)
-        tmp.replace(path)
         return path
     return None
 

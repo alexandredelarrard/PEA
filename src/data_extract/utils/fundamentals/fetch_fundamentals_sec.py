@@ -28,6 +28,7 @@ from src.data_extract.utils.common.edgar_driver import (
 )
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
+from src.data_extract.utils.common.sec_io import filing_xbrl
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
@@ -493,14 +494,14 @@ def filing_rows(
 ) -> list[dict]:
     """Every catalogue field, for every period, from one filing (`stamp.filing`, filed by `stamp.cik`).
 
-    An unreadable filing returns [] and is appended to `failures` as `(accession, error)`; a filing with no
-    XBRL returns [] and is appended to `no_xbrl`. The two excepts differ on purpose: edgartools' `xbrl()`
+    An unreadable filing (a transient SEC failure after the `sec_io` retries included) returns [] and is
+    appended to `failures` as `(accession, error)`; a filing with no XBRL returns [] and is appended to `no_xbrl`. The two excepts differ on purpose: edgartools' `xbrl()`
     parse swallows everything, while `PROGRAMMING_ERRORS` from our own `rows_from_xbrl` are re-raised and
     only data failures are counted.
     """
     filing = stamp.filing
     try:
-        xbrl = filing.xbrl()
+        xbrl = filing_xbrl(filing)
     except Exception as exc:  # noqa: BLE001 -- the filer's XBRL, not our code
         _note_failure(failures, filing, exc)
         return []

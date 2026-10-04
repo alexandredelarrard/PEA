@@ -17,7 +17,7 @@ from src.constants.constants import (
     SEC_SUBMISSIONS_URL,
 )
 from src.context import Context
-from src.data_extract.utils.common.sec_utils import sec_get
+from src.data_extract.utils.common.sec_io import sec_get
 from src.utils.string import pad_cik
 
 
@@ -81,7 +81,9 @@ def list_filings(
     """All filings of `forms` for one CIK over the last `years` years, oldest first, incl. 8-K `items`.
 
     With `since` (a date already fully parsed) only filings strictly after it are returned; archive
-    pages entirely before the cutoff are not downloaded. `cache_dir` keeps every raw page.
+    pages entirely before the cutoff are not downloaded. `cache_dir` keeps every raw page. A page
+    that cannot be read raises (`sec_io.TransientReadError` once retries are spent), so a listing
+    is never silently short.
     """
     cik = pad_cik(cik)
     forms_set = set(forms)
@@ -103,10 +105,7 @@ def list_filings(
         page_to = f.get("filingTo")
         if page_to and pd.Timestamp(page_to) < cutoff:
             continue
-        try:
-            page = sec_get(context, SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json()
-        except Exception:
-            continue
+        page = sec_get(context, SEC_SUBMISSIONS_PAGE_URL.format(name=older_name)).json()
         _cache_json(cache_dir, older_name, page)
         rows += _rows_from_recent(page, cik, company, forms_set, cutoff)
 

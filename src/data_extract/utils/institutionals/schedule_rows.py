@@ -17,6 +17,7 @@ import pandas as pd
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, num_or_null
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.registrant import issuer_ciks, resolve_schedule_subject_filings
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
 
@@ -94,7 +95,7 @@ def _fallback_row(base: dict[str, Any]) -> dict[str, Any]:
 
 def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[str, Any]]:
     """One schedule -> one row per reporting person (one fallback row when none parsed)."""
-    obj = stamp.filing.obj()
+    obj = filing_obj(stamp.filing)
     has_structured = bool(getattr(obj, "has_structured_data", False))
     base = _base_fields(stamp, obj, has_structured, spec)
     persons = getattr(obj, "reporting_persons", None) or []
@@ -133,13 +134,16 @@ def kept_schedule_filings(
 
     Issuer/filer guard: the listing holds every schedule naming any of the ticker's CIKs, including
     ones the ticker FILED about another issuer; those are skipped. An unresolvable CIK on either side
-    means unknown and does not reject. A parse failure raises `RuntimeError` naming the accession.
+    means unknown and does not reject. A parse failure raises `RuntimeError` naming the accession;
+    a transient SEC failure raises `TransientReadError` unchanged.
     """
     ticker_ciks = issuer_ciks(ticker, cik, scope.registrants, scope.identity)
     for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, spec.forms, since=since, done_accessions=done_accessions):
         stamp = FilingStamp.of(filing, cik)
         try:
             rows = schedule_filing_rows(stamp, spec)
+        except TransientReadError:
+            raise
         except Exception as exc:  # noqa: BLE001 -- filing parser boundary
             raise RuntimeError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
         issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""

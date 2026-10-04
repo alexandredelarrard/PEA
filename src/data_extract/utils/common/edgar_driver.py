@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property, partial
+from operator import attrgetter
 from typing import Any, Protocol
 
 import pandas as pd
@@ -28,6 +29,7 @@ from src.data_extract.utils.common.registrant import (
     resolve_registrant_filings,
 )
 from src.data_extract.utils.common.run_manifest import changed_scope_tickers, get_entry, manifest_window, record_run
+from src.data_extract.utils.common.sec_io import TransientReadError, configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
@@ -82,10 +84,13 @@ class FilingStamp:
         """The filing's raw `period_of_report`, or None when EDGAR's metadata cannot yield it.
 
         Guarded because the edgartools property can raise `TypeError`, which `run_per_ticker`
-        re-raises as a `PROGRAMMING_ERRORS` member; consumers tolerate a null.
+        re-raises as a `PROGRAMMING_ERRORS` member; consumers tolerate a null. Read under the
+        `sec_io` retry policy; a transient SEC failure raises rather than storing a null.
         """
         try:
-            return self.filing.period_of_report
+            return sec_call(attrgetter("period_of_report"), self.filing, label=f"{self.accession_number} period_of_report")
+        except TransientReadError:
+            raise
         except Exception:  # noqa: BLE001 -- EDGAR metadata defect
             return None
 
@@ -337,6 +342,7 @@ def run_edgar_fetch(
     each of `fetch.tables`, even with zero rows. `full` takes the whole `years_history` window;
     a failed ticker raises before any manifest entry advances."""
     context.ensure_edgar_identity()
+    configure(context)
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
     entry = get_entry(context, fetch.tables[0])

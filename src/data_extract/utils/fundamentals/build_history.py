@@ -728,12 +728,14 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
 
 
 def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> pd.DataFrame:
-    """Rule 6: rows of a fiscal period reported by several CIKs keep only the CIK whose stated window owns the period end.
+    """Rule 6: a filing is kept only when its filer CIK's seam-widened window admits its filing date, and rows of a
+    fiscal period reported by several CIKs keep only the CIK whose stated window owns the period end.
 
-    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no period.
+    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no CIK, date or period.
     """
     if len(windows) < 2 or facts.empty or "cik" not in facts.columns:
         return facts
+    facts = facts[_filed_inside_window(facts, windows)]
     ciks = pad_cik_series(facts["cik"]).tolist()
     periods = [None if pd.isna(day) else pd.Timestamp(day) for day in pd.to_datetime(facts["period_of_report"], errors="coerce")]
     reported = set(zip(periods, ciks, strict=True))
@@ -743,6 +745,17 @@ def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow])
         for day, cik in zip(periods, ciks, strict=True)
     ]
     return facts[[not dropped for dropped in drop]]
+
+
+def _filed_inside_window(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> list[bool]:
+    """Per row: whether its filer CIK's seam-widened window admits its filing date (the `consolidating` policy)."""
+    if "filing_date" not in facts.columns:
+        return [True] * len(facts)
+    filed = pd.to_datetime(facts["filing_date"], errors="coerce")
+    return [
+        not cik or pd.isna(day) or any(window.cik == cik and window.admits(pd.Timestamp(day)) for window in windows)
+        for cik, day in zip(pad_cik_series(facts["cik"]), filed, strict=True)
+    ]
 
 
 def _filer_count(facts: pd.DataFrame) -> int:
@@ -886,7 +899,7 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
             set_aside = sorted(set(facts["accession_number"]) - set(kept["accession_number"]))
             if set_aside:
                 context.log.info(
-                    "history: %s seam rule set aside %d filing(s) of a period its window owner reports: %s",
+                    "history: %s seam rule set aside %d filing(s) outside the filer's window or of a period its window owner reports: %s",
                     ticker,
                     len(set_aside),
                     ", ".join(set_aside),

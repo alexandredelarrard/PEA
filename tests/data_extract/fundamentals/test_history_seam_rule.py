@@ -67,6 +67,41 @@ def test_a_period_two_ciks_report_keeps_the_window_owner_only():
     print("  Alphabet's 2015-08-31 stub (only it reports) and its FY2015 10-K kept; no period lost or doubled")
 
 
+def test_a_filing_outside_its_filers_window_is_set_aside_even_alone_in_its_period():
+    """F-001 (JCI/Tyco shape): the successor CIK's own pre-seam 10-K ends its 52/53-week year days away from the
+    predecessor's, so no period is shared; the filing is still outside its filer's widened window and is set aside."""
+    jci, tyco = "0000053669", "0000833444"
+    identity = dated_identity([("JCI", jci, "cik_window", SENTINEL, "2016-09-02"), ("JCI", tyco, "cik_window", "2016-09-02", None)], {"JCI": tyco})
+    filings = [
+        ("tyco-fy2015", tyco, "2015-11-13", "2015-09-25"),
+        ("jci-fy2015", jci, "2015-11-18", "2015-09-30"),
+        ("tyco-margin", tyco, "2016-08-20", "2016-06-24"),
+        ("jci-plc-fy2017", tyco, "2017-11-21", "2017-09-30"),
+        ("no-cik", None, "2014-01-01", "2013-12-31"),
+    ]
+    facts = pd.DataFrame(
+        [
+            {
+                "ticker": "JCI",
+                "cik": c,
+                "accession_number": a,
+                "form": "10-K",
+                "filing_date": pd.Timestamp(f),
+                "period_of_report": pd.Timestamp(p),
+                "field": "totalRevenue",
+                "value": 1.0,
+            }
+            for a, c, f, p in filings
+        ]
+    )
+
+    kept = keep_window_owner_filings(facts, identity.filing_scope("JCI").windows)
+
+    assert list(kept["accession_number"]) == ["jci-fy2015", "tyco-margin", "jci-plc-fy2017", "no-cik"], list(kept["accession_number"])
+    print("\n=== SANITY CHECK: F-001 JCI/Tyco filer window ===")
+    print("  Tyco's FY2015 10-K (filed 10 months before its window) set aside; its margin filing, JCI's own FY2015 and the null-CIK row kept")
+
+
 def test_a_single_window_or_cikless_frame_is_untouched():
     facts = _facts()
     assert keep_window_owner_filings(facts, _IDENTITY.filing_scope("GOOGL").windows[:1]).equals(facts)

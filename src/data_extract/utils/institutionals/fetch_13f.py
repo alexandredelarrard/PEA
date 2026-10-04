@@ -32,7 +32,7 @@ from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Resume, Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 from src.utils.universe import load_universe_tickers
 
@@ -233,11 +233,21 @@ def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
     return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
 
 
+def _padded(df: pd.DataFrame) -> pd.DataFrame:
+    """`df` with its `cik` in the stored 10-digit form, whatever form it arrived in."""
+    return df.assign(cik=pad_cik_series(df["cik"]))
+
+
+def save_hr(context: Context, hr: pd.DataFrame) -> int:
+    """Upsert `sec13f_hr` rows with padded CIKs; the one writer of that table. Returns rows saved."""
+    return context.store.save(Tables.sec13f_hr, _padded(hr)) if not hr.empty else 0
+
+
 def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
-    """Upsert manager-book rows. Returns (rows saved, suspect-price rows)."""
+    """Upsert manager-book rows with padded CIKs. Returns (rows saved, suspect-price rows)."""
     if book.empty:
         return 0, 0
-    return context.store.save(Tables.sec13f_manager_holdings, book[_BOOK_COLS]), _suspect_prices(book)
+    return context.store.save(Tables.sec13f_manager_holdings, _padded(book[_BOOK_COLS])), _suspect_prices(book)
 
 
 def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
@@ -254,11 +264,11 @@ def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster
     """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
     `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip). Counts accumulate on
     `walk`."""
-    book = _latest_per_key(book)
+    book = _latest_per_key(_padded(book))
     hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
     if not hr.empty:
         walk.hr_suspect += _suspect_prices(hr)
-        walk.hr_saved += context.store.save(Tables.sec13f_hr, hr)
+        walk.hr_saved += save_hr(context, hr)
     saved, suspect = _save_book(context, book[book["cik"].isin(roster_ciks)])
     walk.book_saved += saved
     walk.book_suspect += suspect

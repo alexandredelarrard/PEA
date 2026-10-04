@@ -277,7 +277,10 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
     )
 
 
-@cli.command(name="thirteen-f-backfill", help="13F history of NEW universe tickers from the SEC 13F data sets (cached ZIPs). Own DAG.")
+@cli.command(
+    name="thirteen-f-backfill",
+    help="13F history of NEW universe tickers: SEC 13F data sets (cached ZIPs), then one EDGAR walk over the gap after them.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)

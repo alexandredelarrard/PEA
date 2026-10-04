@@ -27,6 +27,7 @@ REQUIRED_COMMANDS = {
     "dividends",
     "fails-to-deliver",
     "thirteen-f",
+    "thirteen-f-backfill",
     "financial-statements",
     "insider-transactions",
     "financial-notes",
@@ -111,6 +112,7 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     identity_independent = {
         "insider_transactions",
         "thirteen_f",
+        "thirteen_f_backfill",
         "superinvestors",
         "thirteen_f_managers",
         "macro",
@@ -123,6 +125,8 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
     assert "splits >> price_history" in source
+    assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
+    assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
     assert identity_consumers == expected_identity_consumers
     assert identity_consumers.isdisjoint(identity_independent)
     assert "sec_8k_votes" not in identity_consumers

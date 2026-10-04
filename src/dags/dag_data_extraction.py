@@ -87,6 +87,8 @@ dividends = fetch("dividends")
 # 2) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
 thirteen_f = fetch("thirteen-f", pool="sec_api")
+# new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
+thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions", pool="sec_bulk")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
@@ -133,6 +135,7 @@ all_fetchers = [
     dividends,
     fails_to_deliver,
     thirteen_f,
+    thirteen_f_backfill,
     financial_statements,
     insider_transactions,
     financial_notes,
@@ -170,6 +173,7 @@ identity_consumers = [
 seed_universe >> all_fetchers
 splits >> price_history
 insider_transactions >> identity_tables >> identity_consumers
+thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar

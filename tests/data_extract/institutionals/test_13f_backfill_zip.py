@@ -145,7 +145,24 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(fb, "sec_get", _landing)
     monkeypatch.setattr(bulk_cache, "download", _no_download)
+    _patch_gap_walk(monkeypatch)
     return pages
+
+
+def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False) -> list[dict[str, Any]]:
+    """`fetch_13f` as the gap walk sees it: each call is recorded; with `save` it stores one row filed
+    2025-01-10 (inside the gap) for every ticker it was given, like a real walk over that window."""
+    walks: list[dict[str, Any]] = []
+
+    def _walk(context: Any, **kwargs: Any) -> None:
+        walks.append(kwargs)
+        if not save:
+            return
+        row = {"cik": "0000000007", "period": pd.Timestamp("2024-12-31"), "cusip": _NEW_CUSIP, "filing_date": pd.Timestamp("2025-01-10")}
+        context.store.save(Tables.sec13f_hr, pd.DataFrame([row | {"ticker": ticker} for ticker in kwargs["tickers"]]))
+
+    monkeypatch.setattr(fb, "fetch_13f", _walk, raising=False)
+    return walks
 
 
 def _stored_hr(store: Any, ticker: str) -> pd.DataFrame:
@@ -281,3 +298,50 @@ def test_scoped_runs_follow_the_archive_rules(tmp_path, sqlite_store, monkeypatc
     assert (sorted(set(df["ticker"])) if df is not None else []) == saved_tickers
     print(f"\n=== SANITY: backfill -t {tickers} {'-F' if full else ''} ===")
     print(f"  saved tickers {saved_tickers}: -t narrows the new tickers; an established ticker needs -F. Validated.")
+
+
+def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch, save=True)
+
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))  # night 2, NEWCO still new
+
+    assert len(walks) == 1, walks  # the stored row inside the gap marks it done
+    assert walks[0]["tickers"] == [_NEW] and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28")
+    print("\n=== SANITY: 13F gap walk ===")
+    print(f"  NEWCO joined 2026-09-28, newest data set ends 2024-08-31 -> one EDGAR walk {walks[0]['filing_window']};")
+    print("  night 2 finds a NEWCO row filed inside the gap and walks nothing. Validated.")
+
+
+def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+    nightly = {
+        "cik": "0000000008",
+        "period": pd.Timestamp("2026-06-30"),
+        "ticker": _NEW,
+        "cusip": _NEW_CUSIP,
+        "filing_date": pd.Timestamp("2026-09-25"),
+    }
+    sqlite_store.save(Tables.sec13f_hr, pd.DataFrame([nightly]))  # what the join night's walk can write
+
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+
+    assert len(walks) == 1
+    print("\n=== SANITY: gap done test ignores the nightly overlap ===")
+    print("  a NEWCO row filed 2026-09-25 (within 7 days of joining) is the nightly walk's; the gap is still walked. Validated.")
+
+
+def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+
+    fb.fetch_13f_backfill(ctx, tickers=["AAPL"], as_of=_AS_OF, full=True)
+
+    assert walks == []  # AAPL joined 2000-01-01, before the newest data set ends
+    print("\n=== SANITY: no gap walk for an established ticker ===")
+    print("  -t AAPL -F reads the data sets only; AAPL joined long before 2024-08-31, so no EDGAR walk. Validated.")

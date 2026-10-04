@@ -7,6 +7,7 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 """
 
 import json
+from datetime import datetime
 from typing import Any, cast
 
 import click
@@ -87,6 +88,10 @@ CONFIG_KWARGS = cast(dict[str, Any], _CONFIG_KWARGS)
 TICKERS_KWARGS = cast(dict[str, Any], _TICKERS_KWARGS)
 FULL_KWARGS = cast(dict[str, Any], _FULL_KWARGS)
 YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
+# Hidden run date: what a command treats as "today", so a run can be replayed on an injected date.
+AS_OF_OPTION = click.option(
+    "--as-of", "as_of", type=click.DateTime(formats=["%Y-%m-%d"]), default=None, hidden=True, help="Run date YYYY-MM-DD (default: today)."
+)
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -99,6 +104,11 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
     if tickers:
         return [t.strip().upper() for t in tickers.split(",") if t.strip()]
     return load_universe_tickers(context)
+
+
+def _run_date(as_of: datetime | None) -> pd.Timestamp:
+    """The `--as-of` date at midnight, or today."""
+    return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
 
 
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
@@ -125,9 +135,10 @@ def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = 
 
 @cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def extraction_status(config_path: str) -> None:
+@AS_OF_OPTION
+def extraction_status(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    report = _extraction_status_report(context)
+    report = _extraction_status_report(context, as_of=_run_date(as_of))
     click.echo(json.dumps(report, sort_keys=True))
     if not report["ok"]:
         raise click.ClickException("stale or incomplete extraction tables: " + ", ".join(cast(list[str], report["behind"])))
@@ -137,11 +148,12 @@ def extraction_status(config_path: str) -> None:
 @cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --refresh).", help_priority=1)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option("--refresh", is_flag=True, default=False, help="Re-scrape the S&P 500 even if populated.")
-def seed_universe(config_path: str, refresh: bool) -> None:
+@AS_OF_OPTION
+def seed_universe(config_path: str, refresh: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     if refresh or context.store.row_count(Tables.sp500_tickers) == 0:
         context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (refresh={refresh})")
-        get_sp500_tickers(context)
+        get_sp500_tickers(context, as_of=_run_date(as_of))
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
     # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
     # because a genuine recent spin-off has no filing rows either.

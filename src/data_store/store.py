@@ -206,8 +206,12 @@ def build_select(
     descending: bool = False,
     limit: int | None = None,
     distinct_on: str | None = None,
+    exclude: tuple[str, object] | None = None,
 ):
     """The one query builder every read goes through. `where`, `since` and `until` are ANDed.
+
+    `exclude` = (column, value) drops the rows holding that value (NULLs kept); a table without
+    the column has no such rows, so it is skipped there.
 
     Built from reflected Columns and bound parameters, never string interpolation, so a value
     cannot inject SQL and an unknown column raises KeyError before reaching the DB.
@@ -219,6 +223,8 @@ def build_select(
 
     for col, value in (where or {}).items():
         stmt = stmt.where(_predicate(tbl.c[col], value))
+    if exclude is not None and exclude[0] in tbl.c:
+        stmt = stmt.where(tbl.c[exclude[0]].is_distinct_from(exclude[1]))
 
     if since is not None or until is not None:
         if date_col is None:
@@ -247,11 +253,17 @@ def build_select(
 
 
 def read_table(
-    engine: Engine, name: str, columns: list[str] | None = None, limit: int | None = None, where: dict[str, object] | None = None, **kwargs
+    engine: Engine,
+    name: str,
+    columns: list[str] | None = None,
+    limit: int | None = None,
+    where: dict[str, object] | None = None,
+    exclude: tuple[str, object] | None = None,
+    **kwargs,
 ) -> pd.DataFrame:
     """Execute a built SELECT and return the frame. See `build_select` for the filters."""
     tbl = _reflect(engine, name)
-    stmt = build_select(tbl, columns=columns, where=where, limit=limit, **kwargs)
+    stmt = build_select(tbl, columns=columns, where=where, limit=limit, exclude=exclude, **kwargs)
     with engine.connect() as conn:
         return pd.read_sql(stmt, conn)
 
@@ -445,6 +457,28 @@ class DataStore:
                 continue
         return out
 
+    def key_stats(self, table, key_col: str, date_col: str | None = None, where: dict[str, object] | None = None) -> pd.DataFrame:
+        """Per-key `first`, `last` and row count `n` of `date_col`, in one `GROUP BY` read.
+
+        Returns columns `key, first, last, n` with the dates as midnight Timestamps. Marker rows
+        are counted. An empty frame when the table or either column is absent."""
+        name = name_of(table)
+        col = date_col or self._date_col(table)
+        rows: list = []
+        if col is not None and self.exists(name):
+            tbl = _reflect(self.engine, name)
+            if col in tbl.c and key_col in tbl.c:
+                key, day = tbl.c[key_col], tbl.c[col]
+                stmt = select(key, func.min(day), func.max(day), func.count()).where(key.isnot(None))
+                for where_col, value in (where or {}).items():
+                    stmt = stmt.where(_predicate(tbl.c[where_col], value))
+                with self.engine.connect() as conn:
+                    rows = list(conn.execute(stmt.group_by(key)).all())
+        df = pd.DataFrame([tuple(r) for r in rows], columns=["key", "first", "last", "n"])
+        for edge in ("first", "last"):
+            df[edge] = pd.to_datetime(df[edge], errors="coerce").dt.normalize()
+        return df.astype({"key": str, "n": "int64"})
+
     def distinct(
         self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True
     ) -> list:
@@ -475,11 +509,13 @@ class DataStore:
         order_by=None,
         descending: bool = False,
         optional: bool = False,
+        markers: bool = False,
     ) -> pd.DataFrame | None:
         """Read `table`, filtered server-side.
 
         `where` is equality / IN / IS NULL / `NOT_NULL`; `since`/`until` bound the date
-        column; `project=True` uses the table's declared `read_columns`.
+        column; `project=True` uses the table's declared `read_columns`. Empty-filing marker
+        rows (`Table.empty_marker`) are dropped unless `markers=True`.
 
         RAISES on a missing or empty result -- an empty read is nearly always a real fault and
         should stop the run here, not surface later as an empty feature panel. Never returns a
@@ -500,6 +536,7 @@ class DataStore:
             columns=list(cols) if cols else None,
             limit=limit,
             where=where,
+            exclude=self._marker(table, markers),
             since=since,
             until=until,
             date_col=date_col or self._date_col(table),
@@ -525,8 +562,11 @@ class DataStore:
         since: object = None,
         until: object = None,
         date_col: str | None = None,
+        markers: bool = False,
     ) -> Iterator[pd.DataFrame]:
         """Stream `table` in row chunks so a multi-GB table never fully materializes.
+
+        Marker rows are dropped unless `markers=True`, as in `load`.
 
         Both parts are required: a PROJECTION (mandatory -- `cube` is 574 columns, its readers
         need ~50) and `stream_results=True`, without which psycopg2 buffers the whole result
@@ -545,7 +585,15 @@ class DataStore:
         if not self.exists(name):
             return
         tbl = _reflect(self.engine, name)
-        stmt = build_select(tbl, columns=list(cols), where=where, since=since, until=until, date_col=date_col or self._date_col(table))
+        stmt = build_select(
+            tbl,
+            columns=list(cols),
+            where=where,
+            exclude=self._marker(table, markers),
+            since=since,
+            until=until,
+            date_col=date_col or self._date_col(table),
+        )
         with self.engine.connect() as conn:
             conn = conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)
             yield from pd.read_sql(stmt, conn, chunksize=chunksize)
@@ -558,6 +606,18 @@ class DataStore:
             return table.date_col
         try:
             return resolve(table).date_col
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _marker(table, markers: bool) -> tuple[str, object] | None:
+        """The (column, sentinel) a consumer read excludes; None when `markers` or undeclared."""
+        if markers:
+            return None
+        if isinstance(table, SchemaTable):
+            return table.empty_marker
+        try:
+            return resolve(table).empty_marker
         except KeyError:
             return None
 

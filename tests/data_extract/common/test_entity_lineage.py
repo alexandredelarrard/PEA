@@ -817,3 +817,23 @@ def test_d19_allowlist_is_loaded_from_the_curated_file():
     assert {"BF-B", "BRK-B", "FOXA", "NWSA", "LEN", "VMRK"} <= set(allow)
     print("\n=== SANITY CHECK: D19 allow-list ===")
     print(f"  {len(allow)} evidenced entries, including the six share-class spellings")
+
+
+def test_symbol_rows_carry_their_own_change_stamp(tmp_path):
+    """A symbol-only change restamps that entity's symbol rows; its CIK rows (the EDGAR relist stamp) keep theirs."""
+    config = _config(tmp_path)
+    roster = _roster([("AAA", "0000000100"), ("BBB", "0000000200")])
+    tenure = _tenure([("AAA", "0000000100", "2006-01-05", None, 300), ("BBB", "0000000200", "2006-01-05", None, 300)])
+    t1, t2 = pd.Timestamp("2026-10-01 01:00:00"), pd.Timestamp("2026-10-02 01:00:00")
+    first = derive_entity_lineage(tenure, roster, _owner_pairs({}), config, built_at=t1).rows
+    renamed = pd.concat([tenure, _tenure([("BBX", "0000000200", "2010-01-05", "2012-01-01", 300)])], ignore_index=True)
+    second = derive_entity_lineage(renamed, roster, _owner_pairs({}), config, existing=first, built_at=t2).rows
+
+    stamps = (
+        second.assign(group=second["role"].eq("symbol").map({True: "symbol", False: "cik"}))
+        .groupby(["canonical_ticker", "group"])["scope_changed_at"]
+        .agg(set)
+    )
+    assert stamps.to_dict() == {("AAA", "cik"): {t1}, ("AAA", "symbol"): {t1}, ("BBB", "cik"): {t1}, ("BBB", "symbol"): {t2}}
+    print("\n=== SANITY CHECK: symbol change stamp ===")
+    print(f"  BBB gains the BBX symbol interval: its symbol rows -> {t2}, its CIK rows keep {t1}; AAA untouched")

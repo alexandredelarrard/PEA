@@ -1134,26 +1134,45 @@ def _scope_key(frame: pd.DataFrame) -> pd.Series:
     return frame["canonical_ticker"].where(frame["canonical_ticker"].notna(), frame["entity_id"]).astype(str)
 
 
-def _scope_signatures(frame: pd.DataFrame) -> dict[str, tuple[tuple[str, ...], ...]]:
-    """`{scope key: sorted (cik, role, valid_from, valid_to)}` over the CIK rows."""
-    ciks = frame[frame["role"].isin((ROLE_WINDOW, ROLE_EVENT))]
-    keys = _scope_key(ciks)
-    bounds = [pd.to_datetime(ciks[column]).dt.strftime("%Y-%m-%d").fillna("") for column in ("valid_from", "valid_to")]
-    rows = zip(keys, pad_cik_series(ciks["cik"]), ciks["role"].astype(str), *bounds, strict=True)
-    out: dict[str, list[tuple[str, ...]]] = {}
-    for key, *signature in rows:
-        out.setdefault(key, []).append(tuple(signature))
+def _stamp_group(frame: pd.DataFrame) -> pd.Series:
+    """Per-row stamp group: `cik` for the CIK rows (EDGAR and bulk scope), `symbol` for the symbol rows (tapes)."""
+    return frame["role"].astype(str).eq(ROLE_SYMBOL).map({True: ROLE_SYMBOL, False: "cik"})
+
+
+def _scope_signatures(frame: pd.DataFrame) -> dict[tuple[str, str], tuple[tuple[str, ...], ...]]:
+    """`{(scope key, stamp group): sorted signature}`: `(cik, role, valid_from, valid_to)` over the CIK rows and
+    `(symbol, cik, valid_from, valid_to, status)` over the symbol rows a tape can read (not `dei` alone)."""
+    bounds = [pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d").fillna("") for column in ("valid_from", "valid_to")]
+    sources = frame["sources"].fillna("").astype(str) if "sources" in frame.columns else pd.Series("", index=frame.index)
+    status = frame["status"].fillna("").astype(str) if "status" in frame.columns else pd.Series("", index=frame.index)
+    symbol = frame["symbol"].fillna("").astype(str) if "symbol" in frame.columns else pd.Series("", index=frame.index)
+    out: dict[tuple[str, str], list[tuple[str, ...]]] = {}
+    rows = zip(
+        _scope_key(frame), _stamp_group(frame), pad_cik_series(frame["cik"]), frame["role"].astype(str), *bounds, symbol, status, sources, strict=True
+    )
+    for key, group, cik, role, start, end, sym, stat, src in rows:
+        if group == ROLE_SYMBOL:
+            if src.strip().lower() == DEI_SOURCE:
+                continue
+            signature: tuple[str, ...] = (sym, cik, start, end, stat)
+        else:
+            signature = (cik, role, start, end)
+        out.setdefault((key, group), []).append(signature)
     return {key: tuple(sorted(values)) for key, values in out.items()}
 
 
 def _scope_changed_at(rows: pd.DataFrame, existing: pd.DataFrame | None, stamp: pd.Timestamp) -> pd.Series:
-    """The stored timestamp of each scope whose CIKs and windows are unchanged; `stamp` for every other."""
-    keys = _scope_key(rows)
+    """The stored timestamp of each unchanged (scope, stamp group); `stamp` for every other.
+
+    CIK rows and symbol rows are stamped apart: a symbol-only change moves the tapes, not the EDGAR relist.
+    """
+    keys = list(zip(_scope_key(rows), _stamp_group(rows), strict=True))
     if existing is None or existing.empty or not {"role", "canonical_ticker", "scope_changed_at", "valid_to"} <= set(existing.columns):
         return pd.Series(stamp, index=rows.index, dtype="datetime64[ns]")
     before, after = _scope_signatures(existing), _scope_signatures(rows)
-    stored = pd.to_datetime(existing["scope_changed_at"]).groupby(_scope_key(existing)).max().to_dict()
-    kept = {key: stored[key] for key in after if before.get(key) == after[key] and pd.notna(stored.get(key))}
+    stored_stamps = pd.to_datetime(existing["scope_changed_at"])
+    stored = stored_stamps.groupby([_scope_key(existing), _stamp_group(existing)]).max().to_dict()
+    kept = {key: stored[key] for key in set(keys) if before.get(key, ()) == after.get(key, ()) and pd.notna(stored.get(key))}
     return pd.Series([kept.get(key, stamp) for key in keys], index=rows.index, dtype="datetime64[ns]")
 
 

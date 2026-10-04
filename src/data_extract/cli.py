@@ -32,6 +32,7 @@ from src.constants.command_line_interface import (
 )
 from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS
 from src.context import Context, get_config_context
+from src.data_extract.identity_propagate import propagate_identity
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -532,6 +533,23 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
         config_path,
         approved_rekeys=frozenset(parsed_rekeys),
     )
+
+
+@cli.command(
+    name="identity-propagate",
+    help="Carry an entity_lineage change into the stored SEC rows: purge rows whose filer CIK left the "
+    "ticker's entity (one WARNING per table), re-parse notes, pension and insider bulk from cache, "
+    "re-resolve FTD for changed symbols, rebuild purged tickers' history. OFFLINE. Run after "
+    "`identity-tables`; EDGAR tables relist in their own fetchers. sec_short_interest is never touched.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--dry-run", is_flag=True, help="List the pending removals (table, ticker, cik, window, rows); delete, re-parse and rebuild nothing.")
+def identity_propagate(config_path: str, tickers: str | None, dry_run: bool) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run)
+    if dry_run:
+        click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
 
 @cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")

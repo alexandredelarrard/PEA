@@ -21,7 +21,7 @@ from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.identity import CikWindow, Identity, load_identity
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.run_manifest import get_entry, record_run, scope_changed_tickers
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -833,13 +833,36 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
     return history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
 
 
+def _drop_history(context, ticker: str) -> None:
+    """Delete a rebuilt ticker's history and reason codes when its facts now yield no event."""
+    from src.data_store.schema import Tables  # local: avoids a package cycle
+
+    deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
+    context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
+    if deleted:
+        context.log.warning("history: %s REBUILT -- %d row(s) deleted, no event left in its facts", ticker, deleted)
+
+
+def _scope_changed_since_last_run(context, tickers: list[str]) -> frozenset[str]:
+    """Tickers whose lineage scope changed at or after this table's last recorded run (none before a first run)."""
+    from src.data_store.schema import Tables  # local: avoids a package cycle
+
+    entry = get_entry(context, Tables.fundamentals_history_sec)
+    if not (entry or {}).get("last_run_date"):
+        return frozenset()
+    identity = load_identity(context)
+    stamps = {ticker: identity.filing_scope(ticker).scope_changed_at for ticker in tickers if ticker in identity.roster_cik}
+    return scope_changed_tickers(entry, stamps)
+
+
 def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
     Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
     logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
-    and rebuilds from stored facts, with no network. A ticker whose facts come from several CIKs reads its
-    windows from the identity layer for the seam rule (`keep_window_owner_filings`).
+    and rebuilds from stored facts, with no network; so does a ticker whose lineage scope changed since this
+    table's last run. A ticker whose facts come from several CIKs reads its windows from the identity layer for
+    the seam rule (`keep_window_owner_filings`).
     """
     from src.data_store.schema import Tables  # local: avoids a package cycle
 
@@ -847,10 +870,15 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
     guards = load_guards(context.config_dir)
     history_rows = codes_rows = 0
     identity: Identity | None = None
+    rebuild = frozenset(tickers) if rebuild_history else _scope_changed_since_last_run(context, tickers)
+    if rebuild and not rebuild_history:
+        context.log.info("history: %d ticker lineage scope(s) changed since the last run -> rebuilt: %s", len(rebuild), ", ".join(sorted(rebuild)))
     for ticker in tickers:
         facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
         if facts is None:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
+            if ticker in rebuild:
+                _drop_history(context, ticker)
             continue
         if _filer_count(facts) > 1:
             identity = identity or load_identity(context)
@@ -866,11 +894,13 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
             facts = kept
         built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
+            if ticker in rebuild:
+                _drop_history(context, ticker)
             continue
         # Explicit projection so the read fails loudly if the table and the column contract diverge.
         stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
         history, codes = built.history, built.reason_codes
-        if rebuild_history:
+        if ticker in rebuild:
             deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
             context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
             context.log.warning(

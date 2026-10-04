@@ -30,6 +30,7 @@ from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cache_dir,
     ensure_zip,
+    is_cached,
     mark_processed,
     pending_periods,
     quarter_periods,
@@ -267,4 +268,29 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
     record_run(context, Tables.insider_transactions, len(tickers), saved)
     record_run(context, Tables.insider_footnotes, len(tickers), notes_saved)
     record_run(context, Tables.insider_transactions_quarantine, len(tickers), quarantined)
+    return saved
+
+
+def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
+    """Re-read every cached quarter for `tickers` only (a lineage expansion); returns transaction rows upserted.
+
+    Kept rows and their footnotes are upserted. The quarantine, the stored-row sweep, the marker file and the
+    manifest belong to the regular run over the whole universe and are left alone.
+    """
+    identity = load_identity(context)
+    cache = cache_dir(context, context.config.local.paths.insider_transactions)
+    quarters = [
+        q for q in quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR) if is_cached(cache / f"{q}.zip")
+    ]
+    saved = 0
+    for quarter in quarters:
+        tables = _read_tables(cache / f"{quarter}.zip")
+        if tables is None:
+            continue
+        df_kept, _, df_notes = _parse_quarter(tables, quarter, tickers, identity)
+        if not df_kept.empty:
+            saved += context.store.save(Tables.insider_transactions, df_kept)
+        if not df_notes.empty:
+            context.store.save(Tables.insider_footnotes, df_notes)
+    logger.info("insider_transactions: re-parsed %d cached quarter(s) for %d ticker(s), %d row(s) upserted", len(quarters), len(tickers), saved)
     return saved

@@ -432,3 +432,26 @@ def fetch_financial_notes(
     record_run(context, Tables.notes_num, len(tickers), n_num)
     record_run(context, Tables.notes_text, len(tickers), n_txt)
     return n_num + n_txt
+
+
+def reparse_financial_notes(context: Context, tickers: list[str]) -> int:
+    """Re-read every cached notes zip for `tickers` only (a lineage expansion); returns rows upserted.
+
+    No download, marker file or manifest entry: the next regular run keeps its own resume.
+    """
+    cache = cache_dir(context, context.config.local.paths.financial_notes)
+    identity = load_identity(context)
+    saved = 0
+    for period in _cached_notes_periods(cache):
+        path = cache / f"{period}_notes.zip"
+        available_at = stored_period_clock(context, _NOTES_TABLES, period) or archive_available_at(
+            period_end(period), path, observed_from=_OBSERVED_FROM, downloaded=False
+        )
+        if available_at is None:
+            logger.warning("notes %s: archive clock unavailable -> not re-parsed", period)
+            continue
+        num, txt = _read_notes(path, identity, set(tickers))
+        saved += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
+        saved += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
+    logger.info("notes: re-parsed %d cached period(s) for %d ticker(s), %d row(s) upserted", len(_cached_notes_periods(cache)), len(tickers), saved)
+    return saved

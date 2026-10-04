@@ -30,7 +30,7 @@ from src.data_extract.utils.common.bulk_cache import (
     read_zip_tables,
     stored_period_clock,
 )
-from src.data_extract.utils.common.identity import load_identity, tickers_for_ciks
+from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
@@ -114,6 +114,22 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
     return _join_pension(tables["num.txt"], tables["sub.txt"])
 
 
+def _save_pension_quarter(context: Context, identity: Identity, path: Path, quarter: str, available_at: date, tickers: list[str]) -> int:
+    """One cached quarter's pension facts of `tickers`, latest-filed per fact, upserted; returns rows saved."""
+    facts = _read_pension_facts(path)
+    if facts is None or facts.empty:
+        return 0
+    facts["ticker"] = tickers_for_ciks(identity, facts["cik"], facts["filed"], "consolidating")
+    facts = facts[facts["ticker"].isin(tickers)]
+    if facts.empty:
+        return 0
+    # keep the latest-filed value per (cik, tag, period-end, duration)
+    facts = facts.sort_values("filed").drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last")
+    facts["quarter"] = quarter
+    facts["available_at"] = available_at
+    return context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
+
+
 def fetch_financial_statements(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
@@ -141,20 +157,33 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> leaving quarter un-ingested", q)
             continue
-        facts = _read_pension_facts(path)
-        if facts is None or facts.empty:
-            continue
-        facts["ticker"] = tickers_for_ciks(identity, facts["cik"], facts["filed"], "consolidating")
-        facts = facts[facts["ticker"].isin(tickers)]
-        if facts.empty:
-            continue
-        # keep the latest-filed value per (cik, tag, period-end, duration)
-        facts = facts.sort_values("filed").drop_duplicates(subset=["cik", "tag", "ddate", "qtrs"], keep="last")
-        facts["quarter"] = q
-        facts["available_at"] = available_at
-        saved += context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
+        saved += _save_pension_quarter(context, identity, path, q, available_at, tickers)
 
     mark_processed(cache, Tables.pension_facts, tickers)
     logger.info("pension_facts: upserted %d rows (%d quarters scanned)", saved, len(periods))
     record_run(context, Tables.pension_facts, len(tickers), saved)
+    return saved
+
+
+def reparse_financial_statements(context: Context, tickers: list[str]) -> int:
+    """Re-read every cached statement zip for `tickers` only (a lineage expansion); returns rows upserted.
+
+    No download, marker file or manifest entry: the next regular run keeps its own resume.
+    """
+    identity = load_identity(context)
+    cache = cache_dir(context, context.config.local.paths.financial_statements)
+    quarters = [
+        q for q in quarter_periods(pd.Timestamp.today().year - SEC_FINSTMT_FIRST_YEAR + 1, SEC_FINSTMT_FIRST_YEAR) if is_cached(cache / f"{q}.zip")
+    ]
+    saved = 0
+    for q in quarters:
+        path = cache / f"{q}.zip"
+        available_at = stored_period_clock(context, (Tables.pension_facts,), q, column="quarter") or archive_available_at(
+            period_end(q), path, observed_from=_OBSERVED_FROM, downloaded=False
+        )
+        if available_at is None:
+            logger.warning("finstmt %s: archive clock unavailable -> not re-parsed", q)
+            continue
+        saved += _save_pension_quarter(context, identity, path, q, available_at, tickers)
+    logger.info("pension_facts: re-parsed %d cached quarter(s) for %d ticker(s), %d row(s) upserted", len(quarters), len(tickers), saved)
     return saved

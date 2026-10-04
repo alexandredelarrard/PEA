@@ -165,8 +165,10 @@ class Identity:
     windows_by_entity: Mapping[str, tuple[CikWindow, ...]] = field(default_factory=dict)
     #: normalised symbol -> its stored `symbol` intervals.
     symbol_intervals: Mapping[str, tuple[SymbolInterval, ...]] = field(default_factory=dict)
-    #: entity_id -> the latest `scope_changed_at` on its rows.
+    #: entity_id -> the latest `scope_changed_at` on its CIK rows.
     scope_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
+    #: entity_id -> the latest `scope_changed_at` on its symbol rows (the symbol tapes' change stamp).
+    symbols_changed_at_by_entity: Mapping[str, pd.Timestamp] = field(default_factory=dict)
 
     # entity_lineage
 
@@ -197,6 +199,10 @@ class Identity:
             windows=self.windows_by_entity.get(entity, ()),
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
         )
+
+    def symbols_changed_at(self, ticker: str) -> pd.Timestamp | None:
+        """When the ticker's entity's symbol rows last changed; None when it has none."""
+        return self.symbols_changed_at_by_entity.get(self.universe_entity(ticker))
 
     def ticker_for_cik(self, cik, filed=None, policy: CikPolicy = "event") -> str | None:
         """The universe ticker a filing by `cik` belongs to, or None.
@@ -414,7 +420,8 @@ def build_identity(
         event_ciks_by_entity=event_ciks,
         windows_by_entity=windows,
         symbol_intervals=_symbol_intervals(lineage),
-        scope_changed_at_by_entity=_scope_changed_at(lineage),
+        scope_changed_at_by_entity=_scope_changed_at(lineage, symbols=False),
+        symbols_changed_at_by_entity=_scope_changed_at(lineage, symbols=True),
     )
     _log_identity(identity)
     return identity
@@ -583,12 +590,13 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
     return {symbol: tuple(values) for symbol, values in out.items()}
 
 
-def _scope_changed_at(lineage: pd.DataFrame) -> dict[str, pd.Timestamp]:
-    """`{entity_id: latest scope_changed_at}` over its rows."""
+def _scope_changed_at(lineage: pd.DataFrame, *, symbols: bool) -> dict[str, pd.Timestamp]:
+    """`{entity_id: latest scope_changed_at}` over its symbol rows (`symbols`) or its CIK rows."""
     if "scope_changed_at" not in lineage.columns:
         return {}
-    stamps = pd.to_datetime(lineage["scope_changed_at"], errors="coerce")
-    latest = stamps.groupby(lineage["entity_id"].astype(str)).max().dropna()
+    rows = lineage[_roles(lineage).eq(ROLE_SYMBOL) == symbols]
+    stamps = pd.to_datetime(rows["scope_changed_at"], errors="coerce")
+    latest = stamps.groupby(rows["entity_id"].astype(str)).max().dropna()
     return {str(entity): pd.Timestamp(value) for entity, value in latest.items()}
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Collection
 from pathlib import Path
 
 import pandas as pd
@@ -130,6 +131,31 @@ def _canonicalise_ftd(
         fails_quantity=("fails_quantity", "sum"), fails_value=("fails_value", lambda values: values.sum(min_count=1)), period=("period", "first")
     )
     return grouped[_OUT_COLS], unresolved
+
+
+def resolve_ticker_fails(context: Context, tickers: Collection[str], identity: Identity) -> tuple[pd.DataFrame, set[str]]:
+    """`(rows, periods read)`: `tickers`' FTD rows re-resolved from every cached zip on the destination grain.
+
+    No download, marker file or manifest entry.
+    """
+    cache = cache_dir(context, context.config.local.paths.fails_deliver)
+    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
+    candidates = identity.universe_symbols(universe)
+    frames: list[pd.DataFrame] = []
+    periods: set[str] = set()
+    for period in sorted(_cached_periods(cache)):
+        raw = read_zip_text(cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), log=logger)
+        if raw is None:
+            continue
+        periods.add(period)
+        df = _parse_ftd(raw)
+        df = df[df["source_symbol"].isin(candidates)].copy()
+        if not df.empty:
+            frames.append(df.assign(period=period))
+    if not frames:
+        return pd.DataFrame(columns=_OUT_COLS), periods
+    accepted, _ = _canonicalise_ftd(context, pd.concat(frames, ignore_index=True), identity, universe)
+    return accepted, periods
 
 
 def _validate_full_frame(

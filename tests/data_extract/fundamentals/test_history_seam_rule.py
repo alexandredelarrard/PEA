@@ -87,6 +87,7 @@ def test_the_history_build_applies_the_rule_before_the_event_ladder(sqlite_store
     monkeypatch.setattr(mod, "build_ticker", spy_build)
     monkeypatch.setattr(mod, "load_identity", lambda context: _IDENTITY)
     monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "get_entry", lambda *args, **kwargs: None)  # no manifest: no scope-change rebuild
     context = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.seam_rule"), config_dir="./configs")
     with caplog.at_level(logging.INFO, logger="test.seam_rule"):
         mod.build_fundamentals_history(context, ["GOOGL"])

@@ -470,6 +470,53 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     )
 
 
+def test_a_ticker_subset_edgar_run_never_moves_another_tickers_listing_window(tmp_path, sqlite_store, monkeypatch, identity_two):
+    """R-07: each ticker lists from its OWN latest stored `filing_date` - 7 days, so a `-t AAA` EDGAR run
+    cannot push BBB's window past a BBB filing filed in between; the next full run lists and stores it."""
+    sec = _FakeSec(monkeypatch, identity_two, tmp_path)
+    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
+    context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
+    listed: list[tuple[str, pd.Timestamp | None]] = []
+
+    def list_since(ticker: str, cik: str, *, since: pd.Timestamp | None, through: pd.Timestamp, done_accessions: frozenset[str], scope: Any) -> list:
+        """The EDGAR lister honouring `since`, as the Atom paging does."""
+        listed.append((ticker, since))
+        return [
+            _Filing(spec)
+            for spec in sec.filings
+            if spec.symbol == ticker and spec.accession not in done_accessions and (since is None or pd.Timestamp(spec.filed) >= since)
+        ]
+
+    monkeypatch.setattr(edgar, "insider_filings", list_since)
+    sec.zips["2026q1"] = _zip_tables([Q0, B0])
+    ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
+    sec.filings = [E1, B1]
+    edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
+
+    a_late = Spec("0000000001-26-000900", "2026-07-01", (Trade("2026-06-30", "P", 5, 10, 50),))
+    b_gap = Spec("0000000002-26-000700", "2026-06-01", (Trade("2026-05-29", "P", 5, 10, 50),), issuer_cik=BBB_CIK, symbol="BBB")
+    sec.filings = [E1, B1, a_late]
+    listed.clear()
+    edgar.fetch_insider_edgar(context, tickers=["AAA"], years_history=15)
+    subset_listing = dict(listed)
+
+    sec.filings = [E1, B1, a_late, b_gap]
+    listed.clear()
+    edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
+    full_listing = dict(listed)
+    df = _table(sqlite_store)
+
+    assert subset_listing == {"AAA": pd.Timestamp("2026-04-27")}, "AAA lists from its own max 2026-05-04 - 7 days"
+    assert full_listing == {"AAA": pd.Timestamp("2026-06-24"), "BBB": pd.Timestamp("2026-04-27")}, full_listing
+    assert b_gap.accession in set(df["accession_number"]), "the BBB filing in the old gap is stored"
+    assert _mixed_accessions(df) == 0
+    print(
+        f"\nSANITY: after a -t AAA EDGAR run stored AAA's {a_late.filed} filing, the full run listed AAA from "
+        f"{full_listing['AAA']:%Y-%m-%d} and BBB from its own {full_listing['BBB']:%Y-%m-%d} (BBB max 2026-05-04 - 7 days), "
+        f"so BBB's {b_gap.filed} filing in the old gap was stored ({len(df)} rows, one source per accession)."
+    )
+
+
 def _postgres_add_column(engine: Any, name: str, df: pd.DataFrame) -> list[str]:
     """The store's Postgres schema evolution (`ADD COLUMN` for frame columns the table lacks), run on
     SQLite too, where `store.ensure_columns` is a no-op."""

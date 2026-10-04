@@ -1,15 +1,15 @@
 """Daily EDGAR ownership filings (Forms 3/4/5) into `insider_transactions`.
 
-EDGAR is authoritative. Each run lists filings from the latest stored `filing_date` minus 7 days
-and skips accessions already stored from EDGAR; a zip-sourced accession it re-reads is replaced
-whole (its zip `quarter` is kept), so no accession holds rows from both sources. Rejected rows are
-never stored, only summarised once per run.
+EDGAR is authoritative. Each run lists every ticker's filings from that ticker's own latest stored
+`filing_date` minus 7 days and skips accessions already stored from EDGAR; a zip-sourced accession
+it re-reads is replaced whole (its zip `quarter` is kept), so no accession holds rows from both
+sources. Rejected rows are never stored, only summarised once per run.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Any, cast
 
@@ -48,7 +48,7 @@ from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
 _EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
-#: Calendar days the listing window reaches back before the latest stored filing date.
+#: Calendar days a ticker's listing window reaches back before its latest stored filing date.
 _LISTING_OVERLAP_DAYS = 7
 _LOG = logging.getLogger(__name__)
 
@@ -223,15 +223,18 @@ def build_ticker_insider_edgar(
     scope: EdgarScope,
     excluded: list[pd.DataFrame],
     rescan_stored: bool = False,
+    since_by_ticker: Mapping[str, pd.Timestamp] | None = None,
 ) -> dict[Table, pd.DataFrame]:
     """One ticker's EDGAR transaction and footnote frames; its rejected in-scope rows are appended
     to the run's `excluded` collector.
 
+    The listing starts at the ticker's entry in `since_by_ticker`, else at the driver's `since`.
     `rescan_stored` (a `--full` run) ignores `done_accessions` and re-reads stored filings.
     """
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    listing_start = (since_by_ticker or {}).get(ticker, since)
     filings = insider_filings(
-        ticker, cik, since=since, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
+        ticker, cik, since=listing_start, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
     )
     df_kept, df_notes, df_rejected = _edgar_frames(filings, universe=universe, identity=identity)
     if not df_rejected.empty:
@@ -244,13 +247,13 @@ def build_ticker_insider_edgar(
     return {Tables.insider_transactions: df_rows, Tables.insider_footnotes: df_notes}
 
 
-def listing_since(context: Context, years_history: int) -> pd.Timestamp:
-    """The EDGAR listing start: the latest stored `filing_date` minus `_LISTING_OVERLAP_DAYS`, or
-    `years_history` back from today on an empty table."""
-    latest = context.store.max_date(Tables.insider_transactions, "filing_date")
-    if latest is None:
-        return pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    return latest - pd.Timedelta(days=_LISTING_OVERLAP_DAYS)
+def listing_since_by_ticker(context: Context, tickers: Sequence[str], years_history: int) -> dict[str, pd.Timestamp]:
+    """Each ticker's EDGAR listing start: the latest `filing_date` stored under that ticker minus
+    `_LISTING_OVERLAP_DAYS`, or `years_history` back from today when none is stored under it."""
+    latest = context.store.max_date_by(Tables.insider_transactions, "ticker", "filing_date")
+    no_rows_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+    overlap = pd.Timedelta(days=_LISTING_OVERLAP_DAYS)
+    return {ticker: latest[ticker] - overlap if ticker in latest else no_rows_since for ticker in tickers}
 
 
 def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
@@ -292,11 +295,12 @@ def fetch_insider_edgar(
     *,
     full: bool = False,
 ) -> None:
-    """List and save EDGAR ownership filings from `listing_since`, skipping accessions stored from
-    EDGAR unless `full`; afterwards, even on failure, log the run's exclusions and replace the
-    zip rows of every re-read accession."""
+    """List and save each ticker's EDGAR ownership filings from its `listing_since_by_ticker` start,
+    skipping accessions stored from EDGAR unless `full`; afterwards, even on failure, log the run's
+    exclusions and replace the zip rows of every accession re-read since the earliest start."""
     identity = load_identity(context)
-    since = listing_since(context, years_history)
+    since_by_ticker = listing_since_by_ticker(context, tickers, years_history)
+    since = min(since_by_ticker.values(), default=pd.Timestamp.today().normalize())
     excluded: list[pd.DataFrame] = []
     fetch = EdgarFetch(
         desc="insider Forms 3/4/5 (EDGAR)",
@@ -308,6 +312,7 @@ def fetch_insider_edgar(
             scan_through=pd.Timestamp.today().normalize(),
             excluded=excluded,
             rescan_stored=full,
+            since_by_ticker=since_by_ticker,
         ),
         identity_aware=False,
         listing_since=since,

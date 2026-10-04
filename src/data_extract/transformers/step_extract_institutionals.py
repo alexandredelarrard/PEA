@@ -41,7 +41,7 @@ class StepExtractInstitutionals(Step):
         # Per-CIK catch-up after the snapshot, so a manager added today gets its whole window; no universe filter by design.
         fetch_13f_managers(self._context, years_history=years_history)
 
-        # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR from the latest stored filing date - 7 days.
+        # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR from each ticker's latest stored filing date - 7 days.
         fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history)
         fetch_insider_edgar(self._context, tickers=tickers, years_history=years_history)
 

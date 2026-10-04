@@ -121,7 +121,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
 ## Insider reparse and full rebuild
 
-`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then lists EDGAR from the latest stored `filing_date` minus 7 days.
+`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then lists EDGAR per ticker, from that ticker's own latest stored `filing_date` minus 7 days.
 
 - **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded.
 
@@ -129,7 +129,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
   rtk "$PY" -m src data_extract insider-transactions --reparse
   ~~~
 
-- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR lists from the latest zip filing date minus 7 days and re-reads that window, including filings already stored from EDGAR.
+- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR lists each ticker from its latest zip filing date minus 7 days and re-reads that window, including filings already stored from EDGAR.
 
   ~~~bash
   rtk docker exec pea_db psql -U alexandre -d pea -c "DROP TABLE insider_transactions"

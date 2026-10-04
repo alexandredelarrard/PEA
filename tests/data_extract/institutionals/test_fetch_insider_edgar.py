@@ -80,23 +80,29 @@ def test_rejected_rows_go_to_the_run_collector_not_to_a_table(monkeypatch):
     print("SANITY: a rejected filing is stored nowhere; only its four warning columns reach the run's exclusion collector.")
 
 
-def test_listing_starts_seven_days_before_the_latest_stored_filing(sqlite_store):
-    ctx = SimpleNamespace(store=sqlite_store)
-    empty = module.listing_since(cast(Any, ctx), 15)
+def test_each_ticker_lists_from_seven_days_before_its_own_latest_stored_filing(sqlite_store):
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store))
+    no_rows = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    empty = module.listing_since_by_ticker(ctx, ["AAA"], 15)
     sqlite_store.save(
         Tables.insider_transactions,
         pd.DataFrame(
             {
-                "accession_number": ["a", "b"],
+                "accession_number": ["a", "b", "c"],
                 "security_type": "nonderiv",
                 "row_sequence": 1,
-                "filing_date": pd.to_datetime(["2026-05-01", "2026-06-10"]),
+                "ticker": ["AAA", "AAA", "BBB"],
+                "filing_date": pd.to_datetime(["2026-05-01", "2026-06-10", "2026-03-02"]),
             }
         ),
     )
-    assert empty == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
-    assert module.listing_since(cast(Any, ctx), 15) == pd.Timestamp("2026-06-03")
-    print("SANITY: EDGAR lists from today - years_history on an empty table, else from max(filing_date) 2026-06-10 - 7 days = 2026-06-03.")
+    since = module.listing_since_by_ticker(ctx, ["AAA", "BBB", "CCC"], 15)
+    assert empty == {"AAA": no_rows}
+    assert since == {"AAA": pd.Timestamp("2026-06-03"), "BBB": pd.Timestamp("2026-02-23"), "CCC": no_rows}
+    print(
+        "SANITY: every ticker lists from its own max(filing_date) - 7 days (AAA 2026-06-10 -> 2026-06-03, BBB 2026-03-02 -> 2026-02-23); "
+        "a ticker with no stored row (and every ticker on an empty table) lists from today - years_history."
+    )
 
 
 def test_edgar_audit_clocks_are_timestamps_not_dates():

@@ -10,14 +10,19 @@ stored, only summarised by `log_exclusions`.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from typing import Literal, NamedTuple
 
 import pandas as pd
 
 from src.data_extract.utils.common.identity import Identity
+from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 
+#: The `insider_transactions` row key.
+INSIDER_KEY = list(Tables.insider_transactions.pk)
+#: Accessions per `IN` list when stored rows are read or deleted by accession.
+ACCESSION_BATCH = 2_000
 #: The `insider_transactions` column contract.
 INSIDER_COLUMNS = [
     "accession_number",
@@ -341,6 +346,12 @@ def screened_accessions(df_filing: pd.DataFrame, universe: Sequence[str], identi
     scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
     keep, in_scope = _screen_masks(scored, universe)
     return set(scored.loc[keep | in_scope, "accession_number"])
+
+
+def accession_batches(accessions: Sequence[str]) -> Iterator[list[str]]:
+    """`accessions` in consecutive lists of `ACCESSION_BATCH`, one store `IN` filter each."""
+    for start in range(0, len(accessions), ACCESSION_BATCH):
+        yield list(accessions[start : start + ACCESSION_BATCH])
 
 
 def exclusion_rows(df_rejected: pd.DataFrame) -> pd.DataFrame:

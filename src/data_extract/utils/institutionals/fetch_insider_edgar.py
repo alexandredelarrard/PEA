@@ -31,8 +31,10 @@ from src.data_extract.utils.common.sec_atom import (
 )
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
+    INSIDER_KEY,
     LIVE_DATE_FORMATS,
     OWNER_STRING_COLUMNS,
+    accession_batches,
     build_insider_frame,
     empty_footnotes,
     exclusion_rows,
@@ -46,7 +48,6 @@ from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
 _EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
-_KEY_COLUMNS = list(Tables.insider_transactions.pk)
 #: Calendar days the listing window reaches back before the latest stored filing date.
 _LISTING_OVERLAP_DAYS = 7
 _LOG = logging.getLogger(__name__)
@@ -238,7 +239,7 @@ def build_ticker_insider_edgar(
     df_rows = pd.DataFrame(columns=_EDGAR_COLUMNS)
     if not df_kept.empty:
         df_live = df_kept.assign(fetched_at=fetched_at)
-        df_rows = df_live[[column for column in _EDGAR_COLUMNS if column in df_live.columns]].drop_duplicates(subset=_KEY_COLUMNS, keep="last")
+        df_rows = df_live[[column for column in _EDGAR_COLUMNS if column in df_live.columns]].drop_duplicates(subset=INSIDER_KEY, keep="last")
     return {Tables.insider_transactions: df_rows, Tables.insider_footnotes: df_notes}
 
 
@@ -251,25 +252,24 @@ def listing_since(context: Context, years_history: int) -> pd.Timestamp:
     return latest - pd.Timedelta(days=_LISTING_OVERLAP_DAYS)
 
 
-def replace_zip_accessions(context: Context, since: pd.Timestamp, chunk: int = 2_000) -> int:
+def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     """Finish EDGAR's replacement of zip-sourced accessions filed since `since`: stamp each
     accession's stored zip `quarter` on its EDGAR rows that lack one (rows EDGAR added beyond the
     zip's keys), then delete the zip rows of every accession EDGAR now holds. Returns the rows deleted."""
     df_rows = context.store.load(
-        Tables.insider_transactions, columns=[*_KEY_COLUMNS, "source", "quarter"], since=since, date_col="filing_date", optional=True
+        Tables.insider_transactions, columns=[*INSIDER_KEY, "source", "quarter"], since=since, date_col="filing_date", optional=True
     )
     if df_rows is None:
         return 0
     quarter_of = df_rows.dropna(subset=["quarter"]).groupby("accession_number")["quarter"].first()
-    df_stamp = df_rows.loc[df_rows["source"].eq("edgar") & df_rows["quarter"].isna(), _KEY_COLUMNS]
+    df_stamp = df_rows.loc[df_rows["source"].eq("edgar") & df_rows["quarter"].isna(), INSIDER_KEY]
     df_stamp = df_stamp.assign(quarter=df_stamp["accession_number"].map(quarter_of)).dropna(subset=["quarter"])
     if not df_stamp.empty:
         context.store.save(Tables.insider_transactions, df_stamp)
     edgar_accessions = set(df_rows.loc[df_rows["source"].eq("edgar"), "accession_number"])
     mixed = sorted(edgar_accessions & set(df_rows.loc[df_rows["source"].eq("zip"), "accession_number"]))
     deleted = sum(
-        context.store.delete(Tables.insider_transactions, where={"accession_number": mixed[start : start + chunk], "source": "zip"})
-        for start in range(0, len(mixed), chunk)
+        context.store.delete(Tables.insider_transactions, where={"accession_number": batch, "source": "zip"}) for batch in accession_batches(mixed)
     )
     context.log.info(
         "insider EDGAR: stamped the zip quarter on %d EDGAR row(s); replaced %d zip-sourced filing(s) whole (%d zip row(s) deleted)",

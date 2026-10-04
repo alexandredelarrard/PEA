@@ -41,7 +41,9 @@ from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
+    INSIDER_KEY,
     OWNER_STRING_COLUMNS,
+    accession_batches,
     build_insider_frame,
     empty_footnotes,
     exclusion_rows,
@@ -56,7 +58,6 @@ from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
-_KEY_COLUMNS = list(Tables.insider_transactions.pk)
 #: Fields compared on rows both sources hold; zip numbers carry two decimals, hence the tolerance.
 _COMPARED_FIELDS = ("transaction_code", "transaction_date", "shares", "price_per_share", "shares_owned_after", "owner_cik")
 _NUMBER_FIELDS = frozenset({"shares", "price_per_share", "shares_owned_after"})
@@ -184,7 +185,7 @@ def _rejected_stored_accessions(context: Context, universe: Sequence[str], ident
     )
 
 
-def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity, chunk: int = 2_000) -> int:
+def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity) -> int:
     """Re-adjudicate stored rows against today's universe, delete the rejects (the upsert cannot
     remove rows) and log their exclusion summary. Returns the rows deleted.
 
@@ -194,8 +195,7 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
     accessions = _rejected_stored_accessions(context, universe, identity)
     excluded: list[pd.DataFrame] = []
     deleted = 0
-    for start in range(0, len(accessions), chunk):
-        batch = accessions[start : start + chunk]
+    for batch in accession_batches(accessions):
         rows = context.store.load(
             Tables.insider_transactions,
             columns=["accession_number", "transaction_code", "ticker", "issuer_cik"],
@@ -214,13 +214,11 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
     return deleted
 
 
-def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str], chunk: int = 2_000) -> pd.DataFrame:
-    """`columns` of the stored rows of `accessions`, read in IN lists of `chunk`."""
+def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str]) -> pd.DataFrame:
+    """`columns` of the stored rows of `accessions`, read in `accession_batches`."""
     frames: list[pd.DataFrame] = []
-    for start in range(0, len(accessions), chunk):
-        df = context.store.load(
-            Tables.insider_transactions, columns=columns, where={"accession_number": list(accessions[start : start + chunk])}, optional=True
-        )
+    for batch in accession_batches(accessions):
+        df = context.store.load(Tables.insider_transactions, columns=columns, where={"accession_number": batch}, optional=True)
         if df is not None:
             frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
@@ -232,9 +230,9 @@ def store_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) -> 
     filing is upserted from the zip. Returns the zip rows saved."""
     if df_kept.empty:
         return 0
-    df_stored = _stored_rows(context, sorted(df_kept["accession_number"].unique()), [*_KEY_COLUMNS, "source"])
+    df_stored = _stored_rows(context, sorted(df_kept["accession_number"].unique()), [*INSIDER_KEY, "source"])
     edgar_accessions = set(df_stored.loc[df_stored["source"].eq("edgar"), "accession_number"])
-    df_stamp = df_stored.loc[df_stored["accession_number"].isin(edgar_accessions), _KEY_COLUMNS].assign(quarter=quarter)
+    df_stamp = df_stored.loc[df_stored["accession_number"].isin(edgar_accessions), INSIDER_KEY].assign(quarter=quarter)
     if not df_stamp.empty:
         context.store.save(Tables.insider_transactions, df_stamp)
     df_zip = df_kept[~df_kept["accession_number"].isin(edgar_accessions)]
@@ -257,9 +255,9 @@ def _report_shared_rows(quarter: str, df_zip: pd.DataFrame, df_edgar: pd.DataFra
     fields disagree plus the key rows present on one side only."""
     zip_accessions = set(df_zip["accession_number"])
     shared = zip_accessions & set(df_edgar["accession_number"])
-    columns = [*_KEY_COLUMNS, *_COMPARED_FIELDS]
+    columns = [*INSIDER_KEY, *_COMPARED_FIELDS]
     df_pair = df_zip.loc[df_zip["accession_number"].isin(shared), columns].merge(
-        df_edgar.loc[df_edgar["accession_number"].isin(shared), columns], on=_KEY_COLUMNS, how="outer", suffixes=("_zip", "_edgar"), indicator=True
+        df_edgar.loc[df_edgar["accession_number"].isin(shared), columns], on=INSIDER_KEY, how="outer", suffixes=("_zip", "_edgar"), indicator=True
     )
     df_both = df_pair[df_pair["_merge"].eq("both")]
     agree = pd.Series(True, index=df_both.index)
@@ -285,7 +283,7 @@ def report_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) ->
     period = pd.Period(quarter.upper(), freq="Q")
     df_edgar = context.store.load(
         Tables.insider_transactions,
-        columns=[*_KEY_COLUMNS, "filing_date", *_COMPARED_FIELDS],
+        columns=[*INSIDER_KEY, "filing_date", *_COMPARED_FIELDS],
         where={"source": "edgar"},
         since=period.start_time,
         until=period.end_time.normalize(),
@@ -295,7 +293,7 @@ def report_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame) ->
     if df_edgar is None:
         logger.info("insider %s: loaded from zip (no EDGAR coverage)", quarter)
         return
-    df_zip = df_kept.reindex(columns=[*_KEY_COLUMNS, "filing_date", "ticker", *_COMPARED_FIELDS])
+    df_zip = df_kept.reindex(columns=[*INSIDER_KEY, "filing_date", "ticker", *_COMPARED_FIELDS])
     first_filed = pd.to_datetime(df_edgar["filing_date"]).min()
     df_window = df_zip[pd.to_datetime(df_zip["filing_date"]).ge(first_filed)].drop_duplicates("accession_number")
     df_missing = df_window[~df_window["accession_number"].isin(set(df_edgar["accession_number"]))]

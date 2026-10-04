@@ -181,3 +181,49 @@ After this migration is reviewed:
 
 # universe expand:
 - After the point-in-time S&P 500 gate above, evaluate Russell 1000 expansion with the same membership and delisting controls.
+
+## Extraction resume reads only the database
+
+**P1 — make it a separate plan and refactor.** Today each fetcher decides what to fetch in its own way:
+
+- the run manifest (`extraction_manifest.json`) gives the EDGAR walks, the DEF 14A LLM fetch and the earnings-call fetch their listing window, ticker set and 30-day full rescan;
+- the `{table}_universe.json` marker files do the same for pension, Notes, FTD and insider bulk;
+- the other fetchers read a single last-date frontier.
+
+The target: every fetcher reads only its own tables, the source's own listing and `entity_lineage`. A missing table means a full build. Holes, missing filings and new tickers are found on every run. A repair means deleting the wrong rows, and the next run fetches them again.
+
+Defects to fix (read-only survey of 33 fetchers, 2026-10-03; the per-fetcher table is in `reports/validate/2026-10-02-entity-symbol-lineage/_out/resume_survey.md`):
+
+- **Holes behind the frontier are never found:**
+  - prices older than 7 sessions;
+  - dividends, splits;
+  - Sharadar fundamentals, actions, S&P 500;
+  - short interest, 13F, 13F managers;
+  - earnings surprises.
+- **New tickers:**
+  - 13F, short interest, splits (1 year only) and dividends never backfill a new ticker;
+  - prices re-pulls the whole universe when one ticker is new.
+- **Zero-row units are redone every run:** a 5.07 votes filing with no rows is sent to the LLM again; a ZIP period with no universe row is re-parsed.
+- **"Done" read from the wrong place:**
+  - 13D treats an accession as done once it is in `sec_13d`, even when its transactions failed to save;
+  - Notes treats a period as done when either `notes_num` or `notes_text` has it.
+- **`fetch_13f` writes a new manager's book inline,** which sets that manager's frontier before `fetch_13f_managers` has fetched its history.
+- **A `-t` subset run overwrites the stored ticker set** in the manifest and the marker files, so the next full run relists or re-parses everything.
+- **Full-table reads** in earnings surprises, the DEF 14A LLM fetch, the CUSIP map and the Sharadar roster.
+
+Design proposed for the plan:
+
+1. **Two store reads.** `frontier(table, by, date_col, where)` returns MIN, MAX and COUNT per key in one GROUP BY query. `keys(table, cols, where)` returns the stored keys for a scope.
+2. **One planner, `resume.py`.** Each fetcher declares its table, key columns, date column and mode. The planner returns the work items: full history for a new key, the forward window, holes, and the overlap re-fetch.
+3. **Three modes:**
+   - **Listed by the source** (EDGAR filings, ZIP periods, 13F filings, earnings calls, votes): fetch what the source lists minus what is stored. `Company(cik).get_filings()` already downloads the full history on every call, so the EDGAR window and the 30-day rescan can go.
+   - **Daily series** (prices, macro, short interest, Sharadar): the calendar gives the expected dates, so a row count below it reveals a hole.
+   - **Sparse events** (dividends, splits): fetch forward from the last date checked.
+4. **Recording "checked, nothing found".** Options: a NULL placeholder row in each data table; one `extract_coverage(table_name, unit, n_rows, checked_through, checked_at)` table that would absorb `insider_transactions_live_coverage` (the recommended option); or recording nothing.
+
+Acceptance:
+
+- A source test finds no resume decision that reads the manifest or a marker file.
+- Each mode has fixtures for: a missing table, a new key, the forward window, an interior hole, an old gap in a source-listed unit, a zero-row unit, and a `-t` run followed by a full run.
+- A read-only comparison on the live database shows each fetcher's new plan against its old rule.
+- `EXPLAIN` on the largest tables shows each frontier query is indexed.

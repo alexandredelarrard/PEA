@@ -9,6 +9,12 @@ same-ticker, same-class common-stock filings over a trailing window ending on th
 replaced by `shares x consensus`; too-low prices are only counted. The clock is `filing_date`, so a
 later filing never enters an earlier reference. Corrupt `shares` cannot be separated by size, so
 oversized rows are logged, never dropped.
+
+Versions: a trade repeated in a later accession (same ticker, transaction day, code, shares, price
+and post-trade holding) is kept once, from its earliest filing. An amendment replaces the original's
+whole (transaction day, code, security type) cell from its own filing day; every row carries the day
+the trade was first disclosed (`anchor`) and the interval `[visible_from, visible_until)` in which its
+record is the one known. The stored table is never deduplicated.
 """
 
 from __future__ import annotations
@@ -67,6 +73,18 @@ OTHER_OFFICER = "other_named_officer"
 ROLE_FALLTHROUGH_MEASURED: float = 0.320
 
 _ROLE_COMPILED = tuple((name, re.compile(pat, re.I)) for name, pat in ROLE_PATTERNS)
+
+#: Decimals of the repeat-copy key: the SEC zip's precision, so its record and EDGAR's of one trade match.
+COPY_KEY_DECIMALS: int = 2
+
+#: Columns of the repeat-copy key, built by `_copy_key`.
+COPY_KEY: tuple[str, ...] = ("ticker", "transaction_day", "code", "shares", "price", "owned_after")
+
+#: Columns of an amendment cell: the unit a Form 4/A restates.
+CELL_KEY: tuple[str, ...] = ("transaction_day", "code", "security_type")
+
+#: Columns every cleaned row carries for point-in-time aggregation.
+VISIBILITY_COLUMNS: tuple[str, ...] = ("anchor", "visible_from", "visible_until")
 
 
 def common_stock_mask(security_title: pd.Series) -> pd.Series:
@@ -136,8 +154,9 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
 
     Returns `(frame, diagnostics)`. Added columns: `code`, `day` (normalised `filing_date`, the
     point-in-time stamp, never `transaction_date`), `value` (repaired USD), `shares_n`,
-    `price_repaired`, `role` and `in_exercise_package` (an `S` sharing accession and transaction
-    date with an `M`). Derivative, non-common and unpriced rows are dropped, never zero-filled.
+    `price_repaired`, `role`, `in_exercise_package` (an `S` sharing accession and transaction
+    date with an `M`) and `VISIBILITY_COLUMNS` (see `versioned_records`). Derivative, non-common
+    and unpriced rows are dropped, never zero-filled; later repeat copies are dropped.
     """
 
     need = {"ticker", "filing_date", "transaction_code", "shares", "value_usd"}
@@ -168,10 +187,14 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     if t.empty:
         return pd.DataFrame(), diag
 
+    t, versions = versioned_records(t, pps)
+    diag.update(versions)
+    pps = pps.reindex(t.index)
+
     priced = pps > 0
     diag["dropped_unpriced"] = int((~priced).sum())
     diag["dropped_unpriced_shares"] = float(t.loc[~priced, "shares_n"].sum()) / t["shares_n"].sum()
-    diag["unpriced_events"] = t.loc[~priced, ["ticker", "day", "code"]].copy()
+    diag["unpriced_events"] = t.loc[~priced, ["ticker", "day", "code", *VISIBILITY_COLUMNS]].copy()
     t, pps = t[priced], pps[priced]
 
     ref = consensus_price(insider).reindex(t.index)
@@ -209,6 +232,19 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
         diag["value_before"] / 1e12,
         diag["value_after"] / 1e9,
     )
+    _log.info(
+        "insider versions: %s repeat-copy group(s), %s later cop(ies) dropped ($%.3fbn as filed); %s amendment(s) linked "
+        "(%s ambiguous), cells %s superseded / %s partial / %s new / %s identical",
+        diag["copy_groups"],
+        diag["copy_rows_dropped"],
+        diag["copy_value_removed"] / 1e9,
+        diag["amendments_linked"],
+        diag["amendments_ambiguous"],
+        diag["amendment_cells_superseded"],
+        diag["amendment_cells_partial"],
+        diag["amendment_cells_new"],
+        diag["amendment_cells_identical"],
+    )
     return t, diag
 
 
@@ -220,6 +256,219 @@ def _exercise_packages(t: pd.DataFrame) -> pd.Series:
     key = pd.MultiIndex.from_arrays([t["accession_number"].astype(str), pd.to_datetime(t["transaction_date"], errors="coerce")])
     has_m = pd.Series(t["code"].eq("M").to_numpy(), index=key).groupby(level=[0, 1]).any()
     return pd.Series(has_m.reindex(key).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
+
+
+def versioned_records(t: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataFrame, dict]:
+    """Collapse repeat copies (REQ-010) and supersede amended cells (REQ-011) on scoped rows, never reordering them.
+
+    Adds `anchor` (the day the trade was first disclosed), `visible_from` and `visible_until`
+    (exclusive, NaT = open). A row in no copy group and no amended cell keeps anchor =
+    visible_from = `day` and an open interval. Linked amendment rows never enter the copy
+    collapse. Returns `(frame, counts)`.
+    """
+    df = t.assign(anchor=t["day"], visible_from=t["day"], visible_until=pd.Series(pd.NaT, index=t.index, dtype=t["day"].dtype))
+    counts: dict = {
+        "copy_groups": 0,
+        "copy_rows_dropped": 0,
+        "copy_value_removed": 0.0,
+        "amendments_linked": 0,
+        "amendments_ambiguous": 0,
+        "amendment_cells_superseded": 0,
+        "amendment_cells_partial": 0,
+        "amendment_cells_new": 0,
+        "amendment_cells_identical": 0,
+        "amendment_rows_identical": 0,
+    }
+    if "accession_number" not in df.columns:
+        return df, counts
+
+    df_key = _copy_key(df, pps)
+    links, counts["amendments_ambiguous"] = _link_amendments(df, df_key)
+    counts["amendments_linked"] = len(links)
+    df_plan, cell_counts = _supersede_plan(df_key, links)
+    counts.update(cell_counts)
+    linked = df_key["accession_number"].isin(links.index)
+    drop_copy, df_owners, copy_counts = _collapse_copies(df, df_key, eligible=~linked)
+    counts.update(copy_counts)
+
+    if not df_plan.empty:
+        df.loc[df_plan.index, "anchor"] = df_plan["anchor"].to_numpy()
+        df.loc[df_plan.index, "visible_until"] = df_plan["visible_until"].to_numpy()
+    for column in ("owner_ciks", "n_reporting_owners"):
+        if column in df.columns and not df_owners.empty:
+            df[column] = df[column].astype(object)
+            df.loc[df_owners.index, column] = df_owners[column]
+    identical = df.index.isin(df_plan.index[df_plan["identical"]]) if not df_plan.empty else np.zeros(len(df), dtype=bool)
+    return df[~(drop_copy.to_numpy() | identical)], counts
+
+
+def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
+    """Per row: accession, filing day, the `COPY_KEY` fields (rounded to `COPY_KEY_DECIMALS`) and the `CELL_KEY` fields."""
+    nan = pd.Series(np.nan, index=df.index)
+    owned = pd.to_numeric(df["shares_owned_after"], errors="coerce") if "shares_owned_after" in df.columns else nan
+    txn_day = to_day(df["transaction_date"]) if "transaction_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    security = df["security_type"].astype(str).str.lower() if "security_type" in df.columns else pd.Series("nonderiv", index=df.index)
+    return pd.DataFrame(
+        {
+            "accession_number": df["accession_number"].astype(str),
+            "day": df["day"],
+            "ticker": df["ticker"],
+            "transaction_day": txn_day.astype("datetime64[ns]"),
+            "code": df["code"],
+            "security_type": security,
+            "shares": df["shares_n"].round(COPY_KEY_DECIMALS),
+            "price": pd.to_numeric(pps.reindex(df.index), errors="coerce").round(COPY_KEY_DECIMALS),
+            "owned_after": owned.round(COPY_KEY_DECIMALS),
+        },
+        index=df.index,
+    )
+
+
+def _owner_pairs(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (`accession_number`, `owner`) from `owner_ciks`, else the primary `owner_cik`; CIKs without leading zeros."""
+    blank = pd.Series(pd.NA, index=df.index, dtype="string")
+    listed = (df["owner_ciks"] if "owner_ciks" in df.columns else blank).astype("string").str.strip()
+    primary = (df["owner_cik"] if "owner_cik" in df.columns else blank).astype("string").str.strip()
+    owners = listed.where(listed.fillna("").ne(""), primary)
+    df_pairs = pd.DataFrame({"accession_number": df["accession_number"].astype(str), "owner": owners.str.split(",")}).explode("owner")
+    df_pairs["owner"] = df_pairs["owner"].astype("string").str.strip().str.lstrip("0")
+    return df_pairs[df_pairs["owner"].fillna("").ne("")].drop_duplicates()
+
+
+def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame) -> tuple[pd.Series, int]:
+    """Amendment accession -> its original, and the number of amendments with several candidates.
+
+    The original shares the ticker and an owner, is not an amendment, and was filed on the
+    amendment's `original_submission_date`, on or before the amendment. Among several
+    candidates the one sharing the most cells wins, then the lowest accession number.
+    """
+    none = pd.Series(dtype="string")
+    if "document_type" not in df.columns or "original_submission_date" not in df.columns:
+        return none, 0
+    amend = df["document_type"].astype("string").str.strip().str.upper().str.endswith("/A").fillna(False).astype(bool)
+    if not amend.any():
+        return none, 0
+
+    df_acc = df_key[["accession_number", "ticker"]].assign(
+        day=df_key["day"].astype("datetime64[ns]"), submitted=to_day(df["original_submission_date"]).astype("datetime64[ns]")
+    )
+    df_amend = df_acc[amend].drop_duplicates("accession_number")
+    df_amend = df_amend[df_amend["submitted"].notna() & (df_amend["submitted"] <= df_amend["day"])]
+    df_orig = df_acc[~amend].drop_duplicates("accession_number")[["accession_number", "ticker", "day"]]
+    df_owner = _owner_pairs(df)
+    df_orig = df_orig.merge(df_owner, on="accession_number").rename(columns={"accession_number": "original", "day": "submitted"})
+    df_pairs = df_amend.merge(df_owner, on="accession_number").merge(df_orig, on=["ticker", "submitted", "owner"])
+    df_pairs = df_pairs[["accession_number", "original"]].drop_duplicates()
+    if df_pairs.empty:
+        return none, 0
+
+    df_cells = df_key[["accession_number", *CELL_KEY]].drop_duplicates()
+    shared = (
+        df_pairs.merge(df_cells, on="accession_number")
+        .merge(df_cells.rename(columns={"accession_number": "original"}), on=["original", *CELL_KEY])
+        .groupby(["accession_number", "original"])
+        .size()
+        .rename("shared")
+    )
+    df_pairs = df_pairs.join(shared, on=["accession_number", "original"]).fillna({"shared": 0})
+    df_pairs = df_pairs.sort_values(["accession_number", "shared", "original"], ascending=[True, False, True])
+    n_candidates = df_pairs.groupby("accession_number").size()
+    links = df_pairs.drop_duplicates("accession_number").set_index("accession_number")["original"]
+    return links, int((n_candidates > 1).sum())
+
+
+def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFrame, dict]:
+    """Per row of a linked original or amendment: `anchor`, `visible_until` and `identical`.
+
+    The records of one (original, cell) are ordered original first, then amendments by filing
+    day and accession. A record equal (as a multiset of shares, price and post-trade holding)
+    to the one before it is `identical` and adds nothing; every other record is visible from
+    its filing day until the next one's, anchored on the first record's day.
+    """
+    columns = ["anchor", "visible_until", "identical"]
+    counts = {"amendment_cells_superseded": 0, "amendment_cells_partial": 0, "amendment_cells_new": 0, "amendment_cells_identical": 0}
+    counts["amendment_rows_identical"] = 0
+    if links.empty:
+        return pd.DataFrame(columns=columns), counts
+
+    original = df_key["accession_number"].map(links)
+    member = original.notna() | df_key["accession_number"].isin(set(links.to_numpy()))
+    df_rows = df_key[member].assign(original=original[member].fillna(df_key.loc[member, "accession_number"]), row=df_key.index[member])
+    df_rows["is_original"] = df_rows["original"].eq(df_rows["accession_number"])
+    shares, price, owned = (df_rows[c].to_numpy(dtype="float64").astype("U32") for c in ("shares", "price", "owned_after"))
+    df_rows["record"] = np.char.add(np.char.add(np.char.add(np.char.add(shares, "|"), price), "|"), owned)
+    cell = ["original", *CELL_KEY]
+    reporter = [*cell, "accession_number"]
+
+    df_rep = (
+        df_rows.sort_values([*reporter, "record"])
+        .groupby(reporter, sort=False, dropna=False)
+        .agg(day=("day", "first"), is_original=("is_original", "first"), n_rows=("record", "size"), signature=("record", _joined))
+        .reset_index()
+        .sort_values([*cell, "is_original", "day", "accession_number"], ascending=[True] * len(cell) + [False, True, True])
+    )
+    df_rep["identical"] = df_rep["signature"].eq(df_rep.groupby(cell, sort=False, dropna=False)["signature"].shift())
+    df_eff = df_rep[~df_rep["identical"]].copy()
+    by_cell = df_eff.groupby(cell, sort=False, dropna=False)
+    df_eff["anchor"] = by_cell["day"].transform("first")
+    df_eff["visible_until"] = by_cell["day"].shift(-1)
+    replaces = by_cell.cumcount() > 0
+
+    counts["amendment_cells_superseded"] = int(replaces.sum())
+    counts["amendment_cells_partial"] = int((replaces & (df_eff["n_rows"] < by_cell["n_rows"].shift())).sum())
+    counts["amendment_cells_new"] = int((~replaces & ~df_eff["is_original"]).sum())
+    counts["amendment_cells_identical"] = int(df_rep["identical"].sum())
+    counts["amendment_rows_identical"] = int(df_rep.loc[df_rep["identical"], "n_rows"].sum())
+
+    df_plan = (
+        df_rows[[*reporter, "row"]]
+        .merge(df_rep[[*reporter, "identical"]], on=reporter)
+        .merge(df_eff[[*reporter, "anchor", "visible_until"]], on=reporter, how="left")
+    )
+    return df_plan.set_index("row")[columns].rename_axis(None), counts
+
+
+def _joined(values: pd.Series) -> str:
+    """The values of one group joined by commas, in order."""
+    return ",".join(map(str, values))
+
+
+def _collapse_copies(df: pd.DataFrame, df_key: pd.DataFrame, *, eligible: pd.Series) -> tuple[pd.Series, pd.DataFrame, dict]:
+    """REQ-010 on the `eligible` rows: rows of different accessions with an equal `COPY_KEY` are one trade.
+
+    The earliest accession (filing day, then accession number) keeps its rows; the others are
+    dropped. A NaN key field never matches. Returns the drop mask, the kept rows' union of
+    owners (`owner_ciks`, `n_reporting_owners`) and the counts.
+    """
+    drop = pd.Series(False, index=df.index)
+    counts = {"copy_groups": 0, "copy_rows_dropped": 0, "copy_value_removed": 0.0}
+    df_cand = df_key[eligible].dropna(subset=list(COPY_KEY))
+    n_accessions = df_cand.groupby(list(COPY_KEY), sort=False)["accession_number"].transform("nunique")
+    df_group = df_cand[n_accessions > 1]
+    if df_group.empty:
+        return drop, pd.DataFrame(columns=["owner_ciks", "n_reporting_owners"]), counts
+
+    df_group = df_group.assign(group=df_group.groupby(list(COPY_KEY), sort=False).ngroup())
+    keeper = df_group.sort_values(["group", "day", "accession_number"]).drop_duplicates("group").set_index("group")["accession_number"]
+    later = df_group["accession_number"].ne(df_group["group"].map(keeper))
+    drop.loc[later.index[later.to_numpy()]] = True
+    counts["copy_groups"] = int(df_group["group"].nunique())
+    counts["copy_rows_dropped"] = int(drop.sum())
+    counts["copy_value_removed"] = float(pd.to_numeric(df.loc[drop, "value_usd"], errors="coerce").sum())
+
+    df_union = (
+        df_group[["group", "accession_number"]]
+        .drop_duplicates()
+        .merge(_owner_pairs(df.loc[df_group.index]), on="accession_number")
+        .assign(owner=lambda d: d["owner"].str.zfill(10))
+        .drop_duplicates(["group", "owner"])
+        .sort_values(["group", "owner"])
+        .groupby("group")["owner"]
+        .agg(owner_ciks=_joined, n_reporting_owners="size")
+    )
+    df_kept = df_group.loc[~later.to_numpy(), ["group"]]
+    df_owners = df_kept.join(df_union, on="group")[["owner_ciks", "n_reporting_owners"]]
+    return drop, df_owners, counts
 
 
 def asof_values(frame: pd.DataFrame | None, tickers: pd.Series, days: pd.Series) -> pd.Series:

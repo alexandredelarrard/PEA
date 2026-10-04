@@ -8,15 +8,16 @@ flags needing a manual decision are information.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, removal_records
+from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, own_filer_mask, removal_records
 from src.utils.identity_flags import FLAG_COLUMNS, MARGIN, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.result import CheckResult, Finding
@@ -60,9 +61,9 @@ def _foreign_in_table(context: Context, spec: FilerTable, tickers: Sequence[str]
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
-        filers = context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker})
-        own = ciks.get(ticker, frozenset())
-        foreign = [raw for raw in filers if pad_cik(raw) and pad_cik(raw) not in own]
+        filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
+        padded = filers.map(pad_cik)
+        foreign = filers[padded.ne("") & ~own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)].tolist()
         if not foreign:
             continue
         rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign})
@@ -126,18 +127,19 @@ def _invariant_findings(lineage: pd.DataFrame, roster: pd.DataFrame) -> list[Fin
     return findings
 
 
-def _window_overlaps(windows: pd.DataFrame) -> list[dict[str, Any]]:
+def _overlap_days(a: Mapping[Hashable, Any], b: Mapping[Hashable, Any]) -> int:
+    """Days two windows share, `b` starting no earlier than `a`; an open end runs to the far future."""
     far = pd.Timestamp("2262-01-01")
+    return (min(a["valid_to"] if pd.notna(a["valid_to"]) else far, b["valid_to"] if pd.notna(b["valid_to"]) else far) - b["valid_from"]).days
+
+
+def _window_overlaps(windows: pd.DataFrame) -> list[dict[str, Any]]:
+    """Every pair of one entity's CIK windows overlapping by more than the margin."""
     out: list[dict[str, Any]] = []
     for entity, group in windows.groupby("entity_id", sort=True):
-        records = group.sort_values("valid_from").to_dict("records")
-        for i, a in enumerate(records):
-            for b in records[i + 1 :]:
-                days = (
-                    min(a["valid_to"] if pd.notna(a["valid_to"]) else far, b["valid_to"] if pd.notna(b["valid_to"]) else far) - b["valid_from"]
-                ).days
-                if days > MARGIN.days:
-                    out.append({"entity_id": entity, "ciks": [a["cik"], b["cik"]], "overlap_days": days})
+        for a, b in combinations(group.sort_values("valid_from").to_dict("records"), 2):
+            if (days := _overlap_days(a, b)) > MARGIN.days:
+                out.append({"entity_id": entity, "ciks": [a["cik"], b["cik"]], "overlap_days": days})
     return out
 
 

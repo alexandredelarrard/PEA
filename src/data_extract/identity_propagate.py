@@ -25,7 +25,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import resolve_ticker_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
 from src.data_store.schema import Table, Tables
-from src.utils.filer_tables import PURGE_TABLES, PURGE_TABLES_BY_NAME, REMOVAL_COLUMNS, FilerTable, filing_window, removal_records
+from src.utils.filer_tables import PURGE_TABLES, PURGE_TABLES_BY_NAME, REMOVAL_COLUMNS, FilerTable, filing_window, own_filer_mask, removal_records
 from src.utils.string import normalise_ticker, pad_cik
 
 #: Tickers read per scoped load, and keys per targeted delete.
@@ -51,7 +51,17 @@ def _changed(context: Context, table: Table, stamps: Mapping[str, pd.Timestamp |
     return sorted(scope_changed_tickers(entry, stamps))
 
 
-def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], identity: Identity) -> pd.DataFrame:
+def _own_ciks(identity: Identity) -> dict[str, frozenset[str]]:
+    """`{ticker: CIKs}` that `identity.ticker_for_cik(cik, None, "event")` maps to that ticker."""
+    owned: dict[str, set[str]] = {}
+    for entity, ciks in identity.event_ciks_by_entity.items():
+        ticker = identity.ticker_by_entity.get(entity)
+        if ticker is not None:
+            owned.setdefault(ticker, set()).update(cik for cik in ciks if identity.entity_of(cik) == entity)
+    return {ticker: frozenset(ciks) for ticker, ciks in owned.items()}
+
+
+def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks: Mapping[str, frozenset[str]]) -> pd.DataFrame:
     """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity (a null CIK is never judged)."""
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     frames: list[pd.DataFrame] = []
@@ -61,9 +71,7 @@ def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], id
             continue
         raw = rows[spec.cik_col].astype("string").str.strip()
         rows = rows[raw.notna() & raw.ne("")]
-        padded = rows[spec.cik_col].map(pad_cik)
-        resolved = padded.map({cik: identity.ticker_for_cik(cik, None, "event") for cik in set(padded)})
-        foreign = rows[resolved.ne(rows["ticker"].map(normalise_ticker)) | resolved.isna()]
+        foreign = rows[~own_filer_mask(rows["ticker"], rows[spec.cik_col].map(pad_cik), own_ciks)]
         if not foreign.empty:
             frames.append(foreign)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
@@ -81,11 +89,11 @@ def _warn(context: Context, table: str, records: list[dict], *, dry_run: bool) -
         context.log.warning("identity-propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
 
 
-def _purge(context: Context, spec: FilerTable, tickers: Sequence[str], identity: Identity, *, dry_run: bool) -> list[dict]:
+def _purge(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks: Mapping[str, frozenset[str]], *, dry_run: bool) -> list[dict]:
     """Delete (or list) `tickers`' rows of `spec` filed by a CIK outside the ticker's entity."""
     if not tickers or not context.store.exists(spec.table):
         return []
-    foreign = _foreign_rows(context, spec, tickers, identity)
+    foreign = _foreign_rows(context, spec, tickers, own_ciks)
     records = removal_records(spec.table.name, foreign, spec)
     if not dry_run:
         for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
@@ -178,9 +186,10 @@ def propagate_identity(
     resolver = identity or load_identity(context)
     universe = [normalise_ticker(ticker) for ticker in tickers if normalise_ticker(ticker) in resolver.roster_cik]
     cik_stamps = {ticker: resolver.filing_scope(ticker).scope_changed_at for ticker in universe}
+    own_ciks = _own_ciks(resolver)
     records: list[dict] = []
     for spec in PURGE_TABLES:
-        records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), resolver, dry_run=dry_run)
+        records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), own_ciks, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, cik_stamps)
     records += _refresh_fails(context, resolver, universe, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))

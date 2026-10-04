@@ -1,7 +1,8 @@
 """The stored tables that keep a filer CIK per row, and the removal record a foreign filer leaves.
 
 Shared by `identity-propagate` (which purges) and the identity validator (which recomputes the same
-pending removals through the store); a row is foreign when its filer CIK is not a CIK of its ticker's entity.
+pending removals through the store); a row is foreign when its filer CIK is not a CIK of its ticker's entity
+(`own_filer_mask`).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from src.data_store.schema import Table, Tables
+from src.utils.string import normalise_ticker
 
 #: One row per (table, ticker, filer CIK) a propagation removes; `cik` is empty for a symbol tape.
 REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
@@ -48,6 +50,14 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.pension_facts, "cik", "filed", "adsh"),
 )
 PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
+
+
+def own_filer_mask(tickers: pd.Series, ciks: pd.Series, own_ciks: Mapping[str, frozenset[str]]) -> pd.Series:
+    """True where a padded filer CIK is a CIK of its ticker's entity; `own_ciks` is keyed by normalised ticker."""
+    df_keys = pd.DataFrame({"ticker": tickers.map(normalise_ticker).to_numpy(dtype=object), "cik": ciks.to_numpy(dtype=object)})
+    df_own = pd.DataFrame([(ticker, cik) for ticker, owned in own_ciks.items() for cik in owned], columns=["ticker", "cik"], dtype=object)
+    owned = df_keys.merge(df_own.assign(own=True), on=["ticker", "cik"], how="left")["own"].notna()
+    return pd.Series(owned.to_numpy(dtype=bool), index=tickers.index, dtype=bool)
 
 
 def filing_window(dates: pd.Series) -> tuple[str, str]:

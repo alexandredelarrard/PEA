@@ -18,7 +18,7 @@ The repository includes a Streamlit dashboard and a broad set of operational scr
 - Offer an intentionally manual scratch driver for local investigation.
 - Generate managed SQL from the table registry.
 - Produce diagnostics, baselines, catalogues, and acceptance evidence.
-- Execute bounded backfills, identity research, or cutover verification that does not belong in the recurring package API.
+- Execute bounded backfills, identity research, or registrant-cutover verification that does not belong in the recurring package API.
 
 ## Public API / entry points
 
@@ -32,7 +32,7 @@ The repository includes a Streamlit dashboard and a broad set of operational scr
 - [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) renders [sql/schema.sql](../../sql/schema.sql) from the registry.
 - [scripts/dod/data_profile.py](../../scripts/dod/data_profile.py), [scripts/dod/modelling_report.py](../../scripts/dod/modelling_report.py), and [scripts/dod/refactor_metrics.py](../../scripts/dod/refactor_metrics.py) produce completion evidence.
 - [scripts/cube_feature_catalogue.py](../../scripts/cube_feature_catalogue.py), [scripts/cube_governance_catalogue.py](../../scripts/cube_governance_catalogue.py), and [scripts/cube_institutionals_catalogue.py](../../scripts/cube_institutionals_catalogue.py) maintain feature inventories.
-- [prove_insider_outliers.py](../../scripts/prove_insider_outliers.py) reconstructs the pre-screen insider tape and runs the real institutional insider builder with a fresh conditioning sink while disabling the live overlay, so its before/after comparison differs only in the substituted bulk input.
+- [institutionals_feature_quality.py](../../scripts/institutionals_feature_quality.py) runs read-only quality gates on the institutional feature part against a frozen input manifest. Its source-table list names the one `insider_transactions` table, so a manifest frozen before the single-table insider change is rejected with `manifest source tables differ`; re-freeze it before reuse.
 - Registrant, identity, and DEF 14A research scripts remain isolated under `scripts/`.
 
 ## Dependencies

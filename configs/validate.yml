@@ -5,19 +5,6 @@
 # the checks that need one ABSTAIN (exit 3) rather than guess.
 validate:
 
-  # Completed-quarter gate before quarterly ZIP rows supersede the provisional EDGAR copy.
-  insider_parity:
-    accession_coverage: 0.99
-    exact_structure: 0.99
-    categorical_agreement: 0.999
-    share_agreement: 0.999
-    economic_within_tolerance: 0.99
-    identity_agreement: 0.999
-    numeric_relative_tolerance: 0.01
-    aggregate_value_relative_tolerance: 0.01
-    feature_cell_agreement: 0.99
-    edge_rank_correlation: 0.99
-
   earnings_calls:
     signal_sessions: 66
     redundancy_spearman_abs: 0.90

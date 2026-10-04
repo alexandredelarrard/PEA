@@ -28,10 +28,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
-from src.data_aggregate.utils.institutionals.insider_sources import (
-    as_quarter,
-    bulk_complete_through,
-)
+from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 
@@ -76,80 +73,30 @@ def cube_part_edge_report(store: DataStore) -> dict[str, object]:
 
 def _insider_source_status(
     context: Context,
+    log: logging.Logger,
     part_max_date: str | None,
     tolerance_days: int,
 ) -> dict[str, object]:
-    """Canonical bulk/live completeness versus the institutional part edge."""
-    _, latest_quarter = context.store.bounds(Tables.insider_transactions, "quarter")
-    latest_period = as_quarter(latest_quarter)
-    bulk = None
-    live = None
-    if latest_period is not None:
-        bulk = context.store.load(
-            Tables.insider_transactions,
-            columns=("accession_number", "filing_date"),
-            where={"quarter": latest_quarter},
-            optional=True,
-        )
-        live = context.store.load(
-            Tables.insider_transactions_live,
-            columns=("accession_number", "filing_date"),
-            since=latest_period.start_time.normalize(),
-            until=latest_period.end_time.normalize(),
-            date_col="filing_date",
-            optional=True,
-        )
-    source_config = getattr(getattr(context, "config", {}), "source_freshness", {})
-    bulk_cutover = source_config.get("insider_bulk_authoritative_through")
-    bulk_frontier = bulk_complete_through(
-        latest_quarter,
-        bulk,
-        live,
-        bulk_authoritative_through=bulk_cutover,
-    )
+    """EDGAR completeness of `insider_transactions` versus the institutional part edge.
 
-    price_max = context.store.max_date(Tables.cube_part_prices)
-    expected = set(
-        map(
-            str,
-            context.store.distinct(
-                Tables.cube_part_prices,
-                "ticker",
-                where={"date": price_max} if price_max is not None else None,
-            ),
-        )
+    The frontier is the cube's: the manifest's last EDGAR run, trusted only when it covered
+    exactly the tickers of `cube_part_prices`."""
+    expected = sorted(map(str, context.store.distinct(Tables.cube_part_prices, "ticker")))
+    complete_through = schedule_complete_through(
+        context,
+        log,
+        Tables.insider_transactions,
+        expected_tickers=expected,
     )
-    coverage = context.store.load(
-        Tables.insider_transactions_live_coverage,
-        columns=("ticker", "complete_through"),
-        where={"ticker": sorted(expected)} if expected else None,
-        optional=True,
-    )
-    live_frontier = None
-    covered: set[str] = set()
-    if coverage is not None and not coverage.empty:
-        coverage = coverage.dropna(subset=["ticker", "complete_through"])
-        covered = set(coverage["ticker"].astype(str))
-        if expected and expected.issubset(covered):
-            live_frontier = pd.to_datetime(coverage.groupby("ticker")["complete_through"].max(), errors="coerce").min()
-            live_frontier = live_frontier.normalize() if pd.notna(live_frontier) else None
-
-    candidates = [value for value in (bulk_frontier, live_frontier) if value is not None]
-    complete_through = max(candidates) if candidates else None
     lag_days = None
     if part_max_date is not None and complete_through is not None:
         lag_days = int((pd.Timestamp(part_max_date) - complete_through).days)
-    ok = bool(part_max_date is not None and complete_through is not None and lag_days is not None and lag_days <= tolerance_days)
+    ok = bool(lag_days is not None and lag_days <= tolerance_days)
     return {
-        "bulk_reported_quarter": str(latest_quarter) if latest_quarter is not None else None,
-        "bulk_authoritative_through": str(bulk_cutover) if bulk_cutover else None,
-        "bulk_complete_through": _fmt(bulk_frontier),
-        "live_complete_through": _fmt(live_frontier),
         "complete_through": _fmt(complete_through),
         "part_max_date": part_max_date,
         "lag_days": lag_days,
         "tolerance_days": tolerance_days,
-        "covered_tickers": len(covered & expected),
         "expected_tickers": len(expected),
         "ok": ok,
     }
@@ -201,6 +148,7 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
     insider_tolerance = int(source_config.get("insider_max_lag_days", _LAG_TOLERANCE_DAYS))
     insider_status = _insider_source_status(
         context,
+        log,
         parts.get(Tables.cube_part_institutionals.name, {}).get("max_date"),
         insider_tolerance,
     )

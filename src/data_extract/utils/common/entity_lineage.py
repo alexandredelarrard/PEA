@@ -306,7 +306,7 @@ def _write_rekey_manifest(config_dir: str | None, impacts: list[dict[str, object
         "status": "blocked_before_write",
         "reason": "newly discovered older CIK would change a derived entity_id",
         "source_tables": ["symbol_tenure", "entity_lineage"],
-        "dependent_tables": ["sec_insider_transactions_quarantine"],
+        "dependent_tables": [Tables.insider_transactions.name],
         "impacts": impacts,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

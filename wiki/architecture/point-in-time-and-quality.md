@@ -29,8 +29,9 @@ flowchart TD
 ## Key components
 
 - The [point-in-time data](../concepts/point-in-time-data.md) contract is implemented across [fundamentals history construction](../../src/data_extract/utils/fundamentals/build_history.py) and [PIT frame utilities](../../src/data_aggregate/utils/common/pit.py).
+- [insider_quality.py](../../src/data_aggregate/utils/institutionals/insider_quality.py) gives every cleaned insider trade an anchor day (first disclosure) and a visible interval `[visible_from, visible_until)`: a later repeat copy of a trade is dropped, and an amended Form 4/A cell replaces its original only from the 4/A's filing day, aged from the original's anchor. Every insider aggregator in [insider_features.py](../../src/data_aggregate/utils/institutionals/insider_features.py) counts a record only inside its interval.
 - [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans warm-up windows and rewrites an inclusive tail; [parts.py](../../src/data_aggregate/utils/common/parts.py) declares the binding look-backs.
-- [src/validate](../../src/validate/) provides grain, coverage, profile, redundancy, leakage, clipping, time-series, bounds, catalogue, and insider-parity checks.
+- [src/validate](../../src/validate/) provides grain, coverage, profile, redundancy, leakage, clipping, time-series, bounds, catalogue, and earnings-call checks.
 - Architectural tests pin the SQL boundary in [test_store_boundary.py](../../tests/data_store/test_store_boundary.py), DAG/part consistency in [test_dag_matches_part_registry.py](../../tests/dags/test_dag_matches_part_registry.py), incremental equivalence in [test_cube_incremental.py](../../tests/data_aggregate/test_cube_incremental.py), and numeric outputs in [test_aggregate_regression.py](../../tests/data_aggregate/test_aggregate_regression.py).
 
 ## Design decisions

@@ -62,11 +62,6 @@ from src.data_aggregate.utils.institutionals.cross_source_features import (
     build_cross_source_panel,
 )
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-from src.data_aggregate.utils.institutionals.insider_sources import (
-    as_quarter,
-    bulk_complete_through,
-    overlay_insider_sources,
-)
 from src.data_aggregate.utils.institutionals.institutional_features import (
     COVERAGE_BREAK_DEFAULT,
     build_institutional_feature_panel,
@@ -119,8 +114,6 @@ class StepCubeInstitutionals(Step):
         self._store = context.store
         availability_config = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(availability_config) if availability_config is not None else None
-        freshness_config = config.get("source_freshness") or {}
-        self._insider_bulk_cutover = freshness_config.get("insider_bulk_authoritative_through")
 
     def run(self, full: bool = False) -> None:
         panel, window = self.build_panel(full=full)
@@ -348,38 +341,17 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(self, frames: PriceFrames, shares: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
         """Fourteen Form 3/4/5 features: size-scaled open-market buying, cluster breadth,
         CEO/CFO/director legs, the buyer's own-history surprise, and the 10b5-1 split of
-        selling. Point-in-time on the filing date (a Form 4 is due within ~2 business days).
+        selling. Point-in-time on the filing date. The dollar figures are scoped and repaired
+        by `insider_quality` before they are summed, never read raw from `value_usd`.
 
-        ⚠ THE DOLLAR FIGURES ARE SCOPED AND REPAIRED BEFORE THEY ARE SUMMED. Read raw,
-        `value_usd` averages **$447,771,735,138** per Form 4 line -- 49.4% of which is ONE
-        convertible-note row -- and the sells total $182,982,720tn against a real ~$1.45tn.
-        After the scope cut and the price repair the mean is **$2,339,662** and the median
-        $114,116. See `insider_quality` for which population each figure belongs to."""
-        bulk = self._load_source(Tables.insider_transactions, frames.universe)
-        live = self._load_source(Tables.insider_transactions_live, frames.universe)
-        insider = self._overlay_insider_sources(
-            bulk,
-            live,
-            bulk_authoritative_through=self._insider_bulk_cutover,
-        )
+        The completeness frontier is the last EDGAR run that covered exactly this universe,
+        read from the run manifest; without that proof absence stays unknown."""
+        insider = self._load_source(Tables.insider_transactions, frames.universe)
         if insider is None or insider.empty:
             return None
-        _, latest_quarter = self._store.bounds(Tables.insider_transactions, "quarter")
-        bulk_complete_through = self._insider_bulk_complete_through(
-            latest_quarter,
-            bulk,
-            live,
-            bulk_authoritative_through=self._insider_bulk_cutover,
-        )
-        live_complete_through = institutional_frontiers.insider_live_complete_through(
-            self._store,
-            self._log,
-            frames.universe,
-        )
-        complete_through = self._insider_complete_through(
-            bulk_complete_through,
-            insider,
-            live_complete_through,
+        complete_through = self._schedule_complete_through(
+            Tables.insider_transactions,
+            expected_tickers=sorted(set(map(str, frames.universe))),
         )
         return build_insider_feature_panel(
             frames,
@@ -389,50 +361,6 @@ class StepCubeInstitutionals(Step):
             availability=self._availability,
             complete_through=complete_through,
             sink=sink,
-        )
-
-    @staticmethod
-    def _overlay_insider_sources(
-        bulk: pd.DataFrame | None,
-        live: pd.DataFrame | None,
-        *,
-        bulk_authoritative_through: object = None,
-    ) -> pd.DataFrame | None:
-        return overlay_insider_sources(
-            bulk,
-            live,
-            bulk_authoritative_through=bulk_authoritative_through,
-        )
-
-    @staticmethod
-    def _as_quarter(value: object) -> pd.Period | None:
-        return as_quarter(value)
-
-    @staticmethod
-    def _insider_bulk_complete_through(
-        latest_quarter: object,
-        bulk: pd.DataFrame | None,
-        live: pd.DataFrame | None,
-        *,
-        bulk_authoritative_through: object = None,
-    ) -> pd.Timestamp | None:
-        return bulk_complete_through(
-            latest_quarter,
-            bulk,
-            live,
-            bulk_authoritative_through=bulk_authoritative_through,
-        )
-
-    @staticmethod
-    def _insider_complete_through(
-        bulk_complete_through: object,
-        insider: pd.DataFrame,
-        live_complete_through: pd.Timestamp | None = None,
-    ) -> pd.Timestamp | None:
-        return institutional_frontiers.insider_complete_through(
-            bulk_complete_through,
-            insider,
-            live_complete_through,
         )
 
     def _short_flow_panel(

@@ -111,12 +111,7 @@ def test_insider_parse_and_universe_filter_synthetic():
             "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
         }
     )
-    out = build_insider_frame(
-        ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()),
-        value_rule="shares_x_price_first",
-        numeric_rule="to_numeric",
-        date_formats=BULK_DATE_FORMATS,
-    )
+    out = build_insider_frame(*ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()), date_formats=BULK_DATE_FORMATS)
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
@@ -153,10 +148,8 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = build_insider_frame(
-        ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
-    )
-    assert not df.empty and df["transaction_sk"].notna().all()
+    df = build_insider_frame(*ins.extract_bulk_strings(*tables[:4]), date_formats=BULK_DATE_FORMATS)
+    assert not df.empty and df["row_sequence"].ge(1).all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()
     aapl = df[df["ticker"] == "AAPL"]
@@ -176,7 +169,7 @@ def test_insider_incremental_state_converges(tmp_path):
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
-        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
+        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
     context = SimpleNamespace(store=ds)
     assert stored_values(context, "insider_transactions", "quarter") == {"2024q1"}

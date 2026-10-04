@@ -142,8 +142,8 @@ def test_row_count_matches_part_io_row_count(store):
 
 
 def test_bounds_matches_raw_min_max_on_a_string_quarter(store):
-    """`fetch_insider_edgar` / `part_status` -- `SELECT MIN(quarter), MAX(quarter) FROM
-    "insider_transactions"`. NOT dates: string quarters."""
+    """`store.bounds` -- `SELECT MIN(quarter), MAX(quarter) FROM "insider_transactions"`
+    on a non-date column. NOT dates: string quarters."""
     _requires(store, "bounds")
     old = _sql(store, 'SELECT MIN(quarter) AS lo, MAX(quarter) AS hi FROM "insider_transactions"')
     assert store.bounds("insider_transactions", "quarter") == (old["lo"].iloc[0], old["hi"].iloc[0])

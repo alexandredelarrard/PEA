@@ -132,8 +132,9 @@ class EdgarFetch:
     `record_run` entry. `build(ticker, cik, since=, done_accessions=, scope=)` returns
     `{table: frame}`. A failed ticker is fatal to the run manifest;
     `identity_aware` resolves through the identity layer and relists a ticker whose identity
-    scope changed; `minimum_since` floors the listing window; `completion_table` is saved last
-    and only when every earlier frame saved.
+    scope changed; `minimum_since` floors the listing window; `listing_since`, when set, is the
+    listing window itself (over `full` and the manifest); `done_where` restricts the stored rows
+    whose accessions count as done.
     """
 
     desc: str
@@ -141,7 +142,8 @@ class EdgarFetch:
     build: BuildFn
     identity_aware: bool = True
     minimum_since: pd.Timestamp | None = None
-    completion_table: Table | None = None
+    listing_since: pd.Timestamp | None = None
+    done_where: dict[str, object] | None = None
 
 
 def build_filing_rows(
@@ -210,8 +212,12 @@ def _resolve_window(
     years_history: int,
     full: bool,
 ) -> RunWindow:
-    """`fetch`'s window from manifest `entry`: the whole `years_history` window (floored at
-    `fetch.minimum_since`) under `full` or a not-yet-complete manifest, else `manifest_window`."""
+    """`fetch`'s window: `fetch.listing_since` when set; else, from manifest `entry`, the whole
+    `years_history` window (floored at `fetch.minimum_since`) under `full` or a not-yet-complete
+    manifest, else `manifest_window`."""
+    if fetch.listing_since is not None:
+        since = pd.Timestamp(fetch.listing_since).normalize()
+        return RunWindow(since, since, False)
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
     if fetch.minimum_since is not None:
         fallback_since = max(fallback_since, pd.Timestamp(fetch.minimum_since).normalize())
@@ -246,20 +252,12 @@ def _build_ticker(
 
 
 def _save_frames(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, pd.DataFrame]) -> tuple[dict[Table, int], bool]:
-    """Upsert one ticker's non-empty `frames`, `fetch.completion_table` last. Returns `(rows saved per
-    table, failed_save)`: an undeclared table or a failed save sets `failed_save` without stopping
-    the other tables, and then the completion table is not saved."""
-    completion_table = fetch.completion_table
-    ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
-    if completion_table is not None and completion_table in frames:
-        ordered_frames.append((completion_table, frames[completion_table]))
+    """Upsert one ticker's non-empty `frames`. Returns `(rows saved per table, failed_save)`: an
+    undeclared table or a failed save sets `failed_save` without stopping the other tables."""
     counts: dict[Table, int] = {}
     failed_save = False
-    for table, df in ordered_frames:
+    for table, df in frames.items():
         if df is None or df.empty:
-            continue
-        if table == completion_table and failed_save:
-            context.log.warning("%s: %s coverage not advanced because an earlier save failed", fetch.desc, ticker)
             continue
         if table not in fetch.tables:
             context.log.warning("%s: %s built undeclared table '%s'", fetch.desc, ticker, table)
@@ -344,7 +342,7 @@ def run_edgar_fetch(
     if changed:
         context.log.info("%s: %d ticker identity scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
     window = _resolve_window(context, fetch, cik_map, entry, years_history, full)
-    done = stored_values(context, fetch.tables[0], "accession_number")
+    done = stored_values(context, fetch.tables[0], "accession_number", where=fetch.done_where)
     worker = partial(_walk_ticker, context, fetch, scope, window, changed, done)
     results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
     totals, failed = _tally(results, fetch.tables)

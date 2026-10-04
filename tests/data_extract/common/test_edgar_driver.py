@@ -73,9 +73,9 @@ def _ctx(tmp_path, store, tickers) -> Any:
     return ctx
 
 
-def _fetch(tables, build, desc="test", *, identity_aware=False, completion_table=None) -> EdgarFetch:
+def _fetch(tables, build, desc="test", *, identity_aware=False, listing_since=None, done_where=None) -> EdgarFetch:
     """An `EdgarFetch` that is not identity-aware unless the test sets it."""
-    return EdgarFetch(desc=desc, tables=tables, build=build, identity_aware=identity_aware, completion_table=completion_table)
+    return EdgarFetch(desc=desc, tables=tables, build=build, identity_aware=identity_aware, listing_since=listing_since, done_where=done_where)
 
 
 def _rows(table, ticker, accession):
@@ -384,31 +384,48 @@ def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_stor
     print("  OK: a storage failure cannot turn an unknown Schedule history into an observed zero")
 
 
-def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, sqlite_store, monkeypatch):
+def test_listing_since_overrides_full_and_the_manifest_window(tmp_path, sqlite_store):
+    """`listing_since` is the window itself: it wins over `full=True` and over a complete manifest
+    entry, applies to every ticker, and the run is recorded as an incremental (not full) rescan."""
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    real_save = sqlite_store.save
-
-    def flaky_save(table, df, pk=None):
-        if table is _T_MAIN:
-            raise RuntimeError("deadlock detected")
-        return real_save(table, df, pk)
-
-    monkeypatch.setattr(sqlite_store, "save", flaky_save)
+    prior = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    record_run(ctx, _T_MAIN, 1, 0, is_full_rescan=True, run_date=prior - pd.Timedelta(days=3), coverage_complete=True, tickers=["AAPL"])
+    seen: list[pd.Timestamp] = []
 
     def build(ticker, cik, *, since, done_accessions, scope):
-        return {
-            _T_MAIN: _rows(_T_MAIN, ticker, "x"),
-            _T_EMPTY: _rows(_T_EMPTY, ticker, "coverage"),
-        }
+        seen.append(since)
+        return {}
 
-    with pytest.raises(IncompleteEdgarRunError):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_EMPTY), build, completion_table=_T_EMPTY))
+    listing = pd.Timestamp("2026-04-29 13:45")
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, listing_since=listing), full=True)
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, listing_since=listing))
 
-    assert not sqlite_store.exists(_T_MAIN)
-    assert not sqlite_store.exists(_T_EMPTY)
-    assert any("coverage not advanced" in warning for warning in ctx.warnings)
-    print("\n=== SANITY CHECK: explicit coverage commits last ===")
-    print("  the transaction save failed, so the completion row was withheld and the ticker remains visibly stale. Validated.")
+    assert seen == [pd.Timestamp("2026-04-29"), pd.Timestamp("2026-04-29")]
+    assert get_entry(ctx, _T_MAIN)["last_full_rescan_date"] == (prior - pd.Timedelta(days=3)).strftime("%Y-%m-%d"), "not a full rescan"
+    assert get_entry(ctx, _T_MAIN)["coverage_complete"] is True
+    print("\n=== SANITY CHECK: listing_since ===")
+    print("  full=True and a complete manifest both yield since=2026-04-29 (normalised); the run is not recorded as a full rescan. Validated.")
+
+
+def test_done_where_limits_the_dedup_set_to_matching_rows(tmp_path, sqlite_store):
+    """`done_where` filters the stored-accession read, so rows outside it (another source) are re-listed."""
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+    sqlite_store.save(
+        _T_MAIN, pd.concat([_rows(_T_MAIN, "AAPL", "from-edgar").assign(source="edgar"), _rows(_T_MAIN, "AAPL", "from-zip").assign(source="zip")])
+    )
+    seen: dict[str, frozenset[str]] = {}
+
+    def build(ticker, cik, *, since, done_accessions, scope):
+        seen[str(len(seen))] = done_accessions
+        return {}
+
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, done_where={"source": "edgar"}))
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
+
+    assert seen["0"] == frozenset({"from-edgar"})
+    assert seen["1"] == frozenset({"from-edgar", "from-zip"}), "no done_where keeps the old all-rows dedup"
+    print("\n=== SANITY CHECK: done_where ===")
+    print("  done_where={'source': 'edgar'} -> only 'from-edgar' is skipped; without it both stored accessions are. Validated.")
 
 
 def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path, sqlite_store, monkeypatch):

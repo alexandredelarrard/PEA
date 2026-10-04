@@ -2,9 +2,6 @@
 # facts about the SEC formats.
 source_freshness:
   insider_max_lag_days: 4
-  # Advance only after the completed-quarter ZIP/EDGAR parity report passes. Until then,
-  # overlapping daily accessions remain canonical and the new ZIP fills only missing filings.
-  insider_bulk_authoritative_through: null
 
 # Point-in-time source availability. Keep this compact: table defaults apply to every field;
 # only fields or derived features with a later usable start belong below them.

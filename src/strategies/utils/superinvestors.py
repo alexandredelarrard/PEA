@@ -63,7 +63,7 @@ def _aggregate_insiders(df: pd.DataFrame) -> pd.DataFrame:
             insider_sell_value=("insider_sell_value", "sum"),
             insider_buy_shares=("insider_buy_shares", "sum"),
             insider_sell_shares=("insider_sell_shares", "sum"),
-            insider_n_transactions=("transaction_sk", "count"),
+            insider_n_transactions=("transaction_code", "size"),
             _owned_after_sell=("_owned_after_sell", "sum"),
         )
     )

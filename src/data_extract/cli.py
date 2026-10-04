@@ -532,6 +532,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
         scan.owner_pairs,
         config_path,
         approved_rekeys=frozenset(parsed_rekeys),
+        redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )
 
 

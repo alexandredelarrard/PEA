@@ -234,7 +234,7 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     # downloads -> identity build -> propagation -> every consumer
     for download in IDENTITY_DOWNLOADS:
         assert "identity_tables" in graph[download], f"{download} must feed identity_tables"
-    assert graph["identity_tables"] == {"identity_propagate", "extraction_status"}
+    assert graph["identity_tables"] == {"identity_propagate", "identity_check"}
     assert IDENTITY_CONSUMERS <= graph["identity_propagate"], sorted(IDENTITY_CONSUMERS - graph["identity_propagate"])
     for derived, parents in DERIVED_PARENTS.items():
         assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
@@ -249,12 +249,17 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     assert "trigger_rule" not in params["extraction_status"]
     assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
     assert graph["extraction_status"] == {"trigger_data_aggregation"}
+    # AC-039 foreign-row half: the identity validator runs after every fetcher and before the freshness gate
+    fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", "seed_universe"}
+    assert all("identity_check" in graph[task] for task in fetchers), sorted(t for t in fetchers if "identity_check" not in graph[t])
+    assert graph["identity_check"] == {"extraction_status"} and "trigger_rule" not in params["identity_check"]
+    assert " -m src validate identity -o " in str(params["identity_check"]["bash_command"])
     for task in IDENTITY_DOWNLOADS:
         assert params[task]["pool"] == "sec_bulk"
 
     print("\n=== SANITY CHECK: identity stage order (AC-011, AC-037-039) ===")
     print(f"  {len(graph)} tasks, acyclic; downloads {sorted(IDENTITY_DOWNLOADS)} -> identity_tables -> identity_propagate")
-    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> extraction_status")
+    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> identity_check -> extraction_status")
     first = min(position[task] for task in IDENTITY_DOWNLOADS)
     print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
     print(f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build or propagation leaves the gate unrun")

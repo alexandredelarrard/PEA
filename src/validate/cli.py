@@ -36,12 +36,13 @@ from src.context import get_config_context
 from src.data_store.schema import resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.validate import checks
+from src.validate.checks.identity import check_identity
 from src.validate.insider_reconciliation import (
     run_completed_quarter_reconciliation,
     write_reconciliation_report,
 )
+from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
-from src.validate.io import write_result
 from src.validate.result import EXIT, CheckResult
 from src.validate.spec import UndeclaredTableError
 
@@ -184,3 +185,24 @@ def insider_parity(
     json_path, markdown_path = write_reconciliation_report(out, result)
     click.echo(f"insider parity {result['quarter']}: {'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
     sys.exit(0 if result["passed"] else 1)
+
+
+@cli.command(
+    name="identity",
+    help="Foreign rows per filer-CIK table, entity_lineage invariants and the identity items needing a manual decision.",
+)
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option(*TICKERS_ARGS, **cast(dict[str, Any], TICKERS_KWARGS))
+def identity(out: str, config_path: str, tickers: str | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    started = time.perf_counter()
+    names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    report = check_identity(context, tickers=names)
+    report.result.scope.setdefault("elapsed_s", round(time.perf_counter() - started, 1))
+    path = write_result(out, report.result)
+    report.flags.to_csv(run_dir(out) / OUT_DIR / "identity_flags.csv", index=False)
+    report.removals.to_csv(run_dir(out) / OUT_DIR / "identity_pending_removals.csv", index=False)
+    click.echo(report.result.summary())
+    click.echo(f"  -> {path} (+ identity_flags.csv, identity_pending_removals.csv)")
+    sys.exit(EXIT[report.result.status])

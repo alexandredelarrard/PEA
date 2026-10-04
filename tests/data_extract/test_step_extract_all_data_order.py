@@ -42,8 +42,8 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
         assert given_scan is scan
         return mark("symbol_tenure", tenure)()
 
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir):
-        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
+    def entity_lineage(context, given_tenure, owner_pairs, config_dir, redundant_symbols=frozenset()):
+        assert given_tenure is tenure and owner_pairs is scan.owner_pairs and redundant_symbols == {"GOOG"}
         return mark("entity_lineage")()
 
     def refresh(context, refresh=False):
@@ -61,7 +61,7 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     monkeypatch.setattr(module, "propagate_identity", propagate)
 
     config = SimpleNamespace(
-        data_extract=SimpleNamespace(years_history=15),
+        data_extract=SimpleNamespace(years_history=15, redundant_ticks=["GOOG"]),
         local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="sec_insider_transactions")),
     )
     step = cast(Any, object.__new__(StepExtractAllData))

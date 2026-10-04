@@ -59,7 +59,13 @@ class StepExtractAllData(Step):
         download_financial_notes(self._context, years_history=int(self._config.data_extract.years_history))
         scan = scan_form345_cache(cache_dir(self._context, self._config.local.paths.insider_transactions))
         tenure = build_symbol_tenure(self._context, scan, self._context.config_dir)
-        build_entity_lineage(self._context, tenure, scan.owner_pairs, str(self._context.config_dir))
+        build_entity_lineage(
+            self._context,
+            tenure,
+            scan.owner_pairs,
+            str(self._context.config_dir),
+            redundant_symbols=frozenset(self._config.data_extract.redundant_ticks),
+        )
         propagate_identity(self._context, tickers, identity=load_identity(self._context, refresh=True))
 
     def run(self) -> None:

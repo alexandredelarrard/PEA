@@ -34,6 +34,7 @@ from src.data_extract.utils.common.registrant import Registrant, load_registrant
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, collapse_dei_periods, load_manual_symbol_tenure
 from src.data_store.schema import Tables
+from src.utils.identity_flags import cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
@@ -1232,11 +1233,13 @@ def build_entity_lineage(
     *,
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
     built_at: pd.Timestamp | None = None,
+    redundant_symbols: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     """Derive `entity_lineage` from tenure, the stored `dei` evidence and owner pairs; replace the table unless unchanged.
 
     An older-CIK rekey is excluded and backlogged unless its ``(old_entity_id, new_entity_id)`` pair is in
-    `approved_rekeys`. Returns the derived rows.
+    `approved_rekeys`. Logs the items needing a manual decision (`redundant_symbols`: the configured
+    redundant share classes). Returns the derived rows.
     """
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert roster is not None
@@ -1254,6 +1257,8 @@ def build_entity_lineage(
         f"their {manual_tenure['canonical_ticker'].nunique()} canonical entity(ies); "
         f"dei evidence {0 if dei is None else len(dei)} (symbol, CIK) interval(s); curation backlog {len(build.backlog)} item(s)"
     )
+    evidence = tenure if dei is None else pd.concat([tenure, dei], ignore_index=True)
+    log_identity_flags(context.log, identity_flags(out, cik_activity(evidence), redundant_symbols=redundant_symbols, backlog=build.backlog))
     if not build.blocked.empty:
         logger.warning(
             "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",

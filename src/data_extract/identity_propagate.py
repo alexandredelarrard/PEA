@@ -25,46 +25,13 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import resolve_ticker_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
 from src.data_store.schema import Table, Tables
+from src.utils.filer_tables import PURGE_TABLES, PURGE_TABLES_BY_NAME, REMOVAL_COLUMNS, FilerTable, filing_window, removal_records
 from src.utils.string import normalise_ticker, pad_cik
 
 #: Tickers read per scoped load, and keys per targeted delete.
 _TICKER_CHUNK = 50
 _KEY_CHUNK = 500
-#: One row per (table, ticker, filer CIK) a propagation removes; `cik` is empty for a symbol tape.
-REMOVAL_COLUMNS = ("table", "ticker", "cik", "first_filed", "last_filed", "keys", "rows")
-
-
-@dataclass(frozen=True)
-class FilerTable:
-    """A table whose rows carry the filer CIK: the purge reads `ticker`, `cik_col`, `date_col` and deletes by `key_col`."""
-
-    table: Table
-    cik_col: str
-    date_col: str
-    key_col: str
-
-
-#: Every stored table that keeps a filer CIK per row. `def14a_llm` and `fundamentals_employees` keep none.
-PURGE_TABLES: tuple[FilerTable, ...] = (
-    FilerTable(Tables.sec_8k, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.sec_8k_votes, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.sec_13d, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.sec_13d_transactions, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.sec_13g, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.insider_transactions_live, "issuer_cik", "filing_date", "accession_number"),
-    FilerTable(Tables.insider_transactions, "issuer_cik", "filing_date", "accession_number"),
-    FilerTable(Tables.fundamentals_facts, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.filing_risk_text, "cik", "filed", "accession_number"),
-    FilerTable(Tables.def14a_edgar, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.def14a_directors, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_executive_comp, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_director_comp, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_ownership, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.notes_num, "cik", "filed", "adsh"),
-    FilerTable(Tables.notes_text, "cik", "filed", "adsh"),
-    FilerTable(Tables.pension_facts, "cik", "filed", "adsh"),
-)
-PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
+__all__ = ["PURGE_TABLES", "PURGE_TABLES_BY_NAME", "REMOVAL_COLUMNS", "PropagationResult", "propagate_identity"]
 
 
 @dataclass(frozen=True)
@@ -82,13 +49,6 @@ def _changed(context: Context, table: Table, stamps: Mapping[str, pd.Timestamp |
     if every or not (entry or {}).get("last_run_date"):
         return sorted(stamps)
     return sorted(scope_changed_tickers(entry, stamps))
-
-
-def _window(dates: pd.Series) -> tuple[str, str]:
-    stamps = pd.to_datetime(dates, errors="coerce").dropna()
-    if stamps.empty:
-        return "", ""
-    return str(stamps.min().date()), str(stamps.max().date())
 
 
 def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], identity: Identity) -> pd.DataFrame:
@@ -109,24 +69,6 @@ def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], id
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
 
 
-def _removal_records(table: str, foreign: pd.DataFrame, spec: FilerTable) -> list[dict]:
-    records = []
-    for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
-        first, last = _window(group[spec.date_col])
-        records.append(
-            {
-                "table": table,
-                "ticker": str(ticker),
-                "cik": str(cik),
-                "first_filed": first,
-                "last_filed": last,
-                "keys": int(group[spec.key_col].nunique()),
-                "rows": len(group),
-            }
-        )
-    return records
-
-
 def _warn(context: Context, table: str, records: list[dict], *, dry_run: bool) -> None:
     """One line per table: every (ticker, cik, window, rows) removed."""
     if not records:
@@ -144,7 +86,7 @@ def _purge(context: Context, spec: FilerTable, tickers: Sequence[str], identity:
     if not tickers or not context.store.exists(spec.table):
         return []
     foreign = _foreign_rows(context, spec, tickers, identity)
-    records = _removal_records(spec.table.name, foreign, spec)
+    records = removal_records(spec.table.name, foreign, spec)
     if not dry_run:
         for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
             keys = sorted(group[spec.key_col].astype(str).unique())
@@ -180,7 +122,7 @@ def _fails_records(stored: pd.DataFrame, fresh: pd.DataFrame) -> list[dict]:
     ]
     records = []
     for ticker, group in gone.groupby("ticker", sort=True):
-        first, last = _window(group["date"])
+        first, last = filing_window(group["date"])
         records.append(
             {
                 "table": Tables.sec_fails_to_deliver.name,

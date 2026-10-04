@@ -639,6 +639,42 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     print("  changed CIK 0000000001 and affected current ticker AAA are named")
 
 
+def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
+    """P15: a sequential uncurated pair and a grey-band backlog item reach one WARNING block from the build."""
+    columns = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle"]
+    rows = pd.DataFrame(
+        [
+            ("E1", "AAA", "0000000002", "cik_window", "", pd.Timestamp("1900-01-01"), pd.NaT, "single_source", "roster", "roster"),
+            ("E1", "AAA", "0000000001", "cik_event", "", pd.Timestamp("1900-01-01"), pd.NaT, "single_source", "form345", "owner_overlap"),
+        ],
+        columns=columns,
+    )
+    backlog = pd.DataFrame([("grey_band", "AAA", "E1", "0000000009", "AAA", "owner overlap with 0000000002")], columns=list(L.BACKLOG_COLUMNS))
+    build = L.LineageBuild(rows=rows, blocked=pd.DataFrame(), backlog=backlog, holders=pd.DataFrame(), reproduction=pd.DataFrame())
+    tenure = _tenure([("AAA", "0000000001", "2006-01-03", "2012-06-30", 9), ("AAA", "0000000002", "2014-01-02", None, 9)])
+
+    class Store:
+        def load(self, table, **kwargs):
+            return _roster([("AAA", "0000000002")]) if table is Tables.sp500_tickers else None
+
+        def replace(self, table, frame):
+            return len(frame)
+
+    monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: build)
+    monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
+    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
+    context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.flags"))
+    caplog.set_level(logging.INFO, logger="test.entity_lineage.flags")
+
+    lineage_module.build_entity_lineage(context, tenure, _owner_pairs({}), CONFIG_DIR)
+    blocks = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "IDENTITY ITEMS NEEDING A MANUAL DECISION" in r.getMessage()]
+    assert len(blocks) == 1 and "missing_cutover AAA" in blocks[0] and "grey_band AAA" in blocks[0], blocks
+    print("\n=== SANITY CHECK: build flag block ===")
+    print(blocks[0])
+    print("  OK: the build emits the same block the validator does, with the build-only grey band")
+
+
 # --------------------------------------------------------------------------- #
 # Real data: the live register + curated files against the live tables         #
 # --------------------------------------------------------------------------- #

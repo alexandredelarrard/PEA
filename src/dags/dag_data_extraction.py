@@ -18,7 +18,8 @@ Airflow POOLS (created in airflow-init):
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
 the data_aggregation DAG. Identity stage: the Form 3/4/5 and Notes zip downloads -> identity_tables ->
 identity_propagate -> every task that reads the lineage; a failed build or propagation leaves the
-gate unrun. Fetchers and the schema-driven freshness gate each get three attempts;
+gate unrun. After every fetcher, `identity_check` (`python -m src validate identity`) fails on rows
+filed by a CIK outside the ticker's entity. Fetchers and both gates each get three attempts;
 the final gate is a hard block.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
@@ -120,7 +121,15 @@ filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
 
-# 6) final schema-driven freshness gate; a red gate retries and never permits aggregation.
+# 6) identity gate: rows filed by a CIK outside the ticker's entity, or a broken lineage invariant, fail
+#    it (the items needing a manual decision are logged, not failed); then the schema-driven freshness
+#    gate. A red gate retries and never permits aggregation.
+identity_check = BashOperator(
+    task_id="identity_check",
+    bash_command=f"{PIPE_PY} -m src validate identity -o {PROJECT}/reports/validate/identity-nightly -c {CONFIGS}",
+    cwd=PROJECT,
+    dag=dag,
+)
 extraction_status = fetch("extraction-status", task_id="extraction_status")
 
 trigger_aggregation = TriggerDagRunOperator(
@@ -188,5 +197,5 @@ superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes
 
-# all sources refreshed -> schema freshness hard gate -> aggregation
-all_fetchers >> extraction_status >> trigger_aggregation
+# all sources refreshed -> identity gate -> schema freshness hard gate -> aggregation
+all_fetchers >> identity_check >> extraction_status >> trigger_aggregation

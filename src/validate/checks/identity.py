@@ -25,6 +25,7 @@ from src.validate.result import CheckResult, Finding
 CHECK = "identity"
 SENTINEL = pd.Timestamp("1900-01-01")
 _EVIDENCE_COLUMNS = ["symbol", "issuer_cik", "valid_from", "valid_to", "source"]
+_ROLE_WINDOW, _ROLE_EVENT = "cik_window", "cik_event"
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,29 @@ def _lineage(context: Context) -> pd.DataFrame | None:
         return None
     out = rows.copy()
     out["cik"] = pad_cik_series(out["cik"])
+    if "role" not in out.columns:
+        return out
     out["symbol"] = out["symbol"].fillna("").astype(str)
     out["valid_from"] = pd.to_datetime(out["valid_from"])
     out["valid_to"] = pd.to_datetime(out["valid_to"])
     return out
+
+
+def _from_old_shape(lineage: pd.DataFrame, roster: pd.DataFrame) -> pd.DataFrame:
+    """A pre-cutover membership table read as the accessor reads it: each CIK an event CIK of its entity,
+    each roster CIK its ticker's open window."""
+    entity_by_cik = dict(zip(lineage["cik"], lineage["entity_id"].astype(str), strict=True))
+    events = pd.DataFrame({"entity_id": lineage["entity_id"].astype(str), "cik": lineage["cik"], "role": _ROLE_EVENT, "canonical_ticker": None})
+    windows = pd.DataFrame(
+        {
+            "entity_id": [entity_by_cik.get(c, f"universe:{t}") for t, c in zip(roster["ticker"], roster["cik"], strict=True)],
+            "cik": roster["cik"].to_numpy(),
+            "role": _ROLE_WINDOW,
+            "canonical_ticker": roster["ticker"].to_numpy(),
+        }
+    )
+    out = pd.concat([windows, events], ignore_index=True)
+    return out.assign(symbol="", valid_from=SENTINEL, valid_to=pd.NaT, status="")
 
 
 def _entity_ciks(lineage: pd.DataFrame) -> dict[str, frozenset[str]]:
@@ -153,6 +173,46 @@ def _flags(context: Context, lineage: pd.DataFrame) -> pd.DataFrame:
     return identity_flags(lineage, activity, redundant_symbols=redundant)
 
 
+def _removal_findings(removals: pd.DataFrame) -> list[Finding]:
+    return [
+        Finding.at(
+            8,
+            f"{r.rows} row(s) / {r.keys} filing(s) in {r.table} filed by CIK {r.cik} ({r.first_filed}..{r.last_filed})",
+            "every row filed by a CIK of the ticker's entity (AC-024)",
+            field="foreign_rows",
+            ticker=str(r.ticker),
+            table=r.table,
+            cik=r.cik,
+        )
+        for r in removals.itertuples(index=False)
+    ]
+
+
+def _removal_metrics(removals: pd.DataFrame) -> dict[str, Any]:
+    return {
+        "foreign_rows": int(removals["rows"].sum()) if not removals.empty else 0,
+        "foreign_tickers": sorted(set(removals["ticker"])),
+        "foreign_by_table": removals.groupby("table")["rows"].sum().to_dict() if not removals.empty else {},
+    }
+
+
+def _unmigrated_report(context: Context, lineage: pd.DataFrame, scope: list[str]) -> IdentityReport:
+    """Foreign rows against a pre-cutover lineage; its invariants and flags need the new shape and are skipped."""
+    removals = pending_removals(context, lineage, scope)
+    findings = [
+        Finding.at(
+            2,
+            "entity_lineage is in the pre-cutover shape: foreign rows only, no invariants or flags",
+            "the dated lineage (run the identity cutover steps)",
+            field="lineage_not_migrated",
+        ),
+        *_removal_findings(removals),
+    ]
+    scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
+    result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=_removal_metrics(removals))
+    return IdentityReport(result, pd.DataFrame(columns=list(FLAG_COLUMNS)), removals)
+
+
 def check_identity(context: Context, *, tickers: Sequence[str] | None = None) -> IdentityReport:
     """Foreign rows per filer-CIK table, lineage invariants and the manual-fix flags; logs the flag block."""
     empty = IdentityReport(
@@ -166,30 +226,19 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         return empty
     roster = roster.assign(ticker=roster["ticker"].map(normalise_ticker), cik=pad_cik_series(roster["cik"]))
     scope = sorted({normalise_ticker(t) for t in tickers} & set(roster["ticker"])) if tickers else sorted(roster["ticker"])
+    if "role" not in lineage.columns:
+        return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)
     flags = _flags(context, lineage)
     log_identity_flags(context.log, flags)
     findings = _invariant_findings(lineage, roster[roster["ticker"].isin(scope)])
-    findings += [
-        Finding.at(
-            8,
-            f"{r.rows} row(s) / {r.keys} filing(s) in {r.table} filed by CIK {r.cik} ({r.first_filed}..{r.last_filed})",
-            "every row filed by a CIK of the ticker's entity (AC-024)",
-            field="foreign_rows",
-            ticker=str(r.ticker),
-            table=r.table,
-            cik=r.cik,
-        )
-        for r in removals.itertuples(index=False)
-    ]
+    findings += _removal_findings(removals)
     findings += [
         Finding.at(2, f"{f.kind}: {f.evidence}", str(f.suggested_action), field="manual_decision", ticker=str(f.ticker))
         for f in flags[flags["action"].astype(bool)].itertuples()
     ]
     metrics = {
-        "foreign_rows": int(removals["rows"].sum()) if not removals.empty else 0,
-        "foreign_tickers": sorted(set(removals["ticker"])),
-        "foreign_by_table": removals.groupby("table")["rows"].sum().to_dict() if not removals.empty else {},
+        **_removal_metrics(removals),
         "flags_by_kind": flags["kind"].value_counts().sort_index().to_dict(),
         "backlog": int(flags["action"].sum()),
         "symbol_statuses": lineage.loc[lineage["role"].eq("symbol"), "status"].value_counts().sort_index().to_dict(),

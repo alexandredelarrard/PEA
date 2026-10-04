@@ -301,3 +301,30 @@ def test_lineage_invariant_breaches_are_findings(sqlite_store):
         if finding.field != "foreign_rows":
             print(f"  [{finding.severity}] {finding.field}: {finding.observed}")
     print("  OK: each breached invariant is one finding")
+
+
+def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrated(sqlite_store):
+    """F-002: the old-shape table (cik, entity_id, ...) reads as event CIKs plus the roster CIK, as the accessor does."""
+    old = pd.DataFrame(
+        {
+            "cik": [ALB, TMUS, TMO_USA, PRED, SUCC],
+            "entity_id": ["E-ALB", "E-TMUS", "E-TMUS", "E-REG", "E-REG"],
+            "source": "roster",
+            "confidence": None,
+            "evidence": "old-shape row",
+        }
+    )
+    _seed_store(sqlite_store, _store_lineage())
+    sqlite_store.drop(Tables.entity_lineage)
+    old.to_sql(Tables.entity_lineage.name, sqlite_store.engine, index=False)
+
+    report = check_identity(_context(sqlite_store))
+
+    removals = report.removals
+    assert list(zip(removals["ticker"], removals["cik"], removals["rows"], strict=True)) == [("ALB", AB, 4)], removals
+    fields = [f.field for f in report.result.findings]
+    assert "lineage_not_migrated" in fields and "current_symbol_rows" not in fields, fields
+    assert report.result.metrics["foreign_rows"] == 4 and report.flags.empty
+    print("\n=== SANITY CHECK: validator before the cutover (old-shape entity_lineage) ===")
+    print(f"  {report.result.summary()}")
+    print("  OK: no KeyError; membership CIKs and roster CIKs are own, AllianceBernstein's 4 rows are pending, invariants skipped")

@@ -1,7 +1,8 @@
 """SEC Financial Statement and Notes data sets -> `notes_num` (footnote pension numerics) and `notes_text` (note prose).
 
 Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for universe filers, keeping only
-curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. Rows carry their archive
+curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. A filing belongs to the
+ticker whose lineage window of its filer CIK holds the filing date (consolidating). Rows carry their archive
 `period` and point-in-time `available_at` clock. Incremental: a stored period is skipped unless the universe gained
 tickers or `reparse` is set. Zips are large, so the window is the dedicated `notes_years_history` knob.
 `download_financial_notes` caches the zips and captures every filer's cover-page `dei:TradingSymbol` facts
@@ -33,10 +34,9 @@ from src.data_extract.utils.common.bulk_cache import (
     read_zip_tables,
     stored_period_clock,
 )
+from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, save_dei_period
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik_series
@@ -165,8 +165,8 @@ def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | N
 # --------------------------------------------------------------------------- #
 # Pure parse (unit-tested)                                                       #
 # --------------------------------------------------------------------------- #
-def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> pd.DataFrame:
-    """sub.tsv -> [adsh, cik, ticker, form, fy, fp, filed] for UNIVERSE filers only. Pure."""
+def _sub_meta(sub: pd.DataFrame, identity: Identity, universe: set[str]) -> pd.DataFrame:
+    """sub.tsv -> [adsh, cik, ticker, form, fy, fp, filed] for filings a universe ticker's lineage window holds. Pure."""
     if sub is None or sub.empty:
         return pd.DataFrame()
     s = pd.DataFrame(
@@ -179,10 +179,8 @@ def _sub_meta(sub: pd.DataFrame, cik2tkr: dict[str, str], universe: set[str], re
             "filed": pd.to_datetime(sub["filed"], format="%Y%m%d", errors="coerce"),
         }
     )
-    s["ticker"] = s["cik"].map(cik2tkr)
-    s = s[s["ticker"].isin(universe)]
-    # consolidating table: a predecessor CIK's row must also fall in that CIK's dated segment (see `FORM_POLICY`)
-    return drop_rows_outside_segment(s, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
+    s["ticker"] = tickers_for_ciks(identity, s["cik"], s["filed"], "consolidating")
+    return s[s["ticker"].isin(universe)]
 
 
 def _join_notes_num(num: pd.DataFrame, sub_meta: pd.DataFrame) -> pd.DataFrame:
@@ -269,13 +267,13 @@ def _consolidated_rows(chunk: pd.DataFrame, adsh_set: set[str], tags: frozenset[
     return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
 
 
-def _read_notes(path: Path, cik2tkr: dict[str, str], universe: set[str], registrants: dict[str, Registrant]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One notes zip -> `(num facts, text)` for universe filings; num/txt stream in chunks keeping consolidated curated rows."""
     empty = (pd.DataFrame(), pd.DataFrame())
     subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete", log=logger)
     if not subs:
         return empty
-    sub_meta = _sub_meta(subs["sub.tsv"], cik2tkr, universe, registrants)
+    sub_meta = _sub_meta(subs["sub.tsv"], identity, universe)
     if sub_meta.empty:
         return empty
     adsh_set = set(sub_meta["adsh"])
@@ -395,19 +393,17 @@ def fetch_financial_notes(
     """Fetch the notes data sets over `years_history` into `notes_num` and `notes_text`; returns rows upserted.
 
     A stored period is skipped unless the universe gained tickers. `reparse` re-reads the WHOLE cached window
-    (needed after a registrant/CIK-resolution change; never a partial suffix). `repair_availability` only
+    (needed after a lineage change; never a partial suffix). `repair_availability` only
     repairs stored `available_at` clocks and returns 0 before any download or parse.
     """
 
-    cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap, config_dir=str(context.config_dir))
-    registrants = load_registrants(str(context.config_dir))
     cache = cache_dir(context, context.config.local.paths.financial_notes)
 
     period_clocks = _repair_stored_clocks(context, cache, overwrite=repair_availability)
     if repair_availability:
         return 0  # Metadata-only mode: never download or reparse a ZIP.
 
+    identity = load_identity(context)
     periods = _notes_periods(context, years_history + 1)
     pending = set(pending_periods(context, cache, _NOTES_TABLES, periods, tickers, reparse=reparse))
     n_num = n_txt = 0
@@ -427,7 +423,7 @@ def fetch_financial_notes(
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
 
-        num, txt = _read_notes(path, cik2tkr, set(tickers), registrants)
+        num, txt = _read_notes(path, identity, set(tickers))
         n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
         n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
 

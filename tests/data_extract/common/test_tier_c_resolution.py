@@ -1,243 +1,234 @@
-"""Tier C: the bulk data sets, which had NO cutover concept at all until phase 9b.
+"""Tier C: the CIK-keyed bulk data sets resolve rows through the dated `entity_lineage` only.
 
-`insider_transactions`, `notes_num`/`notes_text` and `pension_facts` come from SEC bulk data
-sets keyed by CIK, and each mapped a row to a ticker through `cik_to_ticker` -- a dict of
-exactly one CIK per ticker. Every row a PREDECESSOR filed therefore resolved to nothing and
-was dropped, silently: a row for an unknown CIK is indistinguishable from a row for a company
-outside the universe, so there was no error, no warning and no gap signal.
-
-Two different repairs, because the two table families combine differently:
-
-  insider (Forms 3/4/5)   UNION   an event happened whoever indexed it -- no date filter
-  notes / pension         SPLIT   consolidating -- a row must also fall in the segment
-                                  whose CIK filed it, or Apache Corp's subsidiary notes
-                                  blend into APA's
+`notes_num`/`notes_text` and `pension_facts` are CONSOLIDATING: a row belongs to a ticker when its
+filer CIK's seam-widened window holds the filing date (`ticker_for_cik(..., "consolidating")`).
+`insider_transactions` (Forms 3/4/5) are EVENTS: any CIK of the entity (`"event"`), no date filter.
+No register JSON is read: the fixtures' config directory holds none, so a predecessor resolves only
+through its lineage window.
 
 Synthetic fixtures: these are resolution rules, not measurements.
 """
 
 from __future__ import annotations
 
+import ast
+import io
+import zipfile
+from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.registrant import Registrant, Segment, drop_rows_outside_segment
-from src.data_extract.utils.common.sec_utils import cik_to_ticker
+from src.data_extract.utils.fundamentals import fetch_financial_notes as fn
+from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.institutionals.insider_common import screen_insider_rows
+from src.data_store.schema import Tables
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
-#: GOOGL's real chain, measured: Google Inc -> Alphabet Inc on 2015-10-02.
-GOOGL = Registrant(
-    ticker="GOOGL",
-    kind="reorganisation",
-    segments=(
-        Segment(cik="0001288776", valid_from=None, valid_to=pd.Timestamp("2015-10-02"), evidence="Google Inc, which traded as GOOG"),
-        Segment(cik="0001652044", valid_from=pd.Timestamp("2015-10-02"), valid_to=None, evidence="Alphabet Inc"),
-    ),
+#: GOOGL (Google Inc -> Alphabet, 2015-10-02), VTRS (Mylan -> Viatris, 2020-11-07), APA (Apache -> APA Corp, 2021-03-01).
+IDENTITY = dated_identity(
+    [
+        ("GOOGL", "0001288776", "cik_window", SENTINEL, "2015-10-02"),
+        ("GOOGL", "0001652044", "cik_window", "2015-10-02", None),
+        ("VTRS", "0001623613", "cik_window", SENTINEL, "2020-11-07"),
+        ("VTRS", "0001792044", "cik_window", "2020-11-07", None),
+        ("APA", "0000006769", "cik_window", SENTINEL, "2021-03-01"),
+        ("APA", "0001841666", "cik_window", "2021-03-01", None),
+        ("AAPL", "0000320193", "cik_window", SENTINEL, None),
+    ],
+    {"GOOGL": "0001652044", "VTRS": "0001792044", "APA": "0001841666", "AAPL": "0000320193"},
 )
+ROSTER = pd.DataFrame({"ticker": ["GOOGL", "VTRS", "APA", "AAPL"], "cik": ["0001652044", "0001792044", "0001841666", "0000320193"]})
+UNIVERSE = ["AAPL", "APA", "GOOGL", "VTRS"]
 
-#: VTRS: Mylan N.V. -> Viatris. The predecessor traded as MYL, so the SYMBOL moved too.
-VTRS = Registrant(
-    ticker="VTRS",
-    kind="reorganisation",
-    segments=(
-        Segment(cik="0001623613", valid_from=None, valid_to=pd.Timestamp("2020-11-07"), evidence="Mylan N.V., which traded as MYL"),
-        Segment(cik="0001792044", valid_from=pd.Timestamp("2020-11-07"), valid_to=None, evidence="Viatris Inc"),
-    ),
-)
+#: (accession, filer CIK, filed, expected ticker or None)
+FILINGS = [
+    ("g-inside", "1288776", "20150728", "GOOGL"),  # Google Inc inside its window
+    ("g-margin", "1288776", "20151029", "GOOGL"),  # Google Inc 27 days past the seam: the margin admits it
+    ("g-after", "1288776", "20151215", None),  # Google Inc past window + margin
+    ("m-inside", "1623613", "20200807", "VTRS"),  # Mylan N.V. before the Viatris seam
+    ("a-sub", "6769", "20220501", None),  # Apache Corp as a subsidiary, a year past its window
+    ("a-parent", "1841666", "20220501", "APA"),
+    ("aapl", "320193", "20241101", "AAPL"),
+]
+EXPECTED = {adsh: ticker for adsh, _, _, ticker in FILINGS if ticker is not None}
 
-#: APA: the shape that was SAVED by symbol-first resolution, because APA never moved.
-APA = Registrant(
-    ticker="APA",
-    kind="reorganisation",
-    segments=(
-        Segment(
-            cik="0000006769",
-            valid_from=None,
-            valid_to=pd.Timestamp("2021-03-01"),
-            evidence="Apache Corp, which kept filing as a subsidiary until 2024-11-07",
-        ),
-        Segment(cik="0001841666", valid_from=pd.Timestamp("2021-03-01"), valid_to=None, evidence="APA Corp"),
-    ),
-)
+_SUB = ["adsh", "cik", "name", "form", "period", "fy", "fp", "filed"]
+_NUM = ["adsh", "tag", "version", "ddate", "qtrs", "uom", "dimn", "coreg", "value", "footnote"]
+_TXT = ["adsh", "tag", "version", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"]
 
-REGISTRANTS = {"GOOGL": GOOGL, "VTRS": VTRS, "APA": APA}
 
-ROSTER = pd.DataFrame({"cik": ["0001652044", "0001792044", "0001841666", "0000320193"], "ticker": ["GOOGL", "VTRS", "APA", "AAPL"]})
+def _tsv(columns: list[str], rows: list[dict[str, str]]) -> str:
+    return "\n".join(["\t".join(columns), *("\t".join(row.get(c, "") for c in columns) for row in rows)])
 
-#: The insider path no longer reads `cik_to_ticker` at all -- it resolves through
-#: `entity_lineage`, of which the register is the highest-priority oracle. This is the
-#: same four registrants expressed as that table, so the two paths are compared on one
-#: set of facts rather than on two hand-kept dicts that could drift apart.
-IDENTITY = build_identity(
-    lineage=pd.DataFrame(
-        [
-            {"cik": c, "entity_id": e, "source": "register"}
-            for c, e in [
-                ("0001288776", "E0001288776"),
-                ("0001652044", "E0001288776"),  # GOOGL
-                ("0001623613", "E0001623613"),
-                ("0001792044", "E0001623613"),  # VTRS
-                ("0000006769", "E0000006769"),
-                ("0001841666", "E0000006769"),  # APA
-                ("0000320193", "E0000320193"),  # AAPL
-            ]
-        ]
-    ).assign(confidence=None, evidence="test"),
-    tenure=pd.DataFrame(
+
+def _notes_zip() -> bytes:
+    sub = [{"adsh": a, "cik": c, "name": a, "form": "10-Q", "fy": "2020", "fp": "Q2", "filed": f} for a, c, f, _ in FILINGS]
+    num = [
+        {"adsh": a, "tag": "DefinedBenefitPlanBenefitObligation", "ddate": f"{f[:4]}0630", "qtrs": "0", "uom": "USD", "dimn": "0", "value": "100"}
+        for a, _, f, _ in FILINGS
+    ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("sub.tsv", _tsv(_SUB, sub))
+        archive.writestr("num.tsv", _tsv(_NUM, num))
+        archive.writestr("txt.tsv", _tsv(_TXT, []))
+    return buf.getvalue()
+
+
+def _context(store: Any, tmp_path) -> SimpleNamespace:
+    """A context whose config directory holds no registrant register."""
+    return SimpleNamespace(
+        store=store,
+        config_dir=str(tmp_path / "no_register"),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused", financial_statements="unused"))),
+    )
+
+
+def _patch_bulk_io(module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Cache, clocks and bookkeeping stubbed; identity and roster from the fixtures above."""
+    monkeypatch.setattr(module, "load_identity", lambda context: IDENTITY, raising=False)
+    monkeypatch.setattr(module, "load_cik_mapping", lambda context: ROSTER.copy(), raising=False)
+    monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(module, "ensure_zip", lambda context, path, url, **kwargs: path)
+    monkeypatch.setattr(module, "is_cached", lambda path: True)
+    monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
+    monkeypatch.setattr(module, "stored_period_clock", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "mark_processed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "record_run", lambda *args, **kwargs: None)
+
+
+def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_store, monkeypatch, tmp_path):
+    """A predecessor's notes row filed inside its window (or its seam margin) is the ticker's; outside, nobody's."""
+    period = "2020q3"
+    (tmp_path / f"{period}_notes.zip").write_bytes(_notes_zip())
+    _patch_bulk_io(fn, monkeypatch, tmp_path)
+    monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
+    monkeypatch.setattr(fn, "pending_periods", lambda *args, **kwargs: [period])
+
+    fn.fetch_financial_notes(_context(sqlite_store, tmp_path), UNIVERSE)
+
+    stored = sqlite_store.load(Tables.notes_num, columns=["adsh", "ticker"])
+    got = dict(zip(stored["adsh"], stored["ticker"], strict=True))
+    assert got == EXPECTED, f"notes_num tickers by accession: {got}"
+    print("\n=== SANITY CHECK: notes rows by lineage window ===")
+    print(f"  kept {sorted(got)}; Google Inc past its margin and Apache Corp's subsidiary-era filing resolve to no ticker. Validated.")
+
+
+def test_pension_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_store, monkeypatch, tmp_path):
+    """Same consolidating rule for `pension_facts`."""
+    facts = pd.DataFrame(
         [
             {
-                "symbol": s,
-                "issuer_cik": c,
-                "valid_from": pd.Timestamp("2006-01-03"),
-                "valid_to": None,
-                "n_filings": 500,
-                "source": "form345",
-                "evidence": "",
+                "cik": c.zfill(10),
+                "tag": "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+                "ddate": pd.Timestamp(f),  # one fact per filing: the pension key holds no accession
+                "qtrs": 0,
+                "uom": "USD",
+                "value": 1.0,
+                "adsh": a,
+                "filed": pd.Timestamp(f),
+                "form": "10-Q",
+                "fy": "2020",
+                "fp": "Q2",
             }
-            for s, c in [("GOOGL", "0001652044"), ("VTRS", "0001792044"), ("APA", "0000006769"), ("AAPL", "0000320193")]
+            for a, c, f, _ in FILINGS
         ]
-    ),
-    roster=ROSTER[["ticker", "cik"]],
-)
-
-
-# --------------------------------------------------------------------------- #
-# ⚠ The regression fixture the whole of tier C exists for                      #
-# --------------------------------------------------------------------------- #
-def test_a_predecessor_cik_resolves_to_the_ticker(monkeypatch):
-    """⚠ THIS TEST FAILED BEFORE PHASE 9b AND PASSES AFTER, which is the only reason it
-    proves anything. A test that was green all along would not have caught this.
-
-    Measured 2026-09-09, the two tickers where the trading SYMBOL moved with the registrant
-    so even the insider fetcher's symbol-first path could not save them:
-
-        GOOGL  insider_transactions starts 2015-10-08   (boundary 2015-10-02, was GOOG)
-        VTRS   insider_transactions starts 2020-11-16   (was MYL)
-
-    Before the repair, `cik_to_ticker` held only the CURRENT CIK, so Google Inc's and Mylan's
-    bulk rows mapped to `NaN` and were filtered out as out-of-universe.
-    """
-    monkeypatch.setattr("src.data_extract.utils.common.sec_utils.load_registrants", lambda *a, **k: REGISTRANTS)
-    mapping = cik_to_ticker(ROSTER)
-
-    assert mapping["0001288776"] == "GOOGL", "Google Inc's rows still resolve to nothing"
-    assert mapping["0001623613"] == "VTRS", "Mylan N.V.'s rows still resolve to nothing"
-    assert mapping["0000006769"] == "APA"
-    assert mapping["0000320193"] == "AAPL", "a ticker with no entry must be untouched"
-
-    print("\n=== SANITY CHECK: predecessor CIKs resolve to their ticker ===")
-    print(f"  roster rows in: {len(ROSTER)}   map entries out: {len(mapping)}")
-    print("  0001288776 -> GOOGL (Google Inc), 0001623613 -> VTRS (Mylan N.V.)")
-    print("  OK: these two mapped to NaN before phase 9b and their rows were dropped.")
-
-
-def test_a_register_entry_for_a_ticker_outside_this_run_is_ignored(monkeypatch):
-    """A `-t AAPL` run must not gain GOOGL's predecessor CIKs. Widening the map beyond the
-    universe being walked would route a company's rows to a ticker this run is not writing."""
-    monkeypatch.setattr("src.data_extract.utils.common.sec_utils.load_registrants", lambda *a, **k: REGISTRANTS)
-    mapping = cik_to_ticker(pd.DataFrame({"cik": ["0000320193"], "ticker": ["AAPL"]}))
-    assert mapping == {"0000320193": "AAPL"}
-    print("\n=== SANITY CHECK: the map stays scoped to the run's universe ===")
-    print("  a one-ticker run gains no register CIKs. Validated.")
-
-
-# --------------------------------------------------------------------------- #
-# UNION vs SPLIT                                                               #
-# --------------------------------------------------------------------------- #
-def _bulk(rows) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=["cik", "ticker", "filed"])
-
-
-def test_a_split_table_drops_a_predecessor_row_filed_after_the_boundary():
-    """`notes` and `pension` are CONSOLIDATING, and this is the Apache case in miniature.
-    Apache Corp filed its own reports until 2024-11-07 as a subsidiary; those disclosures
-    describe a subsidiary and must not be stored as APA's."""
-    df = _bulk(
-        [
-            ("0000006769", "APA", "2019-05-01"),  # parent-era, keep
-            ("0000006769", "APA", "2022-05-01"),  # subsidiary-era, DROP
-            ("0001841666", "APA", "2022-05-01"),
-        ]
-    )  # the real parent, keep
-
-    out = drop_rows_outside_segment(df, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=REGISTRANTS)
-
-    assert len(out) == 2
-    assert list(out["filed"]) == ["2019-05-01", "2022-05-01"]
-    assert list(out["cik"]) == ["0000006769", "0001841666"]
-    print("\n=== SANITY CHECK: the SPLIT date filter on a bulk table ===")
-    print(f"  {len(df)} rows in -> {len(out)} kept; Apache Corp's 2022 subsidiary row dropped.")
-
-
-def test_a_union_table_keeps_that_same_row():
-    """Forms 3/4/5 are EVENTS, so no date filter runs at all: a predecessor's Form 4 filed
-    after the boundary is still a real insider transaction in this issuer's security. That is
-    the 4,287-vs-4 trade, taken deliberately."""
-    df = pd.DataFrame(
-        {"ticker": [None, None], "issuer_cik": ["0000006769", "0000006769"], "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2022-05-01")]}
     )
-    out, rejected = screen_insider_rows(df, ["APA"], IDENTITY)
+    _patch_bulk_io(fin, monkeypatch, tmp_path)
+    monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2020q3"])
+    monkeypatch.setattr(fin, "pending_periods", lambda *args, **kwargs: ["2020q3"])
+    monkeypatch.setattr(fin, "_read_pension_facts", lambda path: facts.copy())
 
-    assert len(out) == 2, "the union path must not apply a date filter"
-    assert rejected.empty
-    print("\n=== SANITY CHECK: the UNION path keeps a post-boundary event ===")
-    print("  both Apache-CIK Form 4 rows kept, including the 2022 one. Validated.")
+    fin.fetch_financial_statements(_context(sqlite_store, tmp_path), UNIVERSE)
+
+    stored = sqlite_store.load(Tables.pension_facts, columns=["adsh", "ticker"])
+    got = dict(zip(stored["adsh"], stored["ticker"], strict=True))
+    assert got == EXPECTED, f"pension_facts tickers by accession: {got}"
+    print("\n=== SANITY CHECK: pension rows by lineage window ===")
+    print(f"  kept {sorted(got)}; out-of-window predecessor filings dropped. Validated.")
 
 
-def test_cik_first_resolution_labels_the_row_whether_the_symbol_is_typed_or_not():
-    """The APA shape, which symbol-first got RIGHT only because APA never moved. CIK-first
-    reaches the same answer from the one field that is always present -- measured zero of
-    4,402,307 filings lack `ISSUERCIK` -- so the blank-symbol row needs no fallback.
-
-    ⚠ This test used to be called `symbol_first_still_wins`. The assertion is unchanged and
-    the reasoning is inverted: the symbol is now a cross-check kept as `claimed_ticker`,
-    never a resolver."""
+def test_insider_rows_of_any_entity_cik_resolve_without_a_date_filter():
+    """Forms 3/4/5 are events: Google Inc's and Apache Corp's filings belong to the ticker whatever the date."""
     df = pd.DataFrame(
-        {"ticker": ["APA", None], "issuer_cik": ["0000006769", "0000006769"], "filing_date": [pd.Timestamp("2019-05-01"), pd.Timestamp("2019-06-01")]}
+        {
+            "ticker": ["GOOG", None, "APA", None],
+            "issuer_cik": ["0001288776", "0001288776", "0000006769", "0001623613"],
+            "filing_date": pd.to_datetime(["2015-07-28", "2015-12-15", "2022-05-01", "2020-08-07"]),
+        }
     )
-    out, rejected = screen_insider_rows(df, ["APA"], IDENTITY)
+    kept, rejected = screen_insider_rows(df, UNIVERSE, IDENTITY)
 
-    assert list(out["ticker"]) == ["APA", "APA"]
-    assert out["claimed_ticker"].tolist()[0] == "APA"
-    assert pd.isna(out["claimed_ticker"].tolist()[1])
+    assert kept["ticker"].tolist() == ["GOOGL", "GOOGL", "APA", "VTRS"]
+    assert kept["claimed_ticker"].tolist()[0] == "GOOG"
     assert rejected.empty
-    print("\n=== SANITY CHECK: CIK-first resolves both rows ===")
-    print("  Apache Corp's CIK names APA's entity whether the filer typed the symbol or not.")
+    print("\n=== SANITY CHECK: insider rows by event CIK ===")
+    print("  predecessor Form 4s (Google Inc, Mylan, Apache Corp post-seam) all keep their ticker. Validated.")
 
 
-def test_a_ticker_with_no_register_entry_is_untouched():
-    """~449 of 491 tickers. The filter must be a no-op for them, not merely harmless."""
-    df = _bulk([("0000320193", "AAPL", "2019-05-01"), ("0000320193", "AAPL", "2024-05-01")])
-    out = drop_rows_outside_segment(df, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=REGISTRANTS)
-    pd.testing.assert_frame_equal(out, df)
-    print("\n=== SANITY CHECK: an unregistered ticker passes through unchanged ===")
-    print("  frame is identical, not merely equal in length. Validated.")
+# --------------------------------------------------------------------------- #
+# AC-027: one identity source for every fetcher                                #
+# --------------------------------------------------------------------------- #
+REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
+#: The identity layer itself: the accessor, the lineage/tenure builds, the register loader they read, the roster listing.
+_ACCESSOR = {
+    "src/data_extract/utils/common/identity.py",
+    "src/data_extract/utils/common/entity_lineage.py",
+    "src/data_extract/utils/common/symbol_tenure.py",
+    "src/data_extract/utils/common/registrant.py",
+    "src/data_extract/utils/common/sec_utils.py",
+}
+#: The roster seeder writes `sp500_tickers`; 13F managers are listed by their own CIK, not an issuer (00-run N1).
+_ROSTER_WRITER = "src/data_extract/utils/prices/fetch_tickers.py"
+_MANAGER_LISTING = "src/data_extract/utils/institutionals/fetch_13f_managers.py"
+_RETIRED = {"cik_to_ticker", "drop_rows_outside_segment", "entity_ticker", "resolve_symbol_rows", "resolve_symbol_ticker", "candidate_symbols"}
+_REGISTER = {"load_registrants", "_registrants_at", "REGISTRANT_CONFIG_FILENAME"}
 
 
-def test_an_unparseable_filed_date_is_dropped_not_silently_kept():
-    """A row whose `filed` cannot be parsed belongs to no segment, and for a SPLIT table
-    "belongs to no segment" must mean dropped. Keeping it would attribute a subsidiary's
-    disclosure to the parent on the strength of a malformed date."""
-    df = _bulk([("0000006769", "APA", "not-a-date"), ("0000006769", "APA", "2019-05-01")])
-    out = drop_rows_outside_segment(df, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=REGISTRANTS)
-    assert list(out["filed"]) == ["2019-05-01"]
-    print("\n=== SANITY CHECK: an unparseable filed date is dropped ===")
-    print("  1 of 2 rows kept. Validated.")
+def _names(tree: ast.AST) -> set[str]:
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.add(node.attr)
+        elif isinstance(node, ast.FunctionDef | ast.alias):
+            out.add(node.name)
+    return out
 
 
-@pytest.mark.parametrize("boundary_offset", [-1, 0, 1])
-def test_the_bulk_split_uses_the_same_boundary_convention_as_the_filing_split(boundary_offset):
-    """Strictly-before / on-or-after, to the day, exactly as `Segment.covers` does for
-    filings. Two different conventions in two layers of one repair would put the seam in two
-    places, and only one of them would be documented."""
-    boundary = pd.Timestamp("2015-10-02")
-    filed = (boundary + pd.Timedelta(days=boundary_offset)).date().isoformat()
-    df = _bulk([("0001288776", "GOOGL", filed), ("0001652044", "GOOGL", filed)])
-
-    out = drop_rows_outside_segment(df, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=REGISTRANTS)
-
-    expected = "0001288776" if boundary_offset < 0 else "0001652044"
-    assert list(out["cik"]) == [expected]
-    print(f"\n=== SANITY CHECK: bulk row filed {filed} (boundary {boundary.date()}) ===")
-    print(f"  kept the row from {expected}. Validated.")
+def test_fetchers_resolve_identity_only_through_the_accessor():
+    """AC-027: no retired CIK/symbol map anywhere in `src`; outside the identity layer no fetcher reads the
+    register, `sp500_tickers` or builds `Company` from anything but `int(cik)`."""
+    retired, register, roster, company = [], [], [], []
+    for path in sorted((REPO / "src").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = _names(tree)
+        retired += [f"{rel}: {name}" for name in sorted(names & _RETIRED)]
+        if not rel.startswith("src/data_extract/utils/") or rel in _ACCESSOR:
+            continue
+        register += [f"{rel}: {name}" for name in sorted(names & _REGISTER)]
+        if rel != _ROSTER_WRITER and any(isinstance(n, ast.Attribute) and n.attr == "sp500_tickers" for n in ast.walk(tree)):
+            roster.append(rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and (getattr(node.func, "id", None) or getattr(node.func, "attr", None)) == "Company"
+                and rel != _MANAGER_LISTING
+            ):
+                arg = node.args[0] if node.args else None
+                if not (isinstance(arg, ast.Call) and getattr(arg.func, "id", None) == "int"):
+                    company.append(f"{rel}:{node.lineno}")
+    assert retired == [], f"retired identity maps still referenced: {retired}"
+    assert register == [], f"fetchers reading the register directly: {register}"
+    assert roster == [], f"fetchers reading sp500_tickers directly: {roster}"
+    assert company == [], f"Company() built from a non-int argument: {company}"
+    print("\n=== SANITY CHECK: AC-027 one identity source ===")
+    print(f"  no {sorted(_RETIRED)} in src; outside {len(_ACCESSOR)} identity modules no register read, no sp500_tickers read,")
+    print("  every issuer Company() takes int(cik). Validated.")

@@ -1,7 +1,8 @@
 """Pension facts from the SEC Financial Statement Data Sets (quarterly bulk zips of primary-statement XBRL).
 
 Each quarter's `sub.txt` + `num.txt` is cached locally; consolidated rows (no `segments` member, no `coreg`) for
-the curated pension tags are joined to `sub` for cik / form / filed, mapped to universe tickers and upserted to
+the curated pension tags are joined to `sub` for cik / form / filed, mapped to the universe ticker whose lineage window
+of the filer CIK holds the filing date (consolidating) and upserted to
 `pension_facts`, one row per (cik, tag, ddate, qtrs, quarter), latest filed wins, stamped with the archive's
 point-in-time `available_at`. Footnote pension detail comes from `fetch_financial_notes.py`.
 """
@@ -29,9 +30,8 @@ from src.data_extract.utils.common.bulk_cache import (
     read_zip_tables,
     stored_period_clock,
 )
-from src.data_extract.utils.common.registrant import drop_rows_outside_segment, load_registrants
+from src.data_extract.utils.common.identity import load_identity, tickers_for_ciks
 from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 
@@ -117,13 +117,11 @@ def _read_pension_facts(path: Path) -> pd.DataFrame | None:
 def fetch_financial_statements(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
-    Only pending quarters are read. `reparse` re-reads the WHOLE cached window (needed after a registrant/CIK
-    resolution change; never a partial suffix). Cached quarters cost no network.
+    Only pending quarters are read. `reparse` re-reads the WHOLE cached window (needed after a lineage change;
+    never a partial suffix). Cached quarters cost no network.
     """
 
-    cikmap = load_cik_mapping(context)
-    cik2tkr = cik_to_ticker(cikmap, config_dir=str(context.config_dir))
-    registrants = load_registrants(str(context.config_dir))
+    identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
 
     periods = quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR)
@@ -146,10 +144,8 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
         facts = _read_pension_facts(path)
         if facts is None or facts.empty:
             continue
-        facts["ticker"] = facts["cik"].map(cik2tkr)
+        facts["ticker"] = tickers_for_ciks(identity, facts["cik"], facts["filed"], "consolidating")
         facts = facts[facts["ticker"].isin(tickers)]
-        # consolidating table: a predecessor CIK counts only inside its dated segment (see `FORM_POLICY`)
-        facts = drop_rows_outside_segment(facts, cik_col="cik", ticker_col="ticker", filed_col="filed", registrants=registrants)
         if facts.empty:
             continue
         # keep the latest-filed value per (cik, tag, period-end, duration)

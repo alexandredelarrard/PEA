@@ -5,8 +5,9 @@ SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS and DERIV_TRANS are mapped to the can
 frame (`insider_common.INSIDER_FIELDS`), typed by `build_insider_frame`, screened CIK-first, and
 upserted one row per (accession, table, SK); FOOTNOTES follow the kept accessions.
 
-Zips are cached and downloaded only when missing; a stored quarter is skipped unless the universe
-gained tickers or `reparse` is set, in which case cached zips are re-parsed.
+`download_insider_transactions` caches every quarter's zip (the identity build reads them);
+`fetch_insider_transactions` parses them, downloading only a zip still missing. A stored quarter is
+skipped unless the universe gained tickers or `reparse` is set, in which case cached zips are re-parsed.
 """
 
 from __future__ import annotations
@@ -66,6 +67,12 @@ _ZIP_SPECS = {
     "DERIV_TRANS.TSV": ZipRead(required=False),
     "FOOTNOTES.TSV": ZipRead(required=False),
 }
+
+
+def _quarter_url(quarter: str) -> str:
+    """The data-set URL of one quarter; the template changed in `SEC_INSIDER_SWAP_YEAR`."""
+    template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
+    return template.format(quarter=quarter)
 
 
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
@@ -200,6 +207,22 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
     return quarantined, deleted
 
 
+def download_insider_transactions(context: Context) -> list[str]:
+    """Cache every quarterly Form 3/4/5 zip since `SEC_INSIDER_FIRST_YEAR`; returns the quarters cached.
+
+    A cached zip is never re-downloaded, and an unpublished quarter is skipped. No parse, no identity.
+    """
+    cache = cache_dir(context, context.config.local.paths.insider_transactions)
+    quarters = quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR)
+    cached = [
+        quarter
+        for quarter in tqdm(quarters, desc="insider data sets (download)")
+        if ensure_zip(context, cache / f"{quarter}.zip", _quarter_url(quarter), label=f"insider {quarter}", log=logger) is not None
+    ]
+    logger.info("insider download: %d of %d quarter zip(s) cached", len(cached), len(quarters))
+    return cached
+
+
 def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
     """Download (cached) the insider data sets, parse and screen each pending quarter, upsert
     `insider_transactions`, `insider_footnotes` and the quarantine, then sweep stored rows.
@@ -216,8 +239,7 @@ def fetch_insider_transactions(context: Context, tickers: list[str], years_histo
 
     saved = notes_saved = quarantined = 0
     for quarter in tqdm(pending, desc="insider data sets"):
-        url_template = SEC_INSIDER_URL_NEW_TEMPLATE if int(quarter[:4]) >= SEC_INSIDER_SWAP_YEAR else SEC_INSIDER_URL_TEMPLATE
-        path = ensure_zip(context, cache / f"{quarter}.zip", url_template.format(quarter=quarter), label=f"insider {quarter}", log=logger)
+        path = ensure_zip(context, cache / f"{quarter}.zip", _quarter_url(quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue

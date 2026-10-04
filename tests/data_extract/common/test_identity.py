@@ -35,9 +35,11 @@ from src.data_extract.utils.common.identity import (
     UnknownUniverseTickerError,
     build_identity,
     load_identity,
-    resolve_symbol_rows,
+    symbol_rows_to_tickers,
+    tickers_for_ciks,
 )
 from src.utils.string import pad_cik, pad_cik_series
+from tests.data_extract.common.scope_fixtures import symbol_identity
 
 CONFIG_DIR = "./configs"
 
@@ -92,7 +94,7 @@ def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
     that answer from it."""
     identity = _simple()
     assert identity.entity_of("0000999999") == "E0000999999"
-    assert identity.entity_ticker("0000999999") is None
+    assert identity.ticker_for_cik("0000999999") is None
     # three spellings of one CIK, one entity
     assert identity.entity_of("100") == identity.entity_of("0000000100") == identity.entity_of("0000000100.0") == "E0000000100"
 
@@ -103,12 +105,12 @@ def test_an_unseen_cik_is_its_own_entity_and_does_not_raise():
     print("  -> A 4.3M-row parse cannot abort on a CIK nobody has ever adjudicated.")
 
 
-def test_entity_ticker_resolves_the_predecessor_and_returns_none_off_universe():
+def test_event_ticker_for_cik_resolves_the_predecessor_and_returns_none_off_universe():
     identity = _simple()
-    assert identity.entity_ticker("0000000100") == "AAA"  # predecessor -> today's ticker
-    assert identity.entity_ticker("0000000200") == "AAA"
-    assert identity.entity_ticker("0000000900") == "BBB"
-    assert identity.entity_ticker("0000000042") is None
+    assert identity.ticker_for_cik("0000000100", None, "event") == "AAA"  # predecessor -> today's ticker
+    assert identity.ticker_for_cik("0000000200", None, "event") == "AAA"
+    assert identity.ticker_for_cik("0000000900", None, "event") == "BBB"
+    assert identity.ticker_for_cik("0000000042", None, "event") is None
     assert identity.owns("AAA", "0000000100") is True
     assert identity.owns("BBB", "0000000100") is False
 
@@ -214,9 +216,6 @@ def test_postgres_date_round_trip_compares_both_directions():
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", dt.date(2006, 1, 1), dt.date(2015, 1, 1), 5), ("AAA", "0000000200", dt.date(2015, 1, 1), None, 5)]),
         roster=_roster([("AAA", "0000000100")]),
-        # two DIFFERENT entities either side of the seam, so an off-by-one day is visible --
-        # which necessarily makes the roster CIK disagree with the incumbent, hence the entry
-        d19_allowlist={"AAA": "synthetic: the seam is the point of this fixture"},
     )
     assert identity.entity_for("AAA", dt.date(2010, 1, 1)) == "E0000000100"
     assert identity.entity_for("AAA", pd.Timestamp("2010-01-01")) == "E0000000100"
@@ -273,7 +272,6 @@ def test_ambiguity_is_entity_grain_not_cik_grain():
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10), ("AAA", "0000000700", pd.Timestamp("2010-01-01"), None, 10)]),
         roster=_roster([("AAA", "0000000100")]),
-        d19_allowlist={"AAA": "test"},
     )
     with pytest.raises(AmbiguousSymbolTenureError):
         two_entities.entity_for("AAA", "2012-01-01")
@@ -462,295 +460,90 @@ def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
     print("  a dei AAA row under a foreign CIK neither makes AAA ambiguous nor joins the filing scope")
 
 
-def test_symbol_ticker_resolution_covers_rename_reuse_gap_and_universe_scope():
-    """The CIK-less source contract: resolve by entity/date, then enforce caller scope."""
-    identity = build_identity(
-        lineage=_lineage(
-            [
-                ("0000000100", "E_META", "roster"),
-                ("0000000200", "E_FISV", "roster"),
-                ("0000000300", "E_TT", "roster"),
-                ("0000000400", "E_IR", "roster"),
-                ("0000000500", "E_WTW", "roster"),
-            ]
-        ),
-        tenure=_tenure(
-            [
-                ("FB", "0000000100", "2012-01-01", "2022-06-01", 500),
-                ("META", "0000000100", "2022-06-01", None, 500),
-                ("FI", "0000000200", "2019-01-01", "2023-06-01", 200),
-                ("FISV", "0000000200", "2023-06-01", None, 200),
-                ("IR", "0000000300", "2009-01-01", "2020-03-01", 200),
-                ("IR", "0000000400", "2020-03-05", None, 200),
-                ("TT", "0000000300", "2020-03-01", None, 200),
-                ("WTW", "0000000900", "2009-01-01", "2019-04-18", 100),
-                ("WTW", "0000000500", "2019-04-18", None, 500),
-                ("OVER", "0000000700", "2010-01-01", "2015-01-01", 10),
-                ("OVER", "0000000800", "2012-01-01", "2016-01-01", 10),
-            ]
-        ),
-        roster=_roster(
-            [
-                ("META", "0000000100"),
-                ("FISV", "0000000200"),
-                ("TT", "0000000300"),
-                ("IR", "0000000400"),
-                ("WTW", "0000000500"),
-            ]
-        ),
-    )
-    universe = frozenset({"META", "FISV", "TT", "IR", "WTW"})
+def test_tickers_for_ciks_answers_each_cik_date_pair_by_policy():
+    identity = _dated()
+    ciks = pd.Series(["100", "0000000100", "300", "200", "555"])
+    filed = pd.Series(pd.to_datetime(["2010-06-30", "2010-06-30", "2020-01-01", None, "2020-01-01"]))
 
-    fb = identity.resolve_symbol_ticker("FB", "2008-01-01", universe)
-    fi = identity.resolve_symbol_ticker("FI", "2020-01-01", universe)
-    old_ir = identity.resolve_symbol_ticker("IR", "2015-01-01", universe)
-    current_ir = identity.resolve_symbol_ticker("IR", "2025-01-01", universe)
-    early_wtw = identity.resolve_symbol_ticker("WTW", "2015-01-01", universe)
-    overlap = identity.resolve_symbol_ticker("OVER", "2013-01-01", universe)
-    gap = identity.resolve_symbol_ticker("IR", "2020-03-03", universe)
-    unknown = identity.resolve_symbol_ticker("NEVER", "2020-01-01", universe)
-    outside = identity.resolve_symbol_ticker("FI", "2020-01-01", frozenset({"META"}))
+    consolidating = tickers_for_ciks(identity, ciks, filed, "consolidating")
+    event = tickers_for_ciks(identity, ciks, filed, "event")
 
-    assert fb.ticker is None and fb.verdict == "unknown_gap" and fb.match_kind is None
-    assert (fi.ticker, fi.verdict, fi.match_kind) == ("FISV", "mapped_current_ticker", "exact_dated_tenure")
-    assert old_ir.ticker == "TT" and old_ir.verdict == "mapped_current_ticker"
-    assert current_ir.ticker == "IR" and current_ir.verdict == "exact_dated_tenure"
-    assert early_wtw.verdict == "entity_not_in_universe" and not early_wtw.accepted
-    assert overlap.verdict == "ambiguous" and gap.verdict == "unknown_gap"
-    assert unknown.verdict == "unknown_symbol"
-    assert outside.verdict == "entity_not_in_universe" and outside.ticker is None
-    assert {"FB", "FI", "FISV", "META", "IR", "TT"} <= identity.candidate_symbols(universe)
-
-    print("\n=== SANITY CHECK: symbol/date -> canonical ticker ===")
-    print("  FB before verified tenure -> unknown_gap; FI -> FISV inside verified tenure")
-    print("  historical IR -> TT, current IR -> IR; early WTW is outside the universe")
-    print("  overlap -> ambiguous; reuse seam gap -> unknown_gap; absent -> unknown_symbol")
-    print("  OK: only the caller's universe is returned, and no ambiguity is guessed")
+    assert consolidating.tolist() == ["AAA", "AAA", None, None, None]
+    assert event.tolist() == ["AAA", "AAA", "AAA", "AAA", None]
+    assert consolidating.index.equals(ciks.index)
+    print("\n=== SANITY CHECK: vectorised ticker_for_cik ===")
+    print("  consolidating needs a window holding the date (event-only CIK, no date -> None); event needs an entity CIK")
 
 
-def test_active_manual_tenure_overrides_conflicting_derived_evidence():
-    tenure = _tenure(
-        [
-            ("COO", "0000000100", "2006-01-05", None, 0),
-            ("COO", "0000000700", "2024-03-11", None, 1),
-            ("TPL", "0000000200", "2007-03-01", "2021-01-11", 0),
-            ("TPL", "0000000300", "2021-01-11", None, 0),
-        ]
-    )
-    tenure.loc[[0, 2, 3], "source"] = "manual"
-    identity = build_identity(
-        lineage=_lineage(
-            [
-                ("0000000100", "E_COO", "roster"),
-                ("0000000200", "E_TPL", "register"),
-                ("0000000300", "E_TPL", "roster"),
-                ("0000000700", "E_OTHER", "roster"),
-            ]
-        ),
-        tenure=tenure,
-        roster=_roster([("COO", "0000000100"), ("TPL", "0000000300")]),
-    )
-
-    coo = identity.resolve_symbol_ticker("COO", "2025-01-01", frozenset({"COO", "TPL"}))
-    tpl_before = identity.resolve_symbol_ticker("TPL", "2021-01-10", frozenset({"COO", "TPL"}))
-    tpl_after = identity.resolve_symbol_ticker("TPL", "2021-01-11", frozenset({"COO", "TPL"}))
-    assert (coo.ticker, coo.match_kind) == ("COO", "exact_dated_tenure")
-    assert tpl_before.ticker == tpl_after.ticker == "TPL"
-    assert tpl_before.entity_id == tpl_after.entity_id == "E_TPL"
-
-    print("\n=== SANITY CHECK: manual source precedence ===")
-    print("  COO manual entity wins over a one-filing active derived conflict")
-    print("  TPL old/new CIK seam resolves once to the same economic entity on both sides")
-    print("  OK: precedence is dated and deterministic; no current-ticker fallback is used")
-
-
-def test_current_roster_tenure_continues_after_last_insider_filing_only_when_safe():
-    tenure = _tenure(
-        [
-            ("DOV", "0000000100", "2006-01-10", "2026-03-18", 1047),
-            ("REUSE", "0000000200", "2006-01-10", "2026-03-18", 100),
-            ("REUSE", "0000000900", "2026-04-01", "2026-04-02", 1),
-            ("MAN", "0000000300", "2006-01-10", "2026-03-18", 100),
-        ]
-    )
-    tenure.loc[tenure["symbol"].eq("MAN"), "source"] = "manual"
-    identity = build_identity(
-        lineage=_lineage(
-            [
-                ("0000000100", "E_DOV", "roster"),
-                ("0000000200", "E_REUSE", "roster"),
-                ("0000000300", "E_MAN", "roster"),
-            ]
-        ),
-        tenure=tenure,
-        roster=_roster([("DOV", "0000000100"), ("REUSE", "0000000200"), ("MAN", "0000000300")]),
-    )
-    universe = frozenset({"DOV", "REUSE", "MAN"})
-    assert identity.resolve_symbol_ticker("DOV", "2026-03-17", universe).verdict == "exact_dated_tenure"
-    continued = identity.resolve_symbol_ticker("DOV", "2026-03-18", universe)
-    assert (continued.ticker, continued.verdict) == ("DOV", "roster_tenure_proxy")
-    assert identity.resolve_symbol_ticker("DOV", "2006-01-09", universe).verdict == "unknown_gap"
-    assert identity.resolve_symbol_ticker("REUSE", "2026-09-29", universe).verdict == "unknown_gap"
-    assert identity.resolve_symbol_ticker("MAN", "2026-09-29", universe).verdict == "unknown_gap"
-
-    print("\n=== SANITY CHECK: last Form 4 is not a delisting ===")
-    print("  DOV continues after its observed filing end; earlier dates stay unknown")
-    print("  later symbol reuse and an explicit manual end both block continuation")
-
-
-def test_market_share_class_spellings_resolve_without_merging_classes():
-    identity = build_identity(
-        lineage=_lineage([("0001067983", "E_BERKSHIRE", "roster")]),
-        tenure=_tenure(
-            [
-                ("BRK.A", "0001067983", "2006-02-14", None, 218),
-                ("BRK/A", "0001067983", "2006-01-03", "2006-01-06", 4),
-                ("BRK.B", "0001067983", "2006-09-28", None, 103),
-                ("BRK/B", "0001067983", "2009-07-02", "2009-10-07", 68),
-            ]
-        ),
-        roster=_roster([("BRK-B", "0001067983")]),
-        redundant_symbols=frozenset({"BRK-A"}),
-    )
-    universe = frozenset({"BRK-B"})
-    assert identity.resolve_symbol_ticker("BRK/B", "2026-09-29", universe).ticker == "BRK-B"
-    assert identity.resolve_symbol_ticker("BRK.B", "2026-09-29", universe).ticker == "BRK-B"
-    assert identity.resolve_symbol_ticker("BRK/A", "2026-09-29", universe).verdict == "redundant_share_class"
-    assert identity.resolve_symbol_ticker("BRK.A", "2026-09-29", universe).verdict == "redundant_share_class"
-    assert {"BRK-A", "BRK-B"} <= identity.candidate_symbols(universe)
-
-    print("\n=== SANITY CHECK: Berkshire share classes ===")
-    print("  slash and dot Class B resolve to BRK-B; Class A is excluded as a separate security")
-
-
-def test_closed_manual_predecessor_does_not_own_a_reused_symbol_today():
-    lineage = _lineage(
-        [
-            ("0000000100", "E0000000100", "manual"),
-            ("0000000200", "E0000000200", "roster"),
-        ]
-    )
-    tenure = pd.DataFrame(
-        [
-            {
-                "symbol": "IR",
-                "issuer_cik": "0000000100",
-                "valid_from": "2009-07-09",
-                "valid_to": "2020-03-02",
-                "n_filings": 1000,
-                "source": "manual",
-            },
-            {
-                "symbol": "IR",
-                "issuer_cik": "0000000200",
-                "valid_from": "2020-03-03",
-                "valid_to": None,
-                "n_filings": 400,
-                "source": "derived",
-            },
-        ]
-    )
-    identity = build_identity(
-        lineage,
-        tenure,
-        _roster([("IR", "0000000200")]),
-    )
-
-    assert (
-        identity.resolve_symbol_ticker(
-            "IR",
-            "2019-12-31",
-            frozenset({"IR"}),
-        ).ticker
-        is None
-    )
-    assert (
-        identity.resolve_symbol_ticker(
-            "IR",
-            "2021-01-01",
-            frozenset({"IR"}),
-        ).ticker
-        == "IR"
-    )
-    print("\n=== SANITY CHECK: closed manual interval versus current reuse ===")
-    print("  historical IR stays on its prior entity; the open derived IR tenure owns today")
-    print("  OK: manual precedence is active-window precedence, never all-time symbol capture")
-
-
-def test_symbol_rows_resolve_unique_pairs_once_and_keep_unresolved_evidence():
-    identity = _simple()
+def test_symbol_rows_resolve_through_lineage_intervals_and_universe_symbols_skip_noise():
+    identity = _dated()
     source = pd.DataFrame(
         {
-            "source_symbol": ["AAA", "AAA", "ZZZ"],
-            "date": pd.to_datetime(["2014-01-01", "2014-01-01", "2014-01-01"]),
-            "value": [1.0, 2.0, 3.0],
+            "source_symbol": ["aaa", "AAA", "OLDX", "ZZZ", "ZZZ", "BBB", "QQQ"],
+            "date": pd.to_datetime(["2010-01-01", "2010-01-01", "2003-01-01", "2011-01-01", "2012-06-01", "2020-01-01", "2020-01-01"]),
+            "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
         }
     )
-    accepted, unresolved = resolve_symbol_rows(identity, source, frozenset({"AAA", "BBB"}))
+    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"AAA"}))
 
-    assert accepted["ticker"].tolist() == ["AAA", "AAA"]
-    assert accepted["resolution_verdict"].eq("exact_dated_tenure").all()
-    assert len(unresolved) == 1 and unresolved.iloc[0]["resolution_verdict"] == "unknown_symbol"
+    assert accepted["ticker"].tolist() == ["AAA", "AAA"] and accepted["value"].tolist() == [1.0, 2.0]
+    verdicts = dict(zip(unresolved["value"], unresolved["resolution_verdict"], strict=True))
+    assert verdicts == {3.0: "unresolved", 4.0: "unresolved", 5.0: "outside_universe", 6.0: "outside_universe", 7.0: "unresolved"}
+    assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA", "ZZZ", "DUP"})
+    print("\n=== SANITY CHECK: symbol rows through lineage intervals ===")
+    print("  AAA on its interval -> AAA; noise OLDX, conflict ZZZ and unknown QQQ unresolved; BBB-held rows outside the universe")
 
-    print("\n=== SANITY CHECK: vector symbol resolution ===")
-    print("  duplicate AAA/date rows share one exact verdict; ZZZ remains unresolved evidence")
-    print("  OK: accepted and unresolved rows retain their original values and dates")
 
-
-def test_d19_roster_proxy_is_dated_and_redundant_share_class_is_excluded():
-    """A filing symbol may be the sibling class, but its historical issuers still matter."""
+def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
+    """Cover-page `dei` lists every security line (preferreds, notes); FTD/RegSHO rows map only intervals with
+    Form 3/4/5, manual or roster evidence, while the plain accessor still answers from the `dei` interval."""
+    rows = _dated_lineage(
+        [
+            ("E0000000100", "AAA", "0000000100", "cik_window", "", "1900-01-01", None, "curated"),
+            ("E0000000100", "AAA", "0000000100", "symbol", "AAA", "2006-01-01", None, "corroborated"),
+            ("E0000000100", "AAA", "0000000100", "symbol", "AAA-PR-C", "2019-08-06", None, "single_source"),
+        ]
+    )
+    rows["sources"] = ["", "dei,form345,roster", "dei"]
     identity = build_identity(
-        lineage=_lineage(
-            [
-                ("0000000100", "E_OLD", "roster"),
-                ("0000000200", "E_CURRENT", "roster"),
-                ("0000000300", "E_LEN", "roster"),
-                ("0000000400", "E_GOOGLE", "roster"),
-            ]
-        ),
-        tenure=_tenure(
-            [
-                ("FOX", "0000000100", "2013-07-01", "2019-03-21", 300),
-                ("FOX", "0000000200", "2019-02-05", None, 300),
-                ("LEN, LEN.B", "0000000300", "2006-01-01", None, 800),
-                ("GOOG", "0000000400", "2006-01-01", None, 800),
-                ("GOOGL", "0000000400", "2017-01-01", None, 800),
-            ]
-        ),
-        roster=_roster([("FOXA", "0000000200"), ("LEN", "0000000300"), ("GOOGL", "0000000400")]),
-        d19_allowlist={"FOXA": "files under sibling class", "LEN": "combined filing symbol"},
-        redundant_symbols=frozenset({"FOX", "GOOG"}),
+        lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster=_roster([("AAA", "0000000100")])
     )
-    universe = frozenset({"FOXA", "LEN", "GOOGL"})
+    source = pd.DataFrame({"source_symbol": ["AAA", "AAA-PR-C"], "date": pd.to_datetime(["2020-01-02", "2020-01-02"])})
 
-    old_foxa = identity.resolve_symbol_ticker("FOXA", "2018-01-01", universe)
-    overlap_foxa = identity.resolve_symbol_ticker("FOXA", "2019-03-01", universe)
-    current_foxa = identity.resolve_symbol_ticker("FOXA", "2020-01-01", universe)
-    redundant_fox = identity.resolve_symbol_ticker("FOX", "2020-01-01", universe)
-    lennar = identity.resolve_symbol_ticker("LEN", "2018-01-01", universe)
-    predecessor_google = identity.resolve_symbol_ticker("GOOG", "2016-01-01", universe)
-    redundant_google = identity.resolve_symbol_ticker("GOOG", "2020-01-01", universe)
+    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"AAA"}))
 
-    assert old_foxa.verdict == "entity_not_in_universe"
-    assert overlap_foxa.verdict == "ambiguous"
-    assert (current_foxa.ticker, current_foxa.verdict, current_foxa.match_kind) == (
-        "FOXA",
-        "roster_tenure_proxy",
-        "roster_tenure_proxy",
+    assert accepted["source_symbol"].tolist() == ["AAA"] and unresolved["source_symbol"].tolist() == ["AAA-PR-C"]
+    assert identity.ticker_for_symbol("AAA-PR-C", "2020-01-02") == "AAA"
+    assert identity.ticker_for_symbol("AAA-PR-C", "2020-01-02", tape=True) is None
+    assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA"})
+    print("\n=== SANITY CHECK: dei-only intervals stay off the symbol tapes ===")
+    print("  AAA-PR-C (a preferred line, dei evidence only) never adds its fails/volume to AAA; AAA itself maps. Validated.")
+
+
+def test_a_redundant_share_class_is_rejected_only_while_the_retained_class_trades():
+    identity = symbol_identity(
+        [
+            ("GOOGL", "0001288776", "GOOG", "2006-01-04", None, "corroborated"),
+            ("GOOGL", "0001288776", "GOOGL", "2014-07-25", None, "corroborated"),
+            ("BRK-B", "0001067983", "BRK-A", "2006-01-03", None, "corroborated"),
+            ("BRK-B", "0001067983", "BRK-B", "2006-09-28", None, "corroborated"),
+        ],
+        {"GOOGL": "0001288776", "BRK-B": "0001067983"},
+        redundant=frozenset({"GOOG", "BRK-A"}),
     )
-    assert redundant_fox.verdict == "redundant_share_class" and not redundant_fox.accepted
-    assert (lennar.ticker, lennar.verdict) == ("LEN", "roster_tenure_proxy")
-    assert (predecessor_google.ticker, predecessor_google.verdict) == (
-        "GOOGL",
-        "mapped_current_ticker",
+    source = pd.DataFrame(
+        {
+            "source_symbol": ["GOOG", "GOOG", "BRK/B", "BRK.A", "GOOGL"],
+            "date": pd.to_datetime(["2010-01-04", "2020-01-02", "2020-01-02", "2020-01-02", "2020-01-02"]),
+        }
     )
-    assert redundant_google.verdict == "redundant_share_class" and not redundant_google.accepted
+    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"GOOGL", "BRK-B"}))
 
-    print("\n=== SANITY CHECK: dual-class roster proxy ===")
-    print("  FOXA borrows FOX's dated issuer boundary; LEN borrows 'LEN, LEN.B'")
-    print("  pre-2019 FOXA stays outside, the overlap stays ambiguous, current FOXA resolves")
-    print("  FOX is excluded as a separately traded redundant class, never summed into FOXA")
-    print("  GOOG remains GOOGL's predecessor before GOOGL is active, then becomes redundant")
+    assert list(zip(accepted["source_symbol"], accepted["ticker"], strict=True)) == [("GOOG", "GOOGL"), ("BRK-B", "BRK-B"), ("GOOGL", "GOOGL")]
+    assert unresolved["source_symbol"].tolist() == ["GOOG", "BRK-A"]
+    assert unresolved["resolution_verdict"].eq("redundant_share_class").all()
+    print("\n=== SANITY CHECK: redundant share classes ===")
+    print("  GOOG before GOOGL existed -> GOOGL; GOOG and BRK.A while the retained class trades -> excluded; BRK/B -> BRK-B")
 
 
 # --------------------------------------------------------------------------- #
@@ -817,9 +610,9 @@ def test_load_identity_caches_per_context_and_not_across_them():
 
     first: Any = _Ctx(frames("0000000100", "AAA"))
     second: Any = _Ctx(frames("0000000900", "BBB"))
-    a, b = load_identity(first, CONFIG_DIR), load_identity(second, CONFIG_DIR)
-    assert load_identity(first, CONFIG_DIR) is a  # same context -> cached instance
-    refreshed = load_identity(first, CONFIG_DIR, refresh=True)
+    a, b = load_identity(first), load_identity(second)
+    assert load_identity(first) is a  # same context -> cached instance
+    refreshed = load_identity(first, refresh=True)
     assert refreshed is not a and refreshed.roster_cik == a.roster_cik
     assert a is not b
     assert set(a.roster_cik) == {"AAA"} and set(b.roster_cik) == {"BBB"}
@@ -853,7 +646,7 @@ def live():
 
     try:
         _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
-        return load_identity(context, CONFIG_DIR)
+        return load_identity(context)
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable ({type(exc).__name__}: {exc})")
 
@@ -935,7 +728,7 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     rows = {"KEEP": 0, "MOVE": 0, "DROP": 0}
     for entry in flagged.itertuples():
         key = (str(entry.ticker), str(entry.issuer_cik))
-        resolved = live.entity_ticker(str(entry.issuer_cik))
+        resolved = live.ticker_for_cik(str(entry.issuer_cik), None, "event")
         if key in KEEP_GROUPS:
             expected, kind = entry.ticker, "KEEP"
         elif key in MOVE_GROUPS:
@@ -956,21 +749,21 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     print("  -> A register-only cut would have deleted the 25,635 KEEP rows.")
 
 
-def test_owns_is_symmetric_with_entity_ticker_on_every_lineage_cik(live):
+def test_owns_is_symmetric_with_event_ticker_for_cik_on_every_lineage_cik(live):
     """Two spellings of one contract must not drift apart."""
     checked = 0
     for cik in live.entity_by_cik:
-        resolved = live.entity_ticker(cik)
+        resolved = live.ticker_for_cik(cik, None, "event")
         for ticker in live.roster_cik:
             assert live.owns(ticker, cik) is (resolved == ticker)
             checked += 1
             if resolved == ticker:
                 break
 
-    print("\n=== SANITY CHECK: owns() == entity_ticker() ===")
+    print("\n=== SANITY CHECK: owns() == ticker_for_cik(event) ===")
     print(f"  {len(live.entity_by_cik)} lineage CIK(s), {checked:,} (ticker, CIK) comparisons")
     print("  OK: the predicate and the resolution core agree everywhere")
-    print("  -> The fetcher resolves with entity_ticker; the quarantine reason cites owns().")
+    print("  -> The insider fetcher resolves with ticker_for_cik(event); the quarantine reason cites owns().")
 
 
 def test_only_one_alphabet_ticker_is_investable(live):
@@ -989,20 +782,20 @@ def test_only_one_alphabet_ticker_is_investable(live):
 
 
 def test_live_dual_class_volume_symbols_resolve_without_combining_classes(live):
+    if not live.symbol_intervals:
+        pytest.skip("the live entity_lineage has no dated symbol rows before the cutover (P11)")
     universe = frozenset({"FOXA", "NWSA", "GOOGL", "LEN"})
+    days = ["2018-01-02", "2020-01-02", "2020-01-02", "2020-01-02", "2010-01-04", "2020-01-02", "2020-01-02", "2020-01-02"]
+    source = pd.DataFrame({"source_symbol": ["FOXA", "FOXA", "NWSA", "LEN", "GOOG", "FOX", "NWS", "GOOG"], "date": pd.to_datetime(days)})
+    accepted, unresolved = symbol_rows_to_tickers(live, source, universe)
 
-    assert live.resolve_symbol_ticker("FOXA", "2018-01-02", universe).verdict == "entity_not_in_universe"
-    assert live.resolve_symbol_ticker("FOXA", "2020-01-02", universe).verdict == "roster_tenure_proxy"
-    assert live.resolve_symbol_ticker("NWSA", "2020-01-02", universe).verdict == "roster_tenure_proxy"
-    assert live.resolve_symbol_ticker("LEN", "2020-01-02", universe).verdict == "roster_tenure_proxy"
-    assert live.resolve_symbol_ticker("GOOG", "2010-01-04", universe).ticker == "GOOGL"
-    for redundant in ("FOX", "NWS", "GOOG"):
-        assert live.resolve_symbol_ticker(redundant, "2020-01-02", universe).verdict == "redundant_share_class"
+    got = {(row.source_symbol, str(pd.Timestamp(row.date).date())): row.ticker for row in accepted.itertuples()}
+    assert got == {("FOXA", "2020-01-02"): "FOXA", ("NWSA", "2020-01-02"): "NWSA", ("LEN", "2020-01-02"): "LEN", ("GOOG", "2010-01-04"): "GOOGL"}
+    assert sorted(unresolved["source_symbol"]) == ["FOX", "FOXA", "GOOG", "NWS"]
 
     print("\n=== SANITY CHECK: live dual-class symbol-volume policy ===")
-    print("  FOXA/NWSA/LEN use dated D19 proxies; pre-restructure FOXA is not imported")
+    print("  FOXA/NWSA/LEN resolve on their dated lineage intervals; pre-restructure FOXA is not imported")
     print("  FOX/NWS/current GOOG are excluded; predecessor GOOG still maps to GOOGL")
-    print("  OK: the retained class is recovered without adding its sibling's volume")
 
 
 def test_no_live_entity_holds_two_universe_tickers(live):

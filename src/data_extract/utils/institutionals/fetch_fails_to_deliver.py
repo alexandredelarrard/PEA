@@ -4,7 +4,8 @@ fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_
 SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date), its own table so
 its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
 unsettled balance on each settlement date, not new fails. Resume skips periods already processed
-under the current symbol policy; historical symbols resolve point-in-time; `full` replaces the table.
+under the current symbol policy; each (symbol, settlement date) resolves through the dated `entity_lineage`
+symbol intervals (`ticker_for_symbol`); `full` replaces the table.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from src.data_extract.utils.common.identity import (
     Identity,
     load_identity,
     log_symbol_resolutions,
-    resolve_symbol_rows,
+    symbol_rows_to_tickers,
 )
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.run_manifest import record_run
@@ -120,8 +121,8 @@ def _canonicalise_ftd(
     identity: Identity,
     universe: frozenset[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resolve historical symbols and aggregate onto the destination table grain."""
-    accepted, unresolved = resolve_symbol_rows(identity, frame, universe)
+    """Resolve each symbol on its settlement date and aggregate onto the destination table grain."""
+    accepted, unresolved = symbol_rows_to_tickers(identity, frame, universe)
     log_symbol_resolutions(context, "FTD", accepted, unresolved, universe=universe)
     if accepted.empty:
         return pd.DataFrame(columns=_OUT_COLS), unresolved
@@ -160,12 +161,12 @@ def fetch_fails_to_deliver(
     full: bool = False,
     identity: Identity | None = None,
 ) -> int:
-    """Resolve SEC FTD history point-in-time and incrementally save or fully replace it."""
+    """Resolve SEC FTD history through the lineage and incrementally save or fully replace it."""
 
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     resolver = identity or load_identity(context)
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    candidates = resolver.candidate_symbols(universe)
+    candidates = resolver.universe_symbols(universe)
     policy_scope = set(candidates) | {_POLICY_MARKER}
     # A full rebuild must reproduce every stored period.
     stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period") if full else frozenset()

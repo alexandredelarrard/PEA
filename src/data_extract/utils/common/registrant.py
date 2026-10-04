@@ -32,7 +32,7 @@ from src.data_extract.utils.common.sec_atom import (
     iter_atom_pages,
     keep_atom_entry,
 )
-from src.utils.string import pad_cik, pad_cik_series
+from src.utils.string import pad_cik
 
 if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
     from src.data_extract.utils.common.identity import CikWindow, FilingScope
@@ -548,44 +548,6 @@ def resolve_schedule_subject_filings(
         len(filtered),
     )
     return filtered
-
-
-def drop_rows_outside_segment(df: pd.DataFrame, *, cik_col: str, ticker_col: str, filed_col: str, registrants: dict[str, Registrant]) -> pd.DataFrame:
-    """Drop consolidating bulk-dataset rows whose `filed` date lies outside the segment their CIK owns.
-
-    Tickers with no register entry are untouched.
-    """
-    if df.empty or not registrants:
-        return df
-    covered = df[ticker_col].isin(registrants)
-    if not covered.any():
-        return df
-
-    filed = pd.to_datetime(df[filed_col], errors="coerce")
-    cik = pad_cik_series(df[cik_col])
-    owner = pd.Series(pd.NA, index=df.index, dtype="object")
-    for ticker, reg in registrants.items():
-        rows = covered & df[ticker_col].eq(ticker)
-        if not rows.any():
-            continue
-        for segment in reg.segments:
-            in_segment = (
-                rows
-                & filed.notna()
-                & ((filed >= segment.valid_from) if segment.valid_from is not None else True)
-                & ((filed < segment.valid_to) if segment.valid_to is not None else True)
-            )
-            owner[in_segment] = segment.cik
-
-    keep = ~covered | (owner.notna() & (owner == cik))
-    dropped = int((~keep).sum())
-    if dropped:
-        logger.info(
-            "registrant split: dropped %d bulk row(s) filed outside their segment (%s)",
-            dropped,
-            ", ".join(sorted(set(df.loc[~keep, ticker_col].astype(str)))),
-        )
-    return df[keep]
 
 
 def _company_or_none(cik: str, ticker: str) -> Any | None:

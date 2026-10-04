@@ -137,7 +137,7 @@ def measure(store, identity, table, name: str, blind: frozenset[str]) -> pd.Data
 
 def main() -> None:
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
-    identity = load_identity(context, CONFIG_DIR)
+    identity = load_identity(context)
     # The D19 allow-list IS the tenure-blind list: every entry on it is a ticker whose roster
     # CIK and whose filings name different entities, with a written reading of why.
     blind = frozenset(load_d19_allowlist(CONFIG_DIR))

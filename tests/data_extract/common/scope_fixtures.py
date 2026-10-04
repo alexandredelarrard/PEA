@@ -67,6 +67,64 @@ def dated_identity(
     return build_identity(lineage=lineage, tenure=tenure, roster=pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()]))
 
 
+#: (ticker, filer cik, symbol, valid_from, valid_to, status); the row's entity is the ticker's.
+SymbolRow = tuple[str, str, str, str, str | None, str]
+
+
+def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant: frozenset[str] = frozenset()) -> Identity:
+    """A real `Identity` whose dated `symbol` rows answer `ticker_for_symbol`; each roster ticker gets one open window."""
+    entity_of = {ticker: f"E{cik}" for ticker, cik in roster.items()}
+    base = {"sources": "form345", "oracle": "roster", "confidence": None, "n_observations": 1, "evidence": "fixture", "scope_changed_at": CHANGED_AT}
+    windows = [
+        {
+            **base,
+            "entity_id": entity_of[t],
+            "canonical_ticker": t,
+            "cik": c,
+            "role": "cik_window",
+            "symbol": "",
+            "valid_from": SENTINEL,
+            "valid_to": None,
+            "status": "curated",
+        }
+        for t, c in roster.items()
+    ]
+    symbols = [
+        {
+            **base,
+            "entity_id": entity_of[t],
+            "canonical_ticker": t,
+            "cik": c,
+            "role": "symbol",
+            "symbol": s,
+            "valid_from": start,
+            "valid_to": end,
+            "status": status,
+        }
+        for t, c, s, start, end, status in rows
+    ]
+    tenure = pd.DataFrame(
+        [
+            {
+                "symbol": t,
+                "issuer_cik": c,
+                "valid_from": pd.Timestamp("2000-01-01"),
+                "valid_to": None,
+                "n_filings": 5,
+                "source": "form345",
+                "evidence": "",
+            }
+            for t, c in roster.items()
+        ]
+    )
+    return build_identity(
+        lineage=pd.DataFrame(windows + symbols),
+        tenure=tenure,
+        roster=pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()]),
+        redundant_symbols=redundant,
+    )
+
+
 def filing(accession: str, filing_date: str, cik: int | None = None, period: str | None = None) -> types.SimpleNamespace:
     """A stub listed filing; `cik` is the filer EDGAR reports (None = not exposed)."""
     out = types.SimpleNamespace(accession_number=accession, filing_date=filing_date, form="10-K", period_of_report=period)

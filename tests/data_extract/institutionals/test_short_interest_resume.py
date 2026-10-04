@@ -16,47 +16,26 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
+from tests.data_extract.common.scope_fixtures import symbol_identity
 
 
 def _identity() -> Identity:
-    lineage = pd.DataFrame(
+    """Dated lineage symbol rows: FISV renamed FI in 2023, old IR is the TT entity, IR reused from 2020-03-05, WTW from 2019."""
+    return symbol_identity(
         [
-            {"cik": "0000000001", "entity_id": "E_AAA", "source": "roster"},
-            {"cik": "0000000002", "entity_id": "E_FISV", "source": "roster"},
-            {"cik": "0000000003", "entity_id": "E_TT", "source": "roster"},
-            {"cik": "0000000004", "entity_id": "E_IR", "source": "roster"},
-            {"cik": "0000000005", "entity_id": "E_WTW", "source": "roster"},
-        ]
-    )
-    tenure = pd.DataFrame(
-        [
-            ("AAA", "0000000001", "2009-01-01", None, 100),
-            ("FISV", "0000000002", "2018-01-01", "2023-06-01", 100),
-            ("FI", "0000000002", "2023-06-01", None, 100),
-            ("IR", "0000000003", "2009-01-01", "2020-03-01", 100),
-            ("IR", "0000000004", "2020-03-05", None, 100),
-            ("TT", "0000000003", "2020-03-01", None, 100),
-            ("WTW", "0000000099", "2009-01-01", "2019-04-18", 100),
-            ("WTW", "0000000005", "2019-04-18", None, 100),
+            ("AAA", "0000000001", "AAA", "2009-01-01", None, "corroborated"),
+            ("FISV", "0000000002", "FISV", "2018-01-01", "2023-06-01", "corroborated"),
+            ("FISV", "0000000002", "FI", "2023-06-01", None, "corroborated"),
+            ("TT", "0000000003", "IR", "2009-01-01", "2020-03-01", "curated"),
+            ("TT", "0000000003", "TT", "2020-03-01", None, "curated"),
+            ("IR", "0000000004", "IR", "2020-03-05", None, "corroborated"),
+            ("WTW", "0000000005", "WTW", "2019-04-18", None, "corroborated"),
         ],
-        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"],
+        {"AAA": "0000000001", "FISV": "0000000002", "TT": "0000000003", "IR": "0000000004", "WTW": "0000000005"},
     )
-    tenure["source"] = "form345"
-    tenure["evidence"] = "test"
-    roster = pd.DataFrame(
-        [
-            ("AAA", "0000000001"),
-            ("FISV", "0000000002"),
-            ("TT", "0000000003"),
-            ("IR", "0000000004"),
-            ("WTW", "0000000005"),
-        ],
-        columns=["ticker", "cik"],
-    )
-    return build_identity(lineage, tenure, roster)
 
 
 def _context(store) -> Any:
@@ -214,7 +193,9 @@ def test_fetch_day_reuses_the_supplied_http_session():
     print("  OK: full replay avoids a new TLS handshake for every date")
 
 
-def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent(sqlite_store, monkeypatch):
+def test_full_refresh_keeps_stored_rows_as_stored_and_resolves_new_rows_through_the_lineage(sqlite_store, monkeypatch):
+    """S1: rows the source no longer serves are kept exactly as stored (no re-resolution, no purge);
+    re-fetched rows resolve with `ticker_for_symbol`."""
     identity = _identity()
     context = _context(sqlite_store)
     stored = pd.DataFrame(
@@ -243,9 +224,9 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
     si.fetch_short_interest(context, universe, pause=0.0, full=True, identity=identity)
     second = sqlite_store.load(Tables.short_interest).sort_values(["date", "ticker"]).reset_index(drop=True)
 
-    assert set(first["ticker"]) == {"AAA", "FISV", "IR", "TT"}
-    assert "WTW" not in set(first["ticker"])
-    assert first[(first.ticker == "TT") & (pd.to_datetime(first.date) == pd.Timestamp("2015-01-02"))].short_volume.iloc[0] == 10.0
+    assert set(first["ticker"]) == {"AAA", "FISV", "IR", "WTW"}
+    assert first[(first.ticker == "IR") & (pd.to_datetime(first.date) == pd.Timestamp("2015-01-02"))].short_volume.iloc[0] == 10.0
+    assert first[(first.ticker == "WTW") & (pd.to_datetime(first.date) == pd.Timestamp("2015-01-02"))].short_volume.iloc[0] == 20.0
     assert first[(first.ticker == "IR") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-03"))].short_volume.iloc[0] == 30.0
     assert first[(first.ticker == "AAA") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-06"))].short_volume.iloc[0] == 40.0
     fisv = first[(first.ticker == "FISV") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-05"))]
@@ -254,9 +235,9 @@ def test_full_refresh_reconciles_legacy_preserves_failed_dates_and_is_idempotent
     pd.testing.assert_frame_equal(first, second)
 
     print("\n=== SANITY CHECK: RegSHO retention-safe full refresh ===")
-    print("  legacy IR -> TT; prior Weight Watchers removed; seam-gap IR preserved")
-    print("  failed-date AAA preserved; only date-eligible FISV publishes; future FI is rejected; rerun identical")
-    print("  OK: the rolling source rebuilds what it can without erasing what it cannot")
+    print("  stored 2015 IR and WTW rows kept as stored (S1); seam-gap IR and failed-date AAA preserved")
+    print("  fresh FISV resolves by its dated lineage interval; FI before its 2023 interval is rejected; rerun identical")
+    print("  OK: the rolling source rebuilds what it can without re-resolving or erasing stored rows")
 
 
 def test_full_refresh_all_source_failures_abort_without_erasing_history(sqlite_store, monkeypatch):

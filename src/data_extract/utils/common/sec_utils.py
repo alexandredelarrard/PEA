@@ -1,4 +1,4 @@
-"""Shared SEC EDGAR helpers: rate-limited GET, the universe CIK mapping and the CIK -> ticker map.
+"""Shared SEC EDGAR helpers: rate-limited GET and the universe CIK mapping.
 
 SEC's fair-access policy requires a descriptive User-Agent and <= 10 requests/second
 (https://www.sec.gov/os/webmaster-faq#developers). The limiter is thread-safe but per process:
@@ -13,7 +13,6 @@ import pandas as pd
 import requests
 
 from src.context import Context
-from src.data_extract.utils.common.registrant import load_registrants
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 
@@ -53,22 +52,3 @@ def load_cik_mapping(context: Context, tickers: list[str] | None = None) -> pd.D
 
     df["cik"] = pad_cik_series(df["cik"])
     return df
-
-
-def cik_to_ticker(cikmap: pd.DataFrame, *, config_dir: str | None = None) -> dict[str, str]:
-    """CIK -> upper-case ticker, including every register predecessor CIK of a ticker in `cikmap`.
-
-    For CIK-keyed bulk data sets. A consolidating (SPLIT) table must additionally drop rows filed
-    outside the matched segment (`registrant.drop_rows_outside_segment`); UNION tables need no
-    date filter. The insider path resolves through `identity.entity_ticker` instead.
-    """
-    if cikmap.empty or "ticker" not in cikmap.columns:
-        return {}
-    out = {str(c): str(t).upper() for c, t in zip(cikmap["cik"], cikmap["ticker"], strict=False)}
-    universe = set(out.values())
-    for ticker, entry in load_registrants(config_dir).items():
-        if ticker.upper() not in universe:
-            continue  # only tickers this run walks
-        for cik in entry.all_ciks():
-            out.setdefault(cik, ticker.upper())
-    return out

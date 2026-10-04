@@ -253,12 +253,13 @@ def repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def insider_verdicts(df: pd.DataFrame, universe: Collection[str], identity: Identity) -> pd.DataFrame:
-    """Resolve each row CIK-first and attach `claimed_ticker`, the resolved `ticker`, both entity
-    ids, `screened_on` (= `filing_date`) and `reject_reason` (NA on kept rows)."""
+    """Resolve each row by its issuer CIK (event policy: any CIK of the entity) and attach
+    `claimed_ticker`, the resolved `ticker`, both entity ids, `screened_on` (= `filing_date`) and
+    `reject_reason` (NA on kept rows)."""
     universe = set(universe)
     raw = df["issuer_cik"]
     unique_ciks = [value for value in pd.unique(raw) if value is not None and not pd.isna(value)]
-    to_ticker = {value: identity.entity_ticker(value) for value in unique_ciks}
+    to_ticker = {value: identity.ticker_for_cik(value, None, "event") for value in unique_ciks}
     to_entity = {value: identity.entity_of(value) for value in unique_ciks}
 
     claimed = df["ticker"].astype("string")

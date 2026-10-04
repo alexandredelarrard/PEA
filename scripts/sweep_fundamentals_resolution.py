@@ -169,7 +169,7 @@ def main() -> int:
     tickers = [t for names in wanted.values() for t in names]
     gics = gics_lookup(tickers)
     _, context = get_config_context(str(config_dir), use_cache=False, save=False)
-    identity = load_identity(context, str(config_dir))
+    identity = load_identity(context)
     scopes = {t: identity.filing_scope(t) for t in tickers}
     chained = sorted(t for t, scope in scopes.items() if len(scope.windows) > 1)
     if chained:

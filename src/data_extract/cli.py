@@ -67,7 +67,7 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_m
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
-from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
+from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
@@ -485,10 +485,20 @@ def insider_transactions(
 
 
 @cli.command(
+    name="insider-download",
+    help="Cache the SEC Form 3/4/5 quarterly zips (every quarter since 2006) that identity-tables and insider-transactions read. SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+def insider_download(config_path: str) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    download_insider_transactions(context)
+
+
+@cli.command(
     name="identity-tables",
     help="symbol_tenure + entity_lineage: WHICH COMPANY a ticker was, and when. "
     "OFFLINE reference build -- derived from the cached Form 345 zips and the "
-    "DB, no network. Run after `insider-transactions` has populated the cache.",
+    "DB, no network. Run after `insider-download` and `notes-download`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(

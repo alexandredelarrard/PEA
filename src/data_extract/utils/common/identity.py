@@ -2,16 +2,16 @@
 
 `entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
 its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `ticker_for_symbol` answer from those
-rows; `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. The `form345`/`manual` part
-of `symbol_tenure` still backs `resolve_symbol_ticker` for the symbol tapes. Invariant violations raise
-at load, never per row. An unknown CIK is its own singleton entity `E{cik}`.
+rows; `tickers_for_ciks` and `symbol_rows_to_tickers` apply them to whole frames for the bulk data sets
+and the symbol tapes. `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant
+violations raise at load, never per row. An unknown CIK is its own singleton entity `E{cik}`.
 """
 
 from __future__ import annotations
 
 import logging
 import weakref
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal, cast
@@ -32,7 +32,6 @@ from src.data_extract.utils.common.entity_lineage import (
     check_one_entity_per_cik,
     entity_by_cik_map,
     entity_or_singleton,
-    load_d19_allowlist,
     roster_cik_map,
 )
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_market_symbol
@@ -57,44 +56,10 @@ class AmbiguousSymbolTenureError(IdentityError):
     """A symbol resolves to more than one entity, at `as_of` or over all of history; never a silent pick."""
 
 
-SymbolVerdict = Literal[
-    "exact_dated_tenure",
-    "roster_tenure_proxy",
-    "mapped_current_ticker",
-    "redundant_share_class",
-    "entity_not_in_universe",
-    "unknown_symbol",
-    "unknown_gap",
-    "ambiguous",
-]
-SymbolMatchKind = Literal[
-    "exact_dated_tenure",
-    "roster_tenure_proxy",
-]
 #: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
 TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
-
-
-@dataclass(frozen=True)
-class SymbolResolution:
-    """Point-in-time source-symbol verdict and optional canonical universe ticker."""
-
-    source_symbol: str
-    as_of: pd.Timestamp | None
-    verdict: SymbolVerdict
-    match_kind: SymbolMatchKind | None = None
-    entity_id: str | None = None
-    ticker: str | None = None
-
-    @property
-    def accepted(self) -> bool:
-        """Whether the row may be stored under `ticker`."""
-        return self.ticker is not None
-
-    @property
-    def relabelled(self) -> bool:
-        """Whether the source symbol differs from the stored canonical ticker."""
-        return self.ticker is not None and self.source_symbol != self.ticker
+#: `resolution_verdict` of a symbol row: stored under `ticker`, or why not.
+SymbolRowVerdict = Literal["resolved", "unresolved", "outside_universe", "redundant_share_class"]
 
 
 #: Per-context cache (weak keys) so one database's identity never leaks into another context.
@@ -142,10 +107,17 @@ class SymbolInterval:
     valid_from: pd.Timestamp | None
     valid_to: pd.Timestamp | None
     status: str
+    sources: frozenset[str] = frozenset()
 
     def covers(self, day: pd.Timestamp) -> bool:
         """Whether `day` falls inside the interval."""
         return _covers(self.valid_from, self.valid_to, day)
+
+    @property
+    def tape_symbol(self) -> bool:
+        """False for an interval evidenced by cover-page `dei` alone: every listed security line of a filer
+        (preferreds, notes, other share classes) carries one, so a symbol tape never maps it."""
+        return self.sources != frozenset({DEI_SOURCE})
 
 
 @dataclass(frozen=True)
@@ -179,14 +151,12 @@ class Identity:
     entity_by_cik: Mapping[str, str]
     #: universe ticker -> its roster CIK (10-digit).
     roster_cik: Mapping[str, str]
-    #: entity_id -> the one universe ticker on it (read by `entity_ticker`).
+    #: entity_id -> the one universe ticker on it.
     ticker_by_entity: Mapping[str, str]
     #: axis B: symbol -> tuple of (entity_id, valid_from, valid_to, n_filings).
     tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Manual subset of axis B; an active manual row takes precedence over derived evidence.
     manual_tenure_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
-    #: D19-cleared roster symbol -> dated rows borrowed from filing symbols on its entity.
-    roster_proxy_by_symbol: Mapping[str, tuple[tuple[str, pd.Timestamp, pd.Timestamp | None, int], ...]]
     #: Separately traded share classes deliberately absent from the modelling universe.
     redundant_symbols: frozenset[str]
     #: entity_id -> every CIK on its `cik_window` / `cik_event` rows, plus a universe ticker's roster CIK.
@@ -228,10 +198,6 @@ class Identity:
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
         )
 
-    def entity_ticker(self, cik) -> str | None:
-        """Today's universe ticker for a CIK's entity, or None when its entity holds none (CIK-first resolution)."""
-        return self.ticker_by_entity.get(self.entity_of(cik))
-
     def ticker_for_cik(self, cik, filed=None, policy: CikPolicy = "event") -> str | None:
         """The universe ticker a filing by `cik` belongs to, or None.
 
@@ -250,19 +216,32 @@ class Identity:
             return None
         return ticker if any(window.cik == key and window.admits(stamp) for window in self.windows_by_entity.get(entity, ())) else None
 
-    def ticker_for_symbol(self, symbol: str, on) -> str | None:
+    def ticker_for_symbol(self, symbol: str, on, *, tape: bool = False) -> str | None:
         """The universe ticker holding `symbol` on date `on`, or None.
 
         `noise` intervals are ignored; a `conflict` interval on that date, or two entities, leaves it unresolved.
+        `tape` (FTD, RegSHO) also ignores intervals evidenced by `dei` alone.
         """
         stamp = _as_timestamp(on)
         if stamp is None:
             return None
-        hits = [row for row in self.symbol_intervals.get(normalise_market_symbol(symbol), ()) if row.status != "noise" and row.covers(stamp)]
+        rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
+        hits = [row for row in rows if row.status != "noise" and (row.tape_symbol or not tape) and row.covers(stamp)]
         if not hits or any(row.status == "conflict" for row in hits):
             return None
         entities = {row.entity for row in hits}
         return self.ticker_by_entity.get(entities.pop()) if len(entities) == 1 else None
+
+    def universe_symbols(self, universe: Collection[str]) -> frozenset[str]:
+        """The universe tickers plus every symbol a non-`noise` tape interval dates to one of their entities."""
+        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
+        entities = {entity for entity, ticker in self.ticker_by_entity.items() if ticker in requested}
+        dated = {
+            symbol
+            for symbol, rows in self.symbol_intervals.items()
+            if any(row.status != "noise" and row.tape_symbol and row.entity in entities for row in rows)
+        }
+        return requested | dated
 
     def owns(self, ticker: str, cik, on_date=None) -> bool:
         """Is this CIK's filing about this universe ticker's company?
@@ -317,140 +296,54 @@ class Identity:
             )
         return next(iter(hits), None)
 
-    def candidate_symbols(self, universe: frozenset[str]) -> frozenset[str]:
-        """Current symbols plus historical symbols owned by the requested universe."""
-        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
-        historical = {
-            symbol
-            for symbol, rows in self.tenure_by_symbol.items()
-            if any(self.ticker_by_entity.get(entity) in requested for entity, _, _, _ in rows)
-        }
-        return requested | historical
 
-    def resolve_symbol_ticker(
-        self,
-        symbol: str,
-        as_of: object,
-        universe: frozenset[str],
-    ) -> SymbolResolution:
-        """Resolve one historical symbol/date to the caller's canonical universe ticker."""
-        source_symbol = normalise_market_symbol(symbol)
-        stamp = _as_timestamp(as_of)
-        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
-        rows = self.tenure_by_symbol.get(source_symbol)
-        is_roster_proxy = rows is None and source_symbol in self.roster_proxy_by_symbol
-        if is_roster_proxy:
-            rows = self.roster_proxy_by_symbol[source_symbol]
-        if not rows:
-            return SymbolResolution(source_symbol, stamp, "unknown_symbol")
-
-        match_kind: SymbolMatchKind
-        entity_id: str | None
-        if is_roster_proxy:
-            if stamp is None:
-                return SymbolResolution(source_symbol, stamp, "unknown_gap")
-            dated_hits = {entity for entity, start, end, _ in rows if start <= stamp and (end is None or stamp < end)}
-            if len(dated_hits) > 1:
-                return SymbolResolution(source_symbol, stamp, "ambiguous")
-            if not dated_hits:
-                return SymbolResolution(source_symbol, stamp, "unknown_gap")
-            entity_id = next(iter(dated_hits))
-            match_kind = "roster_tenure_proxy"
-        else:
-            if stamp is None:
-                return SymbolResolution(source_symbol, stamp, "unknown_gap")
-            try:
-                entity_id = self.entity_for(source_symbol, stamp)
-            except AmbiguousSymbolTenureError:
-                return SymbolResolution(source_symbol, stamp, "ambiguous")
-            if entity_id is None:
-                # A last Form 4 is not a delisting: extend only the latest closed roster-entity interval, never a manual end.
-                latest_start = max(start for _, start, _, _ in rows)
-                latest = [row for row in rows if row[1] == latest_start]
-                roster_entity = self.entity_of(self.roster_cik[source_symbol]) if source_symbol in self.roster_cik else None
-                if (
-                    roster_entity is None
-                    or any(row[0] != roster_entity or row[2] is None or stamp < row[2] for row in latest)
-                    or any(row in self.manual_tenure_by_symbol.get(source_symbol, ()) for row in latest)
-                ):
-                    return SymbolResolution(source_symbol, stamp, "unknown_gap")
-                entity_id = roster_entity
-                match_kind = "roster_tenure_proxy"
-            else:
-                match_kind = "exact_dated_tenure"
-
-        ticker = self.ticker_by_entity.get(entity_id)
-        if ticker is None or ticker not in requested:
-            return SymbolResolution(
-                source_symbol,
-                stamp,
-                "entity_not_in_universe",
-                match_kind=match_kind,
-                entity_id=entity_id,
-            )
-
-        # A redundant class is rejected only while the retained class is concurrently active (else it is a predecessor spelling).
-        target_rows = self.tenure_by_symbol.get(ticker) or self.roster_proxy_by_symbol.get(ticker, ())
-        target_is_concurrent = stamp is not None and any(
-            target_entity == entity_id and start <= stamp and (end is None or stamp < end) for target_entity, start, end, _ in target_rows
-        )
-        if source_symbol in self.redundant_symbols and source_symbol not in requested and target_is_concurrent:
-            return SymbolResolution(
-                source_symbol,
-                stamp,
-                "redundant_share_class",
-                match_kind=match_kind,
-                entity_id=entity_id,
-            )
-
-        verdict: SymbolVerdict = "mapped_current_ticker" if ticker != source_symbol else match_kind
-        return SymbolResolution(
-            source_symbol,
-            stamp,
-            verdict,
-            match_kind=match_kind,
-            entity_id=entity_id,
-            ticker=ticker,
-        )
+def tickers_for_ciks(identity: Identity, ciks: pd.Series, filed: pd.Series, policy: CikPolicy) -> pd.Series:
+    """`ticker_for_cik` over aligned CIK and filing-date series, asked once per distinct pair; None where unresolved."""
+    keys = pd.DataFrame({"cik": pad_cik_series(ciks).to_numpy(), "filed": pd.to_datetime(pd.Series(filed).to_numpy(), errors="coerce")})
+    if policy == "event":
+        keys["filed"] = pd.NaT  # an event filing belongs to the entity whatever its date
+    pairs = keys.drop_duplicates(ignore_index=True)
+    pairs["ticker"] = [identity.ticker_for_cik(cik, day, policy) for cik, day in zip(pairs["cik"], pairs["filed"], strict=True)]
+    tickers = keys.merge(pairs, on=["cik", "filed"], how="left")["ticker"]
+    return pd.Series(tickers.astype(object).where(tickers.notna(), None).to_numpy(), index=ciks.index, dtype=object)
 
 
-def resolve_symbol_rows(
+def symbol_rows_to_tickers(
     identity: Identity,
     frame: pd.DataFrame,
-    universe: frozenset[str],
+    universe: Collection[str],
     *,
     symbol_col: str = "source_symbol",
     date_col: str = "date",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resolve unique symbol/date pairs once and merge their verdicts onto source rows."""
-    if frame.empty:
-        empty = frame.copy()
-        for column in ("ticker", "resolution_verdict", "resolution_match", "resolution_entity"):
-            empty[column] = pd.Series(dtype="object")
-        return empty, empty.copy()
+    """`(accepted, unresolved)` rows with `ticker` and `resolution_verdict`, one tape `ticker_for_symbol` call per distinct pair.
 
+    A redundant share class (`redundant_symbols`, outside `universe`) is set aside while its entity's
+    retained class trades, so two classes' rows are never added together.
+    """
+    requested = frozenset(normalise_ticker(ticker) for ticker in universe)
     work = frame.copy()
     work[symbol_col] = work[symbol_col].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
     pairs = work[[symbol_col, date_col]].drop_duplicates(ignore_index=True)
-    records = []
-    for source_symbol, day in pairs.itertuples(index=False, name=None):
-        resolution = identity.resolve_symbol_ticker(source_symbol, day, universe)
-        records.append(
-            {
-                symbol_col: source_symbol,
-                date_col: day,
-                "ticker": resolution.ticker,
-                "resolution_verdict": resolution.verdict,
-                "resolution_match": resolution.match_kind,
-                "resolution_entity": resolution.entity_id,
-            }
-        )
-    verdicts = pd.DataFrame.from_records(records)
-    resolved = work.merge(verdicts, on=[symbol_col, date_col], how="left", validate="many_to_one")
-    accepted = resolved[resolved["ticker"].notna()].copy()
-    unresolved = resolved[resolved["ticker"].isna()].copy()
-    return accepted, unresolved
+    tickers: list[str | None] = []
+    verdicts: list[SymbolRowVerdict] = []
+    for symbol, day in pairs.itertuples(index=False, name=None):
+        ticker = identity.ticker_for_symbol(symbol, day, tape=True)
+        verdict: SymbolRowVerdict = "resolved"
+        if ticker is None:
+            verdict = "unresolved"
+        elif ticker not in requested:
+            verdict = "outside_universe"
+        elif symbol in identity.redundant_symbols and symbol not in requested and identity.ticker_for_symbol(ticker, day, tape=True) == ticker:
+            verdict = "redundant_share_class"
+        tickers.append(ticker if verdict == "resolved" else None)
+        verdicts.append(verdict)
+    pairs["ticker"] = pd.Series(tickers, index=pairs.index, dtype=object)
+    pairs["resolution_verdict"] = pd.Series(verdicts, index=pairs.index, dtype=object)
+    resolved = work.merge(pairs, on=[symbol_col, date_col], how="left", validate="many_to_one")
+    accepted = resolved["resolution_verdict"].eq("resolved")
+    return resolved[accepted].copy(), resolved[~accepted].copy()
 
 
 def log_symbol_resolutions(
@@ -497,13 +390,12 @@ def build_identity(
     lineage: pd.DataFrame,
     tenure: pd.DataFrame,
     roster: pd.DataFrame,
-    d19_allowlist: Mapping[str, str] | None = None,
     redundant_symbols: frozenset[str] | None = None,
 ) -> Identity:
     """Validate the tables and return the frozen resolver; pure, no DB or config reads.
 
     `TwoUniverseTickersOneEntityError` is asserted before the reverse map is usable. D19 is the
-    lineage build's check, not repeated here; `d19_allowlist` only feeds the roster proxies.
+    lineage build's check, not repeated here.
     """
     _require_tables(lineage, tenure, roster)
     check_one_entity_per_cik(lineage)
@@ -511,7 +403,6 @@ def build_identity(
     roster_cik = roster_cik_map(roster)
     ticker_by_entity = _ticker_by_entity(roster_cik, entity_by_cik, lineage)
     tenure_by_symbol, manual_tenure_by_symbol = _tenure_maps(_tenure_evidence(tenure), entity_by_cik)
-    allowlist = d19_allowlist or {}
     event_ciks, windows = _cik_scopes(lineage, roster_cik, entity_by_cik)
     identity = Identity(
         entity_by_cik=entity_by_cik,
@@ -519,7 +410,6 @@ def build_identity(
         ticker_by_entity=ticker_by_entity,
         tenure_by_symbol=tenure_by_symbol,
         manual_tenure_by_symbol=manual_tenure_by_symbol,
-        roster_proxy_by_symbol=_roster_proxies(allowlist, roster_cik, entity_by_cik, tenure_by_symbol),
         redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
         event_ciks_by_entity=event_ciks,
         windows_by_entity=windows,
@@ -604,28 +494,6 @@ def _tenure_maps(tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]) -> tupl
     )
 
 
-def _roster_proxies(
-    allowlist: Mapping[str, str],
-    roster_cik: Mapping[str, str],
-    entity_by_cik: Mapping[str, str],
-    tenure_by_symbol: Mapping[str, tuple[TenureRow, ...]],
-) -> dict[str, tuple[TenureRow, ...]]:
-    """D19-cleared roster spellings absent from Form 345 -> the dated tenures of every filing symbol on the roster entity.
-
-    Every entity seen under those symbols is kept, so the date settles the boundary.
-    """
-    roster_proxy_by_symbol: dict[str, tuple[TenureRow, ...]] = {}
-    for ticker in sorted(set(allowlist) & set(roster_cik)):
-        if ticker in tenure_by_symbol:
-            continue
-        roster_entity = entity_or_singleton(entity_by_cik, roster_cik[ticker])
-        proxy_symbols = {symbol for symbol, rows in tenure_by_symbol.items() if any(entity == roster_entity for entity, _, _, _ in rows)}
-        proxy_rows = tuple(row for symbol in sorted(proxy_symbols) for row in tenure_by_symbol[symbol])
-        if proxy_rows:
-            roster_proxy_by_symbol[ticker] = proxy_rows
-    return roster_proxy_by_symbol
-
-
 def _tenure_evidence(tenure: pd.DataFrame) -> pd.DataFrame:
     """The tenure rows the resolver reads: every source except `dei`, which reaches identity through `entity_lineage`."""
     if "source" not in tenure.columns:
@@ -701,15 +569,17 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
         return {}
     rows = lineage[lineage["role"].astype(str).eq(ROLE_SYMBOL)]
     out: dict[str, list[SymbolInterval]] = {}
-    for symbol, entity, start, end, status in zip(
+    for symbol, entity, start, end, status, sources in zip(
         rows["symbol"].astype(str),
         rows["entity_id"].astype(str),
         rows["valid_from"],
         _column(rows, "valid_to"),
         _column(rows, "status").fillna("").astype(str),
+        _column(rows, "sources").fillna("").astype(str),
         strict=True,
     ):
-        out.setdefault(normalise_market_symbol(symbol), []).append(SymbolInterval(entity, _bound(start), _as_timestamp(end), status))
+        evidence = frozenset(part.strip().lower() for part in sources.split(",") if part.strip())
+        out.setdefault(normalise_market_symbol(symbol), []).append(SymbolInterval(entity, _bound(start), _as_timestamp(end), status, evidence))
     return {symbol: tuple(values) for symbol, values in out.items()}
 
 
@@ -726,8 +596,7 @@ def _log_identity(identity: Identity) -> None:
     """One line of map sizes for the resolver just built."""
     logger.info(
         "identity: %d lineage CIK(s) over %d entity(ies); %d universe ticker(s); %d windowed entity(ies); "
-        "%d symbol(s) with lineage intervals; %d symbol(s) with tenure; %d manual symbol(s); "
-        "%d D19 roster proxy symbol(s); %d redundant symbol(s)",
+        "%d symbol(s) with lineage intervals; %d symbol(s) with tenure; %d manual symbol(s); %d redundant symbol(s)",
         len(identity.entity_by_cik),
         len(set(identity.entity_by_cik.values())),
         len(identity.roster_cik),
@@ -735,12 +604,11 @@ def _log_identity(identity: Identity) -> None:
         len(identity.symbol_intervals),
         len(identity.tenure_by_symbol),
         len(identity.manual_tenure_by_symbol),
-        len(identity.roster_proxy_by_symbol),
         len(identity.redundant_symbols),
     )
 
 
-def load_identity(context: Context, config_dir: str | None = None, refresh: bool = False) -> Identity:
+def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context and cached on it (`refresh` rebuilds)."""
     cached = None if refresh else _CACHE.get(context)
     if cached is not None:
@@ -753,7 +621,6 @@ def load_identity(context: Context, config_dir: str | None = None, refresh: bool
         lineage=lineage,
         tenure=tenure,
         roster=roster,
-        d19_allowlist=load_d19_allowlist(config_dir or str(context.config_dir)),
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
     )
     _CACHE[context] = identity

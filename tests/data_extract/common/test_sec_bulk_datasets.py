@@ -15,8 +15,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 from sqlalchemy import create_engine
 
+import src.data_extract.cli as cli_mod
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
@@ -24,6 +26,7 @@ from src.data_extract.utils.fundamentals import fetch_financial_statements as fi
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_store.store import DataStore
+from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
@@ -33,6 +36,8 @@ from src.data_store.store import DataStore
 _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 REPO = _ROOT
 INSIDER_ZIP = REPO / "data" / "sec_insider_transactions" / "2024q1_form345.zip"
+#: BDX holds one open consolidating window on its roster CIK.
+BDX_IDENTITY = dated_identity([("BDX", "0000010795", "cik_window", SENTINEL, None)], {"BDX": "0000010795"})
 FINSTMT_ZIP = REPO / "data" / "sec_financial_statements" / "2024q1.zip"
 
 
@@ -192,6 +197,54 @@ def test_insider_incremental_state_converges(tmp_path):
     print("  2024q1 ingested -> skipped next run; unchanged universe -> no re-parse; adding NVDA -> only NVDA flagged for back-fill. Validated.")
 
 
+def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_nothing(tmp_path, monkeypatch):
+    """The download step the identity build depends on: every quarter since `SEC_INSIDER_FIRST_YEAR`, old and new URL
+    templates, an unpublished quarter skipped, no store access and no identity load."""
+    requested: list[tuple[str, str]] = []
+    spans: list[tuple[int, int]] = []
+
+    def _ensure(context, path, url, **kwargs):
+        requested.append((path.name, url))
+        if path.stem == "2026q3":
+            return None  # not published yet
+        path.write_bytes(b"zip")
+        return path
+
+    def _quarters(span, first_year):
+        spans.append((span, first_year))
+        return ["2006q1", "2026q2", "2026q3"]
+
+    monkeypatch.setattr(ins, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(ins, "ensure_zip", _ensure)
+    monkeypatch.setattr(ins, "quarter_periods", _quarters)
+    monkeypatch.setattr(ins, "load_identity", lambda context: pytest.fail("the download step must not load identity"))
+    context = SimpleNamespace(config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="unused"))))
+
+    assert ins.download_insider_transactions(context) == ["2006q1", "2026q2"]
+    assert [name for name, _ in requested] == ["2006q1.zip", "2026q2.zip", "2026q3.zip"]
+    assert spans == [(pd.Timestamp.today().year - ins.SEC_INSIDER_FIRST_YEAR + 1, ins.SEC_INSIDER_FIRST_YEAR)]
+    assert requested[0][1] == ins.SEC_INSIDER_URL_TEMPLATE.format(quarter="2006q1")
+    assert requested[1][1] == ins.SEC_INSIDER_URL_NEW_TEMPLATE.format(quarter="2026q2")
+
+    print("\n=== SANITY CHECK: insider download step ===")
+    print(f"  {len(requested)} quarter(s) requested from {ins.SEC_INSIDER_FIRST_YEAR}; 2 cached, the unpublished one skipped; no parse. Validated.")
+
+
+def test_insider_download_cli_runs_only_the_download(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "download_insider_transactions", lambda context: calls.append("download") or [])
+    monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
+    monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda *a, **k: calls.append("edgar"))
+
+    result = CliRunner().invoke(cli_mod.cli, ["insider-download"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["download"]
+    print("\n=== SANITY CHECK: insider-download CLI ===")
+    print("  the command caches the Form 3/4/5 zips only; parsing stays in insider-transactions. Validated.")
+
+
 # --------------------------------------------------------------------------- #
 # Pension facts (Financial Statement Data Sets)                                  #
 # --------------------------------------------------------------------------- #
@@ -283,15 +336,13 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
             ]
         )
 
-    monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
     monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1", "2026q2"])
     monkeypatch.setattr(fin, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(fin, "_read_pension_facts", fact)
-    monkeypatch.setattr(fin, "drop_rows_outside_segment", lambda facts, **kwargs: facts)
 
     assert fin.fetch_financial_statements(context, ["BDX"]) == 2
     assert fin.fetch_financial_statements(context, ["BDX"], reparse=True) == 2
@@ -330,14 +381,12 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
         return path
 
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
-    monkeypatch.setattr(fin, "load_cik_mapping", lambda context: pd.DataFrame())
-    monkeypatch.setattr(fin, "cik_to_ticker", lambda mapping, config_dir: {"0000010795": "BDX"})
+    monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
     monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q3"])
     monkeypatch.setattr(fin, "ensure_zip", download)
-    monkeypatch.setattr(fin, "drop_rows_outside_segment", lambda facts, **kwargs: facts)
     monkeypatch.setattr(
         fin,
         "_read_pension_facts",

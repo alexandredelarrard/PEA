@@ -11,51 +11,28 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
-from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
+from tests.data_extract.common.scope_fixtures import symbol_identity
 
 
 def _identity() -> Identity:
-    lineage = pd.DataFrame(
+    """Dated lineage symbol rows: FB -> META, IR (old, the TT entity) -> TT, IR reused by a new IR; WTW from 2019."""
+    return symbol_identity(
         [
-            {"cik": "0000000001", "entity_id": "E_META", "source": "roster"},
-            {"cik": "0000000002", "entity_id": "E_TT", "source": "roster"},
-            {"cik": "0000000003", "entity_id": "E_IR", "source": "roster"},
-            {"cik": "0000000004", "entity_id": "E_WTW", "source": "roster"},
-            {"cik": "0000000005", "entity_id": "E_MSFT", "source": "roster"},
-            {"cik": "0000000006", "entity_id": "E_AAPL", "source": "roster"},
-        ]
-    )
-    tenure = pd.DataFrame(
-        [
-            ("FB", "0000000001", "2012-01-01", "2022-06-01", 100),
-            ("META", "0000000001", "2022-06-01", None, 100),
-            ("IR", "0000000002", "2009-01-01", "2020-03-01", 100),
-            ("IR", "0000000003", "2020-03-05", None, 100),
-            ("TT", "0000000002", "2020-03-01", None, 100),
-            ("WTW", "0000000099", "2009-01-01", "2019-04-18", 100),
-            ("WTW", "0000000004", "2019-04-18", None, 100),
-            ("MSFT", "0000000005", "2009-01-01", None, 100),
-            ("AAPL", "0000000006", "2009-01-01", None, 100),
+            ("META", "0000000001", "FB", "2012-01-01", "2022-06-01", "corroborated"),
+            ("META", "0000000001", "META", "2022-06-01", None, "corroborated"),
+            ("TT", "0000000002", "IR", "2009-01-01", "2020-03-01", "curated"),
+            ("TT", "0000000002", "TT", "2020-03-01", None, "curated"),
+            ("IR", "0000000003", "IR", "2020-03-05", None, "corroborated"),
+            ("WTW", "0000000004", "WTW", "2019-04-18", None, "corroborated"),
+            ("MSFT", "0000000005", "MSFT", "2009-01-01", None, "corroborated"),
+            ("AAPL", "0000000006", "AAPL", "2009-01-01", None, "corroborated"),
         ],
-        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"],
+        {"META": "0000000001", "TT": "0000000002", "IR": "0000000003", "WTW": "0000000004", "MSFT": "0000000005", "AAPL": "0000000006"},
     )
-    tenure["source"] = "form345"
-    tenure["evidence"] = "test"
-    roster = pd.DataFrame(
-        [
-            ("META", "0000000001"),
-            ("TT", "0000000002"),
-            ("IR", "0000000003"),
-            ("WTW", "0000000004"),
-            ("MSFT", "0000000005"),
-            ("AAPL", "0000000006"),
-        ],
-        columns=["ticker", "cik"],
-    )
-    return build_identity(lineage, tenure, roster)
 
 
 def _context(sqlite_store, tmp_path) -> Any:
@@ -180,7 +157,7 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
         ),
     )
     cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, ftd.Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    ftd.mark_processed(cache, ftd.Tables.sec_fails_to_deliver, set(identity.universe_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
 
     # 1) stable universe -> the already-done period is skipped, only the new one is fetched
     saved = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity)
@@ -270,6 +247,40 @@ def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite
     print("  OK: renamed rows recovered, reused rows moved/removed, unique PK preserved")
 
 
+def test_reused_symbol_before_the_current_holders_lineage_interval_is_not_mapped(sqlite_store, monkeypatch, tmp_path):
+    """WTW traded as Weight Watchers before Willis Towers Watson took it. The lineage dates the current
+    holder's `WTW` interval from 2016-01-05, so a 2015 FTD row under WTW belongs to nobody in the universe,
+    even though the holder's tenure evidence is open-ended."""
+    ctx = _context(sqlite_store, tmp_path)
+    identity = symbol_identity(
+        [
+            ("WTW", "0000000004", "WTW", "2016-01-05", None, "corroborated"),
+            ("AAPL", "0000000006", "AAPL", "2009-01-01", None, "corroborated"),
+        ],
+        {"WTW": "0000000004", "AAPL": "0000000006"},
+    )
+    raw = (
+        "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
+        "20150102|948626106|WTW|70|WEIGHT WATCHERS|10\n"
+        "20160302|G96629103|WTW|40|WILLIS TOWERS WATSON|10\n"
+        "20150102|037833100|AAPL|5|APPLE INC|10\n"
+    )
+    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a"])
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"201501a"})
+    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
+    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+
+    ftd.fetch_fails_to_deliver(ctx, ["WTW", "AAPL"], full=True, identity=identity)
+
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver)
+    wtw = stored[stored["ticker"] == "WTW"]
+    assert pd.to_datetime(wtw["date"]).tolist() == [pd.Timestamp("2016-03-02")], wtw
+    assert wtw["fails_quantity"].tolist() == [40.0]
+    print("\n=== SANITY CHECK: reused FTD symbol before the holder's lineage interval ===")
+    print("  Weight Watchers' 2015 WTW fails are not stored under WTW; Willis Towers Watson's 2016 row is. Validated.")
+
+
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
     identity = _identity()
@@ -315,7 +326,7 @@ def test_ftd_resume_uses_only_stored_source_periods(sqlite_store, monkeypatch, t
         ),
     )
     cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    ftd.mark_processed(cache, Tables.sec_fails_to_deliver, set(identity.universe_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
     monkeypatch.setattr(ftd, "ensure_zip", lambda *a, **k: pytest.fail("stored periods must not download"))
     monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)

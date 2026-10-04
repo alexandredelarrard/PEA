@@ -158,12 +158,11 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     )
     sqlite_store.save(Tables.sp500_tickers, roster)
 
-    projected = load_identity(_context(sqlite_store), CONFIG_DIR, refresh=True)
+    projected = load_identity(_context(sqlite_store), refresh=True)
     full = build_identity(
         lineage=sqlite_store.load(Tables.entity_lineage, project=True),
         tenure=sqlite_store.load(Tables.symbol_tenure, project=True),
         roster=sqlite_store.load(Tables.sp500_tickers),
-        d19_allowlist={},
         redundant_symbols=frozenset(),
     )
 

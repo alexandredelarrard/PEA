@@ -5,7 +5,8 @@ FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_
 [date, ticker, short_volume, total_volume]; despite the table name it is not reported short
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
-`full` mode therefore preserves stored dates the source no longer serves.
+`full` mode therefore keeps the stored rows of dates the source no longer serves exactly as stored.
+New rows resolve through the dated `entity_lineage` symbol intervals (`ticker_for_symbol`).
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
 """
 
@@ -26,7 +27,7 @@ from src.data_extract.utils.common.identity import (
     Identity,
     load_identity,
     log_symbol_resolutions,
-    resolve_symbol_rows,
+    symbol_rows_to_tickers,
 )
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.errors import TableEmptyError
@@ -88,8 +89,8 @@ def _canonicalise_regsho(
     identity: Identity,
     universe: frozenset[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resolve historical RegSHO symbols and aggregate to `(ticker, date)`."""
-    accepted, unresolved = resolve_symbol_rows(identity, frame, universe)
+    """Resolve each RegSHO symbol on its trade date and aggregate to `(ticker, date)`."""
+    accepted, unresolved = symbol_rows_to_tickers(identity, frame, universe)
     log_symbol_resolutions(context, "RegSHO", accepted, unresolved, universe=universe)
     if accepted.empty:
         return pd.DataFrame(columns=["date", "ticker", "short_volume", "total_volume"]), unresolved
@@ -124,40 +125,8 @@ def _stored_rows(
     return loaded
 
 
-def _reconcile_legacy(
-    context: Context,
-    legacy: pd.DataFrame,
-    identity: Identity,
-    universe: frozenset[str],
-) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Relabel proven legacy rows, remove outsiders and preserve unresolved keys."""
-    if legacy.empty:
-        return legacy, {"retained": 0, "relabelled": 0, "removed": 0, "unresolved": 0}
-    source = legacy.rename(columns={"ticker": "source_symbol"})
-    accepted, unresolved = resolve_symbol_rows(identity, source, universe)
-    log_symbol_resolutions(context, "RegSHO legacy", accepted, unresolved, universe=universe)
-
-    relabelled = int((accepted["source_symbol"] != accepted["ticker"]).sum())
-    proven_exclusions = {"entity_not_in_universe", "redundant_share_class"}
-    removed_mask = unresolved["resolution_verdict"].isin(proven_exclusions)
-    removed = int(removed_mask.sum())
-    preserve = unresolved[~removed_mask].copy()
-    preserve["ticker"] = preserve["source_symbol"]
-    columns = ["date", "ticker", "short_volume", "total_volume"]
-    combined = pd.concat([accepted[columns], preserve[columns]], ignore_index=True)
-    if not combined.empty:
-        combined = combined.groupby(["ticker", "date"], as_index=False)[["short_volume", "total_volume"]].sum()
-    stats = {
-        "retained": len(combined),
-        "relabelled": relabelled,
-        "removed": removed,
-        "unresolved": len(preserve),
-    }
-    return combined[columns], stats
-
-
-def _validate_full_frame(frame: pd.DataFrame, universe: frozenset[str]) -> None:
-    """Validate the reconciled replacement before the one destructive write."""
+def _validate_full_frame(frame: pd.DataFrame, fresh: pd.DataFrame, universe: frozenset[str]) -> None:
+    """Validate the replacement before the one destructive write; only re-fetched rows must be universe tickers."""
     if frame.empty:
         raise ValueError("RegSHO full refresh staged no rows")
     if frame[["ticker", "date"]].isna().any().any():
@@ -165,7 +134,7 @@ def _validate_full_frame(frame: pd.DataFrame, universe: frozenset[str]) -> None:
     duplicate = frame.duplicated(["ticker", "date"], keep=False)
     if duplicate.any():
         raise ValueError(f"RegSHO full refresh staged {int(duplicate.sum())} duplicate key row(s)")
-    outside = sorted(set(frame["ticker"]) - set(universe))
+    outside = sorted(set(fresh["ticker"]) - set(universe))
     if outside:
         raise ValueError(f"RegSHO full refresh staged non-universe ticker(s): {outside}")
 
@@ -178,7 +147,7 @@ def fetch_short_interest(
     full: bool = False,
     identity: Identity | None = None,
 ) -> None:
-    """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates."""
+    """Resolve RegSHO through the lineage; full mode keeps unrecoverable stored dates as stored."""
 
     today = pd.Timestamp.today().normalize()
     days = pd.bdate_range(_resume_day(context, years_history, full), today)
@@ -186,7 +155,7 @@ def fetch_short_interest(
 
     resolver = identity or load_identity(context)
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    candidates = resolver.candidate_symbols(universe)
+    candidates = resolver.universe_symbols(universe)
 
     frames: list[pd.DataFrame] = []
     successful_days: list[pd.Timestamp] = []
@@ -223,19 +192,17 @@ def fetch_short_interest(
     if not successful_days:
         raise RuntimeError("RegSHO full refresh retrieved no source date; preserving the table by aborting")
     earliest = min(successful_days)
+    # stored rows are neither re-resolved nor purged; only the dates the source serves again are replaced
     legacy = _stored_rows(context, until=earliest - pd.Timedelta(days=1))
-    corrected_legacy, legacy_stats = _reconcile_legacy(context, legacy, resolver, universe)
     failed_stored = _stored_rows(context, dates=[day for day in failed_days if day >= earliest])
-    complete = pd.concat([corrected_legacy, failed_stored, fresh], ignore_index=True)
+    complete = pd.concat([legacy, failed_stored, fresh], ignore_index=True)
     if not complete.empty:
         complete = complete.groupby(["ticker", "date"], as_index=False)[["short_volume", "total_volume"]].sum()
-    _validate_full_frame(complete, universe)
+    _validate_full_frame(complete, fresh, universe)
     written = context.store.replace(Tables.short_interest, complete)
 
     logger.info(
-        f"RegSHO full: retained={legacy_stats['retained']} "
-        f"relabelled={legacy_stats['relabelled']} removed={legacy_stats['removed']} "
-        f"legacy_unresolved={legacy_stats['unresolved']} refreshed={len(fresh)} "
+        f"RegSHO full: kept_as_stored={len(legacy)} refreshed={len(fresh)} "
         f"fresh_unresolved={len(unresolved)} preserved_failed_date_rows={len(failed_stored)}"
     )
     record_run(context, Tables.short_interest, len(tickers), written, is_full_rescan=True)

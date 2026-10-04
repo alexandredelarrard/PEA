@@ -216,11 +216,13 @@ def splits(config_path: str, tickers: str | None, full: bool, as_of: datetime | 
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option("--repair-gaps", "repair", is_flag=True, default=False, help="Also re-read every day a key misses inside its stored span (one-time).")
 @AS_OF_OPTION
-def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
+def short_interest(config_path: str, tickers: str | None, full: bool, repair: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
+    universe = _tickers(context, tickers)
+    fetch_short_interest(context, tickers=universe, years_history=years_history, full=full, as_of=_market_as_of(as_of), repair=repair)
 
 
 @cli.command(help="SEC fails-to-deliver (settlement fails). SEC-bulk.")

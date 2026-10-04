@@ -5,7 +5,9 @@ FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_
 [date, ticker, short_volume, total_volume]; despite the table name it is not reported short
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
 One day file covers every symbol, so a run reads the union of the sessions any universe key needs
-(`resume.series_windows`: forward overlap, interior holes, new keys in full).
+(`resume.series_windows`: forward overlap, new keys in full) plus the missing DAYS: calendar sessions
+inside the stored span on which no key has a row. A day with rows for some keys was read; `repair`
+re-reads those per-key gaps once.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
 `full` mode therefore preserves stored dates the source no longer serves.
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
@@ -30,7 +32,7 @@ from src.data_extract.utils.common.identity import (
     log_symbol_resolutions,
     resolve_symbol_rows,
 )
-from src.data_extract.utils.common.resume import series_windows, session_dates, trading_calendar
+from src.data_extract.utils.common.resume import document_floor, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.errors import TableEmptyError
 from src.data_store.schema import Tables
@@ -71,13 +73,27 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _plan_days(context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None) -> pd.DatetimeIndex:
-    """The day files to read: the union of every key's windows, as trading sessions (business days past the calendar)."""
+def _missing_days(context: Context, calendar: pd.DatetimeIndex, floor: pd.Timestamp) -> pd.DatetimeIndex:
+    """Calendar sessions inside the stored span (from `floor`) on which no key has a row: day files never stored."""
+    stored = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.short_interest, "date"))).normalize()
+    if stored.empty:
+        return pd.DatetimeIndex([])
+    span = calendar[(calendar >= max(stored.min(), floor)) & (calendar <= stored.max())]
+    return span.difference(stored)
+
+
+def _plan_days(
+    context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None, *, repair: bool = False
+) -> pd.DatetimeIndex:
+    """The day files to read: every key's windows plus the never-stored days, as trading sessions (business
+    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly)."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
-    work = series_windows(context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar)
-    days = pd.DatetimeIndex([])
+    work = series_windows(
+        context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar if repair else None
+    )
+    days = _missing_days(context, calendar, document_floor(Tables.short_interest, run_date, years_history))
     for since, end, _keys in work.groups():
         days = days.union(session_dates(calendar, since, end))
     return days
@@ -179,11 +195,12 @@ def fetch_short_interest(
     full: bool = False,
     identity: Identity | None = None,
     as_of: pd.Timestamp | None = None,
+    repair: bool = False,
 ) -> None:
-    """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates."""
+    """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates; `repair` re-reads per-key gap days."""
 
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    days = _plan_days(context, sorted(universe), years_history, full, as_of)
+    days = _plan_days(context, sorted(universe), years_history, full, as_of, repair=repair)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
 
     resolver = identity or load_identity(context)

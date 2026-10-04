@@ -1,8 +1,10 @@
 """RegSHO short-volume fetch: day-file plan, universe filter, upsert shape.
 
 One RegSHO file covers the whole market, so the run reads the UNION of the sessions any universe key
-needs (`resume.series_windows` on `sec_short_interest`): each key's own last date minus the overlap,
-its interior holes against the `prices` calendar, and the full window for a new key.
+needs (`resume.series_windows` on `sec_short_interest`): each key's own last date minus the overlap
+and the full window for a new key. A hole is a DAY: a calendar session inside the stored span on which
+no key has a row (the file was never stored). A day with rows for some keys was read and is not re-read
+nightly; `repair=True` re-reads those per-key gaps once.
 """
 
 from __future__ import annotations
@@ -92,19 +94,37 @@ def test_the_day_plan_is_the_union_of_every_key_s_windows(sqlite_store):
     sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS, "close_split": 1.0}))  # the calendar
     cold = si._plan_days(ctx, ["AAA"], 1, False, _AS_OF)
 
-    hole = _SESSIONS[(_SESSIONS >= pd.Timestamp("2024-05-14")) & (_SESSIONS <= pd.Timestamp("2024-05-15"))]
-    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS.difference(hole)))
+    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS))
     sqlite_store.save(Tables.short_interest, _si("LAG", _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-10")]))
     _seed_universe(sqlite_store, ["AAA", "LAG", "NEW"], {"NEW": "2024-06-27"})
     warm = si._plan_days(ctx, ["AAA", "LAG"], 1, False, _AS_OF)
     with_new = si._plan_days(ctx, ["AAA", "LAG", "NEW"], 1, False, _AS_OF)
 
     assert cold.equals(_SESSIONS)  # no table: every calendar session from the 1-year floor
-    assert list(warm.strftime("%m-%d")) == ["05-14", "05-15"] + list(_SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-03")].strftime("%m-%d"))
+    assert warm.equals(_SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-03")])  # LAG's own window from 06-10 - 7 d
     assert with_new.equals(_SESSIONS)  # NEW (added inside the overlap) reads back to the floor
     print("\n=== SANITY CHECK: RegSHO day plan ===")
-    print(f"  cold -> {len(cold)} sessions; AAA's 2-session hole + LAG's own window from 06-03 -> {len(warm)} day files;")
+    print(f"  cold -> {len(cold)} sessions; LAG's own window from 06-03 -> {len(warm)} day files;")
     print(f"  a new key widens the union to the whole window ({len(with_new)} sessions). Each day file is read once.")
+
+
+def test_a_day_with_rows_for_some_keys_is_not_re_read_a_day_with_none_is(sqlite_store):
+    ctx = _context(sqlite_store)
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS, "close_split": 1.0}))
+    partial = pd.Timestamp("2024-05-14")  # AAA missing, BBB stored: the file was read
+    empty = pd.Timestamp("2024-05-21")  # nobody stored: the file was never read
+    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS.difference(pd.DatetimeIndex([partial, empty]))))
+    sqlite_store.save(Tables.short_interest, _si("BBB", _SESSIONS.difference(pd.DatetimeIndex([empty]))))
+
+    nightly = si._plan_days(ctx, ["AAA", "BBB"], 1, False, _AS_OF)
+    repair = si._plan_days(ctx, ["AAA", "BBB"], 1, False, _AS_OF, repair=True)
+
+    forward = _SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-21")]
+    assert nightly.equals(forward.union(pd.DatetimeIndex([empty])))
+    assert repair.equals(forward.union(pd.DatetimeIndex([partial, empty])))
+    print("\n=== SANITY CHECK: RegSHO day-level holes ===")
+    print(f"  {partial.date()} has BBB's row -> not re-read nightly; {empty.date()} has no row at all -> re-read;")
+    print("  repair=True (the one-time Phase 11 pass) also lists the per-key gap day.")
 
 
 def test_days_after_the_calendar_are_business_days(sqlite_store):

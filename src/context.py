@@ -8,13 +8,14 @@ from typing import Any, cast
 
 import requests
 from dotenv import find_dotenv, load_dotenv
+from huggingface_hub import configure_http_backend
 from omegaconf import DictConfig, OmegaConf
 
 from src.data_store.store import DataStore
 from src.utils.config import read_config
 from src.utils.db import get_engine
 from src.utils.seed import set_seed
-from src.utils.ssl_setup import configure_corporate_ca
+from src.utils.ssl_setup import configure_corporate_ca, corporate_session
 
 os.environ["LC_ALL"] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -28,6 +29,9 @@ os.environ["PYTHONUTF8"] = "1"
 # and curl_cffi, and returns 200 once this runs. It only ADDS roots the OS
 # already trusts and leaves verification ON; a CA env var the user set themselves still wins.
 configure_corporate_ca()
+# huggingface_hub opens its own requests sessions, which Python 3.13's strict X509 check fails on the
+# proxy CA; they are built by the corporate session factory (strict flag cleared, verification on).
+configure_http_backend(backend_factory=corporate_session)
 
 
 def check_path_exist(path):

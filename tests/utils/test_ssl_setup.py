@@ -109,6 +109,27 @@ def test_bundle_write_is_atomic_and_reused(tmp_path, monkeypatch):
     print("  built atomically (no .tmp left), reused when usable, rebuilt when torn. Validated.")
 
 
+def test_context_gives_huggingface_the_corporate_session():
+    """Importing `src.context` routes every huggingface_hub request through `corporate_session`, so the
+    proxy CA verifies on Python 3.13 (strict X509 cleared) while verification stays on."""
+    import huggingface_hub
+    from huggingface_hub.utils import _http
+    from requests.adapters import HTTPAdapter
+
+    import src.context  # noqa: F401 -- the import configures the backend
+
+    assert _http._GLOBAL_BACKEND_FACTORY is ssl_setup.corporate_session
+    adapter = huggingface_hub.get_session().get_adapter("https://huggingface.co/api/datasets")
+    assert isinstance(adapter, HTTPAdapter)
+    adapter.init_poolmanager(1, 1)
+    ctx = adapter.poolmanager.connection_pool_kw["ssl_context"]
+    assert not ctx.verify_flags & ssl.VERIFY_X509_STRICT
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+
+    print("=== SANITY CHECK: huggingface_hub backend ===")
+    print(f"  backend factory = corporate_session; adapter {type(adapter).__name__}: strict X509 off, CERT_REQUIRED + hostname check on.")
+
+
 if __name__ == "__main__":
     import tempfile
 

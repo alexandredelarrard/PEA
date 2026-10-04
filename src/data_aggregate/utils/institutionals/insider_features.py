@@ -205,13 +205,13 @@ def build_insider_feature_panel(
 
     # In a fully observed 180-day window with neither purchases nor sales the net-buy ratio is an
     # observed 0; that needs the extraction layer's complete frontier, otherwise missing stays NaN.
-    has_frontier = complete_through is not None and pd.notna(complete_through)
+    frontier = pd.Timestamp(complete_through) if complete_through is not None and pd.notna(complete_through) else None
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
     listed = _listed(stock_close, idx, columns)
     net_name = "ic_insider_net_buy_ratio_180d"
     net_mask: pd.DataFrame | None = None
-    if has_frontier and net_name in fields:
-        net_mask = _net_buy_mask(idx, columns, listed, insider_floor, pd.Timestamp(complete_through), availability)
+    if frontier is not None and net_name in fields:
+        net_mask = _net_buy_mask(idx, columns, listed, insider_floor, frontier, availability)
         fields[net_name] = fields[net_name].reindex(index=idx, columns=columns).fillna(0.0).where(net_mask)
 
     unpriced_masks = _unpriced_masks(df_unpriced, idx)
@@ -220,7 +220,7 @@ def build_insider_feature_panel(
     if sink is not None:
         sink.set_frontier("insider", complete_through)
         sink.add_events("insider", _disclosure_events(df_buys))
-        source_last = pd.Timestamp(complete_through).normalize() if has_frontier else pd.to_datetime(insider["filing_date"], errors="coerce").max()
+        source_last = frontier.normalize() if frontier is not None else pd.to_datetime(insider["filing_date"], errors="coerce").max()
         _keep_sink_signals(
             sink,
             fields,

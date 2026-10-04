@@ -164,63 +164,63 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return pd.DataFrame(), diag
 
-    t = insider.copy()
-    t["ticker"] = t["ticker"].astype(str).str.upper().str.strip()
-    t["code"] = t["transaction_code"].astype(str).str.upper().str.strip()
-    t["day"] = to_day(t["filing_date"])
-    t["shares_n"] = pd.to_numeric(t["shares"], errors="coerce")
-    pps = pd.to_numeric(cast(pd.Series, t.get("price_per_share")), errors="coerce")
+    df_trades = insider.copy()
+    df_trades["ticker"] = df_trades["ticker"].astype(str).str.upper().str.strip()
+    df_trades["code"] = df_trades["transaction_code"].astype(str).str.upper().str.strip()
+    df_trades["day"] = to_day(df_trades["filing_date"])
+    df_trades["shares_n"] = pd.to_numeric(df_trades["shares"], errors="coerce")
+    pps = pd.to_numeric(cast(pd.Series, df_trades.get("price_per_share")), errors="coerce")
 
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
-    t["in_exercise_package"] = _exercise_packages(t)
+    df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
-    if "security_type" in t.columns:
-        t = t[t["security_type"].astype(str).str.lower().eq("nonderiv")]
+    if "security_type" in df_trades.columns:
+        df_trades = df_trades[df_trades["security_type"].astype(str).str.lower().eq("nonderiv")]
 
-    if "security_title" in t.columns:
-        t = t[common_stock_mask(t["security_title"])]
+    if "security_title" in df_trades.columns:
+        df_trades = df_trades[common_stock_mask(df_trades["security_title"])]
 
-    t = t[t["code"].isin(OPEN_MARKET_CODES) & t["day"].notna() & (t["ticker"] != "")]
-    t = t.dropna(subset=["shares_n"])
-    pps = pps.reindex(t.index)
-    diag["scoped_rows"] = len(t)
-    if t.empty:
+    df_trades = df_trades[df_trades["code"].isin(OPEN_MARKET_CODES) & df_trades["day"].notna() & (df_trades["ticker"] != "")]
+    df_trades = df_trades.dropna(subset=["shares_n"])
+    pps = pps.reindex(df_trades.index)
+    diag["scoped_rows"] = len(df_trades)
+    if df_trades.empty:
         return pd.DataFrame(), diag
 
-    t, versions = versioned_records(t, pps)
+    df_trades, versions = versioned_records(df_trades, pps)
     diag.update(versions)
-    pps = pps.reindex(t.index)
+    pps = pps.reindex(df_trades.index)
 
     priced = pps > 0
     diag["dropped_unpriced"] = int((~priced).sum())
-    diag["dropped_unpriced_shares"] = float(t.loc[~priced, "shares_n"].sum()) / t["shares_n"].sum()
-    diag["unpriced_events"] = t.loc[~priced, ["ticker", "day", "code", *VISIBILITY_COLUMNS]].copy()
-    t, pps = t[priced], pps[priced]
+    diag["dropped_unpriced_shares"] = float(df_trades.loc[~priced, "shares_n"].sum()) / df_trades["shares_n"].sum()
+    diag["unpriced_events"] = df_trades.loc[~priced, ["ticker", "day", "code", *VISIBILITY_COLUMNS]].copy()
+    df_trades, pps = df_trades[priced], pps[priced]
 
-    ref = consensus_price(insider).reindex(t.index)
+    ref = consensus_price(insider).reindex(df_trades.index)
     ratio = pps / ref.where(ref > 0)
     # One-sided repair: a too-low ratio may be a genuine low-priced row under a reused ticker, so it is only counted.
     bad = ratio.notna() & (ratio > price_tolerance)
     low = ratio.notna() & (ratio < 1.0 / price_tolerance)
-    raw_value = pd.to_numeric(t["value_usd"], errors="coerce")
+    raw_value = pd.to_numeric(df_trades["value_usd"], errors="coerce")
 
     # Repair rather than drop: the trade and its share count are real, only the price is wrong.
-    t["value"] = raw_value.where(~bad, t["shares_n"] * ref)
-    t["price_repaired"] = bad
+    df_trades["value"] = raw_value.where(~bad, df_trades["shares_n"] * ref)
+    df_trades["price_repaired"] = bad
 
     # A row whose price survived but whose `value_usd` is missing is still a real trade.
-    t["value"] = t["value"].fillna(t["shares_n"] * pps)
+    df_trades["value"] = df_trades["value"].fillna(df_trades["shares_n"] * pps)
 
     diag["repaired_rows"] = int(bad.sum())
     diag["underpriced_rows"] = int(low.sum())
     diag["value_before"] = float(raw_value.sum())
-    diag["value_after"] = float(t["value"].sum())
+    diag["value_after"] = float(df_trades["value"].sum())
     diag["no_consensus_rows"] = int(ratio.isna().sum())
 
-    t["role"] = t["officer_title"].map(officer_role) if "officer_title" in t.columns else OTHER_OFFICER
+    df_trades["role"] = df_trades["officer_title"].map(officer_role) if "officer_title" in df_trades.columns else OTHER_OFFICER
     for flag in ("is_director", "is_officer", "is_ten_pct_owner"):
-        t[flag] = pd.to_numeric(cast(pd.Series, t.get(flag)), errors="coerce")
-    t["is_10b5_1"] = pd.to_numeric(cast(pd.Series, t.get("is_10b5_1")), errors="coerce")
+        df_trades[flag] = pd.to_numeric(cast(pd.Series, df_trades.get(flag)), errors="coerce")
+    df_trades["is_10b5_1"] = pd.to_numeric(cast(pd.Series, df_trades.get("is_10b5_1")), errors="coerce")
 
     _log.info(
         "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
@@ -245,7 +245,7 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
         diag["amendment_cells_new"],
         diag["amendment_cells_identical"],
     )
-    return t, diag
+    return df_trades, diag
 
 
 def _exercise_packages(t: pd.DataFrame) -> pd.Series:
@@ -258,7 +258,7 @@ def _exercise_packages(t: pd.DataFrame) -> pd.Series:
     return pd.Series(has_m.reindex(key).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
 
 
-def versioned_records(t: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataFrame, dict]:
+def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataFrame, dict]:
     """Collapse repeat copies (REQ-010) and supersede amended cells (REQ-011) on scoped rows, never reordering them.
 
     Adds `anchor` (the day the trade was first disclosed), `visible_from` and `visible_until`
@@ -266,7 +266,9 @@ def versioned_records(t: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataFrame, di
     visible_from = `day` and an open interval. Linked amendment rows never enter the copy
     collapse. Returns `(frame, counts)`.
     """
-    df = t.assign(anchor=t["day"], visible_from=t["day"], visible_until=pd.Series(pd.NaT, index=t.index, dtype=t["day"].dtype))
+    df = df_scoped.assign(
+        anchor=df_scoped["day"], visible_from=df_scoped["day"], visible_until=pd.Series(pd.NaT, index=df_scoped.index, dtype=df_scoped["day"].dtype)
+    )
     counts: dict = {
         "copy_groups": 0,
         "copy_rows_dropped": 0,
@@ -386,8 +388,9 @@ def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFram
     its filing day until the next one's, anchored on the first record's day.
     """
     columns = ["anchor", "visible_until", "identical"]
-    counts = {"amendment_cells_superseded": 0, "amendment_cells_partial": 0, "amendment_cells_new": 0, "amendment_cells_identical": 0}
-    counts["amendment_rows_identical"] = 0
+    counts = dict.fromkeys(
+        ("amendment_cells_superseded", "amendment_cells_partial", "amendment_cells_new", "amendment_cells_identical", "amendment_rows_identical"), 0
+    )
     if links.empty:
         return pd.DataFrame(columns=columns), counts
 

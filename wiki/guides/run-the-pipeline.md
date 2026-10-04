@@ -207,9 +207,9 @@ Bulk datasets must be reparsed from cache after expanding a registrant chain; th
 
 Form-string eras and manifests make `-F` important for complete rebuilds. 13G listing cost is driven by all filings a financial institution submitted against other issuers, not only rows retained for that ticker, so chunk it.
 
-### Insider bulk/live cutover
+### Insider transactions
 
-Run canonical insider extraction, use `--live-full` after discovery/parser changes, replay a completed quarter through the parity validator, and advance the authoritative bulk quarter only after a retained PASS. Keep staged live rows as the reproducible audit copy.
+`insider-transactions` loads one table: pending zip quarters first (only the filings EDGAR lacks), then EDGAR from the latest stored `filing_date` minus 7 days. `--reparse` re-reads every cached zip quarter after a zip parse change; `-F` implies `--reparse` and also re-reads the EDGAR window, including filings already stored from EDGAR. A full rebuild drops the table first, then runs `-F` (see [large backfills and recovery](./large-backfills-and-recovery.md)). Read the per-quarter `filings missing from EDGAR` WARNING and the one identity-exclusion WARNING per run; there is no parity or promotion step.
 
 ### Earnings-call rebuild
 
@@ -243,12 +243,6 @@ rtk "$PY" -m src validate timeseries -T cube_part_institutionals -o reports/vali
 ```
 
 The inspected [validation CLI](../../src/validate/cli.py) also exposes `redundancy`, `clip`, `bounds`, and `catalogue`. Exit codes are contractual: `0` pass, `1` finding, `3` abstained. An abstention is not a pass.
-
-Completed-quarter insider promotion uses its dedicated command:
-
-```bash
-rtk "$PY" -m src validate insider-parity --quarter YYYYQn -o reports/validate/YYYY-MM-DD-insider-parity
-```
 
 For expensive historical repair, rollback, coverage, and retained-evidence procedures, use [large backfills and recovery](./large-backfills-and-recovery.md). Reports remain excluded artifacts; the wiki records the procedure and contracts, not generated results.
 

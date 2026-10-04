@@ -1,6 +1,6 @@
 ---
 title: Validation
-description: Read-only table checks, explicit findings, gates, cache-aware I/O, and insider reconciliation.
+description: Read-only table checks, explicit findings, gates, and cache-aware I/O.
 type: module
 tags:
   - wiki
@@ -17,7 +17,6 @@ tags:
 - Resolve table-specific validation declarations from configuration.
 - Read only required columns, optionally through a reusable cache.
 - Check grain, universe coverage, distributions, redundancy, leakage, clipping, time-series continuity, bounds, and catalogue alignment.
-- Reconcile bulk and live-tail insider data at transaction and feature levels.
 - Emit JSON-serializable findings, severities, metrics, and gate results.
 - Abstain explicitly when a check is not applicable or evidence is unavailable.
 
@@ -33,7 +32,7 @@ tags:
 - [validate/checks](../../src/validate/checks/) contains the reusable check implementations.
 - [validate/checks/leakage.py](../../src/validate/checks/leakage.py) tests label horizons and publication clocks.
 - [validate/checks/timeseries.py](../../src/validate/checks/timeseries.py) detects jumps, holes, and frozen legs per ticker.
-- [validate/insider_reconciliation.py](../../src/validate/insider_reconciliation.py) runs completed-quarter bulk-versus-EDGAR reconciliation.
+- [validate/checks/insider_edge.py](../../src/validate/checks/insider_edge.py) accepts insider-derived features at the prediction edge. Zip-versus-EDGAR agreement is no longer a validation command: the zip ingest logs it per quarter (see [data sources](../reference/data-sources.md)).
 - [validate/utils/prices.py](../../src/validate/utils/prices.py) implements the price-basis invariants used to gate cube builds.
 - [configs/validate.yml](../../configs/validate.yml) owns table contracts and thresholds.
 

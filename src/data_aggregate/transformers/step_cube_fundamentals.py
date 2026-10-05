@@ -54,6 +54,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
+from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
@@ -256,7 +257,7 @@ class StepCubeFundamentals(Step):
 
     def _load_optional(
         self,
-        table: str,
+        table: SchemaTable | str,
         what: str,
         fetcher: str,
         universe: tuple[str, ...],

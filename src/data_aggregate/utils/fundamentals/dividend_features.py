@@ -178,7 +178,7 @@ def build_dividend_feature_panel(
     dividends_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
-    stock_close: pd.DataFrame,
+    stock_close: pd.DataFrame | None,
     level_factor: pd.DataFrame | None = None,
     fundamentals_history: pd.DataFrame | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,

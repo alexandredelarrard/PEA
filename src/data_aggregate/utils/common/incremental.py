@@ -82,14 +82,10 @@ def plan_window(
     """Decide what to rebuild.
 
     `full=True`, a missing part, or no usable calendar -> a full rebuild. Otherwise the
-    window reaches `warmup + extra_back + refresh` trading days before the stored max date;
+    window reaches `warmup + extra_back + refresh` trading days before the stored max date:
     `extra_back` is the target step's forward horizon (so maturing labels are recomputed) and
-    `refresh` is how far back the part REWRITES its own tail.
-
-    ⚠ `warmup + extra_back + refresh`, not `warmup + extra_back`. The warm-up has to be
-    measured from the earliest REWRITTEN date, not from `last`, or the oldest refreshed date
-    gets only `warmup - refresh` days of look-back context and is computed differently from
-    the way a full rebuild would compute it.
+    `refresh` is how far back the part rewrites its own tail. The warm-up counts from the
+    earliest rewritten date, so every rewritten row gets the look-back a full rebuild gives it.
     """
     if full:
         return PartWindow(None, None)
@@ -131,21 +127,12 @@ def write_part(
 ) -> int:
     """Persist a part according to `window`.
 
-    FULL -> replace. INCREMENTAL -> compare the stored column set against `rows` and
-    return `COLUMNS_CHANGED` when they differ (the caller must re-run with full=True,
-    since an append into a changed schema would silently misalign); otherwise write the
-    tail from the widest cutoff on offer:
-
-      1. an explicit `refresh_from` -- the target step's maturing-label window (~90 trading
-         days), which is always the widest and so takes precedence;
-      2. `window.refresh_from` -- the part's own trailing rewrite (`plan_window(refresh=...)`);
-      3. `window.last`, strictly after -- only when the caller asked for no refresh at all.
-
-    Cases 1 and 2 write INCLUSIVELY, so the cutoff date's own row is replaced rather than
-    skipped. `store.append_tail(inclusive=True)` DELETEs `>=` the cutoff first, which makes
-    a same-day re-run idempotent.
-
-    `drop_empty` (feature parts) removes rows carrying no feature values at all.
+    FULL -> replace. INCREMENTAL -> `COLUMNS_CHANGED` when the stored column set differs
+    from `rows` (the caller re-runs with full=True); otherwise append the tail from the first
+    cutoff given: an explicit `refresh_from` (the target step's maturing-label window), then
+    `window.refresh_from` (the part's own trailing rewrite), both inclusive because
+    `append_tail` deletes `>=` the cutoff first, so a same-day re-run is idempotent; else
+    strictly after `window.last`. `drop_empty` removes rows with no feature value at all.
     """
     if rows is not None and not rows.empty and drop_empty:
         rows = drop_empty_feature_rows(rows, keys, part)

@@ -179,15 +179,10 @@ def sharadar_get(
 
     An EMPTY frame means the filters matched no rows. `NotEntitledError` is raised on 403 and
     `SharadarRequestError` when any page fails, so a partial result is never returned.
-
-    The caller MUST pass an explicit `date.gte` for any table with a date column: the API
-    defaults `from` to "1 year ago" and `sort` to `date.desc`, so omitting either silently
-    truncates history to the last year. Dotted filter names go in as
-    `sharadar_get(..., **{"date.gte": "2021-01-01"})`.
-
-    `table` is POSITIONAL-ONLY (the `/`) because the `tickers` endpoint has a FILTER of its
-    own called `table` -- `sharadar_get(ctx, "tickers", **{"table": "fundamentals"})` is a
-    legitimate call, and without the `/` it would raise "got multiple values for argument".
+    The caller MUST pass an explicit `date.gte` for any dated table: the API defaults `from`
+    to one year ago and sorts newest first. Dotted filters go in as `**{"date.gte": <iso date>}`.
+    `table` is positional-only because the `tickers` endpoint has a filter of its own called
+    `table` (`sharadar_get(ctx, "tickers", **{"table": "fundamentals"})`).
     """
     url = f"{SHARADAR_BASE_URL}/data/{table}"
     key = _api_key()

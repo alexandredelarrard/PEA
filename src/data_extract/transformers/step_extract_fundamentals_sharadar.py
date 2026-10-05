@@ -38,14 +38,9 @@ class StepExtractFundamentalsSharadar(Step):
         """The five stages, in dependency order. `full` re-pulls the whole configured window
         instead of resuming, and makes the merge DELETE before it rebuilds.
 
-        The CLI's `fundamentals-sharadar` command calls THIS, rather than restating the
-        sequence: a second copy of the order drifted once already, and the copy that omitted
-        the merge left `fundamentals_history` silently one run behind its own inputs.
-
-        `config_dir` defaults to `self._config_dir` (the CLI's `-c`, resolved once by
-        `Context`): `main.py`'s pipeline path calls `run()` with no `config_dir` at all, so a
-        module-level default here would silently ignore `-c` for that path exactly as
-        `context.py` used to.
+        The CLI's `fundamentals-sharadar` command calls this rather than restating the order.
+        `config_dir` defaults to `self._config_dir` (the CLI's `-c`, resolved once by `Context`),
+        so `main.py`'s pipeline path, which passes no `config_dir`, still honours `-c`.
         """
         config_dir = str(config_dir or self._config_dir)
         years = int(self._config.data_extract.sharadar_years_history)
@@ -54,7 +49,7 @@ class StepExtractFundamentalsSharadar(Step):
         #    refresh: `isdelisted` / `lastquarter` mutate, so an append-only view goes stale.
         fetch_sharadar_tickers(self._context)
 
-        # 2. SF1, all 112 columns as delivered, on the three AS-REPORTED dimensions. Its own
+        # 2. SF1, every column as delivered, on the three AS-REPORTED dimensions. Its own
         #    history knob (`sharadar_years_history`), separate from `years_history`, because
         #    the two sources are limited by different things -- the SEC walk by patience,
         #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
@@ -64,13 +59,12 @@ class StepExtractFundamentalsSharadar(Step):
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
         fetch_sharadar_actions(self._context, years_history=years, full=full, as_of=as_of)
 
-        # 4. S&P 500 membership events. Ingested only -- `src/utils/universe.py` still
-        #    resolves the universe from `sp500_tickers`, and the survivorship-bias fix that
-        #    would consume this table is a separate task (D27).
+        # 4. S&P 500 membership events. Ingested only -- `src/utils/universe.py` resolves
+        #    the universe from `sp500_tickers`; nothing consumes this table yet.
         fetch_sharadar_sp500(self._context, full=full)
 
         # 5. The MERGED `fundamentals_history` -- Sharadar's declared column block plus the
-        #    15 SEC-owned ones, joined backward as of each publication date (D14/D18).
+        #    SEC-owned ones, joined backward as of each publication date.
         #
         #    LAST, and never on its own schedule, for the same reason the SEC step already
         #    documents: a snapshot is only as fresh as the rows it reads. Running this beside
@@ -79,5 +73,5 @@ class StepExtractFundamentalsSharadar(Step):
         #
         #    It reads `fundamentals_history_sec` too, which THIS step does not produce -- so
         #    the SEC-owned block is as fresh as the last `StepExtractFundamentals` run, not as
-        #    this one. That is the stated coverage/freshness asymmetry (D14), not a bug.
+        #    this one. That is the stated coverage/freshness asymmetry, not a bug.
         build_merged_history(self._context, tickers=tickers, full=full, config_dir=config_dir)

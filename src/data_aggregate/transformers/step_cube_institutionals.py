@@ -122,12 +122,9 @@ class StepCubeInstitutionals(Step):
             return self.run(full=True)
 
     def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, PartWindow]:
-        """The merge chain, WITHOUT the write. Extracted so `validate institutionals` scores
-        the same panel this step persists instead of carrying a second copy of the chain --
-        the "two declarations of one fact" failure the registry's `read_columns` exists to end.
-
-        `frames` and `shares` are locals and die with the frame on return, which is what the
-        `del` before `write_part` used to buy."""
+        """The merge chain without the write, so `validate institutionals` scores the same panel
+        this step persists. Returns the merged panel and its `PartWindow`; the source frames are
+        locals, freed on return."""
         window = plan_window(
             self._store,
             Tables.cube_part_institutionals,

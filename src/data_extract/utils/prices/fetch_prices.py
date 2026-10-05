@@ -227,20 +227,12 @@ def download_ohlcv(
 ) -> pd.DataFrame:
     """Chunked yfinance pull over [since, until] -> one normalized long frame
     [date, ticker, open/high/low, close_split and/or close_total, volume, dividends,
-    stock splits]. Empty frame when every chunk failed.
+    stock splits]. Empty frame when every chunk failed; `actions` adds the action columns.
 
-    ⚠ `auto_adjust` is KEYWORD-ONLY and REQUIRED, because this function is SHARED and its
-    three callers need different bases:
-
-      * `fetch_prices_and_actions`           -> `auto_adjust=False`, giving both `Close`
-        (split-adjusted, the market-cap basis) and `Adj Close` (total return).
-      * `fetch_macro._fetch_price_leg`         -> `auto_adjust=True`. `SPY` is stored as
-        `equity_tr` and feeds the L/S benchmark leg, `beta_market` and `fwd_market` inside
-        every label; `XLE` pays ~3%. Flipping either to a PRICE return corrupts all of that.
-
-    It used to be a hard-coded `True` here and `actions` was inferred from the `desc` STRING
-    ("dividend" in desc), which meant the basis and the action columns were both decided by a
-    progress-bar label. Both are now explicit arguments."""
+    `auto_adjust` is keyword-only and required because the callers need different bases:
+    `fetch_prices_and_actions` passes False (split-adjusted `Close`, the market-cap basis, plus
+    `Adj Close`, total return); `fetch_macro._fetch_price_leg` passes True, because its `SPY` leg
+    is stored as `equity_tr` and feeds the L/S benchmark, `beta_market` and every label's `fwd_market`."""
     frames: list[pd.DataFrame] = []
     for i in tqdm(range(0, len(tickers), chunk_size), desc=desc):
         chunk = tickers[i : i + chunk_size]

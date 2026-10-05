@@ -298,13 +298,12 @@ def fetch_def14a_llm(
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    Lists each ticker's proxies across its registrant chain over `years_history` and sends only
-    accessions with no saved row to the LLM; each ticker's rows are upserted before the next starts. Skips when no OpenAI key is configured.
-
-    `model` / `max_chars` / `cache` default to `config.gpt` and `workers` (concurrent LLM calls)
-    to `config.gpt.threads`; an explicit keyword pins one without touching config. `full` also
-    re-sends the saved accessions without evidence (markers included); a proxy with stored evidence
-    is never re-sent.
+    Lists each ticker's proxies across its registrant chain over `years_history`, sends only
+    accessions with no saved row to the LLM and upserts each ticker's rows before the next starts.
+    Skips when no OpenAI key is configured. `model` / `max_chars` / `cache` default to `config.gpt`
+    and `workers` (concurrent LLM calls) to `config.gpt.threads`; an explicit keyword pins one
+    without touching config. `full` also re-sends the saved accessions without evidence (markers
+    included); a proxy with stored evidence is never re-sent.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
     de = context.config.data_extract
@@ -315,7 +314,7 @@ def fetch_def14a_llm(
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         return
 
-    # A saved row is done; `full` re-sends every accession without evidence (legacy evidence-free rows and markers).
+    # A saved row is done; `full` re-sends every accession without evidence (evidence-free rows and markers).
     seen = _completed_accessions(context) if full else _stored_accessions(context)
     years = int(de.years_history)
     # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.

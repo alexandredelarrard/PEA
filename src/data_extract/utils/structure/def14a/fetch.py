@@ -26,6 +26,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.empty_markers import drop_markers_over_data
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import (
     Registrant,
     header_subject_ciks,
@@ -207,11 +208,6 @@ def _completed_accessions(context: Context) -> set[str]:
     }
 
 
-def _stored_accessions(context: Context) -> set[str]:
-    """Every accession with a saved `def14a_llm` row: evidence-backed, evidence-free or a marker."""
-    return {str(a) for a in context.store.distinct(Tables.def14a_llm, "accession_number")}
-
-
 def _frames_off_data(context: Context, result: LlmResult) -> dict[Table, pd.DataFrame]:
     """`_result_frames` for one answer, minus any marker whose key already holds a real parent row."""
     return {table: drop_markers_over_data(context.store, table, df, log=context.log) for table, df in _result_frames(result).items()}
@@ -315,7 +311,7 @@ def fetch_def14a_llm(
         return
 
     # A saved row is done; `full` re-sends every accession without evidence (evidence-free rows and markers).
-    seen = _completed_accessions(context) if full else _stored_accessions(context)
+    seen = _completed_accessions(context) if full else set(stored_values(context, Tables.def14a_llm, "accession_number"))
     years = int(de.years_history)
     # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.
     cutovers = load_registrants(str(context.config_dir))

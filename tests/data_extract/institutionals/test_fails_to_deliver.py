@@ -244,7 +244,7 @@ def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite
         ),
     }
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"201501a"})
+    monkeypatch.setattr(ftd, "cached_periods", lambda cache, prefix="", suffix=".zip": {"201501a"})
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
 
@@ -302,7 +302,7 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     )
     sqlite_store.replace(Tables.sec_fails_to_deliver, seeded)
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"202401a"})
+    monkeypatch.setattr(ftd, "cached_periods", lambda cache, prefix="", suffix=".zip": {"202401a"})
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: None)
 

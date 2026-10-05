@@ -40,6 +40,7 @@ SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfai
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
 SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
+SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -102,11 +103,6 @@ def _period_urls(period: str) -> tuple[str, ...]:
     modern = SEC_FTD_URL_TEMPLATE.format(period=period)
     legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
     return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
-
-
-def _cached_periods(cache: Path) -> set[str]:
-    """Period tags present in the local SEC FTD ZIP cache."""
-    return cached_periods(cache, prefix="cnsfails")
 
 
 def _canonicalise_ftd(
@@ -187,7 +183,7 @@ def _rebuild(context: Context, cache: Path, periods: list[str], resolver: Identi
         parsed.add(period)
         frames.append(df)
     df_accepted, df_unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, universe)
-    _validate_full_frame(df_accepted, universe, parsed, _cached_periods(cache))
+    _validate_full_frame(df_accepted, universe, parsed, cached_periods(cache, prefix=SEC_FTD_ZIP_PREFIX))
     logger.info(f"FTD: {len(df_unresolved)} unresolved raw row(s) excluded")
     return context.store.replace(Tables.sec_fails_to_deliver, df_accepted)
 
@@ -205,7 +201,7 @@ def fetch_fails_to_deliver(
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     resolver = identity or load_identity(context)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    cached = _cached_periods(cache)
+    cached = cached_periods(cache, prefix=SEC_FTD_ZIP_PREFIX)
     published = sorted(cached | set(_periods(years_history + 1, run_date)))
     work = archive_worklist(context, (Tables.sec_fails_to_deliver,), published, cached, tickers, run_date, full=full)
     if full and not work.scoped:

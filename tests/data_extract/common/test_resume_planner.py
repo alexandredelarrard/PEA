@@ -12,7 +12,6 @@ from src.data_extract.utils.common.resume import (
     KEY_ESTABLISHED,
     KEY_NEW,
     KEY_ROWLESS,
-    _narrow_done,
     archive_worklist,
     document_worklist,
 )
@@ -179,7 +178,7 @@ def test_the_cap_keeps_the_newest_documents(tmp_path, sqlite_store, caplog):
 
 def test_done_set_narrowing_keeps_units(tmp_path, sqlite_store):
     """A table-wide done set holding accessions the index never lists (another ticker's, an old one)
-    plans exactly as the hand-computed difference, and is narrowed once for every key."""
+    plans exactly as the hand-computed difference."""
     ctx = fake_context(tmp_path, sqlite_store, ["AAA", "BBB"])
     seed_index(ctx, _rows(1, ["2025-06-02", "2026-09-10", "2026-09-28"], "a") + _rows(2, ["2026-09-12", "2026-09-20"], "b"))
     cik_map = _universe(ctx, {"AAA": "1", "BBB": "2"})
@@ -193,13 +192,8 @@ def test_done_set_narrowing_keeps_units(tmp_path, sqlite_store):
     assert _units(work, "AAA") == ["a-000", "a-002"] and _units(work, "BBB") == ["b-001"]
     assert work.key_class == {"AAA": KEY_ESTABLISHED, "BBB": KEY_ESTABLISHED}
     assert work.counts == {"forward": 2, "gap": 1}
-    shared = {"z-000", "a-001", "b-000"}
-    narrowed = _narrow_done({"AAA": shared, "BBB": shared}, pd.DataFrame({"accession": ["a-000", "a-001", "b-000"]}))
-    assert narrowed["AAA"] is narrowed["BBB"] and narrowed["AAA"] == {"a-001", "b-000"}
-    assert _narrow_done({"AAA": shared}, pd.DataFrame({"accession": pd.Series([], dtype=str)})) == {"AAA": set()}
     print("\n=== SANITY CHECK: done-set narrowing ===")
     print(f"  5 stored, 3 never listed -> AAA {_units(work, 'AAA')}, BBB {_units(work, 'BBB')}, counts {work.counts}.")
-    print(f"  a shared table-wide set is narrowed once and stays one object for every key: {sorted(narrowed['AAA'])}.")
 
 
 # --------------------------------------------------------------------------- #

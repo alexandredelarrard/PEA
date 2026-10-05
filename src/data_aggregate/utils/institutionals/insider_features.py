@@ -96,6 +96,7 @@ from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, asof_values, clean_transactions, report_oversized
+from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from src.data_store.schema import Tables
 
 
@@ -159,7 +160,7 @@ def build_insider_feature_panel(
     decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
     availability: InstitutionalAvailability | None = None,
     complete_through: pd.Timestamp | None = None,
-    sink=None,
+    sink: ConditioningSink | None = None,
 ) -> pd.DataFrame:
     """Long-format insider feature panel (`f_<name>` per `EMISSION`) from the cleaned open-market trades.
 
@@ -287,7 +288,7 @@ def _disclosure_events(df_buys: pd.DataFrame) -> pd.DataFrame:
 
 
 def _keep_sink_signals(
-    sink,
+    sink: ConditioningSink,
     fields: dict[str, pd.DataFrame],
     *,
     idx: pd.DatetimeIndex,
@@ -304,7 +305,7 @@ def _keep_sink_signals(
     windows an unpriced trade made unknown removed from values and masks."""
     signal_fields = dict(fields)
     signal_masks: dict[str, pd.DataFrame] = {}
-    frontier_mask = (
+    df_frontier = (
         InstitutionalAvailability.through_mask(idx, columns, source_last)
         if pd.notna(source_last)
         else pd.DataFrame(False, index=idx, columns=columns)
@@ -312,26 +313,35 @@ def _keep_sink_signals(
     for name in ("ic_insider_buy_value_mcap_180d", "ic_insider_net_buy_ratio_180d"):
         if name not in fields:
             continue
-        requirements = [listed, frontier_mask]
-        if name == "ic_insider_buy_value_mcap_180d":
-            if mcap is None or mcap.empty:
-                continue
-            requirements.append(mcap.reindex(index=idx, columns=columns).gt(0))
+        requirements = _signal_requirements(name, [listed, df_frontier], mcap, idx, columns)
+        if requirements is None:
+            continue
         if name == "ic_insider_net_buy_ratio_180d" and net_mask is not None:
-            mask = net_mask
+            df_mask = net_mask
         else:
-            mask = (
+            df_mask = (
                 availability.source_mask(Tables.insider_transactions, idx, columns, requirements=tuple(requirements))
                 if availability is not None
                 else InstitutionalAvailability.combine(*requirements)
             )
-        signal_masks[name] = mask
-        signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(mask)
+        signal_masks[name] = df_mask
+        signal_fields[name] = fields[name].reindex(index=idx, columns=columns).fillna(0.0).where(df_mask)
     _mask_unknown_windows(signal_fields, unpriced_masks)
-    for name, unknown in unpriced_masks.items():
+    for name, df_unknown in unpriced_masks.items():
         if name in signal_masks:
-            signal_masks[name] &= ~unknown.reindex(index=idx, columns=columns, fill_value=False)
+            signal_masks[name] &= ~df_unknown.reindex(index=idx, columns=columns, fill_value=False)
     sink.keep_signals(signal_fields, signal_masks)
+
+
+def _signal_requirements(
+    name: str, requirements: list[pd.DataFrame], mcap: pd.DataFrame | None, idx: pd.DatetimeIndex, columns: pd.Index
+) -> list[pd.DataFrame] | None:
+    """`requirements`, plus a positive market cap for the dollar leg; None for the dollar leg without a market cap."""
+    if name != "ic_insider_buy_value_mcap_180d":
+        return requirements
+    if mcap is None or mcap.empty:
+        return None
+    return [*requirements, mcap.reindex(index=idx, columns=columns).gt(0)]
 
 
 # --------------------------------------------------------------------------- #
@@ -529,32 +539,32 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, halflife: float) -
     out: dict[str, pd.DataFrame] = {}
     if buys.empty:
         return out
-    ev = buys
+    df_events = buys
     # ⚠ ALL FOUR value-scaled intensities are gated on a real market cap, and the guard is
     # not defensive padding. `decay_events` treats a NaN magnitude as an event of unknown
     # size and counts it 1.0 -- correct policy there, but with no market cap EVERY magnitude
     # is NaN and these four would silently become event counts under names that promise
     # dollars over market cap.
-    priced = "value_mcap" in ev.columns and ev["value_mcap"].notna().any()
+    priced = "value_mcap" in df_events.columns and df_events["value_mcap"].notna().any()
     if priced:
-        out["ic_insider_buy_value_mcap_60d"] = _decay_visible(ev, idx, halflife, "value_mcap")
+        out["ic_insider_buy_value_mcap_60d"] = _decay_visible(df_events, idx, halflife, "value_mcap")
 
     roles = {
-        "ic_insider_ceo_buy_mcap_180d": ev["role"].eq("CEO"),
-        "ic_insider_cfo_buy_mcap_180d": ev["role"].eq("CFO"),
-        "ic_insider_director_buy_mcap_180d": ev["is_director"].eq(1),
+        "ic_insider_ceo_buy_mcap_180d": df_events["role"].eq("CEO"),
+        "ic_insider_cfo_buy_mcap_180d": df_events["role"].eq("CFO"),
+        "ic_insider_director_buy_mcap_180d": df_events["is_director"].eq(1),
     }
     for name, mask in roles.items():
-        sub = ev[mask]
-        if priced and not sub.empty and sub["value_mcap"].notna().any():
-            out[name] = _decay_visible(sub, idx, halflife, "value_mcap")
+        df_role = df_events[mask]
+        if priced and not df_role.empty and df_role["value_mcap"].notna().any():
+            out[name] = _decay_visible(df_role, idx, halflife, "value_mcap")
 
-    pct_prior = _purchase_pct_prior(ev)
-    if pct_prior is not None:
-        out["ic_insider_purchase_pct_prior"] = _decay_weighted_mean(pct_prior, idx, halflife, "pct_prior", "value")
-    surprise = _owner_surprise(ev)
-    if surprise is not None:
-        out["ic_insider_owner_surprise_120d"] = _decay_weighted_mean(surprise, idx, halflife, "surprise", "value")
+    df_pct_prior = _purchase_pct_prior(df_events)
+    if df_pct_prior is not None:
+        out["ic_insider_purchase_pct_prior"] = _decay_weighted_mean(df_pct_prior, idx, halflife, "pct_prior", "value")
+    df_surprise = _owner_surprise(df_events)
+    if df_surprise is not None:
+        out["ic_insider_owner_surprise_120d"] = _decay_weighted_mean(df_surprise, idx, halflife, "surprise", "value")
     return out
 
 

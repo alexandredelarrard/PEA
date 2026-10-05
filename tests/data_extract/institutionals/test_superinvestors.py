@@ -566,6 +566,48 @@ def test_rebuild_roster_combines_history_and_live_resolved_fresh(sqlite_store, t
     )
 
 
+@pytest.mark.parametrize("crash", ["write", "delete"])
+def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite_store, tmp_path, crash):
+    """A rebuild that crashes mid-write (the bulk insert, or the stale-key delete after it) leaves every stored live
+    snapshot in the table, so the documented recovery -- rerun the rebuild -- restores the full history and drops
+    the stale keys: a whole stale snapshot (2015-01-01) and a stale code inside a kept history snapshot (XYZ)."""
+    ctx, _ = _rebuild_fixture(sqlite_store, tmp_path)
+    stale_code = dict(_gate_row("XYZ", _BRK, "2015-03-30"), source_url="https://web.archive.org/web/a")
+    sqlite_store.save(si.Tables.superinvestor_roster, pd.DataFrame([stale_code]))
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"simulated crash during the {crash}")
+
+    with monkeypatch.context() as patch:
+        if crash == "write":  # every bulk-insert path of the store: COPY (replace) and upsert (save)
+            patch.setattr("src.data_store.store.copy_load", boom)
+            patch.setattr("src.data_store.store.upsert_dataframe", boom)
+        else:
+            patch.setattr(type(sqlite_store), "delete", boom)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    after_crash = sqlite_store.load(si.Tables.superinvestor_roster, optional=True)
+    live_days = (
+        set()
+        if after_crash is None
+        else set(after_crash.loc[after_crash["source_url"] == si.DATAROMA_HOME_URL, "snapshot_date"].astype(str).str[:10])
+    )
+    assert live_days == {"2026-09-08", "2026-09-09"}, f"live snapshots lost after a {crash} crash: {sorted(live_days)}"
+
+    si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    stored = sqlite_store.load(si.Tables.superinvestor_roster)
+    keys = {(str(d)[:10], c) for d, c in stored[["snapshot_date", "dataroma_code"]].itertuples(index=False)}
+    expected = {(d, c) for d in ("2015-03-30", "2016-03-15") for c in ("BRK", "GLRE")} | {
+        (d, c) for d in ("2026-09-08", "2026-09-09") for c in ("BRK", "GLRE", "PSC")
+    }
+    assert keys == expected and len(stored) == 10
+    print(f"\n=== SANITY: rebuild survives a {crash} crash ===")
+    print(
+        f"  after the crash the table holds {len(after_crash)} rows incl. live snapshots {sorted(live_days)}; the rerun "
+        f"restores 4 history + 6 live rows and deletes the stale 2015-01-01 snapshot and stale code XYZ. Validated."
+    )
+
+
 @pytest.mark.parametrize("failure", ["gate", "pk"])
 def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
     """A gate failure (a CIK with no 13F activity near its snapshot) or a duplicate (snapshot_date, code) between

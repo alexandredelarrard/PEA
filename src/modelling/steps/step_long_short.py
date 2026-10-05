@@ -440,56 +440,56 @@ class StepLongShort(Step):
         want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
         # feature-only, float64: the newest rows have no matured label, and the linear member
         # scores in float64
-        cube = load_frame(store, Tables.cube, columns=list(dict.fromkeys(["date", "ticker"] + want)), since=start, downcast=False)
-        if cube is None or cube.empty:
+        df_cube = load_frame(store, Tables.cube, columns=list(dict.fromkeys(["date", "ticker"] + want)), since=start, downcast=False)
+        if df_cube is None or df_cube.empty:
             raise RuntimeError(f"No cube rows on/after {start.date()}.")
-        present = [c for c in (feat_cols + cat_cols) if c in cube.columns]
-        missing = [c for c in (feat_cols + cat_cols) if c not in cube.columns]
-        panel = cube[["date", "ticker"] + present].copy()
+        present = [c for c in (feat_cols + cat_cols) if c in df_cube.columns]
+        missing = [c for c in (feat_cols + cat_cols) if c not in df_cube.columns]
+        df_panel = df_cube[["date", "ticker"] + present].copy()
         if missing:  # an absent model feature scores as NaN
-            panel = pd.concat([panel, pd.DataFrame(np.nan, index=panel.index, columns=missing)], axis=1)
-        keys = panel[["date", "ticker"]]
+            df_panel = pd.concat([df_panel, pd.DataFrame(np.nan, index=df_panel.index, columns=missing)], axis=1)
+        df_keys = df_panel[["date", "ticker"]]
 
         long_rows: list[pd.DataFrame] = []
-        ens_wide = None
+        df_ens_wide = None
         for h, members in models.items():
-            scores, member_preds = ensemble_predict(members, panel)
+            scores, member_preds = ensemble_predict(members, df_panel)
             per_model = {**{name: p.to_numpy() for name, p in member_preds.items()}, PREDICTION_MODEL_ENSEMBLE: scores.to_numpy()}
             for name, raw in per_model.items():
-                long_rows.append(prediction_rows(keys, raw, h, name, predicted_at))
-            ez = keys.copy()
-            ez[f"z{h}"] = per_day_zscore(scores.to_numpy(), keys["date"].to_numpy())
-            ens_wide = ez if ens_wide is None else ens_wide.merge(ez, on=["date", "ticker"], how="outer")
-        if ens_wide is None:
+                long_rows.append(prediction_rows(df_keys, raw, h, name, predicted_at))
+            df_z = df_keys.copy()
+            df_z[f"z{h}"] = per_day_zscore(scores.to_numpy(), df_keys["date"].to_numpy())
+            df_ens_wide = df_z if df_ens_wide is None else df_ens_wide.merge(df_z, on=["date", "ticker"], how="outer")
+        if df_ens_wide is None:
             raise RuntimeError("No horizon produced a prediction for the latest cube date(s).")
 
-        hs = [int(h) for h in models if f"z{h}" in ens_wide.columns]
+        hs = [int(h) for h in models if f"z{h}" in df_ens_wide.columns]
         w = ir_horizon_weights({h: train_ic.get(h, 0.0) for h in hs})
-        blend = blend_horizons(ens_wide[[f"z{h}" for h in hs]].to_numpy(), np.array([w[h] for h in hs]))
+        blend = blend_horizons(df_ens_wide[[f"z{h}" for h in hs]].to_numpy(), np.array([w[h] for h in hs]))
         # the blend is stamped with the IR-weighted average horizon: how far ahead it is about
         blend_h = int(round(sum(w[h] * h for h in hs))) if hs else 0
-        long_rows.append(prediction_rows(ens_wide[["date", "ticker"]], blend, blend_h, PREDICTION_MODEL_BLENDED, predicted_at))
+        long_rows.append(prediction_rows(df_ens_wide[["date", "ticker"]], blend, blend_h, PREDICTION_MODEL_BLENDED, predicted_at))
 
-        out = pd.concat(long_rows, ignore_index=True)
-        out = out.sort_values(["date", "model", "horizon", "rank"], ascending=[True, True, True, False]).reset_index(drop=True)
-        store.replace(Tables.predictions_latest, out)
-        last = out[(out["date"] == out["date"].max()) & (out["model"] == PREDICTION_MODEL_BLENDED)]
+        df_predictions = pd.concat(long_rows, ignore_index=True)
+        df_predictions = df_predictions.sort_values(["date", "model", "horizon", "rank"], ascending=[True, True, True, False]).reset_index(drop=True)
+        store.replace(Tables.predictions_latest, df_predictions)
+        df_last = df_predictions[(df_predictions["date"] == df_predictions["date"].max()) & (df_predictions["model"] == PREDICTION_MODEL_BLENDED)]
         self._log.info(
             "run_predict: %d row(s) -> '%s' | as-of %s | horizons %s x models %s | blend weights %s",
-            len(out),
+            len(df_predictions),
             Tables.predictions_latest,
             [str(d.date()) for d in dates],
-            sorted(out["horizon"].unique()),
-            sorted(out["model"].unique()),
+            sorted(df_predictions["horizon"].unique()),
+            sorted(df_predictions["model"].unique()),
             {h: round(w[h], 3) for h in hs},
         )
         self._log.info(
             "blended (h~%d) on %s: %d names, predicts_for %s, pred range [%.3f, %.3f]",
             blend_h,
-            out["date"].max().date(),
-            len(last),
-            last["predicts_for"].max().date() if not last.empty else None,
-            float(last["pred"].min()),
-            float(last["pred"].max()),
+            df_predictions["date"].max().date(),
+            len(df_last),
+            df_last["predicts_for"].max().date() if not df_last.empty else None,
+            float(df_last["pred"].min()),
+            float(df_last["pred"].max()),
         )
-        return out
+        return df_predictions

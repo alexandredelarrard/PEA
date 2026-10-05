@@ -54,13 +54,13 @@ def marker_shares_data_key(table: Table) -> bool:
 
 def _key_frame(table: Table, df: pd.DataFrame) -> pd.DataFrame:
     """`df`'s primary-key columns as comparable strings (dates normalised to ISO days)."""
-    out = pd.DataFrame(index=df.index)
+    df_keys = pd.DataFrame(index=df.index)
     for column in table.pk:
         values = df[column]
         if column in table.date_type_cols:
             values = pd.to_datetime(values, errors="coerce").dt.strftime("%Y-%m-%d")
-        out[column] = values.astype(str)
-    return out
+        df_keys[column] = values.astype(str)
+    return df_keys
 
 
 def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log: logging.Logger | None = None) -> pd.DataFrame:
@@ -75,13 +75,13 @@ def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log
     is_marker = marker_mask(table, df)
     if not is_marker.any():
         return df
-    keys = _key_frame(table, df)
+    df_keys = _key_frame(table, df)
     df_markers = df[is_marker]
     scope = {c: sorted({str(v) for v in df_markers[c].dropna()}) for c in table.pk if c not in table.date_type_cols}
-    stored = store.load(table, columns=list(table.pk), where=scope, optional=True)
-    real = [keys[~is_marker]] + ([_key_frame(table, stored)] if stored is not None else [])
+    df_stored = store.load(table, columns=list(table.pk), where=scope, optional=True)
+    real = [df_keys[~is_marker]] + ([_key_frame(table, df_stored)] if df_stored is not None else [])
     taken = set(pd.concat(real, ignore_index=True).itertuples(index=False, name=None))
-    over_data = is_marker & pd.Series([key in taken for key in keys.itertuples(index=False, name=None)], index=df.index)
+    over_data = is_marker & pd.Series([key in taken for key in df_keys.itertuples(index=False, name=None)], index=df.index)
     if not over_data.any():
         return df
     (log or logger).info(

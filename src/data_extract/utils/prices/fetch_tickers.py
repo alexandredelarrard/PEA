@@ -49,12 +49,12 @@ def _with_added_on(context: Context, df: pd.DataFrame, as_of: pd.Timestamp) -> p
     if df_stored is None:
         df_stored = pd.DataFrame({"ticker": pd.Series(dtype=str), "added_on": pd.Series(dtype="datetime64[ns]")})
     df_stored = df_stored.assign(added_on=pd.to_datetime(df_stored["added_on"], errors="coerce"))
-    out = df.merge(df_stored, on="ticker", how="left")
-    is_new = ~out["ticker"].isin(df_stored["ticker"])
-    out["added_on"] = out["added_on"].mask(is_new, as_of)
+    df_tickers = df.merge(df_stored, on="ticker", how="left")
+    is_new = ~df_tickers["ticker"].isin(df_stored["ticker"])
+    df_tickers["added_on"] = df_tickers["added_on"].mask(is_new, as_of)
     if is_new.any():
-        logger.info(f"{int(is_new.sum())} ticker(s) enter {Tables.sp500_tickers} on {as_of.date()}: {sorted(out.loc[is_new, 'ticker'])}")
-    return out
+        logger.info(f"{int(is_new.sum())} ticker(s) enter {Tables.sp500_tickers} on {as_of.date()}: {sorted(df_tickers.loc[is_new, 'ticker'])}")
+    return df_tickers
 
 
 def get_sp500_tickers(context: Context, as_of: pd.Timestamp | None = None) -> None:

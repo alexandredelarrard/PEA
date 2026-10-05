@@ -405,22 +405,22 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
 
     `replace`, never `save`: a full derivation must not leave stale rows behind.
     """
-    existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
-    derived = derive_symbol_tenure(scan)
-    manual = load_manual_symbol_tenure(config_dir or context.config_dir)
-    out = materialize_symbol_tenure(derived, manual)
+    df_existing = context.store.load(Tables.symbol_tenure, project=True, optional=True)
+    df_derived = derive_symbol_tenure(scan)
+    df_manual = load_manual_symbol_tenure(config_dir or context.config_dir)
+    df_tenure = materialize_symbol_tenure(df_derived, df_manual)
     context.log.info(
-        f"symbol_tenure: validated {len(manual)} manual interval(s) for {manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
+        f"symbol_tenure: validated {len(df_manual)} manual interval(s) for {df_manual['canonical_ticker'].nunique()} canonical ticker(s); no manual overlap"
     )
-    if existing is None:
-        context.log.info(f"symbol_tenure: cold build with {len(out)} row(s) over {out['symbol'].nunique()} symbol(s)")
+    if df_existing is None:
+        context.log.info(f"symbol_tenure: cold build with {len(df_tenure)} row(s) over {df_tenure['symbol'].nunique()} symbol(s)")
     else:
-        changed = changed_tenure_symbols(existing, out)
+        changed = changed_tenure_symbols(df_existing, df_tenure)
         context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
-    unchanged = matches_stored(existing, out, Tables.symbol_tenure)
-    written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, out)
+    unchanged = matches_stored(df_existing, df_tenure, Tables.symbol_tenure)
+    written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, df_tenure)
     if unchanged:
-        logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(out))
+        logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(df_tenure))
     else:
         logger.info("symbol_tenure: wrote %d row(s)", written)
-    return out
+    return df_tenure

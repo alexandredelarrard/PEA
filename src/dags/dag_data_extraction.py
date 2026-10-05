@@ -173,7 +173,7 @@ identity_consumers = [
 seed_universe >> all_fetchers
 insider_transactions >> identity_tables >> identity_consumers
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
-thirteen_f >> superinvestors  # roster reads the 13F holdings
+thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes

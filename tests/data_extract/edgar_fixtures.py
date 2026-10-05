@@ -19,6 +19,7 @@ from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
+from tests.fixtures.superinvestor_config import write_roster_config
 
 MASTER_HEADER = """Description:           Master Index of EDGAR Dissemination Feed
 Last Data Received:    September 30, 2026
@@ -41,7 +42,8 @@ def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
 
 
 def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = None, **data_extract: Any) -> Any:
-    """A Context stand-in for the driver: `sp500_tickers` seeded with every column `load_cik_mapping` projects."""
+    """A Context stand-in for the driver: `sp500_tickers` seeded with every column `load_cik_mapping` projects,
+    and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
     ciks = ciks or [str(i + 1) for i in range(len(tickers))]
     store.save(
         Tables.sp500_tickers,
@@ -60,7 +62,7 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
         ),
         config=extract_config(data_extract={"years_history": 15, **data_extract}),
         ensure_edgar_identity=lambda: None,
-        config_dir=tmp_path,
+        config_dir=write_roster_config(tmp_path),
     )
     ctx.warnings, ctx.errors, ctx.infos = warnings, errors, infos
     return ctx

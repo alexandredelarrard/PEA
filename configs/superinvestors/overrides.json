@@ -1,0 +1,434 @@
+{
+  "_README": [
+    "Hand resolutions for the Dataroma superinvestor roster, loaded by src/utils/superinvestor_roster.load_superinvestor_overrides. Every roster write (rebuild and daily refresh) resolves a code as cik_overrides > EDGAR company search, then gates the result.",
+    "cik_overrides: Dataroma code -> 13F-filer CIK for the names EDGAR company search gets wrong or cannot see; a hand mapping always wins over EDGAR. Each entry carries `evidence`: the EDGAR filer name, its 13F-HR count and first->last filing date, and its quarters in sec13f_hr.",
+    "Most failures are mutual-fund SHARE CLASSES or person names whose 13F filer is the ADVISER, and Dataroma's 2026 code migration (fund ticker -> adviser code, e.g. oaklx -> HA) re-resolved known managers from scratch: a new code points at the same filer as the code it replaced.",
+    "AMBIGUITY IS SETTLED BY 13F ACTIVITY, never by name alone: a name match that never filed a 13F-HR (or stopped years before the snapshot) is not the manager.",
+    "manager_ciks: manager ID (the OLDEST filer CIK) -> its filer CIKs with inclusive period windows [from, to] (null = open). Windows never overlap and a CIK belongs to one chain; a filer that takes its book back later appears again with a second window. Readers relabel each member's books to the manager ID inside its window; the writer stores the member valid at the last quarter end before the snapshot date.",
+    "unresolvable: codes allowed to resolve to no CIK, each with its reason (rows kept with a NULL cik).",
+    "inactive: code -> {from, to, reason}, the quarter-end periods (inclusive, null = open) in which a resolved filer has no 13F activity for a recorded reason. Outside that range the gate applies as usual.",
+    "Activity gate: with Q = the last quarter end strictly before the snapshot date, the stored CIK must have a (cik, period) row in sec13f_hr or sec13f_manager_holdings for a period in [Q - 4 quarters, Q + 2 quarters] (a window ending before 2013-06-30, the start of XML 13F tables, extends to it). On a local miss only, the EDGAR 13F-HR listing's report dates for that CIK are checked. A miss raises SuperinvestorResolutionError naming the code, CIK and nearest known period; fix it with an evidence-backed cik_overrides, manager_ciks or inactive entry, never by loosening the gate.",
+    "After any change here, rebuild the table: `python -m src data_extract superinvestors --seed -c ./configs` (rebuilds superinvestor_roster from dataroma_roster_history.json plus every stored live snapshot, all re-resolved and gated: the gates and PK check run before any write, then the rebuilt rows are upserted in one transaction and the stale stored keys deleted; a crash leaves the old table or a superset, and a rerun converges), then `thirteen-f-managers` to fetch the books of any new filer CIK."
+  ],
+  "cik_overrides": {
+    "BRK": {
+      "cik": "0001067983",
+      "note": "Berkshire Hathaway (Warren Buffett)",
+      "evidence": "BERKSHIRE HATHAWAY INC; EDGAR 111 13F-HR filed 1999-05-17->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "HA": {
+      "cik": "0000813917",
+      "note": "2026 adviser code that replaced oaklx (Oakmark Funds -> Harris Associates L P)",
+      "evidence": "HARRIS ASSOCIATES L P; EDGAR 111 13F-HR filed 1999-05-12->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "VAN": {
+      "cik": "0001142062",
+      "note": "2026 adviser code that replaced CMAFX (Century Management -> Van Den Berg Management I)",
+      "evidence": "VAN DEN BERG MANAGEMENT I, INC; EDGAR 72 13F-HR filed 2000-02-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "RC": {
+      "cik": "0001720792",
+      "note": "2026 adviser code that replaced SEQUX (Ruane Cunniff LP); chained to 0000728014",
+      "evidence": "Ruane, Cunniff & Goldfarb L.P.; EDGAR 34 13F-HR filed 2018-05-15->2026-08-14; sec13f_hr 34q 2018-03-31->2026-06-30"
+    },
+    "DAC": {
+      "cik": "0000200217",
+      "evidence": "DODGE & COX; EDGAR 110 13F-HR filed 1999-05-12->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "PI": {
+      "cik": "0001549575",
+      "note": "Mohnish Pabrai - Pabrai Investments: the filer is Dalal Street, LLC",
+      "evidence": "Dalal Street, LLC; EDGAR 58 13F-HR filed 2012-05-11->2026-08-13; sec13f_hr 35q 2013-06-30->2023-03-31"
+    },
+    "MPF": {
+      "cik": "0001070134",
+      "note": "2026 adviser code that replaced MPGFX (Mairs & Power Funds -> Mairs & Power Inc)",
+      "evidence": "MAIRS & POWER INC; EDGAR 110 13F-HR filed 1999-05-12->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "DAV": {
+      "cik": "0001036325",
+      "note": "Chris Davis - Davis Advisors: Davis Selected Advisers (same filer as cfimx)",
+      "evidence": "DAVIS SELECTED ADVISERS; EDGAR 93 13F-HR filed 1999-05-12->2026-08-11; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "T": {
+      "cik": "0000098758",
+      "note": "Torray Funds: Torray Investment Partners LLC (same filer as TORYX)",
+      "evidence": "TORRAY INVESTMENT PARTNERS LLC; EDGAR 108 13F-HR filed 1999-11-12->2026-07-30; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "OA": {
+      "cik": "0000898382",
+      "note": "Leon Cooperman - Omega Advisors: manager ID Cooperman Leon G, chained to Omega Advisors Inc. (0000898202) for 2014Q3-2018Q4",
+      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
+    },
+    "HRSVX": {
+      "cik": "0000937394",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: Heartland Advisors, 1,600 rows / 51q",
+      "evidence": "HEARTLAND ADVISORS INC; EDGAR 110 13F-HR filed 1999-05-12->2026-08-11; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "TVAFX": {
+      "cik": "0001145020",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: Thornburg Investment Mgmt, 2,820 rows / 51q",
+      "evidence": "THORNBURG INVESTMENT MANAGEMENT INC; EDGAR 101 13F-HR filed 2001-08-10->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "YAFFX": {
+      "cik": "0000905567",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: Yacktman Asset Management, 1,826 rows / 51q",
+      "evidence": "YACKTMAN ASSET MANAGEMENT LP; EDGAR 110 13F-HR filed 1999-06-23->2026-08-11; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "cfimx": {
+      "cik": "0001036325",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: Davis Selected Advisers, 3,149 rows / 51q",
+      "evidence": "DAVIS SELECTED ADVISERS; EDGAR 93 13F-HR filed 1999-05-12->2026-08-11; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "lmvtx": {
+      "cik": "0000820330",
+      "note": "Bill Miller - Legg Mason Value Trust (later ClearBridge Value Trust), dropped from the roster since 2013: the fund's adviser Legg Mason Capital Management (now CLEARBRIDGE, LLC, 0000820330) until 2018-06-30, then ClearBridge Investments, LLC (0001348883, chained) after the advisory agreement moved on 2018-07-01",
+      "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC/INC); EDGAR 45 13F-HR filed 2008-02-14->2019-02-14, report periods 2007-12-31->2018-12-31; sec13f_hr 23q 2013-06-30->2018-12-31; Value Trust N-CSR (CIK 0000357235 FY2011, 0001474103 FY2013) name LMCM as adviser; N-Q 2014-01-31 / 2015-07-31 holdings covered by this filer's 13F at 98% / 97% of fund value against 65% / 64% for 0001348883"
+    },
+    "oakvx": {
+      "cik": "0001085256",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: RS Investment Management, 1,233 rows / 13q (ends 2016-06)",
+      "evidence": "RS INVESTMENT MANAGEMENT CO LLC; EDGAR 40 13F-HR filed 2006-11-13->2016-07-26; sec13f_hr 13q 2013-06-30->2016-06-30"
+    },
+    "DJCO": {
+      "cik": "0000783412",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: Daily Journal Corp, 147 rows / 49q",
+      "evidence": "DAILY JOURNAL CORP; EDGAR 51 13F-HR filed 2014-02-11->2026-07-16; sec13f_hr 51q 2013-12-31->2026-06-30"
+    },
+    "t2": {
+      "cik": "0001327388",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: T2 Partners Management, LP",
+      "evidence": "T2 Partners Management, LP; EDGAR 36 13F-HR filed 2007-02-13->2015-11-03; sec13f_hr 10q 2013-06-30->2015-09-30"
+    },
+    "FEVAX": {
+      "cik": "0001325447",
+      "note": "dropped from the roster since 2013, verified against sec13f_hr: First Eagle -- on today's roster too: a DEDUP, not a new manager",
+      "evidence": "First Eagle Investment Management, LLC; EDGAR 81 13F-HR filed 2006-07-18->2026-08-05; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "ARFFX": {
+      "cik": "0000936753",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Ariel Focus Fund -> Ariel Investments LLC, 2,285 rows",
+      "evidence": "ARIEL INVESTMENTS, LLC; EDGAR 109 13F-HR filed 1999-05-07->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "CAAPX": {
+      "cik": "0000936753",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Ariel Appreciation Fund -> Ariel Investments LLC (same adviser)",
+      "evidence": "ARIEL INVESTMENTS, LLC; EDGAR 109 13F-HR filed 1999-05-07->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "FPACX": {
+      "cik": "0001377581",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): FPA Crescent Fund -> First Pacific Advisors LLC, 2,271 rows",
+      "evidence": "First Pacific Advisors, LP; EDGAR 79 13F-HR filed 2007-02-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "FPPTX": {
+      "cik": "0001377581",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): FPA Queens Road -> First Pacific Advisors LLC (same adviser)",
+      "evidence": "First Pacific Advisors, LP; EDGAR 79 13F-HR filed 2007-02-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "LLPFX": {
+      "cik": "0000807985",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Longleaf Partners -> Southeastern Asset Mgmt, 363 rows",
+      "evidence": "SOUTHEASTERN ASSET MANAGEMENT INC/TN/; EDGAR 110 13F-HR filed 1999-05-13->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "MPGFX": {
+      "cik": "0001070134",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Mairs & Power Growth -> Mairs & Power Inc, 5,912 rows",
+      "evidence": "MAIRS & POWER INC; EDGAR 110 13F-HR filed 1999-05-12->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "MVALX": {
+      "cik": "0001483859",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Meridian Contrarian -> ArrowMark Colorado Holdings, 3,159 rows",
+      "evidence": "ArrowMark Colorado Holdings LLC; EDGAR 67 13F-HR filed 2010-02-16->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "TWEBX": {
+      "cik": "0000732905",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Tweedy Browne Value -> Tweedy, Browne Co LLC, 1,211 rows",
+      "evidence": "Tweedy, Browne Co LLC; EDGAR 110 13F-HR filed 1999-05-12->2026-08-07; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "WVALX": {
+      "cik": "0000883965",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Weitz Large Cap Equity -> Weitz Investment Mgmt, 1,283 rows",
+      "evidence": "WEITZ INVESTMENT MANAGEMENT, INC.; EDGAR 109 13F-HR filed 1999-05-07->2026-08-12; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "hcmax": {
+      "cik": "0001314620",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Hillman Value Fund -> Hillman Capital Management, 953 rows",
+      "evidence": "Hillman Capital Management, Inc.; EDGAR 64 13F-HR filed 2005-02-10->2026-08-14; sec13f_hr 30q 2013-06-30->2026-06-30"
+    },
+    "oaklx": {
+      "cik": "0000813917",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Oakmark Select -> Harris Associates L P, 3,692 rows",
+      "evidence": "HARRIS ASSOCIATES L P; EDGAR 111 13F-HR filed 1999-05-12->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "pzfvx": {
+      "cik": "0001027796",
+      "note": "share class whose ADVISER is the 13F filer (all 13 snapshots, still on the roster): Hancock Classic Value -> Pzena Investment Mgmt, 2,789 rows",
+      "evidence": "PZENA INVESTMENT MANAGEMENT LLC; EDGAR 109 13F-HR filed 1999-04-28->2026-08-07; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "CAS": {
+      "cik": "0001697591",
+      "note": "operating company / adviser EDGAR only matches on a shorter name: CAS Investment Partners, LLC, 46 rows",
+      "evidence": "CAS Investment Partners, LLC; EDGAR 35 13F-HR filed 2018-02-14->2026-08-14; sec13f_hr 35q 2017-12-31->2026-06-30"
+    },
+    "FFH": {
+      "cik": "0000915191",
+      "note": "operating company / adviser EDGAR only matches on a shorter name: Fairfax Financial Holdings Ltd/CAN, 512 rows",
+      "evidence": "FAIRFAX FINANCIAL HOLDINGS LTD/ CAN; EDGAR 77 13F-HR filed 2007-08-09->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "MAVFX": {
+      "cik": "0001016287",
+      "note": "operating company / adviser EDGAR only matches on a shorter name: Matrix Asset Advisors Inc/NY, 2,728 rows",
+      "evidence": "MATRIX ASSET ADVISORS INC/NY; EDGAR 110 13F-HR filed 1999-05-12->2026-07-15; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "SA": {
+      "cik": "0001115373",
+      "note": "operating company / adviser EDGAR only matches on a shorter name: Semper Augustus Investments Group LLC, 881 rows",
+      "evidence": "SEMPER AUGUSTUS INVESTMENTS GROUP LLC; EDGAR 75 13F-HR filed 2008-02-07->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "oa": {
+      "cik": "0000898382",
+      "note": "The lower-case twin of \"OA\" (Dataroma serves the code as `oa` and the name as the bare person); manager ID Cooperman Leon G, chained to Omega Advisors Inc. (0000898202) for 2014Q3-2018Q4",
+      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
+    },
+    "BAUPOST": {
+      "cik": "0001061768",
+      "note": "Seth Klarman - Baupost Group: BAUPOST GROUP LLC/MA, not the /ADV entity that stopped in 2002",
+      "evidence": "BAUPOST GROUP LLC/MA; EDGAR 105 13F-HR filed 1999-05-14->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "ic": {
+      "cik": "0000921669",
+      "note": "Carl Icahn - Icahn Capital Management: the filer is Icahn Carl C",
+      "evidence": "ICAHN CARL C; EDGAR 102 13F-HR filed 1999-05-13->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "TF": {
+      "cik": "0001345471",
+      "note": "Nelson Peltz - Trian Fund Management: the L.P., not the GP that stopped in 2011",
+      "evidence": "TRIAN FUND MANAGEMENT, L.P.; EDGAR 62 13F-HR filed 2011-05-16->2026-08-12; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "VA": {
+      "cik": "0001418814",
+      "note": "ValueAct Capital: ValueAct Holdings, L.P.",
+      "evidence": "ValueAct Holdings, L.P.; EDGAR 73 13F-HR filed 2008-08-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "TA": {
+      "cik": "0001099281",
+      "note": "Third Avenue Management LLC (current CIK; 0001002858 stopped in 2004)",
+      "evidence": "THIRD AVENUE MANAGEMENT LLC; EDGAR 87 13F-HR filed 2005-02-16->2026-08-12; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "SEQUX": {
+      "cik": "0000728014",
+      "note": "Ruane Cunniff - Sequoia Fund: Ruane, Cunniff & Goldfarb Inc; chained to 0001720792 from 2018-03-31",
+      "evidence": "RUANE, CUNNIFF & GOLDFARB INC; EDGAR 77 13F-HR filed 1999-05-12->2018-05-15; sec13f_hr 19q 2013-06-30->2017-12-31"
+    },
+    "AM": {
+      "cik": "0001006438",
+      "note": "David Tepper - Appaloosa: Appaloosa Management LP; chained to Appaloosa LP from 2016-03-31",
+      "evidence": "APPALOOSA MANAGEMENT LP; EDGAR 68 13F-HR filed 1999-05-07->2016-02-12; sec13f_hr 11q 2013-06-30->2015-12-31"
+    },
+    "FS": {
+      "cik": "0001569205",
+      "note": "Terry Smith - Fundsmith: Fundsmith LLP, not the Fundsmith Equity Fund L.P.",
+      "evidence": "Fundsmith LLP; EDGAR 55 13F-HR filed 2013-02-13->2026-08-14; sec13f_hr 54q 2013-03-31->2026-06-30"
+    },
+    "TORYX": {
+      "cik": "0000098758",
+      "note": "Torray Fund share class whose adviser files: Torray Investment Partners LLC",
+      "evidence": "TORRAY INVESTMENT PARTNERS LLC; EDGAR 108 13F-HR filed 1999-11-12->2026-07-30; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "jensx": {
+      "cik": "0001106129",
+      "note": "Jensen Quality Growth Fund share class whose adviser files: Jensen Investment Management Inc",
+      "evidence": "JENSEN INVESTMENT MANAGEMENT INC; EDGAR 110 13F-HR filed 1999-02-18->2026-08-07; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "FPA": {
+      "cik": "0001377581",
+      "note": "2026 adviser code that replaced FPACX/FPPTX: First Pacific Advisors, LP, not the defunct Inc",
+      "evidence": "First Pacific Advisors, LP; EDGAR 79 13F-HR filed 2007-02-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "CMAFX": {
+      "cik": "0001142062",
+      "note": "Arnold Van Den Berg - Century Management: the filer is Van Den Berg Management I, Inc",
+      "evidence": "VAN DEN BERG MANAGEMENT I, INC; EDGAR 72 13F-HR filed 2000-02-14->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "LUK": {
+      "cik": "0000096223",
+      "note": "Leucadia National, renamed Jefferies Financial Group; same CIK files 13F-HR since 2005",
+      "evidence": "Jefferies Financial Group Inc.; EDGAR 87 13F-HR filed 2005-02-11->2026-08-17; sec13f_hr 31q 2016-03-31->2026-06-30"
+    },
+    "GLRE": {
+      "cik": "0001079114",
+      "note": "David Einhorn - Greenlight Capital Inc; chained to DME Capital Management, LP from 2024-03-31",
+      "evidence": "GREENLIGHT CAPITAL INC; EDGAR 100 13F-HR filed 1999-05-12->2024-02-14; sec13f_hr 41q 2013-06-30->2023-12-31"
+    },
+    "br": {
+      "cik": "0001056258",
+      "note": "John Griffin - Blue Ridge Capital Holdings; chained to Blue Ridge Capital, L.L.C. from 2011-12-31",
+      "evidence": "BLUE RIDGE CAPITAL HOLDINGS LLC/BLUE RIDGE CAPITAL OFFSHORE HOLDINGS LLC; EDGAR 51 13F-HR filed 1999-05-14->2011-11-14; sec13f_hr 0q"
+    },
+    "ca": {
+      "cik": "0001389403",
+      "note": "Francis Chou - Chou Associates Management Inc., not the Chou Associates Fund",
+      "evidence": "Chou Associates Management Inc.; EDGAR 75 13F-HR filed 2008-02-14->2026-08-12; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "MFP": {
+      "cik": "0001105685",
+      "note": "Michael Price - MFP Investors LLC; inactive after its last 13F-HR (see `inactive`)",
+      "evidence": "MFP INVESTORS LLC; EDGAR 33 13F-HR filed 2000-02-14->2008-02-13; sec13f_hr 0q"
+    },
+    "AI": {
+      "cik": "0000936753",
+      "note": "2026 adviser code that replaced ARFFX/CAAPX: Ariel Investments, LLC",
+      "evidence": "ARIEL INVESTMENTS, LLC; EDGAR 109 13F-HR filed 1999-05-07->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "TB": {
+      "cik": "0000732905",
+      "note": "2026 adviser code that replaced TWEBX: Tweedy, Browne Co LLC",
+      "evidence": "Tweedy, Browne Co LLC; EDGAR 110 13F-HR filed 1999-05-12->2026-08-07; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "SE": {
+      "cik": "0000807985",
+      "note": "2026 adviser code that replaced LLPFX: Southeastern Asset Management",
+      "evidence": "SOUTHEASTERN ASSET MANAGEMENT INC/TN/; EDGAR 110 13F-HR filed 1999-05-13->2026-08-14; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "PIM": {
+      "cik": "0001027796",
+      "note": "2026 adviser code that replaced pzfvx: Pzena Investment Management",
+      "evidence": "PZENA INVESTMENT MANAGEMENT LLC; EDGAR 109 13F-HR filed 1999-04-28->2026-08-07; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "HCM": {
+      "cik": "0001314620",
+      "note": "2026 adviser code that replaced hcmax: Hillman Capital Management",
+      "evidence": "Hillman Capital Management, Inc.; EDGAR 64 13F-HR filed 2005-02-10->2026-08-14; sec13f_hr 30q 2013-06-30->2026-06-30"
+    },
+    "WIM": {
+      "cik": "0000883965",
+      "note": "2026 adviser code that replaced WVALX: Weitz Investment Management",
+      "evidence": "WEITZ INVESTMENT MANAGEMENT, INC.; EDGAR 109 13F-HR filed 1999-05-07->2026-08-12; sec13f_hr 53q 2013-06-30->2026-06-30"
+    },
+    "MUHL": {
+      "cik": "0001133219",
+      "note": "2026 adviser code for Muhlenkamp & Co Inc, listed 2012-2019 as muhlx",
+      "evidence": "MUHLENKAMP & CO INC; EDGAR 105 13F-HR filed 1999-05-12->2026-08-18; sec13f_hr 50q 2013-06-30->2026-06-30"
+    },
+    "LMGTX": {
+      "cik": "0000820330",
+      "note": "Robert Hagstrom - Legg Mason Growth Trust (listed 2012 only): the fund's adviser Legg Mason Capital Management, EDGAR former names LEGG MASON CAPITAL MANAGEMENT INC (2001-2012) / LLC (2012-2014), now CLEARBRIDGE, LLC",
+      "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC); EDGAR 45 13F-HR filed 2008-02-14->2019-02-14, report periods 2007-12-31->2018-12-31 (all 8 of 2011Q3-2013Q2); sec13f_hr 23q 2013-06-30->2018-12-31"
+    }
+  },
+  "manager_ciks": {
+    "0001006438": [
+      {
+        "cik": "0001006438",
+        "from": null,
+        "to": "2015-12-31",
+        "evidence": "APPALOOSA MANAGEMENT LP; EDGAR 68 13F-HR filed 1999-05-07->2016-02-12; sec13f_hr 11q 2013-06-30->2015-12-31"
+      },
+      {
+        "cik": "0001656456",
+        "from": "2016-03-31",
+        "to": null,
+        "evidence": "Appaloosa LP; EDGAR 42 13F-HR filed 2016-05-13->2026-08-14; sec13f_hr 42q 2016-03-31->2026-06-30"
+      }
+    ],
+    "0000728014": [
+      {
+        "cik": "0000728014",
+        "from": null,
+        "to": "2017-12-31",
+        "evidence": "RUANE, CUNNIFF & GOLDFARB INC; EDGAR 77 13F-HR filed 1999-05-12->2018-05-15; sec13f_hr 19q 2013-06-30->2017-12-31"
+      },
+      {
+        "cik": "0001720792",
+        "from": "2018-03-31",
+        "to": null,
+        "evidence": "Ruane, Cunniff & Goldfarb L.P.; EDGAR 34 13F-HR filed 2018-05-15->2026-08-14; sec13f_hr 34q 2018-03-31->2026-06-30"
+      }
+    ],
+    "0001079114": [
+      {
+        "cik": "0001079114",
+        "from": null,
+        "to": "2023-12-31",
+        "evidence": "GREENLIGHT CAPITAL INC; EDGAR 100 13F-HR filed 1999-05-12->2024-02-14; sec13f_hr 41q 2013-06-30->2023-12-31"
+      },
+      {
+        "cik": "0001489933",
+        "from": "2024-03-31",
+        "to": null,
+        "evidence": "DME Capital Management, LP; EDGAR 10 13F-HR filed 2024-05-15->2026-08-14; sec13f_hr 10q 2024-03-31->2026-06-30"
+      }
+    ],
+    "0001056258": [
+      {
+        "cik": "0001056258",
+        "from": null,
+        "to": "2011-09-30",
+        "evidence": "BLUE RIDGE CAPITAL HOLDINGS LLC/BLUE RIDGE CAPITAL OFFSHORE HOLDINGS LLC; EDGAR 51 13F-HR filed 1999-05-14->2011-11-14; sec13f_hr 0q"
+      },
+      {
+        "cik": "0001062589",
+        "from": "2011-12-31",
+        "to": null,
+        "evidence": "Blue Ridge Capital, L.L.C.; EDGAR 32 13F-HR filed 2012-02-14->2021-11-08; sec13f_hr 20q 2013-06-30->2020-12-31"
+      }
+    ],
+    "0000898382": [
+      {
+        "cik": "0000898382",
+        "from": null,
+        "to": "2014-06-30",
+        "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
+      },
+      {
+        "cik": "0000898202",
+        "from": "2014-09-30",
+        "to": "2018-12-31",
+        "evidence": "Omega Advisors Inc. (810 Seventh Avenue, New York); EDGAR 18 13F-HR filed 2014-11-14->2019-02-14, report periods 2014-09-30->2018-12-31; sec13f_hr 18q 2014-09-30->2018-12-31"
+      },
+      {
+        "cik": "0000898382",
+        "from": "2019-03-31",
+        "to": null,
+        "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30; Omega returned outside capital end-2018 and Cooperman resumed filing from period 2019-03-31"
+      }
+    ],
+    "0000820330": [
+      {
+        "cik": "0000820330",
+        "from": null,
+        "to": "2018-06-30",
+        "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC/INC); EDGAR 45 13F-HR, report periods 2007-12-31->2018-12-31; the Value Trust's adviser per its N-CSR (FY2011, FY2013) and N-CSRS 2018-04-30 (ClearBridge, LLC); its 13F covers 95% of the fund's N-Q 2018-07-31 value at 2018-06-30 and 0% at 2018-09-30 (book $5.97bn -> $0.41bn)"
+      },
+      {
+        "cik": "0001348883",
+        "from": "2018-09-30",
+        "to": null,
+        "evidence": "Clearbridge Investments, LLC; EDGAR 75 13F-HR filed 2008-02-14->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30; Value Trust N-CSR 2018-10-31: 'On July 1, 2018, ClearBridge, LLC transferred the Fund's investment management and advisory agreement to ClearBridge Investments, LLC'; its 13F covers 96% of the fund's N-Q 2018-07-31 value at 2018-09-30; the fund (~$2.3bn) is ~2% of this ~$116bn book"
+      }
+    ]
+  },
+  "unresolvable": {},
+  "inactive": {
+    "MFP": {
+      "from": "2008-03-31",
+      "to": null,
+      "reason": "MFP Investors LLC (0001105685) filed its last 13F-HR on 2008-02-13 (period 2007-12-31); no later filer found on EDGAR, yet Dataroma listed the code until 2022."
+    },
+    "aq": {
+      "from": "2022-09-30",
+      "to": null,
+      "reason": "Aquamarine Capital (0001404599): last 13F book 2022-06-30 in sec13f_hr and sec13f_manager_holdings; Dataroma still lists the code."
+    },
+    "SAM": {
+      "from": "2025-12-31",
+      "to": null,
+      "reason": "Scion Asset Management (0001649339) deregistered: last 13F book 2025-09-30; Dataroma still lists the code."
+    },
+    "hcmax": {
+      "from": "2014-03-31",
+      "to": "2019-09-30",
+      "reason": "Hillman Capital Management (0001314620) filed no 13F-HR for periods 2014-03-31..2019-09-30 (EDGAR 64 13F-HR: report periods 2004-12-31->2013-12-31 then 2019-12-31->2026-06-30); EDGAR company search 'Hillman' finds only HILLMAN CO (0001036288, Pittsburgh family office, unrelated), so no other filer carried the book."
+    }
+  }
+}

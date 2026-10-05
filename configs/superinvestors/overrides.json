@@ -4,7 +4,7 @@
     "cik_overrides: Dataroma code -> 13F-filer CIK for the names EDGAR company search gets wrong or cannot see; a hand mapping always wins over EDGAR. Each entry carries `evidence`: the EDGAR filer name, its 13F-HR count and first->last filing date, and its quarters in sec13f_hr.",
     "Most failures are mutual-fund SHARE CLASSES or person names whose 13F filer is the ADVISER, and Dataroma's 2026 code migration (fund ticker -> adviser code, e.g. oaklx -> HA) re-resolved known managers from scratch: a new code points at the same filer as the code it replaced.",
     "AMBIGUITY IS SETTLED BY 13F ACTIVITY, never by name alone: a name match that never filed a 13F-HR (or stopped years before the snapshot) is not the manager.",
-    "manager_ciks: manager ID (the OLDEST filer CIK) -> its filer CIKs with inclusive period windows [from, to] (null = open). Windows never overlap and a CIK belongs to one chain. Readers relabel each member's books to the manager ID inside its window; the writer stores the member valid at the last quarter end before the snapshot date.",
+    "manager_ciks: manager ID (the OLDEST filer CIK) -> its filer CIKs with inclusive period windows [from, to] (null = open). Windows never overlap and a CIK belongs to one chain; a filer that takes its book back later appears again with a second window. Readers relabel each member's books to the manager ID inside its window; the writer stores the member valid at the last quarter end before the snapshot date.",
     "unresolvable: codes allowed to resolve to no CIK, each with its reason (rows kept with a NULL cik).",
     "inactive: code -> {from, to, reason}, the quarter-end periods (inclusive, null = open) in which a resolved filer has no 13F activity for a recorded reason."
   ],
@@ -55,8 +55,8 @@
     },
     "OA": {
       "cik": "0000898382",
-      "note": "Leon Cooperman - Omega Advisors: the 13F filer is Cooperman Leon G",
-      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14; sec13f_hr 35q 2013-06-30->2026-06-30"
+      "note": "Leon Cooperman - Omega Advisors: manager ID Cooperman Leon G, chained to Omega Advisors Inc. (0000898202) for 2014Q3-2018Q4",
+      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
     },
     "HRSVX": {
       "cik": "0000937394",
@@ -185,8 +185,8 @@
     },
     "oa": {
       "cik": "0000898382",
-      "note": "The lower-case twin of \"OA\" (Dataroma serves the code as `oa` and the name as the bare person); the 13F filer is Cooperman Leon G",
-      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14; sec13f_hr 35q 2013-06-30->2026-06-30"
+      "note": "The lower-case twin of \"OA\" (Dataroma serves the code as `oa` and the name as the bare person); manager ID Cooperman Leon G, chained to Omega Advisors Inc. (0000898202) for 2014Q3-2018Q4",
+      "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
     },
     "BAUPOST": {
       "cik": "0001061768",
@@ -307,6 +307,11 @@
       "cik": "0001133219",
       "note": "2026 adviser code for Muhlenkamp & Co Inc, listed 2012-2019 as muhlx",
       "evidence": "MUHLENKAMP & CO INC; EDGAR 105 13F-HR filed 1999-05-12->2026-08-18; sec13f_hr 50q 2013-06-30->2026-06-30"
+    },
+    "LMGTX": {
+      "cik": "0000820330",
+      "note": "Robert Hagstrom - Legg Mason Growth Trust (listed 2012 only): the fund's adviser Legg Mason Capital Management, EDGAR former names LEGG MASON CAPITAL MANAGEMENT INC (2001-2012) / LLC (2012-2014), now CLEARBRIDGE, LLC",
+      "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC); EDGAR 45 13F-HR filed 2008-02-14->2019-02-14, report periods 2007-12-31->2018-12-31 (all 8 of 2011Q3-2013Q2); sec13f_hr 23q 2013-06-30->2018-12-31"
     }
   },
   "manager_ciks": {
@@ -365,6 +370,26 @@
         "to": null,
         "evidence": "Blue Ridge Capital, L.L.C.; EDGAR 32 13F-HR filed 2012-02-14->2021-11-08; sec13f_hr 20q 2013-06-30->2020-12-31"
       }
+    ],
+    "0000898382": [
+      {
+        "cik": "0000898382",
+        "from": null,
+        "to": "2014-06-30",
+        "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30"
+      },
+      {
+        "cik": "0000898202",
+        "from": "2014-09-30",
+        "to": "2018-12-31",
+        "evidence": "Omega Advisors Inc. (810 Seventh Avenue, New York); EDGAR 18 13F-HR filed 2014-11-14->2019-02-14, report periods 2014-09-30->2018-12-31; sec13f_hr 18q 2014-09-30->2018-12-31"
+      },
+      {
+        "cik": "0000898382",
+        "from": "2019-03-31",
+        "to": null,
+        "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30; Omega returned outside capital end-2018 and Cooperman resumed filing from period 2019-03-31"
+      }
     ]
   },
   "unresolvable": {},
@@ -383,6 +408,11 @@
       "from": "2025-12-31",
       "to": null,
       "reason": "Scion Asset Management (0001649339) deregistered: last 13F book 2025-09-30; Dataroma still lists the code."
+    },
+    "hcmax": {
+      "from": "2014-03-31",
+      "to": "2019-09-30",
+      "reason": "Hillman Capital Management (0001314620) filed no 13F-HR for periods 2014-03-31..2019-09-30 (EDGAR 64 13F-HR: report periods 2004-12-31->2013-12-31 then 2019-12-31->2026-06-30); EDGAR company search 'Hillman' finds only HILLMAN CO (0001036288, Pittsburgh family office, unrelated), so no other filer carried the book."
     }
   }
 }

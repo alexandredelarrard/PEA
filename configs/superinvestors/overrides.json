@@ -1,12 +1,14 @@
 {
   "_README": [
-    "Hand resolutions for the Dataroma superinvestor roster, loaded by src/utils/superinvestor_roster.load_superinvestor_overrides.",
+    "Hand resolutions for the Dataroma superinvestor roster, loaded by src/utils/superinvestor_roster.load_superinvestor_overrides. Every roster write (rebuild and daily refresh) resolves a code as cik_overrides > EDGAR company search, then gates the result.",
     "cik_overrides: Dataroma code -> 13F-filer CIK for the names EDGAR company search gets wrong or cannot see; a hand mapping always wins over EDGAR. Each entry carries `evidence`: the EDGAR filer name, its 13F-HR count and first->last filing date, and its quarters in sec13f_hr.",
     "Most failures are mutual-fund SHARE CLASSES or person names whose 13F filer is the ADVISER, and Dataroma's 2026 code migration (fund ticker -> adviser code, e.g. oaklx -> HA) re-resolved known managers from scratch: a new code points at the same filer as the code it replaced.",
     "AMBIGUITY IS SETTLED BY 13F ACTIVITY, never by name alone: a name match that never filed a 13F-HR (or stopped years before the snapshot) is not the manager.",
     "manager_ciks: manager ID (the OLDEST filer CIK) -> its filer CIKs with inclusive period windows [from, to] (null = open). Windows never overlap and a CIK belongs to one chain; a filer that takes its book back later appears again with a second window. Readers relabel each member's books to the manager ID inside its window; the writer stores the member valid at the last quarter end before the snapshot date.",
     "unresolvable: codes allowed to resolve to no CIK, each with its reason (rows kept with a NULL cik).",
-    "inactive: code -> {from, to, reason}, the quarter-end periods (inclusive, null = open) in which a resolved filer has no 13F activity for a recorded reason."
+    "inactive: code -> {from, to, reason}, the quarter-end periods (inclusive, null = open) in which a resolved filer has no 13F activity for a recorded reason. Outside that range the gate applies as usual.",
+    "Activity gate: with Q = the last quarter end strictly before the snapshot date, the stored CIK must have a (cik, period) row in sec13f_hr or sec13f_manager_holdings for a period in [Q - 4 quarters, Q + 2 quarters] (a window ending before 2013-06-30, the start of XML 13F tables, extends to it). On a local miss only, the EDGAR 13F-HR listing's report dates for that CIK are checked. A miss raises SuperinvestorResolutionError naming the code, CIK and nearest known period; fix it with an evidence-backed cik_overrides, manager_ciks or inactive entry, never by loosening the gate.",
+    "After any change here, rebuild the table: `python -m src data_extract superinvestors --seed -c ./configs` (replaces superinvestor_roster from dataroma_roster_history.json plus every stored live snapshot, all re-resolved and gated; idempotent), then `thirteen-f-managers` to fetch the books of any new filer CIK."
   ],
   "cik_overrides": {
     "BRK": {

@@ -60,7 +60,8 @@ Deferred from the verified point-in-time roster run (branch `harness/sec13f-supe
     - The XML book `0001061165` 2014-12-31 has 5 positions above $1tn. The whole book is 1000x; `repair_value_basis` measures a median implied-price/close ratio of 1000.0 on it and divides it.
     - The 30 NULL-amount books, plus 58 issuer-text names inside them, are waiting for a better parser (`harness/13f-managers-cusip`).
     - Every catch-up run logs 246 ERRORs on 228 never-stored (cik, period) filings across 19 CIKs. 15 of them are in-window, and they are the R-06 missing quarters.
-    - `0000098758` 2011-06-30 is held back as "transient" on every run: `is_rate_limited` matches "429" inside the cover text "460,429".
+    - Fixed (`ea37ef0`): `0000098758` 2011-06-30 was held back as "transient" on every run because `is_rate_limited` matched "429" inside the cover text "460,429"; an unverifiable legacy book is now always a deterministic failure.
+    - The 228 never-stored (cik, period) are re-read on every catch-up (cheap: archives are cached locally) and log an ERROR each time. Options: record them as all-NULL placeholder books like the 30 above, or log them at INFO once known.
 - **P2 — `sec13f_hr` unpadded-CIK duplicates (R-07).** The same manager is stored padded and unpadded. Owner: `feat/db-derived-resume` Phase 11.
 - **P2 — Ghost non-quarter-end manager periods and pre-2013 text 13F books (R-06).** Legacy-era manager periods that are not quarter ends, and the pre-XML text 13F books (Greenhaven, the 15 missing 2011Q3 to 2013Q1 quarters at 0000098758, 0000846222 and 0001099281). Owner: `harness/13f-managers-cusip`.
 - **P2 — `fetch_13f_managers` code health.** Its private cross-imports from `fetch_13f.py` and the dual-padding lookup in `_warn_empty_books`. Trigger: after `feat/db-derived-resume` merges (it rewrites `fetch_13f.py`).

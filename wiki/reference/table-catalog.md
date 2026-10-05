@@ -30,14 +30,18 @@ This is the canonical map of PostgreSQL table grain, ownership, temporal key, an
 | `freshness`, `freshness_date_col` | Expected cadence and, when different, the actual publication clock. |
 | `vector_col`, `vector_prefix` | Wide embedding columns collapsed to a PostgreSQL `float8[]`. |
 | `managed` | Managed tables retain generated DDL on replacement; unmanaged cube parts are dropped and recreated so removed features disappear. |
+| `resume` | The `Resume` contract the nightly work list is derived from: mode (`series`, `documents`, `archive`, `market`, `snapshot`), key column, frontier column, overlap days, EDGAR forms (the forms the fetcher lists), archive period column, and source start. |
+| `empty_marker` | The (column, sentinel) of an empty-filing marker: a filing that was read and holds no data for its key is stored once as a row with the key columns, that sentinel and a typed NULL everywhere else, so it is not listed again. |
 
-Derived registry views such as `ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `by_kind()`, and `projection_report()` are computed from the declarations. Adding a managed table means adding one declaration and regenerating [sql/schema.sql](../../sql/schema.sql) through [generate_schema_sql.py](../../scripts/generate_schema_sql.py).
+Marker tables: `fundamentals_facts` (`field`), `insider_transactions` (`security_type`), `sec_13d` and `sec_13g` (`rp_seq` = -1), `def14a_llm` (`def14a_json`), `sec_def14a` (`form`), `sec_8k` (`item`), `sec_8k_votes` (`proposal_seq` = 0) and `sec_filing_text` (`section`); text sentinels are `_empty`. `load` and `iter_load` drop marker rows unless `markers=True`; resume reads (`distinct`, `max_date`, `max_date_by`, `key_stats`) and raw SQL count them.
+
+Derived registry views such as `ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `by_kind()`, `resume_tables()`, `marker_tables()` and `projection_report()` are computed from the declarations. Adding a managed table means adding one declaration and regenerating [sql/schema.sql](../../sql/schema.sql) through [generate_schema_sql.py](../../scripts/generate_schema_sql.py).
 
 ## Reference and identity tables
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `sp500_tickers` | ticker | Current research universe and the roster ticker-to-CIK mapping. Universe loading also applies the insufficient-history exclusions in [universe.py](../../src/utils/universe.py). |
+| `sp500_tickers` | ticker | Current research universe and the roster ticker-to-CIK mapping. `added_on` (DATE) dates a ticker's entry: one added within a table's overlap is new and gets full history; NULL means established. Universe loading also applies the insufficient-history exclusions in [universe.py](../../src/utils/universe.py). |
 | `superinvestor_roster` | snapshot date × Dataroma code | Point-in-time elite-manager roster. The code, not CIK, is the key because manager codes can rename and some managers never file 13F. |
 | `symbol_tenure` | symbol × issuer CIK × valid-from | Dated symbol-to-issuer membership. Intervals are half-open and may overlap; callers perform membership tests rather than assuming a unique answer. |
 | `entity_lineage` | CIK | Maps legal registrants into economic-company entities. Missing rows mean singleton entities, not unknown identity. |
@@ -52,7 +56,7 @@ The identity model has two axes: [registrant policy](../../src/data_extract/util
 | `dividends` | ticker × ex-date | date | Sparse cash distributions; absence is normal for non-payers. |
 | `prices_splits` | ticker × ex-date | date | Sparse split/spinoff factors used in price-basis reconciliation. |
 | `prices_macro` | named series × date | date | Long-form benchmark, volatility, commodity, energy, rate, credit, breakeven, FX, and derived macro series. These series never enter the equity `prices` cross-section. |
-| `short_interest` | ticker × date | date | FINRA RegSHO tape. The source is market-wide per day, so incremental resume is global. |
+| `short_interest` | ticker × date | date | FINRA RegSHO tape. One day file covers every symbol: a run reads the sessions any key needs plus every day inside the stored span on which no key has a row; `short-interest --repair-gaps` re-reads per-key gap days once. |
 | `sec_fails_to_deliver` | ticker × settlement date | date | SEC semi-monthly settlement-fail rows. The persisted `period` identifies the source ZIP and drives feature availability on the fly; a `b` ZIP can contain a day-15 settlement, so settlement date cannot select the ZIP or serve as feature as-of. |
 
 | `cusip_ticker_map` | CUSIP | none | CUSIP-to-ticker resolution, including curated overrides. |
@@ -126,7 +130,7 @@ Earnings-call `as_of` is stored as the call date with no +1 day. The text aggreg
 | `predictions_latest` | date × ticker × horizon × model | Long-form production scores with distinct as-of, prediction horizon, and production timestamp semantics. |
 | `trend_asset_returns` | date | Net returns of the removed macro trend sleeve; unused since 2026-10 (registry entry kept until the next data-store change). |
 | `strategy` | trading day × sleeve × ticker | Upserted trade ledger; opening rows are completed when exits occur. |
-| `extraction_run` | table × run id | Durable extraction-run ledger. Different scopes on the same day remain distinct. |
+
 
 ## Cube parts
 
@@ -136,7 +140,7 @@ Every part uses `(date, ticker)` as its persisted key. Targets encode label and 
 
 ## Freshness and current state
 
-Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. Freshness metadata describes source expectations; runtime gates such as the insider completeness frontier (the EDGAR run's manifest entry over the exact cube universe) add stricter operational checks.
+Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. `extraction-status` reports every declared table against its cadence, and the per-ticker fresh share of `prices`, `fundamentals_sharadar` and `fundamentals_history`; `modelling predict` refuses to score when one of those three is stale per ticker. The insider, 13D and 13G completeness frontiers are read from the tables themselves (see [source availability](../concepts/source-availability.md)).
 
 For row counts, physical size, known holes, and tables registered but absent from the local database, use the [live database snapshot](./live-database.md). Re-measure it before operational decisions.
 

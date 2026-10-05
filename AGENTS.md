@@ -32,7 +32,7 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 - Stable literals go in `src/constants/constants.py`; tunable values go in `configs/`.
 - Log through `self._log` or `context.log`; never `print()` in application code.
 - Fully annotate signatures; imports stay at module top; sibling `src/` packages do not cross-import.
-- Fetchers resume from DB frontiers with `max_date` / `max_date_by`, never a full read.
+- Fetchers plan through their `schema.Resume` contract and `resume.py`, never a full read or a file.
 - Feature/economic tests use real data; exact parser/math tests use known-truth fixtures.
 - A test is not complete until it prints a sanity-check conclusion; report targeted output only.
 - Ask before editing `context.py`, `utils/step.py`, constants, data store/DDL, configs,

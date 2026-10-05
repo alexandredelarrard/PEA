@@ -36,9 +36,9 @@ The [price-part builder](../src/data_aggregate/transformers/step_cube_prices.py)
 
 Deferred from the single-table merge of `insider_transactions` (findings F-007..F-014 and R-04 in the local, gitignored run dir `reports/validate/2026-10-03-insider-transactions-merge/defects.md`).
 
-- **P1 — Ingest insider 2026q1.** The 2026-10-04 refill skipped 2026q1: before the two-path zip fallback (F-005) the quarter was requested only from the new SEC path and got HTTP 404. Only its 77 EDGAR re-reads are stored, so every 2026 feature window reads its trades as absent. Once the branch is merged, run once from the main tree, with no `-F` and no `-t` (2026q1 is still pending, and the main tree caches `data/sec_insider_transactions/2026q1.zip`, so nothing is downloaded): `rtk "$PY" -m src data_extract insider-transactions`. Expect `insider 2026q1: 12525 / 12602 filings missing from EDGAR (99.4%)`: an artefact of the hole and of the quarter-wide N (F-012 below), not an EDGAR loss. The run's EDGAR half also rewrites the main `data/extraction_manifest.json` `insider_transactions` entry with `coverage_complete` (the refill wrote its entry under the worktree's `data/`, F-008); without it a main-tree cube build has no insider frontier. Then rebuild the cube: `data_aggregate build-institutionals` (a full build, since the retired columns go away) and `assemble-cube`. Verify: 82 distinct `quarter` values (2006q1 to 2026q2) and about 12,602 accessions in 2026q1. Trigger: right after the merge, before any cube build.
+- **P1 — Ingest insider 2026q1.** The 2026-10-04 refill skipped 2026q1: before the two-path zip fallback (F-005) the quarter was requested only from the new SEC path and got HTTP 404. Only its 77 EDGAR re-reads are stored, so every 2026 feature window reads its trades as absent. Once the branch is merged, run once from the main tree, with no `-F` and no `-t` (2026q1 is still pending, and the main tree caches `data/sec_insider_transactions/2026q1.zip`, so nothing is downloaded): `rtk "$PY" -m src data_extract insider-transactions`. Expect `insider 2026q1: 12525 / 12602 filings missing from EDGAR (99.4%)`: an artefact of the hole and of the quarter-wide N (F-012 below), not an EDGAR loss. Then rebuild the cube: `data_aggregate build-institutionals` (a full build, since the retired columns go away) and `assemble-cube`. Verify: 82 distinct `quarter` values (2006q1 to 2026q2) and about 12,602 accessions in 2026q1. Trigger: right after the merge, before any cube build.
 - **P2 — Amendment double counts (R-04).** Linked amendment rows never enter the copy collapse in [insider_quality.py](../src/data_aggregate/utils/institutionals/insider_quality.py). Measured on the refilled table (all history, scoped P/S): (a) joint reporters who each file a value-changing 4/A count twice from the 4/A day, 81 rows / $449m as filed; (b) a linked 4/A adding a cell a co-owner already reported counts twice, 194 rows / $763m over 5,737 new-cell rows (e.g. NTRS `0000073124-06-000091` vs `-000072`). Small next to the 6,813 copies the collapse removes, but material in dollars. Trigger: the next insider feature review, or before `buy_value` features are re-tuned.
-- **P2 — An undownloadable zip quarter hides under a complete frontier (F-007).** `fetch_insider_transactions` in [fetch_insider_transactions.py](../src/data_extract/utils/institutionals/fetch_insider_transactions.py) skips a quarter that no URL serves with only per-URL WARNINGs; the per-ticker EDGAR windows then start after the hole, and the EDGAR run still records `coverage_complete`. Fix: fail or WARN-summarise a skipped non-newest quarter, and/or hold the frontier at the last quarter end before it. Trigger: the next zip-path change at the SEC, or any refill.
+- **P2 — An undownloadable zip quarter hides under a complete frontier (F-007).** `fetch_insider_transactions` in [fetch_insider_transactions.py](../src/data_extract/utils/institutionals/fetch_insider_transactions.py) skips a quarter that no URL serves with only per-URL WARNINGs; the EDGAR window then starts after the last stored quarter, so nothing but the stored quarters shows the hole. Fix: fail or WARN-summarise a skipped non-newest quarter, and/or hold the frontier at the last quarter end before it. Trigger: the next zip-path change at the SEC, or any refill.
 - **P3 — Repeat collapse merges different people opening equal new positions (F-011).** `_collapse_copies` keys on (ticker, day, code, shares, price, holding); when the holding equals the shares bought it cannot tell two new positions apart. DDOG IPO day 2019-09-23: two directors' purchases collapse into two others', so `distinct_buyers_120d` reads 4 instead of 6; about 6 zero-start groups / $482m since 2020, some legitimate (TKO). Fix idea: a zero-start group collapses only when the accessions share an owner or filer agent. Trigger: the next insider feature review.
 - **P3 — REQ-007 WARNING overstates EDGAR losses (F-012).** `report_zip_quarter` counts N from the quarter-wide earliest EDGAR filing date, while EDGAR listing is per ticker since the merge; after a rebuild, a `-t` run or a skipped quarter the WARNING inflates (2026q2 replay 71.0 %). Fix: N per ticker. Trigger: the next time the WARNING is used to judge EDGAR completeness.
 - **P3 — Half-cent tolerance in the mismatch line (F-013).** `_same` compares `gap.le(0.005)` on floats, so the zip's half-up rounding of a half-cent EDGAR value (116.695 vs 116.70) counts as a mismatch: 65 of 66 in the 2026q2 replay. Fix: compare `round_half_up(edgar)` with the zip value, or allow a few ulps. Trigger: with F-012.
@@ -105,10 +105,8 @@ Deferred from the shared-driver refactor of `src/data_extract`. Stored-value cha
 
 ### Fetch correctness and robustness
 
-- **P1 — EDGAR insider listing truncates silently on an Atom 503.** `ownership_filings` in [fetch_insider_edgar.py](../src/data_extract/utils/institutionals/fetch_insider_edgar.py) swallows an SEC 503 mid-pagination and returns a truncated list (observed: JPM Form 4 at offset 5100), so the run reports success with missing filings and records a complete frontier. The next zip quarter adds the missed filings and its `filings missing from EDGAR` warning shows the loss, but only once the quarter is published. Trigger: before the next EDGAR insider refill; the page failure should fail the ticker.
 - **P2 — `sec13f_hr` batch duplicate-key risk.** A save batch in [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py) is de-duplicated on the book key `(cik, period, cusip)`; the `sec13f_hr` slice is cut after the CUSIP-to-ticker merge and is not re-checked on its own key `(cik, period, ticker, cusip)`, and Postgres rejects an upsert that touches one key twice. Trigger: any change to the CUSIP map shape or batch de-duplication, or a 13F batch upsert failure.
 - **P2 — Insider stored-row sweep and mixed-CIK accessions.** The sweep in [fetch_insider_transactions.py](../src/data_extract/utils/institutionals/fetch_insider_transactions.py) deletes a whole accession that contains a rejected issuer CIK and counts only the rejected rows in its warning, so a kept row in a mixed-CIK accession is lost silently (0 such accessions live). Trigger: when the sweep first reports a mixed-CIK accession.
-- **P2 — Two-table EDGAR fetchers never retry a failed secondary save.** `run_edgar_fetch` in [edgar_driver.py](../src/data_extract/utils/common/edgar_driver.py) builds its done set from `tables[0]` accessions, and `tables[0]` is saved first. If `sec_13d` saves and `sec_13d_transactions` fails, or `insider_transactions` saves and `insider_footnotes` fails, the ticker fails and the manifest holds, but the accession is skipped from then on. Pre-existing. Fix = save `tables[0]` last, or intersect the stored accessions of every secondary table (an accession may legitimately have no secondary rows, so this needs a design). Trigger: a secondary-table save failure in a log, or the next driver change.
 - **P3 — 13F manager catch-up residuals.** In [fetch_13f_managers.py](../src/data_extract/utils/institutionals/fetch_13f_managers.py): a deterministic-broken filing that is the newest of its period is re-read and logs the same ERROR on every run (no side state records it); and two filings of one period filed the same day share one (period, filing date) pair, so if the main walk saves one and the other fails transiently, both count as done. Trigger: the same ERROR repeating across runs, or a same-day same-period manager filing pair.
 - **P3 — Live-test tripwire scope.** `tests/live_guard.py` does not see asyncio Proactor connects (`ConnectEx`), raw DB-API cursors from `engine.raw_connection()`, or `socket.getaddrinfo` DNS lookups. Nothing in `src`, `tests` or `scripts` uses these paths today. Trigger: the first async HTTP client, raw cursor or new DNS-dependent test; fix = patch them or document the limits in the guard docstring.
 - **P2 — edgartools Windows cache rename race.** Threads building `Company` for the same CIK can hit a `PermissionError` on the edgartools cache rename. Trigger: when a threaded EDGAR walk logs that error, or before raising worker counts.
@@ -126,11 +124,11 @@ Deferred from the shared-driver refactor of `src/data_extract`. Stored-value cha
 - **P3 — Stale comments in risk-zone files.** [schema.py](../src/data_store/schema.py) (about line 888) names the deleted `_filter_universe`, and [context.py](../src/context.py) (about line 125) names `kpi_catalogue.resolve_config_dir`, now in `config_paths`; [store.py](../src/data_store/store.py) (about line 384) cites the retired `fetch_hf_transcripts` as an example. Trigger: the next approved edit to any of these files.
 - **P3 — `src/utils/crawler.py` has no source consumer.** Its last callers (Google Trends, wiki pageviews, the retired earnings-call crawlers) are gone; only `tests/utils/test_crawler.py` imports it, and the [polite_http.py](../src/utils/polite_http.py) module docstring still says Google Trends shares `resolve_proxy` through it. Trigger: the next scraper that needs IP rotation reuses it, or delete it with its test and fix that docstring.
 - **P3 — Minor simplifications from the extraction refactor review.** Behaviour-neutral unless noted; take each with the next edit to its file.
-  - [edgar_driver.py](../src/data_extract/utils/common/edgar_driver.py): inline the one-use `_build_ticker` hop into `_walk_ticker`; move `num_or_null` (13D/13G only) into [schedule_rows.py](../src/data_extract/utils/institutionals/schedule_rows.py); let `manifest_window` take the already-loaded manifest entry instead of reading the JSON twice (also in the DEF 14A lister).
+  - [edgar_driver.py](../src/data_extract/utils/common/edgar_driver.py): inline the one-use `_build_ticker` hop into `_walk_ticker`; move `num_or_null` (13D/13G only) into [schedule_rows.py](../src/data_extract/utils/institutionals/schedule_rows.py).
   - [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py): collapse `_record`'s if/else (only `backfill_window` differs); delete `position_type` (test-only caller); share one suspect-price warning with the manager catch-up and drop the leading underscore on the names `fetch_13f_managers` imports.
   - 13D/13G: derive `fetch_13g_edgar._COLS` from the 13D columns; run 13D frames through `finalise_frame` like 13G (low risk: PK dedup); build `_ITEM_HEADING_ANYWHERE` from `item_heading` (low risk); one cached `FilingStamp.text` for the best-effort text read in 13D and filing text.
   - Insider: `date_formats` is the last per-source argument of `build_insider_frame` in [insider_common.py](../src/data_extract/utils/institutionals/insider_common.py); fold it into the source; drop the two redundant empty-frame conditionals in `fetch_insider_edgar.py`.
-  - Elsewhere: delete the unread `on_date` parameter of `Identity.owns`; vectorise `fundamentals_employees._done_dates`; use `Counter` for the vote tallies in `votes/fetch.py`; one `bulk_cache` helper for the period-archive fetch shared by financial statements and notes (keep each caller's clock precedence); `pad_cik_series` in `fetch_tickers.py` (low risk: odd inputs); read `manifest_full_rescan_days` directly in `def14a/fetch.py` instead of a re-declared default.
+  - Elsewhere: delete the unread `on_date` parameter of `Identity.owns`; vectorise `fundamentals_employees._done_dates`; use `Counter` for the vote tallies in `votes/fetch.py`; one `bulk_cache` helper for the period-archive fetch shared by financial statements and notes (keep each caller's clock precedence); `pad_cik_series` in `fetch_tickers.py` (low risk: odd inputs).
   - Constants (needs approval): move `SEC_13D_FORMS`, `SEC_13G_FORMS`, `SEC_INSIDER_FORMS` and `SEC_8K_FORMS`, each with one `src` consumer, next to their fetchers.
 
 ## Earnings-call tone drift over time
@@ -193,49 +191,3 @@ After this migration is reviewed:
 
 # universe expand:
 - After the point-in-time S&P 500 gate above, evaluate Russell 1000 expansion with the same membership and delisting controls.
-
-## Extraction resume reads only the database
-
-**P1 — make it a separate plan and refactor.** Today each fetcher decides what to fetch in its own way:
-
-- the run manifest (`extraction_manifest.json`) gives the EDGAR walks, the DEF 14A LLM fetch and the earnings-call fetch their listing window, ticker set and 30-day full rescan;
-- the `{table}_universe.json` marker files do the same for pension, Notes, FTD and insider bulk;
-- the other fetchers read a single last-date frontier.
-
-The target: every fetcher reads only its own tables, the source's own listing and `entity_lineage`. A missing table means a full build. Holes, missing filings and new tickers are found on every run. A repair means deleting the wrong rows, and the next run fetches them again.
-
-Defects to fix (read-only survey of 33 fetchers, 2026-10-03; the per-fetcher table is in `reports/validate/2026-10-02-entity-symbol-lineage/_out/resume_survey.md`):
-
-- **Holes behind the frontier are never found:**
-  - prices older than 7 sessions;
-  - dividends, splits;
-  - Sharadar fundamentals, actions, S&P 500;
-  - short interest, 13F, 13F managers;
-  - earnings surprises.
-- **New tickers:**
-  - 13F, short interest, splits (1 year only) and dividends never backfill a new ticker;
-  - prices re-pulls the whole universe when one ticker is new.
-- **Zero-row units are redone every run:** a 5.07 votes filing with no rows is sent to the LLM again; a ZIP period with no universe row is re-parsed.
-- **"Done" read from the wrong place:**
-  - 13D treats an accession as done once it is in `sec_13d`, even when its transactions failed to save;
-  - Notes treats a period as done when either `notes_num` or `notes_text` has it.
-- **`fetch_13f` writes a new manager's book inline,** which sets that manager's frontier before `fetch_13f_managers` has fetched its history.
-- **A `-t` subset run overwrites the stored ticker set** in the manifest and the marker files, so the next full run relists or re-parses everything.
-- **Full-table reads** in earnings surprises, the DEF 14A LLM fetch, the CUSIP map and the Sharadar roster.
-
-Design proposed for the plan:
-
-1. **Two store reads.** `frontier(table, by, date_col, where)` returns MIN, MAX and COUNT per key in one GROUP BY query. `keys(table, cols, where)` returns the stored keys for a scope.
-2. **One planner, `resume.py`.** Each fetcher declares its table, key columns, date column and mode. The planner returns the work items: full history for a new key, the forward window, holes, and the overlap re-fetch.
-3. **Three modes:**
-   - **Listed by the source** (EDGAR filings, ZIP periods, 13F filings, earnings calls, votes): fetch what the source lists minus what is stored. `Company(cik).get_filings()` already downloads the full history on every call, so the EDGAR window and the 30-day rescan can go.
-   - **Daily series** (prices, macro, short interest, Sharadar): the calendar gives the expected dates, so a row count below it reveals a hole.
-   - **Sparse events** (dividends, splits): fetch forward from the last date checked.
-4. **Recording "checked, nothing found".** Options: a NULL placeholder row in each data table; one `extract_coverage(table_name, unit, n_rows, checked_through, checked_at)` table that would absorb the insider EDGAR completeness now recorded in the run manifest (the recommended option); or recording nothing.
-
-Acceptance:
-
-- A source test finds no resume decision that reads the manifest or a marker file.
-- Each mode has fixtures for: a missing table, a new key, the forward window, an interior hole, an old gap in a source-listed unit, a zero-row unit, and a `-t` run followed by a full run.
-- A read-only comparison on the live database shows each fetcher's new plan against its old rule.
-- `EXPLAIN` on the largest tables shows each frontier query is indexed.

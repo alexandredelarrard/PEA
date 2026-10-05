@@ -61,7 +61,7 @@ rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract def14a -t TICKER1,TICKER2 -F
 ~~~
 
-The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers compare per-ticker scope fingerprints with the last complete manifest and automatically relist the full configured window only for changed tickers. Run those walks serially because SEC rate limiting is process-local; use `-F` only when every requested ticker needs a full relist.
+The bulk reparses are local because archives are cached. They must cover the full cache: a partial reparse produces an artificial historical boundary that downstream code cannot distinguish from real source availability. Identity-aware network fetchers list each ticker's filings from the local filing index over its current registrant lineage on every run, so a newly declared CIK's filings enter the work list with no flag. Run those walks serially because SEC rate limiting is process-local; use `-F` only to re-read filings already stored.
 
 After rebuilding affected cube parts, compare the frozen state:
 
@@ -80,7 +80,7 @@ rtk "$PY" -m src data_extract fundamentals-facts -F -t AAPL,CSCO,KR,XOM,APA,EOG
 rtk "$PY" -m src data_extract fundamentals-history-sec -t AAPL,CSCO,KR,XOM,APA,EOG
 ~~~
 
-Use multiple bounded ticker chunks. `-F` is required for a from-scratch chunk because the run manifest otherwise treats an equal-sized next chunk as a repeated scope and may resume from the prior run date.
+Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A chunk larger than `max_documents_per_run` drains over several runs unless `--no-cap` is given.
 
 Choose the narrowest repair:
 
@@ -91,7 +91,7 @@ Choose the narrowest repair:
 | Employee parser missed or rejected headcount | `fundamentals-employees -F -t ...` |
 | Vendor inputs changed; rebuild merged consumer history | `fundamentals-history-merged -F -t ...` |
 
-A ticker with no stored accessions may not self-heal through an ordinary incremental run. Identify genuinely empty tickers explicitly, then force only that scope.
+A ticker with no stored accession lists its whole window on the next ordinary run. A filing that was read and has no XBRL facts is stored as a marker and is not listed again.
 
 Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (count or NULL) and let the next run read them; to pin a value by hand, add the accession to `configs/sec/employees_manual_roster.json`. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run.
 
@@ -108,20 +108,41 @@ This is destructive. Request approval, verify the exact table set printed by the
 
 ## Schedule 13D and 13G
 
-Both fetchers understand the pre- and post-mandate form-name eras. Use a full walk after parser/discovery changes or a from-scratch rebuild:
+Both contracts list the pre- and post-mandate form names, so a from-scratch rebuild needs no flag. Use `-F` after a parser change, to re-read stored filings:
 
 ~~~bash
 rtk "$PY" -m src data_extract sec-13d -F
 rtk "$PY" -m src data_extract sec-13g -F --years 15 -t TICKER1,TICKER2
 ~~~
 
-Chunk 13G more aggressively than 13D. An institutional filer’s listing contains filings against many unrelated issuers; the issuer guard drops them only after discovery and parsing, so cost follows listing size rather than retained rows.
+Chunk 13G more aggressively than 13D. The filing index lists a filing under every party, so a universe asset manager or bank lists every 13G it filed on other issuers. The first read of each resolves the key's role from the filing header and stores a filer-role marker, so that cost falls on the first run only.
 
 Do not restore pre-mandate ownership percentages to the cube merely because the backfill completes. The acceptance criteria remain in [TODO](../TODO.md).
 
+## Document backlogs and markers
+
+A first run over a table's full history (a cleared table, the one-time backlog) can exceed `max_documents_per_run`. Run it once outside 01:00 with `--no-cap`, one EDGAR walk at a time. Before it, read the work list without touching SEC:
+
+~~~bash
+rtk "$PY" -m src data_extract edgar-index
+rtk "$PY" -m src data_extract resume-plan --table sec_13g --timings
+~~~
+
+`edgar-index --build` downloads every quarter of the index again. A filing that was read and holds no data for its key is stored once as an empty-filing marker. `markers --count` counts them per table; `markers --delete` removes every marker by its sentinel and is a rollback tool only, because the next run lists those filings again.
+
+## 13F holes and new tickers
+
+The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus the 7-day overlap and keeps a low watermark: a filing inside the overlap that still fails after the retry rounds holds back every filing after it, so the next run starts at or before it; an older failure is skipped with an ERROR naming its accession. A hole older than the overlap needs an explicit window:
+
+~~~bash
+rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
+~~~
+
+`thirteen-f-backfill` fills the history of a ticker added within the last 7 days from the SEC 13F data sets, then one EDGAR walk over the filings after the newest data set, once per ticker. `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X. Run a first manual backfill outside 01:00 and read its unit-check log lines. The value unit of each filing comes from edgartools' private `_detect_value_in_thousands`: an edgartools upgrade that renames it breaks the `data_extract` CLI import, which `test_13f_backfill_zip.py` catches.
+
 ## Insider reparse and full rebuild
 
-`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then lists EDGAR per ticker, from that ticker's own latest stored `filing_date` minus 7 days.
+`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then reads from EDGAR every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last stored zip quarter and the run date minus 7 days, except the accessions already stored from EDGAR.
 
 - **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
 
@@ -129,7 +150,7 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
   rtk "$PY" -m src data_extract insider-transactions --reparse
   ~~~
 
-- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR lists each ticker from its latest zip filing date minus 7 days and re-reads that window, including filings already stored from EDGAR.
+- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR re-reads its whole window, including filings already stored from EDGAR.
 
   ~~~bash
   rtk docker exec pea_db psql -U alexandre -d pea -c "DROP TABLE insider_transactions"
@@ -138,9 +159,9 @@ Do not restore pre-mandate ownership percentages to the cube merely because the 
 
   Dropping the table is a live-DB change: ask first. `store.save` recreates it from the registry on the first zip save.
 
-Check the run log: per zip quarter, the `X / N filings missing from EDGAR` WARNING and its mismatch INFO line; one identity-exclusion WARNING per run; and the EDGAR run's manifest entry (`coverage_complete`, tickers equal to the cube universe), which is the cube's insider frontier. There is no parity command or promotion step: EDGAR always wins on overlap.
+Check the run log: per zip quarter, the `X / N filings missing from EDGAR` WARNING and its mismatch INFO line; one identity-exclusion WARNING per run; and the EDGAR coverage line. The cube's insider frontier is read from the table itself (see [source availability](../concepts/source-availability.md)). There is no parity command or promotion step: EDGAR always wins on overlap.
 
-After a refill, check that every quarter was ingested before trusting the frontier. A quarter that no SEC path serves is skipped with only per-URL WARNINGs, the per-ticker EDGAR windows then start after it, and the EDGAR run still records `coverage_complete`. Compare the stored quarters with the expected ones (2006q1 to the last published quarter):
+After a refill, check that every quarter was ingested before trusting the frontier. A quarter that no SEC path serves is skipped with only per-URL WARNINGs and stays pending, while the EDGAR window still starts after the last stored quarter, so the hole shows only in the stored quarters. Compare the stored quarters with the expected ones (2006q1 to the last published quarter):
 
 ~~~bash
 rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT count(DISTINCT quarter), min(quarter), max(quarter) FROM insider_transactions"
@@ -148,7 +169,7 @@ rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT count(DISTINCT quarte
 
 If a quarter is missing, one normal run (no `-F`, no `-t`) ingests it: it is still pending because no row carries its `quarter`. Its first `missing from EDGAR` WARNING then reads near 100 %, an artefact of the hole, not an EDGAR loss.
 
-Run from a worktree with `ROOT_PATH` set to the main repo root, so the run uses the cached zips and writes the manifest entry under the main `data/` (otherwise it re-downloads every zip into the worktree and the cube built from the main tree has no insider frontier):
+Run from a worktree with `ROOT_PATH` set to the main repo root, so the run uses the cached zips and filing index instead of downloading them again into the worktree:
 
 ~~~powershell
 $env:ROOT_PATH = "<main repo root>"; rtk $PY -m src data_extract insider-transactions -F

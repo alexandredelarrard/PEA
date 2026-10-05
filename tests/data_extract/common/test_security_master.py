@@ -7,7 +7,9 @@ rows that vote for their issuer, and the real `configs/sec` JSON files.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -15,6 +17,8 @@ import pytest
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
+from src.data_store.schema import Tables
+from tests.data_extract.fake_context import extract_config
 from tests.data_extract.sharadar.test_sharadar_diagnostics import CUTOVER_VENDOR_EXCEPTIONS
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -714,3 +718,199 @@ def test_a_class_suffixed_lineage_symbol_is_class_evidence():
     print(
         "\n=== SANITY CHECK: class from the Form 3/4/5 symbol ===\n  CMGB's truncated description names no class; the filed symbol CMG-B does: secondary class B"
     )
+
+
+# --------------------------------------------------------------------------- Q2d: trading evidence and the WBD seam
+
+STZ = _lineage(
+    _row("STZ", "0000016918", "0000016918", "cik_window", sources="roster"),
+    _row("STZ", "0000016918", "0000016918", "symbol", "STZ", "2006-01-03", sources="dei,form345,roster"),
+)
+STZ_OBS = pd.concat(
+    [
+        _obs("21036P108", "STZ", "CONSTELLATION BRANDS INC CL A", "2019-01-02", "2022-12-28"),
+        _obs("21036P207", "STZB", "CONSTELLATION BRANDS INC CL B", "2019-01-09", "2020-02-07"),
+    ],
+    ignore_index=True,
+)
+
+
+def _finra(symbol: str, start: str, end: str, freq: str = "W-FRI") -> pd.DataFrame:
+    return pd.DataFrame({"source_symbol": symbol, "date": pd.date_range(start, end, freq=freq)})
+
+
+def test_a_thin_secondary_class_runs_over_its_finra_trading_days():
+    presence = pd.concat(
+        [_finra("STZ/B", "2020-02-07", "2022-10-14"), _finra("STZ/B", "2023-06-02", "2024-06-28"), _finra("STZ", "2019-01-04", "2022-12-30")],
+        ignore_index=True,
+    )
+    without = _rows(_derive(STZ_OBS, STZ, _roster(("STZ", "0000016918"))), "21036P207")
+    build = _derive(STZ_OBS, STZ, _roster(("STZ", "0000016918")), finra_presence=presence)
+    stzb = _rows(build, "21036P207")
+    assert without["valid_to"].max() == pd.Timestamp("2020-02-06")
+    assert stzb[["lineage_role", "security_class"]].drop_duplicates().values.tolist() == [["secondary_class", "class_B"]]
+    assert stzb["valid_to"].max() == pd.Timestamp("2022-10-15"), stzb
+    assert stzb["evidence"].str.contains("FINRA to 2022-10-14").all()
+    assert _canonical_overlaps(build, "STZ") == []
+    print("\n=== SANITY CHECK: thin secondary class (STZ/B) ===")
+    print("  last FTD fail 2020-02-05 -> the class line runs to its last FINRA day before an 8-month gap (2022-10-14)")
+
+
+def test_trading_evidence_never_extends_an_unclassed_line_or_crosses_the_next_cusip():
+    hwm = _lineage(
+        _row("HWM", "0000004281", "0000004281", "cik_window", sources="roster"),
+        _row("HWM", "0000004281", "0000004281", "symbol", "AA", "2006-01-03", "2016-11-01"),
+        _row("HWM", "0000004281", "0000004281", "symbol", "HWM", "2020-04-01", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("013817101", "AA", "ALCOA INC", "2016-01-06", "2016-10-26"),
+            _obs("013817101", "ARNC", "ARCONIC INC", "2016-11-02", "2020-03-25"),
+            _obs("443201108", "HWM", "HOWMET AEROSPACE INC", "2020-04-08", "2022-12-28"),
+        ],
+        ignore_index=True,
+    )
+    build = _derive(obs, hwm, _roster(("HWM", "0000004281")), finra_presence=_finra("AA", "2016-11-04", "2022-12-30"))
+    aa = _rows(build, "013817101", "AA")
+    assert aa["valid_to"].max() <= pd.Timestamp("2016-11-02"), aa
+    goog = _derive(GOOGL_OBS, GOOGL, _roster(("GOOGL", "0001652044")), finra_presence=_finra("GOOG", "2013-01-04", "2016-06-24", freq="B"))
+    class_c = _rows(goog, "38259P706")
+    successor = _rows(goog, "02079K107")["valid_from"].min()
+    assert class_c["valid_to"].max() <= successor, class_c
+    print("\n=== SANITY CHECK: trading evidence is bounded ===")
+    print("  AA (no class evidence) is not extended over new Alcoa's FINRA days; Google class C stops at Alphabet's CUSIP")
+
+
+def test_a_current_sec_listing_keeps_a_class_line_open():
+    brk = BRK.copy()
+    obs = pd.concat([BRK_OBS, _obs("084670702", "BRKB", "BERKSHIRE HATHWY INC(HLDG CO)B", "2011-07-06", "2013-12-30", price=110.0)])
+    listing = pd.DataFrame({"cik": ["0001067983", "0001067983"], "ticker": ["BRK-A", "BRK-B"], "exchange": ["NYSE", "NYSE"]})
+    build = _derive(obs, brk, _roster(("BRK-B", "0001067983")), BRK_MANUAL, sec_tickers=listing)
+    brka = _rows(build, "084670108").sort_values("valid_from")
+    assert brka["lineage_role"].eq("secondary_class").all() and pd.isna(brka["valid_to"].iloc[-1]), brka
+    assert brka["market_symbol"].iloc[-1] == "BRK-A"
+    print("\n=== SANITY CHECK: listed class ===\n  BRK-A is in the SEC current-tickers snapshot, so its line stays open past its last FTD fail")
+
+
+def test_wbd_seam_discovery_stays_canonical_until_wbd_first_trades():
+    manual = sm.load_security_manual(str(CONFIG_DIR))
+    wbd = _lineage(
+        _row("WBD", "0001437107", "0001437107", "cik_window", sources="roster"),
+        _row("WBD", "0001437107", "0001437107", "symbol", "DISCA", "2008-09-18", "2022-04-09"),
+        _row("WBD", "0001437107", "0001437107", "symbol", "DISCK", "2008-09-18", "2022-04-09"),
+        _row("WBD", "0001437107", "0001437107", "symbol", "WBD", "2022-04-11", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("25470F104", "DISCA", "DISCOVERY INC COM SER A", "2021-06-02", "2022-04-12", freq="B"),
+            _obs("25470F302", "DISCK", "DISCOVERY INC COM SER C", "2021-06-02", "2022-04-12", freq="B"),
+            _obs("934423104", "WBD", "WARNER BROS DISCOVERY INC COM", "2022-04-11", "2022-12-28", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    build = _derive(obs, wbd, _roster(("WBD", "0001437107")), manual)
+    canonical = build.rows[build.rows["lineage_role"].eq("canonical_current")].sort_values("valid_from")
+    disca = canonical[canonical["cusip"].eq("25470F104")]
+    wbd_rows = _rows(build, "934423104").sort_values("valid_from")
+    assert disca["valid_to"].max() == pd.Timestamp("2022-04-11"), canonical
+    assert wbd_rows[wbd_rows["lineage_role"].eq("canonical_current")]["valid_from"].min() == pd.Timestamp("2022-04-11"), wbd_rows
+    assert wbd_rows[wbd_rows["valid_from"].lt(pd.Timestamp("2022-04-11"))]["lineage_role"].eq("excluded").all()
+    assert "0001193125-22-103051" in set(disca["source_accession"]) | set(wbd_rows["source_accession"])
+    assert _canonical_overlaps(build, "WBD") == []
+    print("\n=== SANITY CHECK: WBD seam (8-K 0001193125-22-103051) ===")
+    print("  DISCA canonical to 2022-04-11 (it traded through 2022-04-08); WBD canonical from its first trading day 2022-04-11")
+
+
+def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path):
+    obs = STZ_OBS.assign(trade_date=sm.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver_security,
+        obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
+    )
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["STZ"], "cik": ["0000016918"]}))
+    finra = _finra("STZ/B", "2020-02-07", "2022-10-14").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
+    sqlite_store.save(Tables.sec_short_volume_security, finra)
+    context = SimpleNamespace(
+        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config()
+    )
+    rows = sm.build_security_master(context, STZ, str(CONFIG_DIR), built_at=BUILT_AT)
+    stzb = rows[rows["cusip"].eq("21036P207")]
+    assert stzb["valid_to"].max() == pd.Timestamp("2022-10-15"), stzb
+    print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of STZ/B reach the derivation: the class line runs to 2022-10-14")
+
+
+def test_trading_evidence_stops_at_a_successor_cusip_seen_on_the_same_day():
+    aon = _lineage(
+        _row("AON", "0000315293", "0000315293", "cik_window", sources="roster"),
+        _row("AON", "0000315293", "0000315293", "symbol", "AON", "2006-01-03", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("G0408V102", "AON", "AON PLC CL A", "2019-01-02", "2020-04-01"),
+            _obs("G0403H108", "AON", "AON PLC CL A", "2020-04-01", "2021-06-30"),
+        ],
+        ignore_index=True,
+    )
+    build = _derive(obs, aon, _roster(("AON", "0000315293")), finra_presence=_finra("AON", "2019-01-04", "2021-06-25"))
+    old = _rows(build, "G0408V102")
+    assert old["valid_to"].max() <= pd.Timestamp("2020-04-01"), old
+    assert not old["evidence"].str.contains("FINRA to").any()
+    assert _canonical_overlaps(build, "AON") == []
+    print(
+        "\n=== SANITY CHECK: successor on the seam day ===\n  the old Aon line is not extended over FINRA days its successor CUSIP already trades on"
+    )
+
+
+def test_a_renamed_class_line_starts_at_its_first_finra_day():
+    psky = _lineage(
+        _row("PSKY", "0000813828", "0000813828", "cik_window", sources="roster"),
+        _row("PSKY", "0000813828", "0000813828", "symbol", "VIACA", "2019-12-05", "2022-02-16"),
+        _row("PSKY", "0000813828", "0000813828", "symbol", "PARAA", "2022-02-16"),
+        _row("PSKY", "0000813828", "0000813828", "symbol", "PARA", "2022-02-16", sources="dei,form345,roster"),
+        _row("PSKY", "0000813828", "0000813828", "symbol", "VIAC", "2019-12-05", "2022-02-16"),
+    )
+    obs = pd.concat(
+        [
+            _obs("92556H107", "VIACA", "VIACOMCBS INC CL A", "2020-01-08", "2020-03-11"),
+            _obs("92556H107", "PARAA", "PARAMOUNT GLOBAL CL A", "2023-07-12", "2023-09-13"),
+            _obs("92556H206", "VIAC", "VIACOMCBS INC CL B", "2020-01-08", "2022-02-14", freq="B"),
+            _obs("92556H206", "PARA", "PARAMOUNT GLOBAL CL B", "2022-02-16", "2024-06-26", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    presence = pd.concat([_finra("VIACA", "2020-01-10", "2022-02-11"), _finra("PARAA", "2022-02-18", "2024-06-21")], ignore_index=True)
+    build = _derive(obs, psky, _roster(("PSKY", "0000813828")), finra_presence=presence)
+    paraa = _rows(build, "92556H107", "PARAA")
+    viaca = _rows(build, "92556H107", "VIACA")
+    assert paraa["valid_from"].min() == pd.Timestamp("2022-02-18") and paraa["valid_to"].max() == pd.Timestamp("2024-06-22"), paraa
+    assert viaca["valid_to"].max() == pd.Timestamp("2022-02-12"), viaca
+    print("\n=== SANITY CHECK: renamed class line ===")
+    print("  VIACA runs to its last FINRA day; PARAA starts at its first FINRA day, not at its first fail 17 months later")
+
+
+def test_an_sec_listing_is_class_evidence_for_a_class_spelling_only():
+    lineage = _lineage(
+        _row("FITB", "0000035527", "0000035527", "cik_window", sources="roster"),
+        _row("FITB", "0000035527", "0000035527", "symbol", "FITB", "2006-01-03", sources="dei,form345,roster"),
+        _row("MKC", "0000063754", "0000063754", "cik_window", sources="roster"),
+        _row("MKC", "0000063754", "0000063754", "symbol", "MKC", "2006-01-03", sources="dei,form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("316773100", "FITB", "FIFTH THIRD BANCORP", "2024-01-03", "2026-09-30"),
+            _obs("316773852", "FITBP", "FIFTH THIRD BANCORP", "2024-01-10", "2024-03-27"),
+            _obs("579780206", "MKC", "MCCORMICK & CO INC", "2024-01-03", "2026-09-30"),
+            _obs("579780107", "MKCV", "MCCORMICK & CO INC", "2024-01-10", "2024-03-27"),
+        ],
+        ignore_index=True,
+    )
+    listing = pd.DataFrame(
+        {"cik": ["0000035527", "0000035527", "0000063754", "0000063754"], "ticker": ["FITB", "FITBP", "MKC", "MKC-V"], "exchange": "NYSE"}
+    )
+    build = _derive(obs, lineage, _roster(("FITB", "0000035527"), ("MKC", "0000063754")), sec_tickers=listing)
+    fitbp, mkcv = _rows(build, "316773852"), _rows(build, "579780107")
+    assert set(fitbp["lineage_role"]) == {"excluded"} and set(fitbp["lineage_reason"]) == {"unclassified"}, fitbp
+    assert mkcv[["lineage_role", "lineage_reason"]].drop_duplicates().values.tolist() == [["secondary_class", "sec_tickers_listing"]], mkcv
+    assert mkcv["market_symbol"].iloc[0] == "MKC-V"
+    print("\n=== SANITY CHECK: SEC listing as class evidence ===")
+    print("  MKC-V (class spelling) is a secondary class; FITBP (a preferred the SEC file lists without a marker) stays excluded")

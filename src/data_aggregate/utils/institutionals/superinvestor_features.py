@@ -147,6 +147,11 @@ def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) 
     Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
     (`to_manager_books`), so it compares with `roster_as_of`.
 
+    A `(cik, period)` book whose `value_usd` is NULL on every row is dropped, so that
+    manager-quarter reads as unfiled. Such a book is an unverifiable legacy text filing: the
+    positions are known but the amounts are not. `clean_holdings` would zero-fill it into a book
+    that holds every name at weight 0.
+
     Returns None when the roster resolves to no manager or the table is not populated.
     """
     config_dir = config_dir_of(context)
@@ -155,7 +160,14 @@ def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) 
         return None
 
     holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
-    return None if holdings is None else to_manager_books(holdings, config_dir=config_dir)
+    if holdings is None:
+        return None
+    unknown = holdings["value_usd"].isna().groupby([holdings["cik"], holdings["period"]]).transform("all")
+    if unknown.any():
+        n_books = holdings.loc[unknown, ["cik", "period"]].drop_duplicates().shape[0]
+        logger.info("superinvestor books: %d (cik, period) book(s) with all-NULL amounts dropped as unfiled (%d row(s))", n_books, int(unknown.sum()))
+        holdings = holdings[~unknown]
+    return to_manager_books(holdings, config_dir=config_dir)
 
 
 def _selection_ciks(roster: Iterable[str] | None) -> set[str]:

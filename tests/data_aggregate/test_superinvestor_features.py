@@ -379,11 +379,11 @@ def test_the_family_emits_no_peer_leg_and_never_a_rank_alone():
 
 def test_selection_ciks_reads_every_roster_shape():
     assert _selection_ciks({"1067983": "Buffett", "0000000002": "Ackman"}) == {"0001067983", "0000000002"}
-    assert _selection_ciks({"cik_to_name": {"1067983": "Buffett"}}) == {"0001067983"}
-    assert _selection_ciks({"managers": [{"cik": "2"}]}) == {"0000000002"}
-    assert _selection_ciks(None) == set() and _selection_ciks({"managers": []}) == set()
+    assert _selection_ciks({"1067983", "0000000002"}) == {"0001067983", "0000000002"}
+    assert _selection_ciks(["1067983", ""]) == {"0001067983"}
+    assert _selection_ciks(None) == set() and _selection_ciks(set()) == set() and _selection_ciks({}) == set()
     print("\n=== SANITY CHECK: roster shapes ===")
-    print("  {cik: name}, {cik_to_name: {...}} and the legacy {managers: [{cik}]} all resolve to padded CIKs; None/empty -> empty set. Validated.")
+    print("  {cik: name} keys, a CIK set and a CIK list all resolve to padded CIKs; blanks dropped; None/empty -> empty set. Validated.")
 
 
 class _Ctx:
@@ -405,7 +405,7 @@ def test_load_reads_only_roster_managers_from_the_book_table(sqlite_store):
     assert out is not None
     assert set(out["cik"]) == {"0000000001"}, set(out["cik"])
     assert len(out) == 10, "the whole book must come back, not the universe slice"
-    assert load_superinvestor_holdings(ctx, {"managers": []}) is None
+    assert load_superinvestor_holdings(ctx, set()) is None
     print("\n=== SANITY CHECK: filtered book read ===")
     print(f"  {len(rows)} stored rows -> {len(out)} returned, all for roster CIK 0000000001; the non-roster manager is filtered server-side")
     print(f"  columns: {list(out.columns)}")

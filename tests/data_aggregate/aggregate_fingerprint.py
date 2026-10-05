@@ -600,7 +600,7 @@ def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Gene
                     }
                 )
     holdings = pd.DataFrame(rows)
-    roster = {"cik_to_name": {c: f"Manager {k}" for k, c in enumerate(ciks[: N_MANAGERS // 2])}}
+    roster = {c: f"Manager {k}" for k, c in enumerate(ciks[: N_MANAGERS // 2])}
     return holdings, roster
 
 

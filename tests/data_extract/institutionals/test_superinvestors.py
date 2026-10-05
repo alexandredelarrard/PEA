@@ -13,65 +13,31 @@ exists to remove.
 
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+import json
+import re
+from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pandas as pd
 import pytest
 
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
+from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
 CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "configs")
 OVERRIDES = si.load_superinvestor_overrides(CONFIG_DIR)
 
-#: The hand resolutions as the Python literals held them at commit 8c0506a, before they moved
-#: to configs/sec/superinvestor_overrides.json. The config must resolve to exactly these.
-CIK_OVERRIDES_AT_8C0506A = {
-    "BRK": "0001067983",
-    "HA": "0000827280",
-    "VAN": "0000858172",
-    "RC": "0001570775",
-    "DAC": "0000200217",
-    "PI": "0001549574",
-    "MPF": "0000932223",
-    "DAV": "0000200305",
-    "T": "0001002778",
-    "OA": "0000885665",
-    "HRSVX": "0000937394",
-    "TVAFX": "0001145020",
-    "YAFFX": "0000905567",
-    "cfimx": "0001036325",
-    "lmvtx": "0001348883",
-    "oakvx": "0001085256",
-    "DJCO": "0000783412",
-    "t2": "0001327388",
-    "FEVAX": "0001325447",
-    "ARFFX": "0000936753",
-    "CAAPX": "0000936753",
-    "FPACX": "0001377581",
-    "FPPTX": "0001377581",
-    "LLPFX": "0000807985",
-    "MPGFX": "0001070134",
-    "MVALX": "0001483859",
-    "TWEBX": "0000732905",
-    "WVALX": "0000883965",
-    "hcmax": "0001314620",
-    "oaklx": "0000813917",
-    "pzfvx": "0001027796",
-    "CAS": "0001697591",
-    "FFH": "0000915191",
-    "MAVFX": "0001016287",
-    "SA": "0001115373",
-    "oa": "0000885665",
-}
-UNRESOLVABLE_AT_8C0506A = {
-    "CMAFX": "Century Management / CM Advisers -- empty 13F-HR feed under 'Century Management "
-    "Advisers', 'Century Management' and 'CM Advisers': never filed a 13F-HR. On the roster "
-    "2013-2017.",
-    "LUK": "Leucadia National, which became Jefferies Financial Group -- empty 13F-HR feed under both "
-    "names: never filed a 13F-HR. On the roster 2013-2023.",
-}
+#: Hand overrides the research proved wrong (trust / fund / unrelated entities that never filed the manager's 13F-HR).
+WRONG_OVERRIDE_CIKS = {"0000827280", "0000858172", "0001570775", "0001549574", "0000932223", "0000200305", "0001002778", "0000885665"}
+#: Dataroma's 2026 code migration (old fund-ticker code, new adviser code): each pair is one manager.
+MIGRATED_CODES = [("oaklx", "HA"), ("MPGFX", "MPF"), ("FPACX", "FPA"), ("SEQUX", "RC"), ("CMAFX", "VAN")]
+#: Fixture hand resolutions for the content-independent tests.
+FIXTURE_CIK_OVERRIDES = {"BRK": "0001067983"}
+FIXTURE_UNRESOLVABLE = {"CMAFX": "fixture: never filed a 13F-HR"}
 
 _SINGLE_ATOM = (
     '<?xml version="1.0"?><feed><company-info>'
@@ -86,16 +52,28 @@ _MULTI_ATOM = (
 )
 
 
-def test_overrides_config_resolves_to_the_former_literals():
-    """The config move changes where the hand resolutions live, never what they resolve to."""
-    assert OVERRIDES.cik_by_code == CIK_OVERRIDES_AT_8C0506A
-    assert list(OVERRIDES.cik_by_code) == list(CIK_OVERRIDES_AT_8C0506A)
-    assert OVERRIDES.unresolvable == UNRESOLVABLE_AT_8C0506A
+def test_overrides_config_carries_evidence_and_valid_chains():
+    """Checks the PRODUCTION overrides on purpose: every hand resolution is a 10-digit CIK carrying its
+    13F evidence, every chain window carries evidence and the loader validates the chains, no proven-wrong
+    CIK is left, and each 2026 migrated code resolves to the same manager as the code it replaced."""
+    blob = json.loads((Path(CONFIG_DIR) / "superinvestors" / "overrides.json").read_text(encoding="utf-8"))
+    for code, entry in blob["cik_overrides"].items():
+        assert re.fullmatch(r"\d{10}", entry["cik"]), code
+        assert "13F-HR" in entry.get("evidence", ""), code
+    windows = [w for chain in blob["manager_ciks"].values() for w in chain]
+    assert all(re.fullmatch(r"\d{10}", w["cik"]) and "13F-HR" in w.get("evidence", "") for w in windows)
+    assert set(OVERRIDES.manager_ciks) == {"0001006438", "0000728014", "0001079114", "0001056258", "0000898382", "0000820330"}
+    assert not WRONG_OVERRIDE_CIKS & set(OVERRIDES.cik_by_code.values())
+    assert not {"CMAFX", "LUK"} & set(OVERRIDES.unresolvable)
+    assert all(r.reason and r.window.start for r in OVERRIDES.inactive.values())
+    for old, new in MIGRATED_CODES:
+        assert OVERRIDES.manager_id(OVERRIDES.cik_by_code[old]) == OVERRIDES.manager_id(OVERRIDES.cik_by_code[new]), (old, new)
     assert si.load_superinvestor_overrides(f"{CONFIG_DIR}/../configs") is OVERRIDES  # cached per resolved directory
     print("\n=== SANITY: superinvestor overrides config ===")
     print(
-        f"  {len(OVERRIDES.cik_by_code)} code -> CIK overrides and {len(OVERRIDES.unresolvable)} unresolvable "
-        "codes load identical (keys, order, CIKs, reasons) to the 8c0506a literals. Validated."
+        f"  {len(OVERRIDES.cik_by_code)} overrides, each a 10-digit CIK with 13F evidence; {len(OVERRIDES.manager_ciks)} chains "
+        f"({len(windows)} windows) validated; inactive {sorted(OVERRIDES.inactive)}; unresolvable {sorted(OVERRIDES.unresolvable)}; "
+        f"none of the {len(WRONG_OVERRIDE_CIKS)} proven-wrong CIKs remain; {len(MIGRATED_CODES)} migrated code pairs share a manager. Validated."
     )
 
 
@@ -176,7 +154,7 @@ def test_resolver_is_memoised_per_code_and_falls_back_to_older_names():
         calls.append(url)
         return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    resolve = si._make_resolver(fake_get, OVERRIDES.cik_by_code, {"GLRE": ["Greenlight Capital", "Greenlight Re"]})
+    resolve = si._make_resolver(fake_get, FIXTURE_CIK_OVERRIDES, {"GLRE": ["Greenlight Capital", "Greenlight Re"]})
     # the name in hand does not resolve; the older one does
     assert resolve("GLRE", "David Einhorn - Some Rebrand") == ("0001079114", si.RESOLUTION_EDGAR)
     n_after_first = len(calls)
@@ -199,6 +177,7 @@ def test_snapshot_rows_shape_and_padding():
         date(2016, 1, 1),
         "https://web.archive.org/web/2016/x",
         lambda code, name: ("1067983", si.RESOLUTION_OVERRIDE) if code == "BRK" else (None, si.RESOLUTION_UNRESOLVED),
+        overrides=si.SuperinvestorOverrides(cik_by_code=FIXTURE_CIK_OVERRIDES, unresolvable=FIXTURE_UNRESOLVABLE),
     )
     assert [r["cik"] for r in rows] == ["0001067983", None]  # padded; unresolved -> NULL, not ""
     assert {r["snapshot_date"] for r in rows} == {date(2016, 1, 1)}
@@ -224,39 +203,459 @@ def test_unresolved_manager_raises_unless_recorded():
         }
     ]
     with pytest.raises(si.SuperinvestorResolutionError, match="Unlisted Boutique"):
-        si.assert_fully_resolved(unknown, OVERRIDES.unresolvable)
+        si.assert_fully_resolved(unknown, FIXTURE_UNRESOLVABLE)
 
     recorded = [dict(unknown[0], dataroma_code="CMAFX", manager_name="Century Management")]
-    assert si.assert_fully_resolved(recorded, OVERRIDES.unresolvable) == ["CMAFX"]  # recorded -> passes, reported
+    assert si.assert_fully_resolved(recorded, FIXTURE_UNRESOLVABLE) == ["CMAFX"]  # recorded -> passes, reported
     resolved = [dict(unknown[0], cik="0001067983", resolution=si.RESOLUTION_EDGAR)]
-    assert si.assert_fully_resolved(resolved, OVERRIDES.unresolvable) == []
+    assert si.assert_fully_resolved(resolved, FIXTURE_UNRESOLVABLE) == []
     print("\n=== SANITY: resolution gate ===")
     print(
-        f"  an unknown unresolved code RAISES; the {len(OVERRIDES.unresolvable)} "
-        f"recorded exceptions {sorted(OVERRIDES.unresolvable)} pass and are returned "
+        f"  an unknown unresolved code RAISES; the {len(FIXTURE_UNRESOLVABLE)} "
+        f"recorded exceptions {sorted(FIXTURE_UNRESOLVABLE)} pass and are returned "
         "for the caller to report. Validated."
     )
 
 
-def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_store):
-    roster_html = (
-        '<a href="holdings.php?m=GLRE">David Einhorn - Greenlight Capital</a><a href="holdings.php?m=BRK">Warren Buffett - Berkshire Hathaway</a>'
-    )
-    monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text=roster_html))
+def _seed_13f(store: Any, hr: list[tuple[str, str]] | None = None, books: list[tuple[str, str]] | None = None) -> None:
+    """Seed (cik, period) 13F activity: `hr` into `sec13f_hr` (the S&P slice), `books` into `sec13f_manager_holdings`."""
+    if hr:
+        store.save(si.Tables.sec13f_hr, pd.DataFrame([{"cik": c, "period": p, "ticker": "AAPL", "cusip": "037833100", "shares": 1.0} for c, p in hr]))
+    if books:
+        store.save(si.Tables.sec13f_manager_holdings, pd.DataFrame([{"cik": c, "period": p, "cusip": "037833100", "shares": 1.0} for c, p in books]))
 
-    def fake_edgar(url):
-        return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=CONFIG_DIR))
-    df = si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)
-    assert set(df["cik"]) == {"0001079114", "0001067983"}  # EDGAR + override
-    assert df["snapshot_date"].nunique() == 1
-    si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)  # same day, again
+def _gate_row(code: str, cik: str | None, snapshot: str) -> dict[str, Any]:
+    """One roster row as the writer builds it."""
+    return {
+        "snapshot_date": date.fromisoformat(snapshot),
+        "dataroma_code": code,
+        "manager_name": f"{code} - Fixture Fund",
+        "cik": cik,
+        "resolution": si.RESOLUTION_OVERRIDE if cik else si.RESOLUTION_UNRESOLVED,
+        "source_url": "x",
+    }
+
+
+def _no_listing(cik: str) -> set[date]:
+    raise AssertionError(f"no EDGAR listing expected on a local hit: {cik}")
+
+
+_ROSTER_HTML = (
+    '<a href="holdings.php?m=GLRE">David Einhorn - Greenlight Capital</a><a href="holdings.php?m=BRK">Warren Buffett - Berkshire Hathaway</a>'
+)
+
+
+def _refresh_fixture(monkeypatch, sqlite_store, tmp_path) -> Any:
+    """Live-refresh context: the two-manager Dataroma page, GLRE via stubbed EDGAR search, BRK via override,
+    both with 13F activity at the quarter before today."""
+    monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text=_ROSTER_HTML))
+    q = str(si.snapshot_quarter(datetime.now(UTC).date()))
+    _seed_13f(sqlite_store, hr=[("1079114", q)], books=[("0001067983", q)])
+    config_dir = write_roster_config(tmp_path, {"cik_overrides": {c: {"cik": k} for c, k in FIXTURE_CIK_OVERRIDES.items()}})
+    return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
+
+
+def _fake_edgar(url: str) -> Any:
+    return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
+
+
+def _stored_snapshot(store: Any, snapshot: str, mapping: dict[str, str]) -> None:
+    rows = [dict(_gate_row(code, cik, snapshot), source_url=si.DATAROMA_HOME_URL) for code, cik in mapping.items()]
+    store.save(si.Tables.superinvestor_roster, pd.DataFrame(rows))
+
+
+def test_live_refresh_noop_when_unchanged(monkeypatch, sqlite_store, tmp_path):
+    """D-6: a refresh whose (code -> cik) mapping equals the latest stored snapshot writes nothing, on a
+    later day and on a same-day repeat."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    _stored_snapshot(sqlite_store, "2026-09-08", {"GLRE": "0001079114", "BRK": "0001067983"})
+    before = sqlite_store.row_count(si.Tables.superinvestor_roster)
+    first = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    second = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
     stored = sqlite_store.load(si.Tables.superinvestor_roster)
-    assert len(stored) == 2, stored  # upserted on the PK, not doubled
-    print("\n=== SANITY: live snapshot write ===")
+    assert first.empty and second.empty
+    assert len(stored) == before == 2 and set(stored["snapshot_date"].astype(str)) == {"2026-09-08"}
+    print("\n=== SANITY: live refresh is a no-op when nothing changed ===")
     print(
-        f"  scraped 2 managers -> {len(stored)} rows in superinvestor_roster "
-        f"(resolution {df['resolution'].value_counts().to_dict()}); re-running the same day "
-        "upserts the same PK rather than duplicating. Validated on the real store."
+        f"  stored snapshot 2026-09-08 = today's mapping -> two refreshes wrote 0 rows; table stays at {len(stored)} rows. Validated on the real store."
+    )
+
+
+def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
+    """A membership change, then a CIK change (an override correction), each write a full gated snapshot dated
+    today; an unchanged repeat in between writes nothing."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    _stored_snapshot(sqlite_store, "2026-09-08", {"BRK": "0001067983"})
+    df = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    today = datetime.now(UTC).date()
+    assert dict(zip(df["dataroma_code"], df["cik"], strict=True)) == {"GLRE": "0001079114", "BRK": "0001067983"}
+    assert set(df["snapshot_date"]) == {today}
+    assert si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing).empty
+
+    corrected = "0000000007"
+    _seed_13f(sqlite_store, books=[(corrected, str(si.snapshot_quarter(today)))])
+    ctx.config_dir = write_roster_config(tmp_path / "corrected", {"cik_overrides": {"BRK": {"cik": "0001067983"}, "GLRE": {"cik": corrected}}})
+    moved = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    assert dict(zip(moved["dataroma_code"], moved["cik"], strict=True)) == {"GLRE": corrected, "BRK": "0001067983"}
+    stored = sqlite_store.load(si.Tables.superinvestor_roster)
+    assert len(stored) == 3, stored  # 1 old row + today's 2, upserted in place on the CIK change
+    print("\n=== SANITY: live refresh writes on change ===")
+    print(
+        f"  GLRE joined -> a {len(df)}-row snapshot dated {today} (gated on local 13F activity); the repeat wrote 0; "
+        f"an override moving GLRE to {corrected} rewrote today's snapshot. {len(stored)} rows stored. Validated on the real store."
+    )
+
+
+def test_live_refresh_refuses_empty_scrape(monkeypatch, sqlite_store, tmp_path):
+    """A page that parses to no manager is refused with a named error, on a cold table too (first-ever run)."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text="<html><a href='/m/managers.php'>All</a></html>"))
+    with pytest.raises(si.SuperinvestorResolutionError, match="0 managers") as err:
+        si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    assert sqlite_store.load(si.Tables.superinvestor_roster, optional=True) is None
+    print("\n=== SANITY: empty scrape refused ===")
+    print(f"  cold table, empty Dataroma page -> {type(err.value).__name__}: {str(err.value)[:90]}...; nothing written. Validated.")
+
+
+def test_live_refresh_refuses_partial_scrape(monkeypatch, sqlite_store, tmp_path):
+    """A 2-manager scrape against an 83-manager latest snapshot is below `ROSTER_CAPTURE_MIN_RATIO`: refused, naming both
+    counts, with the table unchanged, although both scraped managers would pass the gates."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    _stored_snapshot(sqlite_store, "2026-09-08", {"GLRE": _GLRE, "BRK": _BRK} | {f"M{i:02d}": f"{i:010d}" for i in range(81)})
+    before = _table_hash(sqlite_store)
+    with pytest.raises(si.SuperinvestorResolutionError) as err:
+        si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    msg = str(err.value)
+    assert "2 managers" in msg and "83" in msg, msg
+    assert _table_hash(sqlite_store) == before and sqlite_store.row_count(si.Tables.superinvestor_roster) == 83
+    print("\n=== SANITY: partial scrape refused ===")
+    print(
+        f"  2 scraped vs 83 stored (floor {si.ROSTER_CAPTURE_MIN_RATIO:.0%}) -> refused: {msg[:110]}...; table hash {before[:12]} unchanged. Validated."
+    )
+
+
+def test_gate_raises_on_inactive_cik(sqlite_store):
+    """The RC -> TRAC Intermodal shape: a CIK with no 13F-HR near the snapshot raises, naming code, snapshot,
+    CIK and the nearest known period; a CIK with local activity passes without an EDGAR listing call."""
+    trac, lapsed, brk = "0001570775", "0000099999", "0001067983"
+    _seed_13f(sqlite_store, hr=[("99999", "2019-12-31")], books=[(brk, "2026-06-30")])
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store))
+    evidence = si.activity_evidence(ctx, {trac, lapsed, brk})
+    assert evidence == {(lapsed, date(2019, 12, 31)), (brk, date(2026, 6, 30))}  # unpadded hr row normalised
+    listed: list[str] = []
+
+    def listing(cik: str) -> set[date]:
+        listed.append(cik)
+        return {date(2020, 3, 31)} if cik == lapsed else set()
+
+    rows = [_gate_row("RC", trac, "2026-09-08"), _gate_row("LAPSED", lapsed, "2026-09-08"), _gate_row("BRK", brk, "2026-09-08")]
+    with pytest.raises(si.SuperinvestorResolutionError) as err:
+        si.assert_active(rows, evidence, {}, listing)
+    msg = str(err.value)
+    assert '"RC"' in msg and trac in msg and "2026-09-08" in msg and "none" in msg
+    assert '"LAPSED"' in msg and "2020-03-31" in msg  # the listing's period is nearer than the local 2019-12-31
+    assert "BRK" not in msg and sorted(listed) == sorted([trac, lapsed])
+    print("\n=== SANITY: activity gate raises on an inactive CIK ===")
+    print(
+        f"  RC -> {trac} (never filed) and a lapsed filer raise with code/snapshot/CIK/nearest period; BRK passes on "
+        "local evidence, the listing was asked only for the 2 misses. Validated."
+    )
+
+
+def test_gate_passes_recorded_inactive_exception():
+    """A dated `inactive` range skips the gate only for snapshots whose Q(snap) it covers; outside it the gate applies."""
+    aq = "0000000042"
+    inactive = {"aq": si.InactiveRange(si.PeriodRange(date(2022, 9, 30), date(2023, 12, 31)), "fixture: no 13F after 2022-06")}
+    evidence = {(aq, date(2022, 6, 30))}
+
+    def no_listing(cik: str) -> set[date]:
+        return set()
+
+    inside = [_gate_row("aq", aq, "2023-02-15"), _gate_row("aq", aq, "2024-01-10")]  # Q 2022-12-31, 2023-12-31
+    assert si.assert_active(inside, evidence, inactive, no_listing) == ["aq"]
+    assert si.assert_active([_gate_row("aq", aq, "2022-08-01")], evidence, inactive, no_listing) == []  # before: active
+    with pytest.raises(si.SuperinvestorResolutionError, match="2024-05-01"):
+        si.assert_active([_gate_row("aq", aq, "2024-05-01")], evidence, inactive, no_listing)  # Q 2024-03-31: after the range
+    print("\n=== SANITY: dated inactive exception ===")
+    print("  aq inactive 2022-09-30..2023-12-31: snapshots inside pass (reported), 2022-08 passes on evidence, 2024-05 raises. Validated.")
+
+
+def test_gate_clamps_pre_xml_window():
+    """Before the XML era the local tables are sparse, so a pre-XML window extends to the first XML quarter;
+    after it the window is the plain [Q-4q, Q+2q]."""
+    a, b, c = "0000000001", "0000000002", "0000000003"
+    evidence = {(a, date(2013, 6, 30)), (b, date(2013, 9, 30)), (c, date(2015, 12, 31))}
+    assert si.assert_active([_gate_row("A", a, "2012-03-07")], evidence, {}, _no_listing) == []  # Q 2011-12-31
+    with pytest.raises(si.SuperinvestorResolutionError) as err:
+        si.assert_active([_gate_row("B", b, "2012-03-07"), _gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
+    assert '"B"' in str(err.value) and '"C"' in str(err.value)
+    print("\n=== SANITY: pre-XML window clamp ===")
+    print(
+        "  2012-03-07 passes on a 2013-06-30 book (window end clamped to the XML-era start) but not on 2013-09-30; a 2015 snapshot is not clamped. Validated."
+    )
+
+
+def test_gate_uses_listing_on_local_miss(sqlite_store):
+    """A 2012-only filer with no local rows passes through the EDGAR listing, asked once per CIK; a CIK with
+    local evidence never triggers the listing."""
+    old, brk = "0000846222", "0001067983"
+    _seed_13f(sqlite_store, books=[(brk, "2012-03-31")])
+    evidence = si.activity_evidence(cast(Any, SimpleNamespace(store=sqlite_store)), {old, brk})
+    calls: list[str] = []
+
+    def listing(cik: str) -> set[date]:
+        calls.append(cik)
+        return {date(2012, 3, 31), date(2012, 6, 30)}
+
+    rows = [_gate_row("GH", old, "2012-05-01"), _gate_row("GH", old, "2012-08-01")]
+    assert si.assert_active(rows, evidence, {}, listing) == []
+    assert calls == [old]  # memoised per CIK
+    assert si.assert_active([_gate_row("BRK", brk, "2012-05-01")], evidence, {}, _no_listing) == []
+    print("\n=== SANITY: EDGAR listing only on a local miss ===")
+    print(f"  {old} (no local rows) passed 2 snapshots on 1 listing call; BRK passed on its local book without one. Validated on the real store.")
+
+
+def _listing_context(monkeypatch, filings: Any) -> Any:
+    """A context for `edgar_13f_report_dates` whose edgartools `Company(cik).get_filings` returns `filings` or, when
+    it is an exception, raises it."""
+
+    def get_filings(**_kwargs: Any) -> Any:
+        if isinstance(filings, Exception):
+            raise filings
+        return filings
+
+    monkeypatch.setattr(si, "Company", lambda cik: SimpleNamespace(get_filings=get_filings))
+    return cast(Any, SimpleNamespace(ensure_edgar_identity=lambda: None))
+
+
+def test_listing_failure_is_reported_as_listing_error(monkeypatch):
+    """A failed EDGAR listing surfaces as a listing error naming the CIK, through the activity gate too, never as
+    "no 13F activity, correct the CIK"."""
+    cik = "0000846222"
+    ctx = _listing_context(monkeypatch, RuntimeError("429 Too Many Requests"))
+    with pytest.raises(RuntimeError, match=cik) as direct:
+        si.edgar_13f_report_dates(ctx, cik)
+    with pytest.raises(RuntimeError) as gated:
+        si.assert_active([_gate_row("GH", cik, "2012-05-01")], set(), {}, partial(si.edgar_13f_report_dates, ctx))
+    for err in (direct, gated):
+        msg = str(err.value)
+        assert "listing" in msg and cik in msg and "429" in msg, msg
+        assert not isinstance(err.value, si.SuperinvestorResolutionError) and "Correct the CIK" not in msg, msg
+    print("\n=== SANITY: listing failure is a listing error ===")
+    print(f"  edgartools raised 429 -> {type(gated.value).__name__}: {str(gated.value)[:100]}...; no 'correct the CIK' advice. Validated.")
+
+
+def test_empty_listing_still_fails_the_activity_gate(monkeypatch):
+    """A successful listing with no 13F-HR is "no activity": the gate's correct-the-CIK error, not a listing error."""
+    cik = "0000846222"
+    ctx = _listing_context(monkeypatch, None)
+    assert si.edgar_13f_report_dates(ctx, cik) == set()
+    with pytest.raises(si.SuperinvestorResolutionError, match="no 13F-HR activity") as err:
+        si.assert_active([_gate_row("GH", cik, "2012-05-01")], set(), {}, partial(si.edgar_13f_report_dates, ctx))
+    assert "Correct the CIK" in str(err.value)
+    print("\n=== SANITY: empty listing is no activity ===")
+    print("  edgartools listed no 13F-HR -> empty period set -> SuperinvestorResolutionError 'no 13F-HR activity ... Correct the CIK'. Validated.")
+
+
+def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
+    """The seed reads the roster history and the overrides from `<config_dir>/superinvestors/`,
+    never from the data store: a decoy history under DATA_STORE must be ignored."""
+    config_dir = write_roster_config(
+        tmp_path,
+        {"cik_overrides": {"AAA": {"cik": "1234"}}, "unresolvable": {"ZZZ": "fixture: never filed a 13F-HR"}},
+        [
+            {"captured_at": "2015-03-30T10:00:00Z", "source_url": "wayback-a", "managers": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"}},
+            {"captured_at": "2016-03-15T10:00:00Z", "source_url": "wayback-b", "managers": {"AAA": "Alice - Alpha Fund"}},
+        ],
+    )
+    data_store = tmp_path / "data_store"
+    (data_store / "superinvestors").mkdir(parents=True)
+    (data_store / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps({"2014": {"DECOY": "Decoy - Fund"}}), encoding="utf-8")
+
+    queried: list[str] = []
+
+    def empty_edgar(url):
+        queried.append(url)
+        return SimpleNamespace(text="no company-info")
+
+    _seed_13f(sqlite_store, books=[("0000001234", "2015-06-30")])
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, paths={"DATA_STORE": data_store}))
+    df = si.rebuild_roster(ctx, get_fn=empty_edgar, listing_fn=_no_listing)
+    got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
+    assert got == {
+        ("2015-03-30", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+        ("2015-03-30", "ZZZ", None, si.RESOLUTION_UNRESOLVED),
+        ("2016-03-15", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
+    }
+    assert "DECOY" not in set(sqlite_store.load(si.Tables.superinvestor_roster)["dataroma_code"])
+    assert len(queried) == 1 and "company=Zeta" in queried[0]  # only the non-overridden code searched EDGAR
+    print("\n=== SANITY: roster config location ===")
+    print(
+        f"  seed wrote {len(df)} rows from <config_dir>/superinvestors/dataroma_roster_history.json; AAA took the "
+        "fixture override CIK (no EDGAR call) and ZZZ stayed NULL as the fixture's recorded exception; "
+        "the DATA_STORE decoy was never read. Validated on the real store."
+    )
+
+
+def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
+    """A resolved CIK is stored as the member of its manager's chain valid at the last quarter end
+    strictly before the snapshot date: a snapshot before the successor's first book stores the
+    predecessor, even when the code resolves to the successor."""
+    old, new = APPALOOSA_OLD, APPALOOSA_NEW
+    stamps = ["2015-11-20T10:00:00Z", "2016-02-15T10:00:00Z", "2016-03-31T23:00:00Z", "2016-04-01T01:00:00Z", "2016-08-01T10:00:00Z"]
+    config_dir = write_roster_config(
+        tmp_path,
+        {"cik_overrides": {"AM": {"cik": new}, "BRK": {"cik": "0001067983"}}, "manager_ciks": APPALOOSA_CHAIN},
+        [{"captured_at": t, "source_url": f"wb-{t}", "managers": {"AM": "Tepper", "BRK": "Buffett"}} for t in stamps],
+    )
+
+    _seed_13f(sqlite_store, hr=[(old, "2015-09-30"), (new, "2016-03-31"), ("0001067983", "2015-12-31")])
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
+    df = si.rebuild_roster(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"), listing_fn=_no_listing)
+    am = {str(r.snapshot_date): r.cik for r in df.itertuples(index=False) if r.dataroma_code == "AM"}
+    assert am == {"2015-11-20": old, "2016-02-15": old, "2016-03-31": old, "2016-04-01": new, "2016-08-01": new}
+    assert set(df.loc[df["dataroma_code"] == "BRK", "cik"]) == {"0001067983"}  # a singleton is stored as resolved
+    assert si.snapshot_quarter(date(2016, 3, 31)) == date(2015, 12, 31)
+    assert si.snapshot_quarter(date(2016, 4, 1)) == date(2016, 3, 31)
+    assert si.snapshot_quarter(date(2016, 1, 1)) == date(2015, 12, 31)
+    print("\n=== SANITY: writer stores the chain member valid at the snapshot ===")
+    print(
+        f"  AM resolves to Appaloosa LP ({new}); snapshots 2015-11-20, 2016-02-15 and 2016-03-31 (Q = 2015-12-31, inside "
+        f"the succession quarter) store {old}, 2016-04-01 and 2016-08-01 store {new}. Validated on the real store."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Full rebuild (P-2): committed history + stored live snapshots, resolved fresh  #
+# --------------------------------------------------------------------------- #
+_BRK, _GLRE, _GLRE_WRONG, _PSC, _PSC_WRONG = "0001067983", "0001079114", "0000846222", "0001336528", "0002026053"
+_PSC_ATOM = (
+    '<?xml version="1.0"?><feed><company-info><cik>0001336528</cik>'
+    "<conformed-name>PERSHING SQUARE CAPITAL MANAGEMENT, L.P.</conformed-name></company-info></feed>"
+)
+
+
+def _rebuild_fixture(sqlite_store, tmp_path, extra_history: list[dict[str, Any]] | None = None) -> tuple[Any, list[str]]:
+    """Two committed history snapshots (BRK, GLRE by override) and a stored table as an old run left it: a stale
+    1-January seed snapshot, two identical live snapshots with a wrong GLRE CIK (stored `edgar`) and a wrong PSC CIK
+    (live-only code, resolved by EDGAR), plus 13F activity near every snapshot. Returns the context and the
+    list the stub EDGAR search appends its queries to."""
+    pair = {"BRK": "Warren Buffett - Berkshire Hathaway", "GLRE": "David Einhorn - Greenlight Capital"}
+    snapshots = [
+        {"captured_at": "2015-03-30T10:00:00Z", "source_url": "https://web.archive.org/web/a", "managers": pair},
+        {"captured_at": "2016-03-15T10:00:00Z", "source_url": "https://web.archive.org/web/b", "managers": pair},
+        *(extra_history or []),
+    ]
+    config_dir = write_roster_config(tmp_path, {"cik_overrides": {"BRK": {"cik": _BRK}, "GLRE": {"cik": _GLRE}}}, snapshots)
+    stale = [dict(_gate_row(c, k, "2015-01-01"), source_url="https://web.archive.org/web/old") for c, k in (("BRK", _BRK), ("GLRE", _GLRE_WRONG))]
+    live = [
+        dict(_gate_row(code, cik, day), resolution=si.RESOLUTION_EDGAR, source_url=si.DATAROMA_HOME_URL, manager_name=name)
+        for day in ("2026-09-08", "2026-09-09")
+        for code, cik, name in (
+            ("BRK", _BRK, pair["BRK"]),
+            ("GLRE", _GLRE_WRONG, pair["GLRE"]),
+            ("PSC", _PSC_WRONG, "Bill Ackman - Pershing Square Capital Management"),
+        )
+    ]
+    sqlite_store.save(si.Tables.superinvestor_roster, pd.DataFrame(stale + live))
+    _seed_13f(
+        sqlite_store, hr=[(_BRK, "2015-03-31"), (_GLRE, "2015-03-31"), (_GLRE, "2026-06-30")], books=[(_BRK, "2026-06-30"), (_PSC, "2026-06-30")]
+    )
+    queried: list[str] = []
+
+    def edgar(url: str) -> Any:
+        queried.append(url)
+        return SimpleNamespace(text=_PSC_ATOM if "Pershing" in url else "no company-info")
+
+    return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, edgar=edgar)), queried
+
+
+def _table_hash(store: Any) -> str:
+    """sha256 of the whole roster table, every column, rows sorted."""
+    df = store.load(si.Tables.superinvestor_roster).astype(str)
+    return hashlib.sha256(df.sort_values(list(df.columns)).to_csv(index=False).encode()).hexdigest()
+
+
+def test_rebuild_roster_combines_history_and_live_resolved_fresh(sqlite_store, tmp_path):
+    """The rebuild replaces the table with every committed history snapshot plus every stored live snapshot (none
+    collapsed), all resolved fresh: a wrong stored CIK is corrected by the override or by EDGAR, a stale seed
+    snapshot outside the history disappears, and a second rebuild leaves the table byte-identical."""
+    ctx, queried = _rebuild_fixture(sqlite_store, tmp_path)
+    df = si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    stored = sqlite_store.load(si.Tables.superinvestor_roster)
+    got = {(str(d)[:10], c, k, r) for d, c, k, r in stored[["snapshot_date", "dataroma_code", "cik", "resolution"]].itertuples(index=False)}
+    history = {(d, c, k, si.RESOLUTION_OVERRIDE) for d in ("2015-03-30", "2016-03-15") for c, k in (("BRK", _BRK), ("GLRE", _GLRE))}
+    live = {
+        (d, c, k, r)
+        for d in ("2026-09-08", "2026-09-09")
+        for c, k, r in (("BRK", _BRK, si.RESOLUTION_OVERRIDE), ("GLRE", _GLRE, si.RESOLUTION_OVERRIDE), ("PSC", _PSC, si.RESOLUTION_EDGAR))
+    }
+    assert got == history | live and len(stored) == len(df) == 10
+    assert set(stored.loc[stored["snapshot_date"].astype(str).str[:10] >= "2026", "source_url"]) == {si.DATAROMA_HOME_URL}
+    assert len(queried) == 1 and "Pershing" in queried[0]  # stored resolution ignored; memoised per code
+    first = _table_hash(sqlite_store)
+    si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    assert _table_hash(sqlite_store) == first
+    print("\n=== SANITY: full roster rebuild ===")
+    print(
+        f"  stale 2015-01-01 seed dropped; 2 history + 2 identical live snapshots kept = {len(stored)} rows; GLRE {_GLRE_WRONG} -> {_GLRE} "
+        f"(override), PSC {_PSC_WRONG} -> {_PSC} (fresh EDGAR, 1 query); second rebuild hash {first[:12]} unchanged. Validated on the real store."
+    )
+
+
+@pytest.mark.parametrize("crash", ["write", "delete"])
+def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite_store, tmp_path, crash):
+    """A rebuild that crashes mid-write (the bulk insert, or the stale-key delete after it) leaves every stored live
+    snapshot in the table, so the documented recovery -- rerun the rebuild -- restores the full history and drops
+    the stale keys: a whole stale snapshot (2015-01-01) and a stale code inside a kept history snapshot (XYZ)."""
+    ctx, _ = _rebuild_fixture(sqlite_store, tmp_path)
+    stale_code = dict(_gate_row("XYZ", _BRK, "2015-03-30"), source_url="https://web.archive.org/web/a")
+    sqlite_store.save(si.Tables.superinvestor_roster, pd.DataFrame([stale_code]))
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"simulated crash during the {crash}")
+
+    with monkeypatch.context() as patch:
+        if crash == "write":  # every bulk-insert path of the store: COPY (replace) and upsert (save)
+            patch.setattr("src.data_store.store.copy_load", boom)
+            patch.setattr("src.data_store.store.upsert_dataframe", boom)
+        else:
+            patch.setattr(type(sqlite_store), "delete", boom)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    after_crash = sqlite_store.load(si.Tables.superinvestor_roster, optional=True)
+    assert after_crash is not None, f"superinvestor_roster is empty after a {crash} crash"
+    live_days = set(after_crash.loc[after_crash["source_url"] == si.DATAROMA_HOME_URL, "snapshot_date"].astype(str).str[:10])
+    assert live_days == {"2026-09-08", "2026-09-09"}, f"live snapshots lost after a {crash} crash: {sorted(live_days)}"
+
+    si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    stored = sqlite_store.load(si.Tables.superinvestor_roster)
+    keys = {(str(d)[:10], c) for d, c in stored[["snapshot_date", "dataroma_code"]].itertuples(index=False)}
+    expected = {(d, c) for d in ("2015-03-30", "2016-03-15") for c in ("BRK", "GLRE")} | {
+        (d, c) for d in ("2026-09-08", "2026-09-09") for c in ("BRK", "GLRE", "PSC")
+    }
+    assert keys == expected and len(stored) == 10
+    print(f"\n=== SANITY: rebuild survives a {crash} crash ===")
+    print(
+        f"  after the crash the table holds {len(after_crash)} rows incl. live snapshots {sorted(live_days)}; the rerun "
+        f"restores 4 history + 6 live rows and deletes the stale 2015-01-01 snapshot and stale code XYZ. Validated."
+    )
+
+
+@pytest.mark.parametrize("failure", ["gate", "pk"])
+def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
+    """A gate failure (a CIK with no 13F activity near its snapshot) or a duplicate (snapshot_date, code) between
+    history and live raises before the replace, leaving the table untouched."""
+    overlap = [{"captured_at": "2026-09-08T01:00:00Z", "source_url": "https://web.archive.org/web/c", "managers": {"BRK": "Warren Buffett"}}]
+    ctx, _ = _rebuild_fixture(sqlite_store, tmp_path, extra_history=overlap if failure == "pk" else None)
+    if failure == "gate":
+        sqlite_store.delete(si.Tables.sec13f_manager_holdings, where={"cik": [_PSC]})
+    before = _table_hash(sqlite_store)
+    expected = (si.SuperinvestorResolutionError, "no 13F-HR activity") if failure == "gate" else (ValueError, "duplicate")
+    with pytest.raises(expected[0], match=expected[1]):
+        si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=lambda cik: set())
+    assert _table_hash(sqlite_store) == before
+    print(
+        f"\n=== SANITY: rebuild refuses on a {failure} failure ===\n  raised {expected[0].__name__}; table hash {before[:12]} unchanged. Validated."
     )

@@ -2,7 +2,7 @@
   "_README": [
     "Accession-exact vendor coverage gaps at a CIK cutover (decision P24): one row per Sharadar quarter missing from the canonical series while the SEC filing that reports it is present.",
     "A missing quarter with no row here fails the continuity gate; a row whose quarter is present again (healed) fails too and must be deleted.",
-    "Read by the continuity check (tests/data_extract/sharadar/test_sharadar_diagnostics.py and `validate identity`); the test's CUTOVER_VENDOR_EXCEPTIONS must equal these rows until it reads this file."
+    "Read through src/utils/cutover_continuity.py by the continuity gate (tests/data_extract/sharadar/test_sharadar_diagnostics.py) and `validate identity`. The vendor series is judged as merged: a quarter the predecessor's own vendor series (BHI, STE1, ...) fills inside its register window heals its row, which must then be deleted."
   ],
   "exceptions": [
     {"ticker": "BKR", "quarter": "2017Q1", "period_end": "2017-03-31", "cik": "0000808362", "accession": "0000808362-17-000025", "filed": "2017-04-28", "label": "Sharadar/source coverage gap; SEC filings present"},

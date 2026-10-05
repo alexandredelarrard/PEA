@@ -16,7 +16,6 @@ test run can never overwrite the report.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,8 +27,7 @@ from src.constants.constants import (
     SHARADAR_ZERO_FILLED_FIELDS,
     SHARADAR_ZERO_RULES_FILENAME,
 )
-from src.data_extract.utils.common.identity import SEAM_MARGIN_DAYS
-from src.data_extract.utils.common.registrant import Registrant, Segment, load_registrants
+from src.data_extract.utils.common.registrant import Registrant, load_registrants
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
     confirm_sign_conventions,
     cross_check_shares,
@@ -39,7 +37,7 @@ from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
     load_sharadar,
 )
 from src.data_store.schema import Tables
-from src.utils.quarters import quarter_label, quarter_ordinal
+from src.utils import cutover_continuity as cc
 
 CONFIG_DIR = Path("./configs")
 
@@ -52,57 +50,6 @@ MAX_POSITIVE_CAPEX_RATE = 0.05
 #: the history has been retroactively re-based. A real share-class or reporting difference is
 #: a LEVEL shift and holds flat over time; only a split moves the ratio within one ticker.
 SPLIT_RATIO_SPAN = 1.5
-
-#: Half-width of the window D19's continuity is measured in, around each ticker's own cutover
-#: date. A registrant change can only lose filings near its own boundary, so two years each
-#: side is eight quarters of margin on both -- wide enough that a predecessor's last filings
-#: and a successor's first ones are both inside it, narrow enough that a vendor's sparse early
-#: history (BG carries one ARQ row per year before 2004, 21 years before its 2023 cutover)
-#: cannot be mistaken for a hole the cutover caused.
-CUTOVER_WINDOW_YEARS = 2
-
-#: The three classes of a vendor quarter missing near a cutover. Only the last can be explained:
-#: the other two are defects of the SEC side or of the register, never of the vendor.
-MISSING_SEC_FILING = "missing_sec_filing"
-INCORRECT_CIK_WINDOW = "incorrect_cik_window"
-VENDOR_COVERAGE_GAP = "vendor_coverage_gap"
-
-#: The periodic forms whose period of report is a fiscal quarter or year end.
-PERIODIC_FORMS = ("10-Q", "10-Q/A", "10-K", "10-K/A", "10-KT", "10-KT/A")
-
-VENDOR_GAP_LABEL = "Sharadar/source coverage gap; SEC filings present"
-
-
-@dataclass(frozen=True)
-class CutoverException:
-    """One vendor quarter missing at a cutover, explained by the SEC filing that reports it."""
-
-    ticker: str
-    quarter: str
-    period_end: str
-    cik: str
-    accession: str
-    filed: str
-    label: str
-
-
-#: Every recorded cutover vendor gap, one row per missing quarter, each read on EDGAR. A missing
-#: quarter with no row here fails, and a row whose quarter is present again fails too.
-CUTOVER_VENDOR_EXCEPTIONS: tuple[CutoverException, ...] = (
-    CutoverException("BKR", "2017Q1", "2017-03-31", "0000808362", "0000808362-17-000025", "2017-04-28", VENDOR_GAP_LABEL),
-    CutoverException("BKR", "2017Q2", "2017-06-30", "0000808362", "0000808362-17-000034", "2017-07-28", VENDOR_GAP_LABEL),
-    CutoverException("DOW", "2018Q1", "2018-03-31", "0000029915", "0000029915-18-000013", "2018-05-04", VENDOR_GAP_LABEL),
-    CutoverException("DOW", "2018Q2", "2018-06-30", "0000029915", "0000029915-18-000020", "2018-08-03", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2014Q2", "2014-06-30", "0000815065", "0000815065-14-000008", "2014-08-08", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2014Q3", "2014-09-30", "0000815065", "0000815065-14-000012", "2014-11-04", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2014Q4", "2014-12-31", "0000815065", "0001628280-15-000532", "2015-02-09", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2015Q1", "2015-03-31", "0000815065", "0000815065-15-000004", "2015-05-27", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2015Q2", "2015-06-30", "0000815065", "0000815065-15-000008", "2015-08-07", VENDOR_GAP_LABEL),
-    CutoverException("STE", "2015Q3", "2015-09-30", "0000815065", "0000815065-15-000009", "2015-10-30", VENDOR_GAP_LABEL),
-    CutoverException("VMC", "2006Q1", "2006-03-31", "0000103973", "0000103973-06-000112", "2006-04-28", VENDOR_GAP_LABEL),
-    CutoverException("VMC", "2006Q2", "2006-06-30", "0000103973", "0000103973-06-000197", "2006-08-01", VENDOR_GAP_LABEL),
-    CutoverException("VMC", "2006Q3", "2006-09-30", "0000103973", "0000103973-06-000268", "2006-10-31", VENDOR_GAP_LABEL),
-)
 
 #: The only tickers allowed a `sharefactor != 1.0`. Sharadar documents `sharefactor` as a
 #: multiplicant in its `marketcap` calculation that adjusts for DUAL SHARE CLASSES, and these
@@ -349,103 +296,16 @@ def _cutover_registrants() -> dict[str, Registrant]:
     return {t: r for t, r in load_registrants(str(CONFIG_DIR)).items() if r.boundaries}
 
 
-def _admitted(registrant: Registrant, cik: str, filed: pd.Timestamp) -> bool:
-    """Whether the register's seam-widened window for `cik` admits a filing made on `filed`."""
-    margin = pd.Timedelta(days=SEAM_MARGIN_DAYS)
-    return any(
-        segment.cik == cik
-        and (segment.valid_from is None or filed >= segment.valid_from - margin)
-        and (segment.valid_to is None or filed < segment.valid_to + margin)
-        for segment in registrant.segments
-    )
-
-
-def _discontinuities(arq: pd.DataFrame, registrant: Registrant) -> tuple[dict[str, pd.Timestamp], list[pd.Timestamp]]:
-    """Missing vendor quarters within `CUTOVER_WINDOW_YEARS` of every boundary, each with its
-    boundary, plus the boundaries with no vendor quarter in their window at all."""
-    dates = pd.to_datetime(arq["calendardate"], errors="coerce")
-    offset = pd.DateOffset(years=CUTOVER_WINDOW_YEARS)
-    missing: dict[str, pd.Timestamp] = {}
-    unobserved: list[pd.Timestamp] = []
-    for seam in registrant.boundaries:
-        near = arq[dates.between(seam - offset, seam + offset)]
-        if near.empty:
-            unobserved.append(seam)
-            continue
-        labels = str(gate_completeness(near)["missing_quarters"].iloc[0]).split(",")
-        for label in (part.strip() for part in labels):
-            if label and label != "-":
-                missing.setdefault(label, seam)
-    return dict(sorted(missing.items())), unobserved
-
-
-def _quarter_of(day: str) -> str:
-    """The `2025Q1` label of one date; empty when the date is missing or unparseable."""
-    ordinal = quarter_ordinal(pd.Series([day])).iloc[0]
-    return "" if pd.isna(ordinal) else quarter_label(int(ordinal))
-
-
-def _classify(registrant: Registrant, quarter: str, filings: pd.DataFrame, record: CutoverException | None) -> tuple[str, bool, str]:
-    """`(class, explained, evidence)` for one missing vendor quarter.
-
-    The SEC filings stored for the quarter decide the class when there are any; otherwise the
-    exception record does. Only a recorded `vendor_coverage_gap` is explained.
-    """
-    if not filings.empty:
-        filed = pd.to_datetime(filings["filing_date"])
-        admitted = [_admitted(registrant, cik, day) for cik, day in zip(filings["cik"], filed, strict=True)]
-        cls = VENDOR_COVERAGE_GAP if any(admitted) else INCORRECT_CIK_WINDOW
-        evidence = "stored " + "; ".join(
-            f"{cik} {accession} {form} filed {day.date()}" + ("" if ok else " OUTSIDE window")
-            for cik, accession, form, day, ok in zip(filings["cik"], filings["accession_number"], filings["form"], filed, admitted, strict=True)
-        )
-    elif record is not None:
-        cls = VENDOR_COVERAGE_GAP if _admitted(registrant, record.cik, pd.Timestamp(record.filed)) else INCORRECT_CIK_WINDOW
-        evidence = "nothing stored for the period"
-    else:
-        return MISSING_SEC_FILING, False, "nothing stored for the period and no record"
-    if record is None:
-        return cls, False, evidence + " | no exception row"
-    record_ok = _quarter_of(record.period_end) == quarter and _admitted(registrant, record.cik, pd.Timestamp(record.filed))
-    evidence += f" | record {record.cik} {record.accession} filed {record.filed}" + ("" if record_ok else " INCONSISTENT")
-    return cls, cls == VENDOR_COVERAGE_GAP and record_ok, evidence
-
-
-def test_cutover_classification_rules():
-    """Known-truth chain (old CIK to 2020-01-01, new CIK after): each class and the record
-    checks come out as defined, without the database."""
-    seam = pd.Timestamp("2020-01-01")
-    chain = Registrant("TST", "reorganisation", (Segment("0000000001", None, seam, "fixture"), Segment("0000000002", seam, None, "fixture")))
-    columns = ["cik", "accession_number", "form", "filing_date"]
-
-    def stored(cik: str, filed: str) -> pd.DataFrame:
-        return pd.DataFrame([[cik, f"{cik}-19-000001", "10-Q", pd.Timestamp(filed)]], columns=columns)
-
-    record = CutoverException("TST", "2019Q2", "2019-06-30", "0000000001", "0000000001-19-000001", "2019-08-01", VENDOR_GAP_LABEL)
-    cases = {
-        "old CIK files inside its window": (stored("0000000001", "2019-08-01"), record, VENDOR_COVERAGE_GAP, True),
-        "new CIK inside the 31-day seam margin": (stored("0000000002", "2019-12-15"), record, VENDOR_COVERAGE_GAP, True),
-        "new CIK long before its window": (stored("0000000002", "2019-08-01"), record, INCORRECT_CIK_WINDOW, False),
-        "a CIK outside the chain": (stored("0000000009", "2019-08-01"), record, INCORRECT_CIK_WINDOW, False),
-        "vendor gap with no exception row": (stored("0000000001", "2019-08-01"), None, VENDOR_COVERAGE_GAP, False),
-        "nothing stored, no record": (pd.DataFrame(columns=columns), None, MISSING_SEC_FILING, False),
-        "nothing stored, record admitted": (pd.DataFrame(columns=columns), record, VENDOR_COVERAGE_GAP, True),
-        "record for another quarter": (pd.DataFrame(columns=columns), replace(record, period_end="2019-09-30"), VENDOR_COVERAGE_GAP, False),
-        "record CIK outside its window": (pd.DataFrame(columns=columns), replace(record, filed="2020-06-01"), INCORRECT_CIK_WINDOW, False),
-    }
-    print("\n=== SANITY CHECK: cutover discontinuity classes on a known-truth chain ===")
-    for name, (filings, rec, want_cls, want_ok) in cases.items():
-        cls, ok, evidence = _classify(chain, "2019Q2", filings, rec)
-        print(f"  {name:40s} -> {cls:20s} explained={ok}")
-        assert (cls, ok) == (want_cls, want_ok), f"{name}: got {cls}/{ok}, expected {want_cls}/{want_ok} ({evidence})"
-    print(f"  OK: all {len(cases)} cases classify as defined; only a recorded, admitted vendor gap is explained.")
+def _windows(registrant: Registrant) -> tuple[cc.CikWindow, ...]:
+    return tuple(cc.CikWindow(s.cik, s.valid_from, s.valid_to) for s in registrant.segments)
 
 
 def test_cik_cutover_continuity(context, frames):
     """D19 joins Sharadar to the SEC layer on `ticker`, and a CIK cutover is where that join
     can lose half a history. Every vendor quarter missing within `CUTOVER_WINDOW_YEARS` of any
-    boundary is collected and classified before anything is asserted; the test fails once,
-    on the full table, unless each one is a recorded `vendor_coverage_gap`.
+    boundary of the series as merged (predecessor vendor series applied) is collected and
+    classified before anything is asserted; the test fails once, on the full table, unless each
+    one is a recorded `vendor_coverage_gap` of `configs/sec/vendor_coverage_exceptions.json`.
     """
     registrants = _cutover_registrants()
     stored = set(frames.arq["ticker"].astype(str).unique())
@@ -460,51 +320,40 @@ def test_cik_cutover_continuity(context, frames):
         print("     extracted yet. This test runs as soon as one of them is stored.")
         pytest.skip(f"no cutover ticker stored: register={sorted(registrants)} vs {len(stored)} stored tickers. D19 UNVERIFIED.")
 
-    found: dict[tuple[str, str], pd.Timestamp] = {}
-    unobserved: list[str] = []
+    windows = {ticker: _windows(registrants[ticker]) for ticker in testable}
     for ticker in testable:
-        missing, blind = _discontinuities(frames.arq[frames.arq["ticker"] == ticker], registrants[ticker])
-        found.update({(ticker, quarter): seam for quarter, seam in missing.items()})
-        unobserved.extend(f"{ticker} {seam.date()}" for seam in blind)
-        boundaries = [str(b.date()) for b in registrants[ticker].boundaries]
-        print(f"    {ticker}: boundaries {boundaries}, missing within +/-{CUTOVER_WINDOW_YEARS}y: {list(missing) or '-'}")
-
-    columns = ["ticker", "cik", "accession_number", "form", "filing_date", "period_of_report"]
-    gap_tickers = sorted({ticker for ticker, _ in found})
-    facts = (
-        context.store.load(Tables.fundamentals_facts, columns=columns, where={"ticker": gap_tickers, "form": list(PERIODIC_FORMS)}, optional=True)
-        if gap_tickers
-        else None
+        print(f"    {ticker}: boundaries {[str(b.date()) for b in registrants[ticker].boundaries]}")
+    vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
+    series = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, registrants)
+    merged, events = cc.apply_predecessor_series(frames.arq, frames.arq, series)
+    print(
+        f"  predecessor vendor series: {[f'{s.ticker}<-{s.vendor_ticker}' for s in series] or 'none'}; stored: {sorted(set(events['vendor_ticker'])) or 'none'}"
     )
-    filings = (facts if facts is not None else pd.DataFrame(columns=columns)).drop_duplicates(["ticker", "accession_number"])
-    filings = filings.assign(
-        cik=filings["cik"].fillna("").astype(str).str.zfill(10), quarter=[_quarter_of(day) for day in filings["period_of_report"]]
-    )
+    print(f"  predecessor quarters: {events['event'].value_counts().to_dict() if not events.empty else 'none'}")
 
-    records = {(r.ticker, r.quarter): r for r in CUTOVER_VENDOR_EXCEPTIONS}
-    table: list[tuple[str, str, str, str, bool, str]] = []
-    for (ticker, quarter), seam in sorted(found.items()):
-        period = filings[(filings["ticker"] == ticker) & (filings["quarter"] == quarter)].sort_values("filing_date")
-        cls, explained, evidence = _classify(registrants[ticker], quarter, period, records.get((ticker, quarter)))
-        table.append((ticker, quarter, str(seam.date()), cls, explained, evidence))
+    columns = list(cc.FILING_COLUMNS)
+    facts = context.store.load(Tables.fundamentals_facts, columns=columns, where={"ticker": testable, "form": list(cc.PERIODIC_FORMS)}, optional=True)
+    exceptions = cc.load_vendor_exceptions(CONFIG_DIR)
+    report = cc.assess_continuity(merged, windows, cc.prepare_filings(facts), exceptions)
+    table = [(r.ticker, r.quarter, r.boundary, r["class"], bool(r.explained), r.evidence) for _, r in report.table.iterrows()]
+    unobserved = list(report.unobserved)
+    healed = [f"{r.ticker} {r.quarter}" for r in report.healed]
 
     print(f"  discontinuities: {len(table)} ({sum(row[4] for row in table)} explained)")
     print(f"    {'ticker':6s} {'quarter':7s} {'boundary':10s} {'class':20s} {'ok':3s} evidence")
     for ticker, quarter, seam, cls, explained, evidence in table:
         print(f"    {ticker:6s} {quarter:7s} {seam:10s} {cls:20s} {'yes' if explained else 'NO':3s} {evidence}")
     unexplained = [f"{ticker} {quarter} {cls}" for ticker, quarter, _, cls, explained, _ in table if not explained]
-    # A recorded gap that has been FILLED must be deleted, or the record goes stale.
-    healed = sorted(f"{ticker} {quarter}" for ticker, quarter in records if (ticker, quarter) not in found)
     print(f"  unexplained: {unexplained or 'none'} | healed records: {healed or 'none'} | unobserved boundaries: {unobserved or 'none'}")
 
-    assert not unobserved, f"no vendor quarter within {CUTOVER_WINDOW_YEARS}y of these boundaries, so D19 is untested there: {unobserved}"
-    assert len(records) == len(CUTOVER_VENDOR_EXCEPTIONS), "CUTOVER_VENDOR_EXCEPTIONS records one (ticker, quarter) twice"
+    assert not unobserved, f"no vendor quarter within {cc.CUTOVER_WINDOW_YEARS}y of these boundaries, so D19 is untested there: {unobserved}"
+    assert not report.duplicated, f"{cc.EXCEPTIONS_FILE} records one (ticker, quarter) twice: {report.duplicated}"
     assert not unexplained, (
         f"{len(unexplained)} cutover discontinuities are not recorded vendor gaps: {unexplained}. "
-        f"A {MISSING_SEC_FILING} or {INCORRECT_CIK_WINDOW} is a register or SEC-side defect; a "
-        f"{VENDOR_COVERAGE_GAP} needs its EDGAR accession in CUTOVER_VENDOR_EXCEPTIONS."
+        f"A {cc.MISSING_SEC_FILING} or {cc.INCORRECT_CIK_WINDOW} is a register or SEC-side defect; a "
+        f"{cc.VENDOR_COVERAGE_GAP} needs its EDGAR accession in {cc.EXCEPTIONS_FILE}."
     )
     assert not healed, (
-        f"{healed} are in CUTOVER_VENDOR_EXCEPTIONS but the quarter is present now. Delete the rows: a stale exception hides the next real hole."
+        f"{healed} are in {cc.EXCEPTIONS_FILE} but the quarter is present now. Delete the rows: a stale exception hides the next real hole."
     )
     print(f"  OK: {len(testable)} cutover tickers; all {len(table)} discontinuities are recorded vendor gaps with their SEC filing.")

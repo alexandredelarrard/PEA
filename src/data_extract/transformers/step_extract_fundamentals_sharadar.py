@@ -24,6 +24,7 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_fundamentals,
     fetch_sharadar_sp500,
     fetch_sharadar_tickers,
+    predecessor_vendor_tickers,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.utils.step import Step
@@ -58,7 +59,12 @@ class StepExtractFundamentalsSharadar(Step):
         #    the two sources are limited by different things -- the SEC walk by patience,
         #    Sharadar by subscription tier. A ticker outside the subscription returns 403,
         #    costs one request and is counted, never retried.
-        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full)
+        #    The vendor tickers carrying a register predecessor CIK's own series (BHI, STE1, ...) are fetched
+        #    too and stored under their own ticker; the merge reads them inside the predecessor's window.
+        predecessors = [t for t in predecessor_vendor_tickers(self._context, tickers) if t not in set(tickers)]
+        if predecessors:
+            self._log.info("Sharadar SF1: + %d predecessor vendor ticker(s): %s", len(predecessors), ", ".join(predecessors))
+        fetch_sharadar_fundamentals(self._context, tickers=[*tickers, *predecessors], years_history=years, full=full)
 
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
         fetch_sharadar_actions(self._context, years_history=years, full=full)

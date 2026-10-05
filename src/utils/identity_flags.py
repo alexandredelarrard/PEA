@@ -18,7 +18,20 @@ from src.utils.string import pad_cik_series
 MARGIN = pd.Timedelta(days=31)
 BLOCK_TITLE = "IDENTITY ITEMS NEEDING A MANUAL DECISION"
 FLAG_COLUMNS = ("kind", "action", "ticker", "ciks", "evidence", "suggested_action", "config_file")
-KIND_ORDER = ("missing_cutover", "register_date_disputed", "grey_band", "rekey", "manual_review", "conflict", "noise", "co_registrant")
+KIND_ORDER = (
+    "missing_cutover",
+    "register_date_disputed",
+    "incorrect_cik_window",
+    "missing_sec_filing",
+    "grey_band",
+    "rekey",
+    "manual_review",
+    "conflict",
+    "vendor_coverage_gap",
+    "vendor_series_other_company",
+    "noise",
+    "co_registrant",
+)
 _REGISTER = "configs/sec/registrant_cutover.json"
 _MANUAL = "configs/sec/entity_lineage_manual.json"
 _SYMBOLS = "configs/sec/symbol_tenure_manual.json"

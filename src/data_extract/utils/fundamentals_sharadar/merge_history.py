@@ -2,7 +2,8 @@
 
 Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` (plus
 `fundamentals_employees`) owns the `sec`-kind columns, and no column switches source mid-series; the only
-exception is a whole `(ticker, field)` series moved to SEC by the approved override register. SEC-sourced
+exception is a whole `(ticker, field)` series moved to SEC by the approved override register. Inside a register
+predecessor window the canonical ARQ rows are replaced by the window owner's vendor series before the TTM build. SEC-sourced
 columns carry the `_sec` suffix (applied last, after `rederive`). The SEC block is joined BACKWARD as-of
 Sharadar's filing date within `SHARADAR_SEC_ASOF_TOLERANCE_DAYS` -- never forward. Every value column is cast
 to float64 before the write except `regime_sec` (text), excluded by name.
@@ -35,8 +36,10 @@ from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
+from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, TranslationReport, apply_derived, load_field_map, translate
 from src.data_store.schema import Tables
+from src.utils.cutover_continuity import apply_predecessor_series
 
 log = logging.getLogger(__name__)
 
@@ -366,6 +369,41 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
+def with_predecessor_series(context: Context, vendor: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """`vendor` with each predecessor window's canonical ARQ rows replaced by the window owner's own; logged per quarter."""
+    series = load_predecessor_series(context, names)
+    if not series:
+        return vendor
+    owners = context.store.load(
+        Tables.sharadar_fundamentals, project=True, where={"ticker": sorted({s.vendor_ticker for s in series}), "dimension": ARQ}, optional=True
+    )
+    stored = set(owners["ticker"].astype(str)) if owners is not None else set()
+    for s in series:
+        if s.vendor_ticker not in stored:
+            context.log.warning(
+                "merged history: the predecessor vendor series %s of %s (CIK %s) is not stored; rows before %s are kept as fetched",
+                s.vendor_ticker,
+                s.ticker,
+                s.cik,
+                s.valid_to.date() if s.valid_to is not None else "-",
+            )
+    if owners is None or owners.empty:
+        return vendor
+    merged, events = apply_predecessor_series(vendor, owners, series)
+    for (ticker, vendor_ticker, cik), group in events.groupby(["ticker", "vendor_ticker", "cik"], sort=True):
+        quarters = {event: part["quarter"].tolist() for event, part in group.groupby("event", sort=True)}
+        counts = [value for event in ("replaced", "filled", "dropped") for value in (len(quarters.get(event, [])), quarters.get(event, []))]
+        context.log.info(
+            "merged history: %s takes %s rows inside the window of CIK %s -- replaced %d %s | filled %d %s | dropped %d %s | owner quarters filed twice or more %s",
+            ticker,
+            vendor_ticker,
+            cik,
+            *counts,
+            group.loc[group["predecessor_rows"].gt(1), "quarter"].tolist() or "none",
+        )
+    return merged
+
+
 def build_merged_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
     """Build `fundamentals_history` from `fundamentals_sharadar` + `fundamentals_history_sec` for `tickers`.
 
@@ -381,6 +419,7 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     if vendor is None or vendor.empty:
         context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- run `fundamentals-sharadar` first", len(names))
         return
+    vendor = with_predecessor_series(context, vendor, names)
 
     # `sharadar_actions` is market-wide: scope to these tickers' splits and spinoffs (spinoffs only name co-dated splits)
     actions = context.store.load(

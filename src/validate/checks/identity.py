@@ -1,4 +1,5 @@
-"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, and the manual-fix flags.
+"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags
+and the vendor-series continuity at register cutovers.
 
 Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
@@ -17,8 +18,9 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
+from src.utils import cutover_continuity as cc
 from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, judged_cik_mask, own_filer_mask, removal_records
-from src.utils.identity_flags import FLAG_COLUMNS, MARGIN, cik_activity, identity_flags, log_identity_flags
+from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.result import CheckResult, Finding
 
@@ -26,6 +28,9 @@ CHECK = "identity"
 SENTINEL = pd.Timestamp("1900-01-01")
 _EVIDENCE_COLUMNS = ["symbol", "issuer_cik", "valid_from", "valid_to", "source"]
 _ROLE_WINDOW, _ROLE_EVENT = "cik_window", "cik_event"
+_EXCEPTIONS = "configs/sec/vendor_coverage_exceptions.json"
+_REGISTER = "configs/sec/registrant_cutover.json"
+_VENDOR_COLUMNS = ["ticker", "dimension", "calendardate", "reportperiod", "date", "assets"]
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,109 @@ def _removal_metrics(removals: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _vendor_arq(context: Context, tickers: Sequence[str]) -> pd.DataFrame:
+    rows = context.store.load(
+        Tables.sharadar_fundamentals, columns=_VENDOR_COLUMNS, where={"ticker": list(tickers), "dimension": "ARQ"}, optional=True
+    )
+    return rows if rows is not None else pd.DataFrame(columns=_VENDOR_COLUMNS)
+
+
+def _flag(kind: str, action: bool, ticker: str, cik: str, evidence: str, suggested: str, config_file: str) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "action": action,
+        "ticker": ticker,
+        "ciks": cik,
+        "evidence": evidence,
+        "suggested_action": suggested,
+        "config_file": config_file,
+    }
+
+
+def _continuity_item(row: Mapping[Hashable, Any]) -> dict[str, object]:
+    """One flag item per discontinuity: a recorded vendor gap is information, everything else an action."""
+    kind, ticker, cik = str(row["class"]), str(row["ticker"]), str(row["cik"])
+    record = (
+        f"; label '{row['label']}', accession {row['accession']}" if row["label"] else (f"; accession {row['accession']}" if row["accession"] else "")
+    )
+    evidence = f"{row['quarter']} missing from the vendor series near the boundary {row['boundary']}{record} | {row['evidence']}"
+    if row["explained"]:
+        return _flag(kind, False, ticker, cik, evidence, "none: recorded vendor coverage exception", _EXCEPTIONS)
+    if kind == cc.VENDOR_COVERAGE_GAP:
+        return _flag(kind, True, ticker, cik, evidence, "record the quarter's EDGAR accession", _EXCEPTIONS)
+    if kind == cc.INCORRECT_CIK_WINDOW:
+        return _flag(kind, True, ticker, cik, evidence, "the filer CIK is outside its register window: check the window", _REGISTER)
+    return _flag(kind, True, ticker, cik, evidence, "no SEC filing stored or recorded: fetch the quarter's 10-Q/10-K", "")
+
+
+def _series_items(arq: pd.DataFrame, owners: pd.DataFrame, series: Sequence[cc.PredecessorSeries]) -> list[dict[str, object]]:
+    """Canonical vendor quarters inside a predecessor window that carry another company's series, or cannot be checked."""
+    items: list[dict[str, object]] = []
+    for s in series:
+        window = f"{s.cik}'s window ..{s.valid_to.date() if s.valid_to is not None else 'open'}"
+        if owners.empty or not owners["ticker"].astype(str).eq(s.vendor_ticker).any():
+            period = pd.to_datetime(arq["reportperiod"])
+            inside = arq[arq["ticker"].astype(str).eq(s.ticker) & (period < s.valid_to if s.valid_to is not None else period.notna())]
+            evidence = f"{s.vendor_ticker} (the window owner's vendor series) is not stored: {len(inside)} canonical vendor row(s) inside {window} are unverified and not replaced"
+            items.append(
+                _flag(cc.VENDOR_SERIES_OTHER_COMPANY, True, s.ticker, s.cik, evidence, f"fetch {s.vendor_ticker} with fundamentals-sharadar", "")
+            )
+            continue
+        other = cc.other_company_quarters(arq, owners, s)
+        if other.empty:
+            continue
+        sample = ", ".join(f"{r.quarter} {r.canonical_assets:,.0f} vs {r.owner_assets:,.0f}" for r in other.head(3).itertuples(index=False))
+        evidence = f"{len(other)} quarter(s) inside {window} carry another company's assets ({other['quarter'].iloc[0]}..{other['quarter'].iloc[-1]}; {sample})"
+        items.append(_flag(cc.VENDOR_SERIES_OTHER_COMPANY, False, s.ticker, s.cik, evidence, f"none: replaced by {s.vendor_ticker} at the merge", ""))
+    return items
+
+
+def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[str], config_dir: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Vendor-series discontinuities near every register boundary of the scope's tickers, as flag items, plus metrics.
+
+    The vendor series is read as the merge builds it (predecessor series applied), so a filled quarter heals its record.
+    """
+    windows = {t: w for t, w in cc.register_windows(lineage).items() if t in set(scope)}
+    if not windows or not context.store.exists(Tables.sharadar_fundamentals):
+        return pd.DataFrame(columns=list(FLAG_COLUMNS)), {}
+    vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
+    series = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope)
+    arq = _vendor_arq(context, sorted(windows))
+    owners = _vendor_arq(context, sorted({s.vendor_ticker for s in series})) if series else pd.DataFrame(columns=_VENDOR_COLUMNS)
+    merged, events = cc.apply_predecessor_series(arq, owners, series)
+    facts = context.store.load(
+        Tables.fundamentals_facts, columns=list(cc.FILING_COLUMNS), where={"ticker": sorted(windows), "form": list(cc.PERIODIC_FORMS)}, optional=True
+    )
+    report = cc.assess_continuity(merged, windows, cc.prepare_filings(facts), cc.load_vendor_exceptions(config_dir))
+    items = [_continuity_item(row) for row in report.table.to_dict("records")]
+    items += [
+        _flag(
+            cc.VENDOR_COVERAGE_GAP,
+            True,
+            r.ticker,
+            r.cik,
+            f"{r.quarter} recorded ({r.accession}) but the vendor quarter is present now",
+            "delete the healed row",
+            _EXCEPTIONS,
+        )
+        for r in report.healed
+    ]
+    items += [
+        _flag(cc.VENDOR_COVERAGE_GAP, True, key.split()[0], "", f"{key} is recorded twice", "keep one row per (ticker, quarter)", _EXCEPTIONS)
+        for key in report.duplicated
+    ]
+    items += _series_items(arq, owners, series)
+    metrics = {
+        "continuity_discontinuities": len(report.table),
+        "continuity_explained": int(report.table["explained"].sum()) if not report.table.empty else 0,
+        "continuity_healed": [f"{r.ticker} {r.quarter}" for r in report.healed],
+        "continuity_unobserved": list(report.unobserved),
+        "predecessor_vendor_tickers": {s.ticker: s.vendor_ticker for s in series},
+        "predecessor_events": events["event"].value_counts().sort_index().to_dict() if not events.empty else {},
+    }
+    return pd.DataFrame(items, columns=list(FLAG_COLUMNS)), metrics
+
+
 def _unmigrated_report(context: Context, lineage: pd.DataFrame, scope: list[str]) -> IdentityReport:
     """Foreign rows against a pre-cutover lineage; its invariants and flags need the new shape and are skipped."""
     removals = pending_removals(context, lineage, scope)
@@ -229,7 +337,12 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
     if "role" not in lineage.columns:
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)
+    continuity, continuity_metrics = continuity_flags(context, lineage, scope, str(getattr(context, "config_dir", "./configs")))
     flags = _flags(context, lineage)
+    if not continuity.empty:
+        flags = pd.concat([flags, continuity], ignore_index=True)
+        order = flags["kind"].map({kind: rank for rank, kind in enumerate(KIND_ORDER)})
+        flags = flags.assign(_order=order).sort_values(["_order", "ticker"], kind="mergesort").drop(columns="_order").reset_index(drop=True)
     log_identity_flags(context.log, flags)
     findings = _invariant_findings(lineage, roster[roster["ticker"].isin(scope)])
     findings += _removal_findings(removals)
@@ -242,6 +355,7 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         "flags_by_kind": flags["kind"].value_counts().sort_index().to_dict(),
         "backlog": int(flags["action"].sum()),
         "symbol_statuses": lineage.loc[lineage["role"].eq("symbol"), "status"].value_counts().sort_index().to_dict(),
+        **continuity_metrics,
     }
     scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
     result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=metrics)

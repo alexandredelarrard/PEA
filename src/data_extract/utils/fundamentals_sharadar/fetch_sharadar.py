@@ -2,6 +2,7 @@
 
 `fetch_sharadar_tickers` (entity dimension; must run first, it supplies the USD check), `fetch_sharadar_fundamentals`
 (SF1, one request per (ticker, dimension)), `fetch_sharadar_actions` and `fetch_sharadar_sp500` (market-wide).
+`predecessor_vendor_tickers` adds the vendor tickers carrying a register predecessor CIK's own series.
 SF1 resumes per TICKER from the max stored filing `date` (safe: an ARY row is filed with the 10-K, never after the
 ticker-wide watermark). `lastupdated` is not a watermark, so a Sharadar restatement needs `--full`.
 """
@@ -25,6 +26,7 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     vendor_symbol,
 )
 from src.data_store.schema import Table, Tables
+from src.utils.cutover_continuity import PredecessorSeries, predecessor_series, register_windows
 from src.utils.polite_http import sleep_pace
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
@@ -65,6 +67,28 @@ def _usd_roster(context: Context) -> dict[str, str]:
     frame = frame.assign(_live=(frame["isdelisted"].astype(str).str.upper() != "Y"))
     frame = frame.sort_values("_live", ascending=False).drop_duplicates("ticker")
     return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str), strict=False))
+
+
+def load_predecessor_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
+    """The predecessor vendor series of `tickers`: `sharadar_tickers` rows whose `secfilings` CIK owns a closed register
+    window in `entity_lineage`. None before the dated lineage exists."""
+    if "role" not in context.store.columns(Tables.entity_lineage):
+        return ()
+    lineage = context.store.load(
+        Tables.entity_lineage,
+        columns=["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"],
+        where={"role": "cik_window"},
+        optional=True,
+    )
+    vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
+    if lineage is None or vendor is None:
+        return ()
+    return predecessor_series(vendor, register_windows(lineage), tickers)
+
+
+def predecessor_vendor_tickers(context: Context, tickers: list[str]) -> list[str]:
+    """The vendor tickers to fetch beside `tickers`, stored under their own vendor ticker."""
+    return sorted({s.vendor_ticker for s in load_predecessor_series(context, tickers)})
 
 
 # --------------------------------------------------------------------------- #

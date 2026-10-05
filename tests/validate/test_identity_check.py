@@ -5,6 +5,7 @@ validator. Offline: hand-written `entity_lineage` rows, a real `DataStore` on SQ
 
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -328,3 +329,121 @@ def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrate
     print("\n=== SANITY CHECK: validator before the cutover (old-shape entity_lineage) ===")
     print(f"  {report.result.summary()}")
     print("  OK: no KeyError; membership CIKs and roster CIKs are own, AllianceBernstein's 4 rows are pending, invariants skipped")
+
+
+# --------------------------------------------------------------------------- #
+# validator: vendor-series continuity at register cutovers (Q2g, AC-114)        #
+# --------------------------------------------------------------------------- #
+def _quarters(ticker: str, labels: list[str], assets: float) -> pd.DataFrame:
+    ends = [pd.Period(q, freq="Q").end_time.normalize() for q in labels]
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "dimension": "ARQ",
+            "calendardate": ends,
+            "reportperiod": ends,
+            "date": [e + pd.Timedelta(days=40) for e in ends],
+            "assets": assets,
+        }
+    )
+
+
+def _all_quarters(first: str, last: str) -> list[str]:
+    return [str(p) for p in pd.period_range(first, last, freq="Q")]
+
+
+def test_continuity_items_carry_label_and_accession_and_heal_through_the_predecessor_series(sqlite_store, tmp_path):
+    """REG's seam 2015-07-01: a recorded gap is INFO, an unrecorded one an action, a record the predecessor's series fills
+    is healed, and the canonical rows inside the old CIK's window are flagged as another company's."""
+    _seed_store(sqlite_store, _store_lineage())
+    canonical = [q for q in _all_quarters("2013Q1", "2017Q4") if q not in {"2014Q2", "2014Q3", "2016Q1"}]
+    owner = [q for q in _all_quarters("2013Q1", "2015Q2") if q != "2014Q2"]
+    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_quarters("REG", canonical, 7.0), _quarters("REG1", owner, 20.0)], ignore_index=True))
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}&type=&dateb=&owner=include&count=40"
+    # written raw: SQLite refuses the registry's PK, whose first column is the reserved word `table`
+    pd.DataFrame(
+        {"ticker": ["REG1", "REG"], "secfilings": [url.format(PRED), url.format(SUCC)], "lastquarter": pd.to_datetime(["2015-06-30", "2017-12-31"])}
+    ).to_sql(Tables.sharadar_tickers.name, sqlite_store.engine, index=False)
+    sqlite_store.save(
+        Tables.fundamentals_facts,
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "REG",
+                    "accession_number": "succ-q1",
+                    "field": "x",
+                    "duration_type": "instant",
+                    "period_end": pd.Timestamp("2016-03-31"),
+                    "cik": SUCC,
+                    "form": "10-Q",
+                    "filing_date": pd.Timestamp("2016-05-02"),
+                    "period_of_report": "2016-03-31",
+                },
+            ]
+        ),
+    )
+    (tmp_path / "sec").mkdir()
+    label = "Sharadar/source coverage gap; SEC filings present"
+    rows = [
+        {
+            "ticker": "REG",
+            "quarter": "2014Q2",
+            "period_end": "2014-06-30",
+            "cik": PRED,
+            "accession": "0000000040-14-000002",
+            "filed": "2014-08-01",
+            "label": label,
+        },
+        {
+            "ticker": "REG",
+            "quarter": "2014Q3",
+            "period_end": "2014-09-30",
+            "cik": PRED,
+            "accession": "0000000040-14-000003",
+            "filed": "2014-11-01",
+            "label": label,
+        },
+    ]
+    (tmp_path / "sec" / "vendor_coverage_exceptions.json").write_text(json.dumps({"exceptions": rows}), encoding="utf-8")
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    flags = report.flags[
+        report.flags["kind"].isin(["vendor_coverage_gap", "incorrect_cik_window", "missing_sec_filing", "vendor_series_other_company"])
+    ]
+    print("\n=== SANITY CHECK: continuity items in validate identity ===")
+    print(flags[["kind", "action", "ticker", "ciks", "evidence"]].to_string(index=False))
+    by_quarter = {e.split()[0]: (k, a) for k, a, e in zip(flags["kind"], flags["action"], flags["evidence"], strict=True)}
+    assert by_quarter["2014Q2"] == ("vendor_coverage_gap", False)
+    assert "0000000040-14-000002" in flags.loc[flags["evidence"].str.startswith("2014Q2"), "evidence"].iloc[0] and label in flags["evidence"].iloc[0]
+    assert by_quarter["2016Q1"] == ("vendor_coverage_gap", True)
+    assert (
+        by_quarter["2014Q3"] == ("vendor_coverage_gap", True)
+        and "present now" in flags.loc[flags["evidence"].str.startswith("2014Q3"), "evidence"].iloc[0]
+    )
+    other = flags[flags["kind"].eq("vendor_series_other_company")]
+    assert len(other) == 1 and not other["action"].iloc[0] and "REG1" in other["suggested_action"].iloc[0]
+    assert report.result.metrics["predecessor_vendor_tickers"] == {"REG": "REG1"}
+    assert report.result.metrics["continuity_healed"] == ["REG 2014Q3"]
+    manual = [f for f in report.result.findings if f.field == "manual_decision"]
+    assert any("2016Q1" in f.observed for f in manual) and not any("2014Q2" in f.observed for f in manual)
+    print("  OK: recorded 2014Q2 INFO with its accession; 2016Q1 an action; 2014Q3 healed by REG1; REG's pre-seam rows are another company's.")
+
+
+def test_without_the_owner_series_the_window_is_an_action_item(sqlite_store, tmp_path):
+    _seed_store(sqlite_store, _store_lineage())
+    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
+        Tables.sharadar_tickers.name, sqlite_store.engine, index=False
+    )
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    other = report.flags[report.flags["kind"].eq("vendor_series_other_company")]
+    print("\n=== SANITY CHECK: predecessor vendor series not stored ===")
+    print(other[["ticker", "ciks", "evidence"]].to_string(index=False))
+    assert len(other) == 1 and other["action"].iloc[0] and "not stored" in other["evidence"].iloc[0] and "10 canonical" in other["evidence"].iloc[0]
+    print("  OK: REG1 missing -> one action naming the 10 unverified canonical quarters inside the window.")

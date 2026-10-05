@@ -18,8 +18,8 @@ from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
+from src.utils.cutover_continuity import load_vendor_exceptions
 from tests.data_extract.fake_context import extract_config
-from tests.data_extract.sharadar.test_sharadar_diagnostics import CUTOVER_VENDOR_EXCEPTIONS
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 BUILT_AT = pd.Timestamp("2026-10-04 12:00:00")
@@ -576,13 +576,15 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
 
 def test_vendor_exceptions_and_expected_changes_configs():
     rows = json.loads((CONFIG_DIR / "sec" / "vendor_coverage_exceptions.json").read_text(encoding="utf-8"))["exceptions"]
-    assert [(r["ticker"], r["quarter"], r["accession"]) for r in rows] == [(e.ticker, e.quarter, e.accession) for e in CUTOVER_VENDOR_EXCEPTIONS]
+    assert [(r["ticker"], r["quarter"], r["accession"]) for r in rows] == [
+        (e.ticker, e.quarter, e.accession) for e in load_vendor_exceptions(CONFIG_DIR)
+    ]
     expected = json.loads((CONFIG_DIR / "sec" / "expected_lineage_changes.json").read_text(encoding="utf-8"))["hypotheses"]
     ids = {row["id"] for row in expected}
     assert {"dd_predecessor_periods", "mrvl_predecessor_periods", "ferg_predecessor_periods", "tyco_window_filter", "seam_rule_set_aside"} <= ids
     assert all(row.get("status") == "hypothesis" and row.get("source") for row in expected)
     print("\n=== SANITY CHECK: Q2g/Q2h configs created ===")
-    print(f"  {len(rows)} vendor exceptions equal the test's rows; {len(expected)} lineage-change hypotheses recorded")
+    print(f"  {len(rows)} vendor exceptions read back by the shared loader; {len(expected)} lineage-change hypotheses recorded")
 
 
 def test_company_tickers_exchange_snapshot_parses():

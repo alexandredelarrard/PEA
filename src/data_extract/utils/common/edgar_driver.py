@@ -146,8 +146,8 @@ class EdgarFetch:
     arguments) rejects a filing on which the key is only a filer or owner. `done_table` (default
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
-    df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context)` floors the
-    listing at run time.
+    df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
+    floors the listing at run time.
     """
 
     desc: str
@@ -160,7 +160,7 @@ class EdgarFetch:
     done_scope: str = DONE_TABLE
     filings: FilingsFn | None = None
     done_where: dict[str, object] | None = None
-    runtime_floor: Callable[[Context], pd.Timestamp | None] | None = None
+    runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
 
     @property
     def done(self) -> Table:
@@ -459,7 +459,7 @@ def plan_fetch(
         registrants=scope.registrants,
         identity=scope.identity,
         years_history=years_history,
-        runtime_floor=fetch.runtime_floor(context) if fetch.runtime_floor is not None else None,
+        runtime_floor=fetch.runtime_floor(context, run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
         done_where=fetch.done_where,
         full=full,

@@ -1,8 +1,8 @@
 """Daily EDGAR ownership filings (Forms 3/4/5) into `insider_transactions`.
 
 EDGAR is authoritative. Each run reads, one filing at a time, every Form 3/4/5 in the local EDGAR
-index filed after the last stored zip quarter that the key has not yet stored from EDGAR (markers
-included). The index lists a filing under its issuer and under every reporting owner, so a filing
+index filed since the earlier of the day after the last stored zip quarter and 7 days before the
+run date, that the key has not yet stored from EDGAR (markers included). The index lists a filing under its issuer and under every reporting owner, so a filing
 whose XML issuer is not the key's company (the key is only an owner) becomes an empty-filing
 marker, as does a holdings-only filing. A zip-sourced accession EDGAR re-reads is replaced whole
 (its zip `quarter` is kept), so no accession holds rows from both sources. Rejected rows are never
@@ -140,6 +140,16 @@ def bulk_frontier_floor(context: Context) -> pd.Timestamp | None:
         return None
 
 
+def edgar_window_start(context: Context, as_of: pd.Timestamp) -> pd.Timestamp | None:
+    """The EDGAR window start: the earlier of `bulk_frontier_floor` and `as_of` minus the table's
+    resume overlap (7 days); None when no zip quarter is stored (the history floor applies)."""
+    floor = bulk_frontier_floor(context)
+    if floor is None:
+        return None
+    overlap = Tables.insider_transactions.resume.overlap_days if Tables.insider_transactions.resume is not None else 0
+    return min(floor, pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap))
+
+
 def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = None) -> EdgarFetch:
     """The EDGAR Forms 3/4/5 fetch for universe `tickers`. Done per key and only on EDGAR rows: an
     owner-role marker under one company never hides the filing from its issuer, and a zip row never
@@ -152,7 +162,7 @@ def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = 
         done_table=Tables.insider_transactions,
         done_scope=DONE_PER_KEY,
         done_where=_EDGAR_DONE,
-        runtime_floor=bulk_frontier_floor,
+        runtime_floor=edgar_window_start,
     )
 
 
@@ -197,11 +207,11 @@ def fetch_insider_edgar(
     as_of: pd.Timestamp | None = None,
     no_cap: bool = False,
 ) -> None:
-    """Read every indexed Form 3/4/5 after the last zip quarter not yet stored from EDGAR (all of them
+    """Read every indexed Form 3/4/5 since `edgar_window_start` not yet stored from EDGAR (all of them
     under `full`); afterwards, even on failure, log the run's exclusions and replace the zip rows of
     every accession EDGAR now holds."""
     excluded: list[pd.DataFrame] = []
-    since = bulk_frontier_floor(context)
+    since = edgar_window_start(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
     try:
         run_edgar_fetch(context, tickers, years_history, insider_fetch(tickers, excluded), full=full, as_of=as_of, no_cap=no_cap)
     except BaseException:

@@ -102,6 +102,34 @@ def test_the_listing_starts_after_the_last_stored_zip_quarter(ctx, sqlite_store)
     print(f"\nSANITY: zip quarter 2026q2 stored -> EDGAR lists only the {len(listed)} of 10 indexed Form 4s filed from 2026-07-01 on.")
 
 
+def _daily_book(cik: int, company: str) -> list[tuple]:
+    days = pd.date_range("2026-06-20", "2026-10-04")
+    return [(cik, company, "4", day.date().isoformat(), f"{cik:010d}-26-{i:06d}") for i, day in enumerate(days)]
+
+
+@pytest.mark.parametrize(
+    ("quarter", "as_of", "start"),
+    [
+        ("2026q3", "2026-10-04", "2026-09-27"),  # zip floor 2026-10-01 is 3 days back -> as_of - 7 days
+        ("2026q2", "2026-08-30", "2026-07-01"),  # zip floor 2026-07-01 is 60 days back -> the floor
+    ],
+)
+def test_the_window_starts_at_the_earlier_of_the_zip_floor_and_seven_days_back(ctx, sqlite_store, quarter, as_of, start):
+    """The EDGAR window starts at MIN(day after the last zip quarter, as_of - 7 days), for the universe and a `-t` run alike."""
+    seed_index(ctx, _daily_book(19617, "JPMORGAN CHASE & CO") + _daily_book(797468, "OCCIDENTAL PETROLEUM"))
+    sqlite_store.save(Tables.insider_transactions, _stored(["zip-row"], "zip").assign(quarter=quarter))
+    roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
+    scope = EdgarScope(edgar_driver.load_identity(ctx), {})
+
+    universe = plan_fetch(ctx, module.insider_fetch(["JPM", "OXY"]), roster, scope, pd.Timestamp(as_of), 15)
+    subset = plan_fetch(ctx, module.insider_fetch(["JPM"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15)
+
+    first = {key: df["filed"].min() for key, df in universe.units.items()}
+    assert first == {"JPM": pd.Timestamp(start), "OXY": pd.Timestamp(start)}
+    assert subset.units["JPM"]["filed"].min() == pd.Timestamp(start), "a -t run keeps the same window"
+    print(f"\nSANITY: zip quarter {quarter}, run {as_of} -> EDGAR window starts {start} for the universe and for -t JPM.")
+
+
 def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx, sqlite_store, monkeypatch):
     """BRK reports a Form 4 on OXY as a 10% owner: the index lists it under both CIKs."""
     accession = "0001067983-26-000042"

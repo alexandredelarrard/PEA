@@ -17,12 +17,11 @@ Notes:
     alongside this one by `StepExtractPrices`) with its own resume window, since
     ex-dates are quarterly and sparse where bars are daily. `download_ohlcv` is
     the shared entry point -- one yfinance response serves both.
-  - EQUITY ONLY. The market/macro series (SPY, ^VIX, oil/gold/energy, FX) used to be
-    extra OHLCV rows in `prices`, fetched by this function over `other_tickers`.
-    They are now rows in `prices_macro` (`fetch_macro.py`) -- close-only from
-    yfinance, or a FRED level for FX -- so `prices` holds the analysed universe and
-    nothing else, which is what let the cube drop its `cube_part_market` firewall
-    and three `drop(columns=[market])` guards.
+  - EQUITY ONLY. The market/macro series (SPY, ^VIX, oil/gold/energy, FX) are rows in
+    `prices_macro` (`fetch_macro.py`), not here.
+  - `prices` holds the universe AND the current secondary share classes of its companies
+    (`security_master` rows with role `secondary_class` and an open end: BRK-A, GOOG, LEN-B, ...),
+    each under its own Yahoo symbol. Every reader of `prices` filters on the universe.
 """
 
 import logging
@@ -39,6 +38,7 @@ from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.schema import Tables
+from src.utils.string import normalise_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +293,38 @@ def download_ohlcv(
     return _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
 
 
-def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
+SECONDARY_CLASS = "secondary_class"
+
+
+def yahoo_symbol(symbol: object) -> str:
+    """Yahoo's spelling of a share-class symbol: a `/` or `.` class separator becomes `-` (`BRK/A`, `BRK.A` -> `BRK-A`)."""
+    return normalise_ticker(symbol).replace("/", "-").replace(".", "-")
+
+
+def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:
+    """`{Yahoo symbol: canonical company}` of the companies' secondary classes that `security_master` holds as current.
+
+    A class whose every row has an end is no longer listed and is not fetched (yfinance has no history for it).
+    """
+    rows = context.store.load(
+        Tables.security_master,
+        columns=["canonical_company", "market_symbol", "valid_to"],
+        where={"lineage_role": SECONDARY_CLASS, "canonical_company": companies},
+        optional=True,
+    )
+    if rows is None or rows.empty:
+        return {}
+    rows = rows.assign(symbol=rows["market_symbol"].map(yahoo_symbol), current=rows["valid_to"].isna())
+    current = cast(pd.DataFrame, rows.groupby(["symbol", "canonical_company"], as_index=False)["current"].any())
+    triples = zip(current["symbol"].astype(str), current["canonical_company"].astype(str), current["current"].astype(bool), strict=True)
+    listed = {symbol: company for symbol, company, is_current in triples if is_current and symbol not in companies}
+    delisted = sorted(set(current.loc[~current["current"].astype(bool), "symbol"].astype(str)) - set(listed))
+    if delisted:
+        logger.info("%d secondary class(es) no longer listed, not fetched: %s", len(delisted), ", ".join(delisted))
+    return dict(sorted(listed.items()))
+
+
+def tickers_needing_repull(context: Context, tickers: list[str], owners: dict[str, str] | None = None) -> list[str]:
     """Tickers whose stored history is on a STALE adjustment basis, because a split has an
     ex-date after their last stored bar.
 
@@ -305,8 +336,12 @@ def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
 
     Without this trigger, EVERY future splitter re-corrupts the table the same way, and the
     one-off `--full` re-download buys only a clean snapshot. Empty list when `prices_splits`
-    has no rows yet (P2 not run), so this degrades to today's behaviour rather than failing."""
-    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"], where={"ticker": tickers}, optional=True)
+    has no rows yet (P2 not run), so this degrades to today's behaviour rather than failing.
+
+    `owners` maps a secondary-class symbol to its company, whose split events it is checked against."""
+    owners = owners or {}
+    companies = sorted({owners.get(t, t) for t in tickers})
+    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"], where={"ticker": companies}, optional=True)
     if splits is None or splits.empty:
         return []
     last_bar = context.store.max_date_by(Tables.prices, "ticker", "date")
@@ -315,11 +350,8 @@ def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
 
     splits = splits.copy()
     splits["date"] = pd.to_datetime(splits["date"])
-    stale = {
-        ticker
-        for ticker, event in zip(splits["ticker"], splits["date"], strict=False)
-        if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])
-    }
+    latest = splits.groupby("ticker")["date"].max().to_dict()
+    stale = {t for t in tickers if t in last_bar and owners.get(t, t) in latest and latest[owners.get(t, t)] > pd.Timestamp(last_bar[t])}
     return sorted(stale)
 
 
@@ -353,20 +385,31 @@ def fetch_price_history(
     The window ENDS at `last_completed_session()`, never at "today". An unclamped end asks
     yfinance for a session that may still be trading and gets a real-looking bar built from a
     partial OHLC and a fraction of the day's volume (measured: 0.535x the ticker's own
-    trailing median). Nothing downstream can distinguish it from a settled close."""
+    trailing median). Nothing downstream can distinguish it from a settled close.
+
+    The companies' current secondary classes (`secondary_class_symbols`) are fetched alongside;
+    a class with no stored bar yet takes the full window."""
     until = last_completed_session()
     window_start = until - pd.DateOffset(years=years_history)
 
-    repull = [] if full else tickers_needing_repull(context, tickers)
-    incremental = [t for t in tickers if t not in set(repull)]
+    owners = secondary_class_symbols(context, tickers)
+    if owners:
+        logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
+    symbols = [*tickers, *owners]
+    if full:
+        repull = []
+    else:
+        stored = context.store.max_date_by(Tables.prices, "ticker", "date") if owners else {}
+        repull = sorted(set(tickers_needing_repull(context, symbols, owners)) | {s for s in owners if s not in stored})
+    incremental = [t for t in symbols if t not in set(repull)]
 
     batches: list[tuple[list[str], pd.Timestamp, str]] = []
     if full:
-        batches.append((tickers, window_start, "full history"))
+        batches.append((symbols, window_start, "full history"))
     else:
         if repull:
             logger.info(
-                "%d ticker(s) split after their last stored bar -- re-pulling their full history to clear the stale adjustment basis: %s",
+                "%d ticker(s) split after their last stored bar (or are a secondary class with none) -- re-pulling their full history: %s",
                 len(repull),
                 ", ".join(repull),
             )
@@ -401,4 +444,4 @@ def fetch_price_history(
         total += len(df_prices)
         logger.info("Saved %d price rows to DB table '%s' (%s)", len(df_prices), Tables.prices, label)
 
-    record_run(context, Tables.prices, len(tickers), total)
+    record_run(context, Tables.prices, len(symbols), total)

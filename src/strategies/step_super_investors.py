@@ -26,6 +26,7 @@ from src.strategies.utils.superinvestors import _aggregate_superinvestors
 from src.utils.macro import load_macro_series
 from src.utils.risk_parity import series_metrics
 from src.utils.superinvestor_roster import roster_as_of, roster_map_as_of
+from src.utils.universe import load_universe_tickers
 
 # A name the cohort has exited must be gone, not merely small. The only legitimate residual is
 # a position that briefly cannot be sold (no price that day), so the bar is float noise, not a
@@ -147,7 +148,7 @@ class SuperInvestorsStrategy(Strategy):
     def load_raw(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timestamp | None]:
         """The roster managers' raw 13F rows + equity close prices, plus the date to carry
         holdings forward to. The benchmark is NOT in this read any more -- it is a series in
-        `prices_macro` (see `_benchmark_returns`), and `prices` is the equity universe only.
+        `prices_macro` (see `_benchmark_returns`), and `prices` is read for the universe only.
 
         Returns the RAW filings rather than an aggregated panel because the caller aggregates
         the same rows twice -- once pooled, once `by_cik` -- and `sec13f_hr` is a 21.7M-row
@@ -167,7 +168,7 @@ class SuperInvestorsStrategy(Strategy):
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return
         # index.
-        prices = store.load(Tables.prices, columns=["date", "ticker", "close_split"])
+        prices = store.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": load_universe_tickers(self._context)})
         if prices is None:
             raise RuntimeError(f"super_investors: '{Tables.prices}' returned no price frame")
         prices = prices.rename(columns={"close_split": "close"})

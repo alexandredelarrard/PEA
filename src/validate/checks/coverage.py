@@ -135,7 +135,7 @@ def check_coverage(
     ref_ticker = next((c for c in ("ticker", "symbol") if c in ref_cols), None)
     if ref_ticker is None or "date" not in ref_cols:
         return CheckResult.abstained(CHECK, spec_t.name, f"the reference table `{reference}` has no (ticker, date) grid to measure against")
-    prices = context.store.load(reference, columns=[ref_ticker, "date"])
+    prices = context.store.load(reference, columns=[ref_ticker, "date"], where={ref_ticker: universe})
     if prices is None:
         return CheckResult.abstained(CHECK, spec_t.name, f"the reference table `{reference}` returned no rows")
     prices = prices.rename(columns={ref_ticker: ticker_col})

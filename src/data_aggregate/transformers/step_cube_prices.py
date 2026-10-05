@@ -6,8 +6,8 @@ one that computes peer sector returns. Everything downstream reads the part tabl
 (`cube_part_prices`) through `utils/common/price_frames.load_price_frames`, projected to the
 fields it needs.
 
-`prices` is the EQUITY universe and nothing else, so there is no market/commodity/FX split to
-make here any more: the second part table (`cube_part_market`) and its `_market_frames`
+`prices` holds equities only (the universe plus its companies' secondary share classes, read
+filtered to the universe), so there is no market/commodity/FX split to make here any more: the second part table (`cube_part_market`) and its `_market_frames`
 subsetting are gone, and `StepCubeTarget` reads those series from `prices_macro` directly.
 The trading calendar still comes from the market series -- read from `prices_macro`, which is
 the table that owns it.
@@ -75,7 +75,7 @@ class StepCubePrices(Step):
 
         window = self._plan_window(full)
         since = window.since
-        raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS)
+        raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS, where={"ticker": self._tickers})
         assert raw is not None
         self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
 

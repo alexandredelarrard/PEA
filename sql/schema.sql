@@ -175,6 +175,8 @@ CREATE TABLE IF NOT EXISTS "sec_company_tickers" (
 );
 
 -- [extract] prices  (pk: ticker, date)
+-- Equities only: the universe and its companies' current secondary share classes (security_master
+-- role secondary_class, open end) under their Yahoo symbols. Every reader filters on the universe.
 -- TWO price columns, written from ONE yfinance response so they cannot drift apart.
 --   close_split -- Yahoo `Close` under auto_adjust=False: restated for SPLITS ONLY, no
 --                  dividend adjustment. The same basis as Sharadar's `price`, agreeing to

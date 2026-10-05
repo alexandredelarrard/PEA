@@ -50,7 +50,7 @@ class StepDeducePeers(Step):
 
     def load_prices(self):
         self._log.info("Loading prices from DB table 'prices'")
-        self.prices_long = self._context.store.load("prices")
+        self.prices_long = self._context.store.load(Tables.prices, where={"ticker": load_universe_tickers(self._context)})
 
     def load_pre_computed_peers(self, peers_path):
         self.peers = load_peer_dict(peers_path)

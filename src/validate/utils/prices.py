@@ -37,6 +37,7 @@ from src.data_aggregate.utils.common.level_basis import (
     load_bugfix,
 )
 from src.data_store.schema import Tables
+from src.utils.universe import load_universe_tickers
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
 #: and Sharadar's four-significant-figure rounding, and is an order of magnitude tighter than
@@ -149,13 +150,18 @@ def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # loading                                                                     #
 # --------------------------------------------------------------------------- #
+def _price_scope(context: Context, tickers: list[str] | None) -> dict[str, Any]:
+    """The `prices` filter: the given tickers, else the universe (`prices` also holds secondary share classes)."""
+    return {"ticker": list(tickers) if tickers else load_universe_tickers(context)}
+
+
 def load_panel(context: Context, tickers: list[str] | None = None, since: str | pd.Timestamp | None = None) -> pd.DataFrame:
     """One row per (ticker, filing date): both vendors' prices and both share counts.
 
     An AS-OF join, not an equality join: a filing date is frequently a weekend or a holiday,
     and the market cap a filing row implies is the one from the last bar at or before it --
     which is exactly what `pit.daily_market_cap` computes after its forward-fill."""
-    where = {"ticker": tickers} if tickers else None
+    where = _price_scope(context, tickers)
 
     prices = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
     if prices is None:
@@ -165,7 +171,7 @@ def load_panel(context: Context, tickers: list[str] | None = None, since: str | 
     vendor = context.store.load(
         Tables.sharadar_fundamentals,
         columns=["ticker", "date", "dimension", "price", "sharesbas", "marketcap"],
-        where={**(where or {}), "dimension": "ARQ"},
+        where={**where, "dimension": "ARQ"},
         since=since,
     )
     if vendor is None:
@@ -349,7 +355,7 @@ def invariant_spike_revert(context: Context, tickers: list[str] | None = None) -
     Corroboration is the whole point: a real 2:1 split DOES halve the quote, so the test is
     not "did the price move a lot" but "did it move a lot, come back, and is there no event
     on the books". Reads the full price history, so it is the expensive one."""
-    where = {"ticker": tickers} if tickers else None
+    where = _price_scope(context, tickers)
     px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
     if px is None:
         raise RuntimeError(f"'{Tables.prices}' returned no price frame")
@@ -415,7 +421,7 @@ def invariant_day_coverage(context: Context, tickers: list[str] | None = None) -
     Streams the (ticker, date) pair columns rather than loading them, so the check costs a
     grouped count over ~3.3M narrow rows and never materialises the table.
     """
-    where: dict[str, object] | None = {"ticker": tickers} if tickers else None
+    where = _price_scope(context, tickers)
     per_day: dict[pd.Timestamp, int] = {}
     seen: set[str] = set()
     for chunk in context.store.iter_load(Tables.prices, columns=["ticker", "date"], where=where, chunksize=500_000):

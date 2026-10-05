@@ -26,6 +26,7 @@ from src.data_store.schema import Tables
 from src.modelling.utils.artifacts import load_ensemble, models_dir, read_metadata
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, optimal_forecast_weights
 from src.utils.macro import load_macro_series
+from src.utils.universe import load_universe_tickers
 
 
 @dataclass
@@ -87,7 +88,7 @@ def _project_cube(context: Context, meta: dict, models: dict, target_type: str, 
 def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_cfg: DictConfig, start: pd.Timestamp):
     buffer = int(2.2 * (int(model_cfg.get("beta_window", 63)) + int(model_cfg.get("vol_window", 63))) + 30)
     cutoff = start - pd.Timedelta(days=buffer)
-    long = context.store.load(Tables.prices, since=cutoff)
+    long = context.store.load(Tables.prices, since=cutoff, where={"ticker": load_universe_tickers(context)})
     if long is None:
         raise RuntimeError(f"'{Tables.prices}' returned no price frame")
     pivot = du.prices_long_to_multiindex(long)
@@ -96,8 +97,8 @@ def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_c
     # transacted at -- so it is the split-adjusted quote. Returning `close_total` for both
     # would price the book on a series no share ever traded at.
     close = du.extract_field(pivot, "CloseSplit")
-    # `prices` is the equity universe and nothing else now, so there is no market/index/FX
-    # column to strip out here -- the benchmark leg comes from `prices_macro` instead.
+    # `prices` is read for the universe only (it also holds secondary share classes), and holds
+    # no market/index/FX column -- the benchmark leg comes from `prices_macro` instead.
     rets = du.daily_returns(du.extract_field(pivot, "CloseTotal"))
     mkt_close = load_macro_series(context.store, MACRO_MARKET_SERIES, since=cutoff)
     if mkt_close is None:

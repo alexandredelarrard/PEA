@@ -284,6 +284,10 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
+    # Equities only: the universe AND its companies' current secondary share classes (the
+    # `security_master` rows with role `secondary_class` and an open end: BRK-A, GOOG, LEN-B, ...),
+    # each under its own Yahoo symbol. ⚠ Every reader filters on the universe
+    # (`load_universe_tickers`); an unfiltered read mixes the classes into the cross-section.
     prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily")
     dividends = Table("prices_dividends", ("ticker", "date"), date_col="date")
     # Share-split ex-dates, yfinance-sourced and unioned with `sharadar_actions` (which has
@@ -385,9 +389,8 @@ class Tables:
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,
     # 31y) -- which double-stored yield_10y and vix from two sources at two depths -- and
     # took over the non-equity tickers that used to sit in `prices`. That last move is what
-    # lets `prices` be the equity universe and nothing else, which in turn is what let
-    # `cube_part_market` (a firewall against macro tickers leaking into cross-sectional
-    # ranks) disappear entirely.
+    # keeps `prices` equities only, which in turn is what let `cube_part_market` (a firewall
+    # against macro tickers leaking into cross-sectional ranks) disappear entirely.
     # `ticker` holds the SERIES name (equity_tr, vix, yield_10y, bond_10y_tr, ...), not the
     # source symbol, so the wide pivot reproduces the column vocabulary its consumers had.
     # Long, not wide: the legs start on different dates (gold 2000, breakeven 2003) and a

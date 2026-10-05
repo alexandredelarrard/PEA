@@ -124,7 +124,6 @@ IDENTITY_INDEPENDENT = {
     "macro",
     "earnings_surprises",
     "splits",
-    "price_history",
     "dividends",
     "extract_earnings_calls",
 }
@@ -237,7 +236,7 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     # downloads -> identity build -> propagation -> every consumer
     for download in IDENTITY_DOWNLOADS:
         assert "identity_tables" in graph[download], f"{download} must feed identity_tables"
-    assert graph["identity_tables"] == {"identity_propagate", "identity_check"}
+    assert graph["identity_tables"] == {"identity_propagate", "identity_check", "price_history"}
     assert IDENTITY_CONSUMERS <= graph["identity_propagate"], sorted(IDENTITY_CONSUMERS - graph["identity_propagate"])
     for derived, parents in DERIVED_PARENTS.items():
         assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
@@ -266,6 +265,14 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     first = min(position[task] for task in IDENTITY_DOWNLOADS)
     print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
     print(f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build or propagation leaves the gate unrun")
+
+
+def test_price_history_waits_for_the_security_master_and_the_splits(monkeypatch):
+    """Q2d: the price fetch list adds the master's current secondary classes, so it runs after `identity_tables`."""
+    graph, _ = _load_dag_graph(monkeypatch)
+    assert "price_history" in graph["identity_tables"] and "price_history" in graph["splits"]
+    assert "price_history" not in _descendants(graph, "identity_propagate"), "prices read only the master, not the propagation"
+    print("\n=== SANITY CHECK: price_history order ===\n  splits -> price_history and identity_tables -> price_history; no wait on propagation")
 
 
 def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(monkeypatch):

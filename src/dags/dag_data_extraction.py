@@ -19,7 +19,8 @@ Airflow POOLS (created in airflow-init):
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
 the data_aggregation DAG. Identity stage: the Form 3/4/5, Notes and FTD zip downloads and the SEC
 current-tickers snapshot -> identity_tables (tenure, lineage, security master) ->
-identity_propagate -> every task that reads the lineage; a failed build or propagation leaves the
+identity_propagate -> every task that reads the lineage (price_history waits for identity_tables only:
+it reads the master's current secondary classes); a failed build or propagation leaves the
 gate unrun. After every fetcher, `identity_check` (`python -m src validate identity`) fails on rows
 filed by a CIK outside the ticker's entity. Fetchers and both gates each get three attempts;
 the final gate is a hard block.
@@ -200,6 +201,7 @@ identity_consumers = [
 
 seed_universe >> all_fetchers
 splits >> price_history
+identity_tables >> price_history  # the fetch list adds the security master's current secondary classes
 [insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >> identity_consumers
 insider_transactions >> insider_edgar  # the live tail resumes from the bulk table's latest quarter
 thirteen_f >> superinvestors  # roster reads the 13F holdings

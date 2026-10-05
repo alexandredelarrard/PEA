@@ -77,15 +77,17 @@ def unverified_ciks(context: Context) -> list[dict]:
 
     # ONE `distinct` per table, not one count per (ticker, table): the universe is ~500 names
     # and five tables, and a per-cell count is 2,500 round trips on a check that runs at seed.
+    roster = [str(t).strip().upper() for t in df["ticker"].dropna()]
+
     def _tickers(table: str) -> set[str]:
         try:
-            return {str(t).strip().upper() for t in context.store.distinct(table, "ticker") if t}
+            return {str(t).strip().upper() for t in context.store.distinct(table, "ticker", where={"ticker": roster}) if t}
         except Exception:  # noqa: BLE001 -- a table may not exist yet
             return set()
 
     seen = {table: _tickers(table) for table in CIK_EVIDENCE_TABLES}
     filed = set().union(*seen.values()) if seen else set()
-    priced = _tickers("prices")
+    priced = _tickers(Tables.prices.name)
 
     out: list[dict] = []
     for raw_t, raw_c in zip(df["ticker"], df["cik"], strict=False):

@@ -60,6 +60,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
+from src.utils.universe import load_universe_tickers
 from src.validate.frame import as_ts, column_groups, feature_columns
 from src.validate.io import CHUNK_ROWS, cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -146,6 +147,16 @@ def _longest_prefix_sources(
     return max(matches, key=lambda item: len(item[0])) if matches else None
 
 
+def _last_universe_session(context: Context, reference: Table | str) -> pd.Timestamp | None:
+    """The reference table's latest date over universe tickers (`prices` also holds secondary share classes)."""
+    universe = set(load_universe_tickers(context))
+    by_ticker = context.store.max_date_by(reference, "ticker") if universe else {}
+    if not by_ticker:
+        return context.store.max_date(reference)
+    dates = [day for ticker, day in by_ticker.items() if ticker in universe]
+    return max(dates) if dates else None
+
+
 def check_leakage(
     context: Context,
     table: Table | str,
@@ -191,7 +202,7 @@ def check_leakage(
             f"label, and cube_part_momentum's backward-looking seasonal_h30/60/90 "
             f"read as three leaks at score 10 when it was matched blind"
         )
-    last_price = as_ts(context.store.max_date(reference))
+    last_price = as_ts(_last_universe_session(context, reference))
     if horizons:
         halves.append("horizon")
         frame = read_columns(context, spec_t, [date_col] + sorted(horizons), cache=cache)

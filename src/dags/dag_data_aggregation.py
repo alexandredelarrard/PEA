@@ -3,7 +3,7 @@
 dag_data_aggregation.py  (src/dags/dag_data_aggregation.py)
 -----------------------------------------------------------
 Nightly DATA-AGGREGATION DAG — the cube build as eight sequential, memory-bounded steps.
-Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
+Triggered by the extraction DAG once every source task has finished, failed or not (schedule=None).
 
     deduce_peers ─▶ build_prices ─▶ build_target ─▶ build_fundamentals ─▶ build_momentum
                          │                                                        │
@@ -22,6 +22,10 @@ Triggered by the extraction DAG once ALL sources have refreshed (schedule=None).
                          ▼
                     cube_status (XCom: max date/rows per part; RED if a part is behind)
                          └──▶ trigger `strat_prediction` (daily)
+
+Every task runs on ALL_DONE: a failed step neither stops the later steps nor the prediction
+trigger. A red `cube_status` still fails the run visibly; `modelling predict` itself refuses to
+score when its inputs are stale or the cube ends before `prices`.
 
 Each step is `/opt/pipeline/bin/python -m src data_aggregate <cmd>` (the pipeline's isolated venv).
 STRICTLY SEQUENTIAL, on purpose: peak memory is the largest single step rather than the sum of two
@@ -80,6 +84,7 @@ def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None 
         bash_command=f"{base} {cmd} -c {CONFIGS}",
         cwd=PROJECT,
         pool=pool,
+        trigger_rule=TriggerRule.ALL_DONE,
         dag=dag,
     )
 
@@ -125,9 +130,9 @@ def _cube_status(**context) -> None:
 
 
 # 4) status gate: latest date per cube part -> XCom (RED if a part is behind)
-cube_status = PythonOperator(task_id="cube_status", python_callable=_cube_status, dag=dag)
+cube_status = PythonOperator(task_id="cube_status", python_callable=_cube_status, trigger_rule=TriggerRule.ALL_DONE, dag=dag)
 
-# 5) kick off the DAILY prediction DAG (predict -> strategy ledger) once the cube is fresh.
+# 5) kick off the DAILY prediction DAG (predict -> strategy ledger) whatever the build's outcome.
 #    NOT `modelling`: (re)training is weekly (Saturday, see dag_modelling.py) while a freshly
 #    rebuilt cube should be SCORED every night, so the nightly downstream is prediction only.
 trigger_strat_prediction = TriggerDagRunOperator(
@@ -135,7 +140,7 @@ trigger_strat_prediction = TriggerDagRunOperator(
     trigger_dag_id="strat_prediction",
     wait_for_completion=False,
     reset_dag_run=True,
-    trigger_rule=TriggerRule.ALL_SUCCESS,
+    trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
 

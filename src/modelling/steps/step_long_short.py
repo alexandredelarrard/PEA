@@ -19,8 +19,9 @@ transformers.
 `full_history=True` is the production refit: no train-window end, metadata records the actual
 last trained date.
 
-`run_predict(n_dates=1)` loads the saved members, scores the newest cube dates for every horizon
-from a FEATURE-ONLY float64 read (their forward labels have not matured, so a labelled read would
+`run_predict(n_dates=1)` loads the saved members, refuses to score (`StaleInputsError`) when a
+prediction input is stale per universe key or the cube ends before `prices`, then scores the newest
+cube dates for every horizon from a FEATURE-ONLY float64 read (their forward labels have not matured, so a labelled read would
 drop them), and writes `predictions_latest` in long form: each member, each horizon's ensemble, and
 the IR-weighted blend across horizons.
 
@@ -53,7 +54,9 @@ from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
 from src.modelling.utils.panel import load_frame
+from src.utils.freshness import check_prediction_inputs
 from src.utils.step import Step
+from src.utils.universe import load_universe_tickers
 
 # metadata.json name of each family block's resolved columns (kept for the strategies / app)
 _FAMILY_BLOCKS: dict[str, type[BaseModel]] = {"linear": LinearRegression, "lgbm": LightGBMModel, "rf": RandomForestModel}
@@ -425,6 +428,9 @@ class StepLongShort(Step):
         train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
         predicted_at = pd.Timestamp.now().floor("s")
         store = self._context.store
+        min_share = float(self._config.data_extract.prediction_fresh_share)
+        shares = check_prediction_inputs(store, load_universe_tickers(self._context), pd.Timestamp(self._today), min_share)
+        self._log.info("run_predict: per-key fresh share %s (minimum %.2f)", {name: round(share, 3) for name, share in shares.items()}, min_share)
 
         dates = sorted(pd.Timestamp(d).normalize() for d in store.distinct(Tables.cube, "date", order="desc", limit=int(n_dates)))
         if not dates:

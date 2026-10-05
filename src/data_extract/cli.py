@@ -31,7 +31,6 @@ from src.constants.command_line_interface import (
 from src.constants.command_line_interface import (
     YEARS_KWARGS as _YEARS_KWARGS,
 )
-from src.constants.constants import DATA_FRESHNESS_MAX_AGE_DAYS
 from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
@@ -83,6 +82,7 @@ from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
+from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
 CONFIG_KWARGS = cast(dict[str, Any], _CONFIG_KWARGS)
@@ -119,37 +119,59 @@ def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
     return None if as_of is None else _run_date(as_of)
 
 
+def _table_status(context: Context, table: Table, universe: list[str], as_of: pd.Timestamp, min_share: float) -> dict[str, object]:
+    """One table's freshness: the table-wide age, and for a ticker table the per-key share of the universe.
+
+    RED when the age exceeds the cadence, or when a prediction input's share is below `min_share`."""
+    age_days = table_freshness(context.store, table, as_of)
+    max_age = max_age_days(table)
+    ok = age_days is not None and age_days <= max_age
+    share = None
+    if table.ticker_col is not None:
+        last_by_key = last_dates_by_key(context.store, table)
+        if table in PREDICTION_INPUTS or not set(universe).isdisjoint(last_by_key):
+            share = fresh_share(last_by_key, universe, as_of, max_age)
+    if table in PREDICTION_INPUTS:
+        ok = ok and share is not None and share >= min_share
+    return {
+        "date_column": table.freshness_col,
+        "cadence": table.freshness,
+        "max_date": None if age_days is None else (as_of - pd.Timedelta(days=age_days)).date().isoformat(),
+        "age_days": age_days,
+        "max_age_days": max_age,
+        "fresh_share": None if share is None else round(share, 4),
+        "ok": ok,
+    }
+
+
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
-    """Measure exactly the tables and cadences declared by the schema registry."""
+    """Freshness report over exactly the tables and cadences declared by the schema registry."""
     as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    statuses: dict[str, dict[str, object]] = {}
-    for table in freshness_tables():
-        cadence = cast(str, table.freshness)
-        maximum = context.store.max_date(table, table.freshness_col)
-        age_days = None if maximum is None else int((as_of - maximum).days)
-        max_age_days = DATA_FRESHNESS_MAX_AGE_DAYS[cadence]
-        statuses[table.name] = {
-            "date_column": table.freshness_col,
-            "cadence": cadence,
-            "max_date": None if maximum is None else maximum.date().isoformat(),
-            "age_days": age_days,
-            "max_age_days": max_age_days,
-            "ok": age_days is not None and age_days <= max_age_days,
-        }
+    universe = load_universe_tickers(context)
+    min_share = float(context.config.data_extract.prediction_fresh_share)
+    statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}
     behind = [name for name, status in statuses.items() if not status["ok"]]
-    context.log.info("Extraction freshness gate ok=%s behind=%s", not behind, behind)
+    for name in behind:
+        status = statuses[name]
+        context.log.warning(
+            "Extraction freshness RED: %s max_date=%s age_days=%s (max %s) fresh_share=%s",
+            name,
+            status["max_date"],
+            status["age_days"],
+            status["max_age_days"],
+            status["fresh_share"],
+        )
+    context.log.info("Extraction freshness report ok=%s behind=%s", not behind, behind)
     return {"as_of": as_of.date().isoformat(), "ok": not behind, "behind": behind, "tables": statuses}
 
 
-@cli.command(name="extraction-status", help="Fail unless every schema-declared extraction table is fresh enough for aggregation.")
+@cli.command(name="extraction-status", help="Report every schema-declared extraction table's freshness (JSON); RED tables warn, the exit code is 0.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @AS_OF_OPTION
 def extraction_status(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     report = _extraction_status_report(context, as_of=_run_date(as_of))
     click.echo(json.dumps(report, sort_keys=True))
-    if not report["ok"]:
-        raise click.ClickException("stale or incomplete extraction tables: " + ", ".join(cast(list[str], report["behind"])))
 
 
 # --- Universe seed (must run first; everything else resolves the universe from it) ---
@@ -187,27 +209,6 @@ def seed_universe(config_path: str, refresh: bool, as_of: datetime | None) -> No
 @AS_OF_OPTION
 def price_history(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    years_history = int(context.config.data_extract.years_history)
-    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
-
-
-@cli.command(help="Alias of price-history (one download serves all three tables); kept until the DAG tasks merge.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@AS_OF_OPTION
-def dividends(config_path: str, tickers: str | None, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    years_history = int(context.config.data_extract.years_history)
-    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, as_of=_market_as_of(as_of))
-
-
-@cli.command(help="Alias of price-history (one download serves all three tables); kept until the DAG tasks merge.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-def splits(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
     fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))

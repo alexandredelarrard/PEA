@@ -35,6 +35,10 @@ data_extract:
   # Per-fetch cap on documents read in one run, newest first; a larger work list logs an ERROR and
   # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
   max_documents_per_run: 5000
+  # `modelling predict` refuses to score when the share of universe tickers whose own latest
+  # prices / fundamentals_sharadar / fundamentals_history date is within the table's cadence
+  # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
+  prediction_fresh_share: 0.95
   # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
   # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
   # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at

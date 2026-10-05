@@ -106,6 +106,7 @@ def _setup(
         },
         "build_cube": {"output": {"save_cv_results": True, "save_signal": True}},
         "train": {"start_date": str(pd.Timestamp(dates[0]).date()), "end_date": str(pd.Timestamp(dates[-40]).date())},
+        "data_extract": {"prediction_fresh_share": 0.95, "redundant_ticks": []},
     }
     cfg = OmegaConf.merge(make_config(**base), OmegaConf.create(overrides))
     paths = {
@@ -115,7 +116,7 @@ def _setup(
         "MODELS_DIR": tmp_path / "models",
         "CUBE_CV_RESULTS_PATH": tmp_path / "cv.parquet",
     }
-    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config_dir=Path("configs"), paths=paths)
+    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths)
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 
@@ -195,9 +196,11 @@ def test_run_train_streams_one_horizon_at_a_time_and_persists_everything(tmp_pat
     )
 
 
-def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_store: Any) -> None:
+def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, spy, cfg = _setup(tmp_path, sqlite_store, save=False)
     step.run_train()
+    # the synthetic cube is dated in the past, so the input guard (test_predict_freshness.py) is stubbed out
+    monkeypatch.setattr("src.modelling.steps.step_long_short.check_prediction_inputs", lambda *args, **kwargs: {})
     spy.loads.clear()
     out = step.run_predict(n_dates=2)
 

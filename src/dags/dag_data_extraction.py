@@ -15,8 +15,10 @@ Airflow POOLS (created in airflow-init):
                           price_history)
 
 Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
-the data_aggregation DAG. Fetchers and the schema-driven freshness gate each get three attempts;
-the final gate is a hard block.
+the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
+the night: `extraction_status` and the aggregation trigger run on ALL_DONE, so they start once
+every fetcher has finished, failed or not. `extraction_status` prints the per-table freshness
+report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale inputs.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
 run from the mounted repo. Fetchers are incremental, so a nightly run only pulls new data.
@@ -59,6 +61,7 @@ def fetch(
     cmd: str,
     pool: str = "default_pool",
     task_id: str | None = None,
+    trigger_rule: str = TriggerRule.ALL_SUCCESS,
 ) -> BashOperator:
     """Run one retryable extraction command from the pipeline venv."""
     return BashOperator(
@@ -67,6 +70,7 @@ def fetch(
         cwd=PROJECT,
         pool=pool,
         pool_slots=2 if pool == "sec_api" else 1,
+        trigger_rule=trigger_rule,
         dag=dag,
     )
 
@@ -79,10 +83,8 @@ macro = fetch("macro")
 short_interest = fetch("short-interest")
 earnings_surprises = fetch("earnings-surprises")
 
-# yfinance sources: splits must finish before prices so a new event triggers a full re-pull
-splits = fetch("splits")
+# yfinance: one download writes prices, prices_dividends and prices_splits (a new split re-pulls its ticker)
 price_history = fetch("price-history")
-dividends = fetch("dividends")
 
 # 2) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
@@ -113,15 +115,15 @@ filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 # 4) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
 
-# 5) final schema-driven freshness gate; a red gate retries and never permits aggregation.
-extraction_status = fetch("extraction-status", task_id="extraction_status")
+# 5) schema-driven freshness report (exit 0); runs whatever the fetchers' outcome.
+extraction_status = fetch("extraction-status", task_id="extraction_status", trigger_rule=TriggerRule.ALL_DONE)
 
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
     wait_for_completion=False,
     reset_dag_run=True,
-    trigger_rule=TriggerRule.ALL_SUCCESS,
+    trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
 
@@ -130,9 +132,7 @@ all_fetchers = [
     macro,
     short_interest,
     earnings_surprises,
-    splits,
     price_history,
-    dividends,
     fails_to_deliver,
     thirteen_f,
     thirteen_f_backfill,
@@ -171,7 +171,6 @@ identity_consumers = [
 ]
 
 seed_universe >> all_fetchers
-splits >> price_history
 insider_transactions >> identity_tables >> identity_consumers
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster reads the 13F holdings
@@ -179,5 +178,5 @@ superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes
 
-# all sources refreshed -> schema freshness hard gate -> aggregation
+# every source done (failed or not) -> freshness report -> aggregation
 all_fetchers >> extraction_status >> trigger_aggregation

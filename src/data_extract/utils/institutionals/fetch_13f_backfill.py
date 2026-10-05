@@ -327,7 +327,10 @@ def _backfill_data_set(context: Context, path: Path, data_set: DataSet, tickers:
 
 
 def _joined(context: Context, tickers: list[str]) -> dict[str, pd.Timestamp]:
-    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out."""
+    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out, and a table without the
+    column has no joined ticker."""
+    if "added_on" not in context.store.columns(Tables.sp500_tickers):
+        return {}
     df = context.store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": tickers}, optional=True)
     if df is None:
         return {}

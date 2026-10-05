@@ -345,3 +345,21 @@ def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):
     assert walks == []  # AAPL joined 2000-01-01, before the newest data set ends
     print("\n=== SANITY: no gap walk for an established ticker ===")
     print("  -t AAPL -F reads the data sets only; AAPL joined long before 2024-08-31, so no EDGAR walk. Validated.")
+
+
+def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_store: Any) -> None:
+    tickers = ["AAPL", _NEW]
+    ctx = fake_context(tmp_path, sqlite_store, tickers, redundant_ticks=[])
+    sqlite_store.drop(Tables.sp500_tickers)
+    sqlite_store.save(
+        Tables.sp500_tickers, pd.DataFrame({col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS} | {"ticker": tickers, "cik": ["1", "3"]})
+    )
+    assert "added_on" not in sqlite_store.columns(Tables.sp500_tickers)
+
+    since = pd.Timestamp("2024-09-01")
+    nightly = fb.gap_tickers(ctx, tickers, since, full=False)
+    forced = fb.gap_tickers(ctx, tickers, since, full=True)
+
+    assert nightly == {} and forced == {}
+    print("\n=== SANITY: 13F gap tickers before the added_on migration ===")
+    print(f"  sp500_tickers without added_on -> gap_tickers {nightly} nightly and {forced} under -F, no KeyError. Validated.")

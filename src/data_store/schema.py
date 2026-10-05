@@ -358,6 +358,29 @@ class Tables:
             "security_class",
         ),
     )
+    # FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
+    # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities. The four
+    # stamp columns come from `security_master` (a symbol never seen in FTD: the P21 lineage fallback,
+    # `security_id` `S<cik>:<symbol>`); NULL when the symbol's security is known but not on that date.
+    # `short-interest` rebuilds the ticker-grain `short_interest` from these rows.
+    sec_short_volume_security = Table(
+        "sec_short_volume_security",
+        ("source_symbol", "date"),
+        date_col="date",
+        date_type_cols=("date",),
+        read_columns=(
+            "date",
+            "source_symbol",
+            "market",
+            "short_volume",
+            "short_exempt_volume",
+            "total_volume",
+            "security_id",
+            "ticker",
+            "lineage_role",
+            "security_class",
+        ),
+    )
     # Unified macro / market series, LONG: one close per (series, date). Replaced the two
     # wide tables `macro` (FRED features, 16y) and `macro_asset_prices` (allocation legs,
     # 31y) -- which double-stored yield_10y and vix from two sources at two depths -- and

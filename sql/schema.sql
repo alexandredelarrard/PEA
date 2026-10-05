@@ -238,6 +238,27 @@ CREATE TABLE IF NOT EXISTS "sec_short_interest" (
     PRIMARY KEY ("ticker", "date")
 );
 
+-- [extract] sec_short_volume_security  (pk: source_symbol, date)
+-- FINRA RegSHO short volume, RAW and PER SYMBOL: one row per day-file line, `source_symbol` as filed
+-- (case kept), `market` the reporting facilities. The four stamp columns come from security_master;
+-- NULL when the symbol's security is known but not on that date. short-interest rebuilds
+-- sec_short_interest from these rows.
+
+CREATE TABLE IF NOT EXISTS "sec_short_volume_security" (
+    "date" DATE NOT NULL,
+    "source_symbol" TEXT NOT NULL,
+    "market" TEXT,
+    "short_volume" DOUBLE PRECISION,
+    "short_exempt_volume" DOUBLE PRECISION,
+    "total_volume" DOUBLE PRECISION,
+    "security_id" TEXT,
+    "ticker" TEXT,
+    "lineage_role" TEXT,
+    "security_class" TEXT,
+    PRIMARY KEY ("source_symbol", "date")
+);
+CREATE INDEX IF NOT EXISTS ix_sec_short_volume_security_ticker ON "sec_short_volume_security" ("ticker");
+
 -- [extract] sec_fails_to_deliver  (pk: ticker, date)
 
 CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (

@@ -42,7 +42,7 @@ from src.data_extract.utils.common.security_master import (
     squash,
     trade_dates,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import filing_window
 from src.utils.string import normalise_ticker
 
@@ -393,21 +393,27 @@ def _same(a: pd.Series, b: pd.Series) -> np.ndarray:
     return np.isclose(left, right, rtol=1e-12, atol=0.0) | (np.isnan(left) & np.isnan(right))
 
 
-def _apply_grain(context: Context, tickers: Sequence[str], grain: pd.DataFrame, *, dry_run: bool) -> list[dict]:
+def _apply_grain(
+    context: Context,
+    tickers: Sequence[str],
+    grain: pd.DataFrame,
+    *,
+    dry_run: bool,
+    table: Table = Tables.sec_fails_to_deliver,
+    columns: Sequence[str] = TICKER_COLUMNS,
+    text_columns: Collection[str] = ("period",),
+) -> list[dict]:
     """Write the ticker rows of `tickers` that differ from `grain` (vanished keys deleted); one record per ticker that lost rows."""
-    table = Tables.sec_fails_to_deliver
-    columns = list(TICKER_COLUMNS)
+    columns = list(columns)
     frames = [context.store.load(table, columns=columns, where={"ticker": chunk}, optional=True) for chunk in _chunks(tickers, _TICKER_CHUNK)]
     kept = [frame for frame in frames if frame is not None]
     stored = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=columns)
     stored["date"] = pd.to_datetime(stored["date"]).dt.normalize()
     both = stored.merge(grain, on=["ticker", "date"], how="outer", suffixes=("_old", ""), indicator=True)
-    same = (
-        both["_merge"].eq("both").to_numpy()
-        & _same(both["fails_quantity_old"], both["fails_quantity"])
-        & _same(both["fails_value_old"], both["fails_value"])
-        & both["period_old"].astype(str).eq(both["period"].astype(str)).to_numpy()
-    )
+    same = both["_merge"].eq("both").to_numpy(copy=True)
+    for column in (c for c in columns if c not in ("ticker", "date")):
+        old, new = both[f"{column}_old"], both[column]
+        same &= old.astype(str).eq(new.astype(str)).to_numpy() if column in text_columns else _same(old, new)
     gone = both[both["_merge"].eq("left_only")]
     write = both[both["_merge"].ne("left_only").to_numpy() & ~same][columns]
     records: list[dict] = []

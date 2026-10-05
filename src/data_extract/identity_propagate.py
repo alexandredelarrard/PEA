@@ -4,9 +4,9 @@ Per table, the tickers whose lineage stamp is at or after the table's manifest `
 ticker when the table has no recorded run) are re-checked. Contraction: rows whose filer CIK is no
 longer a CIK of the ticker's entity are deleted, one WARNING per table. Expansion: the bulk families
 re-parse those tickers from their cached zips (EDGAR tables relist in their own fetchers). The raw FTD
-lines of companies whose `security_master` rows changed are re-stamped from the stored rows and their
-ticker rows rebuilt. A ticker whose facts were purged has its SEC and merged history rebuilt.
-`sec_short_interest` is never touched.
+lines and RegSHO short-volume rows of companies whose `security_master` rows changed (for short volume,
+also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows rebuilt. A
+ticker whose facts were purged has its SEC and merged history rebuilt.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from src.data_extract.utils.fundamentals.fetch_financial_statements import repar
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
+from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
     PURGE_TABLES,
@@ -145,6 +146,20 @@ def _refresh_fails(context: Context, tickers: Sequence[str], *, dry_run: bool, e
     return records
 
 
+def _refresh_short_volume(context: Context, identity: Identity, tickers: Sequence[str], *, dry_run: bool, every: bool) -> list[dict]:
+    """Re-stamp the stored short-volume rows of companies whose master or symbol rows changed since the ticker table's last run."""
+    if not context.store.exists(Tables.sec_short_volume_security):
+        return []
+    stamps = change_stamps(load_fails_master(context), identity)
+    changed = _changed(context, Tables.short_interest, stamps, every=every)
+    if not changed:
+        return []
+    context.log.info("identity-propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))
+    records = restamp_short_volume(context, changed, tickers, identity=identity, dry_run=dry_run)
+    _warn(context, Tables.short_interest.name, records, dry_run=dry_run)
+    return records
+
+
 def _rebuild_history(context: Context, tickers: list[str]) -> None:
     """Delete and rebuild the SEC history of `tickers`, then their merged history in full."""
     context.log.warning("identity-propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
@@ -157,7 +172,7 @@ def propagate_identity(
 ) -> PropagationResult:
     """Purge, re-parse and rebuild for the lineage changes since each table's last run; `dry_run` only lists removals.
 
-    `every_ticker` checks every ticker whatever its stamp (the validator's dry run; FTD then re-stamps every company).
+    `every_ticker` checks every ticker whatever its stamp (the validator's dry run; the tapes then re-stamp every company).
     """
     resolver = identity or load_identity(context)
     universe = [normalise_ticker(ticker) for ticker in tickers if normalise_ticker(ticker) in resolver.roster_cik]
@@ -168,6 +183,7 @@ def propagate_identity(
         records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), own_ciks, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, cik_stamps)
     records += _refresh_fails(context, universe, dry_run=dry_run, every=every_ticker)
+    records += _refresh_short_volume(context, resolver, universe, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

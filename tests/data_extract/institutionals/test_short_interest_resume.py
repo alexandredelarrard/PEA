@@ -1,180 +1,160 @@
-"""RegSHO short-volume fetch: resume window, universe filter, upsert shape.
+"""RegSHO short-volume fetch: resume window, incremental write, `full` rebuild and its abort gate.
 
-Resume is on the GLOBAL max date, not per ticker: one RegSHO file covers the whole
-market, so once day D is stored every ticker has D. A per-ticker frontier would let
-a single lagging symbol (index churn, a renamed ticker) drag the loop back over
-thousands of already-held day-files on every run -- the reason `fails_to_deliver`
-is a separate table in the first place (schema.py).
+Resume is on the GLOBAL max date, not per ticker: one RegSHO file covers the whole market, so once day D is
+stored every ticker has D. `full` re-fetches every served date (2018-08-01 on, plus the 2017-12-29 file) and
+keeps no legacy row; a stored date the source fails to serve aborts it before any write.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
-from tests.data_extract.common.scope_fixtures import symbol_identity
+from tests.data_extract.fake_context import extract_config
+from tests.data_extract.institutionals.test_short_volume_security import UNIVERSE, _file, _identity, _master
 
 
-def _identity() -> Identity:
-    """Dated lineage symbol rows: FISV renamed FI in 2023, old IR is the TT entity, IR reused from 2020-03-05, WTW from 2019."""
-    return symbol_identity(
-        [
-            ("AAA", "0000000001", "AAA", "2009-01-01", None, "corroborated"),
-            ("FISV", "0000000002", "FISV", "2018-01-01", "2023-06-01", "corroborated"),
-            ("FISV", "0000000002", "FI", "2023-06-01", None, "corroborated"),
-            ("TT", "0000000003", "IR", "2009-01-01", "2020-03-01", "curated"),
-            ("TT", "0000000003", "TT", "2020-03-01", None, "curated"),
-            ("IR", "0000000004", "IR", "2020-03-05", None, "corroborated"),
-            ("WTW", "0000000005", "WTW", "2019-04-18", None, "corroborated"),
-        ],
-        {"AAA": "0000000001", "FISV": "0000000002", "TT": "0000000003", "IR": "0000000004", "WTW": "0000000005"},
-    )
+def _context(store, tmp_path: Path | None = None) -> Any:
+    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={}))
 
 
-def _context(store) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger("test.regsho"))
+def _raw(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
+    """Stored raw rows (symbol, day, short, total) stamped as LEN's canonical line."""
+    frame = pd.DataFrame(rows, columns=["source_symbol", "date", "short_volume", "total_volume"])
+    return frame.assign(
+        date=pd.to_datetime(frame["date"]),
+        market="Q",
+        short_exempt_volume=0.0,
+        security_id="C526057104",
+        ticker="LEN",
+        lineage_role="canonical_current",
+        security_class="class_A",
+    )[list(si.SECURITY_COLUMNS)]
 
 
-def _regsho(day: str, rows: list[tuple[str, int, int]]) -> str:
-    head = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
-    return head + "".join(f"{day}|{t}|{s}|0|{v}|Q\n" for t, s, v in rows)
+def _serve(monkeypatch: pytest.MonkeyPatch, files: dict[str, list[tuple[str, float, float]]]) -> list[pd.Timestamp]:
+    """Serve `files` ({yyyymmdd: [(symbol, short, total)]}); every other day is not served. Returns the days asked."""
+    asked: list[pd.Timestamp] = []
+
+    def _fetch(day: pd.Timestamp, session: object = None) -> str | None:
+        del session
+        asked.append(day)
+        rows = files.get(day.strftime("%Y%m%d"))
+        return None if rows is None else _file(day.strftime("%Y%m%d"), [(s, sv, 0, tv, "Q,N") for s, sv, tv in rows])
+
+    monkeypatch.setattr(si, "_fetch_day", _fetch)
+    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
+    return asked
+
+
+def _grain(store) -> dict[tuple[str, str], float]:
+    frame = store.load(Tables.short_interest)
+    return {(str(t), str(pd.Timestamp(d).date())): float(v) for t, d, v in zip(frame["ticker"], frame["date"], frame["short_volume"], strict=True)}
 
 
 def test_resume_day_replays_a_bounded_tail_from_the_global_max(sqlite_store):
     ctx = _context(sqlite_store)
-    # cold table -> full years_history window
     cold = si._resume_day(ctx, years_history=10)
     assert cold == pd.Timestamp.today().normalize() - pd.DateOffset(years=10)
 
-    sqlite_store.replace(
-        Tables.short_interest,
-        pd.DataFrame(
-            {
-                "ticker": ["AAA", "BBB", "BBB"],
-                "date": pd.to_datetime(["2024-05-01", "2024-06-03", "2024-06-04"]),
-                "short_volume": [1.0, 2.0, 3.0],
-                "total_volume": [10.0, 20.0, 30.0],
-            }
-        ),
-    )
-    # GLOBAL max is 2024-06-04 (BBB's) -- AAA lagging at 05-01 must NOT pull it back
+    sqlite_store.replace(Tables.sec_short_volume_security, _raw([("LEN", "2024-05-01", 1.0, 2.0), ("LEN/B", "2024-06-04", 1.0, 2.0)]))
     assert si._resume_day(ctx, years_history=10) == pd.Timestamp("2024-05-24")
 
     print("\n=== SANITY CHECK: RegSHO resume day ===")
-    print(
-        f"  cold table -> {cold.date()} (years_history); stored max 2024-06-04 -> "
-        "2024-05-24 (7-session repair tail). AAA at 2024-05-01 does not widen it. Validated."
-    )
+    print(f"  cold table -> {cold.date()} (years_history); stored raw max 2024-06-04 -> 2024-05-24 (7-session repair tail). Validated.")
 
 
-def test_stored_rows_returns_empty_for_an_empty_bounded_prefix(sqlite_store):
-    sqlite_store.replace(
+def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, monkeypatch):
+    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2020-01-02", 1.0, 2.0), ("LEN", "2020-01-03", 3.0, 4.0)]))
+    sqlite_store.save(
         Tables.short_interest,
-        pd.DataFrame(
-            {
-                "ticker": ["AAA"],
-                "date": pd.to_datetime(["2020-01-02"]),
-                "short_volume": [1.0],
-                "total_volume": [2.0],
-            }
-        ),
+        pd.DataFrame({"date": pd.to_datetime(["2020-01-02", "2020-01-03"]), "ticker": "LEN", "short_volume": [1.0, 3.0], "total_volume": [2.0, 4.0]}),
     )
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-01-06")))
+    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-01-03"))
+    asked = _serve(monkeypatch, {"20200103": [("LEN", 30.0, 40.0), ("LEN/B", 5.0, 6.0), ("ZZZZ", 1.0, 1.0)], "20200106": [("LEN", 50.0, 60.0)]})
 
-    prefix = si._stored_rows(_context(sqlite_store), until=pd.Timestamp("2020-01-01"))
+    si.fetch_short_interest(_context(sqlite_store, tmp_path), UNIVERSE, pause=0.0, identity=_identity())
 
-    assert prefix.empty
-    assert list(prefix.columns) == ["date", "ticker", "short_volume", "total_volume"]
+    assert [d.date().isoformat() for d in asked] == ["2020-01-03", "2020-01-06"]
+    assert _grain(sqlite_store) == {("LEN", "2020-01-02"): 1.0, ("LEN", "2020-01-03"): 35.0, ("LEN", "2020-01-06"): 50.0}
+    raw = sqlite_store.load(Tables.sec_short_volume_security)
+    assert sorted(raw["source_symbol"]) == ["LEN", "LEN", "LEN", "LEN/B"], "ZZZZ is no universe security"
+    print("\n=== SANITY CHECK: RegSHO incremental ===")
+    print("  fetched days rewritten (LEN 2020-01-03 = 30 + LEN-B 5); the unfetched 2020-01-02 row kept; ZZZZ not stored")
 
-    print("\n=== SANITY CHECK: RegSHO empty legacy prefix ===")
-    print("  bounded read before the first stored date -> typed empty frame")
-    print("  OK: a fully reproducible source window needs no legacy rows")
+
+def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, monkeypatch):
+    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.save(
+        Tables.short_interest, pd.DataFrame({"date": pd.to_datetime(["2015-01-02"]), "ticker": "LEN", "short_volume": [9.0], "total_volume": [9.0]})
+    )
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2015-01-02", 9.0, 9.0)]))
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-03")))
+    files = {"20171229": [("LEN", 1.0, 2.0)], "20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)], "20180803": [("LEN", 7.0, 8.0)]}
+    asked = _serve(monkeypatch, files)
+
+    with pytest.raises(RuntimeError, match="2015-01-02"):
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+    assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "a stored date the source no longer serves aborts before any write"
+
+    sqlite_store.drop(Tables.sec_short_volume_security)
+    asked.clear()
+    si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+
+    assert {d.date().isoformat() for d in asked} >= {"2017-12-29", "2018-08-01", "2018-08-02", "2018-08-03"}
+    assert min(asked) == pd.Timestamp("2017-12-29") and pd.Timestamp("2018-07-31") not in asked
+    assert _grain(sqlite_store) == {("LEN", "2017-12-29"): 1.0, ("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
+    print("\n=== SANITY CHECK: RegSHO full ===")
+    print("  a stored 2015 date the source no longer serves aborts the run with both tables intact;")
+    print("  without it, full re-fetches 2017-12-29 plus 2018-08-01 on and the legacy 2015 ticker row is gone")
 
 
-def test_fetch_filters_to_the_universe_and_upserts(sqlite_store, monkeypatch):
-    sqlite_store.replace(
+def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monkeypatch):
+    sqlite_store.replace(Tables.security_master, _master())
+    sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2018-08-01", 1.0, 2.0), ("LEN", "2018-08-02", 3.0, 4.0)]))
+    sqlite_store.save(
         Tables.short_interest,
-        pd.DataFrame(
-            {
-                "ticker": ["AAA"],
-                "date": pd.to_datetime(["2024-06-03"]),
-                "short_volume": [1.0],
-                "total_volume": [10.0],
-            }
-        ),
+        pd.DataFrame({"date": pd.to_datetime(["2018-08-01", "2018-08-02"]), "ticker": "LEN", "short_volume": [1.0, 3.0], "total_volume": [2.0, 4.0]}),
     )
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-02")))
+    _serve(monkeypatch, {"20171229": [("LEN", 1.0, 2.0)], "20180801": [("LEN", 30.0, 40.0)]})  # 2018-08-02 is stored but not served
 
-    # ⚠ THE WINDOW MUST NOT BE `today .. today`. `fetch_short_interest` builds
-    # `pd.bdate_range(_resume_day(...), today)`, and a bdate_range whose start AND end are the
-    # same WEEKEND day is EMPTY -- so on a Saturday or Sunday no day-file was fetched, nothing
-    # was stored, and `len(stored) == 2` failed. That is exactly what happened in the
-    # 2026-09-06 (Sunday) full-suite run, where this test passed in isolation on the Monday
-    # and looked like ordering pollution.
-    #
-    # A 5-business-day window is non-empty on every day of the week, and serving the day-file
-    # only ONCE keeps the assertion on "one new row" exact regardless of how many days the
-    # range holds.
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(5))
-    served: list[pd.Timestamp] = []
+    with pytest.raises(RuntimeError, match="2018-08-02"):
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+    assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
+    assert len(sqlite_store.load(Tables.sec_short_volume_security)) == 2
 
-    def _one_day(day, session=None):
-        del session
-        if served:
-            return None
-        served.append(day)
-        return _regsho(day.strftime("%Y%m%d"), [("AAA", 500, 1000), ("ZZZ", 900, 1800)])
+    def _boom(day: pd.Timestamp, session: object = None) -> str | None:
+        raise ConnectionError("reset")
 
-    monkeypatch.setattr(si, "_fetch_day", _one_day)
-
-    si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], pause=0.0, identity=_identity())
-
-    # the fetcher returns None -- it resumes from the DB and writes to it, so the stored
-    # table is the only contract worth asserting on
-    stored = sqlite_store.load(Tables.short_interest)
-    assert served, "the window must contain at least one business day on any weekday"
-    assert set(stored["ticker"]) == {"AAA"}, "ZZZ leaked past the universe filter"
-    assert len(stored) == 2  # prior row kept, one new day added
-
-    print("\n=== SANITY CHECK: RegSHO universe filter + upsert ===")
-    print(
-        f"  day-file for {served[0].date()} had AAA+ZZZ -> stored "
-        f"{sorted(set(stored['ticker']))} only; table {len(stored)} rows "
-        f"(1 prior + 1 new). Validated."
-    )
+    monkeypatch.setattr(si, "_fetch_day", _boom)
+    with pytest.raises(RuntimeError, match="aborting"):
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+    assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
+    print("\n=== SANITY CHECK: RegSHO full abort gate ===")
+    print("  a stored date not served, or a network error, aborts full before replace; both tables keep their rows")
 
 
-def test_empty_download_leaves_the_table_untouched(sqlite_store, monkeypatch):
-    """A holiday / all-404 window must not crash: `store.save` warns on the empty frame, the
-    run is still recorded, and nothing is written."""
+def test_empty_download_leaves_the_tables_untouched(sqlite_store, monkeypatch):
     recorded: list = []
     monkeypatch.setattr(si, "record_run", lambda *a, **k: recorded.append(a))
-    monkeypatch.setattr(si, "_fetch_day", lambda day: None)
+    monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
     monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp.today().normalize())
 
-    assert si.fetch_short_interest(_context(sqlite_store), tickers=["AAA"], pause=0.0, identity=_identity()) is None
-    assert not sqlite_store.exists(Tables.short_interest)  # nothing written, nothing created
+    assert si.fetch_short_interest(_context(sqlite_store), tickers=["LEN"], pause=0.0, identity=_identity()) is None
+    assert not sqlite_store.exists(Tables.short_interest) and not sqlite_store.exists(Tables.sec_short_volume_security)
     assert recorded, "an empty window must still record the run"
-
     print("\n=== SANITY CHECK: RegSHO empty window ===")
     print("  every day-file missing -> no crash, no table created, run still recorded. Validated.")
-
-
-def test_parse_keeps_source_symbol_until_identity_resolution():
-    parsed = si._parse_regsho(_regsho("20200305", [("FI", 10, 20), ("FI", 5, 10), ("BRK/B", 7, 14)]))
-    assert parsed.loc[parsed["source_symbol"].eq("FI"), "short_volume"].iloc[0] == 15
-    assert "BRK-B" in set(parsed["source_symbol"])
-    assert "ticker" not in parsed.columns
-
-    print("\n=== SANITY CHECK: RegSHO parse identity boundary ===")
-    print("  two FI rows aggregate as source_symbol=FI; BRK/B normalizes to BRK-B")
-    print("  OK: canonical identity is assigned only after the dated source parse")
 
 
 def test_fetch_day_reuses_the_supplied_http_session():
@@ -187,82 +167,5 @@ def test_fetch_day_reuses_the_supplied_http_session():
 
     assert si._fetch_day(pd.Timestamp("2026-09-22"), cast(Any, Session())) == "payload"
     assert len(calls) == 1 and calls[0][0].endswith("CNMSshvol20260922.txt")
-
     print("\n=== SANITY CHECK: RegSHO connection reuse ===")
     print("  one run-scoped HTTP session serves the daily FINRA request")
-    print("  OK: full replay avoids a new TLS handshake for every date")
-
-
-def test_full_refresh_keeps_stored_rows_as_stored_and_resolves_new_rows_through_the_lineage(sqlite_store, monkeypatch):
-    """S1: rows the source no longer serves are kept exactly as stored (no re-resolution, no purge);
-    re-fetched rows resolve with `ticker_for_symbol`."""
-    identity = _identity()
-    context = _context(sqlite_store)
-    stored = pd.DataFrame(
-        {
-            "ticker": ["IR", "WTW", "IR", "AAA"],
-            "date": pd.to_datetime(["2015-01-02", "2015-01-02", "2020-03-03", "2020-03-06"]),
-            "short_volume": [10.0, 20.0, 30.0, 40.0],
-            "total_volume": [100.0, 200.0, 300.0, 400.0],
-        }
-    )
-    sqlite_store.replace(Tables.short_interest, stored)
-    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
-    monkeypatch.setattr(si, "record_run", lambda *a, **k: None)
-
-    def _fetch(day: pd.Timestamp, session=None) -> str | None:
-        del session
-        if day == pd.Timestamp("2020-03-05"):
-            return _regsho("20200305", [("FI", 50, 100), ("FISV", 25, 50)])
-        return None
-
-    monkeypatch.setattr(si, "_fetch_day", _fetch)
-    universe = ["AAA", "FISV", "TT", "IR", "WTW"]
-    si.fetch_short_interest(context, universe, pause=0.0, full=True, identity=identity)
-    first = sqlite_store.load(Tables.short_interest).sort_values(["date", "ticker"]).reset_index(drop=True)
-    si.fetch_short_interest(context, universe, pause=0.0, full=True, identity=identity)
-    second = sqlite_store.load(Tables.short_interest).sort_values(["date", "ticker"]).reset_index(drop=True)
-
-    assert set(first["ticker"]) == {"AAA", "FISV", "IR", "WTW"}
-    assert first[(first.ticker == "IR") & (pd.to_datetime(first.date) == pd.Timestamp("2015-01-02"))].short_volume.iloc[0] == 10.0
-    assert first[(first.ticker == "WTW") & (pd.to_datetime(first.date) == pd.Timestamp("2015-01-02"))].short_volume.iloc[0] == 20.0
-    assert first[(first.ticker == "IR") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-03"))].short_volume.iloc[0] == 30.0
-    assert first[(first.ticker == "AAA") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-06"))].short_volume.iloc[0] == 40.0
-    fisv = first[(first.ticker == "FISV") & (pd.to_datetime(first.date) == pd.Timestamp("2020-03-05"))]
-    assert fisv.short_volume.iloc[0] == 25.0 and fisv.total_volume.iloc[0] == 50.0
-    assert not first.duplicated(["ticker", "date"]).any()
-    pd.testing.assert_frame_equal(first, second)
-
-    print("\n=== SANITY CHECK: RegSHO retention-safe full refresh ===")
-    print("  stored 2015 IR and WTW rows kept as stored (S1); seam-gap IR and failed-date AAA preserved")
-    print("  fresh FISV resolves by its dated lineage interval; FI before its 2023 interval is rejected; rerun identical")
-    print("  OK: the rolling source rebuilds what it can without re-resolving or erasing stored rows")
-
-
-def test_full_refresh_all_source_failures_abort_without_erasing_history(sqlite_store, monkeypatch):
-    identity = _identity()
-    context = _context(sqlite_store)
-    sqlite_store.replace(
-        Tables.short_interest,
-        pd.DataFrame(
-            {
-                "ticker": ["AAA"],
-                "date": pd.to_datetime(["2020-03-02"]),
-                "short_volume": [1.0],
-                "total_volume": [2.0],
-            }
-        ),
-    )
-    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
-    monkeypatch.setattr(si, "_resume_day", lambda *a, **k: pd.Timestamp("2020-03-02"))
-    monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
-
-    with pytest.raises(RuntimeError, match="preserving the table by aborting"):
-        si.fetch_short_interest(context, ["AAA"], pause=0.0, full=True, identity=identity)
-    saved = sqlite_store.load(Tables.short_interest)
-    assert len(saved) == 1 and saved.iloc[0]["ticker"] == "AAA"
-
-    print("\n=== SANITY CHECK: RegSHO all-403 safety gate ===")
-    print("  zero reproducible days -> abort before replace; stored AAA row survives")
-    print("  OK: a provider outage cannot be mistaken for an empty market")

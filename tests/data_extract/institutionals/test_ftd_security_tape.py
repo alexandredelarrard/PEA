@@ -373,16 +373,21 @@ def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticke
 
 def test_p21_tape_symbol_resolves_only_through_window_ciks_inside_their_windows():
     identity = _identity()
-    assert identity.ticker_for_symbol("ACE", "2015-06-02", tape=True) == "CB"
-    assert identity.ticker_for_symbol("CB", "2015-06-02", tape=True) is None, "old Chubb: event-only CIK"
-    assert identity.ticker_for_symbol("CB", "2016-03-01", tape=True) == "CB"
-    assert identity.ticker_for_symbol("DOC", "2023-01-03", tape=True) is None, "Physicians Realty: event-only CIK"
-    assert identity.ticker_for_symbol("PEAK", "2023-01-03", tape=True) == "DOC"
-    assert identity.ticker_for_symbol("MTLQQ", "2010-01-04", tape=True) is None
-    assert identity.ticker_for_symbol("SGP", "2009-10-01", tape=True) is None, "window CIK before its window"
-    assert identity.ticker_for_symbol("AMB", "2011-05-02", tape=True) is None
-    assert identity.ticker_for_symbol("TYC", "2016-08-15", tape=True) is None
-    assert identity.ticker_for_symbol("MRK", "2009-10-01", tape=True) == "MRK"
+
+    def tape(symbol: str, day: str) -> str | None:
+        hit = identity.tape_interval(symbol, day)
+        return None if hit is None else identity.ticker_by_entity.get(hit.entity)
+
+    assert tape("ACE", "2015-06-02") == "CB"
+    assert tape("CB", "2015-06-02") is None, "old Chubb: event-only CIK"
+    assert tape("CB", "2016-03-01") == "CB"
+    assert tape("DOC", "2023-01-03") is None, "Physicians Realty: event-only CIK"
+    assert tape("PEAK", "2023-01-03") == "DOC"
+    assert tape("MTLQQ", "2010-01-04") is None
+    assert tape("SGP", "2009-10-01") is None, "window CIK before its window"
+    assert tape("AMB", "2011-05-02") is None
+    assert tape("TYC", "2016-08-15") is None
+    assert tape("MRK", "2009-10-01") == "MRK"
     assert identity.ticker_for_symbol("CB", "2015-06-02") == "CB", "the non-tape accessor is unchanged"
     assert {"TYC", "MTLQQ"}.isdisjoint(identity.universe_symbols(frozenset(UNIVERSE))), "no day inside a window CIK's window"
     print("\n=== SANITY CHECK: P21 symbol fallback ===")

@@ -1,10 +1,11 @@
 """Which company is this row about: the `Identity` accessor over `entity_lineage` and the roster.
 
 `entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
-its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `ticker_for_symbol` answer from those
-rows; `tickers_for_ciks` and `symbol_rows_to_tickers` apply them to whole frames for the bulk data sets
-and the symbol tapes. `security_on` answers from `security_master` (security grain: CUSIP, class, role). `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant
-violations raise at load, never per row. An unknown CIK is its own singleton entity `E{cik}`.
+its dated symbol intervals. `filing_scope`, `ticker_for_cik`, `ticker_for_symbol` and `tape_interval` answer
+from those rows; `tickers_for_ciks` applies `ticker_for_cik` to whole frames for the bulk data sets. `security_on`
+answers the market tapes from `security_master` (security grain: CUSIP, class, role).
+`owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant violations raise at load, never
+per row. An unknown CIK is its own singleton entity `E{cik}`.
 """
 
 from __future__ import annotations
@@ -60,8 +61,6 @@ class AmbiguousSymbolTenureError(IdentityError):
 
 #: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
 TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
-#: `resolution_verdict` of a symbol row: stored under `ticker`, or why not.
-SymbolRowVerdict = Literal["resolved", "unresolved", "outside_universe", "redundant_share_class"]
 
 
 #: Per-context cache (weak keys) so one database's identity never leaks into another context.
@@ -244,22 +243,34 @@ class Identity:
             return None
         return ticker if any(window.cik == key and window.admits(stamp) for window in self.windows_by_entity.get(entity, ())) else None
 
-    def ticker_for_symbol(self, symbol: str, on, *, tape: bool = False) -> str | None:
+    def ticker_for_symbol(self, symbol: str, on) -> str | None:
         """The universe ticker holding `symbol` on date `on`, or None.
 
         `noise` intervals are ignored; a `conflict` interval on that date, or two entities, leaves it unresolved.
-        `tape` (RegSHO) also ignores intervals evidenced by `dei` alone, and (P21) intervals whose CIK is not the
-        roster CIK or a `cik_window` CIK whose declared window holds `on`: event-only CIKs never resolve.
         """
-        stamp = _as_timestamp(on)
-        if stamp is None:
-            return None
-        rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
-        hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and (not tape or (row.tape_symbol and self._windowed(row, stamp)))]
-        if not hits or any(row.status == "conflict" for row in hits):
-            return None
+        hits = self._symbol_hits(symbol, on, tape=False)
         entities = {row.entity for row in hits}
         return self.ticker_by_entity.get(entities.pop()) if len(entities) == 1 else None
+
+    def tape_interval(self, symbol: str, on) -> SymbolInterval | None:
+        """The symbol interval a market tape may read for `symbol` on date `on` (P21), or None.
+
+        As `ticker_for_symbol`, and also ignoring intervals evidenced by `dei` alone and intervals whose CIK is
+        not the roster CIK or a `cik_window` CIK whose declared window holds `on`: event-only CIKs never answer.
+        """
+        hits = self._symbol_hits(symbol, on, tape=True)
+        if len({row.entity for row in hits}) != 1:
+            return None
+        return max(hits, key=lambda row: (row.valid_from or pd.Timestamp.min, row.cik))
+
+    def _symbol_hits(self, symbol: str, on, *, tape: bool) -> list[SymbolInterval]:
+        """The non-noise intervals of `symbol` covering `on`; none when a `conflict` interval covers it."""
+        stamp = _as_timestamp(on)
+        if stamp is None:
+            return []
+        rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
+        hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and (not tape or (row.tape_symbol and self._windowed(row, stamp)))]
+        return [] if any(row.status == "conflict" for row in hits) else hits
 
     def universe_symbols(self, universe: Collection[str]) -> frozenset[str]:
         """The universe tickers plus every symbol a non-`noise` tape interval of a window CIK dates to one of their entities."""
@@ -363,89 +374,6 @@ def tickers_for_ciks(identity: Identity, ciks: pd.Series, filed: pd.Series, poli
     pairs["ticker"] = [identity.ticker_for_cik(cik, day, policy) for cik, day in zip(pairs["cik"], pairs["filed"], strict=True)]
     tickers = keys.merge(pairs, on=["cik", "filed"], how="left")["ticker"]
     return pd.Series(tickers.astype(object).where(tickers.notna(), None).to_numpy(), index=ciks.index, dtype=object)
-
-
-def _symbol_row_verdict(identity: Identity, symbol: str, day: pd.Timestamp, requested: frozenset[str]) -> tuple[str | None, SymbolRowVerdict]:
-    """The tape ticker of one (symbol, date) pair and its verdict against the requested universe."""
-    ticker = identity.ticker_for_symbol(symbol, day, tape=True)
-    if ticker is None:
-        return ticker, "unresolved"
-    if ticker not in requested:
-        return ticker, "outside_universe"
-    if symbol in identity.redundant_symbols and symbol not in requested and identity.ticker_for_symbol(ticker, day, tape=True) == ticker:
-        return ticker, "redundant_share_class"
-    return ticker, "resolved"
-
-
-def symbol_rows_to_tickers(
-    identity: Identity,
-    frame: pd.DataFrame,
-    universe: Collection[str],
-    *,
-    symbol_col: str = "source_symbol",
-    date_col: str = "date",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """`(accepted, unresolved)` rows with `ticker` and `resolution_verdict`, one tape `ticker_for_symbol` call per distinct pair.
-
-    A redundant share class (`redundant_symbols`, outside `universe`) is set aside while its entity's
-    retained class trades, so two classes' rows are never added together.
-    """
-    requested = frozenset(normalise_ticker(ticker) for ticker in universe)
-    work = frame.copy()
-    work[symbol_col] = work[symbol_col].astype("string").str.strip().str.upper().str.replace(".", "-", regex=False).str.replace("/", "-", regex=False)
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
-    pairs = work[[symbol_col, date_col]].drop_duplicates(ignore_index=True)
-    tickers: list[str | None] = []
-    verdicts: list[SymbolRowVerdict] = []
-    for symbol, day in pairs.itertuples(index=False, name=None):
-        ticker, verdict = _symbol_row_verdict(identity, symbol, day, requested)
-        tickers.append(ticker if verdict == "resolved" else None)
-        verdicts.append(verdict)
-    pairs["ticker"] = pd.Series(tickers, index=pairs.index, dtype=object)
-    pairs["resolution_verdict"] = pd.Series(verdicts, index=pairs.index, dtype=object)
-    resolved = work.merge(pairs, on=[symbol_col, date_col], how="left", validate="many_to_one")
-    accepted = resolved["resolution_verdict"].eq("resolved")
-    return resolved[accepted].copy(), resolved[~accepted].copy()
-
-
-def log_symbol_resolutions(
-    context: Context,
-    source_name: str,
-    accepted: pd.DataFrame,
-    unresolved: pd.DataFrame,
-    *,
-    universe: frozenset[str],
-    date_col: str = "date",
-    symbol_col: str = "source_symbol",
-) -> None:
-    """Log compact verdict counts and every source-to-canonical relabel by name."""
-    combined = pd.concat([accepted, unresolved], ignore_index=True)
-    counts = combined["resolution_verdict"].value_counts().sort_index().to_dict()
-    context.log.info(f"{source_name}: symbol-resolution verdicts {counts}")
-
-    relabelled = accepted[accepted[symbol_col] != accepted["ticker"]]
-    if not relabelled.empty:
-        summary = (
-            relabelled.groupby([symbol_col, "ticker"], as_index=False)
-            .agg(rows=(date_col, "size"), first=(date_col, "min"), last=(date_col, "max"))
-            .sort_values([symbol_col, "ticker"], kind="mergesort")
-        )
-        for row in summary.itertuples(index=False):
-            context.log.info(
-                f"{source_name}: {getattr(row, symbol_col)} -> {row.ticker}: "
-                f"{row.rows} row(s), {pd.Timestamp(cast(Any, row.first)).date()}.."
-                f"{pd.Timestamp(cast(Any, row.last)).date()}"
-            )
-
-    current_reuse = accepted[accepted[symbol_col].isin(universe) & (accepted[symbol_col] != accepted["ticker"])]
-    if not current_reuse.empty:
-        names = sorted(current_reuse[symbol_col].dropna().astype(str).unique())
-        context.log.warning(f"{source_name}: current-looking symbol(s) resolved to another universe entity: {', '.join(names)}")
-
-    if not unresolved.empty:
-        by_verdict = unresolved.groupby("resolution_verdict")[symbol_col].agg(lambda values: ", ".join(sorted(set(map(str, values)))))
-        for verdict, names in by_verdict.items():
-            context.log.warning(f"{source_name}: {verdict}: {names}")
 
 
 def build_identity(

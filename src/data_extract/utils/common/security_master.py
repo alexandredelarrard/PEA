@@ -1189,6 +1189,9 @@ def build_security_master(
         Tables.symbol_tenure, columns=["issuer_cik", "source", "valid_from", "valid_to"], where={"source": ["form345", DEI_SOURCE]}, optional=True
     )
     co_registrants = co_registrant_ciks(lineage, evidence)
+    finra = (
+        context.store.distinct(Tables.sec_short_volume_security, "source_symbol") if context.store.exists(Tables.sec_short_volume_security) else []
+    )
     build = derive_security_master(
         observations,
         lineage,
@@ -1196,6 +1199,7 @@ def build_security_master(
         load_security_manual(str(config_dir or context.config_dir)),
         built_at=built_at or pd.Timestamp.now().floor("s"),
         sec_tickers=sec_tickers,
+        finra_symbols=[str(symbol) for symbol in finra if re.fullmatch(r"[A-Z]+/[A-Z]", str(symbol))],
         co_registrant_ciks=co_registrants,
         existing=existing,
     )

@@ -189,7 +189,11 @@ def splits(config_path: str, tickers: str | None, full: bool) -> None:
     fetch_splits(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
-@cli.command(help="FINRA RegSHO short interest / short volume.")
+@cli.command(
+    help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from security_master, "
+    "summed per ticker by class into sec_short_interest. --full re-fetches every served date (2018-08-01 on, plus "
+    "2017-12-29), keeps no legacy row, and aborts before writing if a stored date is not served."
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -579,8 +583,8 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     name="identity-propagate",
     help="Carry an entity_lineage change into the stored SEC rows: purge rows whose filer CIK left the "
     "ticker's entity (one WARNING per table), re-parse notes, pension and insider bulk from cache, "
-    "re-resolve FTD for changed symbols, rebuild purged tickers' history. OFFLINE. Run after "
-    "`identity-tables`; EDGAR tables relist in their own fetchers. sec_short_interest is never touched.",
+    "re-stamp the FTD and short-volume rows of companies whose security_master rows changed, rebuild purged "
+    "tickers' history. OFFLINE. Run after `identity-tables`; EDGAR tables relist in their own fetchers.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

@@ -35,11 +35,9 @@ from src.data_extract.utils.common.identity import (
     UnknownUniverseTickerError,
     build_identity,
     load_identity,
-    symbol_rows_to_tickers,
     tickers_for_ciks,
 )
 from src.utils.string import pad_cik, pad_cik_series
-from tests.data_extract.common.scope_fixtures import symbol_identity
 
 CONFIG_DIR = "./configs"
 
@@ -475,23 +473,16 @@ def test_tickers_for_ciks_answers_each_cik_date_pair_by_policy():
     print("  consolidating needs a window holding the date (event-only CIK, no date -> None); event needs an entity CIK")
 
 
-def test_symbol_rows_resolve_through_lineage_intervals_and_universe_symbols_skip_noise():
+def test_tape_interval_answers_dated_intervals_and_universe_symbols_skip_noise():
     identity = _dated()
-    source = pd.DataFrame(
-        {
-            "source_symbol": ["aaa", "AAA", "OLDX", "ZZZ", "ZZZ", "BBB", "QQQ"],
-            "date": pd.to_datetime(["2010-01-01", "2010-01-01", "2003-01-01", "2011-01-01", "2012-06-01", "2020-01-01", "2020-01-01"]),
-            "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-        }
-    )
-    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"AAA"}))
-
-    assert accepted["ticker"].tolist() == ["AAA", "AAA"] and accepted["value"].tolist() == [1.0, 2.0]
-    verdicts = dict(zip(unresolved["value"], unresolved["resolution_verdict"], strict=True))
-    assert verdicts == {3.0: "unresolved", 4.0: "unresolved", 5.0: "outside_universe", 6.0: "outside_universe", 7.0: "unresolved"}
+    entity = identity.universe_entity("AAA")
+    hit = identity.tape_interval("aaa", "2010-01-01")
+    assert hit is not None and hit.entity == entity
+    for symbol, day in (("OLDX", "2003-01-01"), ("ZZZ", "2011-01-01"), ("QQQ", "2020-01-01"), ("BBB", None)):
+        assert identity.tape_interval(symbol, day) is None, (symbol, day)
     assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA", "ZZZ", "DUP"})
-    print("\n=== SANITY CHECK: symbol rows through lineage intervals ===")
-    print("  AAA on its interval -> AAA; noise OLDX, conflict ZZZ and unknown QQQ unresolved; BBB-held rows outside the universe")
+    print("\n=== SANITY CHECK: tape intervals ===")
+    print("  AAA on its interval answers with its entity; noise OLDX, conflict ZZZ, unknown QQQ and an undated lookup do not")
 
 
 def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
@@ -508,42 +499,12 @@ def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
     identity = build_identity(
         lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster=_roster([("AAA", "0000000100")])
     )
-    source = pd.DataFrame({"source_symbol": ["AAA", "AAA-PR-C"], "date": pd.to_datetime(["2020-01-02", "2020-01-02"])})
-
-    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"AAA"}))
-
-    assert accepted["source_symbol"].tolist() == ["AAA"] and unresolved["source_symbol"].tolist() == ["AAA-PR-C"]
+    assert identity.tape_interval("AAA", "2020-01-02") is not None
     assert identity.ticker_for_symbol("AAA-PR-C", "2020-01-02") == "AAA"
-    assert identity.ticker_for_symbol("AAA-PR-C", "2020-01-02", tape=True) is None
+    assert identity.tape_interval("AAA-PR-C", "2020-01-02") is None
     assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA"})
     print("\n=== SANITY CHECK: dei-only intervals stay off the symbol tapes ===")
     print("  AAA-PR-C (a preferred line, dei evidence only) never adds its fails/volume to AAA; AAA itself maps. Validated.")
-
-
-def test_a_redundant_share_class_is_rejected_only_while_the_retained_class_trades():
-    identity = symbol_identity(
-        [
-            ("GOOGL", "0001288776", "GOOG", "2006-01-04", None, "corroborated"),
-            ("GOOGL", "0001288776", "GOOGL", "2014-07-25", None, "corroborated"),
-            ("BRK-B", "0001067983", "BRK-A", "2006-01-03", None, "corroborated"),
-            ("BRK-B", "0001067983", "BRK-B", "2006-09-28", None, "corroborated"),
-        ],
-        {"GOOGL": "0001288776", "BRK-B": "0001067983"},
-        redundant=frozenset({"GOOG", "BRK-A"}),
-    )
-    source = pd.DataFrame(
-        {
-            "source_symbol": ["GOOG", "GOOG", "BRK/B", "BRK.A", "GOOGL"],
-            "date": pd.to_datetime(["2010-01-04", "2020-01-02", "2020-01-02", "2020-01-02", "2020-01-02"]),
-        }
-    )
-    accepted, unresolved = symbol_rows_to_tickers(identity, source, frozenset({"GOOGL", "BRK-B"}))
-
-    assert list(zip(accepted["source_symbol"], accepted["ticker"], strict=True)) == [("GOOG", "GOOGL"), ("BRK-B", "BRK-B"), ("GOOGL", "GOOGL")]
-    assert unresolved["source_symbol"].tolist() == ["GOOG", "BRK-A"]
-    assert unresolved["resolution_verdict"].eq("redundant_share_class").all()
-    print("\n=== SANITY CHECK: redundant share classes ===")
-    print("  GOOG before GOOGL existed -> GOOGL; GOOG and BRK.A while the retained class trades -> excluded; BRK/B -> BRK-B")
 
 
 # --------------------------------------------------------------------------- #
@@ -779,24 +740,7 @@ def test_only_one_alphabet_ticker_is_investable(live):
     print("\n=== SANITY CHECK: dual class stays one investable ticker ===")
     print(f"  GOOGL -> {alphabet}; GOOG absent from the roster; same for FOX/FOXA, NWS/NWSA")
     print("  OK: one entity, one universe ticker, so the two-ticker raise cannot fire on it")
-    print("  -> FTD/RegSHO separately exclude the redundant traded class before aggregation.")
-
-
-def test_live_dual_class_volume_symbols_resolve_without_combining_classes(live):
-    if not live.symbol_intervals:
-        pytest.skip("the live entity_lineage has no dated symbol rows before the cutover (P11)")
-    universe = frozenset({"FOXA", "NWSA", "GOOGL", "LEN"})
-    days = ["2018-01-02", "2020-01-02", "2020-01-02", "2020-01-02", "2010-01-04", "2020-01-02", "2020-01-02", "2020-01-02"]
-    source = pd.DataFrame({"source_symbol": ["FOXA", "FOXA", "NWSA", "LEN", "GOOG", "FOX", "NWS", "GOOG"], "date": pd.to_datetime(days)})
-    accepted, unresolved = symbol_rows_to_tickers(live, source, universe)
-
-    got = {(row.source_symbol, str(pd.Timestamp(row.date).date())): row.ticker for row in accepted.itertuples()}
-    assert got == {("FOXA", "2020-01-02"): "FOXA", ("NWSA", "2020-01-02"): "NWSA", ("LEN", "2020-01-02"): "LEN", ("GOOG", "2010-01-04"): "GOOGL"}
-    assert sorted(unresolved["source_symbol"]) == ["FOX", "FOXA", "GOOG", "NWS"]
-
-    print("\n=== SANITY CHECK: live dual-class symbol-volume policy ===")
-    print("  FOXA/NWSA/LEN resolve on their dated lineage intervals; pre-restructure FOXA is not imported")
-    print("  FOX/NWS/current GOOG are excluded; predecessor GOOG still maps to GOOGL")
+    print("  -> FTD/RegSHO separate the classes per security (security_master) before aggregation.")
 
 
 def test_no_live_entity_holds_two_universe_tickers(live):

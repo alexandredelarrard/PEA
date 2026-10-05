@@ -88,3 +88,23 @@ def test_q2a_tables_are_registered_and_spliced_into_schema_sql() -> None:
     assert "entity_lineage" in blocks and "sec_fails_to_deliver" in blocks and "ix_entity_lineage_entity_id" in schema_sql
     print("\n=== SANITY CHECK: Q2a DDL ===")
     print(f"  {', '.join(Q2A_TABLES)} registered with their PKs and hand-spliced into sql/schema.sql; existing blocks and indexes kept")
+
+
+def test_q2c_short_volume_security_table_is_registered_and_spliced() -> None:
+    schema_sql = (Path(__file__).resolve().parents[2] / "sql/schema.sql").read_text(encoding="utf-8")
+    blocks = ddl.existing_blocks(schema_sql)
+    table = Tables.sec_short_volume_security
+    assert table.name == "sec_short_volume_security" and table.pk == ("source_symbol", "date")
+    persisted = blocks[table.name]
+    assert 'PRIMARY KEY ("source_symbol", "date")' in persisted
+    for column in (
+        '"date" DATE NOT NULL',
+        '"source_symbol" TEXT NOT NULL',
+        '"market" TEXT',
+        '"short_exempt_volume" DOUBLE PRECISION',
+        '"security_class" TEXT',
+    ):
+        assert column in persisted, column
+    assert "sec_short_interest" in blocks and "ix_sec_short_volume_security_ticker" in schema_sql
+    print("\n=== SANITY CHECK: Q2c DDL ===")
+    print("  sec_short_volume_security registered with PK (source_symbol, date) and hand-spliced; sec_short_interest's block kept")

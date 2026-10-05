@@ -154,7 +154,7 @@ def _record_all(context) -> None:
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
     """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "pension": [], "insider": [], "ftd": [], "history": [], "merged": []}
+    calls: dict[str, list] = {"notes": [], "pension": [], "insider": [], "ftd": [], "short": [], "history": [], "merged": []}
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: calls["notes"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: calls["pension"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: calls["insider"].append(sorted(tickers)) or 0)
@@ -162,6 +162,11 @@ def stubs(monkeypatch) -> dict[str, list]:
         prop,
         "restamp_fails",
         lambda context, companies, tickers, master=None, dry_run=False: calls["ftd"].append(sorted(companies)) or [],
+    )
+    monkeypatch.setattr(
+        prop,
+        "restamp_short_volume",
+        lambda context, companies, tickers, identity=None, stamps=None, dry_run=False: calls["short"].append(sorted(companies)) or [],
     )
     monkeypatch.setattr(
         prop,
@@ -310,23 +315,24 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
     print("  notes, pension and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
 
 
-def test_the_short_interest_table_is_never_purged(sqlite_store, tmp_path, monkeypatch, stubs):
-    """S1: stored short-interest rows are neither re-resolved nor purged."""
+def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
+    """Short volume is no purge table: companies whose master rows changed since its last run are re-stamped from stored rows."""
     context = _context(sqlite_store, tmp_path)
-    sqlite_store.save(
-        Tables.short_interest,
-        pd.DataFrame({"ticker": ["ALB", "ALB"], "date": pd.to_datetime(["2019-03-01", "2024-02-01"]), "short_volume": [1.0, 2.0]}),
-    )
+    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER}))
     _record_all(context)
     record_run(context, Tables.short_interest, ticker_count=3, rows_added=0, run_date=LAST_RUN)
-    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
+    sqlite_store.save(
+        Tables.sec_short_volume_security,
+        pd.DataFrame({"date": pd.to_datetime(["2024-02-01"]), "source_symbol": ["ALB"], "short_volume": [1.0], "ticker": ["ALB"]}),
+    )
+    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({}))
 
     prop.propagate_identity(context, list(ROSTER))
 
     assert Tables.short_interest.name not in prop.PURGE_TABLES_BY_NAME
-    assert sqlite_store.row_count(Tables.short_interest) == 2
-    print("\n=== SANITY CHECK: short interest exempt (S1) ===")
-    print("  sec_short_interest is not a purge table; its 2 stored rows survive a contraction of ALB")
+    assert stubs["short"] == [["ALB"]], stubs["short"]
+    print("\n=== SANITY CHECK: short volume re-stamp ===")
+    print("  ALB's master rows changed after the last run: its stored short-volume rows are re-stamped; nothing is purged by CIK")
 
 
 def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:

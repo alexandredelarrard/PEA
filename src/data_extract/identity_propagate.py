@@ -3,9 +3,10 @@
 Per table, the tickers whose lineage stamp is at or after the table's manifest `last_run_date` (every
 ticker when the table has no recorded run) are re-checked. Contraction: rows whose filer CIK is no
 longer a CIK of the ticker's entity are deleted, one WARNING per table. Expansion: the bulk families
-re-parse those tickers from their cached zips (EDGAR tables relist in their own fetchers). The FTD rows
-of tickers whose symbol rows changed are re-resolved from the cache. A ticker whose facts were purged
-has its SEC and merged history rebuilt. `sec_short_interest` is never touched.
+re-parse those tickers from their cached zips (EDGAR tables relist in their own fetchers). The raw FTD
+lines of companies whose `security_master` rows changed are re-stamped from the stored rows and their
+ticker rows rebuilt. A ticker whose facts were purged has its SEC and merged history rebuilt.
+`sec_short_interest` is never touched.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from src.data_extract.utils.fundamentals.build_history import build_fundamentals
 from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import reparse_financial_statements
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import resolve_ticker_fails
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
@@ -30,7 +31,6 @@ from src.utils.filer_tables import (
     PURGE_TABLES_BY_NAME,
     REMOVAL_COLUMNS,
     FilerTable,
-    filing_window,
     judged_cik_mask,
     own_filer_mask,
     removal_records,
@@ -129,50 +129,18 @@ def _reparse_bulk(context: Context, stamps: Mapping[str, pd.Timestamp | None]) -
     return done
 
 
-def _fails_records(stored: pd.DataFrame, fresh: pd.DataFrame) -> list[dict]:
-    """Stored FTD (ticker, date) rows the re-resolution no longer produces."""
-    keep = set(zip(fresh["ticker"].astype(str), pd.to_datetime(fresh["date"]).dt.normalize(), strict=True))
-    dates = pd.to_datetime(stored["date"]).dt.normalize()
-    gone = stored.loc[
-        pd.Series([(t, d) not in keep for t, d in zip(stored["ticker"].astype(str), dates, strict=True)], index=stored.index, dtype=bool)
-    ]
-    records = []
-    for ticker, group in gone.groupby("ticker", sort=True):
-        first, last = filing_window(group["date"])
-        records.append(
-            {
-                "table": Tables.sec_fails_to_deliver.name,
-                "ticker": str(ticker),
-                "cik": "",
-                "first_filed": first,
-                "last_filed": last,
-                "keys": len(group),
-                "rows": len(group),
-            }
-        )
-    return records
-
-
-def _refresh_fails(context: Context, identity: Identity, tickers: Sequence[str], *, dry_run: bool, every: bool) -> list[dict]:
-    """Re-resolve the FTD rows of tickers whose symbol rows changed, over the cached periods; replace those partitions."""
-    if not context.store.exists(Tables.sec_fails_to_deliver):
+def _refresh_fails(context: Context, tickers: Sequence[str], *, dry_run: bool, every: bool) -> list[dict]:
+    """Re-stamp the stored FTD lines of companies whose master rows changed since the ticker table's last run; rebuild their rows."""
+    if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
-    changed = _changed(context, Tables.sec_fails_to_deliver, {ticker: identity.symbols_changed_at(ticker) for ticker in tickers}, every=every)
+    master = load_fails_master(context)
+    if master is None or master.empty:
+        return []
+    changed = _changed(context, Tables.sec_fails_to_deliver, master_stamps(master), every=every)
     if not changed:
         return []
-    context.log.info("identity-propagate: re-resolving FTD from cache for %d ticker(s): %s", len(changed), ", ".join(changed))
-    fresh, periods = resolve_ticker_fails(context, changed, identity)
-    stored = context.store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "period"], where={"ticker": changed}, optional=True)
-    stored = stored[stored["period"].isin(periods)] if stored is not None else pd.DataFrame(columns=["ticker", "date", "period"])
-    records = _fails_records(stored, fresh)
-    if not dry_run:
-        for ticker in changed:
-            replaced = sorted(set(stored.loc[stored["ticker"] == ticker, "period"].astype(str)))
-            for start in range(0, len(replaced), _KEY_CHUNK):
-                context.store.delete(Tables.sec_fails_to_deliver, where={"ticker": ticker, "period": replaced[start : start + _KEY_CHUNK]})
-        rows = fresh[fresh["ticker"].isin(changed)]
-        if not rows.empty:
-            context.store.save(Tables.sec_fails_to_deliver, rows)
+    context.log.info("identity-propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
+    records = restamp_fails(context, changed, tickers, master=master, dry_run=dry_run)
     _warn(context, Tables.sec_fails_to_deliver.name, records, dry_run=dry_run)
     return records
 
@@ -189,7 +157,7 @@ def propagate_identity(
 ) -> PropagationResult:
     """Purge, re-parse and rebuild for the lineage changes since each table's last run; `dry_run` only lists removals.
 
-    `every_ticker` checks every ticker whatever its stamp (the validator's dry run; FTD then reads the whole cache).
+    `every_ticker` checks every ticker whatever its stamp (the validator's dry run; FTD then re-stamps every company).
     """
     resolver = identity or load_identity(context)
     universe = [normalise_ticker(ticker) for ticker in tickers if normalise_ticker(ticker) in resolver.roster_cik]
@@ -199,7 +167,7 @@ def propagate_identity(
     for spec in PURGE_TABLES:
         records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), own_ciks, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, cik_stamps)
-    records += _refresh_fails(context, resolver, universe, dry_run=dry_run, every=every_ticker)
+    records += _refresh_fails(context, universe, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

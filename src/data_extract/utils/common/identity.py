@@ -103,13 +103,14 @@ class CikWindow:
 
 @dataclass(frozen=True)
 class SymbolInterval:
-    """One stored `symbol` row: the entity holding the symbol over `[valid_from, valid_to)` and its status."""
+    """One stored `symbol` row: the entity (and CIK) holding the symbol over `[valid_from, valid_to)` and its status."""
 
     entity: str
     valid_from: pd.Timestamp | None
     valid_to: pd.Timestamp | None
     status: str
     sources: frozenset[str] = frozenset()
+    cik: str = ""
 
     def covers(self, day: pd.Timestamp) -> bool:
         """Whether `day` falls inside the interval."""
@@ -247,28 +248,43 @@ class Identity:
         """The universe ticker holding `symbol` on date `on`, or None.
 
         `noise` intervals are ignored; a `conflict` interval on that date, or two entities, leaves it unresolved.
-        `tape` (FTD, RegSHO) also ignores intervals evidenced by `dei` alone.
+        `tape` (RegSHO) also ignores intervals evidenced by `dei` alone, and (P21) intervals whose CIK is not the
+        roster CIK or a `cik_window` CIK whose declared window holds `on`: event-only CIKs never resolve.
         """
         stamp = _as_timestamp(on)
         if stamp is None:
             return None
         rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
-        hits = [row for row in rows if row.status != "noise" and (row.tape_symbol or not tape) and row.covers(stamp)]
+        hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and (not tape or (row.tape_symbol and self._windowed(row, stamp)))]
         if not hits or any(row.status == "conflict" for row in hits):
             return None
         entities = {row.entity for row in hits}
         return self.ticker_by_entity.get(entities.pop()) if len(entities) == 1 else None
 
     def universe_symbols(self, universe: Collection[str]) -> frozenset[str]:
-        """The universe tickers plus every symbol a non-`noise` tape interval dates to one of their entities."""
+        """The universe tickers plus every symbol a non-`noise` tape interval of a window CIK dates to one of their entities."""
         requested = frozenset(normalise_ticker(ticker) for ticker in universe)
         entities = {entity for entity, ticker in self.ticker_by_entity.items() if ticker in requested}
         dated = {
             symbol
             for symbol, rows in self.symbol_intervals.items()
-            if any(row.status != "noise" and row.tape_symbol and row.entity in entities for row in rows)
+            if any(row.status != "noise" and row.tape_symbol and row.entity in entities and self._windowed(row) for row in rows)
         }
         return requested | dated
+
+    def _windowed(self, row: SymbolInterval, day: pd.Timestamp | None = None) -> bool:
+        """P21: the interval's CIK is a consolidating CIK of its entity whose declared window holds `day` (any part of the interval when None)."""
+        for window in self.windows_by_entity.get(row.entity, ()):
+            if window.cik != row.cik:
+                continue
+            if day is not None:
+                if window.owns(day):
+                    return True
+            elif (window.valid_to is None or row.valid_from is None or row.valid_from < window.valid_to) and (
+                window.valid_from is None or row.valid_to is None or window.valid_from < row.valid_to
+            ):
+                return True
+        return False
 
     def security_on(self, *, cusip: str | None = None, symbol: str | None = None, source: str, day: object) -> SecurityHit | None:
         """The security a tape line is on trade date `day`, by CUSIP when given, else by `(source, symbol)`.
@@ -618,17 +634,20 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
         return {}
     rows = lineage[lineage["role"].astype(str).eq(ROLE_SYMBOL)]
     out: dict[str, list[SymbolInterval]] = {}
-    for symbol, entity, start, end, status, sources in zip(
+    ciks = pad_cik_series(rows["cik"]) if "cik" in rows.columns else pd.Series("", index=rows.index)
+    for symbol, entity, start, end, status, sources, cik in zip(
         rows["symbol"].astype(str),
         rows["entity_id"].astype(str),
         rows["valid_from"],
         _column(rows, "valid_to"),
         _column(rows, "status").fillna("").astype(str),
         _column(rows, "sources").fillna("").astype(str),
+        ciks,
         strict=True,
     ):
         evidence = frozenset(part.strip().lower() for part in sources.split(",") if part.strip())
-        out.setdefault(normalise_market_symbol(symbol), []).append(SymbolInterval(entity, _bound(start), _as_timestamp(end), status, evidence))
+        interval = SymbolInterval(entity, _bound(start), _as_timestamp(end), status, evidence, str(cik))
+        out.setdefault(normalise_market_symbol(symbol), []).append(interval)
     return {symbol: tuple(values) for symbol, values in out.items()}
 
 

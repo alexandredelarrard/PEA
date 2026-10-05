@@ -1,5 +1,5 @@
-"""SEC Fails-to-Deliver: parse + semi-monthly period logic + the FTD feature
-(fails/volume, publication-lagged so it's leak-free)."""
+"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the ftd-download ingest and
+the FTD feature (fails/volume, publication-lagged so it's leak-free)."""
 
 from __future__ import annotations
 
@@ -11,28 +11,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
-from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
-from tests.data_extract.common.scope_fixtures import symbol_identity
-
-
-def _identity() -> Identity:
-    """Dated lineage symbol rows: FB -> META, IR (old, the TT entity) -> TT, IR reused by a new IR; WTW from 2019."""
-    return symbol_identity(
-        [
-            ("META", "0000000001", "FB", "2012-01-01", "2022-06-01", "corroborated"),
-            ("META", "0000000001", "META", "2022-06-01", None, "corroborated"),
-            ("TT", "0000000002", "IR", "2009-01-01", "2020-03-01", "curated"),
-            ("TT", "0000000002", "TT", "2020-03-01", None, "curated"),
-            ("IR", "0000000003", "IR", "2020-03-05", None, "corroborated"),
-            ("WTW", "0000000004", "WTW", "2019-04-18", None, "corroborated"),
-            ("MSFT", "0000000005", "MSFT", "2009-01-01", None, "corroborated"),
-            ("AAPL", "0000000006", "AAPL", "2009-01-01", None, "corroborated"),
-        ],
-        {"META": "0000000001", "TT": "0000000002", "IR": "0000000003", "WTW": "0000000004", "MSFT": "0000000005", "AAPL": "0000000006"},
-    )
 
 
 def _context(sqlite_store, tmp_path) -> Any:
@@ -81,14 +63,14 @@ def test_parse_ftd_math_and_na_price():
         "20240102|B|BRK/B|1|BERKSHIRE|300.00\n"
         "20240103|Z|AAPL|200|APPLE INC|181.00\n"
     )
-    df = ftd._parse_ftd(raw)
+    df = ftd._parse_ftd_lines(raw)
     a = df[(df["source_symbol"] == "AAPL") & (df["date"] == pd.Timestamp("2024-01-02"))].iloc[0]
     assert a["fails_quantity"] == 1000.0 and abs(a["fails_value"] - 180_500.0) < 1e-6
     m = df[df["source_symbol"] == "MSFT"].iloc[0]
-    assert m["fails_quantity"] == 500.0 and pd.isna(m["fails_value"])  # '.' price -> value NaN
-    assert set(df["source_symbol"]) == {"AAPL", "MSFT", "BRK-B"} and len(df) == 4
+    assert m["fails_quantity"] == 500.0 and pd.isna(m["price"]) and pd.isna(m["fails_value"])  # '.' price -> NULL dollars
+    assert set(df["source_symbol"]) == {"AAPL", "MSFT", "BRK/B"} and len(df) == 4
     print("\n=== SANITY: FTD parse ===")
-    print("  AAPL 1000@180.5 -> fails_value $180.5k; MSFT price '.' -> NaN; BRK/B -> BRK-B. Validated.")
+    print("  AAPL 1000@180.5 -> fails_value $180.5k; MSFT price '.' -> NULL; BRK/B kept as filed. Validated.")
 
 
 def test_parse_ftd_matches_real_legacy_and_modern_samples():
@@ -101,7 +83,7 @@ def test_parse_ftd_matches_real_legacy_and_modern_samples():
         "20090701|037833100|AAPL|32975|APPLE INC;COM NPV|142.43\n"  # legacy era
         "20240102|037833100|AAPL|516|APPLE INC;COM NPV|192.53\n"
     )  # modern era
-    df = ftd._parse_ftd(raw)
+    df = ftd._parse_ftd_lines(raw)
     legacy = df[df["date"] == pd.Timestamp("2009-07-01")].iloc[0]
     modern = df[df["date"] == pd.Timestamp("2024-01-02")].iloc[0]
     assert legacy["fails_quantity"] == 32975.0 and abs(legacy["fails_value"] - 4_696_629.25) < 1e-2
@@ -113,177 +95,81 @@ def test_parse_ftd_matches_real_legacy_and_modern_samples():
     )
 
 
-def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, monkeypatch, tmp_path):
-    """Resume contract: an already-ingested period is never re-fetched while the universe
-    is stable; a universe change re-parses cached periods, but the upsert on (ticker, date)
-    must not duplicate rows already stored."""
-    # `cache_dir(context, context.config.local.paths.fails_deliver)` -- the fetcher reads its
-    # cache subdirectory out of config, so the double has to carry it (value from
-    # configs/paths.yml).
-    ctx = _context(sqlite_store, tmp_path)
-    identity = _identity()
-
-    def _raw_for(path) -> str:
-        period = path.stem.removeprefix("cnsfails")
-        yyyymm, day = period[:6], ("01" if period.endswith("a") else "16")
-        return (
-            "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
-            f"{yyyymm}{day}|037833100|AAPL|100|APPLE INC|190.00\n"
-            f"{yyyymm}{day}|055555555|MSFT|50|MICROSOFT|300.00\n"
-        )
-
-    requested: list[str] = []
-
-    def _fake_ensure_zip(context, path, urls, *, label, timeout, log):
-        requested.append(label)
-        return path
-
-    monkeypatch.setattr(ftd, "ensure_zip", _fake_ensure_zip)
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: _raw_for(path))
-    monkeypatch.setattr(ftd, "_periods", lambda years_history, today=None: ["202401a", "202401b"])
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
-
-    # period 202401a already ingested, universe already converged on AAPL
-    sqlite_store.replace(
-        "sec_fails_to_deliver",
-        pd.DataFrame(
-            {
-                "ticker": ["AAPL"],
-                "date": pd.to_datetime(["2024-01-01"]),
-                "fails_quantity": [100.0],
-                "fails_value": [19000.0],
-                "period": ["202401a"],
-            }
-        ),
+def _master(rows: list[tuple[str, str, str, str, str | None]]) -> pd.DataFrame:
+    """(cusip, company, symbol, valid_from, valid_to) canonical common lines, ratio 1."""
+    frame = pd.DataFrame(rows, columns=["cusip", "canonical_company", "source_symbol", "valid_from", "valid_to"])
+    frame = frame.assign(
+        security_id="C" + frame["cusip"],
+        issuer_cik="0000000001",
+        source=sm.SOURCE_FTD,
+        market_symbol=frame["source_symbol"],
+        exchange=None,
+        security_class="common",
+        conversion_ratio=1.0,
+        lineage_role=sm.CANONICAL_CURRENT,
+        lineage_reason="fixture",
+        source_accession=None,
+        evidence="fixture",
+        n_observations=1,
+        scope_changed_at=pd.Timestamp("2026-10-04"),
     )
-    cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, ftd.Tables.sec_fails_to_deliver, set(identity.universe_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
-
-    # 1) stable universe -> the already-done period is skipped, only the new one is fetched
-    saved = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity)
-    assert requested == ["FTD 202401b"], f"already-done period was re-fetched: {requested}"
-    assert saved == 1
-    stored = sqlite_store.load("sec_fails_to_deliver")
-    assert len(stored) == 2  # seeded 202401a row + new 202401b row
-
-    # 2) an identity-policy revision replays both cached periods even with a stable universe
-    requested.clear()
-    monkeypatch.setattr(ftd, "_POLICY_MARKER", "__point_in_time_symbol_identity_v3__")
-    assert ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity) == 2
-    assert requested == ["FTD 202401a", "FTD 202401b"]
-
-    # 3) universe grows (MSFT) -> both cached periods are re-parsed, but the upsert on
-    #    (ticker, date) must not duplicate the 202401a/202401b AAPL rows already stored
-    requested.clear()
-    saved2 = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL", "MSFT"], years_history=1, identity=identity)
-    assert requested == ["FTD 202401a", "FTD 202401b"]
-    stored2 = sqlite_store.load("sec_fails_to_deliver")
-    assert len(stored2) == 4  # AAPL+MSFT x 2 periods, no duplicates
-    assert saved2 == 4
-
-    print("\n=== SANITY CHECK: FTD resume + universe-growth reparse ===")
-    print(
-        f"  stable universe -> 202401a skipped; policy revision and universe growth each reparse both periods; "
-        f"{len(stored2)} distinct rows stored "
-        "(upsert, no duplicates). Validated."
-    )
+    frame["valid_from"] = pd.to_datetime(frame["valid_from"])
+    frame["valid_to"] = pd.to_datetime(frame["valid_to"])
+    return frame[list(sm.TABLE_COLUMNS)]
 
 
-def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite_store, monkeypatch, tmp_path):
+_REUSE_MASTER = [
+    ("30303M102", "META", "FB", "2012-05-18", "2022-06-09"),
+    ("30303M102", "META", "META", "2022-06-09", None),
+    ("G47791101", "TT", "IR", "2009-01-01", "2020-03-02"),
+    ("45687V106", "IR", "IR", "2020-03-02", None),
+    ("G96629103", "WTW", "WLTW", "2016-01-05", None),
+]
+
+
+def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(sqlite_store, monkeypatch, tmp_path):
+    """FB and META are one CUSIP (one META key); IR before 2020 is the TT entity's CUSIP; the Weight Watchers
+    2015 WTW line is a CUSIP the master does not hold, so it is never stored under Willis Towers Watson."""
     ctx = _context(sqlite_store, tmp_path)
-    identity = _identity()
+    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
     raw_by_period = {
         "201501a": (
             "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
-            "20150102|A|FB|100|FACEBOOK|10\n"
-            "20150102|B|FB|200|META ALIAS|10\n"
-            "20150102|C|IR|50|INGERSOLL RAND PLC|10\n"
-            "20150102|D|WTW|70|WEIGHT WATCHERS|10\n"
+            "20150102|30303M102|FB|100|FACEBOOK INC CL A|10\n"
+            "20150102|G47791101|IR|50|INGERSOLL RAND PLC|10\n"
+            "20150102|948626106|WTW|70|WEIGHT WATCHERS|10\n"
         ),
+        "202207b": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20220720|30303M102|META|200|META PLATFORMS INC|10\n",
     }
-    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"201501a"})
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw_by_period))
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
     monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
-
-    sqlite_store.replace(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame(
-            {
-                "ticker": ["WTW"],
-                "date": pd.to_datetime(["2015-01-02"]),
-                "fails_quantity": [999.0],
-                "fails_value": [999.0],
-                "period": ["201501a"],
-            }
-        ),
-    )
-    replace_calls = 0
+    replace_calls: list[str] = []
     original_replace = sqlite_store.replace
 
     def _replace(table, frame, *args, **kwargs):
-        nonlocal replace_calls
-        replace_calls += 1
+        replace_calls.append(getattr(table, "name", table))
         return original_replace(table, frame, *args, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "replace", _replace)
     universe = ["META", "TT", "IR", "WTW"]
-    ftd.fetch_fails_to_deliver(ctx, universe, full=True, identity=identity)
-    first = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("ticker").reset_index(drop=True)
-    ftd.fetch_fails_to_deliver(ctx, universe, full=True, identity=identity)
-    second = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("ticker").reset_index(drop=True)
+    ftd.fetch_fails_to_deliver(ctx, universe, full=True)
+    first = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values(["ticker", "date"]).reset_index(drop=True)
+    ftd.fetch_fails_to_deliver(ctx, universe, full=True)
+    second = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    assert replace_calls == 2
-    assert set(first["ticker"]) == {"META", "TT"}
-    assert first.set_index("ticker").loc["META", "fails_quantity"] == 300.0
-    assert first.set_index("ticker").loc["TT", "fails_quantity"] == 50.0
-    assert not first.duplicated(["ticker", "date"]).any()
+    assert replace_calls == [Tables.sec_fails_to_deliver_security.name, Tables.sec_fails_to_deliver.name] * 2
+    assert list(zip(first["ticker"], first["fails_quantity"], strict=True)) == [("META", 100.0), ("META", 200.0), ("TT", 50.0)]
+    assert "948626106" not in set(sqlite_store.load(Tables.sec_fails_to_deliver_security)["cusip"])
     pd.testing.assert_frame_equal(first, second)
-
-    print("\n=== SANITY CHECK: FTD point-in-time full rebuild ===")
-    print("  FB+META -> one META key (quantity 300); historical IR -> TT")
-    print("  Weight Watchers under WTW excluded; second full run is byte-equivalent")
-    print("  OK: renamed rows recovered, reused rows moved/removed, unique PK preserved")
-
-
-def test_reused_symbol_before_the_current_holders_lineage_interval_is_not_mapped(sqlite_store, monkeypatch, tmp_path):
-    """WTW traded as Weight Watchers before Willis Towers Watson took it. The lineage dates the current
-    holder's `WTW` interval from 2016-01-05, so a 2015 FTD row under WTW belongs to nobody in the universe,
-    even though the holder's tenure evidence is open-ended."""
-    ctx = _context(sqlite_store, tmp_path)
-    identity = symbol_identity(
-        [
-            ("WTW", "0000000004", "WTW", "2016-01-05", None, "corroborated"),
-            ("AAPL", "0000000006", "AAPL", "2009-01-01", None, "corroborated"),
-        ],
-        {"WTW": "0000000004", "AAPL": "0000000006"},
-    )
-    raw = (
-        "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
-        "20150102|948626106|WTW|70|WEIGHT WATCHERS|10\n"
-        "20160302|G96629103|WTW|40|WILLIS TOWERS WATSON|10\n"
-        "20150102|037833100|AAPL|5|APPLE INC|10\n"
-    )
-    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"201501a"})
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
-
-    ftd.fetch_fails_to_deliver(ctx, ["WTW", "AAPL"], full=True, identity=identity)
-
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver)
-    wtw = stored[stored["ticker"] == "WTW"]
-    assert pd.to_datetime(wtw["date"]).tolist() == [pd.Timestamp("2016-03-02")], wtw
-    assert wtw["fails_quantity"].tolist() == [40.0]
-    print("\n=== SANITY CHECK: reused FTD symbol before the holder's lineage interval ===")
-    print("  Weight Watchers' 2015 WTW fails are not stored under WTW; Willis Towers Watson's 2016 row is. Validated.")
+    print("\n=== SANITY CHECK: FTD CUSIP full rebuild ===")
+    print("  FB and META one CUSIP -> META; pre-2020 IR -> TT by its CUSIP; the Weight Watchers WTW line never stored")
+    print("  second full run is byte-equivalent; both tables replaced each run")
 
 
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    identity = _identity()
+    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
     seeded = pd.DataFrame(
         {
             "ticker": ["AAPL"],
@@ -294,13 +180,11 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
         }
     )
     sqlite_store.replace(Tables.sec_fails_to_deliver, seeded)
-    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a"])
     monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"202401a"})
-    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: None)
 
     with pytest.raises(ValueError, match="cannot read cached period 202401a"):
-        ftd.fetch_fails_to_deliver(ctx, ["AAPL"], full=True, identity=identity)
+        ftd.fetch_fails_to_deliver(ctx, ["AAPL"], full=True)
     stored = sqlite_store.load(Tables.sec_fails_to_deliver).reset_index(drop=True)
     assert len(stored) == 1 and stored.iloc[0]["ticker"] == "AAPL"
     assert pd.Timestamp(stored.iloc[0]["date"]) == pd.Timestamp("2024-01-02")
@@ -311,37 +195,25 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     print("  OK: a partial cache can never become a complete-looking replacement")
 
 
-def test_ftd_resume_uses_only_stored_source_periods(sqlite_store, monkeypatch, tmp_path):
+def test_full_rebuild_refuses_when_a_stored_period_left_the_cache(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    identity = _identity()
-    sqlite_store.replace(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame(
-            {
-                "ticker": ["AAPL", "AAPL"],
-                "date": pd.to_datetime(["2024-01-02", "2024-01-16"]),
-                "fails_quantity": [1.0, 2.0],
-                "period": ["202401a", "202401b"],
-            }
-        ),
-    )
-    cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, Tables.sec_fails_to_deliver, set(identity.universe_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
-    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
-    monkeypatch.setattr(ftd, "ensure_zip", lambda *a, **k: pytest.fail("stored periods must not download"))
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+    sqlite_store.replace(Tables.security_master, _master([("037833100", "AAPL", "AAPL", "2009-01-01", None)]))
+    lines = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20231215|037833100|AAPL|5|APPLE INC|190\n")
+    unstamped = lines.assign(period="202312a", security_id=None, ticker=None, lineage_role=None, security_class=None)
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, unstamped[list(ftd.SECURITY_COLUMNS)])
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"202401a"})
+    monkeypatch.setattr(ftd, "read_zip_text", lambda *a, **k: pytest.fail("no zip is read before the gate"))
 
-    for _ in range(2):
-        assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert len(stored) == 2 and set(stored["period"]) == {"202401a", "202401b"}
-    print("\n=== SANITY CHECK: FTD resume from stored source periods ===")
-    print("  Two stored periods skip ZIP reads on rerun and preserve their source period tags.")
+    with pytest.raises(FileNotFoundError, match="202312a"):
+        ftd.fetch_fails_to_deliver(ctx, ["AAPL"], full=True)
+    assert sqlite_store.row_count(Tables.sec_fails_to_deliver_security) == 1
+    print("\n=== SANITY CHECK: FTD rebuild reproduces every stored period ===")
+    print("  a stored period missing from the cache aborts the rebuild before any read or write")
 
 
-def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
+def test_ftd_download_first_successful_http_response_stores_source_period(sqlite_store, monkeypatch, tmp_path):
     ctx = _context(sqlite_store, tmp_path)
-    identity = _identity()
+    sqlite_store.replace(Tables.entity_lineage, _scope_lineage())
     requested: list[str] = []
 
     class _Response:
@@ -360,13 +232,13 @@ def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, m
     monkeypatch.setattr(
         ftd,
         "read_zip_text",
-        lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|037833100|AAPL|100|APPLE INC|190.00\n",
+        lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|000111AAA|ABC|100|ABC CORP|190.00\n",
     )
     monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
-    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 1
-    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
-    stored = sqlite_store.load(Tables.sec_fails_to_deliver).iloc[0]
+    assert ftd.download_fails_to_deliver(ctx, years_history=1) == 1
+    assert ftd.download_fails_to_deliver(ctx, years_history=1) == 0
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver_security).iloc[0]
     assert len(requested) == 1
     assert stored["period"] == "202609a"
     assert (ftd.cache_dir(ctx, "sec_fails_to_deliver") / "cnsfails202609a.zip").is_file()

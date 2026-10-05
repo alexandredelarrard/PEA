@@ -58,7 +58,7 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         order.append("regsho")
 
     def fails(*args, **kwargs):
-        assert kwargs["identity"] is identity
+        assert "identity" not in kwargs, "FTD is stamped from security_master, not the symbol resolver"
         order.append("ftd")
 
     monkeypatch.setattr(module, "fetch_short_interest", short)
@@ -77,7 +77,7 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
 
     print("\n=== SANITY CHECK: institutional identity consumption ===")
     print(f"  {len(order)} calls: 13F -> roster -> managers -> insider parse -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO -> FTD")
-    print("  OK: no identity build inside the step; both symbol tapes share the one resolver the identity stage refreshed")
+    print("  OK: no identity build inside the step; RegSHO uses the resolver the identity stage refreshed, FTD the security master")
 
 
 def test_domain_steps_contain_no_identity_stage():

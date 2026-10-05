@@ -198,7 +198,10 @@ def short_interest(config_path: str, tickers: str | None, full: bool) -> None:
     fetch_short_interest(context, tickers=_tickers(context, tickers), years_history=context.config.data_extract.years_history, full=full)
 
 
-@cli.command(help="SEC fails-to-deliver (settlement fails). SEC-bulk.")
+@cli.command(
+    help="SEC fails-to-deliver: stamp the raw per-CUSIP lines from security_master and rebuild the ticker table "
+    "(--full: both tables from every cached zip). SEC-bulk."
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)

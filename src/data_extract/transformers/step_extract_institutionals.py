@@ -50,9 +50,9 @@ class StepExtractInstitutionals(Step):
         # Corporate events (8-K).
         run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_8K_FETCH)
 
-        # One frozen resolver for the symbol-only tapes, from the lineage the identity stage built and propagated.
+        # One frozen resolver for the symbol-only RegSHO tape, from the lineage the identity stage built and propagated.
         identity = load_identity(self._context)
 
-        # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on).
+        # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on), stamped from the security master.
         fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity)
-        fetch_fails_to_deliver(self._context, tickers=tickers, years_history=years_history, identity=identity)
+        fetch_fails_to_deliver(self._context, tickers=tickers)

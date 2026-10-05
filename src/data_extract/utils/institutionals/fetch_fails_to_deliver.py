@@ -1,22 +1,24 @@
 """
 fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-SEC Fails-to-Deliver semi-monthly ZIPs -> `sec_fails_to_deliver` (ticker, date), its own table so
-its publication lag never moves `short_interest`'s frontier. Values are the cumulative net
-unsettled balance on each settlement date, not new fails. Resume skips periods already processed
-under the current symbol policy; each (symbol, settlement date) resolves through the dated `entity_lineage`
-symbol intervals (`ticker_for_symbol`); `full` replaces the table. `download_fails_to_deliver` (the
-`ftd-download` stage) caches the ZIPs and stores the in-scope source lines raw, per CUSIP, in
-`sec_fails_to_deliver_security` for the security master.
+SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (the `ftd-download` stage) caches
+the ZIPs and stores the in-scope source lines raw, per CUSIP, in `sec_fails_to_deliver_security`.
+`fetch_fails_to_deliver` stamps those lines from `security_master` (security, canonical company,
+lineage role, class) and rebuilds the ticker-grain `sec_fails_to_deliver`, its own table so its
+publication lag never moves `short_interest`'s frontier: per (ticker, settlement date) the sum over
+the canonical and secondary-class lines of quantity x conversion ratio, and of quantity x the file's
+PRICE (NULL when a summed line has no price). Values are cumulative net unsettled balances, not new
+fails. `full` rebuilds both tables from every cached ZIP.
 """
 
 from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -29,15 +31,11 @@ from src.data_extract.utils.common.bulk_cache import (
     pending_periods,
     read_zip_text,
 )
-from src.data_extract.utils.common.identity import (
-    Identity,
-    load_identity,
-    log_symbol_resolutions,
-    symbol_rows_to_tickers,
-)
-from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.run_manifest import get_entry, record_run, scope_changed_tickers
 from src.data_extract.utils.common.security_master import (
+    CANONICAL_ROLES,
+    SECONDARY_CLASS,
+    SOURCE_FTD,
     cusip_votes,
     lineage_scope_symbols,
     load_security_manual,
@@ -45,10 +43,13 @@ from src.data_extract.utils.common.security_master import (
     trade_dates,
 )
 from src.data_store.schema import Tables
+from src.utils.filer_tables import filing_window
+from src.utils.string import normalise_ticker
 
 logger = logging.getLogger(__name__)
 
-_OUT_COLS = ["ticker", "date", "fails_quantity", "fails_value", "period"]
+#: Columns of the ticker-grain `sec_fails_to_deliver` (the consumers' schema).
+TICKER_COLUMNS = ("ticker", "date", "fails_quantity", "fails_value", "period")
 #: Column order of `sec_fails_to_deliver_security`; the last four are stamped from the security master.
 SECURITY_COLUMNS = (
     "date",
@@ -65,10 +66,28 @@ SECURITY_COLUMNS = (
     "lineage_role",
     "security_class",
 )
+_STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
+#: Roles whose lines are summed into the canonical ticker.
+SUMMED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
+_MASTER_COLUMNS = [
+    "security_id",
+    "canonical_company",
+    "cusip",
+    "source_symbol",
+    "security_class",
+    "conversion_ratio",
+    "lineage_role",
+    "valid_from",
+    "valid_to",
+    "scope_changed_at",
+]
 _LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
 #: Scope members of the raw ingest that are CUSIP-6 prefixes, not symbols.
 _PREFIX_TAG = "cusip6:"
-_POLICY_MARKER = "__point_in_time_symbol_identity_v2__"
+#: Tickers per scoped load, keys per targeted delete.
+_TICKER_CHUNK = 50
+_KEY_CHUNK = 500
+_FAR = pd.Timestamp("2262-01-01")
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
@@ -94,38 +113,6 @@ def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]
 # --------------------------------------------------------------------------- #
 # Pure parse (unit-tested)                                                       #
 # --------------------------------------------------------------------------- #
-def _parse_ftd(raw: str) -> pd.DataFrame:
-    """Parse one FTD file while retaining its historical symbol and raw CUSIP."""
-    if not raw or "|" not in raw:
-        return pd.DataFrame(columns=["date", "source_symbol", "cusip", "fails_quantity", "fails_value"])
-    df = pd.read_csv(io.StringIO(raw), sep="|", dtype=str, engine="python", on_bad_lines="skip")
-    cols = {c.strip().upper(): c for c in df.columns}
-
-    def col(name: str) -> pd.Series:
-        return df[cols[name]] if name in cols else pd.Series(pd.NA, index=df.index)
-
-    price = pd.to_numeric(col("PRICE").astype("string").str.strip().where(lambda s: s != "."), errors="coerce")
-    qty = pd.to_numeric(col("QUANTITY (FAILS)"), errors="coerce")
-    out = pd.DataFrame(
-        {
-            "date": pd.to_datetime(col("SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
-            "source_symbol": col("SYMBOL")
-            .astype("string")
-            .str.upper()
-            .str.replace(".", "-", regex=False)
-            .str.replace("/", "-", regex=False)
-            .str.strip(),
-            "cusip": col("CUSIP").astype("string").str.strip(),
-            "fails_quantity": qty,
-            "fails_value": qty * price,
-        }
-    ).dropna(subset=["date", "source_symbol"])
-    out = out[out["source_symbol"] != ""]
-    if out.empty:
-        return out
-    return out.groupby(["date", "source_symbol", "cusip"], as_index=False, dropna=False)[["fails_quantity", "fails_value"]].sum(min_count=1)
-
-
 def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     """Every source line of one FTD file, raw: symbol as filed, description, PRICE ('.' -> NULL), trade date.
 
@@ -176,138 +163,325 @@ def _cached_periods(cache: Path) -> set[str]:
     return {path.stem.removeprefix("cnsfails") for path in cache.glob("cnsfails*.zip")}
 
 
-def _canonicalise_ftd(
-    context: Context,
-    frame: pd.DataFrame,
-    identity: Identity,
-    universe: frozenset[str],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resolve each symbol on its settlement date and aggregate onto the destination table grain."""
-    accepted, unresolved = symbol_rows_to_tickers(identity, frame, universe)
-    log_symbol_resolutions(context, "FTD", accepted, unresolved, universe=universe)
-    if accepted.empty:
-        return pd.DataFrame(columns=_OUT_COLS), unresolved
-    grouped = accepted.groupby(["ticker", "date"], as_index=False).agg(
-        fails_quantity=("fails_quantity", "sum"), fails_value=("fails_value", lambda values: values.sum(min_count=1)), period=("period", "first")
-    )
-    return grouped[_OUT_COLS], unresolved
+# --------------------------------------------------------------------------- #
+# Stamp from the security master, aggregate to the ticker grain (pure)           #
+# --------------------------------------------------------------------------- #
+_HIT_COLUMNS = ["canonical_company", "lineage_role", "security_class", "conversion_ratio"]
 
 
-def resolve_ticker_fails(context: Context, tickers: Collection[str], identity: Identity) -> tuple[pd.DataFrame, set[str]]:
-    """`(rows, periods read)`: `tickers`' FTD rows re-resolved from every cached zip on the destination grain.
+def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
+    """The FTD rows of `security_master`, keyed for stamping: upper-case CUSIP and symbol, open ends at a far date."""
+    rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
+    out = rows[_MASTER_COLUMNS].copy()
+    out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
+    out["source_symbol"] = out["source_symbol"].fillna("").astype(str).str.strip().str.upper()
+    out["valid_from"] = pd.to_datetime(out["valid_from"])
+    out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
+    out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"]).fillna(1.0).astype("float64")
+    company = out["canonical_company"].astype(object)
+    out["canonical_company"] = company.where(company.notna() & company.astype(str).ne(""), None)
+    out["scope_changed_at"] = pd.to_datetime(out["scope_changed_at"], errors="coerce")
+    return out.reset_index(drop=True)
 
-    No download, marker file or manifest entry.
+
+def master_stamps(master: pd.DataFrame) -> dict[str, pd.Timestamp]:
+    """`{canonical company: latest scope_changed_at}` over its master rows."""
+    stamps = master.dropna(subset=["canonical_company"]).groupby("canonical_company")["scope_changed_at"].max()
+    return {str(company): pd.Timestamp(stamp) for company, stamp in stamps.items() if pd.notna(stamp)}
+
+
+def _covering(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[(frame["trade_date"] >= frame["valid_from"]) & (frame["trade_date"] < frame["valid_to"])]
+
+
+def _nullable(values: pd.Series) -> pd.Series:
+    return values.astype(object).where(values.notna(), None)
+
+
+def stamp_lines(lines: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
+    """`lines` with `security_id`, `ticker`, `lineage_role`, `security_class` and `conversion_ratio`.
+
+    The answer is the master row of the line's (CUSIP, symbol) covering its trade date, else the one answer every
+    row of its CUSIP covering that date agrees on. A CUSIP the master lacks keeps a NULL `security_id` (out of
+    scope); a known CUSIP with no answer on that date keeps a NULL role and is never summed.
     """
-    cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    candidates = identity.universe_symbols(universe)
-    frames: list[pd.DataFrame] = []
-    periods: set[str] = set()
-    for period in sorted(_cached_periods(cache)):
-        raw = read_zip_text(cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), log=logger)
-        if raw is None:
-            continue
-        periods.add(period)
-        df = _parse_ftd(raw)
-        df = df[df["source_symbol"].isin(candidates)].copy()
-        if not df.empty:
-            frames.append(df.assign(period=period))
-    if not frames:
-        return pd.DataFrame(columns=_OUT_COLS), periods
-    accepted, _ = _canonicalise_ftd(context, pd.concat(frames, ignore_index=True), identity, universe)
-    return accepted, periods
-
-
-def _validate_full_frame(
-    frame: pd.DataFrame,
-    universe: frozenset[str],
-    parsed_periods: set[str],
-    cached_periods: set[str],
-) -> None:
-    """Raise before replacement when cache coverage, keys or universe scope are unsafe."""
-    missing = sorted(cached_periods - parsed_periods)
-    if missing:
-        raise ValueError(f"FTD full rebuild did not parse cached period(s): {missing}")
-    if frame.empty:
-        raise ValueError("FTD full rebuild staged no accepted rows")
-    if frame[["ticker", "date"]].isna().any().any():
-        raise ValueError("FTD full rebuild staged a null destination key")
-    duplicate = frame.duplicated(["ticker", "date"], keep=False)
-    if duplicate.any():
-        raise ValueError(f"FTD full rebuild staged {int(duplicate.sum())} duplicate key row(s)")
-    outside = sorted(set(frame["ticker"]) - set(universe))
-    if outside:
-        raise ValueError(f"FTD full rebuild staged non-universe ticker(s): {outside}")
-
-
-def fetch_fails_to_deliver(
-    context: Context,
-    tickers: list[str],
-    years_history: int = 15,
-    full: bool = False,
-    identity: Identity | None = None,
-) -> int:
-    """Resolve SEC FTD history through the lineage and incrementally save or fully replace it."""
-
-    cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    resolver = identity or load_identity(context)
-    universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
-    candidates = resolver.universe_symbols(universe)
-    policy_scope = set(candidates) | {_POLICY_MARKER}
-    # A full rebuild must reproduce every stored period.
-    stored_periods = stored_values(context, Tables.sec_fails_to_deliver, "period") if full else frozenset()
-
-    saved = 0
-    initial_cached = _cached_periods(cache)
-    periods = sorted(initial_cached | set(_periods(years_history + 1)))
-    pending = pending_periods(context, cache, Tables.sec_fails_to_deliver, periods, policy_scope, reparse=full)
-    raw_frames: list[pd.DataFrame] = []
-    parsed_periods: set[str] = set()
-    for period in tqdm(pending, desc="SEC fails-to-deliver"):
-        path = ensure_zip(
-            context,
-            cache / FTD_ZIP_NAME_TEMPLATE.format(period=period),
-            _period_urls(period),
-            label=f"FTD {period}",
-            timeout=180,
-            log=logger,
-        )
-        if path is None:
-            if full and period in stored_periods:
-                raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period {period}")
-            continue
-        raw = read_zip_text(path, log=logger)
-        if raw is None:
-            if full:
-                raise ValueError(f"FTD full rebuild cannot read cached period {period}")
-            continue
-        df = _parse_ftd(raw)
-        parsed_periods.add(period)
-        df = df[df["source_symbol"].isin(candidates)].copy()
-        if df.empty:
-            continue
-        df["period"] = period
-        raw_frames.append(df)
-
-    raw_complete = (
-        pd.concat(raw_frames, ignore_index=True)
-        if raw_frames
-        else pd.DataFrame(columns=["date", "source_symbol", "cusip", "fails_quantity", "fails_value", "period"])
+    out = lines.reset_index(drop=True).copy()
+    trade = pd.to_datetime(out["trade_date"]) if "trade_date" in out.columns else pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
+    out["trade_date"] = trade.fillna(trade_dates(out["date"]))
+    keys = pd.DataFrame(
+        {
+            "_row": out.index,
+            "cusip": out["cusip"].astype(str).str.strip().str.upper(),
+            "source_symbol": out["source_symbol"].fillna("").astype(str).str.strip().str.upper(),
+            "trade_date": out["trade_date"],
+        }
     )
-    accepted, unresolved = _canonicalise_ftd(context, raw_complete, resolver, universe)
+    exact = _covering(keys.merge(master, on=["cusip", "source_symbol"]))
+    exact = exact.sort_values(["_row", "valid_from"], ascending=[True, False]).drop_duplicates("_row")
+    rest = keys[~keys["_row"].isin(exact["_row"])].drop(columns="source_symbol")
+    loose = _covering(rest.merge(master.drop(columns="source_symbol"), on="cusip")).drop_duplicates(["_row", *_HIT_COLUMNS])
+    agreed = loose[~loose["_row"].duplicated(keep=False)]
+    hits = pd.concat([exact[["_row", *_HIT_COLUMNS]], agreed[["_row", *_HIT_COLUMNS]]], ignore_index=True).set_index("_row")
+    out["security_id"] = _nullable(("C" + keys["cusip"]).where(keys["cusip"].isin(set(master["cusip"]))))
+    out["ticker"] = _nullable(hits["canonical_company"].reindex(out.index))
+    out["lineage_role"] = _nullable(hits["lineage_role"].reindex(out.index))
+    out["security_class"] = _nullable(hits["security_class"].reindex(out.index))
+    out["conversion_ratio"] = hits["conversion_ratio"].reindex(out.index).astype("float64")
+    return out
 
+
+def ticker_rows(stamped: pd.DataFrame, tickers: Collection[str] | None = None) -> pd.DataFrame:
+    """Ticker-grain rows: per (ticker, settlement date) over the canonical and secondary-class lines, the sum of
+    quantity x conversion ratio and of quantity x PRICE; the dollars are NULL when a summed line has no price."""
+    summed = stamped[stamped["lineage_role"].isin(SUMMED_ROLES) & stamped["ticker"].notna()]
+    if tickers is not None:
+        summed = summed[summed["ticker"].isin(set(tickers))]
+    if summed.empty:
+        return pd.DataFrame(columns=list(TICKER_COLUMNS))
+    quantity = pd.to_numeric(summed["fails_quantity"], errors="coerce")
+    value = pd.to_numeric(summed["fails_value"], errors="coerce")
+    work = pd.DataFrame(
+        {
+            "ticker": summed["ticker"].astype(str),
+            "date": pd.to_datetime(summed["date"]).dt.normalize(),
+            "fails_quantity": quantity * summed["conversion_ratio"].astype("float64"),
+            "fails_value": value,
+            "unpriced": value.isna() & quantity.notna(),
+            "period": summed["period"].astype(str),
+        }
+    )
+    grouped = work.groupby(["ticker", "date"], as_index=False, sort=True).agg(
+        fails_quantity=("fails_quantity", "sum"), fails_value=("fails_value", "sum"), unpriced=("unpriced", "any"), period=("period", "min")
+    )
+    grouped["fails_value"] = grouped["fails_value"].where(~grouped["unpriced"])
+    return grouped[list(TICKER_COLUMNS)]
+
+
+def _unique_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
+    """One line per (cusip, settlement date): exact repeats collapse; a repeat with other values keeps the first (WARNING)."""
+    kept = lines.drop_duplicates(["cusip", "date", "source_symbol", "fails_quantity"], ignore_index=True)
+    duplicate = kept.duplicated(["cusip", "date"], keep="first")
+    if duplicate.any():
+        logger.warning("%s: %d line(s) repeat a (cusip, settlement date) key with other values; the first is kept", label, int(duplicate.sum()))
+        kept = kept[~duplicate].reset_index(drop=True)
+    return kept
+
+
+def _chunks[T](values: Sequence[T], size: int) -> list[list[T]]:
+    return [list(values[start : start + size]) for start in range(0, len(values), size)]
+
+
+# --------------------------------------------------------------------------- #
+# IO: stamp the stored lines, rebuild the ticker grain                          #
+# --------------------------------------------------------------------------- #
+
+
+def load_fails_master(context: Context) -> pd.DataFrame | None:
+    """The stored `security_master` prepared for stamping; None before the first `identity-tables` build."""
+    master = context.store.load(Tables.security_master, columns=[*_MASTER_COLUMNS, "source"], optional=True)
+    return None if master is None else prepare_master(master)
+
+
+def _log_unplaced(stamped: pd.DataFrame) -> None:
+    unplaced = stamped["security_id"].notna() & stamped["lineage_role"].isna()
+    if unplaced.any():
+        cusips = sorted(set(stamped.loc[unplaced, "cusip"]))
+        logger.warning(
+            "FTD: %d line(s) of %d master CUSIP(s) fall in no master interval; stored, never summed: %s",
+            int(unplaced.sum()),
+            len(cusips),
+            ", ".join(cusips[:20]),
+        )
+
+
+def _purge_out_of_scope(context: Context, stamped: pd.DataFrame) -> int:
+    """Delete the stored lines of CUSIPs the master lacks (no universe security, or a co-registrant's)."""
+    gone = stamped.loc[stamped["security_id"].isna(), "cusip"].astype(str)
+    if gone.empty:
+        return 0
+    cusips = sorted(set(gone))
+    for chunk in _chunks(cusips, _KEY_CHUNK):
+        context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": chunk})
+    logger.warning("FTD: %d stored line(s) over %d CUSIP(s) have no security_master row; deleted", len(gone), len(cusips))
+    return len(gone)
+
+
+def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozenset[str]) -> tuple[int, int]:
+    """Every cached ZIP's lines of the master's CUSIPs, stamped; both tables replaced. `(raw rows, ticker rows)`."""
+    cache = cache_dir(context, context.config.local.paths.fails_deliver)
+    cached = sorted(_cached_periods(cache))
+    missing = sorted(set(map(str, context.store.distinct(Tables.sec_fails_to_deliver_security, "period"))) - set(cached))
+    if missing:
+        raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period(s) {missing}: not in the cache")
+    cusips = frozenset(master["cusip"])
+    frames: list[pd.DataFrame] = []
+    other = 0
+    for period in tqdm(cached, desc="SEC fails-to-deliver (rebuild)"):
+        lines = _read_period(context, cache, period, download=False)
+        if lines is None:
+            raise ValueError(f"FTD full rebuild cannot read cached period {period}")
+        scoped = lines["cusip"].isin(cusips)
+        other += int((~scoped).sum())
+        frames.append(stamp_lines(lines[scoped], master))
+    stamped = _unique_keys(pd.concat(frames, ignore_index=True), "FTD rebuild") if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS))
+    grain = ticker_rows(stamped, universe)
+    if grain.empty:
+        raise ValueError("FTD full rebuild staged no ticker rows")
+    _log_unplaced(stamped)
+    raw = context.store.replace(Tables.sec_fails_to_deliver_security, stamped[list(SECURITY_COLUMNS)])
+    saved = context.store.replace(Tables.sec_fails_to_deliver, grain)
+    roles = stamped["lineage_role"].fillna("none").value_counts().sort_index().to_dict()
+    logger.info(
+        "FTD rebuild: %d period(s); %d line(s) stored, by role %s; %d line(s) of other CUSIPs not stored; %d ticker row(s)",
+        len(cached),
+        raw,
+        roles,
+        other,
+        saved,
+    )
+    return raw, saved
+
+
+def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str]) -> int:
+    """Stamp the NULL-stamped lines (`ftd-download`'s new rows) and rebuild the ticker rows of their periods."""
+    table = Tables.sec_fails_to_deliver_security
+    new = context.store.load(table, columns=list(SECURITY_COLUMNS[:9]), where={"security_id": None}, optional=True)
+    if new is None:
+        return 0
+    stamped = stamp_lines(new, master)
+    _purge_out_of_scope(context, stamped)
+    stamped = stamped[stamped["security_id"].notna()]
+    if stamped.empty:
+        return 0
+    context.store.save(table, stamped[list(SECURITY_COLUMNS)])
+    _log_unplaced(stamped)
+    periods = sorted(set(stamped["period"].astype(str)))
+    lines = context.store.load(table, columns=list(SECURITY_COLUMNS), where={"period": periods}, optional=True)
+    grain = ticker_rows(stamp_lines(lines, master), universe) if lines is not None else pd.DataFrame(columns=list(TICKER_COLUMNS))
+    for chunk in _chunks(sorted(universe), _TICKER_CHUNK):
+        context.store.delete(Tables.sec_fails_to_deliver, where={"ticker": chunk, "period": periods})
+    saved = context.store.save(Tables.sec_fails_to_deliver, grain) if not grain.empty else 0
+    logger.info("FTD: %d new line(s) stamped over %d period(s); %d ticker row(s) rebuilt", len(stamped), len(periods), saved)
+    return saved
+
+
+def _company_lines(context: Context, master: pd.DataFrame, companies: Sequence[str]) -> pd.DataFrame:
+    """Stored lines stamped with one of `companies` or on one of their master CUSIPs."""
+    table = Tables.sec_fails_to_deliver_security
+    columns = list(SECURITY_COLUMNS)
+    cusips = sorted(set(master.loc[master["canonical_company"].isin(set(companies)), "cusip"]))
+    frames = [context.store.load(table, columns=columns, where={"ticker": chunk}, optional=True) for chunk in _chunks(companies, _TICKER_CHUNK)]
+    frames += [context.store.load(table, columns=columns, where={"cusip": chunk}, optional=True) for chunk in _chunks(cusips, _KEY_CHUNK)]
+    kept = [frame for frame in frames if frame is not None]
+    if not kept:
+        return pd.DataFrame(columns=columns)
+    lines = pd.concat(kept, ignore_index=True)
+    lines["date"] = pd.to_datetime(lines["date"])
+    return lines.drop_duplicates(["cusip", "date"], ignore_index=True)
+
+
+def _stamp_changed(stored: pd.DataFrame, fresh: pd.DataFrame) -> pd.Series:
+    differs = pd.Series(False, index=fresh.index)
+    for column in _STAMP_COLUMNS:
+        differs |= _nullable(stored[column]).astype(str).to_numpy() != _nullable(fresh[column]).astype(str).to_numpy()
+    return differs
+
+
+def _same(a: pd.Series, b: pd.Series) -> np.ndarray:
+    left = pd.to_numeric(a, errors="coerce").to_numpy(dtype="float64")
+    right = pd.to_numeric(b, errors="coerce").to_numpy(dtype="float64")
+    return np.isclose(left, right, rtol=1e-12, atol=0.0) | (np.isnan(left) & np.isnan(right))
+
+
+def _apply_grain(context: Context, tickers: Sequence[str], grain: pd.DataFrame, *, dry_run: bool) -> list[dict]:
+    """Write the ticker rows of `tickers` that differ from `grain` (vanished keys deleted); one record per ticker that lost rows."""
+    table = Tables.sec_fails_to_deliver
+    columns = list(TICKER_COLUMNS)
+    frames = [context.store.load(table, columns=columns, where={"ticker": chunk}, optional=True) for chunk in _chunks(tickers, _TICKER_CHUNK)]
+    kept = [frame for frame in frames if frame is not None]
+    stored = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=columns)
+    stored["date"] = pd.to_datetime(stored["date"]).dt.normalize()
+    both = stored.merge(grain, on=["ticker", "date"], how="outer", suffixes=("_old", ""), indicator=True)
+    same = (
+        both["_merge"].eq("both").to_numpy()
+        & _same(both["fails_quantity_old"], both["fails_quantity"])
+        & _same(both["fails_value_old"], both["fails_value"])
+        & both["period_old"].astype(str).eq(both["period"].astype(str)).to_numpy()
+    )
+    gone = both[both["_merge"].eq("left_only")]
+    write = both[both["_merge"].ne("left_only").to_numpy() & ~same][columns]
+    records: list[dict] = []
+    for ticker, group in gone.groupby("ticker", sort=True):
+        first, last = filing_window(group["date"])
+        records.append(
+            {"table": table.name, "ticker": str(ticker), "cik": "", "first_filed": first, "last_filed": last, "keys": len(group), "rows": len(group)}
+        )
+        if not dry_run:
+            for chunk in _chunks(sorted(group["date"]), _KEY_CHUNK):
+                context.store.delete(table, where={"ticker": str(ticker), "date": chunk})
+    if not dry_run and not write.empty:
+        context.store.save(table, write)
+    return records
+
+
+def restamp_fails(
+    context: Context,
+    companies: Collection[str] | None,
+    tickers: Collection[str],
+    *,
+    master: pd.DataFrame | None = None,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Re-stamp the stored lines of `companies` from the master and rebuild their ticker rows, writing only what changed.
+
+    `companies` None: those whose master rows changed since `sec_fails_to_deliver`'s last run (all when it has none).
+    Lines of CUSIPs the master no longer holds are deleted. Returns one record per ticker whose ticker rows vanished.
+    """
+    master = load_fails_master(context) if master is None else master
+    if master is None or master.empty:
+        return []
+    if companies is None:
+        entry = get_entry(context, Tables.sec_fails_to_deliver)
+        stamps = master_stamps(master)
+        companies = sorted(stamps) if not (entry or {}).get("last_run_date") else scope_changed_tickers(entry, stamps)
+    names = sorted(set(companies))
+    if not names:
+        return []
+    stored = _company_lines(context, master, names)
+    if stored.empty:
+        return []
+    fresh = stamp_lines(stored, master)
+    changed = _stamp_changed(stored, fresh) & fresh["security_id"].notna()
+    if not dry_run:
+        _purge_out_of_scope(context, fresh)
+        if changed.any():
+            context.store.save(Tables.sec_fails_to_deliver_security, fresh.loc[changed, list(SECURITY_COLUMNS)])
+    logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
+    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    rebuilt = [name for name in names if name in universe]
+    return _apply_grain(context, rebuilt, ticker_rows(fresh, rebuilt), dry_run=dry_run) if rebuilt else []
+
+
+def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False) -> int:
+    """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
+
+    Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
+    since the table's last run; no ZIP is read. `full` rebuilds both tables from every cached ZIP.
+    """
+    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    master = load_fails_master(context)
+    if master is None or master.empty:
+        logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
+        return 0
     if full:
-        final_cached = _cached_periods(cache)
-        _validate_full_frame(accepted, universe, parsed_periods, final_cached)
-        saved = context.store.replace(Tables.sec_fails_to_deliver, accepted)
-    elif not accepted.empty:
-        saved = context.store.save(Tables.sec_fails_to_deliver, accepted)
-
-    unresolved_count = len(unresolved)
-    mark_processed(cache, Tables.sec_fails_to_deliver, policy_scope)
-    logger.info(f"sec_fails_to_deliver completed ({len(periods)} files scanned) +{saved}")
-    logger.info(f"FTD: {unresolved_count} unresolved raw row(s) excluded")
-    record_run(context, Tables.sec_fails_to_deliver, len(tickers), saved, is_full_rescan=full)
+        _, saved = _rebuild_from_cache(context, master, universe)
+    else:
+        saved = _stamp_new(context, master, universe)
+        for record in restamp_fails(context, None, universe, master=master):
+            logger.warning(
+                "FTD: %s lost %d ticker row(s) %s..%s on re-stamp", record["ticker"], record["rows"], record["first_filed"], record["last_filed"]
+            )
+    record_run(context, Tables.sec_fails_to_deliver, len(universe), saved, is_full_rescan=full)
     return saved
 
 
@@ -373,11 +547,7 @@ def download_fails_to_deliver(context: Context, years_history: int = 15, full: b
             if frame is not None:
                 kept = pd.concat([kept, _in_scope(frame, frozenset(), added)], ignore_index=True)
         scope |= {_PREFIX_TAG + p for p in added}
-    kept = kept.drop_duplicates(["cusip", "date", "source_symbol", "fails_quantity"], ignore_index=True)
-    duplicate = kept.duplicated(["cusip", "date"], keep="first")
-    if duplicate.any():
-        logger.warning("FTD download: %d line(s) repeat a (cusip, settlement date) key with other values; the first is kept", int(duplicate.sum()))
-        kept = kept[~duplicate]
+    kept = _unique_keys(kept, "FTD download")
     rows = kept.assign(security_id=None, ticker=None, lineage_role=None, security_class=None)[list(SECURITY_COLUMNS)]
     if full:
         written = context.store.replace(table, rows)

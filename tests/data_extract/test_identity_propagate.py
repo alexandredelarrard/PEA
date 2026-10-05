@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract import identity_propagate as prop
+from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import build_history
@@ -152,15 +153,15 @@ def _record_all(context) -> None:
 
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
-    """Bulk re-parsers, the FTD re-resolution and the derived rebuilds recorded instead of run."""
+    """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
     calls: dict[str, list] = {"notes": [], "pension": [], "insider": [], "ftd": [], "history": [], "merged": []}
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: calls["notes"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: calls["pension"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: calls["insider"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(
         prop,
-        "resolve_ticker_fails",
-        lambda context, tickers, identity: calls["ftd"].append(sorted(tickers)) or (pd.DataFrame(columns=["ticker", "date", "period"]), set()),
+        "restamp_fails",
+        lambda context, companies, tickers, master=None, dry_run=False: calls["ftd"].append(sorted(companies)) or [],
     )
     monkeypatch.setattr(
         prop,
@@ -292,7 +293,7 @@ def test_an_unchanged_lineage_neither_purges_nor_reparses(sqlite_store, tmp_path
     every = prop.propagate_identity(context, list(ROSTER), dry_run=True, every_ticker=True).removals
     assert set(zip(every["ticker"], every["cik"], strict=True)) == {("ALB", AB), ("MSFT", MSFT_FOREIGN)}
     print("\n=== SANITY CHECK: unchanged lineage (AC-032) ===")
-    print("  no purge, no bulk re-parse, no FTD re-resolution, no rebuild; the validator's every-ticker dry run still lists both foreign filers")
+    print("  no purge, no bulk re-parse, no FTD re-stamp, no rebuild; the validator's every-ticker dry run still lists both foreign filers")
 
 
 def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -304,9 +305,9 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
     prop.propagate_identity(context, list(ROSTER))
 
     assert stubs["notes"] == stubs["pension"] == stubs["insider"] == [["MSFT"]]
-    assert stubs["ftd"] == []  # symbol rows unchanged
+    assert stubs["ftd"] == []  # no stored FTD lines, no master
     print("\n=== SANITY CHECK: expansion (AC-030) ===")
-    print("  notes, pension and insider bulk re-parsed for MSFT only; FTD untouched (no symbol change)")
+    print("  notes, pension and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
 
 
 def test_the_short_interest_table_is_never_purged(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -328,24 +329,53 @@ def test_the_short_interest_table_is_never_purged(sqlite_store, tmp_path, monkey
     print("  sec_short_interest is not a purge table; its 2 stored rows survive a contraction of ALB")
 
 
-def _symbol_rows(old_holder: str, stamp) -> list[dict]:
-    """`OLD` traded 2010-2016; `old_holder` holds it. Each ticker also holds its own symbol."""
-    return [
-        _row(old_holder, ROSTER[old_holder], "symbol", symbol="OLD", start="2010-01-01", end="2016-01-01", stamp=stamp),
-        _row("ALB", ALB, "symbol", symbol="ALB", start="2000-01-01", stamp=stamp if old_holder == "MSFT" else BEFORE),
-        _row("MSFT", MSFT, "symbol", symbol="MSFT", start="2000-01-01", stamp=stamp if old_holder == "MSFT" else BEFORE),
+def _master(owner_of_old: str, stamps: dict[str, pd.Timestamp]) -> pd.DataFrame:
+    """One canonical CUSIP per ticker, plus `OLD` (2010-2016) held by `owner_of_old`."""
+    rows = [
+        ("000000AL1", "ALB", "ALB", "2000-01-01", None),
+        ("000000MS1", "MSFT", "MSFT", "2000-01-01", None),
+        ("000000OL1", owner_of_old, "OLD", "2010-01-01", "2016-01-01"),
     ]
+    frame = pd.DataFrame(rows, columns=["cusip", "canonical_company", "source_symbol", "valid_from", "valid_to"])
+    frame = frame.assign(
+        security_id="C" + frame["cusip"],
+        issuer_cik="0000000001",
+        source=sm.SOURCE_FTD,
+        market_symbol=frame["source_symbol"],
+        exchange=None,
+        security_class="common",
+        conversion_ratio=1.0,
+        lineage_role=sm.CANONICAL_CURRENT,
+        lineage_reason="fixture",
+        source_accession=None,
+        evidence="fixture",
+        n_observations=1,
+    )
+    frame["valid_from"] = pd.to_datetime(frame["valid_from"])
+    frame["valid_to"] = pd.to_datetime(frame["valid_to"])
+    frame["scope_changed_at"] = [stamps.get(t, BEFORE) for t in frame["canonical_company"]]
+    return frame[list(sm.TABLE_COLUMNS)]
 
 
-def _ftd_raw(rows: list[tuple[str, str, int]]) -> str:
+def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
     lines = ["SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"]
-    lines += [f"{day}|000000000|{symbol}|{qty}|X|1.0" for day, symbol, qty in rows]
-    return "\n".join(lines)
+    lines += [f"{day}|{cusip}|{symbol}|{qty}|X|1.0" for day, cusip, symbol, qty in rows]
+    return ftd._parse_ftd_lines("\n".join(lines) + "\n")
 
 
-def test_a_moved_tape_symbol_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch, caplog):
-    """FTD contraction and expansion: `OLD` is re-dated from ALB to MSFT; ALB's OLD-era rows go, MSFT gains them."""
+def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch, caplog):
+    """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
+    ticker row goes (WARNING), MSFT gains it, re-stamped from the stored raw lines with no zip read."""
     context = _context(sqlite_store, tmp_path)
+    raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
+    raw = raw.assign(
+        period=["201203a", "202402a", "202402a"],
+        security_id="C" + raw["cusip"],
+        ticker=["ALB", "ALB", "MSFT"],
+        lineage_role=sm.CANONICAL_CURRENT,
+        security_class="common",
+    )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
     stored = pd.DataFrame(
         {
             "ticker": ["ALB", "ALB", "MSFT"],
@@ -356,13 +386,10 @@ def test_a_moved_tape_symbol_moves_its_fails_rows(sqlite_store, tmp_path, monkey
         }
     )
     sqlite_store.save(Tables.sec_fails_to_deliver, stored)
+    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
     _record_all(context)
-    identity = _identity({}, _symbol_rows("MSFT", AFTER))
-    monkeypatch.setattr(prop, "load_identity", lambda context: identity)
-    raw = {"201203a": _ftd_raw([("20120301", "OLD", 10)]), "202402a": _ftd_raw([("20240201", "ALB", 5), ("20240201", "MSFT", 7)])}
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw))
-    monkeypatch.setattr(ftd, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw[path.stem.removeprefix("cnsfails")])
+    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({}))
+    monkeypatch.setattr(ftd, "read_zip_text", lambda *a, **k: pytest.fail("the re-stamp reads no zip"))
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: 0)
     monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: 0)
@@ -373,32 +400,34 @@ def test_a_moved_tape_symbol_moves_its_fails_rows(sqlite_store, tmp_path, monkey
     after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
     got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
     assert got == [("ALB", "2024-02-01", 5.0), ("MSFT", "2012-03-01", 10.0), ("MSFT", "2024-02-01", 7.0)], got
+    restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
+    assert restamped["ticker"].tolist() == ["MSFT"]
     assert any(
         "'sec_fails_to_deliver'" in r.getMessage() and "ALB" in r.getMessage() and "2012-03-01..2012-03-01 1 row(s)" in r.getMessage()
         for r in caplog.records
     )
-    print("\n=== SANITY CHECK: FTD symbol tape ===")
-    print("  OLD re-dated from ALB to MSFT: ALB's 2012 row purged (WARNING), MSFT gains it; ALB's own 2024 row kept")
+    print("\n=== SANITY CHECK: FTD re-stamp ===")
+    print("  OLD moved from ALB to MSFT in the master: ALB's 2012 row purged (WARNING), MSFT gains it; ALB's own 2024 row kept")
 
 
-def test_the_symbol_stamp_alone_drives_the_tape(sqlite_store, tmp_path, monkeypatch, stubs):
-    """A symbol-only change re-resolves FTD for the two tickers whose symbol rows moved and relists no CIK family."""
+def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path, monkeypatch, stubs):
+    """Only companies whose master rows changed since the table's last run are re-stamped; no CIK family is re-parsed."""
     context = _context(sqlite_store, tmp_path)
-    sqlite_store.save(
-        Tables.sec_fails_to_deliver,
-        pd.DataFrame({"ticker": ["ALB"], "date": pd.to_datetime(["2024-02-01"]), "fails_quantity": [5.0], "period": ["202402a"]}),
+    raw = _ftd_raw([("20240201", "000000AL1", "ALB", 5)]).assign(
+        period="202402a", security_id="C000000AL1", ticker="ALB", lineage_role=sm.CANONICAL_CURRENT, security_class="common"
     )
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw[list(ftd.SECURITY_COLUMNS)])
+    sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
     _record_all(context)
-    identity = _identity({}, _symbol_rows("MSFT", AFTER))
+    identity = _identity({})
     monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
     prop.propagate_identity(context, list(ROSTER))
 
     assert stubs["ftd"] == [["ALB", "MSFT"]]
     assert stubs["notes"] == stubs["insider"] == []
-    assert identity.filing_scope("MSFT").scope_changed_at == BEFORE and identity.symbols_changed_at("MSFT") == AFTER
-    print("\n=== SANITY CHECK: symbol stamp ===")
-    print("  symbol rows carry their own change stamp: FTD re-resolved for ALB and MSFT, no CIK family re-parsed")
+    print("\n=== SANITY CHECK: master stamp ===")
+    print("  security_master rows carry their own change stamp: FTD re-stamped for ALB and MSFT, no CIK family re-parsed")
 
 
 def _history(ticker: str, dates: list, revenue: float) -> TickerHistory:

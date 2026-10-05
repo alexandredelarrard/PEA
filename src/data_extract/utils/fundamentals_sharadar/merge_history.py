@@ -3,7 +3,8 @@
 Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` (plus
 `fundamentals_employees`) owns the `sec`-kind columns, and no column switches source mid-series; the only
 exception is a whole `(ticker, field)` series moved to SEC by the approved override register. Inside a register
-predecessor window the canonical ARQ rows are replaced by the window owner's vendor series before the TTM build. SEC-sourced
+predecessor window the canonical ARQ rows are replaced by the window owner's vendor series before the TTM build, on the
+ticker's share basis through the cited merger exchange ratio. SEC-sourced
 columns carry the `_sec` suffix (applied last, after `rederive`). The SEC block is joined BACKWARD as-of
 Sharadar's filing date within `SHARADAR_SEC_ASOF_TOLERANCE_DAYS` -- never forward. Every value column is cast
 to float64 before the write except `regime_sec` (text), excluded by name.
@@ -34,12 +35,21 @@ from src.constants.constants import (
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
-from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, TranslationReport, apply_derived, load_field_map, translate
+from src.data_extract.utils.fundamentals_sharadar.field_map import (
+    FieldMap,
+    TranslationReport,
+    apply_derived,
+    forward_split_factor,
+    load_field_map,
+    split_events,
+    translate,
+)
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import apply_predecessor_series
+from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, apply_predecessor_series, rebase_split_events
 
 log = logging.getLogger(__name__)
 
@@ -291,12 +301,14 @@ def build_frame(
     *,
     yf_splits: pd.DataFrame | None = None,
     report: TranslationReport | None = None,
+    splits: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """The whole merge transform, no I/O.
 
     translate -> TTM (+ split de-adjustment) -> same-date collapse -> backward SEC join -> employees -> overrides
-    -> re-derive -> `_sec` rename -> contract -> cast. Split events (`actions` + `yf_splits`) de-adjust only the
-    `split_basis` columns (`sharesOutstandingPit`); other share columns stay on the vendor's split-adjusted basis.
+    -> re-derive -> `_sec` rename -> contract -> cast. Split events (`actions` + `yf_splits`, or `splits` when given)
+    de-adjust only the `split_basis` columns (`sharesOutstandingPit`); other share columns stay on the vendor's
+    split-adjusted basis.
     """
     columns = merged_columns(field_map)
     # an override on an already SEC-owned column is a contradiction, refused by name
@@ -310,7 +322,7 @@ def build_frame(
     translated = translate(sharadar_arq, field_map, report=report)
 
     # split de-adjustment runs after the four-quarter aggregation, inside `build_ttm`
-    ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits, report=report)
+    ttm = build_ttm(translated, field_map, actions=actions, yf_splits=yf_splits, report=report, splits=splits)
     ttm = pin_dtypes(ttm.rename(columns=_KEY_FROM_VENDOR), dates=("as_of", "fiscal_end"))
 
     collapsed, dropped = collapse_same_date(ttm)
@@ -369,11 +381,30 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
     return out
 
 
-def with_predecessor_series(context: Context, vendor: pd.DataFrame, names: list[str]) -> pd.DataFrame:
-    """`vendor` with each predecessor window's canonical ARQ rows replaced by the window owner's own; logged per quarter."""
+def share_basis_factors(
+    series: tuple[PredecessorSeries, ...], exchanges: tuple[ShareExchange, ...], splits: pd.DataFrame
+) -> dict[tuple[str, str], tuple[ShareExchange, float] | None]:
+    """Per `(ticker, cik)` window: its cited exchange and factor = ratio x the ticker's splits after the seam; None when uncited."""
+    by_window = {(x.ticker, x.predecessor_cik): x for x in exchanges}
+    out: dict[tuple[str, str], tuple[ShareExchange, float] | None] = {}
+    for s in series:
+        exchange = by_window.get((s.ticker, s.cik))
+        if exchange is None:
+            out[(s.ticker, s.cik)] = None
+            continue
+        later = forward_split_factor(pd.Series([s.ticker]), pd.Series([exchange.seam_date]), splits).iloc[0]
+        out[(s.ticker, s.cik)] = (exchange, exchange.ratio * float(later))
+    return out
+
+
+def with_predecessor_series(
+    context: Context, vendor: pd.DataFrame, names: list[str], splits: pd.DataFrame, *, config_dir: str = DEFAULT_CONFIG_DIR
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`(vendor, splits)` with each predecessor window's canonical ARQ rows replaced by the window owner's own on the
+    ticker's share basis, and the split events rebased so the window's PIT count is the owner's; logged per quarter."""
     series = load_predecessor_series(context, names)
     if not series:
-        return vendor
+        return vendor, splits
     owners = context.store.load(
         Tables.sharadar_fundamentals, project=True, where={"ticker": sorted({s.vendor_ticker for s in series}), "dimension": ARQ}, optional=True
     )
@@ -388,8 +419,9 @@ def with_predecessor_series(context: Context, vendor: pd.DataFrame, names: list[
                 s.valid_to.date() if s.valid_to is not None else "-",
             )
     if owners is None or owners.empty:
-        return vendor
-    merged, events = apply_predecessor_series(vendor, owners, series)
+        return vendor, splits
+    exchanges = share_basis_factors(series, load_security_manual(config_dir).exchanges, splits)
+    merged, events = apply_predecessor_series(vendor, owners, series, factors={key: hit[1] if hit else None for key, hit in exchanges.items()})
     for (ticker, vendor_ticker, cik), group in events.groupby(["ticker", "vendor_ticker", "cik"], sort=True):
         quarters = {event: part["quarter"].tolist() for event, part in group.groupby("event", sort=True)}
         counts = [value for event in ("replaced", "filled", "dropped") for value in (len(quarters.get(event, [])), quarters.get(event, []))]
@@ -401,7 +433,35 @@ def with_predecessor_series(context: Context, vendor: pd.DataFrame, names: list[
             *counts,
             group.loc[group["predecessor_rows"].gt(1), "quarter"].tolist() or "none",
         )
-    return merged
+        hit = exchanges.get((str(ticker), str(cik)))
+        if hit is None:
+            context.log.warning(
+                "merged history: no cited exchange ratio for the window of CIK %s in %s (%s rows): its share counts and per-share figures are NULL",
+                cik,
+                ticker,
+                vendor_ticker,
+            )
+        else:
+            context.log.info(
+                "merged history: %s rows of CIK %s on %s's share basis -- exchange ratio %s on %s x later splits = factor %.6g",
+                vendor_ticker,
+                cik,
+                ticker,
+                hit[0].ratio,
+                hit[0].seam_date.date(),
+                hit[1],
+            )
+    applied = set(zip(events["ticker"], events["cik"], strict=True))
+    converted = [(s, hit[0]) for s in series if (s.ticker, s.cik) in applied and (hit := exchanges.get((s.ticker, s.cik))) is not None]
+    if not converted:
+        return merged, splits
+    owner_actions = context.store.load(
+        Tables.sharadar_actions,
+        project=True,
+        optional=True,
+        where={"ticker": sorted({s.vendor_ticker for s, _ in converted}), "action": [SHARADAR_ACTION_SPLIT]},
+    )
+    return merged, rebase_split_events(splits, split_events(owner_actions, None), converted)
 
 
 def build_merged_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
@@ -419,7 +479,6 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     if vendor is None or vendor.empty:
         context.log.warning("merged history: no ARQ rows for %d requested ticker(s) -- run `fundamentals-sharadar` first", len(names))
         return
-    vendor = with_predecessor_series(context, vendor, names)
 
     # `sharadar_actions` is market-wide: scope to these tickers' splits and spinoffs (spinoffs only name co-dated splits)
     actions = context.store.load(
@@ -427,6 +486,8 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     )
     # second split source; `split_events` unions it with `sharadar_actions` under a corroboration rule
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    report = TranslationReport()
+    vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits, report=report), config_dir=config_dir)
     employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names}, optional=True)
 
     # projection built from the register (so every override column is loaded); `employees` lives elsewhere
@@ -443,8 +504,7 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     else:
         sec = sec.rename(columns={f: f"{_SEC_PREFIX}{f}" for f in overrides.fields})
 
-    report = TranslationReport()
-    frame = build_frame(vendor, sec, employees, actions, field_map, overrides, yf_splits=yf_splits, report=report)
+    frame = build_frame(vendor, sec, employees, actions, field_map, overrides, yf_splits=yf_splits, report=report, splits=splits)
     if frame.empty:
         context.log.warning("merged history: the transform produced 0 rows")
         return

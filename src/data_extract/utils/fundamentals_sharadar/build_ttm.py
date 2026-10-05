@@ -161,6 +161,7 @@ def build_ttm(
     yf_splits: pd.DataFrame | None = None,
     quarter_columns: dict[str, str] | None = None,
     report: TranslationReport | None = None,
+    splits: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Discrete ARQ quarters -> one TTM/instant row per (ticker, filing date).
 
@@ -189,7 +190,7 @@ def build_ttm(
     `actions` and `yf_splits` are the two split sources, unioned under the corroboration rule
     in `split_events` -- `sharadar_actions` alone has nine known holes. Passing both as None
     leaves `sharesOutstandingPit` on the vendor basis, which is NOT point-in-time;
-    `deadjust_splits` warns when it happens.
+    `deadjust_splits` warns when it happens. `splits`, when given, is the event list itself.
     """
 
     if frame.empty:
@@ -270,5 +271,5 @@ def build_ttm(
     # De-adjust the AGGREGATE, then derive. Both orderings matter: after the rolling window so
     # the window is on one basis, and before `apply_derived` so `epsDiluted` reads a corrected
     # `dilutedShares` rather than being computed from a hybrid one.
-    result = deadjust_splits(result, field_map, actions, yf_splits, report=report)
+    result = deadjust_splits(result, field_map, actions, yf_splits, report=report, splits=splits)
     return apply_derived(result, field_map)

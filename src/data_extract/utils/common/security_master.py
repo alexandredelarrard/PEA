@@ -36,6 +36,7 @@ from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
+from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
@@ -228,13 +229,14 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 @dataclass(frozen=True)
 class SecurityManual:
     """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
-    metadata and the declared co-registrant CIKs."""
+    metadata, the declared co-registrant CIKs and the merger exchange ratios."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
     classes: pd.DataFrame
     mergers: tuple[dict[str, Any], ...] = ()
     co_registrants: tuple[str, ...] = ()
+    exchanges: tuple[ShareExchange, ...] = ()
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -244,6 +246,7 @@ class SecurityManual:
 _RATIO_COLUMNS = ("ticker", "cusip", "ratio", "valid_from", "valid_to", "source")
 _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "valid_to", "reason", "source")
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
+_EXCHANGE_COLUMNS = ("ticker", "predecessor_cik", "seam_date", "ratio", "source")
 
 
 def _entries(blob: Mapping[str, Any], key: str, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -280,7 +283,19 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         classes=_entries(blob, "class_overrides", _CLASS_COLUMNS),
         mergers=mergers,
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
+        exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
     )
+
+
+def _exchanges(rows: pd.DataFrame) -> tuple[ShareExchange, ...]:
+    """The `exchange_ratios` entries; a ratio that is not a positive number is refused."""
+    out = []
+    for row in rows.itertuples(index=False):
+        ratio = pd.to_numeric(row.ratio, errors="coerce")
+        if pd.isna(ratio) or float(ratio) <= 0:
+            raise SecurityManualError(f"security_master_manual.json: exchange ratio {row} is not a positive number")
+        out.append(ShareExchange(normalise_ticker(str(row.ticker)), pad_cik(row.predecessor_cik), pd.Timestamp(str(row.seam_date)), float(ratio)))
+    return tuple(out)
 
 
 @dataclass(frozen=True)

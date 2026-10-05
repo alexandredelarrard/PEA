@@ -626,18 +626,21 @@ def deadjust_splits(
     yf_splits: pd.DataFrame | None = None,
     *,
     report: TranslationReport | None = None,
+    splits: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Undo Sharadar's retroactive split adjustment on every column with a declared `split_basis`.
 
     SF1 restates the whole share block (`sharesbas`, `shareswa`, `shareswadil`, `eps`, `epsdil`, `dps`) on
     today's basis, so it is not point-in-time. `count` columns are divided and per-share columns multiplied by
     `forward_split_factor` at the row's filing date. Must run on the TTM frame (every quarter in a window shares
-    one vendor basis), never on discrete quarters. With no split events, warns and returns the frame unchanged.
+    one vendor basis), never on discrete quarters. `splits` replaces the events built from the two sources. With no
+    split events, warns and returns the frame unchanged.
     """
     targets = {n: s for n, s in field_map.outputs.items() if s.split_basis}
     if not targets:
         return frame
-    splits = split_events(actions, yf_splits, report=report)
+    if splits is None:
+        splits = split_events(actions, yf_splits, report=report)
     if splits.empty:
         log.warning(
             "no genuine split events available -- the share block stays on Sharadar's retroactively adjusted basis, which is NOT point-in-time"

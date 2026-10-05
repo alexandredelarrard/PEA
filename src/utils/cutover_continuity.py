@@ -37,6 +37,11 @@ FILING_COLUMNS = ("ticker", "cik", "accession_number", "form", "filing_date", "p
 #: Relative `assets` difference above which a vendor quarter is read as another company's.
 OTHER_COMPANY_TOLERANCE = 0.05
 
+#: Vendor share counts, multiplied by the share-basis factor inside a converted predecessor window.
+SHARE_COUNT_COLUMNS = ("sharesbas", "shareswa", "shareswadil")
+#: Vendor per-share figures, divided by it; totals (`marketcap`, `ev`) and unitless ratios are left alone.
+PER_SHARE_COLUMNS = ("eps", "epsdil", "epsusd", "dps", "bvps", "tbvps", "fcfps", "sps", "price")
+
 _SENTINEL = pd.Timestamp("1900-01-01")
 _CIK_IN_URL = re.compile(r"CIK=(\d+)", re.IGNORECASE)
 _EVENTS = ("replaced", "filled", "dropped")
@@ -73,6 +78,16 @@ class PredecessorSeries:
     cik: str
     valid_from: pd.Timestamp | None
     valid_to: pd.Timestamp | None
+
+
+@dataclass(frozen=True)
+class ShareExchange:
+    """A cited merger exchange ratio: one share of `predecessor_cik` became `ratio` shares of `ticker` on `seam_date`."""
+
+    ticker: str
+    predecessor_cik: str
+    seam_date: pd.Timestamp
+    ratio: float
 
 
 @dataclass(frozen=True)
@@ -318,12 +333,55 @@ def _inside(frame: pd.DataFrame, series: PredecessorSeries) -> pd.Series:
 EVENT_COLUMNS = ("ticker", "vendor_ticker", "cik", "quarter", "event", "canonical_rows", "predecessor_rows")
 
 
-def apply_predecessor_series(arq: pd.DataFrame, predecessors: pd.DataFrame, series: Sequence[PredecessorSeries]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def convert_share_basis(frame: pd.DataFrame, factor: float | None) -> pd.DataFrame:
+    """`frame` with its share counts multiplied and its per-share figures divided by `factor`.
+
+    `factor=None` (no cited exchange ratio) nulls the whole share block rather than mixing two share bases.
+    """
+    out = frame.copy()
+    counts = [column for column in SHARE_COUNT_COLUMNS if column in out.columns]
+    per_share = [column for column in PER_SHARE_COLUMNS if column in out.columns]
+    if factor is None:
+        out[counts + per_share] = float("nan")
+        return out
+    out[counts] = out[counts].astype("float64") * factor
+    out[per_share] = out[per_share].astype("float64") / factor
+    return out
+
+
+def rebase_split_events(splits: pd.DataFrame, owner_splits: pd.DataFrame, windows: Sequence[tuple[PredecessorSeries, ShareExchange]]) -> pd.DataFrame:
+    """The split events with each converted window's pre-seam part replaced by the owner's own splits plus one event
+    of the exchange ratio on the seam, so a count de-adjusted inside the window is the owner's as-filed count."""
+    out = splits[["ticker", "date", "value"]].assign(date=pd.to_datetime(splits["date"]))
+    owners = owner_splits[["ticker", "date", "value"]].assign(
+        date=pd.to_datetime(owner_splits["date"]), _vendor=owner_splits["ticker"].map(normalise_ticker)
+    )
+    added: list[pd.DataFrame] = []
+    for s, exchange in windows:
+        start = s.valid_from if s.valid_from is not None else pd.Timestamp.min
+        before = out["ticker"].eq(s.ticker) & out["date"].ge(start) & out["date"].lt(exchange.seam_date)
+        own = owners[owners["_vendor"].eq(s.vendor_ticker) & owners["date"].ge(start) & owners["date"].lt(exchange.seam_date)]
+        out = out[~before]
+        added.append(own.drop(columns="_vendor").assign(ticker=s.ticker))
+        added.append(pd.DataFrame({"ticker": [s.ticker], "date": [exchange.seam_date], "value": [float(exchange.ratio)]}))
+    frames = [frame for frame in (out, *added) if not frame.empty]
+    if not frames:
+        return out
+    return pd.concat(frames, ignore_index=True).sort_values(["ticker", "date"], kind="mergesort").reset_index(drop=True)
+
+
+def apply_predecessor_series(
+    arq: pd.DataFrame,
+    predecessors: pd.DataFrame,
+    series: Sequence[PredecessorSeries],
+    factors: Mapping[tuple[str, str], float | None] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Inside each predecessor window, replace the canonical ticker's ARQ rows by the window owner's own rows.
 
-    Rows are tested on `reportperiod`; the owner's rows are relabelled to the canonical ticker. A window whose owner
-    has no stored row inside it is left unchanged. Returns `(arq, events)`, one event per quarter (`EVENT_COLUMNS`):
-    `replaced` (both had it), `filled` (only the owner) or `dropped` (only the canonical series).
+    Rows are tested on `reportperiod`; the owner's rows are relabelled to the canonical ticker and, when `factors`
+    is given, put on the canonical share basis by `factors[(ticker, cik)]` (`convert_share_basis`). A window whose
+    owner has no stored row inside it is left unchanged. Returns `(arq, events)`, one event per quarter
+    (`EVENT_COLUMNS`): `replaced` (both had it), `filled` (only the owner) or `dropped` (only the canonical series).
     """
     out = arq.copy()
     events: list[dict[str, object]] = []
@@ -333,6 +391,8 @@ def apply_predecessor_series(arq: pd.DataFrame, predecessors: pd.DataFrame, seri
         own = own[_inside(own, s)] if not own.empty else own
         if own.empty:
             continue
+        if factors is not None:
+            own = convert_share_basis(own, factors.get((s.ticker, s.cik)))
         canonical = out["ticker"].astype(str).eq(s.ticker) & _inside(out, s)
         before = quarter_ordinal(out.loc[canonical, "calendardate"]).value_counts()
         after = quarter_ordinal(own["calendardate"]).value_counts()

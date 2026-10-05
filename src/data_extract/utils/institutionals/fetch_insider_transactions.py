@@ -441,10 +441,12 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
     return saved
 
 
-def _restamp_targets(context: Context, tickers: Sequence[str]) -> list[str]:
-    """`tickers` plus every ticker holding a row without a stamp (rows stored before the lineage columns existed)."""
+def _restamp_targets(context: Context, tickers: Sequence[str], identity: Identity) -> list[str]:
+    """`tickers`, every ticker holding a row without a stamp (rows stored before the lineage columns existed), and the
+    tickers the manual `merger_metadata` and co-registrants name, since editing those moves no lineage stamp."""
     unstamped = {str(t) for t in context.store.distinct(Tables.insider_transactions, "ticker", where={"lineage_role": None})}
-    return sorted(set(tickers) | unstamped)
+    co_registrant = {identity.ticker_for_cik(cik) for cik in identity.co_registrant_ciks} - {None}
+    return sorted(set(tickers) | unstamped | set(identity.merger_boundaries) | {str(t) for t in co_registrant})
 
 
 def _changed_stamps(df_rows: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
@@ -469,7 +471,7 @@ def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identit
     if "lineage_role" not in present:
         context.log.warning("insider lineage: `insider_transactions` has no lineage columns yet (apply the sql/schema.sql block); re-stamp skipped")
         return []
-    targets = _restamp_targets(context, tickers)
+    targets = _restamp_targets(context, tickers, identity)
     columns = [column for column in _RESTAMP_COLUMNS if column in present]
     records: list[dict] = []
     restamped = 0

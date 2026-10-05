@@ -438,6 +438,51 @@ def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_stor
     print("\nSANITY: identity-propagate re-stamps the stored insider rows of the company whose lineage changed")
 
 
+def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lineage_change(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P32: declaring a co-registrant or a merger in the manual config moves no lineage stamp, yet the next
+    propagation re-checks the tickers the config names: the PG&E utility row is purged and AMB's pre-merger row,
+    canonical without the PLD merger entry, becomes acquired."""
+    tenure = pd.DataFrame(
+        [
+            {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
+            for t, c in ROSTER.items()
+        ]
+    )
+    roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
+    before = build_identity(_lineage(), tenure, roster, co_registrant_ciks=(DLR_LP,), mergers=())
+    rows = [
+        _tx("amb", AMB, "AMB", txn="2011-05-01", filed="2011-05-03"),
+        _tx("util", PCG_UTILITY, "PCG", txn="2022-06-01", filed="2022-06-03"),
+        _tx("pcg", PCG, "PCG", txn="2022-06-01", filed="2022-06-03"),
+    ]
+    kept, _ = ic.screen_insider_rows(pd.DataFrame(rows), UNIVERSE, before)
+    assert dict(zip(kept["accession_number"], kept["lineage_role"], strict=True)) == {
+        "amb": "canonical_predecessor",
+        "util": "acquired_constituent",
+        "pcg": "canonical_current",
+    }
+    sourced = kept.assign(source="zip")
+    sqlite_store.save(Tables.insider_transactions, sourced[[c for c in ic.INSIDER_COLUMNS if c in sourced.columns]])
+    context = _context(sqlite_store, tmp_path)
+    record_run(context, Tables.insider_transactions, 0, 3, is_full_rescan=True, run_date=STAMP + pd.Timedelta(days=5))
+    monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
+
+    after = _identity()  # same lineage and stamps; the shipped merger metadata and both fixture co-registrants
+    result = prop.propagate_identity(context, list(UNIVERSE), identity=after)
+    got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
+    roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
+    print("\n=== SANITY CHECK: config-driven re-stamp (P32) ===")
+    print(f"  roles after: {roles}")
+    print(result.removals[["table", "ticker", "cik", "rows"]].to_string(index=False))
+    assert roles == {"amb": "acquired_constituent", "pcg": "canonical_current"}
+    assert [(r.ticker, r.cik, r.rows) for r in result.removals.itertuples()] == [("PCG", PCG_UTILITY, 1)]
+    print(
+        "  OK: with no lineage change the propagation re-checks the config-named tickers: the new co-registrant's row is purged, the merger entry re-stamps AMB."
+    )
+
+
 def test_a_re_registered_company_keeps_its_late_filings_canonical() -> None:
     """A domestication is not a merger: Accenture plc's Form 4 filed 2009-11-18 for a 2004 gift (before its window)
     is the company's own history, dated into the Bermuda registrant's era; only a merger's legal acquirer is acquired

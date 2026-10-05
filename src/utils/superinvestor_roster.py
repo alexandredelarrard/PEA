@@ -190,7 +190,7 @@ def _chain(path: Path, manager_id: str, entries: list[dict[str, Any]]) -> tuple[
 
 
 def _load(context: Context) -> pd.DataFrame | None:
-    """The whole roster table (879 seeded rows + one snapshot per live scrape) with
+    """The whole roster table (the capture-dated history plus each changed live snapshot) with
     `snapshot_date` coerced to Timestamp. None when the table has never been written.
 
     `snapshot_date` is a SQL DATE, so psycopg2 hands back `datetime.date` objects that
@@ -256,9 +256,8 @@ def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
 def first_snapshot_date(context: Context) -> pd.Timestamp | None:
     """The earliest `snapshot_date` in the table, or None when it has never been written.
 
-    Dataroma's history starts in 2013 but the 13F books start 2011-09-30, so
-    `roster_as_of(q)` is EMPTY for the first two years and a caller that used it unguarded
-    would zero every manager there. Callers floor their lookup at this date: extrapolating
+    The roster history starts after the first 13F books, so `roster_as_of(q)` is EMPTY for
+    the earliest quarters and a caller that used it unguarded would zero every manager there. Callers floor their lookup at this date: extrapolating
     the oldest roster backwards is a compromise, but the alternative is today's roster,
     which is the survivorship bias this table exists to remove."""
     df = _load(context)

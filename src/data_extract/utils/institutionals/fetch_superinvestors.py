@@ -597,7 +597,7 @@ def _delete_stale_keys(context: Context, df: pd.DataFrame) -> int:
     """Delete the stored (snapshot_date, dataroma_code) keys absent from `df`, one targeted delete per snapshot date.
     Returns the rows deleted."""
     table = Tables.superinvestor_roster
-    stored = context.store.load(table, columns=["snapshot_date", "dataroma_code"])
+    stored = cast(pd.DataFrame, context.store.load(table, columns=["snapshot_date", "dataroma_code"]))
     keep = set(zip(pd.to_datetime(df["snapshot_date"]).dt.date, df["dataroma_code"], strict=True))
     stored_days = pd.to_datetime(stored["snapshot_date"]).dt.date
     stale = stored.assign(snapshot_date=stored_days)[[k not in keep for k in zip(stored_days, stored["dataroma_code"], strict=True)]]

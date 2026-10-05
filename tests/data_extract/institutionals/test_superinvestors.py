@@ -587,11 +587,8 @@ def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite
         with pytest.raises(RuntimeError, match="simulated crash"):
             si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
     after_crash = sqlite_store.load(si.Tables.superinvestor_roster, optional=True)
-    live_days = (
-        set()
-        if after_crash is None
-        else set(after_crash.loc[after_crash["source_url"] == si.DATAROMA_HOME_URL, "snapshot_date"].astype(str).str[:10])
-    )
+    assert after_crash is not None, f"superinvestor_roster is empty after a {crash} crash"
+    live_days = set(after_crash.loc[after_crash["source_url"] == si.DATAROMA_HOME_URL, "snapshot_date"].astype(str).str[:10])
     assert live_days == {"2026-09-08", "2026-09-09"}, f"live snapshots lost after a {crash} crash: {sorted(live_days)}"
 
     si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)

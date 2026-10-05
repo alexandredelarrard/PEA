@@ -70,6 +70,104 @@ def _result_frames(result: LlmResult, tally: dict) -> dict[Table, pd.DataFrame]:
     return {Tables.sec_8k_votes: _prepare_frame(rows)}
 
 
+def _load_narratives(context: Context, tickers: list[str]) -> pd.DataFrame | None:
+    """The stored Item 5.07 narratives of `tickers` (a projection of `sec_8k`), or None when there are none."""
+    if not context.store.exists(Tables.sec_8k):
+        context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; Item 5.07 votes skipped")
+        return None
+    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
+    if df_source is None or df_source.empty:
+        context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
+        return None
+    return df_source
+
+
+def _plan_todo(context: Context, df_source: pd.DataFrame) -> pd.DataFrame:
+    """The narratives whose accession is not yet stored in `sec_8k_votes` (markers included)."""
+    seen = stored_values(context, Tables.sec_8k_votes, "accession_number")
+    df_todo = df_source[~df_source["accession_number"].isin(seen)]
+    context.log.info(
+        "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",
+        len(df_source),
+        df_source["ticker"].nunique(),
+        len(df_source) - len(df_todo),
+        len(df_todo),
+    )
+    return df_todo
+
+
+def _ticker_tasks(context: Context, ticker: str, df_filings: pd.DataFrame, skips: dict[str, int]) -> tuple[list[LlmTask], list[pd.DataFrame]]:
+    """One ticker's LLM tasks, plus a marker for each filing the guard refuses (counted in `skips`).
+
+    The proxy roles are read once per ticker on this thread, so a worker never needs the database to categorise a nominee.
+    """
+    role_source = _role_source(context, ticker)
+    tasks: list[LlmTask] = []
+    refused: list[pd.DataFrame] = []
+    for _, f in df_filings.iterrows():
+        text = f.get("item_text")
+        reason = rejection_reason(text)
+        if reason is not None:
+            # Rejected before a task exists, so a truncated or tally-free narrative costs nothing; it is marked as read.
+            skips[reason] = skips.get(reason, 0) + 1
+            refused.append(_marker_frame(ticker, f))
+            continue
+        roles, titles = _role_map(role_source, f.get("period_of_report"))
+        tasks.append(
+            LlmTask(
+                seq=len(tasks),
+                payload=cast(str, text),
+                schema=Item507Extract,
+                table=Tables.sec_8k_votes,
+                meta={"ticker": ticker, "filing": f, "text": text, "roles": roles, "titles": titles},
+            )
+        )
+    return tasks, refused
+
+
+def _extract_ticker(extractor: LLMExtractor, ticker: str, tasks: list[LlmTask], skips: dict[str, int]) -> tuple[list[dict], int]:
+    """Run one ticker's tasks (the extractor saves each answer's rows or marker) and merge its skip counts into `skips`.
+
+    Returns the vote rows that survived the fabrication guard and the number it rejected.
+    """
+    tally: dict = {"rejected": 0, "rows": [], "skips": {}}
+    results = extractor.run_extraction(
+        tasks,
+        flatten=lambda r, tally=tally: _result_frames(r, tally),
+        group_key=lambda t: str(t.meta["ticker"]),
+    )
+    for reason, n in tally["skips"].items():
+        skips[reason] = skips.get(reason, 0) + n
+    for failed in (r for r in results if not r.ok):
+        logger.warning("%s: Item 5.07 LLM extraction failed (%s)", ticker, failed.error)
+        skips["extraction failed"] = skips.get("extraction failed", 0) + 1
+    return tally["rows"], tally["rejected"]
+
+
+def _log_ticker_rows(context: Context, ticker: str, rows: list[dict], n_filings: int) -> None:
+    """One line per ticker that gained vote rows, with its unmatched-nominee count."""
+    if not rows:
+        return
+    unmatched = sum(r.get("n_nominees_unmatched") or 0 for r in rows)
+    nominees = sum(r.get("n_nominees") or 0 for r in rows)
+    context.log.info(
+        "%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched",
+        ticker,
+        len(rows),
+        n_filings,
+        int(unmatched),
+        int(nominees),
+    )
+
+
+def _log_totals(context: Context, total_rows: int, total_rejected: int, skips: dict[str, int]) -> None:
+    """The run's row and rejection totals, then each skip reason, most frequent first."""
+    context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication guard", total_rows, total_rejected)
+    for reason, n in sorted(skips.items(), key=lambda kv: -kv[1]):
+        # Each is a filing that produced no rows; the reason separates an accepted loss from a correct empty answer.
+        context.log.info("Item 5.07: %d filing(s) skipped — %s", n, reason)
+
+
 def fetch_8k_votes_llm(
     context: Context,
     config: DictConfig,
@@ -88,24 +186,10 @@ def fetch_8k_votes_llm(
     (concurrent LLM calls) to `config.gpt.threads`; an explicit keyword pins one without touching config.
     """
     config = with_gpt_overrides(config, "sec8k_votes", model=model, max_chars=max_chars, cache=cache)
-    if not context.store.exists(Tables.sec_8k):
-        context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; Item 5.07 votes skipped")
+    df_source = _load_narratives(context, tickers)
+    if df_source is None:
         return
-
-    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
-    if df_source is None or df_source.empty:
-        context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
-        return
-
-    seen = stored_values(context, Tables.sec_8k_votes, "accession_number")
-    df_todo = df_source[~df_source["accession_number"].isin(seen)]
-    context.log.info(
-        "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",
-        len(df_source),
-        df_source["ticker"].nunique(),
-        len(df_source) - len(df_todo),
-        len(df_todo),
-    )
+    df_todo = _plan_todo(context, df_source)
     if df_todo.empty:
         return
 
@@ -117,62 +201,14 @@ def fetch_8k_votes_llm(
 
     total_rows, total_rejected = 0, 0
     skips: dict[str, int] = {}
-    for ticker, df_filings in tqdm(df_todo.groupby("ticker"), desc="8-K votes"):
-        # Read once per ticker on this thread, so a worker never needs the database to categorise a nominee.
-        role_source = _role_source(context, str(ticker))
-
-        tasks: list[LlmTask] = []
-        refused: list[pd.DataFrame] = []
-        for _, f in df_filings.iterrows():
-            text = f.get("item_text")
-            reason = rejection_reason(text)
-            if reason is not None:
-                # Rejected before a task exists, so a truncated or tally-free narrative costs nothing; it is marked as read.
-                skips[reason] = skips.get(reason, 0) + 1
-                refused.append(_marker_frame(str(ticker), f))
-                continue
-            roles, titles = _role_map(role_source, f.get("period_of_report"))
-            tasks.append(
-                LlmTask(
-                    seq=len(tasks),
-                    payload=cast(str, text),
-                    schema=Item507Extract,
-                    table=Tables.sec_8k_votes,
-                    meta={"ticker": str(ticker), "filing": f, "text": text, "roles": roles, "titles": titles},
-                )
-            )
-
+    for key, df_filings in tqdm(df_todo.groupby("ticker"), desc="8-K votes"):
+        ticker = str(key)
+        tasks, refused = _ticker_tasks(context, ticker, df_filings, skips)
         if refused:
             context.store.save(Tables.sec_8k_votes, pd.concat(refused, ignore_index=True))
-        tally: dict = {"rejected": 0, "rows": [], "skips": {}}
-        results = extractor.run_extraction(
-            tasks,
-            flatten=lambda r, tally=tally: _result_frames(r, tally),
-            group_key=lambda t: str(t.meta["ticker"]),
-        )
+        rows, rejected = _extract_ticker(extractor, ticker, tasks, skips)
+        total_rows += len(rows)
+        total_rejected += rejected
+        _log_ticker_rows(context, ticker, rows, len(df_filings))
 
-        total_rejected += tally["rejected"]
-        for reason, n in tally["skips"].items():
-            skips[reason] = skips.get(reason, 0) + n
-        for failed in (r for r in results if not r.ok):
-            logger.warning("%s: Item 5.07 LLM extraction failed (%s)", ticker, failed.error)
-            skips["extraction failed"] = skips.get("extraction failed", 0) + 1
-
-        ticker_rows = tally["rows"]
-        if ticker_rows:
-            total_rows += len(ticker_rows)
-            unmatched = sum(r.get("n_nominees_unmatched") or 0 for r in ticker_rows)
-            nominees = sum(r.get("n_nominees") or 0 for r in ticker_rows)
-            context.log.info(
-                "%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched",
-                ticker,
-                len(ticker_rows),
-                len(df_filings),
-                int(unmatched),
-                int(nominees),
-            )
-
-    context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication guard", total_rows, total_rejected)
-    for reason, n in sorted(skips.items(), key=lambda kv: -kv[1]):
-        # Each is a filing that produced no rows; the reason separates an accepted loss from a correct empty answer.
-        context.log.info("Item 5.07: %d filing(s) skipped — %s", n, reason)
+    _log_totals(context, total_rows, total_rejected, skips)

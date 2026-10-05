@@ -23,7 +23,7 @@ import re
 import warnings
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from functools import partial
 from typing import Any, NamedTuple, cast
 from urllib.parse import quote
@@ -132,7 +132,12 @@ ListingFn = Callable[[str], set[date]]
 
 
 class SuperinvestorResolutionError(RuntimeError):
-    """A roster manager resolved to no CIK, or to a CIK with no 13F activity near its snapshot, and is not a recorded exception."""
+    """A roster write is refused: an empty or partial scrape, or a manager with no CIK or no 13F activity near its
+    snapshot that is not a recorded exception."""
+
+
+class EdgarListingError(RuntimeError):
+    """The EDGAR 13F-HR listing of a CIK could not be read, so its activity is unknown (not evidence of a wrong CIK)."""
 
 
 class WaybackCapture(NamedTuple):
@@ -225,8 +230,7 @@ def _edgar_cik_for_name(fund_name: str, get_fn) -> tuple[str | None, str | None]
 
 def snapshot_quarter(snapshot_date: date | pd.Timestamp | str) -> date:
     """Q(snapshot): the last quarter end strictly before the date, i.e. the book most recently filed at it."""
-    day = pd.Timestamp(snapshot_date).date()
-    return date(day.year, 3 * ((day.month - 1) // 3) + 1, 1) - timedelta(days=1)
+    return (pd.Timestamp(snapshot_date).normalize() - pd.offsets.QuarterEnd()).date()
 
 
 def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver, *, overrides: SuperinvestorOverrides) -> list[dict]:
@@ -286,7 +290,7 @@ def _nearest(periods: Iterable[date], target: date) -> str:
 def assert_active(rows: list[dict], evidence: Evidence, inactive: Mapping[str, InactiveRange], listing_fn: ListingFn) -> list[str]:
     """Raise `SuperinvestorResolutionError` unless every row with a CIK shows 13F activity in its `activity_window`,
     from `evidence` or, on a local miss only, from `listing_fn(cik)` (called once per CIK). A row whose code has an
-    `inactive` range covering Q(snapshot) is skipped. Returns the skipped codes."""
+    `inactive` range covering Q(snapshot) is skipped; a `listing_fn` failure propagates. Returns the skipped codes."""
     by_cik: dict[str, set[date]] = {}
     for cik, period in evidence:
         by_cik.setdefault(cik, set()).add(period)
@@ -335,7 +339,7 @@ def quarterly_capture_candidates(cdx: str, since: date = ROSTER_HISTORY_START, u
         if status != "200" or timestamp in seen or day < since or (until is not None and day > until):
             continue
         seen.add(timestamp)
-        by_quarter.setdefault(f"{day.year}Q{(day.month - 1) // 3 + 1}", []).append(WaybackCapture(timestamp, original))
+        by_quarter.setdefault(str(pd.Period(day, "Q")), []).append(WaybackCapture(timestamp, original))
     return {quarter: sorted(caps, key=lambda c: c.timestamp, reverse=True) for quarter, caps in sorted(by_quarter.items())}
 
 
@@ -441,6 +445,16 @@ def _resolve_code(
     return out
 
 
+def _names_newest_first(pairs: Iterable[tuple[str, str]]) -> dict[str, list[str]]:
+    """`{code: [distinct names in input order]}` over newest-first `(code, name)` pairs."""
+    names: dict[str, list[str]] = {}
+    for code, name in pairs:
+        seen = names.setdefault(code, [])
+        if name not in seen:
+            seen.append(name)
+    return names
+
+
 def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], dict[str, list[str]]]:
     """What `superinvestor_roster` already knows: `{code: (cik, resolution)}` for the codes
     that resolved, and `{code: [names, newest first]}`. Empty on a cold table."""
@@ -451,14 +465,10 @@ def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], d
         return {}, {}
     df = df.sort_values("snapshot_date", ascending=False)
     known: dict[str, tuple[str, str]] = {}
-    names: dict[str, list[str]] = {}
-    for code, name, cik, resolution in df[["dataroma_code", "manager_name", "cik", "resolution"]].itertuples(index=False):
+    for code, cik, resolution in df[["dataroma_code", "cik", "resolution"]].itertuples(index=False):
         if (padded := pad_cik(cik)) and code not in known:
             known[code] = (padded, str(resolution))
-        seen = names.setdefault(code, [])
-        if (name := str(name)) not in seen:
-            seen.append(name)
-    return known, names
+    return known, _names_newest_first(zip(df["dataroma_code"], df["manager_name"].astype(str), strict=True))
 
 
 def activity_evidence(context: Context, ciks: Iterable[str]) -> Evidence:
@@ -478,15 +488,17 @@ def activity_evidence(context: Context, ciks: Iterable[str]) -> Evidence:
 
 
 def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
-    """Report periods of every 13F-HR(/A) EDGAR lists for one CIK (the listing's `reportDate`). A failed listing
-    is logged and returns no period, so the activity gate names the CIK."""
+    """Report periods of every 13F-HR(/A) EDGAR lists for one CIK (the listing's `reportDate`); empty when it lists
+    none. A failed listing raises `EdgarListingError` naming the CIK."""
     context.ensure_edgar_identity()
     try:
         listing = Company(int(cik)).get_filings(form=SEC_13F_FORMS)
         frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("EDGAR 13F-HR listing FAILED for CIK %s: %s", cik, e)
-        return set()
+    except Exception as e:
+        raise EdgarListingError(
+            f"EDGAR 13F-HR listing failed for CIK {cik} ({type(e).__name__}: {e}); its 13F activity is unknown, so nothing "
+            "was written. This is a listing/network failure, not evidence of a wrong CIK: rerun once EDGAR responds."
+        ) from e
     periods = pd.to_datetime(frame["reportDate"], errors="coerce").dropna()
     return {p.date() for p in periods}
 
@@ -512,23 +524,17 @@ def _gate(context: Context, rows: list[dict], overrides: SuperinvestorOverrides,
         )
 
 
-def _log_written(df: pd.DataFrame, verb: str) -> None:
-    """One INFO line: rows, snapshots and resolution split of a roster write."""
+def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+    """Gate the rows (`_gate`), upsert them sorted by primary key and log the resolution split. Returns the written frame."""
+    _gate(context, rows, overrides, listing_fn)
+    df = pd.DataFrame(rows).sort_values(["snapshot_date", "dataroma_code"], ignore_index=True)
+    context.store.save(Tables.superinvestor_roster, df)
     logger.info(
-        "superinvestor_roster: %s %d rows across %d snapshot(s); resolution %s",
-        verb,
+        "superinvestor_roster: wrote %d rows across %d snapshot(s); resolution %s",
         len(df),
         df["snapshot_date"].nunique(),
         df["resolution"].value_counts().to_dict(),
     )
-
-
-def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
-    """Gate the rows (`_gate`), upsert them and report the resolution split. Returns the written frame."""
-    _gate(context, rows, overrides, listing_fn)
-    df = pd.DataFrame(rows)
-    context.store.save(Tables.superinvestor_roster, df)
-    _log_written(df, "wrote")
     return df
 
 
@@ -563,12 +569,9 @@ def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) ->
     snapshots += [(day, DATAROMA_HOME_URL, roster) for day, roster in live]
 
     # Newest name first, so a renamed code resolves on its most recent name.
-    name_history: dict[str, list[str]] = {}
-    for _day, _url, roster in sorted(snapshots, key=lambda s: s[0], reverse=True):
-        for entry in roster:
-            names = name_history.setdefault(entry["code"], [])
-            if entry["name"] not in names:
-                names.append(entry["name"])
+    name_history = _names_newest_first(
+        (e["code"], e["name"]) for _day, _url, roster in sorted(snapshots, key=lambda s: s[0], reverse=True) for e in roster
+    )
     logger.info(
         "Roster rebuild: %d history + %d live snapshots, %d manager-rows, %d distinct codes",
         len(history["snapshots"]),
@@ -576,7 +579,7 @@ def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) ->
         sum(len(roster) for _day, _url, roster in snapshots),
         len(name_history),
     )
-    resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known={})
+    resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history)
     rows: list[dict] = []
     for day, url, roster in snapshots:
         rows += snapshot_rows(roster, day, url, resolver, overrides=overrides)
@@ -609,19 +612,16 @@ def _delete_stale_keys(context: Context, df: pd.DataFrame) -> int:
 
 
 def rebuild_roster(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
-    """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, both write gates, then an
-    upsert of the rebuilt frame and only then the delete of the stored keys it lacks. The live snapshots are read
+    """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, then `_write` (both gates,
+    upsert of the rebuilt frame) and only then the delete of the stored keys it lacks. The live snapshots are read
     from this same table, so it is never emptied: a crash leaves the old table or a superset, and a rerun converges.
     A resolution, primary-key or gate failure raises before the table is touched. Returns the written frame."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     overrides = load_superinvestor_overrides(config_dir_of(context))
     rows = rebuild_rows(context, get_fn, overrides)
     _assert_unique_pk(rows)
-    _gate(context, rows, overrides, listing_fn)
-    df = pd.DataFrame(rows).sort_values(["snapshot_date", "dataroma_code"], ignore_index=True)
-    context.store.save(Tables.superinvestor_roster, df)
+    df = _write(context, rows, overrides, listing_fn)
     deleted = _delete_stale_keys(context, df)
-    _log_written(df, "rebuilt with")
     logger.info("superinvestor_roster: deleted %d stale row(s) absent from the rebuild", deleted)
     return df
 
@@ -640,18 +640,33 @@ def _latest_mapping(context: Context) -> dict[str, str | None] | None:
     return None if df is None else _code_to_cik(df["dataroma_code"], df["cik"])
 
 
+def _assert_complete_scrape(n_parsed: int, latest: Mapping[str, str | None] | None) -> None:
+    """Raise `SuperinvestorResolutionError` when the scrape lists no manager or, with a stored snapshot, fewer than
+    `ROSTER_CAPTURE_MIN_RATIO` of its managers."""
+    n_stored = len(latest or {})
+    if n_parsed == 0 or n_parsed < ROSTER_CAPTURE_MIN_RATIO * n_stored:
+        raise SuperinvestorResolutionError(
+            f"Dataroma roster scrape of {DATAROMA_HOME_URL} parsed {n_parsed} managers against {n_stored} in the latest stored "
+            f"snapshot; a scrape must list at least one manager and {ROSTER_CAPTURE_MIN_RATIO:.0%} of that count. The page "
+            "or its parse is broken, so nothing was written."
+        )
+
+
 def upsert_roster_snapshot(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
     """Scrape Dataroma's roster and write it as today's snapshot, gated as `_write`, only when its code -> CIK
-    mapping differs from the latest stored snapshot; otherwise write nothing and return an empty frame.
-    CIKs resolve via `_make_resolver`; `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
+    mapping differs from the latest stored snapshot; otherwise write nothing and return an empty frame. An empty or
+    partial scrape (`_assert_complete_scrape`) raises before any resolution. CIKs resolve via `_make_resolver`;
+    `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
+    latest = _latest_mapping(context)
+    _assert_complete_scrape(len(roster), latest)
     known, past_names = _stored_resolutions(context)
     overrides = load_superinvestor_overrides(config_dir_of(context))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
     rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver, overrides=overrides)
-    if _code_to_cik((r["dataroma_code"] for r in rows), (r["cik"] for r in rows)) == _latest_mapping(context):
+    if _code_to_cik((r["dataroma_code"] for r in rows), (r["cik"] for r in rows)) == latest:
         logger.info("superinvestor_roster: %d managers unchanged since the latest snapshot, no snapshot written", len(rows))
-        return pd.DataFrame(columns=list(rows[0]) if rows else [])
+        return pd.DataFrame(columns=list(rows[0]))
     return _write(context, rows, overrides, listing_fn)

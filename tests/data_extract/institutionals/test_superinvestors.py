@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -313,6 +314,34 @@ def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
     )
 
 
+def test_live_refresh_refuses_empty_scrape(monkeypatch, sqlite_store, tmp_path):
+    """A page that parses to no manager is refused with a named error, on a cold table too (first-ever run)."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text="<html><a href='/m/managers.php'>All</a></html>"))
+    with pytest.raises(si.SuperinvestorResolutionError, match="0 managers") as err:
+        si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    assert sqlite_store.load(si.Tables.superinvestor_roster, optional=True) is None
+    print("\n=== SANITY: empty scrape refused ===")
+    print(f"  cold table, empty Dataroma page -> {type(err.value).__name__}: {str(err.value)[:90]}...; nothing written. Validated.")
+
+
+def test_live_refresh_refuses_partial_scrape(monkeypatch, sqlite_store, tmp_path):
+    """A 2-manager scrape against an 83-manager latest snapshot is below `ROSTER_CAPTURE_MIN_RATIO`: refused, naming both
+    counts, with the table unchanged, although both scraped managers would pass the gates."""
+    ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
+    _stored_snapshot(sqlite_store, "2026-09-08", {"GLRE": _GLRE, "BRK": _BRK} | {f"M{i:02d}": f"{i:010d}" for i in range(81)})
+    before = _table_hash(sqlite_store)
+    with pytest.raises(si.SuperinvestorResolutionError) as err:
+        si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
+    msg = str(err.value)
+    assert "2 managers" in msg and "83" in msg, msg
+    assert _table_hash(sqlite_store) == before and sqlite_store.row_count(si.Tables.superinvestor_roster) == 83
+    print("\n=== SANITY: partial scrape refused ===")
+    print(
+        f"  2 scraped vs 83 stored (floor {si.ROSTER_CAPTURE_MIN_RATIO:.0%}) -> refused: {msg[:110]}...; table hash {before[:12]} unchanged. Validated."
+    )
+
+
 def test_gate_raises_on_inactive_cik(sqlite_store):
     """The RC -> TRAC Intermodal shape: a CIK with no 13F-HR near the snapshot raises, naming code, snapshot,
     CIK and the nearest known period; a CIK with local activity passes without an EDGAR listing call."""
@@ -393,6 +422,48 @@ def test_gate_uses_listing_on_local_miss(sqlite_store):
     assert si.assert_active([_gate_row("BRK", brk, "2012-05-01")], evidence, {}, _no_listing) == []
     print("\n=== SANITY: EDGAR listing only on a local miss ===")
     print(f"  {old} (no local rows) passed 2 snapshots on 1 listing call; BRK passed on its local book without one. Validated on the real store.")
+
+
+def _listing_context(monkeypatch, filings: Any) -> Any:
+    """A context for `edgar_13f_report_dates` whose edgartools `Company(cik).get_filings` returns `filings` or, when
+    it is an exception, raises it."""
+
+    def get_filings(**_kwargs: Any) -> Any:
+        if isinstance(filings, Exception):
+            raise filings
+        return filings
+
+    monkeypatch.setattr(si, "Company", lambda cik: SimpleNamespace(get_filings=get_filings))
+    return cast(Any, SimpleNamespace(ensure_edgar_identity=lambda: None))
+
+
+def test_listing_failure_is_reported_as_listing_error(monkeypatch):
+    """A failed EDGAR listing surfaces as a listing error naming the CIK, through the activity gate too, never as
+    "no 13F activity, correct the CIK"."""
+    cik = "0000846222"
+    ctx = _listing_context(monkeypatch, RuntimeError("429 Too Many Requests"))
+    with pytest.raises(RuntimeError, match=cik) as direct:
+        si.edgar_13f_report_dates(ctx, cik)
+    with pytest.raises(RuntimeError) as gated:
+        si.assert_active([_gate_row("GH", cik, "2012-05-01")], set(), {}, partial(si.edgar_13f_report_dates, ctx))
+    for err in (direct, gated):
+        msg = str(err.value)
+        assert "listing" in msg and cik in msg and "429" in msg, msg
+        assert not isinstance(err.value, si.SuperinvestorResolutionError) and "Correct the CIK" not in msg, msg
+    print("\n=== SANITY: listing failure is a listing error ===")
+    print(f"  edgartools raised 429 -> {type(gated.value).__name__}: {str(gated.value)[:100]}...; no 'correct the CIK' advice. Validated.")
+
+
+def test_empty_listing_still_fails_the_activity_gate(monkeypatch):
+    """A successful listing with no 13F-HR is "no activity": the gate's correct-the-CIK error, not a listing error."""
+    cik = "0000846222"
+    ctx = _listing_context(monkeypatch, None)
+    assert si.edgar_13f_report_dates(ctx, cik) == set()
+    with pytest.raises(si.SuperinvestorResolutionError, match="no 13F-HR activity") as err:
+        si.assert_active([_gate_row("GH", cik, "2012-05-01")], set(), {}, partial(si.edgar_13f_report_dates, ctx))
+    assert "Correct the CIK" in str(err.value)
+    print("\n=== SANITY: empty listing is no activity ===")
+    print("  edgartools listed no 13F-HR -> empty period set -> SuperinvestorResolutionError 'no 13F-HR activity ... Correct the CIK'. Validated.")
 
 
 def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):

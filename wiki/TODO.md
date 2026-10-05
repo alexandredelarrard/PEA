@@ -190,8 +190,6 @@ After this migration is reviewed:
 - earnings surprises starts 1999-08, but empty till ~2003
 - financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
 - fix volume to be adjusted to spinoffs in price
-- fix EC extraction history and gaps. 2/3 are available today vs 90% potential
-- fix employee count, lots of MVs and gaps. Play with LLM extract.
 - fine tune def 14 data extraction
 
 # other data checks

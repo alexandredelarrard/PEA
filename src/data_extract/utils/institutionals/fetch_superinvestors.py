@@ -652,6 +652,7 @@ def upsert_roster_snapshot(context: Context, get_fn=None, listing_fn: ListingFn 
     get_fn = get_fn or (lambda url: sec_get(context, url))
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
+
     latest = _latest_mapping(context)
     _assert_complete_scrape(len(roster), latest)
     known, past_names = _stored_resolutions(context)

@@ -169,7 +169,8 @@ def document_worklist(
             if frames
             else df_index.iloc[:0]
         )
-        df_units = df_listed[~df_listed["accession"].isin(done.get(ticker, set()))].reset_index(drop=True)
+        done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
+        df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
         key_class[ticker] = _key_class(ticker, new, df_listed, df_units)
         for name, n in _classify_units(df_listed, df_units, key_class[ticker], overlap).items():
             counts[name] = counts.get(name, 0) + n

@@ -467,14 +467,20 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool) -
     fetch_financial_statements(context, tickers=_tickers(context, tickers), reparse=reparse)
 
 
-@cli.command(help="SEC insider transactions (Forms 3/4/5): quarterly bulk history plus the daily EDGAR tail.")
+@cli.command(
+    help="SEC insider transactions (Forms 3/4/5) into one table: pending quarterly zips add the filings EDGAR lacks, "
+    "then EDGAR lists each ticker from its own latest stored filing date - 7 days (the configured history when none is "
+    "stored), so a -t run never moves another ticker's window. Stored rows are re-screened and rejects deleted only on a "
+    "full-universe run (no -t). -F re-parses every cached zip, then re-reads the EDGAR window including filings already "
+    "stored from EDGAR. --bulk-only stops after the zips (the DAG then runs `insider-edgar`)."
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(
     "--reparse",
     is_flag=True,
     default=False,
-    help="Re-read every cached quarter even when already ingested. For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
+    help="Re-read every cached quarter even when already ingested (implied by -F). For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(
@@ -492,12 +498,16 @@ def insider_transactions(
 ) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
-    fetch_insider_transactions(context, tickers=names, reparse=reparse)
+    fetch_insider_transactions(context, tickers=names, reparse=reparse or full)
     if not bulk_only:
         fetch_insider_edgar(context, tickers=names, years_history=int(config.data_extract.years_history), full=full)
 
 
-@cli.command(name="insider-edgar", help="SEC insider transactions: the daily EDGAR tail (Forms 3/4/5) after the latest bulk quarter. SEC-API.")
+@cli.command(
+    name="insider-edgar",
+    help="SEC insider transactions: the EDGAR half of `insider-transactions` (Forms 3/4/5), each ticker listed from its own "
+    "latest stored filing date - 7 days; a ticker whose lineage scope changed relists from the day after the latest zip quarter. SEC-API.",
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)

@@ -1,7 +1,9 @@
-"""Daily EDGAR ownership filings for the open quarterly-bulk gap.
+"""Daily EDGAR ownership filings (Forms 3/4/5) into `insider_transactions`.
 
-The live table is provisional. Quarterly ZIP rows remain canonical whenever an accession is
-present in both sources; the aggregation loader performs that accession-level overlay.
+EDGAR is authoritative. Each run lists every ticker's filings from that ticker's own latest stored
+`filing_date` minus 7 days and skips accessions already stored from EDGAR; a zip-sourced accession
+it re-reads is replaced whole (its zip `quarter` is kept), so no accession holds rows from both
+sources. Rejected rows are never stored, only summarised once per run.
 """
 
 from __future__ import annotations
@@ -28,25 +30,25 @@ from src.data_extract.utils.common.sec_atom import (
 )
 from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
-    LIVE_DATE_FORMATS,
+    INSIDER_KEY,
+    OWNER_STRING_COLUMNS,
+    XML_DATE_FORMATS,
+    accession_batches,
     build_insider_frame,
     empty_footnotes,
+    exclusion_rows,
     filter_footnotes,
+    log_exclusions,
     screen_insider_rows,
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
-_LIVE_COLUMNS = (
-    "accession_number",
-    "source_row_sequence",
-    *(column for column in INSIDER_COLUMNS if column not in ("accession_number", "transaction_sk", "filing_date", "quarter")),
-    "footnote_ids",
-    "filing_date",
-    "acceptance_datetime",
-    "fetched_at",
-)
+#: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
+_EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
+#: Calendar days a ticker's listing window reaches back before its latest stored filing date.
+_LISTING_OVERLAP_DAYS = 7
 _LOG = logging.getLogger(__name__)
 
 
@@ -134,6 +136,7 @@ def insider_filings(
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
+    """The filing header's acceptance time, timezone-naive; NaT when the header has none."""
     filing_obj = cast(Any, filing)
     try:
         raw = getattr(filing_obj.header, "acceptance_datetime", None)
@@ -145,22 +148,24 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
-def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Ownership filings -> (canonical string transactions, footnotes, filing metadata), keyed on accession."""
+def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (transaction strings, owner strings, footnotes, filing metadata), keyed on accession."""
     transaction_frames: list[pd.DataFrame] = []
+    owner_frames: list[pd.DataFrame] = []
     footnote_frames: list[pd.DataFrame] = []
     metadata: list[dict[str, object]] = []
     for filing in filings:
         xml = filing.xml()
         if not xml:
             raise ValueError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
-        df_str, df_notes = extract_xml_strings(xml)
+        accession = str(filing.accession_number)
+        df_str, df_owners, df_notes = extract_xml_strings(xml, accession)
         if df_str.empty:
             continue
-        accession = str(filing.accession_number)
-        transaction_frames.append(df_str.assign(accession_number=accession))
+        transaction_frames.append(df_str)
+        owner_frames.append(df_owners)
         if not df_notes.empty:
-            footnote_frames.append(df_notes.assign(accession_number=accession))
+            footnote_frames.append(df_notes)
         metadata.append(
             {
                 "accession_number": accession,
@@ -169,26 +174,28 @@ def _ticker_strings(filings: Sequence[Any]) -> tuple[pd.DataFrame, pd.DataFrame,
             }
         )
     df_str = pd.concat(transaction_frames, ignore_index=True) if transaction_frames else pd.DataFrame()
+    df_owners = pd.concat(owner_frames, ignore_index=True) if owner_frames else pd.DataFrame(columns=OWNER_STRING_COLUMNS)
     df_notes = pd.concat(footnote_frames, ignore_index=True) if footnote_frames else empty_footnotes()
-    return df_str, df_notes, pd.DataFrame(metadata)
+    return df_str, df_owners, df_notes, pd.DataFrame(metadata)
 
 
-def _screen_live_rows(df_str: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Type the string rows, attach filing metadata and an `edgar:` row key, then screen into (kept, quarantine)."""
-    df_built = build_insider_frame(df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS)
+def _screen_edgar_rows(
+    df_str: pd.DataFrame, df_owners: pd.DataFrame, df_meta: pd.DataFrame, universe: Sequence[str], identity: Identity
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Type the string rows, attach filing metadata and `source='edgar'`, then screen into (kept, rejected in scope)."""
+    df_built = build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)
     df_built = df_built.merge(df_meta.drop_duplicates("accession_number", keep="last"), on="accession_number", how="left")
-    df_built["transaction_sk"] = "edgar:" + df_built["security_type"].astype(str) + ":" + df_built["source_row_sequence"].astype(str)
-    return screen_insider_rows(df_built, universe, identity)
+    return screen_insider_rows(df_built.assign(source="edgar"), universe, identity)
 
 
-def live_insider_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Ownership filings -> (kept transactions, footnotes of kept accessions, quarantine rows)."""
-    df_str, df_notes, df_meta = _ticker_strings(filings)
+def _edgar_frames(filings: Sequence[Any], *, universe: Sequence[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership filings -> (kept transactions, footnotes of kept accessions, rejected in-scope rows)."""
+    df_str, df_owners, df_notes, df_meta = _ticker_strings(filings)
     if df_str.empty:
         return pd.DataFrame(), empty_footnotes(), pd.DataFrame()
-    df_kept, df_quarantine = _screen_live_rows(df_str, df_meta, universe, identity)
+    df_kept, df_rejected = _screen_edgar_rows(df_str, df_owners, df_meta, universe, identity)
     df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"])) if not df_kept.empty else empty_footnotes()
-    return df_kept, df_kept_notes, df_quarantine
+    return df_kept, df_kept_notes, df_rejected
 
 
 def build_ticker_insider_edgar(
@@ -201,9 +208,11 @@ def build_ticker_insider_edgar(
     identity: Identity,
     scan_through: pd.Timestamp,
     scope: EdgarScope,
+    excluded: list[pd.DataFrame],
     rescan_stored: bool = False,
 ) -> dict[Table, pd.DataFrame]:
-    """Build live rows for one ticker and a coverage row even when no filing was found.
+    """One ticker's EDGAR transaction and footnote frames listed from the driver's `since`; its
+    rejected in-scope rows are appended to the run's `excluded` collector.
 
     `rescan_stored` (a `--full` run) ignores `done_accessions` and re-reads stored filings.
     """
@@ -211,24 +220,30 @@ def build_ticker_insider_edgar(
     filings = insider_filings(
         ticker, cik, since=since, through=scan_through, done_accessions=frozenset() if rescan_stored else done_accessions, scope=scope
     )
-    df_kept, df_notes, df_quarantine = live_insider_frames(filings, universe=universe, identity=identity)
+    df_kept, df_notes, df_rejected = _edgar_frames(filings, universe=universe, identity=identity)
+    if not df_rejected.empty:
+        excluded.append(exclusion_rows(df_rejected))
 
-    live = pd.DataFrame(columns=_LIVE_COLUMNS)
+    df_rows = pd.DataFrame(columns=_EDGAR_COLUMNS)
     if not df_kept.empty:
-        df_live = df_kept.assign(fetched_at=fetched_at)
-        live = df_live[[column for column in _LIVE_COLUMNS if column in df_live.columns]].drop_duplicates(
-            subset=list(Tables.insider_transactions_live.pk), keep="last"
-        )
-    coverage = pd.DataFrame([{"ticker": ticker, "complete_through": scan_through, "updated_at": fetched_at}])
-    return {
-        Tables.insider_transactions_live: live,
-        Tables.insider_footnotes: df_notes,
-        Tables.insider_transactions_quarantine: df_quarantine if not df_quarantine.empty else pd.DataFrame(),
-        Tables.insider_transactions_live_coverage: coverage,
-    }
+        df_stamped = df_kept.assign(fetched_at=fetched_at)
+        df_rows = df_stamped[[column for column in _EDGAR_COLUMNS if column in df_stamped.columns]].drop_duplicates(subset=INSIDER_KEY, keep="last")
+    return {Tables.insider_transactions: df_rows, Tables.insider_footnotes: df_notes}
 
 
-def _bulk_frontier(context: Context) -> pd.Timestamp | None:
+def listing_since_by_ticker(context: Context, tickers: Sequence[str], years_history: int) -> dict[str, pd.Timestamp]:
+    """Each ticker's EDGAR listing start: the latest `filing_date` stored under that ticker minus
+    `_LISTING_OVERLAP_DAYS`, or `years_history` back from today when none is stored under it."""
+    latest = context.store.max_date_by(Tables.insider_transactions, "ticker", "filing_date")
+    no_rows_since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+    overlap = pd.Timedelta(days=_LISTING_OVERLAP_DAYS)
+    return {ticker: latest[ticker] - overlap if ticker in latest else no_rows_since for ticker in tickers}
+
+
+def _zip_frontier(context: Context) -> pd.Timestamp | None:
+    """The last day of the latest zip quarter stored, or None when no row carries a `quarter`."""
+    if "quarter" not in context.store.columns(Tables.insider_transactions):
+        return None
     _, latest_quarter = context.store.bounds(Tables.insider_transactions, "quarter")
     if latest_quarter is None:
         return None
@@ -238,6 +253,38 @@ def _bulk_frontier(context: Context) -> pd.Timestamp | None:
         return None
 
 
+def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
+    """Finish EDGAR's replacement of zip-sourced accessions filed since `since`: stamp each
+    accession's stored zip `quarter` on its EDGAR rows that lack one (rows EDGAR added beyond the
+    zip's keys), then delete the zip rows of every accession EDGAR now holds. Returns the rows deleted.
+    A table without a `quarter` column holds no zip row, so there is nothing to replace."""
+    if "quarter" not in context.store.columns(Tables.insider_transactions):
+        context.log.info("insider EDGAR: no zip row stored (no `quarter` column) -> nothing to replace")
+        return 0
+    df_rows = context.store.load(
+        Tables.insider_transactions, columns=[*INSIDER_KEY, "source", "quarter"], since=since, date_col="filing_date", optional=True
+    )
+    if df_rows is None:
+        return 0
+    quarter_of = df_rows.dropna(subset=["quarter"]).groupby("accession_number")["quarter"].first()
+    df_stamp = df_rows.loc[df_rows["source"].eq("edgar") & df_rows["quarter"].isna(), INSIDER_KEY]
+    df_stamp = df_stamp.assign(quarter=df_stamp["accession_number"].map(quarter_of)).dropna(subset=["quarter"])
+    if not df_stamp.empty:
+        context.store.save(Tables.insider_transactions, df_stamp)
+    edgar_accessions = set(df_rows.loc[df_rows["source"].eq("edgar"), "accession_number"])
+    mixed = sorted(edgar_accessions & set(df_rows.loc[df_rows["source"].eq("zip"), "accession_number"]))
+    deleted = sum(
+        context.store.delete(Tables.insider_transactions, where={"accession_number": batch, "source": "zip"}) for batch in accession_batches(mixed)
+    )
+    context.log.info(
+        "insider EDGAR: stamped the zip quarter on %d EDGAR row(s); replaced %d zip-sourced filing(s) whole (%d zip row(s) deleted)",
+        len(df_stamp),
+        len(mixed),
+        deleted,
+    )
+    return deleted
+
+
 def fetch_insider_edgar(
     context: Context,
     tickers: list[str],
@@ -245,22 +292,47 @@ def fetch_insider_edgar(
     *,
     full: bool = False,
 ) -> None:
-    """Fill the open-quarter tail and advance coverage only for successful tickers."""
+    """List and save each ticker's EDGAR ownership filings from its `listing_since_by_ticker` start,
+    skipping accessions stored from EDGAR unless `full`; a ticker whose lineage scope changed since
+    the last run relists from the day after the latest zip quarter. Afterwards, even on failure, log
+    the run's exclusions and replace the zip rows of every accession re-read since the earliest start."""
     identity = load_identity(context)
-    scan_through = pd.Timestamp.today().normalize()
-    bulk_frontier = _bulk_frontier(context)
-    minimum_since = bulk_frontier + pd.Timedelta(days=1) if bulk_frontier is not None else None
-
+    since_by_ticker = listing_since_by_ticker(context, tickers, years_history)
+    since = min(since_by_ticker.values(), default=pd.Timestamp.today().normalize())
+    zip_frontier = _zip_frontier(context)
+    excluded: list[pd.DataFrame] = []
     fetch = EdgarFetch(
-        desc="insider Forms 3/4/5 (EDGAR live)",
-        tables=(
-            Tables.insider_transactions_live,
-            Tables.insider_footnotes,
-            Tables.insider_transactions_quarantine,
-            Tables.insider_transactions_live_coverage,
+        desc="insider Forms 3/4/5 (EDGAR)",
+        tables=(Tables.insider_transactions, Tables.insider_footnotes),
+        build=partial(
+            build_ticker_insider_edgar,
+            universe=tickers,
+            identity=identity,
+            scan_through=pd.Timestamp.today().normalize(),
+            excluded=excluded,
+            rescan_stored=full,
         ),
-        build=partial(build_ticker_insider_edgar, universe=tickers, identity=identity, scan_through=scan_through, rescan_stored=full),
-        minimum_since=minimum_since,
-        completion_table=Tables.insider_transactions_live_coverage,
+        minimum_since=zip_frontier + pd.Timedelta(days=1) if zip_frontier is not None else None,
+        listing_since=since,
+        since_by_ticker=since_by_ticker,
+        done_where={"source": "edgar"},
     )
-    run_edgar_fetch(context, tickers, years_history, fetch, full=full)
+    try:
+        run_edgar_fetch(context, tickers, years_history, fetch, full=full)
+    except BaseException:
+        _finish_run(context, since, excluded, after_failure=True)
+        raise
+    _finish_run(context, since, excluded, after_failure=False)
+
+
+def _finish_run(context: Context, since: pd.Timestamp, excluded: list[pd.DataFrame], *, after_failure: bool) -> None:
+    """Log the run's exclusions and replace the zip rows it re-read. After a failed run a reconcile
+    error is logged, never raised, so the run's own error is the one that propagates."""
+    log_exclusions(_LOG, "EDGAR run", excluded)
+    if not after_failure:
+        replace_zip_accessions(context, since)
+        return
+    try:
+        replace_zip_accessions(context, since)
+    except Exception:
+        _LOG.exception("insider EDGAR: the zip reconcile after a failed run raised; the run's own error follows")

@@ -1,0 +1,464 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-06-15</periodOfReport>
+
+    <issuer>
+        <issuerCik>0001571996</issuerCik>
+        <issuerName>Dell Technologies Inc.</issuerName>
+        <issuerTradingSymbol>DELL</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001672568</rptOwnerCik>
+            <rptOwnerName>SLTA IV (GP), L.L.C.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001418226</rptOwnerCik>
+            <rptOwnerName>Silver Lake Group, L.L.C.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001672566</rptOwnerCik>
+            <rptOwnerName>Silver Lake Technology Associates IV, L.P.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001552054</rptOwnerCik>
+            <rptOwnerName>Silver Lake Partners IV, L.P.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001767116</rptOwnerCik>
+            <rptOwnerName>SLTA SPV-2 (GP), L.L.C.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001767115</rptOwnerCik>
+            <rptOwnerName>SLTA SPV-2, L.P.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001767114</rptOwnerCik>
+            <rptOwnerName>SL SPV-2, L.P.</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE,</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001651403</rptOwnerCik>
+            <rptOwnerName>Durban Egon</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>C/O SILVER LAKE</rptOwnerStreet1>
+            <rptOwnerStreet2>2775 SAND HILL ROAD, SUITE 100</rptOwnerStreet2>
+            <rptOwnerCity>MENLO PARK</rptOwnerCity>
+            <rptOwnerState>CA</rptOwnerState>
+            <rptOwnerZipCode>94025</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>true</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>false</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>false</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-06-15</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>J</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+                <footnoteId id="F1"/>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>91809</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>0</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>Held through SL SPV-2, L.P.</value>
+                    <footnoteId id="F2"/>
+                    <footnoteId id="F5"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-06-15</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>J</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+                <footnoteId id="F1"/>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>69916</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>0</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>Held through Silver Lake Partners IV, L.P.</value>
+                    <footnoteId id="F3"/>
+                    <footnoteId id="F5"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-06-15</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>J</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+                <footnoteId id="F1"/>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>50381</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>0</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>Held through Silver Lake Partners V DE (AIV), L.P.</value>
+                    <footnoteId id="F4"/>
+                    <footnoteId id="F5"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>10765</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>Held through Silver Lake Group, L.L.C.</value>
+                    <footnoteId id="F5"/>
+                    <footnoteId id="F6"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>5914</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See footnote</value>
+                    <footnoteId id="F6"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>150338</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See footnote</value>
+                    <footnoteId id="F7"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>1374245</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>D</value>
+                    <footnoteId id="F8"/>
+                </directOrIndirectOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+        <nonDerivativeHolding>
+            <securityTitle>
+                <value>Class C Common Stock</value>
+            </securityTitle>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>49237</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See footnote</value>
+                    <footnoteId id="F9"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeHolding>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">SL SPV-2, L.P., Silver Lake Partners IV, L.P., Silver Lake Partners V DE (AIV), L.P. and certain of their respective affiliates initiated in-kind distributions of Class C Common Stock, par value $0.01 per share (&quot;Class C Common Stock&quot;) of Dell Technologies Inc. (the &quot;Issuer&quot;) on June 15, 2026. The receipt of shares of Class C Common Stock by each of the Reporting Persons in connection with such distributions was exempt from reporting pursuant to Rule 16a-13 of the Exchange Act.</footnote>
+        <footnote id="F2">These securities are directly held by SL SPV-2, L.P. The general partner of SL SPV-2, L.P. is SLTA SPV-2, L.P. (&quot;SLTA SPV&quot;) and the general partner of SLTA SPV is SLTA SPV-2 (GP), L.L.C (&quot;SLTA SPV GP&quot;).</footnote>
+        <footnote id="F3">These securities are directly held by Silver Lake Partners IV, L.P. The general partner of Silver Lake Partners IV, L.P. is Silver Lake Technology Associates IV, L.P. (&quot;SLTA IV&quot;) and the general partner of (&quot;SLTA IV&quot;). is SLTA IV (GP), L.L.C (&quot;SLTA IV GP&quot;).</footnote>
+        <footnote id="F4">These securities are directly held by Silver Lake Partners V DE (AIV), L.P. The general partner of Silver Lake Partners V DE (AIV), L.P. is Silver Lake Technology Associates V, L.P. (&quot;SLTA V&quot;) and the general partner of SLTA V is SLTA V (GP), L.L.C (&quot;SLTA V GP&quot;).</footnote>
+        <footnote id="F5">Silver Lake Group, L.L.C. (&quot;SLG&quot;) is the managing member of SLTA SPV GP, SLTA IV GP and SLTA V GP. Egon Durban, who serves as a director of the Issuer, also serves as a Co-CEO and Managing Member of SLG. Each of the Reporting Persons may be deemed a director by deputization of the Issuer.</footnote>
+        <footnote id="F6">Represents shares of Class C Common Stock held by entities in which Mr. Egon Durban may be deemed to have an indirect pecuniary interest. Shares held include shares of Class C Common Stock received in connection with the distributions described herein on June 15, 2026. The receipt of such shares of Class C Common Stock was exempt from reporting pursuant to Rule 16a-13 of the Exchange Act.</footnote>
+        <footnote id="F7">In connection with the distributions described in footnote (1) above, distributions of certain shares were initiated to certain employees and managing members of SLG or its affiliates, including Mr. Durban. This amount reflects 29,494, 11,109, 28,109, 81,500 and 126 shares held by SLTA SPV-2, L.P., SLTA IV, SLTA V, SLG and Silver Lake Secondary Holdings L.P., respectively, on behalf of such individuals, including shares distributed in the June 15, 2026 distributions. The receipt of such shares of Class C Common Stock was exempt from reporting pursuant to Rule 16a-13 of the Exchange Act.</footnote>
+        <footnote id="F8">Represents shares of Class C Common Stock held directly by Mr. Egon Durban immediately following the receipt of shares in connection with the distributions of shares of Class C Common Stock on June 15, 2026. The receipt of such shares of Class C Common Stock was exempt from reporting pursuant to Rule 16a-13 of the Exchange Act.</footnote>
+        <footnote id="F9">Represents shares of Class C Common Stock beneficially owned indirectly by Mr. Durban through a trust for the benefit of certain family members including shares received in connection with the distributions of shares of Class C Common Stock on June 15, 2026. The receipt of such shares of Class C Common Stock indirectly by Mr. Durban was exempt from reporting pursuant to Rule 16a-13 of the Exchange Act.</footnote>
+    </footnotes>
+
+    <remarks>The Reporting Persons are jointly filing this Form 4 pursuant to Rule 16a-3(j) under the Exchange Act. This filing shall not be deemed an admission that the Reporting Persons are beneficial owners of all securities covered by this filing for purposes of Section 16 of the Exchange Act or otherwise, and each Reporting Person disclaims beneficial ownership of these securities, except to the extent of such Reporting Person's pecuniary interest therein, if any. Because no more than 10 reporting persons can file any one Form 4 through the Securities and Exchange Commission's EDGAR system, certain affiliates of the Reporting Persons have filed a separate Form 4.</remarks>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA IV (GP), L.L.C.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA IV (GP), L.L.C., general partner of Silver Lake Technology Associates IV, L.P.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA IV (GP), L.L.C., general partner of Silver Lake Technology Associates IV, L.P., general partner of Silver Lake Partners IV, L.P.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA SPV-2 (GP), L.L.C.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA SPV-2 (GP), L.L.C., general partner of SLTA SPV-2, L.P.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>By: /s/ Justin G. Hamill, Managing Director and Chief Legal Officer of Silver Lake Group, L.L.C., managing member of SLTA SPV-2 (GP), L.L.C., general partner of SLTA SPV-2, L.P., general partner of SL SPV-2, L.P.</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>/s/ Justin G. Hamill, Attorney-in-fact for Egon Durban</signatureName>
+        <signatureDate>2026-06-17</signatureDate>
+    </ownerSignature>
+</ownershipDocument>

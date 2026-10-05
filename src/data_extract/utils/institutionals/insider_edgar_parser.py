@@ -1,7 +1,8 @@
-"""Live SEC ownership XML (Forms 3, 4, 5) -> the canonical insider string frame.
+"""EDGAR ownership XML (Forms 3, 4, 5) -> the canonical insider string frames.
 
-Field paths come from `insider_common.INSIDER_FIELDS`; typing is `build_insider_frame`. Rows carry
-an XML-order `source_row_sequence` per security table instead of a bulk `transaction_sk`.
+Field paths come from `insider_common.INSIDER_FIELDS`; typing is `build_insider_frame`. Transaction
+rows carry a 1-based XML-order `row_sequence` per security table; every `reportingOwner` node gives
+one owner row.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from xml.etree import ElementTree
 
 import pandas as pd
 
-from src.data_extract.utils.institutionals.insider_common import FLAG_TRUE, FOOTNOTE_COLUMNS, INSIDER_FIELDS, InsiderField
+from src.data_extract.utils.institutionals.insider_common import FLAG_TRUE, FOOTNOTE_COLUMNS, INSIDER_FIELDS, OWNER_STRING_COLUMNS, InsiderField
 
 #: (table element, row element, security_type) of the two transaction tables.
 XML_TABLES = (
@@ -20,9 +21,10 @@ XML_TABLES = (
 #: Relationship checkbox -> the role name the bulk data sets write in `RPTOWNER_RELATIONSHIP`.
 ROLE_CHECKBOXES = (("isDirector", "Director"), ("isOfficer", "Officer"), ("isTenPercentOwner", "TenPercentOwner"), ("isOther", "Other"))
 XML_STRING_COLUMNS = (
-    "source_row_sequence",
+    "accession_number",
+    "row_sequence",
     "security_type",
-    *(field.name for field in INSIDER_FIELDS if field.xml),
+    *(field.name for field in INSIDER_FIELDS if field.xml and field.scope != "owner"),
     "footnote_ids",
 )
 
@@ -70,11 +72,10 @@ def _relationship(relation: ElementTree.Element | None) -> str | None:
 
 
 def _field_text(node: ElementTree.Element | None, field: InsiderField) -> str | None:
-    """One canonical string field; a missing ticker reads as ""."""
+    """One canonical string field: the first non-empty of its XML paths."""
     if field.kind == "role":
         return _relationship(_child(node, field.xml[0]))
-    text = next((value for value in (_path_text(node, path) for path in field.xml) if value), None)
-    return (text or "") if field.kind == "symbol" else text
+    return next((value for value in (_path_text(node, path) for path in field.xml) if value), None)
 
 
 def _scope_strings(node: ElementTree.Element | None, scope: str) -> dict[str, str | None]:
@@ -86,33 +87,38 @@ def _footnote_ids(node: ElementTree.Element) -> str:
     return ",".join(dict.fromkeys(item for item in ids if item))
 
 
-def _footnotes(root: ElementTree.Element) -> pd.DataFrame:
-    """(footnote_id, footnote_text) of every footnote carrying an id."""
+def _footnotes(root: ElementTree.Element, accession_number: str) -> pd.DataFrame:
+    """(accession_number, footnote_id, footnote_text) of every footnote carrying an id."""
     notes = []
     for note in _children(_child(root, "footnotes"), "footnote"):
         note_id = str(note.attrib.get("id", "")).strip()
         if note_id:
-            notes.append({"footnote_id": note_id, "footnote_text": "".join(note.itertext()).strip()})
-    return pd.DataFrame(notes, columns=FOOTNOTE_COLUMNS[1:])
+            notes.append({"accession_number": accession_number, "footnote_id": note_id, "footnote_text": "".join(note.itertext()).strip()})
+    return pd.DataFrame(notes, columns=FOOTNOTE_COLUMNS)
 
 
-def extract_xml_strings(xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Ownership XML -> (canonical string transactions, accession-local footnotes)."""
+def _owner_strings(root: ElementTree.Element, accession_number: str) -> pd.DataFrame:
+    """One owner string row per `reportingOwner` node, in document order."""
+    rows = [{"accession_number": accession_number, **_scope_strings(owner, "owner")} for owner in _children(root, "reportingOwner")]
+    return pd.DataFrame(rows, columns=OWNER_STRING_COLUMNS)
+
+
+def extract_xml_strings(xml: str, accession_number: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Ownership XML -> (transaction strings, owner strings, footnotes), all keyed on `accession_number`."""
     root = ElementTree.fromstring(xml)
     if _local_name(root.tag) != "ownershipDocument":
         raise ValueError("ownership XML has no ownershipDocument root")
-    owner = next((node for node in root.iter() if _local_name(node.tag) == "reportingOwner"), None)
-    base = {**_scope_strings(root, "filing"), **_scope_strings(owner, "owner")}
+    base = {"accession_number": accession_number, **_scope_strings(root, "filing")}
     rows: list[dict[str, object]] = []
     for table_name, row_name, security_type in XML_TABLES:
         for sequence, node in enumerate(_children(_child(root, table_name), row_name), start=1):
             rows.append(
                 {
                     **base,
-                    "source_row_sequence": sequence,
+                    "row_sequence": sequence,
                     "security_type": security_type,
                     **_scope_strings(node, "transaction"),
                     "footnote_ids": _footnote_ids(node),
                 }
             )
-    return pd.DataFrame(rows, columns=XML_STRING_COLUMNS), _footnotes(root)
+    return pd.DataFrame(rows, columns=XML_STRING_COLUMNS), _owner_strings(root, accession_number), _footnotes(root, accession_number)

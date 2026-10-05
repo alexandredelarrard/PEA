@@ -1,4 +1,5 @@
-"""Daily insider EDGAR orchestration and coverage semantics."""
+"""Daily insider EDGAR build: the per-ticker frames target `insider_transactions`, the listing window
+and the owner-inclusive discovery."""
 
 from __future__ import annotations
 
@@ -30,72 +31,94 @@ class _Filing:
         return _FORM4_XML
 
 
-def test_successful_zero_filing_scan_still_advances_ticker_coverage(monkeypatch):
-    monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [])
-    out = module.build_ticker_insider_edgar(
+def _build(excluded: list[pd.DataFrame]) -> dict:
+    return module.build_ticker_insider_edgar(
         "AAA",
         "1",
         universe=["AAA"],
         identity=cast(Any, object()),
         scan_through=pd.Timestamp("2026-09-22"),
         scope=module.EdgarScope(),
+        excluded=excluded,
     )
-    assert out[Tables.insider_transactions_live].empty
-    assert out[Tables.insider_transactions_live_coverage].to_dict("records") == [
-        {
-            "ticker": "AAA",
-            "complete_through": pd.Timestamp("2026-09-22"),
-            "updated_at": out[Tables.insider_transactions_live_coverage].iloc[0]["updated_at"],
-        }
-    ]
-    print(
-        "SANITY: a successful AAA scan with zero new filings wrote no transaction sentinel but advanced AAA's explicit coverage through 2026-09-22."
-    )
+
+
+def test_a_zero_filing_scan_builds_empty_frames_for_the_two_declared_tables(monkeypatch):
+    monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [])
+    excluded: list[pd.DataFrame] = []
+    out = _build(excluded)
+    assert set(out) == {Tables.insider_transactions, Tables.insider_footnotes}
+    assert out[Tables.insider_transactions].empty and excluded == []
+    print("SANITY: a scan with zero new filings builds only empty insider_transactions/insider_footnotes frames; no coverage row exists any more.")
 
 
 def test_duplicate_listing_is_idempotent_and_keeps_acceptance_time(monkeypatch):
     monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [_Filing(), _Filing()])
     monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame, pd.DataFrame()))
-    out = module.build_ticker_insider_edgar(
-        "AAA",
-        "1",
-        universe=["AAA"],
-        identity=cast(Any, object()),
-        scan_through=pd.Timestamp("2026-09-22"),
-        scope=module.EdgarScope(),
+    out = _build([])
+    rows = out[Tables.insider_transactions]
+    assert len(rows) == 1
+    assert rows.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
+    assert rows.iloc[0]["accession_number"] == _Filing.accession_number
+    assert rows.iloc[0]["value_usd"] == 200.0
+    assert rows.iloc[0]["source"] == "edgar" and "quarter" not in rows.columns, "the EDGAR frame never carries the zip quarter"
+    print(
+        "SANITY: listing the same accession twice produced one insider_transactions PK row (source=edgar, no quarter) with the 16:05 acceptance time."
     )
-    live = out[Tables.insider_transactions_live]
-    assert len(live) == 1
-    assert live.iloc[0]["acceptance_datetime"] == pd.Timestamp("2026-07-02 16:05:00")
-    assert live.iloc[0]["accession_number"] == _Filing.accession_number
-    assert live.iloc[0]["value_usd"] == 200.0
-    print("SANITY: listing the same accession twice produced one live PK row and retained the 16:05 EDGAR acceptance timestamp.")
 
 
-def test_live_audit_clocks_are_timestamps_not_dates():
-    live = pd.DataFrame(
+def test_rejected_rows_go_to_the_run_collector_not_to_a_table(monkeypatch):
+    monkeypatch.setattr(module, "insider_filings", lambda *args, **kwargs: [_Filing()])
+    rejected = pd.DataFrame(
+        {"accession_number": ["X"], "transaction_code": ["P"], "claimed_ticker": ["AAA"], "reject_reason": ["entity_mismatch"], "extra": [1]}
+    )
+    monkeypatch.setattr(module, "screen_insider_rows", lambda frame, universe, identity: (frame.iloc[0:0], rejected))
+    excluded: list[pd.DataFrame] = []
+    out = _build(excluded)
+    assert out[Tables.insider_transactions].empty
+    assert len(excluded) == 1 and list(excluded[0].columns) == ["accession_number", "transaction_code", "claimed_ticker", "reject_reason"]
+    print("SANITY: a rejected filing is stored nowhere; only its four warning columns reach the run's exclusion collector.")
+
+
+def test_each_ticker_lists_from_seven_days_before_its_own_latest_stored_filing(sqlite_store):
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store))
+    no_rows = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    empty = module.listing_since_by_ticker(ctx, ["AAA"], 15)
+    sqlite_store.save(
+        Tables.insider_transactions,
+        pd.DataFrame(
+            {
+                "accession_number": ["a", "b", "c"],
+                "security_type": "nonderiv",
+                "row_sequence": 1,
+                "ticker": ["AAA", "AAA", "BBB"],
+                "filing_date": pd.to_datetime(["2026-05-01", "2026-06-10", "2026-03-02"]),
+            }
+        ),
+    )
+    since = module.listing_since_by_ticker(ctx, ["AAA", "BBB", "CCC"], 15)
+    assert empty == {"AAA": no_rows}
+    assert since == {"AAA": pd.Timestamp("2026-06-03"), "BBB": pd.Timestamp("2026-02-23"), "CCC": no_rows}
+    print(
+        "SANITY: every ticker lists from its own max(filing_date) - 7 days (AAA 2026-06-10 -> 2026-06-03, BBB 2026-03-02 -> 2026-02-23); "
+        "a ticker with no stored row (and every ticker on an empty table) lists from today - years_history."
+    )
+
+
+def test_edgar_audit_clocks_are_timestamps_not_dates():
+    frame = pd.DataFrame(
         {
             "accession_number": ["A"],
             "security_type": ["nonderiv"],
-            "source_row_sequence": [1],
+            "row_sequence": [1],
             "acceptance_datetime": [pd.Timestamp("2026-07-02 16:05:00")],
             "fetched_at": [pd.Timestamp("2026-07-02 16:06:00")],
         }
     )
-    coverage = pd.DataFrame(
-        {
-            "ticker": ["AAA"],
-            "complete_through": [pd.Timestamp("2026-07-02")],
-            "updated_at": [pd.Timestamp("2026-07-02 16:06:00")],
-        }
-    )
-    live_types = dict(columns_from_frame(Tables.insider_transactions_live, live))
-    coverage_types = dict(columns_from_frame(Tables.insider_transactions_live_coverage, coverage))
-    assert live_types["acceptance_datetime"] == "TIMESTAMP"
-    assert live_types["fetched_at"] == "TIMESTAMP"
-    assert coverage_types["complete_through"] == "DATE"
-    assert coverage_types["updated_at"] == "TIMESTAMP"
-    print("SANITY: filing acceptance/fetch/update clocks retain intraday TIMESTAMP precision; only the inclusive coverage frontier is a DATE.")
+    types = dict(columns_from_frame(Tables.insider_transactions, frame))
+    assert types["acceptance_datetime"] == "TIMESTAMP"
+    assert types["fetched_at"] == "TIMESTAMP"
+    print("SANITY: filing acceptance and fetch clocks keep intraday TIMESTAMP precision in insider_transactions.")
 
 
 def test_owner_inclusive_atom_finds_reporting_owner_accessions(monkeypatch):

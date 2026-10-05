@@ -11,65 +11,11 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore
+from src.data_store.schema import Table
 
 
 def _normalized_timestamp(value: Any) -> pd.Timestamp:
     return cast(pd.Timestamp, pd.Timestamp(value)).normalize()
-
-
-def insider_live_complete_through(
-    store: DataStore,
-    log: logging.Logger,
-    universe: Sequence[str],
-) -> pd.Timestamp | None:
-    """Return the minimum successful EDGAR scan across the requested universe."""
-    expected = set(map(str, universe))
-    coverage = store.load(
-        Tables.insider_transactions_live_coverage,
-        columns=("ticker", "complete_through"),
-        where={"ticker": sorted(expected)},
-        optional=True,
-    )
-    if coverage is None or coverage.empty:
-        return None
-    coverage = coverage.dropna(subset=["ticker", "complete_through"])
-    covered = set(coverage["ticker"].astype(str))
-    missing = expected - covered
-    if missing:
-        log.warning(
-            "insider EDGAR coverage is missing %d/%d universe ticker(s); live rows are loaded provisionally but cannot advance the family frontier",
-            len(missing),
-            len(expected),
-        )
-        return None
-    latest_by_ticker = cast(pd.Series, coverage.groupby("ticker")["complete_through"].max())
-    per_ticker = pd.to_datetime(
-        latest_by_ticker,
-        errors="coerce",
-    )
-    value: Any = per_ticker.min()
-    return _normalized_timestamp(value) if pd.notna(value) else None
-
-
-def insider_complete_through(
-    bulk_complete_through: object,
-    insider: pd.DataFrame,
-    live_complete_through: pd.Timestamp | None = None,
-) -> pd.Timestamp | None:
-    """Return the latest valid inclusive frontier across bulk and live sources."""
-    candidates: list[pd.Timestamp] = []
-    if bulk_complete_through is not None:
-        try:
-            candidates.append(_normalized_timestamp(bulk_complete_through))
-        except (TypeError, ValueError):
-            pass
-    if live_complete_through is not None and pd.notna(live_complete_through):
-        candidates.append(_normalized_timestamp(live_complete_through))
-    if candidates:
-        return max(candidates)
-    return None
 
 
 def schedule_complete_through(

@@ -116,12 +116,12 @@ def _filings(table, ticker: str, rows: list[tuple[str, str, str]], **extra_cols)
                 "ticker": ticker,
                 "accession_number": a,
                 "security_type": "nonderiv",
-                "transaction_sk": sk,
+                "row_sequence": seq,
                 "issuer_cik": c,
                 "filing_date": pd.Timestamp(f),
             }
             for a, c, f in rows
-            for sk in (1, 2)
+            for seq in (1, 2)
         ]
     else:
         raise AssertionError(table)

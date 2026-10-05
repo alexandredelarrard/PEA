@@ -90,8 +90,16 @@ def _ctx(tmp_path, store, tickers) -> Any:
     return ctx
 
 
-def _fetch(tables, build, desc="test", *, completion_table=None) -> EdgarFetch:
-    return EdgarFetch(desc=desc, tables=tables, build=build, completion_table=completion_table)
+def _fetch(tables, build, desc="test", *, minimum_since=None, listing_since=None, since_by_ticker=None, done_where=None) -> EdgarFetch:
+    return EdgarFetch(
+        desc=desc,
+        tables=tables,
+        build=build,
+        minimum_since=minimum_since,
+        listing_since=listing_since,
+        since_by_ticker=since_by_ticker,
+        done_where=done_where,
+    )
 
 
 def _rows(table, ticker, accession):
@@ -283,31 +291,48 @@ def test_completeness_sensitive_run_rejects_a_save_failure(tmp_path, sqlite_stor
     print("  OK: a storage failure cannot turn an unknown Schedule history into an observed zero")
 
 
-def test_completion_table_is_not_saved_after_an_earlier_save_failure(tmp_path, sqlite_store, monkeypatch):
+def test_listing_since_overrides_full_and_the_manifest_window(tmp_path, sqlite_store):
+    """`listing_since` is the window itself: it wins over `full=True` and over a complete manifest
+    entry, applies to every ticker, and the run is recorded as an incremental (not full) rescan."""
     ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
-    real_save = sqlite_store.save
-
-    def flaky_save(table, df, pk=None):
-        if table is _T_MAIN:
-            raise RuntimeError("deadlock detected")
-        return real_save(table, df, pk)
-
-    monkeypatch.setattr(sqlite_store, "save", flaky_save)
+    prior = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    record_run(ctx, _T_MAIN, 1, 0, is_full_rescan=True, run_date=prior - pd.Timedelta(days=3), coverage_complete=True, tickers=["AAPL"])
+    seen: list[pd.Timestamp] = []
 
     def build(ticker, cik, *, since, done_accessions, scope):
-        return {
-            _T_MAIN: _rows(_T_MAIN, ticker, "x"),
-            _T_EMPTY: _rows(_T_EMPTY, ticker, "coverage"),
-        }
+        seen.append(since)
+        return {}
 
-    with pytest.raises(IncompleteEdgarRunError):
-        run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN, _T_EMPTY), build, completion_table=_T_EMPTY))
+    listing = pd.Timestamp("2026-04-29 13:45")
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, listing_since=listing), full=True)
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, listing_since=listing))
 
-    assert not sqlite_store.exists(_T_MAIN)
-    assert not sqlite_store.exists(_T_EMPTY)
-    assert any("coverage not advanced" in warning for warning in ctx.warnings)
-    print("\n=== SANITY CHECK: explicit coverage commits last ===")
-    print("  the transaction save failed, so the completion row was withheld and the ticker remains visibly stale. Validated.")
+    assert seen == [pd.Timestamp("2026-04-29"), pd.Timestamp("2026-04-29")]
+    assert get_entry(ctx, _T_MAIN)["last_full_rescan_date"] == (prior - pd.Timedelta(days=3)).strftime("%Y-%m-%d"), "not a full rescan"
+    assert get_entry(ctx, _T_MAIN)["coverage_complete"] is True
+    print("\n=== SANITY CHECK: listing_since ===")
+    print("  full=True and a complete manifest both yield since=2026-04-29 (normalised); the run is not recorded as a full rescan. Validated.")
+
+
+def test_done_where_limits_the_dedup_set_to_matching_rows(tmp_path, sqlite_store):
+    """`done_where` filters the stored-accession read, so rows outside it (another source) are re-listed."""
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL"])
+    sqlite_store.save(
+        _T_MAIN, pd.concat([_rows(_T_MAIN, "AAPL", "from-edgar").assign(source="edgar"), _rows(_T_MAIN, "AAPL", "from-zip").assign(source="zip")])
+    )
+    seen: dict[str, frozenset[str]] = {}
+
+    def build(ticker, cik, *, since, done_accessions, scope):
+        seen[str(len(seen))] = done_accessions
+        return {}
+
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build, done_where={"source": "edgar"}))
+    run_edgar_fetch(ctx, ["AAPL"], 15, _fetch((_T_MAIN,), build))
+
+    assert seen["0"] == frozenset({"from-edgar"})
+    assert seen["1"] == frozenset({"from-edgar", "from-zip"}), "no done_where keeps the old all-rows dedup"
+    print("\n=== SANITY CHECK: done_where ===")
+    print("  done_where={'source': 'edgar'} -> only 'from-edgar' is skipped; without it both stored accessions are. Validated.")
 
 
 def test_run_edgar_fetch_passes_manifest_window_and_dedup_set_to_build(tmp_path, sqlite_store, monkeypatch):
@@ -356,6 +381,36 @@ def test_a_lineage_scope_change_relists_only_that_ticker_same_day_included(tmp_p
     assert "relist test: 1 ticker lineage scope(s) changed -> full-window relist: MSFT" in ctx.infos
     print("\n=== SANITY CHECK: lineage-driven relist ===")
     print(f"  MSFT scope_changed_at == last_run_date ({last_run.date()}) -> full window; AAPL changed one second earlier -> incremental")
+
+
+def test_per_ticker_starts_keep_the_lineage_relist(tmp_path, sqlite_store, monkeypatch):
+    """`since_by_ticker` gives each unchanged ticker its own start inside `listing_since`; a ticker whose
+    scope changed relists from the `minimum_since`-floored window, unless its own start is earlier."""
+    ctx = _ctx(tmp_path, sqlite_store, ["AAPL", "MSFT", "NVDA"])
+    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
+    record_run(ctx, _T_MAIN, 3, 0, is_full_rescan=True, run_date=last_run, coverage_complete=True, tickers=["AAPL", "MSFT", "NVDA"])
+    identity = dated_identity(
+        [(t, f"000000000{i}", "cik_window", SENTINEL, None) for i, t in enumerate(["AAPL", "MSFT", "NVDA"], start=1)],
+        {"AAPL": "0000000001", "MSFT": "0000000002", "NVDA": "0000000003"},
+        changed_at={"AAPL": last_run - pd.Timedelta(days=5), "MSFT": last_run, "NVDA": last_run},
+    )
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
+    seen: dict[str, pd.Timestamp] = {}
+
+    def build(ticker, cik, *, since, done_accessions, scope):
+        seen[ticker] = since
+        return {}
+
+    floor = pd.Timestamp("2026-07-01")
+    starts = {"AAPL": pd.Timestamp("2026-09-20"), "MSFT": pd.Timestamp("2026-09-25"), "NVDA": pd.Timestamp("2026-03-02")}
+    fetch = _fetch((_T_MAIN,), build, minimum_since=floor, listing_since=min(starts.values()), since_by_ticker=starts)
+    run_edgar_fetch(ctx, ["AAPL", "MSFT", "NVDA"], 15, fetch)
+
+    assert seen == {"AAPL": starts["AAPL"], "MSFT": floor, "NVDA": starts["NVDA"]}
+    print("\n=== SANITY CHECK: per-ticker starts + lineage relist ===")
+    print(
+        f"  AAPL unchanged -> own start {starts['AAPL'].date()}; MSFT changed -> floor {floor.date()}; NVDA changed but own start earlier -> {starts['NVDA'].date()}. Validated."
+    )
 
 
 def test_an_unchanged_lineage_relists_nothing(tmp_path, sqlite_store, monkeypatch):

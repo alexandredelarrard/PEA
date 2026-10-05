@@ -119,21 +119,44 @@ Chunk 13G more aggressively than 13D. An institutional filer’s listing contain
 
 Do not restore pre-mandate ownership percentages to the cube merely because the backfill completes. The acceptance criteria remain in [TODO](../TODO.md).
 
-## Insider reparse and bulk/live cutover
+## Insider reparse and full rebuild
 
-After a parser or column-contract change, back up the canonical bulk table and reparse cached quarters:
+`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then lists EDGAR per ticker, from that ticker's own latest stored `filing_date` minus 7 days.
+
+- **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
+
+  ~~~bash
+  rtk "$PY" -m src data_extract insider-transactions --reparse
+  ~~~
+
+- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR lists each ticker from its latest zip filing date minus 7 days and re-reads that window, including filings already stored from EDGAR.
+
+  ~~~bash
+  rtk docker exec pea_db psql -U alexandre -d pea -c "DROP TABLE insider_transactions"
+  rtk "$PY" -m src data_extract insider-transactions -F
+  ~~~
+
+  Dropping the table is a live-DB change: ask first. `store.save` recreates it from the registry on the first zip save.
+
+Check the run log: per zip quarter, the `X / N filings missing from EDGAR` WARNING and its mismatch INFO line; one identity-exclusion WARNING per run; and the EDGAR run's manifest entry (`coverage_complete`, tickers equal to the cube universe), which is the cube's insider frontier. There is no parity command or promotion step: EDGAR always wins on overlap.
+
+After a refill, check that every quarter was ingested before trusting the frontier. A quarter that no SEC path serves is skipped with only per-URL WARNINGs, the per-ticker EDGAR windows then start after it, and the EDGAR run still records `coverage_complete`. Compare the stored quarters with the expected ones (2006q1 to the last published quarter):
 
 ~~~bash
-rtk "$PY" -m src data_extract insider-transactions --reparse
+rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT count(DISTINCT quarter), min(quarter), max(quarter) FROM insider_transactions"
 ~~~
 
-Use `--live-full` when open-quarter discovery or parsing changed. For a completed quarter, the validation command replays EDGAR and compares it with the ZIP representation:
+If a quarter is missing, one normal run (no `-F`, no `-t`) ingests it: it is still pending because no row carries its `quarter`. Its first `missing from EDGAR` WARNING then reads near 100 %, an artefact of the hole, not an EDGAR loss.
+
+Run from a worktree with `ROOT_PATH` set to the main repo root, so the run uses the cached zips and writes the manifest entry under the main `data/` (otherwise it re-downloads every zip into the worktree and the cube built from the main tree has no insider frontier):
+
+~~~powershell
+$env:ROOT_PATH = "<main repo root>"; rtk $PY -m src data_extract insider-transactions -F
+~~~
 
 ~~~bash
-rtk "$PY" -m src validate insider-parity --quarter YYYYQn -o reports/validate/YYYY-MM-DD-insider-parity
+ROOT_PATH="<main repo root>" rtk "$PY" -m src data_extract insider-transactions -F
 ~~~
-
-Add `--refresh-replay` only when the retained replay cache must be replaced. Promote `source_freshness.insider_bulk_authoritative_through` only after the report passes. Keep live staging rows: the canonical reader selects one complete representation per accession, and the staging copy makes reconciliation reproducible.
 
 ## Source-coverage evidence
 

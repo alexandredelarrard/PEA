@@ -23,7 +23,7 @@ Configuration dates are only outer bounds; they do not fill missing cells or pro
 - Availability configuration: [configs/data.yml](../../configs/data.yml)
 - Validation declarations: [configs/validate.yml](../../configs/validate.yml)
 - Availability utilities: [availability.py](../../src/data_aggregate/utils/institutionals/availability.py)
-- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), including all-ticker live insider coverage and complete-universe 13D/13G manifest checks
+- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), one `schedule_complete_through` rule for insider, 13D and 13G: the source's run-manifest entry proves completeness through its `last_run_date` only when it is `coverage_complete` and its tickers equal the cube universe exactly, otherwise the frontier is unknown. For insiders only the EDGAR run writes that entry; a zip ingest never does
 - Conditioning sink: [sink.py](../../src/data_aggregate/utils/institutionals/sink.py)
 - Leakage checks: [validate/checks/leakage.py](../../src/validate/checks/leakage.py)
 - Source constraints: [data sources](../reference/data-sources.md)

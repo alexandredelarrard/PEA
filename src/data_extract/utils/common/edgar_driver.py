@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from typing import Any, Protocol
@@ -163,15 +163,19 @@ class EdgarFetch:
     `tables[0]` keys the manifest window and the accession dedup set; every table gets a
     `record_run` entry. `build(ticker, cik, since=, done_accessions=, scope=)` returns
     `{table: frame}`. A failed ticker is fatal to the run manifest; a ticker whose lineage scope
-    changed since the last run is relisted over the full window; `minimum_since` floors the listing
-    window; `completion_table` is saved last and only when every earlier frame saved.
+    changed since the last run is relisted over the full window; `minimum_since` floors that full
+    window; `listing_since`, when set, is the run's listing window itself (over `full` and the
+    manifest), and `since_by_ticker` gives an unchanged ticker its own start inside it; `done_where`
+    restricts the stored rows whose accessions count as done.
     """
 
     desc: str
     tables: tuple[Table, ...]
     build: BuildFn
     minimum_since: pd.Timestamp | None = None
-    completion_table: Table | None = None
+    listing_since: pd.Timestamp | None = None
+    since_by_ticker: Mapping[str, pd.Timestamp] | None = None
+    done_where: dict[str, object] | None = None
 
 
 def build_filing_rows(
@@ -228,11 +232,14 @@ def _resolve_window(
     years_history: int,
     full: bool,
 ) -> RunWindow:
-    """`fetch`'s window from manifest `entry`: the whole `years_history` window (floored at
-    `fetch.minimum_since`) under `full` or a not-yet-complete manifest, else `manifest_window`."""
+    """`fetch`'s window. The relist window is the whole `years_history` (floored at
+    `fetch.minimum_since`). The listing window is `fetch.listing_since` when set; else, from manifest
+    `entry`, the relist window under `full` or a not-yet-complete manifest, else `manifest_window`."""
     fallback_since = pd.Timestamp.today() - pd.DateOffset(years=years_history)
     if fetch.minimum_since is not None:
         fallback_since = max(fallback_since, pd.Timestamp(fetch.minimum_since).normalize())
+    if fetch.listing_since is not None:
+        return RunWindow(pd.Timestamp(fetch.listing_since).normalize(), fallback_since, False)
     # `-F/--full` serves chunked backfills, whose universe-size change the manifest cannot see.
     if full:
         return RunWindow(fallback_since, fallback_since, True)
@@ -258,26 +265,21 @@ def _build_ticker(
     ticker: str,
     cik: str,
 ) -> dict[Table, pd.DataFrame]:
-    """`fetch.build`'s frames for one ticker; a ticker in `changed` relists from `window.fallback_since`."""
-    since = window.fallback_since if ticker in changed else window.since
+    """`fetch.build`'s frames for one ticker, listed from its `fetch.since_by_ticker` entry, else from
+    `window.since`; a ticker in `changed` relists from `window.fallback_since` when that is earlier."""
+    since = (fetch.since_by_ticker or {}).get(ticker, window.since)
+    if ticker in changed:
+        since = min(since, window.fallback_since)
     return fetch.build(ticker, cik, since=since, done_accessions=done, scope=scope)
 
 
 def _save_frames(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, pd.DataFrame]) -> tuple[dict[Table, int], bool]:
-    """Upsert one ticker's non-empty `frames`, `fetch.completion_table` last. Returns `(rows saved per
-    table, failed_save)`: an undeclared table or a failed save sets `failed_save` without stopping
-    the other tables, and then the completion table is not saved."""
-    completion_table = fetch.completion_table
-    ordered_frames = [(table, df) for table, df in frames.items() if table != completion_table]
-    if completion_table is not None and completion_table in frames:
-        ordered_frames.append((completion_table, frames[completion_table]))
+    """Upsert one ticker's non-empty `frames`. Returns `(rows saved per table, failed_save)`: an
+    undeclared table or a failed save sets `failed_save` without stopping the other tables."""
     counts: dict[Table, int] = {}
     failed_save = False
-    for table, df in ordered_frames:
+    for table, df in frames.items():
         if df is None or df.empty:
-            continue
-        if table == completion_table and failed_save:
-            context.log.warning("%s: %s coverage not advanced because an earlier save failed", fetch.desc, ticker)
             continue
         if table not in fetch.tables:
             context.log.warning("%s: %s built undeclared table '%s'", fetch.desc, ticker, table)
@@ -361,7 +363,7 @@ def run_edgar_fetch(
     if changed:
         context.log.info("%s: %d ticker lineage scope(s) changed -> full-window relist: %s", fetch.desc, len(changed), ", ".join(sorted(changed)))
     window = _resolve_window(context, fetch, cik_map, entry, years_history, full)
-    done = stored_values(context, fetch.tables[0], "accession_number")
+    done = stored_values(context, fetch.tables[0], "accession_number", where=fetch.done_where)
     worker = partial(_walk_ticker, context, fetch, scope, window, changed, done)
     results = run_per_ticker(cik_map, worker, desc=fetch.desc, log=context.log, max_workers=max_workers)
     totals, failed = _tally(results, fetch.tables)

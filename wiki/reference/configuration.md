@@ -35,7 +35,7 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `linear`, `lgbm`, `random_forest` | [configs/models](../../configs/models/) | Family hyperparameters and family-specific feature columns. |
 | `strategy_ls`, `strategy_eq_long_only` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
-| `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, live-insider lag, the parity-approved bulk quarter, and the earnings-call extractor knobs. |
+| `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
 
 Curated evidence registers under [configs/sec](../../configs/sec/) are versioned data contracts rather than tuning knobs:
@@ -75,7 +75,7 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_bulk_authoritative_through` is a reviewed cutover, not a date that advances automatically. Promote it only after the retained bulk/live parity validation passes.
+`source_freshness.insider_max_lag_days` is the only insider freshness knob: the status gate fails when the insider completeness frontier (the EDGAR run's manifest entry over the exact cube universe) is unknown or lags the institutionals part by more than this many days. There is no reviewed cutover date and no insider parity threshold; the zip and EDGAR sources share one table and EDGAR always wins.
 
 ## Cube settings
 

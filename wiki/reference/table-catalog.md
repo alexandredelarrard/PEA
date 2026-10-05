@@ -83,11 +83,8 @@ The distinction between the two histories is load-bearing: [data extraction](../
 | --- | --- | --- |
 | `sec13f_hr` | manager CIK × period × ticker × CUSIP | Universe-filtered quarterly holdings. Filing-date lag and manager-coverage quality must be applied before constructing deltas. Raw reported value units require per-filing repair. |
 | `sec13f_manager_holdings` | manager CIK × period × CUSIP | Complete roster-manager books without an S&P 500 filter; use this denominator for portfolio weights. |
-| `insider_transactions` | accession × security type × transaction key | Canonical bulk Forms 3/4/5 history. Ticker is resolved CIK-first; the derivative block is structurally null on non-derivative rows. |
-| `insider_transactions_live` | accession × security type × XML row sequence | Provisional EDGAR tail. The canonical reader selects one whole source per accession rather than mixing bulk and live rows. |
-| `insider_transactions_live_coverage` | ticker | Successful scan frontier, including legitimate zero-filing scans. The source-wide completeness frontier is the minimum over the requested universe. |
+| `insider_transactions` | `accession_number` × `security_type` × `row_sequence` | The only Forms 3/4/5 transaction table. `row_sequence` is the 1-based row inside the filing's non-derivative or derivative table (XML order; the zip's surrogate key ranked per table gives the same number). Daily EDGAR rows are authoritative (`source='edgar'`); a quarterly zip adds only the filings EDGAR lacks (`source='zip'`), never both sources in one accession. `quarter` is the zip quarter that covered the filing, NULL until one has. Joint filings keep one row per trade: the primary owner (best role Officer < Director < 10% owner < Other, then lowest CIK) fills `owner_cik`/`owner_name`/`officer_title`, `owner_ciks` lists every reporting owner, `n_reporting_owners` counts them, and the four role flags are OR'ed across owners. Also `original_submission_date` (set on amendments), `document_type`, `fetched_at`; `footnote_ids` and `acceptance_datetime` are EDGAR-only (NULL on zip rows). Ticker is resolved CIK-first; identity rejects are not stored. Daily freshness on `filing_date`; the derivative block is structurally null on non-derivative rows. |
 | `insider_footnotes` | accession × footnote id | Filing-level Form 3/4/5 prose. Joins through transactions; no ticker is required. |
-| `insider_transactions_quarantine` | transaction key | Rejected identity rows retained as evidence. Its claimed ticker is not safe to join to prices. |
 | `sec_13d`, `sec_13g` | ticker × accession × reporting-person sequence | Activist and passive beneficial-ownership filings. Pre-2024 structured-data numerics are unavailable, not zero. |
 | `sec_13d_transactions` | ticker × accession × trade sequence | Schedule 13D Item 5(c) trade log, distinct from reporting-person grain. |
 | `sec_8k` | ticker × accession × item | One row per 8-K item code; a filing commonly contributes several rows. |
@@ -139,7 +136,7 @@ Every part uses `(date, ticker)` as its persisted key. Targets encode label and 
 
 ## Freshness and current state
 
-Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. Freshness metadata describes source expectations; runtime gates such as insider bulk/live completeness add stricter operational checks.
+Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. Freshness metadata describes source expectations; runtime gates such as the insider completeness frontier (the EDGAR run's manifest entry over the exact cube universe) add stricter operational checks.
 
 For row counts, physical size, known holes, and tables registered but absent from the local database, use the [live database snapshot](./live-database.md). Re-measure it before operational decisions.
 

@@ -116,12 +116,7 @@ def test_insider_parse_and_universe_filter_synthetic():
             "DIRECT_INDIRECT_OWNERSHIP": ["D", "D"],
         }
     )
-    out = build_insider_frame(
-        ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()),
-        value_rule="shares_x_price_first",
-        numeric_rule="to_numeric",
-        date_formats=BULK_DATE_FORMATS,
-    )
+    out = build_insider_frame(*ins.extract_bulk_strings(sub, own, nd, pd.DataFrame()), date_formats=BULK_DATE_FORMATS)
     assert set(out["accession_number"]) == {"a1", "a2"}
     a1 = out[out["accession_number"] == "a1"].iloc[0]
     assert a1["ticker"] == "AAPL" and a1["is_officer"] == 1.0 and a1["transaction_code"] == "P"
@@ -158,10 +153,8 @@ def test_insider_parse_and_universe_filter_synthetic():
 def test_insider_parse_real_zip():
     tables = ins._read_tables(INSIDER_ZIP)
     assert tables is not None
-    df = build_insider_frame(
-        ins.extract_bulk_strings(*tables[:4]), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
-    )
-    assert not df.empty and df["transaction_sk"].notna().all()
+    df = build_insider_frame(*ins.extract_bulk_strings(*tables[:4]), date_formats=BULK_DATE_FORMATS)
+    assert not df.empty and df["row_sequence"].ge(1).all()
     assert set(df["security_type"]) <= {"nonderiv", "deriv"}
     codes = df["transaction_code"].value_counts()
     aapl = df[df["ticker"] == "AAPL"]
@@ -181,7 +174,7 @@ def test_insider_incremental_state_converges(tmp_path):
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
-        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "transaction_sk": "1", "ticker": "AAPL", "quarter": "2024q1"}]),
+        pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
     context = SimpleNamespace(store=ds)
     assert stored_values(context, "insider_transactions", "quarter") == {"2024q1"}
@@ -200,7 +193,7 @@ def test_insider_incremental_state_converges(tmp_path):
 def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_nothing(tmp_path, monkeypatch):
     """The download step the identity build depends on: every quarter since `SEC_INSIDER_FIRST_YEAR`, old and new URL
     templates, an unpublished quarter skipped, no store access and no identity load."""
-    requested: list[tuple[str, str]] = []
+    requested: list[tuple[str, tuple[str, str]]] = []
     spans: list[tuple[int, int]] = []
 
     def _ensure(context, path, url, **kwargs):
@@ -223,11 +216,13 @@ def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_no
     assert ins.download_insider_transactions(context) == ["2006q1", "2026q2"]
     assert [name for name, _ in requested] == ["2006q1.zip", "2026q2.zip", "2026q3.zip"]
     assert spans == [(pd.Timestamp.today().year - ins.SEC_INSIDER_FIRST_YEAR + 1, ins.SEC_INSIDER_FIRST_YEAR)]
-    assert requested[0][1] == ins.SEC_INSIDER_URL_TEMPLATE.format(quarter="2006q1")
-    assert requested[1][1] == ins.SEC_INSIDER_URL_NEW_TEMPLATE.format(quarter="2026q2")
+    assert requested[0][1] == ins.zip_urls("2006q1") and requested[0][1][0] == ins.SEC_INSIDER_URL_TEMPLATE.format(quarter="2006q1")
+    assert requested[1][1] == ins.zip_urls("2026q2") and requested[1][1][0] == ins.SEC_INSIDER_URL_NEW_TEMPLATE.format(quarter="2026q2")
 
     print("\n=== SANITY CHECK: insider download step ===")
-    print(f"  {len(requested)} quarter(s) requested from {ins.SEC_INSIDER_FIRST_YEAR}; 2 cached, the unpublished one skipped; no parse. Validated.")
+    print(
+        f"  {len(requested)} quarter(s) requested from {ins.SEC_INSIDER_FIRST_YEAR}, both SEC paths each, likelier first; 2 cached, the unpublished one skipped; no parse. Validated."
+    )
 
 
 def test_insider_download_cli_runs_only_the_download(monkeypatch):

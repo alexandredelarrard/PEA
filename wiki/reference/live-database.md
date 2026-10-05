@@ -38,10 +38,10 @@ Prefer catalog queries that return table presence, row estimates, physical size,
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
 | `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
 | `sec_filing_text` | about 34K rows / 1.2 GB | 2011-07 to 2026-08 | Do not perform unbounded text reads. |
-| `insider_transactions` | about 2.01M canonical rows | filing coverage from 2006 through the latest completed bulk quarter | Canonical reads must apply scope/repair and bulk/live completeness. |
-| `insider_footnotes` | about 1.89M rows | accession-linked, no ticker/date grain | Join at filing grain; quarantined accessions can leave explainable orphans. |
+| `insider_transactions` | 2,027,338 rows after the single-table refill, measured 2026-10-04: zip 2,004,933 rows / 721,416 accessions (filed 2006-01-03 to 2026-06-22), EDGAR 22,405 rows / 8,867 accessions (filed 2025-09-30 to 2026-10-02) | 81 zip quarters (2006q1 to 2026q2); **2026q1 is not yet ingested** (the refill hit an HTTP 404 on the new SEC path), so only its 77 EDGAR re-reads are stored | Reads must apply the scope, repair, repeat-collapse and amendment rules of `insider_quality.py`, and the manifest completeness frontier. Ingest 2026q1 before the next cube build (see the [TODO](../TODO.md)). The retired EDGAR staging, coverage and quarantine tables are dropped. |
+| `insider_footnotes` | about 1.94M rows | accession-linked, no ticker/date grain | Join at filing grain; accessions deleted by the identity sweep can leave explainable orphans. |
 
-The 2026-09-23 targeted rebuild of `cube_part_institutionals` recorded roughly 3.27M rows, 120 feature columns, 491 tickers, and 1995-09 to 2026-09 coverage. Insider-dependent cross-source cells stopped at the measured bulk/live completeness frontier rather than being forward-filled.
+The 2026-09-23 targeted rebuild of `cube_part_institutionals` recorded roughly 3.27M rows, 120 feature columns, 491 tickers, and 1995-09 to 2026-09 coverage. Insider-dependent cross-source cells stop at the insider completeness frontier rather than being forward-filled.
 
 ## Earnings-call snapshot (2026-10-02)
 
@@ -72,7 +72,7 @@ Important measured state:
 
 - 13F manager coverage contained historical holes that ticker counts did not reveal. A later refill closed the identified empty filing months; validation now scores this axis.
 - `sec13f_manager_holdings` covered the filing managers needed for denominator-quality analysis but not every roster code resolves to a filing CIK.
-- CIK-first insider identity repair relabelled valid predecessor rows, admitted rows the symbol path missed, and quarantined mismatched entities instead of discarding evidence.
+- CIK-first insider identity repair relabelled valid predecessor rows, and admitted rows the symbol path missed. Mismatched entities are now excluded and counted in one warning per run rather than stored.
 - `symbol_tenure` contains overlapping observed intervals; overlap is expected and must not be collapsed into a one-row lookup.
 - `entity_lineage` is sparse by design: a missing CIK row means a singleton entity.
 - Until the user runs the identity cutover ([run guide](../guides/run-the-pipeline.md)), the live `symbol_tenure` (primary key without `source`/`evidence_period`, no `dei` rows) and `entity_lineage` (one row per CIK, no `role`) keep the old shape. The accessor reads the old `entity_lineage` as membership rows (roster window plus event-only CIKs), so register chains reach consolidating listings only after the cutover, and `notes-download` and `identity-tables` need the recreated tables. Measured read-only on 2026-10-04 before the cutover: foreign filer rows only in `sec_8k` (1,749 accessions, 3,795 rows, 10 tickers) and `fundamentals_facts` (349 accessions, 31,280 rows, 8 tickers).
@@ -90,7 +90,7 @@ Important measured state:
 | `dividends` covers fewer tickers | Correct for non-payers; no row is not automatically missing data. |
 | `earnings_surprises` has future dates | Scheduled calls are present; realized signals require non-null actual EPS. |
 | Roster names with no earnings-call rows | BRK-B holds no calls; ED, EXPD and NVR are absent from the defeatbeta source. Their `f_ec_*` features are null, not stale. |
-| Bulk insider/pension maxima lag today | Publication cadence, not automatically failed extraction. |
+| Bulk pension maxima, and the latest insider `quarter` tag, lag today | Publication cadence, not automatically failed extraction. Insider rows after the last zip quarter come from EDGAR with a NULL `quarter`. |
 | Short-volume minimum predates the current provider window | The isolated stored date is not proof of continuously recoverable history. |
 | `sec_def14a` code exists but table was removed in an older cutover | Check current table presence before designing a feature around Pay-versus-Performance history. |
 | Price table missing on another machine | Real-data price fixtures skip; a green test suite then represents reduced coverage. |
@@ -103,8 +103,10 @@ Raw `value_usd` is not safe to aggregate. A tiny number of convertible-note and 
 
 1. restricts to eligible common-stock, open-market, priced transaction codes;
 2. separates scope rejection from price repair;
-3. repairs suspect per-share prices against a local, per-ticker and per-share-class filed-price median; and
-4. validates aggregate buy/sell magnitudes after repair.
+3. repairs suspect per-share prices against a local, per-ticker and per-share-class filed-price median;
+4. keeps only the earliest copy of a trade repeated across accessions (same ticker, trade day, code, shares, price and holding after, to 2 decimals), so joint reporters filing separately count once;
+5. supersedes an amended cell (trade day, code, security type) point in time: the original is visible until the Form 4/A's filing day, then the 4/A, both aged from the original's disclosure day; and
+6. validates aggregate buy/sell magnitudes after repair.
 
 The implementation lives in [insider_quality.py](../../src/data_aggregate/utils/institutionals/insider_quality.py). Any new consumer must reuse that logic or independently prove an equivalent contract.
 

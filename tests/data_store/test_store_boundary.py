@@ -141,7 +141,7 @@ def test_store_surface_covers_every_capability_the_bypasses_needed():
         "exists": "information_schema.tables -- Postgres-only",
         "columns": "information_schema.columns (step_train, ls_model)",
         "row_count": "SELECT COUNT(*) (PartStore.row_count)",
-        "bounds": "SELECT MIN(q), MAX(q) (fetch_insider_edgar, part_status)",
+        "bounds": "SELECT MIN(q), MAX(q) (validate checks: grain, profile, bounds, leakage)",
         "max_date": "SELECT MAX(date) (PartStore.max_date, fetch_short_interest)",
         "distinct": "SELECT DISTINCT [ORDER BY .. LIMIT] (sec_utils, bulk_cache, step_train, earnings-call streamers)",
         "load": "WHERE / IN / IS NOT NULL / date >= x / date <= y / projection",

@@ -5,16 +5,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.insider_common import LIVE_DATE_FORMATS, build_insider_frame
+from src.data_extract.utils.institutionals.insider_common import XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
+
+ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]
 
 
 def parse_ownership_xml(xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The live path: ownership XML -> canonical strings -> typed frame, plus footnotes."""
-    df_str, footnotes = extract_xml_strings(xml)
-    return build_insider_frame(
-        df_str, value_rule="stated_total_first", numeric_rule="strip_currency_float", date_formats=LIVE_DATE_FORMATS
-    ), footnotes
+    """The EDGAR path: ownership XML -> canonical strings -> typed frame, plus footnotes."""
+    df_str, df_owners, footnotes = extract_xml_strings(xml, "0000093556-26-000001")
+    return build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS), footnotes
 
 
 FORM4_XML = """<?xml version="1.0"?>
@@ -69,7 +69,9 @@ def test_form4_preserves_every_cube_input_and_the_richer_xml_fields():
     option = transactions.iloc[1]
     assert option["exercise_price"] == pytest.approx(20.0)
     assert option["underlying_shares"] == pytest.approx(1_000)
-    assert footnotes.to_dict("records") == [{"footnote_id": "F1", "footnote_text": "Sold under a Rule 10b5-1 trading plan."}]
+    assert footnotes.to_dict("records") == [
+        {"accession_number": "0000093556-26-000001", "footnote_id": "F1", "footnote_text": "Sold under a Rule 10b5-1 trading plan."}
+    ]
     print(
         "SANITY: one Form 4 XML produced one non-derivative sale and one derivative "
         "exercise, retaining price precision, roles, 10b5-1, deemed date, timeliness, "
@@ -95,7 +97,7 @@ def test_all_declared_ownership_form_variants_share_one_xml_contract(document_ty
     )
     transactions, _ = parse_ownership_xml(xml)
     assert set(transactions["document_type"]) == {document_type}
-    assert transactions.groupby("security_type")["source_row_sequence"].apply(list).to_dict() == {
+    assert transactions.groupby("security_type")["row_sequence"].apply(list).to_dict() == {
         "deriv": [1],
         "nonderiv": [1],
     }
@@ -109,7 +111,7 @@ def test_missing_ten_b5_flag_remains_unknown_on_an_amendment():
     ).replace("<aff10b5One>true</aff10b5One>", "")
     transactions, _ = parse_ownership_xml(xml)
     assert transactions["is_10b5_1"].isna().all()
-    assert transactions["source_row_sequence"].tolist() == [1, 1]
+    assert transactions["row_sequence"].tolist() == [1, 1]
     assert pd.isna(transactions.iloc[0]["is_10b5_1"])
     print(
         "SANITY: an amended filing with no aff10b5One element preserves UNKNOWN rather than "
@@ -124,6 +126,44 @@ def test_omitted_relationship_checkboxes_are_false_not_unknown():
     assert transactions["is_ten_pct_owner"].eq(0.0).all()
     assert transactions["is_officer"].eq(1.0).all()
     print("SANITY: omitted relationship checkboxes mean False, while the explicitly checked officer role remains True.")
+
+
+def test_an_absent_relationship_block_gives_roles_zero_not_unknown():
+    start = FORM4_XML.index("<reportingOwnerRelationship>")
+    end = FORM4_XML.index("</reportingOwnerRelationship>") + len("</reportingOwnerRelationship>")
+    transactions, _ = parse_ownership_xml(FORM4_XML[:start] + FORM4_XML[end:])
+    assert (transactions[ROLES] == 0.0).all().all()
+    assert transactions["officer_title"].isna().all() and set(transactions["owner_cik"]) == {"0001234567"}
+    print("SANITY: an owner without a relationship block has no role: all four flags are 0 (never NaN), as on the zip path.")
+
+
+def test_every_reporting_owner_is_read_and_the_primary_is_chosen_by_rule():
+    second_owner = """<reportingOwner>
+    <reportingOwnerId><rptOwnerCik>0000000042</rptOwnerCik><rptOwnerName>FAMILY TRUST</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isTenPercentOwner>1</isTenPercentOwner></reportingOwnerRelationship>
+  </reportingOwner>
+  <reportingOwner>"""
+    xml = FORM4_XML.replace("<reportingOwner>", second_owner, 1)
+    transactions, _ = parse_ownership_xml(xml)
+    sale = transactions.iloc[0]
+    assert len(transactions) == 2, "one row per trade, not per owner"
+    assert sale["owner_ciks"] == "0000000042,0001234567" and sale["n_reporting_owners"] == 2
+    assert (sale["owner_cik"], sale["officer_title"]) == ("0001234567", "Chief Executive Officer"), "the officer outranks the lower-CIK 10% owner"
+    assert sale[ROLES].tolist() == [1.0, 1.0, 1.0, 0.0]
+    print(
+        "SANITY: two reportingOwner nodes -> owner_ciks of both, n 2, the officer as primary despite the lower 10%-owner CIK, flags OR'ed; still 2 rows."
+    )
+
+
+def test_an_amendment_carries_its_original_submission_date():
+    xml = FORM4_XML.replace(
+        "<documentType>4</documentType>", "<documentType>4/A</documentType><dateOfOriginalSubmission>2026-06-30</dateOfOriginalSubmission>"
+    )
+    amended, _ = parse_ownership_xml(xml)
+    original, _ = parse_ownership_xml(FORM4_XML)
+    assert set(amended["original_submission_date"]) == {pd.Timestamp("2026-06-30")}
+    assert original["original_submission_date"].isna().all()
+    print("SANITY: a 4/A's root dateOfOriginalSubmission reaches every row as original_submission_date; an original Form 4 leaves it NULL.")
 
 
 def test_explicit_transaction_total_is_kept_without_shares_or_price():

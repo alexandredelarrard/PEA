@@ -39,9 +39,7 @@ _OWN_ROW = {"ACCESSION_NUMBER": "0001-26-000002", "RPTOWNERCIK": "1", "RPTOWNER_
 
 def _parse_insider(sub: pd.DataFrame, own: pd.DataFrame, nonderiv: pd.DataFrame, deriv: pd.DataFrame) -> pd.DataFrame:
     """The bulk path: zip members -> canonical strings -> typed frame."""
-    return build_insider_frame(
-        extract_bulk_strings(sub, own, nonderiv, deriv), value_rule="shares_x_price_first", numeric_rule="to_numeric", date_formats=BULK_DATE_FORMATS
-    )
+    return build_insider_frame(*extract_bulk_strings(sub, own, nonderiv, deriv), date_formats=BULK_DATE_FORMATS)
 
 
 def _transactions(df: pd.DataFrame, security_type: str) -> pd.DataFrame:
@@ -120,6 +118,7 @@ def test_a_submission_without_the_column_parses_and_yields_nan():
     assert len(out) == 1
     assert pd.isna(out.iloc[0]["is_10b5_1"])
     assert out.iloc[0]["transaction_form_type"] == "4"  # present since 2006q1, unlike the flag
+    print("SANITY: a SUBMISSION without AFF10B5ONE parses; is_10b5_1 stays NaN (unknown), not False.")
 
 
 def test_the_flag_reaches_the_transaction_rows_when_present():
@@ -153,6 +152,7 @@ def test_the_flag_reaches_the_transaction_rows_when_present():
     )
     out = _parse_insider(sub, own, nonderiv, pd.DataFrame())
     assert out.iloc[0]["is_10b5_1"] == 1.0
+    print("SANITY: AFF10B5ONE='true' on the submission reaches the transaction row as is_10b5_1 = 1.0.")
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +187,7 @@ def test_derivative_block_reads_secs_own_misspelling():
     assert row["expiration_date"] == pd.Timestamp("2030-02-01")
     assert row["underlying_security_title"] == "Common Stock"
     assert row["underlying_shares"] == 1000.0
+    print("SANITY: the derivative block (exercise price, SEC's EXCERCISE_DATE spelling, expiry, underlying) parses on the zip path.")
 
 
 def test_derivative_columns_are_null_on_nonderivative_rows():
@@ -207,6 +208,7 @@ def test_derivative_columns_are_null_on_nonderivative_rows():
     out = _transactions(nonderiv, "nonderiv")
     for col in ("exercise_price", "exercise_date", "expiration_date", "underlying_security_title", "underlying_shares", "underlying_value"):
         assert out[col].isna().all(), f"{col} should be NULL on a non-derivative row"
+    print("SANITY: every derivative-only column is NULL on a non-derivative row.")
 
 
 # --------------------------------------------------------------------------- #
@@ -233,6 +235,7 @@ def test_footnotes_key_on_accession_and_id_and_respect_the_universe():
 def test_footnotes_tolerate_an_absent_or_empty_table():
     assert _footnotes(pd.DataFrame(), {"A"}).empty
     assert list(_footnotes(None, {"A"}).columns) == FOOTNOTE_COLUMNS
+    print("SANITY: an absent or empty FOOTNOTES member gives an empty footnote frame with the table's columns.")
 
 
 # --------------------------------------------------------------------------- #

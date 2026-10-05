@@ -37,10 +37,6 @@ from src.data_store.schema import resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.validate import checks
 from src.validate.checks.identity import check_identity
-from src.validate.insider_reconciliation import (
-    run_completed_quarter_reconciliation,
-    write_reconciliation_report,
-)
 from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
 from src.validate.result import EXIT, CheckResult
@@ -151,40 +147,6 @@ earnings_calls = _command(
 )
 def catalogue(table: str, out: str, use_cache: bool, tickers: str | None, config_path: str, catalogue_path: Path | None) -> None:
     _run(checks.check_catalogue, table, out, use_cache, config_path, tickers, catalogue=catalogue_path)
-
-
-@cli.command(
-    name="insider-parity",
-    help="Replay a completed Form 3/4/5 quarter through EDGAR and gate ZIP promotion.",
-)
-@click.option("--quarter", required=True, metavar="YYYYQn")
-@click.option("--workers", default=8, show_default=True, type=click.IntRange(1, 16))
-@click.option(
-    "--refresh-replay",
-    is_flag=True,
-    help="Ignore the retained EDGAR replay cache and fetch the quarter again.",
-)
-@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
-@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-def insider_parity(
-    quarter: str,
-    workers: int,
-    refresh_replay: bool,
-    out: str,
-    config_path: str,
-) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    result = run_completed_quarter_reconciliation(
-        context,
-        config,
-        quarter,
-        max_workers=workers,
-        replay_cache=Path(out) / "_cache" / f"edgar_ownership_{quarter.upper()}.parquet",
-        refresh_replay=refresh_replay,
-    )
-    json_path, markdown_path = write_reconciliation_report(out, result)
-    click.echo(f"insider parity {result['quarter']}: {'PASS' if result['passed'] else 'FAIL'} -> {json_path} ({markdown_path})")
-    sys.exit(0 if result["passed"] else 1)
 
 
 @cli.command(

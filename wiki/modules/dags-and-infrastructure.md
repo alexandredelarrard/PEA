@@ -23,7 +23,7 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 ## Public API / entry points
 
-- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders, then identity tables, then identity-consuming SEC tasks; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
+- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders (one `insider-transactions` task in the `sec_bulk` pool: pending zip quarters, then the EDGAR walk, into the one `insider_transactions` table), then identity tables, then identity-consuming SEC tasks; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
 - [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py) chains peer deduction, registered cube parts, assembly, status, and downstream prediction.
 - [dag_modelling.py](../../src/dags/dag_modelling.py) runs holdout training, portfolio backtest, and full-history production training.
 - [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) scores the newest cube and writes strategy moves.

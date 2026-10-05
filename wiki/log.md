@@ -171,6 +171,15 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-01-edgar-extract-refactor/` (`06-final.md`)
 
+## 2026-10-03: refresh — one insider transactions table
+
+- Profile: internal/standard
+- source_commit: 843a4eb (branch `harness/insider-transactions-merge`)
+- Coverage: `insider_transactions` is the only Forms 3/4/5 table, keyed (`accession_number`, `security_type`, `row_sequence`) with `source`, `owner_ciks`, `n_reporting_owners`, `original_submission_date`, `footnote_ids`, `acceptance_datetime`, `fetched_at`; EDGAR is authoritative and a zip quarter fills only the filings EDGAR missed, with a per-quarter missing-from-EDGAR warning; identity rejects are logged, not stored; the frontier is the EDGAR run's manifest entry; the cube collapses repeat copies and supersedes Form 4/A cells point in time. Removed: the EDGAR staging, coverage and quarantine tables, the accession overlay, `validate insider-parity`, its `validate.yml` thresholds and the `data.yml` bulk cutover date. Full rebuild = drop the table, then `insider-transactions -F`. TODO: the zip/EDGAR encoding item is resolved (one shared encoding) and removed; the Atom 503 item stays.
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Configuration](./reference/configuration.md), [Live database](./reference/live-database.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Run the pipeline](./guides/run-the-pipeline.md), [Validation](./modules/validation.md), [Data extraction](./modules/data-extract.md), [Source availability](./concepts/source-availability.md), [Cube build](./flows/cube-build.md), [Application and scripts](./modules/application-and-scripts.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Point-in-time and quality controls](./architecture/point-in-time-and-quality.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Documentation coverage](./reference/documentation-coverage.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-03-insider-transactions-merge/` (`03-implementation.md`)
+- Operational boundary: the live database still holds the retired tables until the user drops them and runs the refill.
+
 ## 2026-10-04: refresh — entity-safe EDGAR filing scope and dated lineage
 
 - Profile: internal/standard

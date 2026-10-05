@@ -114,7 +114,7 @@ thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster boo
 
 # 4) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
 fundamentals = fetch("fundamentals", pool="sec_api")
-insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 daily tail, after the bulk quarters
+insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR half, after the zip half
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
 def14a = fetch("def14a", pool="sec_api")  # + LLM
@@ -203,7 +203,7 @@ seed_universe >> all_fetchers
 splits >> price_history
 identity_tables >> price_history  # the fetch list adds the security master's current secondary classes
 [insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >> identity_consumers
-insider_transactions >> insider_edgar  # the live tail resumes from the bulk table's latest quarter
+insider_transactions >> insider_edgar  # zips fill first; EDGAR then replaces each filing it re-reads
 thirteen_f >> superinvestors  # roster reads the 13F holdings
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar

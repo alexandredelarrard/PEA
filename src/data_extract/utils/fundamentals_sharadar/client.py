@@ -173,7 +173,7 @@ def _page(context: Context, url: str, params: dict) -> str | None:
 
 
 def sharadar_get(
-    context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters
+    context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters: str
 ) -> pd.DataFrame:
     """`GET {SHARADAR_BASE_URL}/data/{table}` with `filters`, paged, as a DataFrame.
 

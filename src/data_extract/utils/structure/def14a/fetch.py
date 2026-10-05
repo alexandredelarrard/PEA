@@ -202,7 +202,7 @@ def _completed_accessions(context: Context) -> set[str]:
         return set()
     return {
         str(row["accession_number"])
-        for row in stored.to_dict(orient="records")
+        for row in cast(list[dict[str, object]], stored.to_dict(orient="records"))
         if row.get("accession_number") is not None and _has_parent_evidence(row)
     }
 

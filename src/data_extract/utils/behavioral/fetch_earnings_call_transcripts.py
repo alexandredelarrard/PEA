@@ -20,7 +20,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import IO, Any
+from typing import IO, Any, SupportsInt, cast
 
 import numpy as np
 import pandas as pd
@@ -98,7 +98,7 @@ def resolve_hf_source() -> TranscriptSource:
     revision = str(info.sha)
     fs = HfFileSystem()
     path = f"datasets/{DATASET_REPO}@{revision}/{DATASET_FILE}"
-    return TranscriptSource(revision=revision, opener=lambda: fs.open(path, "rb", block_size=_BLOCK_SIZE))
+    return TranscriptSource(revision=revision, opener=lambda: cast(IO[bytes], fs.open(path, "rb", block_size=_BLOCK_SIZE)))
 
 
 def _is_text(dtype: pa.DataType) -> bool:
@@ -190,7 +190,7 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], since: str | None, ba
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
         as_of=pd.to_datetime(calls["report_date"], format="%Y-%m-%d"),
-        transcript_id=pd.array(calls["transcripts_id"], dtype="Int64"),
+        transcript_id=calls["transcripts_id"].astype("Int64"),
     )
     calls = calls.sort_values([*_KEY, "as_of", "transcript_id"], na_position="first").drop_duplicates(_KEY, keep="last")
     calls = one_call_per_date(calls.assign(ordinal=calls["fiscal_year"].astype(int) * 4 + calls["fiscal_quarter"].astype(int)))
@@ -467,8 +467,8 @@ def extract_earnings_calls(
             log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(gone), _sample_keys(gone))
             _remove_calls(context, gone)
 
-        needed = pd.concat([new.assign(old_as_of=pd.NaT), reissued], ignore_index=True)
-        by_group = {int(g): part for g, part in needed.groupby("row_group", sort=True)}
+        needed = pd.concat([new.assign(old_as_of=pd.Series(pd.NaT, index=new.index, dtype="datetime64[ns]")), reissued], ignore_index=True)
+        by_group = {int(cast(SupportsInt, g)): part for g, part in needed.groupby("row_group", sort=True)}
         empty_calls = 0
         for group, paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
             part = by_group[group]

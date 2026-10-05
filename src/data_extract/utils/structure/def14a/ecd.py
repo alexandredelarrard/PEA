@@ -59,6 +59,7 @@ value here.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pandas as pd
 
@@ -103,7 +104,7 @@ _NET_INCOME = "us-gaap:NetIncomeLoss"
 _ZERO_TOL = 1e-9
 
 
-def ecd_facts(filing) -> pd.DataFrame | None:
+def ecd_facts(filing: Any) -> pd.DataFrame | None:
     """The filing's inline-XBRL facts, or None when it has none.
 
     This is the same frame `ProxyStatement._facts_dataframe` builds, so a caller that already

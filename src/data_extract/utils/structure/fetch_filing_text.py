@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from functools import partial
+from typing import Any
 
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
@@ -107,7 +108,7 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
     return out
 
 
-def _filing_sections(filing) -> dict[str, str]:
+def _filing_sections(filing: Any) -> dict[str, str]:
     """Structured sections from the parsed filing, with the regex carve filling whichever section it missed."""
     form = filing.form
     needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}

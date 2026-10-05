@@ -18,6 +18,7 @@ from typing import Any, cast
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
+from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
@@ -30,6 +31,7 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
+from src.data_store.schema import Tables
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
@@ -802,17 +804,15 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
     return history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
 
 
-def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
+def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_history: bool = False) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
     Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
     logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
     and rebuilds from stored facts, with no network.
     """
-    from src.data_store.schema import Tables  # local: avoids a package cycle
-
-    catalogue = load_catalogue(context.config_dir)
-    guards = load_guards(context.config_dir)
+    catalogue = load_catalogue(str(context.config_dir))
+    guards = load_guards(str(context.config_dir))
     history_rows = codes_rows = 0
     for ticker in tickers:
         facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)

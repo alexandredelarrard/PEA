@@ -729,22 +729,21 @@ def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:
     """
     if "owner_cik" not in ev.columns:
         return None
-    d = ev.dropna(subset=["value"]).sort_values(["owner_cik", "anchor"], kind="stable")
-    if d.empty:
+    df_purchases = ev.dropna(subset=["value"]).sort_values(["owner_cik", "anchor"], kind="stable")
+    if df_purchases.empty:
         return None
-    restated = d["owner_cik"].isin(set(d.loc[~_plain(d), "owner_cik"]))
-    d["surprise"] = np.nan
+    restated = df_purchases["owner_cik"].isin(set(df_purchases.loc[~_plain(df_purchases), "owner_cik"]))
+    df_purchases["surprise"] = np.nan
     if (~restated).any():
-        g = d[~restated].groupby("owner_cik", sort=False)["value"]
-        # `rank(pct=True)` over the expanding window includes the current row, so the first
-        # observation is always 1.0 and every later one is inflated by 1/n. Subtracting the
-        # self-contribution rescales to "fraction of PRIOR purchases at or below this one".
+        g = df_purchases[~restated].groupby("owner_cik", sort=False)["value"]
+        # The expanding `max` rank counts the purchases at or below this one, itself included;
+        # minus one leaves the earlier ones at or below it, out of the `n` earlier purchases.
         n = g.cumcount()
-        expanding_rank = g.expanding().apply(lambda s: (s.iloc[:-1] <= s.iloc[-1]).sum(), raw=False).reset_index(level=0, drop=True)
-        d.loc[~restated, "surprise"] = (expanding_rank / n.where(n > 0)).astype("float64")
+        n_at_or_below = (g.expanding().rank(method="max") - 1).reset_index(level=0, drop=True)
+        df_purchases.loc[~restated, "surprise"] = (n_at_or_below / n.where(n > 0)).astype("float64")
     if restated.any():
-        d.loc[restated, "surprise"] = _visible_prior_rank(d[restated])
-    return d.dropna(subset=["surprise"])
+        df_purchases.loc[restated, "surprise"] = _visible_prior_rank(df_purchases[restated])
+    return df_purchases.dropna(subset=["surprise"])
 
 
 def _visible_prior_rank(d: pd.DataFrame) -> pd.Series:

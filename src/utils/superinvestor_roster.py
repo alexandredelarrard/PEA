@@ -22,23 +22,32 @@ highest. Survivorship bias correlated with the selection rule is the worst kind.
 
 Also owns the roster config under `<config_dir>/superinvestors/`: the hand resolutions
 (`overrides.json`) and the committed Dataroma history (`dataroma_roster_history.json`).
+
+MANAGER IDENTITY. A manager whose 13F filer CIK changed (Appaloosa, Ruane, Greenlight, Blue
+Ridge) is one manager: its ID is the OLDEST filer CIK of its chain (`manager_ciks` in the
+overrides), a singleton's ID is its own CIK. `roster_as_of` / `roster_map_as_of` return manager
+IDs, `roster_cik_union` returns every filer CIK, and `to_manager_books` relabels a book read by
+filer CIK to the manager ID, keeping each filer's rows only inside its dated window.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import date
 from functools import cache
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +59,68 @@ ROSTER_HISTORY_FILENAME = "dataroma_roster_history.json"
 
 
 @dataclass(frozen=True)
+class PeriodRange:
+    """Inclusive quarter-end period range; `None` bounds are open."""
+
+    start: date | None
+    end: date | None
+
+    def covers(self, period: object) -> bool:
+        """Whether `period` (date, Timestamp or ISO string) lies inside the range."""
+        day = pd.Timestamp(cast(Any, period)).date()
+        return (self.start is None or day >= self.start) and (self.end is None or day <= self.end)
+
+
+@dataclass(frozen=True)
+class CikWindow:
+    """One filer CIK of a manager chain and the periods in which it files that manager's book."""
+
+    cik: str
+    window: PeriodRange
+
+
+@dataclass(frozen=True)
+class InactiveRange:
+    """A resolved code with no 13F activity over `window` (Q(snapshot) periods), for `reason`."""
+
+    window: PeriodRange
+    reason: str
+
+
+@dataclass(frozen=True)
 class SuperinvestorOverrides:
-    """`cik_by_code` wins over any stored or EDGAR resolution; `unresolvable` names the codes
-    allowed to stay NULL, each with its reason."""
+    """The roster hand configuration.
+
+    `cik_by_code` wins over any stored or EDGAR resolution; `unresolvable` names the codes allowed
+    to stay NULL; `inactive` names resolved codes without 13F activity over a dated range;
+    `manager_ciks` maps a manager ID to its filer chain in chronological order."""
 
     cik_by_code: dict[str, str]
     unresolvable: dict[str, str]
+    inactive: dict[str, InactiveRange] = field(default_factory=dict)
+    manager_ciks: dict[str, tuple[CikWindow, ...]] = field(default_factory=dict)
+
+    def manager_id(self, cik: object) -> str:
+        """The manager ID of a filer CIK (padded); a CIK in no chain is its own ID, junk gives ''."""
+        padded = pad_cik(cik)
+        for mid, chain in self.manager_ciks.items():
+            if any(w.cik == padded for w in chain):
+                return mid
+        return padded
+
+    def chain(self, cik: object) -> tuple[CikWindow, ...]:
+        """The filer chain of `cik`'s manager; empty for a singleton."""
+        return self.manager_ciks.get(self.manager_id(cik), ())
+
+    def member_at(self, cik: object, period: object) -> str:
+        """The filer CIK of `cik`'s manager for `period`: the last chain member whose window starts at or
+        before it (the first member before any start); a singleton is returned padded."""
+        chain = self.chain(cik)
+        if not chain:
+            return pad_cik(cik)
+        day = pd.Timestamp(cast(Any, period)).date()
+        started = [w for w in chain if w.window.start is None or w.window.start <= day]
+        return (started[-1] if started else chain[0]).cik
 
 
 def superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
@@ -76,16 +141,51 @@ def load_superinvestor_overrides(config_dir: str | Path | None = None) -> Superi
 @cache
 def _overrides_at(superinvestors_dir: str) -> SuperinvestorOverrides:
     """`load_superinvestor_overrides`, keyed on the resolved `superinvestors` directory. Raises when a
-    CIK is blank or a code is both overridden and recorded unresolvable."""
+    CIK is blank, a code is in two exception lists, or a chain is malformed (`_chain`)."""
     path = Path(superinvestors_dir) / OVERRIDES_CONFIG_FILENAME
     blob = json.loads(path.read_text(encoding="utf-8"))
     cik_by_code = {code: pad_cik(entry["cik"]) for code, entry in blob["cik_overrides"].items()}
-    unresolvable = {code: str(reason) for code, reason in blob["unresolvable"].items()}
+    unresolvable = {code: str(reason) for code, reason in blob.get("unresolvable", {}).items()}
+    inactive = {
+        code: InactiveRange(_range(path, code, entry.get("from"), entry.get("to")), str(entry["reason"]))
+        for code, entry in blob.get("inactive", {}).items()
+    }
     blank = sorted(code for code, cik in cik_by_code.items() if not cik)
     both = sorted(set(cik_by_code) & set(unresolvable))
-    if blank or both:
-        raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}")
-    return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable)
+    twice = sorted(set(inactive) & set(unresolvable))
+    if blank or both or twice:
+        raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}; both inactive and unresolvable: {twice}")
+    manager_ciks = {pad_cik(mid): _chain(path, pad_cik(mid), entries) for mid, entries in blob.get("manager_ciks", {}).items()}
+    members = [w.cik for chain in manager_ciks.values() for w in chain]
+    shared = sorted({c for c in members if members.count(c) > 1})
+    if shared:
+        raise ValueError(f"{path}: CIK(s) {shared} listed in more than one chain (or twice in one)")
+    return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable, inactive=inactive, manager_ciks=manager_ciks)
+
+
+def _range(path: Path, label: str, start: str | None, end: str | None) -> PeriodRange:
+    """`PeriodRange` from ISO `from` / `to` strings (None = open); raises when `from` is after `to`."""
+    out = PeriodRange(date.fromisoformat(start) if start else None, date.fromisoformat(end) if end else None)
+    if out.start and out.end and out.start > out.end:
+        raise ValueError(f"{path}: {label}: from {out.start} is after to {out.end}")
+    return out
+
+
+def _chain(path: Path, manager_id: str, entries: list[dict[str, Any]]) -> tuple[CikWindow, ...]:
+    """A manager's filer chain, validated: at least two members, listed chronologically with the
+    manager ID (the oldest CIK) first, and no two windows sharing a period."""
+    chain = tuple(CikWindow(pad_cik(e["cik"]), _range(path, manager_id, e.get("from"), e.get("to"))) for e in entries)
+    if len(chain) < 2:
+        raise ValueError(f"{path}: chain {manager_id} needs at least two filer CIKs, got {len(chain)}")
+    if chain[0].cik != manager_id:
+        raise ValueError(f"{path}: chain {manager_id} must list its manager ID (the oldest filer CIK) first, got {chain[0].cik}")
+    for prev, nxt in zip(chain, chain[1:], strict=False):
+        if prev.window.end is None or nxt.window.start is None or nxt.window.start <= prev.window.end:
+            raise ValueError(
+                f"{path}: chain {manager_id}: windows of {prev.cik} (to {prev.window.end}) and {nxt.cik} "
+                f"(from {nxt.window.start}) overlap or are not chronological; the manager ID must be the oldest filer CIK"
+            )
+    return chain
 
 
 def _load(context: Context) -> pd.DataFrame | None:
@@ -117,29 +217,37 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
     return cast(pd.DataFrame, df[df["snapshot_date"] == df["snapshot_date"].max()])
 
 
+def _config_dir(context: Context) -> str | Path | None:
+    """The context's config directory, None (the default configs dir) when it has none."""
+    return getattr(context, "config_dir", None)
+
+
 def roster_as_of(context: Context, as_of=None) -> set[str]:
-    """The padded CIKs on the roster at `as_of` -- THE point-in-time accessor.
+    """The manager IDs on the roster at `as_of` -- THE point-in-time accessor.
 
     A set, so the `brk` / `BRK` duplicate (two Dataroma codes, one manager, CIK
-    0001067983) collapses to one member. Unresolved managers carry a NULL `cik` and are
-    dropped here; the writer is what must fail loudly on them (they must never silently
-    shrink the eligible pool, which is the survivorship bug this table exists to remove)."""
+    0001067983) collapses to one member, and so does a manager stored under either filer of
+    its chain. Unresolved managers carry a NULL `cik` and are dropped here; the writer is
+    what must fail loudly on them (they must never silently shrink the eligible pool, which
+    is the survivorship bug this table exists to remove)."""
     snap = _snapshot(context, as_of)
     if snap is None:
         return set()
-    return {c for raw in snap["cik"].dropna() if (c := pad_cik(raw))}
+    overrides = load_superinvestor_overrides(_config_dir(context))
+    return {c for raw in snap["cik"].dropna() if (c := overrides.manager_id(raw))}
 
 
 def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
-    """`{padded_cik: manager_name}` at `as_of` -- `roster_as_of` plus the display name, for
-    the callers that log it or weight by it. One entry per CIK: the duplicate-code pair
+    """`{manager_id: manager_name}` at `as_of` -- `roster_as_of` plus the display name, for
+    the callers that log it or weight by it. One entry per manager: the duplicate-code pair
     keeps the first name in `dataroma_code` order, so the map is deterministic."""
     snap = _snapshot(context, as_of)
     if snap is None:
         return {}
+    overrides = load_superinvestor_overrides(_config_dir(context))
     out: dict[str, str] = {}
     for _code, name, raw in snap.sort_values("dataroma_code")[["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
-        if (cik := pad_cik(raw)) and cik not in out:
+        if (cik := overrides.manager_id(raw)) and cik not in out:
             out[cik] = str(name)
     return out
 
@@ -160,12 +268,63 @@ def first_snapshot_date(context: Context) -> pd.Timestamp | None:
 
 
 def roster_cik_union(context: Context) -> set[str]:
-    """Every CIK that was EVER on the roster, across all snapshots.
+    """Every filer CIK of every manager that was EVER on the roster, across all snapshots.
 
     NOT a point-in-time set and never a feature input: this is the per-manager 13F WALK
     SCOPE. Fetching only today's roster is what makes a dropped manager unrecoverable
-    later, so the walk covers the union and the selector narrows it per quarter."""
+    later, so the walk covers the union and the selector narrows it per quarter. A chain
+    contributes every member, whichever one the snapshots stored."""
     df = _load(context)
     if df is None:
         return set()
-    return {c for raw in df["cik"].dropna() if (c := pad_cik(raw))}
+    return filer_ciks(df["cik"].dropna(), _config_dir(context))
+
+
+def manager_id(cik: object, config_dir: str | Path | None = None) -> str:
+    """The manager ID (oldest filer CIK of its chain) of a filer CIK, padded; a singleton is its own ID."""
+    return load_superinvestor_overrides(config_dir).manager_id(cik)
+
+
+def filer_ciks(manager_ids: Iterable[object], config_dir: str | Path | None = None) -> set[str]:
+    """Every filer CIK of the given managers (any chain member stands for its manager), padded."""
+    overrides = load_superinvestor_overrides(config_dir)
+    out: set[str] = set()
+    for raw in manager_ids:
+        if not (cik := pad_cik(raw)):
+            continue
+        chain = overrides.chain(cik)
+        out |= {w.cik for w in chain} if chain else {cik}
+    return out
+
+
+def to_manager_books(df: pd.DataFrame, cik_col: str = "cik", period_col: str = "period", config_dir: str | Path | None = None) -> pd.DataFrame:
+    """A book read by filer CIK, keyed by manager ID: each chain member's rows are kept only for
+    periods inside its window and relabelled to the manager ID; other rows are untouched. Padded
+    and unpadded CIK strings both match; `period` may be date, Timestamp or ISO string."""
+    overrides = load_superinvestor_overrides(config_dir)
+    if df is None or df.empty or not overrides.manager_ciks:
+        return df
+    padded = pad_cik_series(df[cik_col]).to_numpy()
+    keep = np.ones(len(df), dtype=bool)
+    label = np.full(len(df), None, dtype=object)
+    for mid, chain in overrides.manager_ciks.items():
+        for member in chain:
+            rows = padded == member.cik
+            if not rows.any():
+                continue
+            periods = pd.to_datetime(df[period_col].to_numpy()[rows])
+            inside = np.ones(int(rows.sum()), dtype=bool)
+            if member.window.start is not None:
+                inside &= periods >= pd.Timestamp(member.window.start)
+            if member.window.end is not None:
+                inside &= periods <= pd.Timestamp(member.window.end)
+            keep[rows] = inside
+            label[rows] = mid
+    chained = pd.notna(label)
+    if not chained.any():
+        return df
+    out = df[keep].copy()
+    ciks = out[cik_col].to_numpy(dtype=object, copy=True)
+    ciks[chained[keep]] = label[keep][chained[keep]]
+    out[cik_col] = ciks
+    return out

@@ -77,6 +77,7 @@ from src.data_aggregate.utils.institutionals.holdings_clean import clean_holding
 from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.utils.superinvestor_roster import filer_ciks, to_manager_books
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +144,18 @@ def load_superinvestor_holdings(context: Context, roster: dict | list | set | No
     submission and holds the same manager both padded and unpadded; it is not needed here and
     reintroducing it would be cargo cult.
 
+    Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
+    (`to_manager_books`), so it compares with `roster_as_of`.
+
     Returns None when the roster resolves to no manager or the table is not populated.
     """
-    ciks = sorted(_selection_ciks(roster))
+    config_dir = getattr(context, "config_dir", None)
+    ciks = sorted(filer_ciks(_selection_ciks(roster), config_dir))
     if not ciks:
         return None
 
-    return context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
+    holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
+    return None if holdings is None else to_manager_books(holdings, config_dir=config_dir)
 
 
 def _selection_ciks(roster: dict | list | set | None) -> set[str]:

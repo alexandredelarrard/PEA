@@ -14,6 +14,7 @@ exists to remove.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,53 +28,13 @@ from src.data_extract.utils.institutionals import fetch_superinvestors as si
 CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "configs")
 OVERRIDES = si.load_superinvestor_overrides(CONFIG_DIR)
 
-#: The hand resolutions as the Python literals held them at commit 8c0506a, before they moved
-#: to config. The overrides config must resolve to exactly these.
-CIK_OVERRIDES_AT_8C0506A = {
-    "BRK": "0001067983",
-    "HA": "0000827280",
-    "VAN": "0000858172",
-    "RC": "0001570775",
-    "DAC": "0000200217",
-    "PI": "0001549574",
-    "MPF": "0000932223",
-    "DAV": "0000200305",
-    "T": "0001002778",
-    "OA": "0000885665",
-    "HRSVX": "0000937394",
-    "TVAFX": "0001145020",
-    "YAFFX": "0000905567",
-    "cfimx": "0001036325",
-    "lmvtx": "0001348883",
-    "oakvx": "0001085256",
-    "DJCO": "0000783412",
-    "t2": "0001327388",
-    "FEVAX": "0001325447",
-    "ARFFX": "0000936753",
-    "CAAPX": "0000936753",
-    "FPACX": "0001377581",
-    "FPPTX": "0001377581",
-    "LLPFX": "0000807985",
-    "MPGFX": "0001070134",
-    "MVALX": "0001483859",
-    "TWEBX": "0000732905",
-    "WVALX": "0000883965",
-    "hcmax": "0001314620",
-    "oaklx": "0000813917",
-    "pzfvx": "0001027796",
-    "CAS": "0001697591",
-    "FFH": "0000915191",
-    "MAVFX": "0001016287",
-    "SA": "0001115373",
-    "oa": "0000885665",
-}
-UNRESOLVABLE_AT_8C0506A = {
-    "CMAFX": "Century Management / CM Advisers -- empty 13F-HR feed under 'Century Management "
-    "Advisers', 'Century Management' and 'CM Advisers': never filed a 13F-HR. On the roster "
-    "2013-2017.",
-    "LUK": "Leucadia National, which became Jefferies Financial Group -- empty 13F-HR feed under both "
-    "names: never filed a 13F-HR. On the roster 2013-2023.",
-}
+#: Hand overrides the research proved wrong (trust / fund / unrelated entities that never filed the manager's 13F-HR).
+WRONG_OVERRIDE_CIKS = {"0000827280", "0000858172", "0001570775", "0001549574", "0000932223", "0000200305", "0001002778", "0000885665"}
+#: Dataroma's 2026 code migration (old fund-ticker code, new adviser code): each pair is one manager.
+MIGRATED_CODES = [("oaklx", "HA"), ("MPGFX", "MPF"), ("FPACX", "FPA"), ("SEQUX", "RC"), ("CMAFX", "VAN")]
+#: Fixture hand resolutions for the content-independent tests.
+FIXTURE_CIK_OVERRIDES = {"BRK": "0001067983"}
+FIXTURE_UNRESOLVABLE = {"CMAFX": "fixture: never filed a 13F-HR"}
 
 _SINGLE_ATOM = (
     '<?xml version="1.0"?><feed><company-info>'
@@ -88,16 +49,28 @@ _MULTI_ATOM = (
 )
 
 
-def test_overrides_config_resolves_to_the_former_literals():
-    """The config move changes where the hand resolutions live, never what they resolve to."""
-    assert OVERRIDES.cik_by_code == CIK_OVERRIDES_AT_8C0506A
-    assert list(OVERRIDES.cik_by_code) == list(CIK_OVERRIDES_AT_8C0506A)
-    assert OVERRIDES.unresolvable == UNRESOLVABLE_AT_8C0506A
+def test_overrides_config_carries_evidence_and_valid_chains():
+    """Checks the PRODUCTION overrides on purpose: every hand resolution is a 10-digit CIK carrying its
+    13F evidence, every chain window carries evidence and the loader validates the chains, no proven-wrong
+    CIK is left, and each 2026 migrated code resolves to the same manager as the code it replaced."""
+    blob = json.loads((Path(CONFIG_DIR) / "superinvestors" / "overrides.json").read_text(encoding="utf-8"))
+    for code, entry in blob["cik_overrides"].items():
+        assert re.fullmatch(r"\d{10}", entry["cik"]), code
+        assert "13F-HR" in entry.get("evidence", ""), code
+    windows = [w for chain in blob["manager_ciks"].values() for w in chain]
+    assert all(re.fullmatch(r"\d{10}", w["cik"]) and "13F-HR" in w.get("evidence", "") for w in windows)
+    assert set(OVERRIDES.manager_ciks) == {"0001006438", "0000728014", "0001079114", "0001056258"}
+    assert not WRONG_OVERRIDE_CIKS & set(OVERRIDES.cik_by_code.values())
+    assert not {"CMAFX", "LUK"} & set(OVERRIDES.unresolvable)
+    assert all(r.reason and r.window.start for r in OVERRIDES.inactive.values())
+    for old, new in MIGRATED_CODES:
+        assert OVERRIDES.manager_id(OVERRIDES.cik_by_code[old]) == OVERRIDES.manager_id(OVERRIDES.cik_by_code[new]), (old, new)
     assert si.load_superinvestor_overrides(f"{CONFIG_DIR}/../configs") is OVERRIDES  # cached per resolved directory
     print("\n=== SANITY: superinvestor overrides config ===")
     print(
-        f"  {len(OVERRIDES.cik_by_code)} code -> CIK overrides and {len(OVERRIDES.unresolvable)} unresolvable "
-        "codes load identical (keys, order, CIKs, reasons) to the 8c0506a literals. Validated."
+        f"  {len(OVERRIDES.cik_by_code)} overrides, each a 10-digit CIK with 13F evidence; {len(OVERRIDES.manager_ciks)} chains "
+        f"({len(windows)} windows) validated; inactive {sorted(OVERRIDES.inactive)}; unresolvable {sorted(OVERRIDES.unresolvable)}; "
+        f"none of the {len(WRONG_OVERRIDE_CIKS)} proven-wrong CIKs remain; {len(MIGRATED_CODES)} migrated code pairs share a manager. Validated."
     )
 
 
@@ -178,7 +151,7 @@ def test_resolver_is_memoised_per_code_and_falls_back_to_older_names():
         calls.append(url)
         return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    resolve = si._make_resolver(fake_get, OVERRIDES.cik_by_code, {"GLRE": ["Greenlight Capital", "Greenlight Re"]})
+    resolve = si._make_resolver(fake_get, FIXTURE_CIK_OVERRIDES, {"GLRE": ["Greenlight Capital", "Greenlight Re"]})
     # the name in hand does not resolve; the older one does
     assert resolve("GLRE", "David Einhorn - Some Rebrand") == ("0001079114", si.RESOLUTION_EDGAR)
     n_after_first = len(calls)
@@ -201,6 +174,7 @@ def test_snapshot_rows_shape_and_padding():
         date(2016, 1, 1),
         "https://web.archive.org/web/2016/x",
         lambda code, name: ("1067983", si.RESOLUTION_OVERRIDE) if code == "BRK" else (None, si.RESOLUTION_UNRESOLVED),
+        overrides=si.SuperinvestorOverrides(cik_by_code=FIXTURE_CIK_OVERRIDES, unresolvable=FIXTURE_UNRESOLVABLE),
     )
     assert [r["cik"] for r in rows] == ["0001067983", None]  # padded; unresolved -> NULL, not ""
     assert {r["snapshot_date"] for r in rows} == {date(2016, 1, 1)}
@@ -226,21 +200,21 @@ def test_unresolved_manager_raises_unless_recorded():
         }
     ]
     with pytest.raises(si.SuperinvestorResolutionError, match="Unlisted Boutique"):
-        si.assert_fully_resolved(unknown, OVERRIDES.unresolvable)
+        si.assert_fully_resolved(unknown, FIXTURE_UNRESOLVABLE)
 
     recorded = [dict(unknown[0], dataroma_code="CMAFX", manager_name="Century Management")]
-    assert si.assert_fully_resolved(recorded, OVERRIDES.unresolvable) == ["CMAFX"]  # recorded -> passes, reported
+    assert si.assert_fully_resolved(recorded, FIXTURE_UNRESOLVABLE) == ["CMAFX"]  # recorded -> passes, reported
     resolved = [dict(unknown[0], cik="0001067983", resolution=si.RESOLUTION_EDGAR)]
-    assert si.assert_fully_resolved(resolved, OVERRIDES.unresolvable) == []
+    assert si.assert_fully_resolved(resolved, FIXTURE_UNRESOLVABLE) == []
     print("\n=== SANITY: resolution gate ===")
     print(
-        f"  an unknown unresolved code RAISES; the {len(OVERRIDES.unresolvable)} "
-        f"recorded exceptions {sorted(OVERRIDES.unresolvable)} pass and are returned "
+        f"  an unknown unresolved code RAISES; the {len(FIXTURE_UNRESOLVABLE)} "
+        f"recorded exceptions {sorted(FIXTURE_UNRESOLVABLE)} pass and are returned "
         "for the caller to report. Validated."
     )
 
 
-def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_store):
+def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_store, tmp_path):
     roster_html = (
         '<a href="holdings.php?m=GLRE">David Einhorn - Greenlight Capital</a><a href="holdings.php?m=BRK">Warren Buffett - Berkshire Hathaway</a>'
     )
@@ -249,7 +223,11 @@ def test_upsert_roster_snapshot_writes_one_dated_snapshot(monkeypatch, sqlite_st
     def fake_edgar(url):
         return SimpleNamespace(text=_SINGLE_ATOM if "Greenlight" in url else "no company-info")
 
-    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=CONFIG_DIR))
+    config_dir = tmp_path / "configs"
+    (config_dir / "superinvestors").mkdir(parents=True)
+    overrides = {"cik_overrides": {code: {"cik": cik} for code, cik in FIXTURE_CIK_OVERRIDES.items()}, "unresolvable": {}}
+    (config_dir / "superinvestors" / "overrides.json").write_text(json.dumps(overrides), encoding="utf-8")
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir)))
     df = si.upsert_roster_snapshot(ctx, get_fn=fake_edgar)
     assert set(df["cik"]) == {"0001079114", "0001067983"}  # EDGAR + override
     assert df["snapshot_date"].nunique() == 1
@@ -313,4 +291,39 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
         f"  seed wrote {len(df)} rows from <config_dir>/superinvestors/dataroma_roster_history.json; AAA took the "
         "fixture override CIK (no EDGAR call) and ZZZ stayed NULL as the fixture's recorded exception; "
         "the DATA_STORE decoy was never read. Validated on the real store."
+    )
+
+
+def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
+    """A resolved CIK is stored as the member of its manager's chain valid at the last quarter end
+    strictly before the snapshot date: a snapshot before the successor's first book stores the
+    predecessor, even when the code resolves to the successor."""
+    old, new = "0001006438", "0001656456"
+    config_dir = tmp_path / "configs"
+    (config_dir / "superinvestors").mkdir(parents=True)
+    overrides = {
+        "cik_overrides": {"AM": {"cik": new}, "BRK": {"cik": "0001067983"}},
+        "unresolvable": {},
+        "manager_ciks": {old: [{"cik": old, "to": "2015-12-31"}, {"cik": new, "from": "2016-03-31"}]},
+    }
+    (config_dir / "superinvestors" / "overrides.json").write_text(json.dumps(overrides), encoding="utf-8")
+    stamps = ["2015-11-20T10:00:00Z", "2016-02-15T10:00:00Z", "2016-03-31T23:00:00Z", "2016-04-01T01:00:00Z", "2016-08-01T10:00:00Z"]
+    history = {
+        "_README": ["fixture"],
+        "snapshots": [{"captured_at": t, "source_url": f"wb-{t}", "managers": {"AM": "Tepper", "BRK": "Buffett"}} for t in stamps],
+    }
+    (config_dir / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps(history), encoding="utf-8")
+
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir)))
+    df = si.seed_roster_history(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"))
+    am = {str(r.snapshot_date): r.cik for r in df.itertuples(index=False) if r.dataroma_code == "AM"}
+    assert am == {"2015-11-20": old, "2016-02-15": old, "2016-03-31": old, "2016-04-01": new, "2016-08-01": new}
+    assert set(df.loc[df["dataroma_code"] == "BRK", "cik"]) == {"0001067983"}  # a singleton is stored as resolved
+    assert si.snapshot_quarter(date(2016, 3, 31)) == date(2015, 12, 31)
+    assert si.snapshot_quarter(date(2016, 4, 1)) == date(2016, 3, 31)
+    assert si.snapshot_quarter(date(2016, 1, 1)) == date(2015, 12, 31)
+    print("\n=== SANITY: writer stores the chain member valid at the snapshot ===")
+    print(
+        f"  AM resolves to Appaloosa LP ({new}); snapshots 2015-11-20, 2016-02-15 and 2016-03-31 (Q = 2015-12-31, inside "
+        f"the succession quarter) store {old}, 2016-04-01 and 2016-08-01 store {new}. Validated on the real store."
     )

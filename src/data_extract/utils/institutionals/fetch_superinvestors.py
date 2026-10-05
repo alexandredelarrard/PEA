@@ -4,7 +4,8 @@ fetch_superinvestors.py (src/data_extract/utils/institutionals/fetch_superinvest
 WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), one row per
 (snapshot_date, dataroma_code) so membership is point-in-time, with CIKs resolved via SEC EDGAR
 company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
-loaded by `src/utils/superinvestor_roster.py`, which is also the read side. Entry points:
+loaded by `src/utils/superinvestor_roster.py`, which is also the read side; a chained manager's row
+stores the filer CIK valid at `snapshot_quarter(snapshot_date)`. Entry points:
 `seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster).
 The committed history is built by `quarterly_capture_candidates` + `history_from_captures`, driven by
 `scripts/build_dataroma_roster_history.py`.
@@ -17,7 +18,7 @@ import logging
 import re
 import warnings
 from collections.abc import Callable, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Any, NamedTuple
 from urllib.parse import quote
@@ -35,6 +36,7 @@ from src.utils.string import pad_cik
 from src.utils.superinvestor_roster import (
     OVERRIDES_CONFIG_FILENAME,
     SUPERINVESTORS_CONFIG_SUBDIR,
+    SuperinvestorOverrides,
     load_superinvestor_overrides,
     roster_history_path,
 )
@@ -201,8 +203,16 @@ def _edgar_cik_for_name(fund_name: str, get_fn) -> tuple[str | None, str | None]
     return best if best else (None, None)
 
 
-def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver) -> list[dict]:
-    """One `superinvestor_roster` row per roster entry; pure given `resolver(code, name) -> (cik | None, resolution)`."""
+def snapshot_quarter(snapshot_date: date | pd.Timestamp | str) -> date:
+    """Q(snapshot): the last quarter end strictly before the date, i.e. the book most recently filed at it."""
+    day = pd.Timestamp(snapshot_date).date()
+    return date(day.year, 3 * ((day.month - 1) // 3) + 1, 1) - timedelta(days=1)
+
+
+def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver, *, overrides: SuperinvestorOverrides) -> list[dict]:
+    """One `superinvestor_roster` row per roster entry; pure given `resolver(code, name) -> (cik | None, resolution)`.
+    A resolved CIK is stored as the member of its manager's chain valid at `snapshot_quarter(snapshot_date)`."""
+    quarter = snapshot_quarter(snapshot_date)
     rows = []
     for entry in roster:
         code, name = entry["code"], entry["name"]
@@ -212,7 +222,7 @@ def snapshot_rows(roster: list[dict], snapshot_date, source_url: str, resolver) 
                 "snapshot_date": snapshot_date,
                 "dataroma_code": code,
                 "manager_name": name,
-                "cik": pad_cik(cik) or None,
+                "cik": overrides.member_at(cik, quarter) if pad_cik(cik) else None,
                 "resolution": resolution,
                 "source_url": source_url,
             }
@@ -426,7 +436,7 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
     rows: list[dict] = []
     for snap in snapshots:
         roster = [{"code": c, "name": n} for c, n in snap["managers"].items()]
-        rows += snapshot_rows(roster, datetime.fromisoformat(snap["captured_at"]).date(), snap["source_url"], resolver)
+        rows += snapshot_rows(roster, datetime.fromisoformat(snap["captured_at"]).date(), snap["source_url"], resolver, overrides=overrides)
     return _write(context, rows, overrides.unresolvable)
 
 
@@ -439,5 +449,5 @@ def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
     known, past_names = _stored_resolutions(context)
     overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
-    rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver)
+    rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver, overrides=overrides)
     return _write(context, rows, overrides.unresolvable)

@@ -123,19 +123,19 @@ class SuperinvestorOverrides:
         return (started[-1] if started else chain[0]).cik
 
 
-def superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
+def _superinvestors_config_dir(config_dir: str | Path | None = None) -> Path:
     """The absolute `<config_dir>/superinvestors` directory; `None` means the default configs dir."""
     return Path(config_dir or DEFAULT_CONFIG_DIR).resolve() / SUPERINVESTORS_CONFIG_SUBDIR
 
 
 def roster_history_path(config_dir: str | Path | None = None) -> Path:
-    """The committed Dataroma roster history file under `superinvestors_config_dir`."""
-    return superinvestors_config_dir(config_dir) / ROSTER_HISTORY_FILENAME
+    """The committed Dataroma roster history file under `_superinvestors_config_dir`."""
+    return _superinvestors_config_dir(config_dir) / ROSTER_HISTORY_FILENAME
 
 
 def load_superinvestor_overrides(config_dir: str | Path | None = None) -> SuperinvestorOverrides:
     """The superinvestor hand resolutions, cached per resolved config directory."""
-    return _overrides_at(str(superinvestors_config_dir(config_dir)))
+    return _overrides_at(str(_superinvestors_config_dir(config_dir)))
 
 
 @cache
@@ -218,7 +218,7 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
     return cast(pd.DataFrame, df[df["snapshot_date"] == df["snapshot_date"].max()])
 
 
-def _config_dir(context: Context) -> str | Path | None:
+def config_dir_of(context: Context) -> str | Path | None:
     """The context's config directory, None (the default configs dir) when it has none."""
     return getattr(context, "config_dir", None)
 
@@ -234,7 +234,7 @@ def roster_as_of(context: Context, as_of=None) -> set[str]:
     snap = _snapshot(context, as_of)
     if snap is None:
         return set()
-    overrides = load_superinvestor_overrides(_config_dir(context))
+    overrides = load_superinvestor_overrides(config_dir_of(context))
     return {c for raw in snap["cik"].dropna() if (c := overrides.manager_id(raw))}
 
 
@@ -245,7 +245,7 @@ def roster_map_as_of(context: Context, as_of=None) -> dict[str, str]:
     snap = _snapshot(context, as_of)
     if snap is None:
         return {}
-    overrides = load_superinvestor_overrides(_config_dir(context))
+    overrides = load_superinvestor_overrides(config_dir_of(context))
     out: dict[str, str] = {}
     for _code, name, raw in snap.sort_values("dataroma_code")[["dataroma_code", "manager_name", "cik"]].itertuples(index=False):
         if (cik := overrides.manager_id(raw)) and cik not in out:
@@ -277,12 +277,7 @@ def roster_cik_union(context: Context) -> set[str]:
     df = _load(context)
     if df is None:
         return set()
-    return filer_ciks(df["cik"].dropna(), _config_dir(context))
-
-
-def manager_id(cik: object, config_dir: str | Path | None = None) -> str:
-    """The manager ID (oldest filer CIK of its chain) of a filer CIK, padded; a singleton is its own ID."""
-    return load_superinvestor_overrides(config_dir).manager_id(cik)
+    return filer_ciks(df["cik"].dropna(), config_dir_of(context))
 
 
 def filer_ciks(manager_ids: Iterable[object], config_dir: str | Path | None = None) -> set[str]:
@@ -297,37 +292,28 @@ def filer_ciks(manager_ids: Iterable[object], config_dir: str | Path | None = No
     return out
 
 
-def to_manager_books(df: pd.DataFrame, cik_col: str = "cik", period_col: str = "period", config_dir: str | Path | None = None) -> pd.DataFrame:
+def to_manager_books(df: pd.DataFrame, config_dir: str | Path | None = None) -> pd.DataFrame:
     """A book read by filer CIK, keyed by manager ID: each chain member's rows are kept only for
     periods inside one of its windows and relabelled to the manager ID; other rows are untouched. Padded
     and unpadded CIK strings both match; `period` may be date, Timestamp or ISO string."""
     overrides = load_superinvestor_overrides(config_dir)
-    if df is None or df.empty or not overrides.manager_ciks:
+    windows = [(mid, w) for mid, chain in overrides.manager_ciks.items() for w in chain]
+    if df.empty or not windows:
         return df
-    padded = pad_cik_series(df[cik_col]).to_numpy()
-    keep = np.ones(len(df), dtype=bool)
-    label = np.full(len(df), None, dtype=object)
-    for mid, chain in overrides.manager_ciks.items():
-        for cik in dict.fromkeys(w.cik for w in chain):
-            rows = padded == cik
-            if not rows.any():
-                continue
-            periods = pd.to_datetime(df[period_col].to_numpy()[rows])
-            inside = np.zeros(int(rows.sum()), dtype=bool)
-            for member in (w for w in chain if w.cik == cik):  # a returning filer has several windows
-                hit = np.ones(int(rows.sum()), dtype=bool)
-                if member.window.start is not None:
-                    hit &= periods >= pd.Timestamp(member.window.start)
-                if member.window.end is not None:
-                    hit &= periods <= pd.Timestamp(member.window.end)
-                inside |= hit
-            keep[rows] = inside
-            label[rows] = mid
-    chained = pd.notna(label)
+    padded = pad_cik_series(df["cik"]).to_numpy()
+    chained = np.isin(padded, [w.cik for _, w in windows])
     if not chained.any():
         return df
+    periods = pd.to_datetime(df["period"].where(chained)).to_numpy()
+    label = np.full(len(df), None, dtype=object)
+    for mid, w in windows:  # a returning filer has several windows
+        hit = padded == w.cik
+        if w.window.start is not None:
+            hit &= periods >= np.datetime64(w.window.start)
+        if w.window.end is not None:
+            hit &= periods <= np.datetime64(w.window.end)
+        label[hit] = mid
+    keep = ~chained | pd.notna(label)
     out = df[keep].copy()
-    ciks = out[cik_col].to_numpy(dtype=object, copy=True)
-    ciks[chained[keep]] = label[keep][chained[keep]]
-    out[cik_col] = ciks
+    out["cik"] = np.where(chained[keep], label[keep], out["cik"].to_numpy(dtype=object))
     return out

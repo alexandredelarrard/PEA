@@ -45,6 +45,7 @@ from src.utils.superinvestor_roster import (
     InactiveRange,
     PeriodRange,
     SuperinvestorOverrides,
+    config_dir_of,
     load_superinvestor_overrides,
     roster_history_path,
 )
@@ -553,7 +554,7 @@ def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) ->
     """The rows a full rebuild writes: every committed history snapshot (dated at its capture day, its capture URL
     as `source_url`) plus every stored live snapshot, none collapsed, all resolved fresh (overrides, then EDGAR on
     the code's names newest first; stored resolutions are ignored). Reads only, writes nothing."""
-    history = json.loads(roster_history_path(getattr(context, "config_dir", None)).read_text(encoding="utf-8"))
+    history = json.loads(roster_history_path(config_dir_of(context)).read_text(encoding="utf-8"))
     snapshots: list[tuple[date, str, list[dict]]] = [
         (datetime.fromisoformat(s["captured_at"]).date(), s["source_url"], [{"code": c, "name": n} for c, n in s["managers"].items()])
         for s in sorted(history["snapshots"], key=lambda s: s["captured_at"])
@@ -613,7 +614,7 @@ def rebuild_roster(context: Context, get_fn=None, listing_fn: ListingFn | None =
     from this same table, so it is never emptied: a crash leaves the old table or a superset, and a rerun converges.
     A resolution, primary-key or gate failure raises before the table is touched. Returns the written frame."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
-    overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
+    overrides = load_superinvestor_overrides(config_dir_of(context))
     rows = rebuild_rows(context, get_fn, overrides)
     _assert_unique_pk(rows)
     _gate(context, rows, overrides, listing_fn)
@@ -647,7 +648,7 @@ def upsert_roster_snapshot(context: Context, get_fn=None, listing_fn: ListingFn 
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
     known, past_names = _stored_resolutions(context)
-    overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
+    overrides = load_superinvestor_overrides(config_dir_of(context))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
     rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver, overrides=overrides)
     if _code_to_cik((r["dataroma_code"] for r in rows), (r["cik"] for r in rows)) == _latest_mapping(context):

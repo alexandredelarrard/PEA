@@ -25,7 +25,7 @@ from src.strategies.utils.replication import replicate_superinvestors
 from src.strategies.utils.superinvestors import _aggregate_superinvestors
 from src.utils.macro import load_macro_series
 from src.utils.risk_parity import series_metrics
-from src.utils.superinvestor_roster import filer_ciks, roster_as_of, roster_map_as_of, to_manager_books
+from src.utils.superinvestor_roster import config_dir_of, filer_ciks, roster_as_of, roster_map_as_of, to_manager_books
 
 # A name the cohort has exited must be gone, not merely small. The only legitimate residual is
 # a position that briefly cannot be sold (no price that day), so the bar is float noise, not a
@@ -156,7 +156,7 @@ class SuperInvestorsStrategy(Strategy):
         store = self._context.store
         funds_cols = ["cik", "ticker", "filing_date", "period", "shares", "value_usd"]
 
-        config_dir = getattr(self._context, "config_dir", None)
+        config_dir = config_dir_of(self._context)
         manager_ids = roster_as_of(self._context)
         if not manager_ids:
             raise RuntimeError(
@@ -165,7 +165,7 @@ class SuperInvestorsStrategy(Strategy):
         df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": sorted(filer_ciks(manager_ids, config_dir))})
         if df_funds is None:
             raise RuntimeError(f"super_investors: '{Tables.sec13f_hr}' returned no filing frame")
-        df_funds = to_manager_books(df_funds, period_col="period", config_dir=config_dir)
+        df_funds = to_manager_books(df_funds, config_dir=config_dir)
         # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return

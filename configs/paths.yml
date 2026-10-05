@@ -11,7 +11,6 @@ local:
     sec_13f_datasets: "sec_13f_datasets"
     fundamentals_catalogue_subdir: "fundamentals"
   filename:
-    extraction: "extraction_manifest.json"
     fundamentals_kpis_filename : "fundamentals_kpis.json"
     fundamentals_regimes_filename : "fundamentals_regimes.json"
     fundamentals_exceptions_filename : "fundamentals_exceptions.json"

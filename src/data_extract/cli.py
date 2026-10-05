@@ -320,7 +320,7 @@ def superinvestors(config_path: str, seed: bool) -> None:
 
 # --- Fundamentals: SEC ---
 # Facts (network walk) and history (pure replay) are separate commands so a history-layer bug never costs a re-download.
-# `-F/--full` bypasses the manifest's ticker-count incremental window, which a chunked backfill defeats (see `run_edgar_fetch`).
+# `-F/--full` re-reads every listed filing, stored ones included (see `run_edgar_fetch`).
 
 
 @cli.command(
@@ -576,11 +576,11 @@ def insider_transactions(config_path: str, tickers: str | None, reparse: bool, f
     "approved_rekeys",
     multiple=True,
     metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
-    help="Acknowledge one exact older-CIK entity-id change reported by the safety manifest.",
+    help="Acknowledge one exact older-CIK entity-id change reported by the rekey impact file.",
 )
 def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """Builds `symbol_tenure` then `entity_lineage` together: lineage candidates are read off tenure, so a stale
-    tenure silently narrows lineage. Market-wide, so the manifest records `ticker_count=0`.
+    tenure silently narrows lineage. Market-wide: both tables are rebuilt from the cache and the DB.
     """
     _, context = get_config_context(config_path, use_cache=False, save=False)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)

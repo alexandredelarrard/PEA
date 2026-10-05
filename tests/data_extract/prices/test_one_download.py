@@ -79,8 +79,6 @@ def yahoo(monkeypatch: pytest.MonkeyPatch) -> FakeYahoo:
 
 
 def test_one_call_per_window(sqlite_store: DataStore, yahoo: FakeYahoo, monkeypatch: pytest.MonkeyPatch) -> None:
-    for module in (fp, fd, fs):
-        monkeypatch.setattr(module, "record_run", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(step_module, "fetch_macro", lambda *a, **k: None)
     ctx = _context(sqlite_store)
 

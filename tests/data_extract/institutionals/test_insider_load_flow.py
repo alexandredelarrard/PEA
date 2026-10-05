@@ -213,7 +213,7 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
-        config=extract_config(data_extract={"manifest_full_rescan_days": 30, "redundant_ticks": []}),
+        config=extract_config(data_extract={"redundant_ticks": []}),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
     )

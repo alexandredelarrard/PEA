@@ -831,13 +831,10 @@ PREDICTION_MODEL_ENSEMBLE = "ensemble"  # the per-horizon average of that horizo
 PREDICTION_MODEL_BLENDED = "blended"  # the IR-weighted blend ACROSS horizons
 
 # --------------------------------------------------------------------------- #
-# Data-freshness cadence THRESHOLDS -- declarative metadata, no consumer today. #
+# Data-freshness cadence THRESHOLDS (read by `src/utils/freshness.py`)         #
 # --------------------------------------------------------------------------- #
 # WHICH tables carry a cadence, and on which date column, comes from
 # `schema.freshness_tables()` (`Table.freshness` / `Table.freshness_col`).
-# The automated gate that read these was removed; they now only document each
-# source's expected refresh rate. Wire a new consumer to `freshness_tables()`
-# rather than reintroducing a parallel table list here.
 DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
     "daily": 4,
     "weekly": 10,

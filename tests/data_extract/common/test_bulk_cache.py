@@ -99,7 +99,7 @@ def test_cached_periods_lists_non_empty_archives_by_their_tag(tmp_path: Path) ->
         "cnsfails202401a.zip": b"x",
         "cnsfails202401b.zip": b"",
         "2026_08_notes.zip": b"x",
-        "notes_num_universe.json": b"{}",
+        "readme.txt": b"{}",
     }.items():
         (tmp_path / name).write_bytes(payload)
     assert cached_periods(tmp_path, prefix="cnsfails") == {"202401a"}  # the empty 202401b is not an archive

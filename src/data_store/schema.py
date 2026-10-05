@@ -48,6 +48,8 @@ _TEXT_IDENTIFIER_COLS = {"cik"}
 _FORMS_13D = ("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")
 _FORMS_13G = ("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")
 _FORMS_345 = ("3", "4", "5", "3/A", "4/A", "5/A")
+_FORMS_DEF14A = ("DEF 14A", "DEF 14C", "DEFC14A")
+_FORMS_13F = ("13F-HR", "13F-HR/A")
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
 _EMPTY = "_empty"
 
@@ -801,7 +803,7 @@ class Tables:
         # institutional_features zero-fills the option legs when they are absent
         optional_columns=frozenset({"call_value", "put_value", "filing_date"}),
         # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
-        resume=Resume(RESUME_MARKET, None, "filing_date", 7, forms=("13F-HR",), source_start="2013-04-01"),
+        resume=Resume(RESUME_MARKET, None, "filing_date", 7, forms=_FORMS_13F, source_start="2013-04-01"),
     )
     # The COMPLETE quarterly book of every manager that has ever been on the Dataroma roster, at
     # CUSIP grain and with NO universe filter -- the denominator `sec13f_hr` above cannot supply.
@@ -849,7 +851,7 @@ class Tables:
             "debt_value",
             "other_value",
         ),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR",)),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=_FORMS_13F),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative
@@ -1005,7 +1007,7 @@ class Tables:
         ("ticker", "accession_number"),
         date_col="as_of",
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("DEF 14A",)),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_FORMS_DEF14A),
         empty_marker=("def14a_json", _EMPTY),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
@@ -1101,7 +1103,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report", "ecd_period_end"),
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A",), source_start="2022-12-16"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_FORMS_DEF14A, source_start="2022-12-16"),
         empty_marker=("form", _EMPTY),
     )
     # 8-K events: one row per ITEM CODE of a filing, keyed (ticker, accession, item) -- an
@@ -1116,7 +1118,7 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report"),
         freshness="daily",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A", "8-K12B")),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A")),
         empty_marker=("item", _EMPTY),
     )
     # Shareholder-meeting vote tallies parsed out of the ALREADY-STORED `sec_8k` Item 5.07

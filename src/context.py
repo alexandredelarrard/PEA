@@ -177,7 +177,7 @@ class Context:
     @property
     def sec_session(self) -> requests.Session:
         """One `requests.Session` with the SEC User-Agent pre-set on `session.headers`,
-        shared by `sec_utils.sec_get` and `bulk_cache.ensure_zip`. Replaces a header dict
+        shared by `sec_io.sec_get` and `bulk_cache.ensure_zip`. Replaces a header dict
         rebuilt -- and `SEC_USER_AGENT` re-read from the env -- on every single request, and
         gives the multi-hundred-MB bulk-ZIP downloads connection reuse."""
         if self._sec_session is None:

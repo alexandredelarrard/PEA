@@ -13,9 +13,6 @@ data_extract:
   sharadar_years_history: 31
   sharadar_request_pace: 0.35
   redundant_ticks: ["GOOG", "FOX", "NWS", "EA", "BRK-A"] #EA got acquired; BRK-A is a separate class from roster BRK-B
-  # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
-  # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
-  manifest_full_rescan_days: 30
   # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
   # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
   # waiting `waits` seconds between them (the last repeats); a Retry-After lengthens a wait up to the cap.

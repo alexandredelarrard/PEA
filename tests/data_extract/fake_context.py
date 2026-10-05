@@ -1,13 +1,7 @@
 """Shared config plumbing for the OFFLINE data_extract tests (tmp_path fake contexts).
 
-`run_manifest.manifest_path` resolves the checkpoint's filename through
-`context.config.local.filename.extraction` rather than a module constant, so a fake context
-carrying only `paths` raises `AttributeError` before any assertion in the test body runs --
-which reads as 17 unrelated failures across the manifest, edgar-driver and DEF 14A suites.
-
-The real `configs/paths.yml` is loaded rather than a hand-written stub so the filename stays in
-ONE place: a test that pinned its own copy would keep passing after the config moved the file,
-while the pipeline wrote somewhere else entirely.
+The real `configs/paths.yml` and `configs/gpt.yml` are loaded rather than a hand-written stub, so
+cache folders, filenames and model defaults stay in one place.
 """
 
 from __future__ import annotations

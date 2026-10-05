@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -16,7 +15,6 @@ from src.data_aggregate.utils.common.part_status import (
     part_status_report,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
@@ -24,17 +22,8 @@ LOG = logging.getLogger(__name__)
 SOURCE = "cube_part_institutionals:insider_transactions"
 
 
-def _context(tmp_path: Path, store: Any) -> Any:
-    return SimpleNamespace(
-        store=store,
-        paths={"DATA_STORE": tmp_path},
-        config=extract_config(source_freshness={"insider_max_lag_days": 4}),
-    )
-
-
-def _edgar_run(context: Any, run_date: str, tickers: list[str], *, coverage_complete: bool = True) -> None:
-    """The manifest entry the EDGAR insider run writes (`coverage_complete` only on a full run)."""
-    record_run(context, Tables.insider_transactions, len(tickers), 1, run_date=run_date, coverage_complete=coverage_complete, tickers=tickers)
+def _context(store: Any) -> Any:
+    return SimpleNamespace(store=store, config=extract_config(source_freshness={"insider_max_lag_days": 4}))
 
 
 def _seed_prices(sqlite_store) -> None:
@@ -49,50 +38,58 @@ def _seed_prices(sqlite_store) -> None:
     )
 
 
-def test_a_complete_edgar_run_over_the_universe_makes_the_source_current(tmp_path, sqlite_store):
-    _seed_prices(sqlite_store)
-    context = _context(tmp_path, sqlite_store)
-    _edgar_run(context, "2026-09-04", ["BBB", "AAA"])
+def _seed_insider(sqlite_store, filing_date: str) -> None:
+    """One stored insider row filed on `filing_date`."""
+    sqlite_store.save(
+        Tables.insider_transactions,
+        pd.DataFrame(
+            {
+                "accession_number": ["a1"],
+                "security_type": "nonderiv",
+                "row_sequence": 1,
+                "ticker": ["AAA"],
+                "filing_date": [pd.Timestamp(filing_date)],
+                "source": ["edgar"],
+            }
+        ),
+    )
 
-    status = _insider_source_status(cast(Context, context), LOG, "2026-09-04", tolerance_days=4)
+
+def test_a_filing_inside_the_overlap_makes_the_source_current(sqlite_store):
+    _seed_prices(sqlite_store)
+    _seed_insider(sqlite_store, "2026-09-01")
+
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
 
     assert status == {
         "complete_through": "2026-09-04",
         "part_max_date": "2026-09-04",
         "lag_days": 0,
         "tolerance_days": 4,
-        "expected_tickers": 2,
         "ok": True,
     }
-    print("SANITY: the EDGAR run covered both price tickers through 2026-09-04, so the insider source-to-part lag is 0 days and the gate passes.")
-
-
-def test_a_partial_or_unproven_edgar_run_cannot_make_the_source_current(tmp_path, sqlite_store):
-    _seed_prices(sqlite_store)
-    context = _context(tmp_path, sqlite_store)
-    seen: dict[str, object] = {}
-
-    for label, tickers, complete in (("partial", ["AAA"], True), ("wrong member", ["AAA", "CCC"], True), ("no proof", ["AAA", "BBB"], False)):
-        _edgar_run(context, "2026-09-04", tickers, coverage_complete=complete)
-        status = _insider_source_status(cast(Context, context), LOG, "2026-09-04", tolerance_days=4)
-        assert status["complete_through"] is None and status["lag_days"] is None and status["ok"] is False, label
-        seen[label] = status["ok"]
-
-    assert seen == {"partial": False, "wrong member": False, "no proof": False}
     print(
-        "SANITY: a run over AAA only, a run over a different 2-ticker set, and an entry without the completeness proof all leave the frontier unknown and the gate red."
+        "SANITY: the latest insider filing (09-01) lies inside the 7-day overlap of the last price session, so the source is current through 09-04 and the gate passes."
     )
 
 
-def test_a_stale_edgar_run_fails_the_lag_gate(tmp_path, sqlite_store):
+def test_an_empty_insider_table_cannot_make_the_source_current(sqlite_store):
     _seed_prices(sqlite_store)
-    context = _context(tmp_path, sqlite_store)
-    _edgar_run(context, "2026-08-25", ["AAA", "BBB"])
 
-    status = _insider_source_status(cast(Context, context), LOG, "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
+
+    assert status["complete_through"] is None and status["lag_days"] is None and status["ok"] is False
+    print("SANITY: with no stored insider row the frontier is unknown and the gate is red.")
+
+
+def test_a_stale_insider_table_fails_the_lag_gate(sqlite_store):
+    _seed_prices(sqlite_store)
+    _seed_insider(sqlite_store, "2026-08-25")
+
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
 
     assert status["complete_through"] == "2026-08-25" and status["lag_days"] == 10 and status["ok"] is False
-    print("SANITY: a complete EDGAR run ten days older than the part edge exceeds the 4-day tolerance and fails the gate.")
+    print("SANITY: a latest filing ten days before the part edge is outside the overlap, so the frontier stays 08-25 and the 4-day tolerance fails.")
 
 
 class _ReportStore:
@@ -103,7 +100,7 @@ class _ReportStore:
     def exists(self, table) -> bool:
         return getattr(table, "name", table) not in self.missing
 
-    def max_date(self, table):
+    def max_date(self, table, column=None):
         name = getattr(table, "name", table)
         return self.max_dates.get(name, pd.Timestamp("2026-09-04"))
 
@@ -147,9 +144,8 @@ def test_cube_part_edges_require_exact_price_alignment():
     )
 
 
-def test_full_status_keeps_the_dag_contract_and_adds_source_detail(tmp_path):
-    context = _context(tmp_path, _ReportStore())
-    _edgar_run(context, "2026-09-04", ["AAA"])
+def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
+    context = _context(_ReportStore(max_dates={Tables.insider_transactions.name: pd.Timestamp("2026-08-20")}))
 
     report = part_status_report(cast(Context, context))
 
@@ -168,27 +164,23 @@ def test_full_status_keeps_the_dag_contract_and_adds_source_detail(tmp_path):
     assert not report["ok"]
     assert SOURCE in report["behind"]
     insider = report["sources"]["cube_part_institutionals"]["insider_transactions"]
-    assert insider["expected_tickers"] == 2 and insider["complete_through"] is None
+    assert insider["complete_through"] == "2026-08-20" and insider["lag_days"] == 15
     print(
-        "SANITY: the DAG's ok/behind/parts/max_date contract is unchanged, and an EDGAR run over 1 of the "
-        "2 universe tickers names the insider source in `behind` and fails the status."
+        "SANITY: the DAG's ok/behind/parts/max_date contract is unchanged, and an insider table whose latest "
+        "filing is 15 days behind the part edge names the insider source in `behind` and fails the status."
     )
 
 
-def test_status_fails_closed_for_missing_cube_and_part_edge_mismatch(tmp_path):
+def test_status_fails_closed_for_missing_cube_and_part_edge_mismatch():
     lagging = Tables.cube_part_fundamentals.name
-    context = _context(
-        tmp_path,
-        _ReportStore(max_dates={lagging: pd.Timestamp("2026-09-03")}, missing=(Tables.cube.name,)),
-    )
-    _edgar_run(context, "2026-09-04", ["AAA", "BBB"])
+    context = _context(_ReportStore(max_dates={lagging: pd.Timestamp("2026-09-03")}, missing=(Tables.cube.name,)))
 
     report = part_status_report(cast(Context, context))
 
     assert not report["ok"]
     assert lagging in report["behind"]
     assert Tables.cube.name in report["behind"]
-    assert SOURCE not in report["behind"], "a complete EDGAR run over the universe keeps the insider source current"
+    assert SOURCE not in report["behind"], "an insider filing on the last session keeps the source current"
     assert set(report["misaligned"]) == {lagging, Tables.cube.name}
     print("\n=== SANITY CHECK: cube status fails closed ===")
     print("  the missing final cube and the one-day fundamentals lag are both named in `behind`; the current insider source is not. Validated.")

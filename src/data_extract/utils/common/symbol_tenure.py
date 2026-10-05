@@ -21,7 +21,6 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.incremental import matches_stored
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik_series
 
@@ -420,8 +419,6 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
         context.log.info(f"symbol_tenure: {len(changed)} changed symbol(s): {', '.join(changed) if changed else 'none'}")
     unchanged = matches_stored(existing, out, Tables.symbol_tenure)
     written = 0 if unchanged else context.store.replace(Tables.symbol_tenure, out)
-    # Market-wide derivation (ticker_count 0) that re-reads the whole cache, so always a full rescan.
-    record_run(context, Tables.symbol_tenure, 0, written, is_full_rescan=True)
     if unchanged:
         logger.info("symbol_tenure: unchanged (%d row(s)); replace skipped", len(out))
     else:

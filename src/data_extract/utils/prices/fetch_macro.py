@@ -262,7 +262,7 @@ def fetch_macro(context: Context, years_history: int) -> None:
     """Refresh `prices_macro`: every macro / market series, long, one source each.
 
     `years_history` is passed IN (resolved by StepExtractPrices.run / the CLI) rather than
-    read off the config here -- the same contract as fetch_price_history / fetch_dividends,
+    read off the config here -- the same contract as fetch_prices_and_actions,
     which keeps both windows visible at the one place that owns them."""
     if not os.getenv("FRED_API_KEY"):
         raise RuntimeError("FRED_API_KEY not set. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html and add it to your .env file.")

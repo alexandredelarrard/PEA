@@ -92,7 +92,7 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
     step._load_optional(
         Tables.dividends,
         "dividend history",
-        "fetch_price_history",
+        "fetch_prices_and_actions",
         ("AAA", "BBB"),
     )
 

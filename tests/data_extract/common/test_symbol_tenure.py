@@ -433,7 +433,6 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
             ]
         ),
     )
-    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
@@ -471,7 +470,6 @@ def test_symbol_tenure_replace_is_skipped_when_unchanged(sqlite_store, monkeypat
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: current["frame"])
     manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
-    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     replaced: list[int] = []
     real_replace = sqlite_store.replace
 

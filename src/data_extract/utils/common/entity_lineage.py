@@ -23,7 +23,6 @@ from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.symbol_tenure import load_manual_symbol_tenure
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -481,7 +480,6 @@ def build_entity_lineage(
         _log_changed_assignments(context, existing, out, roster)
     unchanged = matches_stored(existing, out, Tables.entity_lineage)
     written = 0 if unchanged else context.store.replace(Tables.entity_lineage, out)
-    record_run(context, Tables.entity_lineage, 0, written, is_full_rescan=True)
     if unchanged:
         logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(out))
     else:

@@ -19,7 +19,6 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -848,5 +847,4 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
         history_rows += len(history)
         codes_rows += len(codes)
 
-    record_run(context, Tables.fundamentals_history_sec, len(tickers), history_rows, is_full_rescan=rebuild_history)
-    record_run(context, Tables.fundamentals_reason_codes, len(tickers), codes_rows, is_full_rescan=rebuild_history)
+    context.log.info("history: %d ticker(s), +%d event row(s), %d reason code(s)", len(tickers), history_rows, codes_rows)

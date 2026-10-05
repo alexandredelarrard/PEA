@@ -73,21 +73,15 @@ def cube_part_edge_report(store: DataStore) -> dict[str, object]:
 
 def _insider_source_status(
     context: Context,
-    log: logging.Logger,
     part_max_date: str | None,
     tolerance_days: int,
 ) -> dict[str, object]:
     """EDGAR completeness of `insider_transactions` versus the institutional part edge.
 
-    The frontier is the cube's: the manifest's last EDGAR run, trusted only when it covered
-    exactly the tickers of `cube_part_prices`."""
-    expected = sorted(map(str, context.store.distinct(Tables.cube_part_prices, "ticker")))
-    complete_through = schedule_complete_through(
-        context,
-        log,
-        Tables.insider_transactions,
-        expected_tickers=expected,
-    )
+    The frontier is the cube's DB rule (`schedule_complete_through`), anchored on the last
+    `cube_part_prices` session."""
+    store = context.store
+    complete_through = schedule_complete_through(store, Tables.insider_transactions, store.max_date(Tables.cube_part_prices))
     lag_days = None
     if part_max_date is not None and complete_through is not None:
         lag_days = int((pd.Timestamp(part_max_date) - complete_through).days)
@@ -97,7 +91,6 @@ def _insider_source_status(
         "part_max_date": part_max_date,
         "lag_days": lag_days,
         "tolerance_days": tolerance_days,
-        "expected_tickers": len(expected),
         "ok": ok,
     }
 
@@ -148,7 +141,6 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
     insider_tolerance = int(source_config.get("insider_max_lag_days", _LAG_TOLERANCE_DAYS))
     insider_status = _insider_source_status(
         context,
-        log,
         parts.get(Tables.cube_part_institutionals.name, {}).get("max_date"),
         insider_tolerance,
     )

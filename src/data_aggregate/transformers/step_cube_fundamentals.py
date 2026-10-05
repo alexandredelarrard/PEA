@@ -402,7 +402,7 @@ class StepCubeFundamentals(Step):
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_price_history -> StepExtractPrices", frames.universe)
+        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
         if dividends is None:
             return None
         return build_dividend_feature_panel(

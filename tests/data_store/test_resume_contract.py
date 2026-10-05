@@ -5,6 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from src.constants.constants import (
+    DEF14A_FORMS,
+    FUNDAMENTALS_FORMS,
+    SEC_8K_FORMS,
+    SEC_13D_FORMS,
+    SEC_13F_FORMS,
+    SEC_13G_FORMS,
+    SEC_INSIDER_FORMS,
+)
+from src.data_extract.utils.fundamentals.fundamentals_employees import HEADCOUNT_FORMS
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FORMS
 from src.data_store import ddl
 from src.data_store.schema import (
     KIND_EXTRACT,
@@ -130,3 +141,27 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
 
     print("\n=== SANITY CHECK: sequence sentinels ===")
     print("  rp_seq -> -1 (sequence starts at 0), proposal_seq -> 0 (starts at 1): no marker can overwrite a real row. Validated.")
+
+
+def test_document_contract_forms_are_the_forms_each_fetcher_lists() -> None:
+    fetched = {
+        Tables.sec_8k: SEC_8K_FORMS,
+        Tables.sec_13d: SEC_13D_FORMS,
+        Tables.sec_13g: SEC_13G_FORMS,
+        Tables.insider_transactions: SEC_INSIDER_FORMS,
+        Tables.def14a_edgar: DEF14A_FORMS,
+        Tables.def14a_llm: DEF14A_FORMS,
+        Tables.fundamentals_facts: FUNDAMENTALS_FORMS,
+        Tables.fundamentals_employees: HEADCOUNT_FORMS,
+        Tables.filing_risk_text: FILING_TEXT_FORMS,
+        Tables.sec13f_hr: SEC_13F_FORMS,
+        Tables.sec13f_manager_holdings: SEC_13F_FORMS,
+    }
+    declared = {t.name for t in resume_tables() if t.resume is not None and t.resume.forms}
+    assert declared == {t.name for t in fetched}, f"tables declaring forms differ: {sorted(declared ^ {t.name for t in fetched})}"
+    for table, forms in fetched.items():
+        assert table.resume is not None
+        assert set(table.resume.forms) == set(forms), f"{table.name}: contract {table.resume.forms} vs fetched {tuple(forms)}"
+
+    print("\n=== SANITY CHECK: contract forms = fetched forms ===")
+    print(f"  {len(fetched)} form-declaring contracts match the forms their fetchers list (8-K without 8-K12B; DEF 14A/14C/DEFC14A). Validated.")

@@ -10,7 +10,6 @@ manager identity across a filer-CIK succession (a fixture `config_dir` holds the
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,10 +21,9 @@ import pytest
 import src.utils.superinvestor_roster as sr
 from src.data_store.schema import Tables
 from src.utils.superinvestor_roster import roster_as_of, roster_cik_union, roster_map_as_of
+from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
-#: Appaloosa's filer succession: Appaloosa Management LP files to 2015-12-31, Appaloosa LP from 2016-03-31.
-_AM_OLD, _AM_NEW = "0001006438", "0001656456"
-_APPALOOSA = {_AM_OLD: [{"cik": _AM_OLD, "from": None, "to": "2015-12-31"}, {"cik": _AM_NEW, "from": "2016-03-31", "to": None}]}
+_AM_OLD, _AM_NEW = APPALOOSA_OLD, APPALOOSA_NEW
 
 
 def _rows(snapshot, pairs):
@@ -44,12 +42,8 @@ def _rows(snapshot, pairs):
 
 
 def _config_dir(tmp_path: Path, manager_ciks: dict | None = None) -> str:
-    """A fixture `<config_dir>/superinvestors/overrides.json` holding only `manager_ciks`."""
-    folder = tmp_path / "configs" / "superinvestors"
-    folder.mkdir(parents=True, exist_ok=True)
-    blob = {"cik_overrides": {}, "unresolvable": {}, "manager_ciks": manager_ciks or {}}
-    (folder / "overrides.json").write_text(json.dumps(blob), encoding="utf-8")
-    return str(tmp_path / "configs")
+    """A fixture config dir whose overrides hold only `manager_ciks`."""
+    return write_roster_config(tmp_path, {"manager_ciks": manager_ciks or {}})
 
 
 def _ctx(store: Any, rows: Any = None, config_dir: str | None = None) -> Any:
@@ -155,7 +149,7 @@ def test_manager_identity_across_succession(sqlite_store, tmp_path):
     rows = _rows(date(2015, 12, 1), [("AM", "David Tepper - Appaloosa", _AM_OLD)]) + _rows(
         date(2016, 3, 31), [("AM", "David Tepper - Appaloosa", _AM_NEW), ("BRK", "Berkshire Hathaway", "0001067983")]
     )
-    config_dir = _config_dir(tmp_path, _APPALOOSA)
+    config_dir = _config_dir(tmp_path, APPALOOSA_CHAIN)
     ctx = _ctx(sqlite_store, rows, config_dir)
     assert roster_as_of(ctx, "2015-12-31") == {_AM_OLD}
     assert roster_as_of(ctx, "2016-03-31") == {_AM_OLD, "0001067983"}
@@ -194,7 +188,7 @@ def test_manager_identity_across_succession(sqlite_store, tmp_path):
 
 def test_union_contains_whole_chain(sqlite_store, tmp_path):
     """The walk scope holds every filer of every ever-listed manager, whichever member a snapshot stored."""
-    config_dir = _config_dir(tmp_path, _APPALOOSA)
+    config_dir = _config_dir(tmp_path, APPALOOSA_CHAIN)
     ctx = _ctx(sqlite_store, _rows(date(2015, 12, 1), [("AM", "David Tepper - Appaloosa", _AM_OLD)]), config_dir)
     assert roster_cik_union(ctx) == {_AM_OLD, _AM_NEW}
     assert sr.filer_ciks({_AM_OLD, "1067983"}, config_dir) == {_AM_OLD, _AM_NEW, "0001067983"}
@@ -274,8 +268,7 @@ _LMCM, _CBI = "0000820330", "0001348883"
 
 def test_production_lmvtx_maps_to_the_value_trust_adviser_book():
     """The committed overrides map Legg Mason Value Trust (`lmvtx`) to the filer that held the fund's book each quarter:
-    Legg Mason Capital Management / ClearBridge, LLC up to 2018-06-30, ClearBridge Investments from 2018-09-30 (the
-    advisory agreement moved on 2018-07-01). Before the chain, the 1,100-position ClearBridge Investments book stood in."""
+    Legg Mason Capital Management / ClearBridge, LLC up to 2018-06-30, ClearBridge Investments from 2018-09-30."""
     overrides = sr.load_superinvestor_overrides(_REPO_CONFIGS)
     lmvtx = overrides.cik_by_code["lmvtx"]
     assert overrides.manager_id(lmvtx) == _LMCM

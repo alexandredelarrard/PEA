@@ -6,7 +6,10 @@ WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), on
 company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
 loaded by `src/utils/superinvestor_roster.py`, which is also the read side; a chained manager's row
 stores the filer CIK valid at `snapshot_quarter(snapshot_date)`. Entry points:
-`seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster).
+`seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster,
+written only when its code -> CIK mapping differs from the latest stored snapshot).
+Every write passes two gates: `assert_fully_resolved` (no unexpected NULL CIK) and `assert_active`
+(each CIK filed a 13F-HR near its snapshot, from local tables, else the EDGAR listing).
 The committed history is built by `quarterly_capture_candidates` + `history_from_captures`, driven by
 `scripts/build_dataroma_roster_history.py`.
 """
@@ -17,7 +20,7 @@ import json
 import logging
 import re
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Any, NamedTuple
@@ -26,16 +29,19 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from edgar import Company
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
+from src.constants.constants import BROWSER_HEADERS, SEC_13F_FORMS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
 from src.data_extract.utils.common.sec_utils import sec_get
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import (
     OVERRIDES_CONFIG_FILENAME,
     SUPERINVESTORS_CONFIG_SUBDIR,
+    InactiveRange,
+    PeriodRange,
     SuperinvestorOverrides,
     load_superinvestor_overrides,
     roster_history_path,
@@ -110,9 +116,20 @@ RESOLUTION_EDGAR = "edgar"
 RESOLUTION_OVERRIDE = "override"
 RESOLUTION_UNRESOLVED = "unresolved"
 
+# Activity gate window around Q(snapshot), in quarters.
+GATE_QUARTERS_BEFORE = 4
+GATE_QUARTERS_AFTER = 2
+# First quarter with broad XML 13F coverage in the local tables; a pre-XML window extends to it.
+SEC13F_XML_ERA_START = date(2013, 6, 30)
+
+#: (padded cik, period) pairs of 13F activity.
+Evidence = set[tuple[str, date]]
+#: CIK -> report periods of its EDGAR-listed 13F-HR filings.
+ListingFn = Callable[[str], set[date]]
+
 
 class SuperinvestorResolutionError(RuntimeError):
-    """A roster manager resolved to no CIK and is not a recorded exception."""
+    """A roster manager resolved to no CIK, or to a CIK with no 13F activity near its snapshot, and is not a recorded exception."""
 
 
 class WaybackCapture(NamedTuple):
@@ -246,6 +263,62 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
             "it cannot be resolved."
         )
     return unresolved
+
+
+def activity_window(snapshot_date: date | pd.Timestamp | str) -> PeriodRange:
+    """The gate window [Q - GATE_QUARTERS_BEFORE, Q + GATE_QUARTERS_AFTER] around Q = `snapshot_quarter`. The local
+    tables are sparse before `SEC13F_XML_ERA_START`, so a window ending earlier extends to that quarter."""
+    q = pd.Timestamp(snapshot_quarter(snapshot_date))
+    start = (q - pd.offsets.QuarterEnd(GATE_QUARTERS_BEFORE)).date()
+    end = (q + pd.offsets.QuarterEnd(GATE_QUARTERS_AFTER)).date()
+    return PeriodRange(start, max(end, SEC13F_XML_ERA_START))
+
+
+def _nearest(periods: Iterable[date], target: date) -> str:
+    """The period closest to `target` as ISO text, 'none' when there is none."""
+    best = min(periods, key=lambda p: abs((p - target).days), default=None)
+    return best.isoformat() if best else "none"
+
+
+def assert_active(rows: list[dict], evidence: Evidence, inactive: Mapping[str, InactiveRange], listing_fn: ListingFn) -> list[str]:
+    """Raise `SuperinvestorResolutionError` unless every row with a CIK shows 13F activity in its `activity_window`,
+    from `evidence` or, on a local miss only, from `listing_fn(cik)` (called once per CIK). A row whose code has an
+    `inactive` range covering Q(snapshot) is skipped. Returns the skipped codes."""
+    by_cik: dict[str, set[date]] = {}
+    for cik, period in evidence:
+        by_cik.setdefault(cik, set()).add(period)
+    listed: dict[str, set[date]] = {}
+    skipped: set[str] = set()
+    failures: dict[tuple[str, str], list[date]] = {}
+    for row in rows:
+        if not (cik := pad_cik(row["cik"])):
+            continue
+        code, snapshot = row["dataroma_code"], pd.Timestamp(row["snapshot_date"]).date()
+        if code in inactive and inactive[code].window.covers(snapshot_quarter(snapshot)):
+            skipped.add(code)
+            continue
+        window = activity_window(snapshot)
+        if any(window.covers(p) for p in by_cik.get(cik, ())):
+            continue
+        if cik not in listed:
+            listed[cik] = listing_fn(cik)
+        if not any(window.covers(p) for p in listed[cik]):
+            failures.setdefault((code, cik), []).append(snapshot)
+    if failures:
+        lines = []
+        for (code, cik), snapshots in sorted(failures.items()):
+            first, last = min(snapshots), max(snapshots)
+            known = by_cik.get(cik, set()) | listed.get(cik, set())
+            lines.append(
+                f'"{code}" CIK {cik}: {len(snapshots)} snapshot(s) {first}..{last}, nearest known 13F period '
+                f"{_nearest(known, snapshot_quarter(first))} (window at {first}: {activity_window(first).start}..{activity_window(first).end})"
+            )
+        raise SuperinvestorResolutionError(
+            f"{len(failures)} roster code/CIK pair(s) have no 13F-HR activity near their snapshot and are not recorded "
+            "inactive: " + "; ".join(lines) + f". Correct the CIK under `cik_overrides` in {SUPERINVESTORS_CONFIG_SUBDIR}/"
+            f"{OVERRIDES_CONFIG_FILENAME} with its 13F evidence, or record the code under `inactive` with a dated range and reason."
+        )
+    return sorted(skipped)
 
 
 def quarterly_capture_candidates(cdx: str, since: date = ROSTER_HISTORY_START, until: date | None = None) -> dict[str, list[WaybackCapture]]:
@@ -385,15 +458,55 @@ def _stored_resolutions(context: Context) -> tuple[dict[str, tuple[str, str]], d
     return known, names
 
 
-def _write(context: Context, rows: list[dict], unresolvable: Mapping[str, str]) -> pd.DataFrame:
-    """Upsert the rows and report the resolution split. Returns the written frame."""
+def activity_evidence(context: Context, ciks: Iterable[str]) -> Evidence:
+    """(padded cik, period) 13F activity of `ciks` from `sec13f_hr` and `sec13f_manager_holdings`: projected,
+    CIK-scoped reads that match both padded and unpadded stored CIKs."""
+    padded = sorted({p for c in ciks if (p := pad_cik(c))})
+    if not padded:
+        return set()
+    forms = padded + [c.lstrip("0") for c in padded]
+    out: Evidence = set()
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        for chunk in context.store.iter_load(table, columns=["cik", "period"], where={"cik": forms}):
+            pairs = chunk.drop_duplicates()
+            periods = pd.to_datetime(pairs["period"], errors="coerce")
+            out |= {(c, p.date()) for c, p in zip(pad_cik_series(pairs["cik"]), periods, strict=True) if c and pd.notna(p)}
+    return out
+
+
+def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
+    """Report periods of every 13F-HR(/A) EDGAR lists for one CIK (the listing's `reportDate`). A failed listing
+    is logged and returns no period, so the activity gate names the CIK."""
+    context.ensure_edgar_identity()
+    try:
+        listing = Company(int(cik)).get_filings(form=SEC_13F_FORMS)
+        frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("EDGAR 13F-HR listing FAILED for CIK %s: %s", cik, e)
+        return set()
+    periods = pd.to_datetime(frame["reportDate"], errors="coerce").dropna()
+    return {p.date() for p in periods}
+
+
+def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+    """Gate the rows (resolution, then 13F activity), upsert them and report the resolution split. Returns the
+    written frame. `listing_fn` defaults to `edgar_13f_report_dates`, asked only on a local miss."""
     df = pd.DataFrame(rows)
+    unresolvable = overrides.unresolvable
     unresolved = assert_fully_resolved(rows, unresolvable)
     if unresolved:
         logger.warning(
             "Superinvestor roster: %d recorded-unresolvable manager(s) kept with a NULL cik -- %s",
             len(unresolved),
             "; ".join(f"{c}: {unresolvable[c]}" for c in unresolved),
+        )
+    evidence = activity_evidence(context, {r["cik"] for r in rows if r["cik"]})
+    skipped = assert_active(rows, evidence, overrides.inactive, listing_fn or partial(edgar_13f_report_dates, context))
+    if skipped:
+        logger.warning(
+            "Superinvestor roster: %d recorded-inactive manager(s) written without 13F activity -- %s",
+            len(skipped),
+            "; ".join(f"{c}: {overrides.inactive[c].reason}" for c in skipped),
         )
     context.store.save(Tables.superinvestor_roster, df)
     logger.info(
@@ -408,9 +521,9 @@ def _write(context: Context, rows: list[dict], unresolvable: Mapping[str, str]) 
 # --------------------------------------------------------------------------- #
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
-def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
+def seed_roster_history(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
     """One-off: write the committed Wayback snapshots, one row per (snapshot_date, dataroma_code); each
-    snapshot is dated at its capture day and keeps its capture URL as `source_url`."""
+    snapshot is dated at its capture day and keeps its capture URL as `source_url`. Gated as `_write`."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     config_dir = getattr(context, "config_dir", None)
     history = json.loads(roster_history_path(config_dir).read_text(encoding="utf-8"))
@@ -437,12 +550,27 @@ def seed_roster_history(context: Context, get_fn=None) -> pd.DataFrame:
     for snap in snapshots:
         roster = [{"code": c, "name": n} for c, n in snap["managers"].items()]
         rows += snapshot_rows(roster, datetime.fromisoformat(snap["captured_at"]).date(), snap["source_url"], resolver, overrides=overrides)
-    return _write(context, rows, overrides.unresolvable)
+    return _write(context, rows, overrides, listing_fn)
 
 
-def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
-    """Scrape Dataroma's roster and upsert today's snapshot (idempotent per day). CIKs resolve via
-    `_make_resolver`; `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
+def _code_to_cik(codes: Iterable[object], ciks: Iterable[object]) -> dict[str, str | None]:
+    """`{dataroma_code: padded cik or None}`, the identity a live snapshot is compared on."""
+    return {str(code): pad_cik(cik) or None for code, cik in zip(codes, ciks, strict=True)}
+
+
+def _latest_mapping(context: Context) -> dict[str, str | None] | None:
+    """The code -> CIK mapping of the latest stored snapshot; None on a cold table."""
+    latest = context.store.max_date(Tables.superinvestor_roster, "snapshot_date")
+    if latest is None:
+        return None
+    df = context.store.load(Tables.superinvestor_roster, columns=["dataroma_code", "cik"], where={"snapshot_date": latest.date()}, optional=True)
+    return None if df is None else _code_to_cik(df["dataroma_code"], df["cik"])
+
+
+def upsert_roster_snapshot(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+    """Scrape Dataroma's roster and write it as today's snapshot, gated as `_write`, only when its code -> CIK
+    mapping differs from the latest stored snapshot; otherwise write nothing and return an empty frame.
+    CIKs resolve via `_make_resolver`; `get_fn` defaults to the context-bound, rate-limited `sec_get`."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     roster = _parse_dataroma_roster(_http_get(DATAROMA_HOME_URL).text)
     logger.info("Dataroma: parsed %d superinvestors", len(roster))
@@ -450,4 +578,7 @@ def upsert_roster_snapshot(context: Context, get_fn=None) -> pd.DataFrame:
     overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
     resolver = _make_resolver(get_fn, overrides.cik_by_code, past_names, known)
     rows = snapshot_rows(roster, datetime.now(UTC).date(), DATAROMA_HOME_URL, resolver, overrides=overrides)
-    return _write(context, rows, overrides.unresolvable)
+    if _code_to_cik((r["dataroma_code"] for r in rows), (r["cik"] for r in rows)) == _latest_mapping(context):
+        logger.info("superinvestor_roster: %d managers unchanged since the latest snapshot, no snapshot written", len(rows))
+        return pd.DataFrame(columns=list(rows[0]) if rows else [])
+    return _write(context, rows, overrides, listing_fn)

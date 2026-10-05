@@ -147,7 +147,7 @@ def test_seed_stamps_capture_date(sqlite_store, tmp_path):
         raise AssertionError(f"override must not hit EDGAR: {url}")
 
     ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(tmp_path / "configs")))
-    si.seed_roster_history(ctx, get_fn=no_edgar)
+    si.seed_roster_history(ctx, get_fn=no_edgar, listing_fn=lambda cik: {date(2013, 3, 31)})  # activity gate: BRK filed 2013Q1
     stored = sqlite_store.load(si.Tables.superinvestor_roster)
     got = sorted((str(d)[:10], u) for d, u in zip(stored["snapshot_date"], stored["source_url"], strict=True))
     assert got == [("2013-03-28", url_a), ("2013-06-27", url_b)]

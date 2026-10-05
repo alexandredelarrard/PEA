@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import pandas as pd
 
 from src.context import Context
+from src.data_aggregate.utils.common.level_basis import apply_volume_scale
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_price_frames
 from src.data_store.schema import Table, Tables
@@ -133,10 +135,12 @@ def load_secondary_classes(
     store: DataStore,
     log: logging.Logger,
     universe: Sequence[str],
+    bugfix: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """The universe companies' `secondary_class` lines from `security_master` and those classes' `prices` volume bars.
 
     `prices` is read by exactly the classes' Yahoo symbols, which the universe filter of its other readers would drop.
+    The price register's `volume_scale` entries (`bugfix`) repair a vendor volume unit defect on those bars.
     None when the master is absent or holds no class line, so the features keep the canonical tape.
     """
     lines = store.load(
@@ -152,6 +156,8 @@ def load_secondary_classes(
     bars = store.load(Tables.prices, columns=list(CLASS_BAR_COLUMNS), where={"ticker": symbols}, optional=True)
     if bars is None:
         bars = pd.DataFrame(columns=list(CLASS_BAR_COLUMNS))
+    if bugfix:
+        bars = apply_volume_scale(bars, bugfix, log.info)
     log.info(
         "Secondary share classes: %s line(s), %s symbol(s) of %s companies, %s volume bar(s)",
         len(lines),

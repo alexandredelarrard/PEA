@@ -107,7 +107,7 @@ class _StopError(Exception):
 def test_cube_prices_reads_the_universe_only():
     def read(context: Any) -> pd.DataFrame:
         step = StepCubePrices.__new__(StepCubePrices)
-        step._store, step._tickers, step._log = context.store, list(UNIVERSE), context.log
+        step._store, step._tickers, step._log, step._bugfix = context.store, list(UNIVERSE), context.log, {}
         captured: dict[str, pd.DataFrame] = {}
         step._plan_window = lambda full: SimpleNamespace(since=None)  # type: ignore[method-assign]
 

@@ -100,7 +100,8 @@
     "`volume` is deliberately NOT moved: MNST's two vintages show comparable volume (10.8M on",
     "the last stale bar, 10.1M on the next adjusted one), so there is no measured defect, and",
     "inventing a factor for a leg with no evidence is how a register starts lying. `ret` is not",
-    "moved either -- it is recomputed downstream FROM the repaired closes.",
+    "moved either -- it is recomputed downstream FROM the repaired closes. A MEASURED volume",
+    "defect has its own shape, `volume_scale`, below, and moves nothing but `volume`.",
     "",
     "`null_ret` is the exception in both directions: it moves `ret` and NOTHING else, because it",
     "is the one shape that does not claim to know the correct level.",
@@ -127,7 +128,18 @@
     "and walks backwards, flipping a multiplier at every one-bar step that lands on the ratio",
     "or its reciprocal. `expect_wedge` is what `sharadar.price / close_split` must still read",
     "for the entry to fire, and the wedge is re-measured AFTER the walk to confirm it reached",
-    "1.0. Verified from both ends, refused from either."
+    "1.0. Verified from both ends, refused from either.",
+    "",
+    "## `volume_scale` -- a volume UNIT defect",
+    "",
+    "Yahoo's BRK-A volume before 2013-07-29 is in the wrong unit: 24,800 shares on 2013-07-26,",
+    "300 on 2013-07-29, and hundreds ever since, while BRK-A's dollar volume reads 13-95x",
+    "BRK-B's in 2008-2013 against 0.10-0.14x in 2014-2020. `factor` multiplies `volume` of the",
+    "bars dated before `before` (exclusive) and nothing else. `expect_jump` is the median volume",
+    "of the 20 bars before `before` over that of the 20 at or after it, as Yahoo serves it; the",
+    "entry fires only while the observed jump sits within `level_basis.VOLUME_JUMP_TOL` of it,",
+    "so a vendor fix is refused rather than divided twice. Applied by `StepCubePrices` and by",
+    "the secondary-class volume read of the short-flow features (`load_secondary_classes`)."
   ],
 
   "_APPROVED": {
@@ -275,6 +287,19 @@
         "date": "2002-10-01",
         "expect_ret": 0.17834,
         "evidence": "close_total steps +17.83% in one bar and level_factor steps 1.186240 -> 1.000000, EXACTLY the 1.186240 ratio in prices_splits. sharadar_actions carries a spinoff 0.7886 -> GEN1 with a 1.5 spinoff dividend on the same date, so the event is real and only the price leg's basis is in question. Mean |epsilon| over the 60d before/after is 0.28 -> 0.24, the mildest of the six -- registered because it is the same mechanism, not because the label damage is large."
+      }
+    ]
+  },
+
+  "volume_scale": {
+    "BRK-A": [
+      {
+        "before": "2013-07-29",
+        "factor": 0.01,
+        "expect_jump": 106.8,
+        "evidence": "Yahoo BRK-A volume (re-fetched 2026-10-05, 2008-01-02..2026-10-02) steps 24,800 on 2013-07-26 -> 300 on 2013-07-29 and stays in the hundreds (median 300 in 2014, 200 in 2015) after a 2008-2013 run of 29,050-86,050 a year. The 20-bar median jump across the boundary is 106.8. Every bar before it is a round hundred, the shape of a count in hundreds of shares.",
+        "corroboration": "Dollar volume against BRK-B, the same issuer's other class: BRK-A / BRK-B median per year is 13-95x in 2008-2013 and 0.10-0.14x in 2014-2020 (`_out/q2e_summary.txt` of the entity-symbol-lineage run); a class 1,500x BRK-B's price cannot trade 13x its dollars. After the repair it reads 0.15-0.23 in 2010-2013 and 0.82-0.95 in 2008-2009, before BRK-B's 50:1 split and index entry made it the liquid line (`_out/q2m_brka_summary.txt`).",
+        "approved": "user decision P30, 2026-10-05 (reports/validate/2026-10-02-entity-symbol-lineage, finding F-Q2e-1)"
       }
     ]
   }

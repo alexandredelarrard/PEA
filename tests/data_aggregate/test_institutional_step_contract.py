@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
+from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
 from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
@@ -140,6 +141,7 @@ def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.M
     fake_step._context = SimpleNamespace(
         paths={"DATA_STORE": tmp_path},
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
+        config_dir=DEFAULT_CONFIG_DIR,
     )
     fake_step._availability = None
     calls: list[object] = []
@@ -164,12 +166,18 @@ def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.M
     )
     class_bars = pd.DataFrame({"ticker": "AAPL-B", "date": days, "volume": 5.0})
     monkeypatch.setattr(step_module.institutional_inputs, "load_symbol_lineage", lambda *args: (None, None))
-    monkeypatch.setattr(step_module.institutional_inputs, "load_secondary_classes", lambda *args: (class_lines, class_bars))
+    registers: list[object] = []
+    monkeypatch.setattr(
+        step_module.institutional_inputs,
+        "load_secondary_classes",
+        lambda *args, bugfix=None: registers.append(bugfix) or (class_lines, class_bars),
+    )
     monkeypatch.setattr(step_module, "build_short_flow_feature_panel", build_panel)
     out = step._short_flow_panel(SimpleNamespace(universe=["AAPL"], trading_index=days), None, None, cast(Any, object()))
 
     assert out is not None and len(out) == 1
     assert calls == [Tables.short_interest, Tables.sec_fails_to_deliver]
+    assert len(registers) == 1 and "BRK-A" in cast(dict, registers[0])["volume_scale"], "the class read gets the shipped price register"
     print(
         "SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read, "
         "and hands the builder the secondary-class volume (AAPL-B 5 x ratio 2 = 10 a day)."

@@ -33,6 +33,7 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_null_ret,
     apply_return_seams,
     apply_split_vintage,
+    apply_volume_scale,
     describe,
     level_factor,
     load_bugfix,
@@ -647,6 +648,11 @@ def test_the_shipped_register_is_loadable_and_states_its_evidence():
             assert entry["date"] and entry["evidence"], ticker
             assert isinstance(entry["expect_ret"], float) and entry["expect_ret"] != 0.0, ticker
 
+    for ticker, entries in blob["volume_scale"].items():
+        for entry in entries:
+            assert entry["before"] and 0 < entry["factor"] < 1 and entry["expect_jump"] > 1, ticker
+            assert entry["evidence"] and entry["corroboration"], ticker
+
     n = sum(len(v) for v in blob["null_ret"].values())
     print("\n=== SANITY CHECK: the shipped register states its evidence ===")
     print(f"  sections: {[k for k in blob if not k.startswith('_')]}")
@@ -753,3 +759,49 @@ def test_an_already_missing_return_is_not_counted_as_applied():
 
     print("\n=== SANITY CHECK: an already-NaN bar is not a repair ===")
     print("  applied count stays 0 rather than counting a no-op. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# `volume_scale` -- a vendor volume UNIT defect                                #
+# --------------------------------------------------------------------------- #
+#: A BRK-A-shaped series: hundreds of times the shares before the boundary, then the real level.
+_VOLUME_ENTRY = {"volume_scale": {"BRK-A": [{"before": "2013-07-29", "factor": 0.01, "expect_jump": 100.0}]}}
+
+
+def _volume_bars(before: float, after: float) -> pd.DataFrame:
+    days = pd.bdate_range("2013-06-03", "2013-08-30")
+    volume = [before if day < pd.Timestamp("2013-07-29") else after for day in days]
+    other = pd.DataFrame({"ticker": "BRK-B", "date": days, "volume": 4_000_000.0})
+    return pd.concat([pd.DataFrame({"ticker": "BRK-A", "date": days, "volume": volume}), other], ignore_index=True)
+
+
+def test_volume_scale_rescales_only_the_registered_ticker_before_the_boundary():
+    """Bars before `before` take `factor`; the boundary bar, later bars and every other ticker are untouched."""
+    bars = _volume_bars(30_000.0, 300.0)
+    logged: list[str] = []
+
+    out = apply_volume_scale(bars, _VOLUME_ENTRY, lambda m, *a: logged.append(m % a))
+
+    brka = out[out["ticker"] == "BRK-A"].set_index("date")["volume"]
+    assert brka.loc["2013-07-26"] == pytest.approx(300.0) and brka.loc[:"2013-07-26"].eq(300.0).all()
+    assert brka.loc["2013-07-29":].eq(300.0).all()
+    pd.testing.assert_series_equal(out.loc[out["ticker"] == "BRK-B", "volume"], bars.loc[bars["ticker"] == "BRK-B", "volume"].astype("float64"))
+    assert bars.loc[bars["ticker"] == "BRK-A", "volume"].iloc[0] == 30_000.0, "the input frame is not mutated"
+    assert any("x0.01" in m for m in logged), logged
+    print("\n=== SANITY CHECK: volume_scale ===")
+    print(
+        f"  BRK-A 30,000 -> 300 on {int((brka.index < '2013-07-29').sum())} bars before 2013-07-29; boundary and later bars and BRK-B unchanged. Validated."
+    )
+
+
+def test_volume_scale_refuses_a_series_the_vendor_already_fixed():
+    """With no jump left across the boundary the entry is skipped and logged, never applied on faith."""
+    bars = _volume_bars(310.0, 300.0)
+    logged: list[str] = []
+
+    out = apply_volume_scale(bars, _VOLUME_ENTRY, lambda m, *a: logged.append(m % a))
+
+    assert out is bars
+    assert any("SKIPPED" in m for m in logged), logged
+    print("\n=== SANITY CHECK: a fixed series is refused ===")
+    print(f"  observed jump ~1.03 against an expected 100 -> skipped: {logged[0]}")

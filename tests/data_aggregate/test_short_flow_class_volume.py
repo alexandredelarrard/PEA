@@ -16,7 +16,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.transformers import step_cube_institutionals as step_module
+from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     _fails_fields,
     _shortvol_fields,
@@ -222,6 +224,43 @@ def test_loader_reads_universe_secondary_classes_and_only_their_bars(sqlite_stor
     assert step_module.institutional_inputs.load_secondary_classes(sqlite_store, logging.getLogger(__name__), ["MRK"]) is None
     print("\n=== SANITY CHECK: class loader ===")
     print("  of 4 master lines it kept LEN's secondary class only; of 5 symbols in prices it read LEN-B's 3 bars only. Validated.")
+
+
+def test_loader_applies_the_registered_brk_a_volume_unit_repair(sqlite_store: Any) -> None:
+    """P30: with the shipped price register, BRK-A's Yahoo volume before 2013-07-29 is divided by 100 on the class read;
+    the boundary day and later bars are untouched, and without the register nothing changes."""
+    master = pd.DataFrame(
+        {
+            "security_id": ["B1", "A1"],
+            "canonical_company": ["BRK-B", "BRK-B"],
+            "source": ["ftd", "ftd"],
+            "source_symbol": ["BRKB", "BRKA"],
+            "market_symbol": ["BRK-B", "BRK-A"],
+            "security_class": ["class_B", "class_A"],
+            "conversion_ratio": [1.0, 1500.0],
+            "lineage_role": ["canonical_current", "secondary_class"],
+            "valid_from": ["2009-06-26"] * 2,
+            "valid_to": [None] * 2,
+            "n_observations": [10, 10],
+        }
+    )
+    sqlite_store.save(Tables.security_master, master)
+    days = pd.bdate_range("2013-06-03", "2013-08-30")
+    volume = [24_800.0 if day < pd.Timestamp("2013-07-29") else 300.0 for day in days]
+    sqlite_store.save(Tables.prices, _bars("BRK-A", days, volume).assign(close_split=170_000.0, close_total=170_000.0))
+    log = logging.getLogger(__name__)
+
+    loaded = step_module.institutional_inputs.load_secondary_classes(sqlite_store, log, ["BRK-B"], bugfix=load_bugfix(DEFAULT_CONFIG_DIR))
+    untouched = step_module.institutional_inputs.load_secondary_classes(sqlite_store, log, ["BRK-B"])
+
+    assert loaded is not None and untouched is not None
+    fixed = loaded[1].assign(date=lambda f: pd.to_datetime(f["date"])).set_index("date")["volume"]
+    raw = untouched[1].assign(date=lambda f: pd.to_datetime(f["date"])).set_index("date")["volume"]
+    assert fixed.loc["2013-07-26"] == pytest.approx(248.0) and fixed.loc[:"2013-07-26"].eq(248.0).all()
+    assert fixed.loc["2013-07-29":].eq(300.0).all()
+    assert raw.loc["2013-07-26"] == 24_800.0
+    print("\n=== SANITY CHECK: BRK-A volume unit repair on the class read ===")
+    print("  2013-07-26 24,800 -> 248 with the shipped register; 2013-07-29 on stays 300; no register -> raw 24,800. Validated.")
 
 
 def test_loader_without_a_master_returns_none(sqlite_store: Any) -> None:

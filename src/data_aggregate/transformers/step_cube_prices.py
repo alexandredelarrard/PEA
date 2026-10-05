@@ -34,6 +34,7 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_null_ret,
     apply_return_seams,
     apply_split_vintage,
+    apply_volume_scale,
     describe,
     genuine_splits,
     level_factor,
@@ -78,6 +79,7 @@ class StepCubePrices(Step):
         raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS, where={"ticker": self._tickers})
         assert raw is not None
         self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
+        raw = apply_volume_scale(raw, self._bugfix, self._log.info)
 
         # long to wide format
         wide = self._pivot_fields(raw)

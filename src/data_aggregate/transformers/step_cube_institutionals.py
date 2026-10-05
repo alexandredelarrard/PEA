@@ -49,6 +49,7 @@ from omegaconf import DictConfig
 from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import (
@@ -380,7 +381,7 @@ class StepCubeInstitutionals(Step):
         fails = self._load_source(Tables.sec_fails_to_deliver, universe)
         ftd_stored_periods = self._store.distinct(Tables.sec_fails_to_deliver, "period") if fails is not None and not fails.empty else None
         # Both numerators are class sums in reference shares, so the tape denominators sum the same classes.
-        classes = institutional_inputs.load_secondary_classes(self._store, self._log, universe)
+        classes = institutional_inputs.load_secondary_classes(self._store, self._log, universe, bugfix=load_bugfix(self._context.config_dir))
         class_volume = None
         if classes is not None:
             class_volume, _ = secondary_class_volume(*classes, frames.trading_index)

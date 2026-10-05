@@ -78,9 +78,9 @@ left alone.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -246,7 +246,8 @@ VINTAGE_FLIP_TOL = 0.10
 #: a ~95 high/low band. Anything not listed here is deliberately untouched: `volume`, because
 #: the two MNST vintages show comparable volume (10.8M on the last stale bar, 10.1M on the
 #: next adjusted one) and inventing a factor for a leg with no measured defect is how a
-#: register starts lying; `ret`, because it is recomputed downstream FROM these.
+#: register starts lying (a MEASURED volume unit defect is its own shape, `volume_scale`);
+#: `ret`, because it is recomputed downstream FROM these.
 REPAIRED_PRICE_FIELDS = ("close_split", "close_total", "open", "high", "low")
 
 
@@ -281,6 +282,66 @@ def load_bugfix(config_dir: str | Path) -> dict:
             f"{path} has no `_APPROVED` block -- refusing to apply a price repair nobody signed off. Add one stating who measured it and how."
         )
     return blob
+
+
+#: How far the observed volume jump across a `volume_scale` boundary may sit from `expect_jump`,
+#: as a ratio band either way. Daily volume is noisy (a 20-bar median still moves 2x between
+#: quiet and busy months); a unit defect is a 100x step, so a 3x band refuses a fixed series.
+VOLUME_JUMP_TOL = 3.0
+#: Bars on each side of a `volume_scale` boundary whose median volumes form the observed jump.
+VOLUME_JUMP_BARS = 20
+
+
+def _volume_jump(volume: pd.Series, when: pd.Timestamp) -> float | None:
+    """Median volume of the `VOLUME_JUMP_BARS` bars before `when` over that of the bars at or after
+    it; None when either side is missing or the later median is not positive."""
+    before = volume[volume.index < when].tail(VOLUME_JUMP_BARS).median()
+    after = volume[volume.index >= when].head(VOLUME_JUMP_BARS).median()
+    if pd.isna(before) or pd.isna(after) or after <= 0:
+        return None
+    return float(before / after)
+
+
+def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any], log: Callable[..., None]) -> pd.DataFrame:
+    """Repair a vendor volume UNIT defect: the `volume` of a registered ticker's bars dated before an
+    entry's `before` is multiplied by its `factor`. `bars` is long (`ticker`, `date`, `volume`); the
+    input is returned untouched when no entry applies, else a copy.
+
+    Re-verified before it fires: the observed jump across `before` (`_volume_jump`) must sit within
+    `VOLUME_JUMP_TOL` of `expect_jump`, else the entry is skipped and logged. A frame with no bar
+    before `before` has nothing to repair."""
+    entries = bugfix.get("volume_scale") or {}
+    if not entries or bars.empty:
+        return bars
+    out = bars
+    dates = pd.to_datetime(bars["date"])
+    for ticker, items in entries.items():
+        mine = bars["ticker"].astype(str).eq(ticker).to_numpy()
+        if not mine.any():
+            continue
+        for entry in items:
+            when = pd.Timestamp(entry["before"])
+            target = mine & (dates < when).to_numpy()
+            if not target.any():
+                continue
+            volume = pd.Series(pd.to_numeric(out.loc[mine, "volume"], errors="coerce").to_numpy(), index=dates[mine]).sort_index()
+            jump, expect = _volume_jump(volume, when), float(entry["expect_jump"])
+            if jump is None or not expect / VOLUME_JUMP_TOL <= jump <= expect * VOLUME_JUMP_TOL:
+                log("price bugfix: volume_scale %s before %s SKIPPED -- observed jump %s, expected %.1f", ticker, when.date(), jump, expect)
+                continue
+            if out is bars:
+                out = bars.copy()
+                out["volume"] = pd.to_numeric(out["volume"], errors="coerce").astype("float64")
+            out.loc[target, "volume"] = out.loc[target, "volume"] * float(entry["factor"])
+            log(
+                "price bugfix: volume_scale %s x%s on %d bar(s) before %s (observed jump %.1f)",
+                ticker,
+                entry["factor"],
+                int(target.sum()),
+                when.date(),
+                jump,
+            )
+    return out
 
 
 def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict, vendor_price: pd.DataFrame | None, log: Callable[..., None]) -> int:

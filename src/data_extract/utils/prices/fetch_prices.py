@@ -38,7 +38,7 @@ from src.data_extract.utils.common.incremental import resume_since
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker
+from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -294,11 +294,6 @@ def download_ohlcv(
 
 
 SECONDARY_CLASS = "secondary_class"
-
-
-def yahoo_symbol(symbol: object) -> str:
-    """Yahoo's spelling of a share-class symbol: a `/` or `.` class separator becomes `-` (`BRK/A`, `BRK.A` -> `BRK-A`)."""
-    return normalise_ticker(symbol).replace("/", "-").replace(".", "-")
 
 
 def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:

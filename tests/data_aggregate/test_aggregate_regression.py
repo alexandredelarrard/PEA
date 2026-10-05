@@ -253,6 +253,18 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # rewrote `StepCubeInstitutionals`' grid contract (no `since`; full calendar, tail-only write),
 # and the six `label.*` digests, `panel.price`, `panel.fundamental`, `panel.governance`,
 # `panel.insider` and every `prim.*` outside the 13F family all held.
+#
+# Spliced a TENTH time, 2026-10-05, for the multi-class volume denominators (entity-symbol-lineage
+# Q2e', decision D-Q2-9): ADV20 and RegSHO coverage now sum the issuer's secondary share classes.
+# Only `panel.short_flow` was replaced in the file; every other entry is the previous baseline's.
+# First the code change alone against the old baseline: all 37 outputs byte-identical, because the
+# fixture had no secondary class. Then `synthetic_share_classes` (its own `rng_for` stream) was
+# added, and the diff against a copy of the old baseline read
+#
+#     37 outputs, 36 BYTE-IDENTICAL, rows 43,010 and cols 12 unchanged
+#     moved: f_ic_ftd_to_adv20, f_ic_shortvol_market_coverage
+#
+# exactly the two denominators; the other eight short-flow legs did not move.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 

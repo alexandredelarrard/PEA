@@ -2668,15 +2668,15 @@
    "f_ic_shortvol_turnover_20d",
    "ticker"
   ],
-  "hash": "45321823eeaf903c45878f1d84189175",
+  "hash": "f9424b4cfd25461877436392a84333e8",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_ftd_persistence_30d": "f7c3b049315d3f45",
-   "f_ic_ftd_to_adv20": "c8444c2d4f03387f",
+   "f_ic_ftd_to_adv20": "3b6d0eade5ae572d",
    "f_ic_shortvol_acceleration": "638b887f58935a66",
    "f_ic_shortvol_high_x_strong_price": "9a2587e6de649970",
    "f_ic_shortvol_high_x_weak_price": "0c16e70758cd05f7",
-   "f_ic_shortvol_market_coverage": "b2b3679855e569fc",
+   "f_ic_shortvol_market_coverage": "7095a86498823b2c",
    "f_ic_shortvol_ratio_20d": "a8cc6821abcad3f2",
    "f_ic_shortvol_ratio_5d": "a211975d2d869e6e",
    "f_ic_shortvol_ratio_60d": "c35df12a89f0637b",

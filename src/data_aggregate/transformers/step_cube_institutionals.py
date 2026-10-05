@@ -82,6 +82,7 @@ from src.data_aggregate.utils.institutionals.ownership_features import (
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     build_short_flow_feature_panel,
+    secondary_class_volume,
 )
 from src.data_aggregate.utils.institutionals.signal_conditioning import (
     EXCURSION_LOOKBACK,
@@ -450,6 +451,11 @@ class StepCubeInstitutionals(Step):
         short = self._load_source(Tables.short_interest, universe)
         fails = self._load_source(Tables.sec_fails_to_deliver, universe)
         ftd_stored_periods = self._store.distinct(Tables.sec_fails_to_deliver, "period") if fails is not None and not fails.empty else None
+        # Both numerators are class sums in reference shares, so the tape denominators sum the same classes.
+        classes = institutional_inputs.load_secondary_classes(self._store, self._log, universe)
+        class_volume = None
+        if classes is not None:
+            class_volume, _ = secondary_class_volume(*classes, frames.trading_index)
         return build_short_flow_feature_panel(
             frames,
             short,
@@ -462,6 +468,7 @@ class StepCubeInstitutionals(Step):
             ticker_ciks=ticker_ciks,
             availability=self._availability,
             sink=sink,
+            class_volume=class_volume,
         )
 
     def _ownership_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:

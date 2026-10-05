@@ -3,7 +3,9 @@ short_flow_features.py  (src/data_aggregate/utils/institutionals/short_flow_feat
 ----------------------------------------------------------------------------------------
 Short-flow features: FINRA RegSHO daily short-sale VOLUME (`ic_shortvol_*`, not short interest)
 and SEC fails-to-deliver (`ic_ftd_*`). Ratios are volume-weighted (SUM short / SUM total over N
-days); `ic_shortvol_market_coverage` is RegSHO's measured share of tape volume. Point-in-time:
+days); `ic_shortvol_market_coverage` is RegSHO's measured share of tape volume. Both tape-volume
+denominators (ADV20 and coverage) sum the issuer's secondary share classes, as the class-summed
+numerators do (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is shifted `SHORTVOL_PUB_LAG` trading day; an FTD ZIP becomes knowable as
 a whole at period end plus `FTD_HISTORICAL_LAG_DAYS` past weekends (the fresh latest cached ZIP may
 use its mtime in `MARKET_TIMEZONE`), moved to the next session and held until the next ZIP. An
@@ -37,7 +39,7 @@ from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, yahoo_symbol
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -200,6 +202,63 @@ def _publish_ftd_zip_states(
         if stop > start:
             published.iloc[start:stop] = state.to_numpy()
     return published
+
+
+def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Wide (date x company) secondary-class volume in canonical shares, and the company-days an active class has no bar.
+
+    A class counts only on its `security_master` dates. Yahoo volume is restated to today's split basis, so a class
+    enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
+    that Yahoo already restated. A class with no bar on an active day adds nothing; those company-days are logged.
+    """
+    idx = pd.DatetimeIndex(idx).normalize()
+    if lines.empty:
+        return pd.DataFrame(index=idx, dtype="float64"), pd.DataFrame(index=idx, dtype="bool")
+    work = lines.assign(
+        company=lines["canonical_company"].astype(str),
+        symbol=lines["market_symbol"].map(yahoo_symbol),
+        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce").fillna(1.0),
+        start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
+        end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
+    ).sort_values("start", kind="stable")
+    tape = bars.assign(date=to_day(bars["date"])).drop_duplicates(["ticker", "date"], keep="last")
+    tape = tape.pivot(index="date", columns="ticker", values="volume").reindex(idx) if not tape.empty else pd.DataFrame(index=idx)
+    companies = sorted(work["company"].unique())
+    volume = pd.DataFrame(0.0, index=idx, columns=companies)
+    missing = pd.DataFrame(False, index=idx, columns=companies)
+    gaps: list[str] = []
+    for (company, symbol), group in work.groupby(["company", "symbol"], sort=True):
+        active = np.zeros(len(idx), dtype=bool)
+        for start, end in zip(group["start"], group["end"], strict=True):
+            window = idx >= start if pd.notna(start) else np.ones(len(idx), dtype=bool)
+            active |= window & (idx < end) if pd.notna(end) else window
+        bar = pd.to_numeric(tape[symbol], errors="coerce") if symbol in tape.columns else pd.Series(np.nan, index=idx)
+        has_bar = bar.notna().to_numpy()
+        volume[company] += np.where(active & has_bar, float(group["ratio"].iloc[-1]) * bar.fillna(0.0).to_numpy(), 0.0)
+        gap = active & ~has_bar
+        missing[company] |= gap
+        if gap.any():
+            days = idx[gap]
+            gaps.append(f"{company} {symbol} {int(gap.sum())} day(s) {days[0].date()}..{days[-1].date()}")
+    if gaps:
+        logger.warning(
+            "secondary-class volume: %s company-day(s) have an active class with no bar, which adds no volume: %s",
+            f"{int(missing.to_numpy().sum()):,}",
+            "; ".join(gaps),
+        )
+    return volume, missing
+
+
+def with_class_volume(volume: pd.DataFrame | None, class_volume: pd.DataFrame | None) -> pd.DataFrame | None:
+    """`volume` plus each company's secondary-class volume; a company with no class, or a day with no canonical bar, is unchanged."""
+    if volume is None or class_volume is None or class_volume.empty:
+        return volume
+    columns = volume.columns.intersection(class_volume.columns)
+    if columns.empty:
+        return volume
+    out = volume.copy()
+    out[columns] = volume[columns] + class_volume.reindex(index=volume.index, columns=columns).fillna(0.0)
+    return out
 
 
 def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
@@ -409,16 +468,18 @@ def build_short_flow_feature_panel(
     ticker_ciks: pd.DataFrame | None = None,
     availability: InstitutionalAvailability | None = None,
     sink=None,
+    class_volume: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format short-flow panel (`f_<name>` per `EMISSION`); empty if neither source is available.
 
-    `frames.volume` backs ADV20 and coverage, `shares_out_history` (`sharesOutstandingPit`) the
+    `frames.volume` plus `class_volume` (wide secondary-class volume from `secondary_class_volume`) backs
+    ADV20 and coverage, `shares_out_history` (`sharesOutstandingPit`) the
     share-count-scaled legs, `frames.close_total` the price interactions; each is optional and its
     absence removes only the legs that need it (hence no `frames.require`).
     """
     peer_dict = frames.peers
     trading_index = frames.trading_index
-    volume = frames.volume
+    volume = with_class_volume(frames.volume, class_volume)
     close_total = frames.close_total
     # Both sources are optional; the panel is empty only when neither arrived.
     if _absent(short_history) and _absent(fails_history):

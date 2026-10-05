@@ -12,11 +12,15 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_price_frames
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, yahoo_symbol
 
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
 #: `symbol_tenure` sources behind the proven-tenure mask; cover-page `dei` rows stay out so features do not move.
 TENURE_SOURCES = ("form345", "manual")
+#: `security_master` role of a company's concurrently traded common class, and the columns its volume needs.
+SECONDARY_CLASS = "secondary_class"
+CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+CLASS_BAR_COLUMNS = ("ticker", "date", "volume")
 
 
 def load_full_price_frames(
@@ -123,3 +127,36 @@ def load_symbol_lineage(
     aliases = len(set(symbol_tenure["symbol"].astype(str))) if symbol_tenure is not None else 0
     log.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
     return symbol_tenure, ticker_ciks
+
+
+def load_secondary_classes(
+    store: DataStore,
+    log: logging.Logger,
+    universe: Sequence[str],
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """The universe companies' `secondary_class` lines from `security_master` and those classes' `prices` volume bars.
+
+    `prices` is read by exactly the classes' Yahoo symbols, which the universe filter of its other readers would drop.
+    None when the master is absent or holds no class line, so the features keep the canonical tape.
+    """
+    lines = store.load(
+        Tables.security_master,
+        columns=list(CLASS_LINE_COLUMNS),
+        where={"lineage_role": SECONDARY_CLASS, "canonical_company": sorted(set(map(str, universe)))},
+        optional=True,
+    )
+    if lines is None or lines.empty:
+        log.info("No secondary share-class lines in security_master -> ADV20 and RegSHO coverage use the canonical tape only.")
+        return None
+    symbols = sorted({yahoo_symbol(symbol) for symbol in lines["market_symbol"]})
+    bars = store.load(Tables.prices, columns=list(CLASS_BAR_COLUMNS), where={"ticker": symbols}, optional=True)
+    if bars is None:
+        bars = pd.DataFrame(columns=list(CLASS_BAR_COLUMNS))
+    log.info(
+        "Secondary share classes: %s line(s), %s symbol(s) of %s companies, %s volume bar(s)",
+        len(lines),
+        len(symbols),
+        lines["canonical_company"].nunique(),
+        len(bars),
+    )
+    return lines, bars

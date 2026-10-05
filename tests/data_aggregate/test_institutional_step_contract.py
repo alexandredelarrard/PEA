@@ -155,16 +155,26 @@ def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.M
         assert kwargs["fails_history"] is fails
         assert kwargs["ftd_cache_dir"] == tmp_path / "sec_fails_to_deliver"
         assert kwargs["ftd_stored_periods"] == ["202608b", "202609a"]
+        assert kwargs["class_volume"]["AAPL"].tolist() == [10.0, 10.0]
         return pd.DataFrame({"date": [pd.Timestamp("2024-05-15")], "ticker": ["AAPL"]})
 
     fake_step._load_source = load_source
+    days = pd.DatetimeIndex(["2024-05-14", "2024-05-15"])
+    class_lines = pd.DataFrame(
+        {"canonical_company": ["AAPL"], "market_symbol": ["AAPL-B"], "conversion_ratio": [2.0], "valid_from": ["1900-01-01"], "valid_to": [None]}
+    )
+    class_bars = pd.DataFrame({"ticker": "AAPL-B", "date": days, "volume": 5.0})
     monkeypatch.setattr(step_module.institutional_inputs, "load_symbol_lineage", lambda *args: (None, None))
+    monkeypatch.setattr(step_module.institutional_inputs, "load_secondary_classes", lambda *args: (class_lines, class_bars))
     monkeypatch.setattr(step_module, "build_short_flow_feature_panel", build_panel)
-    out = step._short_flow_panel(SimpleNamespace(universe=["AAPL"]), None, None, cast(Any, object()))
+    out = step._short_flow_panel(SimpleNamespace(universe=["AAPL"], trading_index=days), None, None, cast(Any, object()))
 
     assert out is not None and len(out) == 1
     assert calls == [Tables.short_interest, Tables.sec_fails_to_deliver]
-    print("SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read.")
+    print(
+        "SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read, "
+        "and hands the builder the secondary-class volume (AAPL-B 5 x ratio 2 = 10 a day)."
+    )
 
 
 def test_symbol_lineage_loader_projects_current_issuers() -> None:

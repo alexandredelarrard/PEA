@@ -1,7 +1,7 @@
 """Small string normalisers shared across packages.
 
 `pad_cik` / `pad_cik_series` are the one CIK spelling every package writes and joins on;
-`normalise_ticker` is the one ticker spelling; `clean_text` is the whitespace half of the
+`normalise_ticker` is the one ticker spelling and `yahoo_symbol` Yahoo's spelling of a share class; `clean_text` is the whitespace half of the
 person key in `src/utils/names.py`.
 """
 
@@ -43,3 +43,8 @@ def pad_cik_series(values: pd.Series) -> pd.Series:
 def normalise_ticker(value: object) -> str:
     """Canonical ticker spelling: stripped and upper-case."""
     return str(value).strip().upper()
+
+
+def yahoo_symbol(symbol: object) -> str:
+    """Yahoo's spelling of a share-class symbol: a `/` or `.` class separator becomes `-` (`BRK/A`, `BRK.A` -> `BRK-A`)."""
+    return normalise_ticker(symbol).replace("/", "-").replace(".", "-")

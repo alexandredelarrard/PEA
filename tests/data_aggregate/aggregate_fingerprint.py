@@ -435,6 +435,36 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
     return si, ftd
 
 
+def synthetic_share_classes(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Secondary share classes -- `security_master` `secondary_class` lines and their `prices` volume bars.
+
+    Two companies: one ratio-1 class that starts mid-window and misses a few bars, and one BRK-style class
+    whose ratio steps 30 -> 1,500 (only the latest ratio applies on the restated tape). Without it the digest
+    would freeze only the single-class branch of the ADV20 and coverage denominators.
+    """
+    a, b = tickers[0], tickers[1]
+    start = idx[int(len(idx) * 0.3)]
+    step = idx[int(len(idx) * 0.5)]
+    lines = pd.DataFrame(
+        {
+            "canonical_company": [a, b, b],
+            "market_symbol": [f"{a}-B", f"{b}-A", f"{b}-A"],
+            "conversion_ratio": [1.0, 30.0, 1500.0],
+            "valid_from": [start, pd.Timestamp("1900-01-01"), step],
+            "valid_to": [pd.NaT, step, pd.NaT],
+        }
+    )
+    days_a = idx[(idx >= idx[int(len(idx) * 0.2)]) & (rng.random(len(idx)) > 0.02)]
+    bars = pd.concat(
+        [
+            pd.DataFrame({"ticker": f"{a}-B", "date": days_a, "volume": rng.lognormal(13.0, 0.5, len(days_a)).round(0)}),
+            pd.DataFrame({"ticker": f"{b}-A", "date": idx, "volume": rng.lognormal(6.0, 0.5, len(idx)).round(0)}),
+        ],
+        ignore_index=True,
+    )
+    return lines, bars
+
+
 def synthetic_ownership(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Schedule 13D + 13G at REPORTING-PERSON grain -- `sec_13d`, `sec_13g`.
 
@@ -722,6 +752,7 @@ def compute() -> dict:
     )
     from src.data_aggregate.utils.institutionals.short_flow_features import (
         build_short_flow_feature_panel,
+        secondary_class_volume,
     )
     from src.data_aggregate.utils.institutionals.signal_conditioning import (
         build_signal_conditioning_panel,
@@ -768,6 +799,7 @@ def compute() -> dict:
     board_pay, _ = impute_director_comp(synthetic_director_comp(board, rng_for("director_comp")))
     short_hist, ftd = synthetic_short_flow(tickers, idx, rng_for("short_flow"))
     splits = synthetic_splits(tickers, idx, rng_for("splits"))
+    class_volume, _ = secondary_class_volume(*synthetic_share_classes(tickers, idx, rng_for("share_classes")), idx)
     sec_13d, sec_13g = synthetic_ownership(tickers, idx, rng_for("ownership"))
     insider = synthetic_insider(tickers, idx, rng_for("insider"))
     holdings, roster = synthetic_13f(tickers, idx, rng_for("13f"))
@@ -838,6 +870,7 @@ def compute() -> dict:
             shares_out_history=fund,
             splits=splits,
             sink=sink,
+            class_volume=class_volume,
         )
     )
     # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.

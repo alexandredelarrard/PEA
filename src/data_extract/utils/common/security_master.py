@@ -227,12 +227,14 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 
 @dataclass(frozen=True)
 class SecurityManual:
-    """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger metadata."""
+    """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
+    metadata and the declared co-registrant CIKs."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
     classes: pd.DataFrame
     mergers: tuple[dict[str, Any], ...] = ()
+    co_registrants: tuple[str, ...] = ()
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -271,7 +273,44 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
     for entry in mergers:
         if not str(entry.get("source") or "").strip():
             raise SecurityManualError(f"security_master_manual.json: merger entry {entry} has no source (URL or accession)")
-    return SecurityManual(ratios=ratios, boundaries=boundaries, classes=_entries(blob, "class_overrides", _CLASS_COLUMNS), mergers=mergers)
+    co_registrants = _entries(blob, "co_registrants", ("cik", "ticker", "source"))
+    return SecurityManual(
+        ratios=ratios,
+        boundaries=boundaries,
+        classes=_entries(blob, "class_overrides", _CLASS_COLUMNS),
+        mergers=mergers,
+        co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
+    )
+
+
+@dataclass(frozen=True)
+class MergerBoundary:
+    """One merger's boundary day for the insider lineage: who acquired whom on `seam_date`, and whether it closed after the market close."""
+
+    ticker: str
+    seam_date: pd.Timestamp
+    after_close: bool | None
+    legal_acquirer_cik: str
+    accounting_predecessor_cik: str
+    acquired_symbol: str
+
+
+def merger_boundaries(manual: SecurityManual) -> tuple[MergerBoundary, ...]:
+    """The manual `merger_metadata` entries as `MergerBoundary` rows; a null `closing_time` leaves `after_close` unknown."""
+    out = []
+    for entry in manual.mergers:
+        closing = str(entry.get("closing_time") or "").strip().lower()
+        out.append(
+            MergerBoundary(
+                ticker=normalise_ticker(str(entry["ticker"])),
+                seam_date=pd.Timestamp(entry["seam_date"]),
+                after_close=("after" in closing) if closing else None,
+                legal_acquirer_cik=pad_cik(entry["legal_acquirer_cik"]),
+                accounting_predecessor_cik=pad_cik(entry["accounting_predecessor_cik"]),
+                acquired_symbol=str(entry["acquired_symbol"]).strip().upper(),
+            )
+        )
+    return tuple(out)
 
 
 def load_security_manual(config_dir: str | None = None) -> SecurityManual:
@@ -1202,14 +1241,16 @@ def derive_security_master(
     return MasterBuild(rows=rows, flags=detail, items=flag_items(detail))
 
 
-def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None) -> frozenset[str]:
-    """The extra CIKs the identity flags classify as co-registrants, except a former listing of the company.
+def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None, declared: Collection[str] = ()) -> frozenset[str]:
+    """The extra CIKs the identity flags classify as co-registrants, except a former listing of the company, plus the
+    `declared` ones (curated subsidiaries the flags never judge).
 
     A former listing held the company's ticker on its own, not alongside the home CIK (old GM as `GM` until 2009):
     it is a predecessor or an acquired constituent, not a subsidiary filing under its parent's symbol.
     """
-    if evidence is None or evidence.empty:
-        return frozenset()
+    listed = frozenset(pad_cik(cik) for cik in declared)
+    if evidence is None or evidence.empty or not {"role", "sources"} <= set(lineage.columns):  # membership rows only: nothing to judge
+        return listed
     flags = identity_flags(lineage, cik_activity(evidence))
     tape = _tape_intervals(lineage)
     out = set()
@@ -1217,7 +1258,7 @@ def co_registrant_ciks(lineage: pd.DataFrame, evidence: pd.DataFrame | None) -> 
         other, home = (str(value).split(",") + [""])[:2]
         if not _former_listing(tape, other, home):
             out.add(other)
-    return frozenset(out)
+    return frozenset(out) | listed
 
 
 def _former_listing(tape: pd.DataFrame, other: str, home: str) -> bool:
@@ -1271,7 +1312,8 @@ def build_security_master(
     evidence = context.store.load(
         Tables.symbol_tenure, columns=["issuer_cik", "source", "valid_from", "valid_to"], where={"source": ["form345", DEI_SOURCE]}, optional=True
     )
-    co_registrants = co_registrant_ciks(lineage, evidence)
+    manual = load_security_manual(str(config_dir or context.config_dir))
+    co_registrants = co_registrant_ciks(lineage, evidence, manual.co_registrants)
     finra = (
         [str(s) for s in context.store.distinct(Tables.sec_short_volume_security, "source_symbol")]
         if context.store.exists(Tables.sec_short_volume_security)
@@ -1281,7 +1323,7 @@ def build_security_master(
         observations,
         lineage,
         roster,
-        load_security_manual(str(config_dir or context.config_dir)),
+        manual,
         built_at=built_at or pd.Timestamp.now().floor("s"),
         sec_tickers=sec_tickers,
         finra_symbols=[symbol for symbol in finra if re.fullmatch(r"[A-Z]+/[A-Z]", symbol)],

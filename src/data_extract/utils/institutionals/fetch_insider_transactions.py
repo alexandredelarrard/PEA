@@ -10,6 +10,8 @@ kept accessions. Each quarter logs how many of its filings EDGAR missed.
 `download_insider_transactions` caches every quarter's zip (the identity build reads them);
 `fetch_insider_transactions` parses them, downloading only a zip still missing. A stored quarter is
 skipped unless the universe gained tickers or `reparse` is set, in which case cached zips are re-parsed.
+`restamp_insider_lineage` rewrites the lineage stamp of stored rows (either source) after a lineage
+change and purges co-registrant rows, reading no zip and no EDGAR filing.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
     INSIDER_KEY,
+    LINEAGE_COLUMNS,
     OWNER_STRING_COLUMNS,
     accession_batches,
     build_insider_frame,
@@ -54,10 +57,12 @@ from src.data_extract.utils.institutionals.insider_common import (
     log_exclusions,
     screen_insider_rows,
     screened_accessions,
+    stamp_lineage,
     top_counts,
 )
 from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker
+from src.utils.filer_tables import FilerTable, removal_records
+from src.utils.string import normalise_ticker, pad_cik_series
 from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,23 @@ _COMPARED_FIELDS = ("transaction_code", "transaction_date", "shares", "price_per
 _NUMBER_FIELDS = frozenset({"shares", "price_per_share", "shares_owned_after"})
 _DATE_FIELDS = frozenset({"transaction_date"})
 _NUMBER_TOLERANCE = 0.005
+#: Stored columns the lineage re-stamp reads: the key, what the stamp derives from, and the stamp itself.
+_RESTAMP_COLUMNS = [
+    *INSIDER_KEY,
+    "ticker",
+    "issuer_cik",
+    "owner_cik",
+    "document_type",
+    "transaction_code",
+    "transaction_date",
+    "period_of_report",
+    "filing_date",
+    "original_submission_date",
+    "security_title",
+    *LINEAGE_COLUMNS,
+]
+_RESTAMP_TICKERS = 50
+_CO_REGISTRANT_SPEC = FilerTable(Tables.insider_transactions, "issuer_cik", "filing_date", "accession_number")
 
 #: SUBMISSION / REPORTINGOWNER columns `INSIDER_FIELDS` maps; remarks and addresses are never read.
 _MEMBER_COLUMNS = {
@@ -417,3 +439,64 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
             context.store.save(Tables.insider_footnotes, df_notes)
     logger.info("insider_transactions: re-parsed %d cached quarter(s) for %d ticker(s), %d row(s) upserted", len(quarters), len(tickers), saved)
     return saved
+
+
+def _restamp_targets(context: Context, tickers: Sequence[str]) -> list[str]:
+    """`tickers` plus every ticker holding a row without a stamp (rows stored before the lineage columns existed)."""
+    unstamped = {str(t) for t in context.store.distinct(Tables.insider_transactions, "ticker", where={"lineage_role": None})}
+    return sorted(set(tickers) | unstamped)
+
+
+def _changed_stamps(df_rows: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
+    """The key and lineage columns of the rows whose `economic_date` or `lineage_role` differs from the stored stamp."""
+    old_day = pd.to_datetime(df_rows["economic_date"], errors="coerce")
+    new_day = pd.to_datetime(df_new["economic_date"], errors="coerce")
+    same_day = (old_day.eq(new_day) | (old_day.isna() & new_day.isna())).fillna(False)
+    old_role, new_role = df_rows["lineage_role"].astype("string"), df_new["lineage_role"].astype("string")
+    same_role = (old_role.eq(new_role) | (old_role.isna() & new_role.isna())).fillna(False)
+    changed = ~(same_day & same_role).astype(bool)
+    return df_new.loc[changed, [*INSIDER_KEY, "economic_date", "lineage_role"]]
+
+
+def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identity: Identity, dry_run: bool = False) -> list[dict]:
+    """Re-stamp `economic_date` and `lineage_role` on the stored rows of `tickers` (and of every ticker with an
+    unstamped row) under `identity`, and delete their co-registrant rows. Reads stored rows only, so EDGAR-sourced
+    filings change exactly like zip ones; an unchanged lineage writes nothing. Returns the co-registrant removal
+    records; `dry_run` writes nothing."""
+    if not context.store.exists(Tables.insider_transactions):
+        return []
+    present = set(context.store.columns(Tables.insider_transactions))
+    if "lineage_role" not in present:
+        context.log.warning("insider lineage: `insider_transactions` has no lineage columns yet (apply the sql/schema.sql block); re-stamp skipped")
+        return []
+    targets = _restamp_targets(context, tickers)
+    columns = [column for column in _RESTAMP_COLUMNS if column in present]
+    records: list[dict] = []
+    restamped = 0
+    for start in range(0, len(targets), _RESTAMP_TICKERS):
+        df_rows = context.store.load(
+            Tables.insider_transactions, columns=columns, where={"ticker": targets[start : start + _RESTAMP_TICKERS]}, optional=True
+        )
+        if df_rows is None:
+            continue
+        df_rows = df_rows.reindex(columns=_RESTAMP_COLUMNS).reset_index(drop=True)
+        co_registrant = pad_cik_series(df_rows["issuer_cik"]).isin(identity.co_registrant_ciks)
+        df_purge = df_rows[co_registrant]
+        if not df_purge.empty:
+            records += removal_records(Tables.insider_transactions.name, df_purge, _CO_REGISTRANT_SPEC)
+            if not dry_run:
+                for batch in accession_batches(sorted(df_purge["accession_number"].unique())):
+                    context.store.delete(Tables.insider_transactions, where={"accession_number": batch})
+        df_kept = df_rows[~co_registrant]
+        df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity, originals=df_kept))
+        restamped += len(df_changed)
+        if not df_changed.empty and not dry_run:
+            context.store.save(Tables.insider_transactions, df_changed)
+    context.log.info(
+        "insider lineage%s: re-stamped %d row(s) over %d ticker(s); %d co-registrant row(s) purged",
+        " (dry run)" if dry_run else "",
+        restamped,
+        len(targets),
+        sum(record["rows"] for record in records),
+    )
+    return records

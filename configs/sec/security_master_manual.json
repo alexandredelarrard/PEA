@@ -4,7 +4,8 @@
     "conversion_ratios: dated number of canonical-class shares one share of `cusip` is worth, half-open trade dates [valid_from, valid_to) (null = open). Only contractual ratios live here; every other common class is 1.",
     "market_boundaries: CUSIP-qualified role and issuer over half-open trade dates; they override the derived issuer and the lineage-window role for that CUSIP. role is one of canonical_predecessor, canonical_current, secondary_class, acquired_constituent, excluded (excluded rows name the reason).",
     "class_overrides: {cusip, security_class, source} for a line whose class evidence the FTD description does not carry.",
-    "merger_metadata: the boundary-day facts the insider lineage (Q2f) reads. The financial-statement register keeps its own meaning."
+    "merger_metadata: the boundary-day facts the insider lineage (Q2f) reads. The financial-statement register keeps its own meaning.",
+    "co_registrants: subsidiary CIKs that file event forms under the parent's symbol and whose rows are not stored (decision D-Q2-1). The identity-flags rule finds the ones beside a roster window (DLR LP, PG&E utility, PPL Electric, ONEOK); the curated ones it never judges are listed here."
   ],
   "conversion_ratios": [
     {"ticker": "BRK-B", "cusip": "084670108", "symbol": "BRK-A", "ratio": 30, "valid_from": null, "valid_to": "2010-01-21", "source": "0001157523-10-000241", "evidence": "Each Class A share converts into 30 Class B shares before the 50-for-1 Class B split approved on 2010-01-20 (8-K https://www.sec.gov/Archives/edgar/data/1067983/000115752310000241/); FTD A/B price ratio p50 30.36 before 2010-01-21."},
@@ -28,5 +29,11 @@
   "merger_metadata": [
     {"ticker": "MRK", "seam_date": "2009-11-03", "closing_time": "after 16:00 ET", "legal_acquirer_cik": "0000310158", "accounting_predecessor_cik": "0000064978", "acquired_symbol": "SGP", "source": "0001193125-09-223917", "evidence": "Merck / Schering-Plough reverse merger consummated on 2009-11-03 (8-K of CIK 0000310158 filed 2009-11-04); the closing after the 16:00 close is decision P25. On the boundary day a row reporting SGP is acquired_constituent; under 0000310158 code A rows are canonical_current and code D/J rows acquired_constituent; rows under 0000064978 are canonical_predecessor."},
     {"ticker": "PLD", "seam_date": "2011-06-03", "closing_time": null, "legal_acquirer_cik": "0001045609", "accounting_predecessor_cik": "0000899881", "acquired_symbol": "AMB", "source": "0000950123-11-057596", "evidence": "AMB / ProLogis merger consummated on 2011-06-03 (8-K Items 2.01, 3.03, 5.03 of CIK 0001045609 filed 2011-06-08; the filing states no closing time). AMB rows before the seam are acquired_constituent; rows under 0000899881 are canonical_predecessor."}
+  ],
+  "co_registrants": [
+    {"cik": "0001143908", "ticker": "ACN", "name": "Accenture SCA", "source": "0001274524-06-000022", "evidence": "Accenture SCA, the Luxembourg partnership inside the Accenture group, files Form 4s as issuer with symbol NONE (148 filings 2006-01-31 .. 2015, cached Form 3/4/5 data sets); its Class I shares are the subsidiary's own securities. Decision D-Q2-1 (2026-10-04)."},
+    {"cik": "0001097609", "ticker": "TMUS", "name": "T-Mobile USA, Inc.", "source": "0001181431-13-027088", "evidence": "T-Mobile US, Inc.'s operating subsidiary and co-registrant (entity_lineage_manual.json TMUS/t-mobile-usa); 3 Form 3/4 filings as issuer 2013-2018. Decision D-Q2-1 (2026-10-04)."},
+    {"cik": "0001132694", "ticker": "IRM", "name": "Iron Mountain Global Inc", "source": "0001104659-11-014423", "evidence": "A co-registrant inside Iron Mountain's own group (entity_lineage_manual.json IRM/iron-mountain-global); 1 Form 4 as issuer, filed 2011-03-15. Decision D-Q2-1 (2026-10-04)."},
+    {"cik": "0000105598", "ticker": "WFC", "name": "WFC Holdings Corp", "source": "0001689118-18-000004", "evidence": "A Wells Fargo & Co subsidiary and co-registrant (entity_lineage_manual.json WFC/wfc-holdings); 1 Form 4/A as issuer, filed 2018-01-31. Decision D-Q2-1 (2026-10-04)."}
   ]
 }

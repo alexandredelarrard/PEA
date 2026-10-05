@@ -5,8 +5,9 @@ ticker when the table has no recorded run) are re-checked. Contraction: rows who
 longer a CIK of the ticker's entity are deleted, one WARNING per table. Expansion: the bulk families
 re-parse those tickers from their cached zips (EDGAR tables relist in their own fetchers). The raw FTD
 lines and RegSHO short-volume rows of companies whose `security_master` rows changed (for short volume,
-also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows rebuilt. A
-ticker whose facts were purged has its SEC and merged history rebuilt.
+also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows rebuilt. The
+stored insider rows of changed tickers (and every unstamped row) get their lineage stamp rewritten in place,
+and co-registrant insider rows are purged. A ticker whose facts were purged has its SEC and merged history rebuilt.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_fi
 from src.data_extract.utils.fundamentals.fetch_financial_statements import reparse_financial_statements
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, restamp_fails
-from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions
+from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
@@ -160,6 +161,16 @@ def _refresh_short_volume(context: Context, identity: Identity, tickers: Sequenc
     return records
 
 
+def _refresh_insider(context: Context, identity: Identity, stamps: Mapping[str, pd.Timestamp | None], *, dry_run: bool, every: bool) -> list[dict]:
+    """Re-stamp the stored insider rows of tickers whose lineage changed since the table's last run; purge co-registrant rows."""
+    if not context.store.exists(Tables.insider_transactions):
+        return []
+    changed = _changed(context, Tables.insider_transactions, stamps, every=every)
+    records = restamp_insider_lineage(context, changed, identity=identity, dry_run=dry_run)
+    _warn(context, Tables.insider_transactions.name, records, dry_run=dry_run)
+    return records
+
+
 def _rebuild_history(context: Context, tickers: list[str]) -> None:
     """Delete and rebuild the SEC history of `tickers`, then their merged history in full."""
     context.log.warning("identity-propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
@@ -182,6 +193,7 @@ def propagate_identity(
     for spec in PURGE_TABLES:
         records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), own_ciks, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, cik_stamps)
+    records += _refresh_insider(context, resolver, cik_stamps, dry_run=dry_run, every=every_ticker)
     records += _refresh_fails(context, universe, dry_run=dry_run, every=every_ticker)
     records += _refresh_short_volume(context, resolver, universe, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))

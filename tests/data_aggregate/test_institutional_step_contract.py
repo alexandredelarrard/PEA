@@ -251,8 +251,8 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
     frontiers: list[tuple[object, object]] = []
     built: dict[str, Any] = {}
 
-    def load_source(table: object, universe: object = None) -> pd.DataFrame:
-        loads.append((table, universe))
+    def load_insider(universe: object) -> pd.DataFrame:
+        loads.append((Tables.insider_transactions, universe))
         return insider
 
     def schedule_complete_through(table: object, *, expected_tickers: object) -> pd.Timestamp:
@@ -263,7 +263,7 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
         built.update(frames=actual_frames, insider=actual_insider, **kwargs)
         return pd.DataFrame({"date": [frontier], "ticker": ["AAA"]})
 
-    fake_step._load_source = load_source
+    fake_step._load_insider = load_insider
     fake_step._schedule_complete_through = schedule_complete_through
     monkeypatch.setattr(step_module, "build_insider_feature_panel", build)
 
@@ -282,7 +282,7 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
         "sink": sink,
     }
     print(
-        "SANITY: the insider panel read only insider_transactions, took complete_through from the manifest over the sorted universe, and passed the builder the same arguments."
+        "SANITY: the insider panel read only insider_transactions (canonical-lineage rows, `load_insider_transactions`), took complete_through from the manifest over the sorted universe, and passed the builder the same arguments."
     )
 
 

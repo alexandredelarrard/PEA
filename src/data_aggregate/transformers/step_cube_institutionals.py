@@ -179,6 +179,9 @@ class StepCubeInstitutionals(Step):
     def _load_source(self, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
         return institutional_inputs.load_source(self._store, self._log, table, universe)
 
+    def _load_insider(self, universe: Sequence[str]) -> pd.DataFrame | None:
+        return institutional_inputs.load_insider_transactions(self._store, self._log, universe)
+
     def _load_shares_out(self) -> pd.DataFrame | None:
         return institutional_inputs.load_shares_out(self._store, self._log)
 
@@ -347,8 +350,9 @@ class StepCubeInstitutionals(Step):
         by `insider_quality` before they are summed, never read raw from `value_usd`.
 
         The completeness frontier is the last EDGAR run that covered exactly this universe,
-        read from the run manifest; without that proof absence stays unknown."""
-        insider = self._load_source(Tables.insider_transactions, frames.universe)
+        read from the run manifest; without that proof absence stays unknown. Only the companies' own
+        history is read: canonical-lineage rows, never an acquired company's."""
+        insider = self._load_insider(frames.universe)
         if insider is None or insider.empty:
             return None
         complete_through = self._schedule_complete_through(

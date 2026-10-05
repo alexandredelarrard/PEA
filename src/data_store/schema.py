@@ -917,6 +917,10 @@ class Tables:
     # `transaction_date` legitimately reaches further back.
     # `is_10b5_1` is a float: NaN means unknown (before the filing field existed), not False.
     # The derivative columns are NULL on every nonderiv row by construction.
+    # Lineage (P25): `source_symbol` is the filing's own trading symbol, `economic_date` the date of
+    # the reported event (Form 3: period of report; Form 4/5: the row's transaction date) and
+    # `lineage_role` the issuer CIK's role on that date (canonical_predecessor, canonical_current,
+    # acquired_constituent). The cube reads canonical rows only; co-registrant rows are never stored.
     # ⚠ For anything that is not an option, `exercise_price` NULL and 0 mean the same thing.
     insider_transactions = Table(
         "insider_transactions",
@@ -930,6 +934,7 @@ class Tables:
             "exercise_date",
             "expiration_date",
             "original_submission_date",
+            "economic_date",
         ),
         freshness="daily",
         freshness_date_col="filing_date",

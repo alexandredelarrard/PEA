@@ -1052,6 +1052,9 @@ CREATE TABLE IF NOT EXISTS "insider_transactions" (
     "footnote_ids" TEXT,
     "acceptance_datetime" TIMESTAMP,
     "fetched_at" TIMESTAMP,
+    "source_symbol" TEXT,
+    "economic_date" DATE,
+    "lineage_role" TEXT,
     PRIMARY KEY ("accession_number", "security_type", "row_sequence")
 );
 CREATE INDEX IF NOT EXISTS ix_insider_transactions_ticker ON "insider_transactions" ("ticker");

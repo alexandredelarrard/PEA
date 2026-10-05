@@ -23,6 +23,8 @@ TENURE_SOURCES = ("form345", "manual")
 SECONDARY_CLASS = "secondary_class"
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
 CLASS_BAR_COLUMNS = ("ticker", "date", "volume")
+#: The insider rows that are the company's own history (`insider_transactions.lineage_role`).
+CANONICAL_INSIDER_ROLES = ("canonical_predecessor", "canonical_current")
 
 
 def load_full_price_frames(
@@ -44,19 +46,20 @@ def load_source(
     log: logging.Logger,
     table: Table,
     universe: Sequence[str] | None = None,
+    where: dict[str, Any] | None = None,
 ) -> pd.DataFrame | None:
     """Load one source projected to its registry columns and scoped to the universe.
 
     The universe cut defines the cross-section rather than optimizing the read. Source
     tables can contain names outside the cube universe; excluding them at the read keeps
-    every ``_xs`` leg on the same ticker denominator as the other cube parts.
+    every ``_xs`` leg on the same ticker denominator as the other cube parts. `where` adds row filters.
     """
-    where: dict[str, list[str]] | None = None
+    filters: dict[str, Any] = dict(where or {})
     if universe is not None and table.ticker_col:
-        where = {table.ticker_col: sorted(set(map(str, universe)))}
+        filters[table.ticker_col] = sorted(set(map(str, universe)))
         _report_off_universe(store, log, table, universe)
 
-    frame = store.load(table, project=True, where=where, optional=True)
+    frame = store.load(table, project=True, where=filters or None, optional=True)
     if frame is None:
         log.warning("%s is absent or empty -> its features are skipped.", table.name)
     else:
@@ -166,3 +169,9 @@ def load_secondary_classes(
         len(bars),
     )
     return lines, bars
+
+
+def load_insider_transactions(store: DataStore, log: logging.Logger, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
+    """`insider_transactions` rows of the companies' own history: `lineage_role` canonical (predecessor or current).
+    Acquired-constituent rows and rows without a stamp are not read."""
+    return load_source(store, log, Tables.insider_transactions, universe, where={"lineage_role": list(CANONICAL_INSIDER_ROLES)})

@@ -3,8 +3,9 @@
 Both paths extract the same two canonical string frames from `INSIDER_FIELDS`: one row per
 transaction line (keyed by `row_sequence`) and one row per reporting owner. `build_insider_frame`
 types them with one numeric parser, one value rule and one owner rule; only the date formats
-differ by source. `screen_insider_rows` then resolves each row CIK-first; rejected rows are never
-stored, only summarised by `log_exclusions`.
+differ by source. `screen_insider_rows` then resolves each row CIK-first and stamps the kept rows'
+lineage (`stamp_lineage`: the filing's own symbol, the economic date and the role of the issuer CIK on
+that date); rejected rows, co-registrant rows included, are never stored, only summarised by `log_exclusions`.
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ from typing import Literal, NamedTuple
 import pandas as pd
 
 from src.data_extract.utils.common.identity import Identity
+from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, MergerBoundary
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik, pad_cik_series
 
 #: The `insider_transactions` row key.
 INSIDER_KEY = list(Tables.insider_transactions.pk)
@@ -70,13 +72,23 @@ INSIDER_COLUMNS = [
     "footnote_ids",
     "acceptance_datetime",
     "fetched_at",
+    "source_symbol",
+    "economic_date",
+    "lineage_role",
 ]
+#: The lineage stamp `stamp_lineage` adds and a re-stamp rewrites.
+LINEAGE_COLUMNS = ["source_symbol", "economic_date", "lineage_role"]
 FOOTNOTE_COLUMNS = ["accession_number", "footnote_id", "footnote_text"]
 #: The columns of a rejected in-scope row that the identity-exclusion warning reads.
 EXCLUSION_COLUMNS = ["accession_number", "transaction_code", "claimed_ticker", "reject_reason"]
 #: Reject reasons in warning order, and the transaction codes counted as open-market trades.
-REJECT_REASONS = ("entity_mismatch", "entity_not_in_universe", "no_issuer_cik")
+REJECT_REASONS = ("entity_mismatch", "entity_not_in_universe", "no_issuer_cik", "co_registrant")
 OPEN_MARKET_CODES = frozenset({"P", "S"})
+#: Boundary-day codes under the legal acquirer: received in the merger, and surrendered (disposed / other).
+RECEIVED_CODES = frozenset({"A"})
+SURRENDERED_CODES = frozenset({"D", "J"})
+#: Row identity of an amendment's original: same issuer, owner, table, security title and row.
+_ORIGINAL_KEY = ["_cik", "owner_cik", "security_type", "security_title", "row_sequence"]
 
 #: Yes/no source text (`AFF10B5ONE`, `aff10b5One`, relationship checkboxes); anything else is unknown.
 FLAG_TRUE = frozenset({"1", "true", "y", "yes"})
@@ -303,8 +315,8 @@ def repair_transaction_dates(df: pd.DataFrame) -> pd.DataFrame:
 
 def insider_verdicts(df: pd.DataFrame, universe: Collection[str], identity: Identity) -> pd.DataFrame:
     """Resolve each row by its issuer CIK (event policy: any CIK of the entity) and attach
-    `claimed_ticker`, the resolved `ticker` and
-    `reject_reason` (NA on kept rows)."""
+    `claimed_ticker`, the resolved `ticker` and `reject_reason` (NA on kept rows). A co-registrant
+    CIK's rows resolve to their company but are rejected (`co_registrant`)."""
     universe = set(universe)
     raw = df["issuer_cik"]
     unique_ciks = [value for value in pd.unique(raw) if value is not None and not pd.isna(value)]
@@ -317,6 +329,8 @@ def insider_verdicts(df: pd.DataFrame, universe: Collection[str], identity: Iden
     reason[~keep] = "entity_not_in_universe"
     reason[~keep & claimed.isin(universe)] = "entity_mismatch"
     reason[~keep & (raw.isna() | (raw.astype("string").str.strip() == ""))] = "no_issuer_cik"
+    co_registrant = raw.map({value: pad_cik(value) in identity.co_registrant_ciks for value in unique_ciks}).fillna(False).astype(bool)
+    reason[keep & co_registrant] = "co_registrant"
     return df.assign(claimed_ticker=claimed, ticker=resolved, reject_reason=reason)
 
 
@@ -330,7 +344,7 @@ def screen_insider_rows(df: pd.DataFrame, universe: Sequence[str], identity: Ide
         return df, pd.DataFrame(columns=EXCLUSION_COLUMNS)
     scored = insider_verdicts(repair_transaction_dates(df), universe, identity)
     keep, in_scope = _screen_masks(scored, universe)
-    return scored[keep], scored[~keep & in_scope]
+    return stamp_lineage(scored[keep], identity), scored[~keep & in_scope]
 
 
 def _screen_masks(scored: pd.DataFrame, universe: Sequence[str]) -> tuple[pd.Series, pd.Series]:
@@ -347,6 +361,117 @@ def screened_accessions(df_filing: pd.DataFrame, universe: Sequence[str], identi
     df_scored = insider_verdicts(df_filing.assign(ticker=_symbol_text(df_filing["ticker"])), universe, identity)
     keep, in_scope = _screen_masks(df_scored, universe)
     return set(df_scored.loc[keep | in_scope, "accession_number"])
+
+
+# --------------------------------------------------------------------------- #
+# Lineage stamp                                                                 #
+# --------------------------------------------------------------------------- #
+def _date_column(df: pd.DataFrame, name: str) -> pd.Series:
+    """Column `name` as datetimes, all NaT when the frame has none."""
+    if name not in df.columns:
+        return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    return pd.to_datetime(df[name], errors="coerce")
+
+
+def _text_column(df: pd.DataFrame, name: str) -> pd.Series:
+    """Column `name` as stripped upper-case text, NA when the frame has none."""
+    if name not in df.columns:
+        return pd.Series(pd.NA, index=df.index, dtype="string")
+    return df[name].astype("string").str.strip().str.upper()
+
+
+def _is_amendment(df: pd.DataFrame) -> pd.Series:
+    return _text_column(df, "document_type").str.endswith("/A").fillna(False).astype(bool)
+
+
+def _own_dates(df: pd.DataFrame) -> pd.Series:
+    """Each row's own economic date: Form 3 its period of report, every other form its transaction date."""
+    form3 = _text_column(df, "document_type").str.startswith("3").fillna(False).astype(bool)
+    return _date_column(df, "transaction_date").mask(form3, _date_column(df, "period_of_report"))
+
+
+def _keyed(df: pd.DataFrame) -> pd.DataFrame:
+    """The `_ORIGINAL_KEY` columns as text, the CIK padded and a missing column null."""
+    ciks = pad_cik_series(df["issuer_cik"]) if "issuer_cik" in df.columns else pd.Series("", index=df.index)
+    out = pd.DataFrame({"_cik": ciks.astype("string")}, index=df.index)
+    for column in _ORIGINAL_KEY[1:]:
+        out[column] = df[column].astype("string") if column in df.columns else pd.Series(pd.NA, index=df.index, dtype="string")
+    return out
+
+
+def _inherited_dates(df: pd.DataFrame, missing: pd.Series, pool: pd.DataFrame) -> pd.Series:
+    """For the amendment rows in `missing`, the own date of their original row in `pool`: not an amendment, filed
+    on the amendment's `original_submission_date`, same `_ORIGINAL_KEY`. NaT where none is found."""
+    out = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    if not missing.any() or pool.empty:
+        return out
+    originals = _keyed(pool).assign(_filed=_date_column(pool, "filing_date"), _date=_own_dates(pool))
+    originals = originals[~_is_amendment(pool) & originals["_date"].notna()].drop_duplicates([*_ORIGINAL_KEY, "_filed"])
+    wanted = _keyed(df[missing]).assign(_filed=_date_column(df[missing], "original_submission_date"), _row=df.index[missing])
+    joined = wanted.merge(originals, on=[*_ORIGINAL_KEY, "_filed"], how="inner").drop_duplicates("_row")
+    return out.fillna(joined.set_index("_row")["_date"].reindex(out.index))
+
+
+def economic_dates(df: pd.DataFrame, originals: pd.DataFrame | None = None) -> pd.Series:
+    """The date each row's economic event happened: Form 3 its period of report; Form 4/5 each row's
+    transaction date (a late Form 5 keeps its old date); an amendment without one inherits its original
+    row's (found in `df` or `originals`); otherwise the period of report, then the filing date."""
+    dates = _own_dates(df)
+    pool = df if originals is None or originals.empty else pd.concat([df, originals], ignore_index=True)
+    dates = dates.fillna(_inherited_dates(df, dates.isna() & _is_amendment(df), pool))
+    return dates.fillna(_date_column(df, "period_of_report")).fillna(_date_column(df, "transaction_date")).fillna(_date_column(df, "filing_date"))
+
+
+def _boundary_role(boundary: MergerBoundary, cik: str, symbol: object, code: object) -> str | None:
+    """A boundary-day row's role from the merger metadata, or None when no rule applies (the window decides).
+
+    Open-market trades count as before the completion unless the merger closed before the open.
+    """
+    if isinstance(symbol, str) and symbol.strip().upper() == boundary.acquired_symbol:
+        return ACQUIRED_CONSTITUENT
+    if cik == boundary.legal_acquirer_cik:
+        letter = code.strip().upper() if isinstance(code, str) else ""
+        if letter in RECEIVED_CODES:
+            return CANONICAL_CURRENT
+        if letter in SURRENDERED_CODES or (letter in OPEN_MARKET_CODES and boundary.after_close is not False):
+            return ACQUIRED_CONSTITUENT
+    if cik == boundary.accounting_predecessor_cik:
+        return CANONICAL_PREDECESSOR
+    return None
+
+
+def lineage_roles(df: pd.DataFrame, identity: Identity) -> pd.Series:
+    """Each row's `lineage_role` from its issuer CIK and `economic_date` (`Identity.lineage_role`), with the
+    boundary-day rules of the resolved ticker's mergers applied on the seam date."""
+    ciks = pad_cik_series(df["issuer_cik"])
+    days = pd.to_datetime(df["economic_date"], errors="coerce")
+    keys = pd.DataFrame({"cik": ciks.to_numpy(), "day": days.to_numpy()})
+    pairs = keys.drop_duplicates(ignore_index=True)
+    pairs["role"] = [identity.lineage_role(cik, day) for cik, day in zip(pairs["cik"], pairs["day"], strict=True)]
+    roles = pd.Series(keys.merge(pairs, on=["cik", "day"], how="left")["role"].to_numpy(dtype=object), index=df.index, dtype=object)
+    tickers = df["ticker"].astype("string") if "ticker" in df.columns else pd.Series(pd.NA, index=df.index, dtype="string")
+    codes = df["transaction_code"] if "transaction_code" in df.columns else pd.Series(None, index=df.index, dtype=object)
+    for ticker, boundaries in identity.merger_boundaries.items():
+        for boundary in boundaries:
+            on_day = (tickers.eq(ticker) & days.eq(boundary.seam_date)).fillna(False).astype(bool)
+            for index in df.index[on_day]:
+                role = _boundary_role(boundary, ciks[index], df.at[index, "source_symbol"], codes[index])
+                if role is not None:
+                    roles[index] = role
+    return roles
+
+
+def stamp_lineage(df: pd.DataFrame, identity: Identity, originals: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Add `source_symbol` (the filing's own trading symbol: `claimed_ticker` once the verdict has run),
+    `economic_date` and `lineage_role` to resolved rows."""
+    if df.empty:
+        return df.assign(**{column: pd.Series(dtype=object) for column in LINEAGE_COLUMNS})
+    if "claimed_ticker" in df.columns:
+        symbol = _symbol_text(df["claimed_ticker"])
+    else:
+        symbol = df["source_symbol"] if "source_symbol" in df.columns else pd.Series(pd.NA, index=df.index, dtype="string")
+    df_stamped = df.assign(source_symbol=symbol, economic_date=economic_dates(df, originals))
+    return df_stamped.assign(lineage_role=lineage_roles(df_stamped, identity))
 
 
 def accession_batches(accessions: Sequence[str]) -> Iterator[list[str]]:

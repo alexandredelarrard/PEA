@@ -3,7 +3,8 @@
 `entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
 its dated symbol intervals. `filing_scope`, `ticker_for_cik`, `ticker_for_symbol` and `tape_interval` answer
 from those rows; `tickers_for_ciks` applies `ticker_for_cik` to whole frames for the bulk data sets. `security_on`
-answers the market tapes from `security_master` (security grain: CUSIP, class, role).
+answers the market tapes from `security_master` (security grain: CUSIP, class, role); `lineage_role` dates a CIK's
+filings against its consolidating windows.
 `owns(ticker, cik) == (entity_of(cik) == universe_entity(ticker))`. Invariant violations raise at load, never
 per row. An unknown CIK is its own singleton entity `E{cik}`.
 """
@@ -36,7 +37,16 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
-from src.data_extract.utils.common.security_master import squash
+from src.data_extract.utils.common.security_master import (
+    ACQUIRED_CONSTITUENT,
+    CANONICAL_CURRENT,
+    CANONICAL_PREDECESSOR,
+    MergerBoundary,
+    co_registrant_ciks,
+    load_security_manual,
+    merger_boundaries,
+    squash,
+)
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_market_symbol
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -190,6 +200,10 @@ class Identity:
     securities_by_cusip: Mapping[str, tuple[SecurityInterval, ...]] = field(default_factory=dict)
     #: (source, squashed source symbol) -> its dated `security_master` intervals.
     securities_by_symbol: Mapping[tuple[str, str], tuple[SecurityInterval, ...]] = field(default_factory=dict)
+    #: Subsidiary CIKs filing event forms under the parent's symbol; their rows are not stored (D-Q2-1).
+    co_registrant_ciks: frozenset[str] = frozenset()
+    #: universe ticker -> the boundary days of its mergers (insider lineage).
+    merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
 
     # entity_lineage
 
@@ -311,6 +325,33 @@ class Identity:
             return None
         return hits[0]
 
+    def lineage_role(self, cik, day) -> str | None:
+        """The role of `cik`'s filings dated `day`, or None for a CIK of no universe entity, a co-registrant, or no date.
+
+        A window CIK is canonical on the dates its declared windows hold (current for the roster CIK, predecessor
+        otherwise). Outside them it is `acquired_constituent` before the seam of a merger it is the legal acquirer of;
+        otherwise the entity's window owning `day` decides (a re-registered company's late filings stay its own
+        history). An event-only CIK, or a date no window holds, is `acquired_constituent`.
+        """
+        key = pad_cik(cik)
+        stamp = _as_timestamp(day)
+        entity = self.entity_of(key)
+        ticker = self.ticker_by_entity.get(entity)
+        if stamp is None or ticker is None or key in self.co_registrant_ciks or key not in self.event_ciks_by_entity.get(entity, frozenset()):
+            return None
+        windows = self.windows_by_entity.get(entity, ())
+        roster = self.roster_cik.get(ticker)
+        if any(window.cik == key and window.owns(stamp) for window in windows):
+            return CANONICAL_CURRENT if key == roster else CANONICAL_PREDECESSOR
+        if not any(window.cik == key for window in windows):
+            return ACQUIRED_CONSTITUENT
+        if any(b.legal_acquirer_cik == key and stamp < b.seam_date for b in self.merger_boundaries.get(ticker, ())):
+            return ACQUIRED_CONSTITUENT
+        owner = next((window.cik for window in windows if window.owns(stamp)), None)
+        if owner is None:
+            return ACQUIRED_CONSTITUENT
+        return CANONICAL_CURRENT if owner == roster else CANONICAL_PREDECESSOR
+
     def owns(self, ticker: str, cik, on_date=None) -> bool:
         """Is this CIK's filing about this universe ticker's company?
 
@@ -382,6 +423,8 @@ def build_identity(
     roster: pd.DataFrame,
     redundant_symbols: frozenset[str] | None = None,
     master: pd.DataFrame | None = None,
+    co_registrant_ciks: Collection[str] = (),
+    mergers: Collection[MergerBoundary] = (),
 ) -> Identity:
     """Validate the tables and return the frozen resolver; pure, no DB or config reads.
 
@@ -408,6 +451,8 @@ def build_identity(
         scope_changed_at_by_entity=_scope_changed_at(lineage, symbols=False),
         symbols_changed_at_by_entity=_scope_changed_at(lineage, symbols=True),
         **_security_maps(master),
+        co_registrant_ciks=frozenset(pad_cik(cik) for cik in co_registrant_ciks),
+        merger_boundaries=_by_ticker(mergers),
     )
     _log_identity(identity)
     return identity
@@ -600,6 +645,14 @@ def _security_maps(master: pd.DataFrame | None) -> dict[str, Any]:
     }
 
 
+def _by_ticker(mergers: Collection[MergerBoundary]) -> dict[str, tuple[MergerBoundary, ...]]:
+    """`{ticker: its merger boundaries}`."""
+    out: dict[str, list[MergerBoundary]] = {}
+    for boundary in mergers:
+        out.setdefault(boundary.ticker, []).append(boundary)
+    return {ticker: tuple(values) for ticker, values in out.items()}
+
+
 def _scope_changed_at(lineage: pd.DataFrame, *, symbols: bool) -> dict[str, pd.Timestamp]:
     """`{entity_id: latest scope_changed_at}` over its symbol rows (`symbols`) or its CIK rows."""
     if "scope_changed_at" not in lineage.columns:
@@ -636,13 +689,22 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(TENURE_SOURCES)})
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     master = context.store.load(Tables.security_master, project=True, optional=True)
+    evidence = context.store.load(
+        Tables.symbol_tenure,
+        columns=["issuer_cik", "source", "valid_from", "valid_to"],
+        where={"source": [FORM345_SOURCE, DEI_SOURCE]},
+        optional=True,
+    )
     assert lineage is not None and tenure is not None and roster is not None
+    manual = load_security_manual(str(context.config_dir))
     identity = build_identity(
         lineage=lineage,
         tenure=tenure,
         roster=roster,
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
         master=master,
+        co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
+        mergers=merger_boundaries(manual),
     )
     _CACHE[context] = identity
     return identity

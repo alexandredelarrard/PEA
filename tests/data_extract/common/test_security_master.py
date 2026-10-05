@@ -965,3 +965,117 @@ def test_an_sec_listing_is_class_evidence_for_a_class_spelling_only():
     assert mkcv["market_symbol"].iloc[0] == "MKC-V"
     print("\n=== SANITY CHECK: SEC listing as class evidence ===")
     print("  MKC-V (class spelling) is a secondary class; FITBP (a preferred the SEC file lists without a marker) stays excluded")
+
+
+# --------------------------------------------------------------------------- Q2n: common lines run back to their listing
+
+VRT = _lineage(
+    _row("VRT", "0001674101", "0001674101", "cik_window", sources="roster"),
+    _row("VRT", "0001674101", "0001674101", "symbol", "GSAH", "2018-06-07", "2019-11-06", sources="dei,form345"),
+    _row("VRT", "0001674101", "0001674101", "symbol", "VRT", "2020-02-11", sources="dei,form345,roster"),
+)
+VRT_OBS = pd.concat(
+    [
+        _obs("36255F102", "GSAH", "GS ACQUISITION HLDGS CORP", "2018-08-01", "2020-01-31"),
+        _obs("92537N108", "VRT", "VERTIV HLDG CO CL A (DE)", "2021-01-22", "2022-12-28"),
+    ],
+    ignore_index=True,
+)
+EG = _lineage(
+    _row("EG", "0001095073", "0001095073", "cik_window", sources="roster"),
+    _row("EG", "0001095073", "0001095073", "symbol", "RE", "2006-01-03", "2023-07-10", sources="manual"),
+    _row("EG", "0001095073", "0001095073", "symbol", "EG", "2023-07-10", sources="manual,roster"),
+)
+EG_OBS = pd.concat(
+    [
+        _obs("G3223R108", "RE", "EVEREST RE GP LTD(BERM)HLDG CO", "2022-01-05", "2023-07-03"),
+        _obs("G3223R108", "EG", "EVEREST GROUP LTD SHS (BMU)", "2023-07-21", "2024-06-26"),
+    ],
+    ignore_index=True,
+)
+
+
+def test_a_canonical_line_runs_back_over_its_finra_days_to_its_listing():
+    presence = pd.concat(
+        [_finra("VRT", "2020-02-07", "2022-12-30", freq="B"), _finra("GSAH", "2018-06-11", "2020-02-06", freq="B")], ignore_index=True
+    )
+    build = _derive(VRT_OBS, VRT, _roster(("VRT", "0001674101")), finra_presence=presence)
+    vrt = _rows(build, "92537N108").sort_values("valid_from")
+    assert vrt["lineage_role"].eq("canonical_current").all(), vrt
+    assert vrt["valid_from"].min() == pd.Timestamp("2020-02-07"), vrt
+    assert vrt["evidence"].str.contains("FINRA from 2020-02-07").all()
+    assert _canonical_overlaps(build, "VRT") == []
+    eg = _derive(
+        EG_OBS,
+        EG,
+        _roster(("EG", "0001095073")),
+        finra_presence=pd.concat([_finra("RE", "2022-01-03", "2023-07-07", freq="B"), _finra("EG", "2023-07-10", "2024-06-28", freq="B")]),
+    )
+    renamed = _rows(eg, "G3223R108", "EG")
+    assert renamed["lineage_role"].eq("canonical_current").all() and renamed["valid_from"].min() == pd.Timestamp("2023-07-10"), renamed
+    assert _canonical_overlaps(eg, "EG") == []
+    print("\n=== SANITY CHECK: canonical lines from their listing ===")
+    print("  VRT (first fail 2021-01-20) is canonical from its first FINRA day 2020-02-07; EG (renamed RE, first fail 2023-07-19) from 2023-07-10")
+
+
+def test_a_canonical_line_never_runs_back_into_another_use_of_its_symbol():
+    alcoa = _lineage(
+        _row("AA", "0001675149", "0001675149", "cik_window", sources="roster"),
+        _row("AA", "0001675149", "0001675149", "symbol", "AA", "2016-11-01", sources="dei,form345,roster"),
+    )
+    presence = _finra("AA", "2016-01-04", "2017-12-29", freq="B")
+    old_issuer = _obs("013817101", "AA", "ALCOA INC", "2016-01-06", "2016-10-26")  # old Alcoa: another issuer, not in the lineage
+    build = _derive(
+        pd.concat([old_issuer, _obs("013872106", "AA", "ALCOA CORP", "2016-11-16", "2017-12-27")]),
+        alcoa,
+        _roster(("AA", "0001675149")),
+        finra_presence=presence,
+    )
+    assert _rows(build, "013872106")["valid_from"].min() == pd.Timestamp("2016-11-01"), _rows(build, "013872106")
+    seam = pd.concat(
+        [_obs("013817101", "AA", "ALCOA INC", "2016-01-06", "2016-11-16"), _obs("013872106", "AA", "ALCOA CORP", "2016-11-17", "2017-12-27")]
+    )
+    tight = _rows(_derive(seam, alcoa, _roster(("AA", "0001675149")), finra_presence=presence), "013872106")
+    assert tight["valid_from"].min() == pd.Timestamp("2016-11-14") and not tight["evidence"].str.contains("FINRA from").any(), tight
+    no_interval = _derive(EG_OBS, EG.iloc[:2], _roster(("EG", "0001095073")), finra_presence=_finra("EG", "2023-07-10", "2024-06-28", freq="B"))
+    assert _rows(no_interval, "G3223R108", "EG")["valid_from"].min() == pd.Timestamp("2023-07-19")
+    manual = sm.parse_security_manual(
+        {
+            "market_boundaries": [
+                {
+                    "ticker": "VRT",
+                    "cusip": "92537N108",
+                    "issuer_cik": "0001674101",
+                    "role": "canonical_current",
+                    "valid_from": "2020-06-01",
+                    "source": "test",
+                }
+            ]
+        }
+    )
+    bounded = _rows(
+        _derive(VRT_OBS, VRT, _roster(("VRT", "0001674101")), manual, finra_presence=_finra("VRT", "2020-02-07", "2022-12-30", freq="B")), "92537N108"
+    )
+    assert bounded["valid_from"].min() == pd.Timestamp("2020-06-01"), bounded
+    print("\n=== SANITY CHECK: the run back is bounded ===")
+    print(
+        "  new Alcoa stops at its own AA interval (2016-11-01), not over old Alcoa's last days; no run back when the old CUSIP fails the day before;"
+        " none without a lineage interval of the symbol; a manual start bounds it"
+    )
+
+
+def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path):
+    obs = EG_OBS.assign(trade_date=sm.trade_dates(EG_OBS["date"]), fails_quantity=1000.0)
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver_security,
+        obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
+    )
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["EG"], "cik": ["0001095073"]}))
+    finra = _finra("EG", "2023-07-10", "2024-06-28", freq="B").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
+    sqlite_store.save(Tables.sec_short_volume_security, finra)
+    context = SimpleNamespace(
+        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config()
+    )
+    rows = sm.build_security_master(context, EG, str(CONFIG_DIR), built_at=BUILT_AT)
+    assert rows[rows["source_symbol"].eq("EG")]["valid_from"].min() == pd.Timestamp("2023-07-10")
+    print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of a common symbol (EG) reach the derivation: the line starts at 2023-07-10")

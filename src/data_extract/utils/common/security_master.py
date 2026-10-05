@@ -493,11 +493,29 @@ def _finra_days(presence: pd.DataFrame | None) -> dict[str, Any]:
     return {str(key): group.drop_duplicates().sort_values().to_numpy() for key, group in frame.groupby("key")["date"]}
 
 
+def _is_common_line(descriptions: tuple[str, ...], symbol: str) -> bool:
+    """Not a transition placeholder, and no non-common kind in any description or in the symbol."""
+    return not is_placeholder(symbol) and not any(non_common_kind(d, symbol) for d in descriptions)
+
+
 def _is_class_line(descriptions: tuple[str, ...], symbol: str, finra_classes: frozenset[str]) -> bool:
     """A common class by positive evidence: a class letter in a description or FINRA `X/Y` symbology, no non-common kind."""
-    if is_placeholder(symbol) or any(non_common_kind(d, symbol) for d in descriptions):
+    if not _is_common_line(descriptions, symbol):
         return False
     return any(class_letter(d) for d in descriptions) or squash(symbol) in finra_classes
+
+
+def _symbol_starts(lines: pd.DataFrame, issuers: Mapping[str, _Issuer], view: _Lineage) -> list[pd.Timestamp | None]:
+    """Start of the issuer entity's tape interval of each line's symbol that holds the line's first fail; None without one."""
+    intervals: dict[tuple[str, str], list[Span]] = {}
+    for key, cik, start, end in view.tape[["key", "cik", "valid_from", "valid_to"]].to_numpy().tolist():
+        intervals.setdefault((view.entity(cik), key), []).append((_NEAR if pd.isna(start) else start, end))
+    out: list[pd.Timestamp | None] = []
+    for cusip, key, first in lines[["cusip", "key", "first"]].to_numpy().tolist():
+        issuer = issuers.get(cusip)
+        spans = intervals.get((view.entity(issuer.primary), key), []) if issuer else []
+        out.append(next((start for start, end in spans if start <= first < end), None))
+    return out
 
 
 def _chain(days: Any, anchor: pd.Timestamp, stop: pd.Timestamp, forward: bool) -> pd.Timestamp:
@@ -512,10 +530,17 @@ def _chain(days: Any, anchor: pd.Timestamp, stop: pd.Timestamp, forward: bool) -
     return reached
 
 
-def _extend_by_trading(lines: pd.DataFrame, finra_days: Mapping[str, Any], finra_classes: frozenset[str], manual: SecurityManual) -> pd.DataFrame:
+def _extend_by_trading(
+    lines: pd.DataFrame,
+    finra_days: Mapping[str, Any],
+    finra_classes: frozenset[str],
+    manual: SecurityManual,
+    symbol_starts: list[pd.Timestamp | None],
+) -> pd.DataFrame:
     """A class line runs over the FINRA days of its symbol around its fails: on past its last fail, back before its first.
+    Another common line only runs back, and no earlier than its issuer's tape interval of the symbol (`symbol_starts`).
 
-    A run stops at a gap longer than `FINRA_MAX_GAP`, where another CUSIP of the symbol trades, and at a manual end.
+    A run stops at a gap longer than `FINRA_MAX_GAP`, where another CUSIP of the symbol trades, and at a manual bound.
     """
     out = lines.copy()
     out["start"], out["finra_from"], out["finra_to"] = out["first"], pd.NaT, pd.NaT
@@ -523,19 +548,23 @@ def _extend_by_trading(lines: pd.DataFrame, finra_days: Mapping[str, Any], finra
         return out
     lives = out.groupby("key")[["cusip", "first", "last"]].apply(lambda g: list(zip(g["cusip"], g["first"], g["last"], strict=True))).to_dict()
     manual_ends = manual.boundaries.dropna(subset=["valid_to"]).groupby("cusip")["valid_to"].agg(list).to_dict()
-    for i, line in zip(out.index, _records(out), strict=True):
+    manual_starts = manual.boundaries.dropna(subset=["valid_from"]).groupby("cusip")["valid_from"].agg(list).to_dict()
+    for i, line, symbol_from in zip(out.index, _records(out), symbol_starts, strict=True):
         days = finra_days.get(line.key)
-        if days is None or not _is_class_line(line.descriptions, line.source_symbol, finra_classes):
+        classed = _is_class_line(line.descriptions, line.source_symbol, finra_classes)
+        if days is None or not (classed or (symbol_from is not None and _is_common_line(line.descriptions, line.source_symbol))):
             continue
         others = [(first, last) for cusip, first, last in lives.get(line.key, []) if cusip != line.cusip]
-        if line.end < _FAR:
+        if classed and line.end < _FAR:
             stops = [max(first, line.last + pd.Timedelta(days=1)) for first, last in others if last > line.last]
             stops += [end for end in manual_ends.get(line.cusip, []) if end > line.last]
             last = _chain(days, line.last, min(stops, default=_FAR), forward=True)
             if last > line.last and last + pd.Timedelta(days=1) > line.end:
                 out.at[i, "end"], out.at[i, "finra_to"] = last + pd.Timedelta(days=1), last
-        floor = max((min(last + pd.Timedelta(days=1), line.first) for first, last in others if first < line.first), default=_NEAR)
-        first = _chain(days, line.first, floor, forward=False)
+        floors = [min(last + pd.Timedelta(days=1), line.first) for first, last in others if first < line.first]
+        floors += [start for start in manual_starts.get(line.cusip, []) if start <= line.first]
+        floors += [] if classed else [symbol_from]
+        first = _chain(days, line.first, max(floors, default=_NEAR), forward=False)
         if first < line.first:
             out.at[i, "start"], out.at[i, "finra_from"] = first, first
     return out
@@ -827,7 +856,7 @@ def _cusip_facts(
             for r in _records(rows)
         ]
         out.append(
-            _Cusip(cusip, issuer, company, group["first"].min(), max(group["end"]), kind, letter, priority, evidence, man),
+            _Cusip(cusip, issuer, company, group["start"].min(), max(group["end"]), kind, letter, priority, evidence, man),
         )
     return out
 
@@ -1206,7 +1235,7 @@ def derive_security_master(
 ) -> MasterBuild:
     """Pure derivation of `security_master`; deterministic for fixed inputs and `built_at`, no DB, no network.
 
-    `finra_presence` (`source_symbol`, `date`) are stored RegSHO days: trading evidence a class line runs over.
+    `finra_presence` (`source_symbol`, `date`) are stored RegSHO days: trading evidence a line runs over.
     """
     obs = _prepare(observations)
     view = _lineage_view(lineage, roster)
@@ -1228,7 +1257,7 @@ def derive_security_master(
     issuers = _issuers(spans, _votes(obs[["cusip", "key", "trade_date"]].drop_duplicates(), view.tape), view, manual, flags)
     periods = sorted(set(obs["period"]))
     lines["end"] = _line_ends(lines, frozenset(periods[-CURRENT_PERIODS:]), frozenset(sec_symbols), {c: v.primary for c, v in issuers.items()})
-    lines = _extend_by_trading(lines, _finra_days(finra_presence), finra, manual)
+    lines = _extend_by_trading(lines, _finra_days(finra_presence), finra, manual, _symbol_starts(lines, issuers, view))
     lines = _extend_to_manual_end(lines, manual)
     listed_classes = frozenset(key for key, spelled in sec_symbols.items() if _LISTED_CLASS.match(spelled))
     facts = _cusip_facts(lines, issuers, view, manual, listed_classes, finra)
@@ -1306,12 +1335,9 @@ def _observation_columns() -> list[str]:
     return ["date", "trade_date", "cusip", "source_symbol", "description", "price", "period"]
 
 
-def _finra_presence(context: Context, observations: pd.DataFrame, spellings: list[str]) -> pd.DataFrame | None:
-    """Stored RegSHO days of the FTD class symbols: the trading evidence that keeps a thin class line open."""
-    described = observations[["source_symbol", "description"]].drop_duplicates()
-    keys = {squash(s) for s, d in zip(described["source_symbol"], described["description"], strict=True) if class_letter(d)}
-    keys |= {squash(s) for s in spellings if "/" in s}
-    wanted = sorted(s for s in spellings if s == s.upper() and squash(s) in keys)
+def _finra_presence(context: Context, spellings: list[str]) -> pd.DataFrame | None:
+    """Stored RegSHO days of the unmarked FINRA spellings: the trading evidence a line runs over."""
+    wanted = sorted(s for s in spellings if s == s.upper())
     if not wanted:
         return None
     return context.store.load(Tables.sec_short_volume_security, columns=["source_symbol", "date"], where={"source_symbol": wanted}, optional=True)
@@ -1347,7 +1373,7 @@ def build_security_master(
         built_at=built_at or pd.Timestamp.now().floor("s"),
         sec_tickers=sec_tickers,
         finra_symbols=[symbol for symbol in finra if re.fullmatch(r"[A-Z]+/[A-Z]", symbol)],
-        finra_presence=_finra_presence(context, observations, finra),
+        finra_presence=_finra_presence(context, finra),
         co_registrant_ciks=co_registrants,
         existing=existing,
     )

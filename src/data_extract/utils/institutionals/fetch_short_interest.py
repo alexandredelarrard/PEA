@@ -9,7 +9,8 @@ One day file covers every symbol, so a run reads the union of the sessions any u
 inside the stored span on which no key has a row. A day with rows for some keys was read; `repair`
 re-reads those per-key gaps once.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
-`full` mode therefore preserves stored dates the source no longer serves.
+`full` mode therefore preserves stored dates the source no longer serves. Only an unscoped `full` run
+replaces the table; a scoped one (`-t`) re-reads its tickers' days and upserts them, touching no other key.
 Missing the Lit exchange short volumes from NYSE / Nasdaq and CBOE equities.
 """
 
@@ -36,6 +37,7 @@ from src.data_extract.utils.common.resume import document_floor, series_windows,
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.errors import TableEmptyError
 from src.data_store.schema import Tables
+from src.utils.universe import load_universe_tickers
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 
@@ -197,7 +199,8 @@ def fetch_short_interest(
     as_of: pd.Timestamp | None = None,
     repair: bool = False,
 ) -> None:
-    """Resolve RegSHO point-in-time; full mode preserves unrecoverable stored dates; `repair` re-reads per-key gap days."""
+    """Resolve RegSHO point-in-time; an unscoped full run replaces the table and preserves unrecoverable stored dates,
+    a scoped one upserts its own tickers only; `repair` re-reads per-key gap days."""
 
     universe = frozenset(str(ticker).strip().upper() for ticker in tickers)
     days = _plan_days(context, sorted(universe), years_history, full, as_of, repair=repair)
@@ -231,7 +234,8 @@ def fetch_short_interest(
     df_raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
     df_fresh, df_unresolved = _canonicalise_regsho(context, df_raw, resolver, universe)
 
-    if not full:
+    scoped = full and bool(set(load_universe_tickers(context)) - universe)
+    if not full or scoped:
         context.store.save(Tables.short_interest, df_fresh)
         logger.info(f"Saved {len(df_fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
         logger.info(f"RegSHO: {len(df_unresolved)} unresolved raw row(s) excluded; {len(failed_days)} day file(s) not served")

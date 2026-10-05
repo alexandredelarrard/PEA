@@ -339,3 +339,37 @@ def test_full_refresh_all_source_failures_abort_without_erasing_history(sqlite_s
     print("\n=== SANITY CHECK: RegSHO all-403 safety gate ===")
     print("  zero reproducible days -> abort before replace; stored AAA row survives")
     print("  OK: a provider outage cannot be mistaken for an empty market")
+
+
+def test_a_scoped_full_refresh_rewrites_only_its_own_tickers(sqlite_store, monkeypatch):
+    identity = _identity()
+    context = SimpleNamespace(
+        store=sqlite_store, log=logging.getLogger("test.regsho"), config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))
+    )
+    _seed_universe(sqlite_store, ["AAA", "FISV", "TT", "IR", "WTW"], {})
+    stored = pd.DataFrame(
+        {
+            "ticker": ["IR", "TT", "AAA", "FISV", "AAA"],
+            "date": pd.to_datetime(["2020-03-03", "2020-03-03", "2020-03-03", "2020-03-03", "2015-01-02"]),
+            "short_volume": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "total_volume": [10.0, 20.0, 30.0, 40.0, 50.0],
+        }
+    )
+    sqlite_store.replace(Tables.short_interest, stored)
+    monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2020-03-06")))
+    monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2020-03-02", "2020-03-06"))
+    monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: _regsho(day.strftime("%Y%m%d"), [("AAA", 7, 70), ("TT", 9, 90)]))
+
+    si.fetch_short_interest(cast(Any, context), ["AAA"], years_history=10, pause=0.0, full=True, identity=identity)
+    after = sqlite_store.load(Tables.short_interest)
+    after["date"] = pd.to_datetime(after["date"])
+    others_before = stored[stored.ticker != "AAA"].sort_values(["ticker", "date"]).reset_index(drop=True)
+    others_after = after[after.ticker != "AAA"][others_before.columns].sort_values(["ticker", "date"]).reset_index(drop=True)
+    aaa = after[after.ticker == "AAA"].set_index("date")
+
+    pd.testing.assert_frame_equal(others_before, others_after, check_dtype=False)
+    assert len(aaa) == 6 and (aaa.loc[pd.bdate_range("2020-03-02", "2020-03-06"), "short_volume"] == 7.0).all()
+    assert aaa.loc[pd.Timestamp("2015-01-02"), "short_volume"] == 5.0  # a stored date the source no longer serves
+    print("\n=== SANITY CHECK: RegSHO scoped full refresh ===")
+    print(f"  -t AAA -F: IR, TT and FISV keep their {len(others_before)} rows untouched; AAA's 5 served days are")
+    print("  re-read (short_volume 7) and its unserved 2015 row survives. Only an unscoped -F replaces the table.")

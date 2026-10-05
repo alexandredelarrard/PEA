@@ -77,7 +77,7 @@ from src.data_aggregate.utils.institutionals.holdings_clean import clean_holding
 from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
-from src.utils.superinvestor_roster import filer_ciks, to_manager_books
+from src.utils.superinvestor_roster import config_dir_of, filer_ciks, to_manager_books
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) 
 
     Returns None when the roster resolves to no manager or the table is not populated.
     """
-    config_dir = getattr(context, "config_dir", None)
+    config_dir = config_dir_of(context)
     ciks = sorted(filer_ciks(_selection_ciks(roster), config_dir))
     if not ciks:
         return None

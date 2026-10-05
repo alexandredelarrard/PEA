@@ -160,7 +160,8 @@ def test_manager_identity_across_succession(sqlite_store, tmp_path):
     assert roster_as_of(ctx, "2015-12-31") == {_AM_OLD}
     assert roster_as_of(ctx, "2016-03-31") == {_AM_OLD, "0001067983"}
     assert roster_map_as_of(ctx, "2016-03-31")[_AM_OLD] == "David Tepper - Appaloosa"
-    assert sr.manager_id(_AM_NEW, config_dir) == _AM_OLD and sr.manager_id("1067983", config_dir) == "0001067983"
+    overrides = sr.load_superinvestor_overrides(config_dir)
+    assert overrides.manager_id(_AM_NEW) == _AM_OLD and overrides.manager_id("1067983") == "0001067983"
 
     books = pd.DataFrame(
         {
@@ -224,7 +225,7 @@ def test_chain_with_returning_filer(tmp_path):
         _OMEGA,
         _COOPERMAN,
     ]
-    assert sr.manager_id(_OMEGA, config_dir) == _COOPERMAN and sr.filer_ciks({_OMEGA}, config_dir) == {_COOPERMAN, _OMEGA}
+    assert overrides.manager_id(_OMEGA) == _COOPERMAN and sr.filer_ciks({_OMEGA}, config_dir) == {_COOPERMAN, _OMEGA}
     books = pd.DataFrame(
         {
             "cik": [_COOPERMAN, _COOPERMAN, _OMEGA, _OMEGA, "898382", _OMEGA],

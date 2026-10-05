@@ -17,6 +17,8 @@ from src.utils.db import get_engine
 from src.utils.seed import set_seed
 from src.utils.ssl_setup import configure_corporate_ca, corporate_session
 
+logger = logging.getLogger(__name__)
+
 os.environ["LC_ALL"] = "C"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
@@ -177,9 +179,8 @@ class Context:
     @property
     def sec_session(self) -> requests.Session:
         """One `requests.Session` with the SEC User-Agent pre-set on `session.headers`,
-        shared by `sec_io.sec_get` and `bulk_cache.ensure_zip`. Replaces a header dict
-        rebuilt -- and `SEC_USER_AGENT` re-read from the env -- on every single request, and
-        gives the multi-hundred-MB bulk-ZIP downloads connection reuse."""
+        shared by `sec_io.sec_get` and `bulk_cache.ensure_zip`, so the bulk-ZIP downloads
+        reuse one connection."""
         if self._sec_session is None:
             session = requests.Session()
             session.headers.update(
@@ -192,7 +193,7 @@ class Context:
         return self._sec_session
 
 
-def get_config_context(config_path: str, use_cache: bool, save: bool):
+def get_config_context(config_path: str, use_cache: bool, save: bool) -> tuple[DictConfig, Context]:
 
     config_dir = Path(config_path).resolve()
     try:
@@ -200,7 +201,7 @@ def get_config_context(config_path: str, use_cache: bool, save: bool):
         dictConfig(cast(dict[str, Any], OmegaConf.to_container(config.logging)))
         set_seed(config)
     except FileNotFoundError:
-        print(f"configuration file {config_path} not found ", file=sys.stderr)
+        logger.error(f"configuration file {config_path} not found ")
         sys.exit(1)
 
     context = Context(config=config, use_cache=use_cache, save=save, config_dir=config_dir)

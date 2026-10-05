@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Engine, MetaData, Table, false, func, inspect, select, text, tuple_
+from sqlalchemy import Engine, MetaData, Select, Table, false, func, inspect, select, text, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -196,18 +196,18 @@ def _predicate(column, value):
 
 
 def build_select(
-    tbl,
-    columns=None,
-    where=None,
-    since=None,
-    until=None,
+    tbl: Table,
+    columns: Sequence[str] | None = None,
+    where: dict[str, Any] | None = None,
+    since: Any = None,
+    until: Any = None,
     date_col: str | None = None,
-    order_by=None,
+    order_by: str | Sequence[str] | None = None,
     descending: bool = False,
     limit: int | None = None,
     distinct_on: str | None = None,
     exclude: tuple[str, object] | None = None,
-):
+) -> Select[Any]:
     """The one query builder every read goes through. `where`, `since` and `until` are ANDed.
 
     `exclude` = (column, value) drops the rows holding that value (NULLs kept); a table without
@@ -259,7 +259,7 @@ def read_table(
     limit: int | None = None,
     where: dict[str, object] | None = None,
     exclude: tuple[str, object] | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """Execute a built SELECT and return the frame. See `build_select` for the filters."""
     tbl = _reflect(engine, name)
@@ -457,7 +457,7 @@ class DataStore:
                 continue
         return out
 
-    def key_stats(self, table, key_col: str, date_col: str | None = None, where: dict[str, object] | None = None) -> pd.DataFrame:
+    def key_stats(self, table: SchemaTable | str, key_col: str, date_col: str | None = None, where: dict[str, object] | None = None) -> pd.DataFrame:
         """Per-key `first`, `last` and row count `n` of `date_col`, in one `GROUP BY` read.
 
         Returns columns `key, first, last, n` with the dates as midnight Timestamps. Marker rows
@@ -497,7 +497,7 @@ class DataStore:
     # -- reads ------------------------------------------------------------- #
     def load(
         self,
-        table,
+        table: SchemaTable | str,
         columns: Sequence[str] | None = None,
         limit: int | None = None,
         where: dict[str, Any] | None = None,
@@ -506,22 +506,19 @@ class DataStore:
         since: object = None,
         until: object = None,
         date_col: str | None = None,
-        order_by=None,
+        order_by: str | Sequence[str] | None = None,
         descending: bool = False,
         optional: bool = False,
         markers: bool = False,
     ) -> pd.DataFrame | None:
         """Read `table`, filtered server-side.
 
-        `where` is equality / IN / IS NULL / `NOT_NULL`; `since`/`until` bound the date
-        column; `project=True` uses the table's declared `read_columns`. Empty-filing marker
-        rows (`Table.empty_marker`) are dropped unless `markers=True`.
+        `where` is equality / IN / IS NULL / `NOT_NULL`; `since`/`until` bound the date column;
+        `project=True` uses the table's declared `read_columns`. Empty-filing marker rows
+        (`Table.empty_marker`) are dropped unless `markers=True`.
 
-        RAISES on a missing or empty result -- an empty read is nearly always a real fault and
-        should stop the run here, not surface later as an empty feature panel. Never returns a
-        fabricated frame. `optional=True` returns None instead, for reads that are genuinely
-        allowed to have no data yet (a fetcher's resume check on a cold DB); ~48 call sites in
-        `src/` rely on it, so branch on `is None` there rather than on `.empty`.
+        RAISES on a missing or empty result, since an empty read is nearly always a real fault.
+        `optional=True` returns None instead, for reads allowed to have no data yet: branch on `is None`.
         """
         name = name_of(table)
         cols = self._resolve_columns(table, columns, project)
@@ -553,7 +550,7 @@ class DataStore:
 
     def iter_load(
         self,
-        table,
+        table: SchemaTable | str,
         *,
         chunksize: int = 200_000,
         columns: Sequence[str] | None = None,
@@ -566,14 +563,11 @@ class DataStore:
     ) -> Iterator[pd.DataFrame]:
         """Stream `table` in row chunks so a multi-GB table never fully materializes.
 
-        Marker rows are dropped unless `markers=True`, as in `load`.
+        Needs a projection (`columns=` or `project=True`) and reads with `stream_results=True`, without
+        which psycopg2 buffers the whole result client-side. Marker rows are dropped unless
+        `markers=True`, as in `load`.
 
-        Both parts are required: a PROJECTION (mandatory -- `cube` is 574 columns, its readers
-        need ~50) and `stream_results=True`, without which psycopg2 buffers the whole result
-        client-side before pandas chunks it, making `chunksize` useless for peak memory.
-
-        Callers MUST exhaust or close the iterator -- it holds a pooled connection for its
-        lifetime, so breaking out early leaks it.
+        Callers MUST exhaust or close the iterator: it holds a pooled connection for its lifetime.
         """
         name = name_of(table)
         cols = self._resolve_columns(table, columns, project)
@@ -610,7 +604,7 @@ class DataStore:
             return None
 
     @staticmethod
-    def _marker(table, markers: bool) -> tuple[str, object] | None:
+    def _marker(table: SchemaTable | str, markers: bool) -> tuple[str, object] | None:
         """The (column, sentinel) a consumer read excludes; None when `markers` or undeclared."""
         if markers:
             return None

@@ -120,6 +120,14 @@ def _cap(units: dict[str, pd.DataFrame], cap: int | None, desc: str) -> tuple[di
     return capped, uncapped
 
 
+def _narrow_done(done: dict[str, set[str]], df_index: pd.DataFrame) -> dict[str, set[str]]:
+    """Each distinct done set cut to the accessions `df_index` lists, once per set: a table-wide set
+    shared by every key is intersected once and stays shared."""
+    listed = set(df_index["accession"].astype(str)) if not df_index.empty else set()
+    narrowed: dict[int, set[str]] = {}
+    return {key: narrowed.setdefault(id(accessions), accessions & listed) for key, accessions in done.items()}
+
+
 def document_worklist(
     context: Context,
     table: Table,
@@ -147,6 +155,7 @@ def document_worklist(
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
     done = {key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where)
+    done = _narrow_done(done, df_index)
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = new_tickers(context.store, overlap, as_of) if overlap else set()

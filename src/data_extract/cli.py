@@ -251,8 +251,8 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     "--seed",
     is_flag=True,
     default=False,
-    help="REBUILD first: replace the table with the committed quarterly Wayback history (configs/superinvestors/) plus every "
-    "stored live snapshot, all re-resolved and 13F-gated; idempotent. Rerun after any overrides.json change.",
+    help="REBUILD first: upsert the committed quarterly Wayback history (configs/superinvestors/) plus every stored live "
+    "snapshot, all re-resolved and 13F-gated, then delete stale keys; idempotent. Rerun after any overrides.json change.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)

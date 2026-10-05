@@ -5,33 +5,42 @@ One oldest-first walk over every 13F-HR by filing date (edgartools), feeding two
 universe ticker slice of each book -> `sec13f_hr`, and the complete CUSIP book of every roster manager ->
 `sec13f_manager_holdings`. In-batch dedup keeps the last filed (amendment wins). Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
+
+The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date. Transient read
+failures get in-task retry rounds; a filing filed inside the overlap that still fails holds back every
+filing after it (low watermark), so the next window starts at or before it. An older one is skipped with
+an ERROR naming its accession. A scoped (`-t`) run never reads past the stored frontier.
 """
 
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import httpx
 import pandas as pd
 import pyarrow.compute as pc
 from edgar import Filings, get_filings
-from edgar.httprequests import is_unreachable
 from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.rate_limit import is_rate_limited
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
+from src.data_extract.utils.common.resume import document_floor
+from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_extract.utils.institutionals.legacy_13f_fallback import needs_legacy_fallback, parse_legacy_information_table
-from src.data_store.schema import Tables
-from src.utils.string import pad_cik
+from src.data_store.schema import Resume, Tables
+from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
+from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
+
+#: The sleeper between retry rounds; tests replace it.
+_sleep: Callable[[float], None] = time.sleep
 
 # `quarter` is absent on purpose: it tagged the SOURCE bulk data set, not the period.
 _HR_COLS = [
@@ -194,11 +203,6 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     return out.dropna(subset=["period"])[_BOOK_COLS]
 
 
-def _is_transient(exc: Exception) -> bool:
-    """A throttle / 5xx / timeout (the shared matcher), or a request that never reached SEC."""
-    return is_rate_limited(exc) or is_unreachable(exc) or isinstance(exc, ConnectionError | TimeoutError | httpx.TransportError)
-
-
 def _garbage_rows(book: pd.DataFrame) -> pd.Series:
     """Rows no information table holds: a valued common line with zero shares, a position above
     `_MAX_POSITION_USD`, a negative amount, or table text merged into `issuer_name`."""
@@ -224,29 +228,31 @@ def _legacy_book(stamp: FilingStamp, raw: str) -> pd.DataFrame:
 def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
     (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
+    The failure is transient exactly when `sec_io` gave up on a throttle, 5xx or network error.
     An XML-era book is EdgarTools' parse as is. A pre-XML text book that EdgarTools failed on,
     disagrees with the source text, or holds a garbage row is re-read by the source-checked legacy
-    parser; an unverifiable one is a deterministic failure, never stored."""
+    parser; an unverifiable one is a deterministic failure (skipped, never stored, never held back).
+    The information-table documents are downloaded under `sec_io` before EdgarTools parses them, so
+    a parse error is never read as a throttle."""
     try:
-        report = stamp.filing.obj()
+        report = filing_obj(stamp.filing)
+        xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
+        raw = None if xml else sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
         try:
             infotable, edgar_error = report.infotable, None
         except Exception as e:  # noqa: BLE001 -- malformed legacy text makes EdgarTools raise
-            if _is_transient(e):
-                raise
             infotable, edgar_error = None, e
-        raw = None if getattr(report, "infotable_xml", None) else getattr(report, "infotable_txt", None)
         if edgar_error is not None and not raw:
             raise edgar_error
         book = pd.DataFrame() if infotable is None or infotable.empty else _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
         if raw and (edgar_error is not None or needs_legacy_fallback(raw, infotable) or _garbage_rows(book).any()):
             try:
                 return _legacy_book(stamp, raw)
-            except ValueError as e:  # deterministic: its text quotes source numbers the 429 matcher would misread
+            except ValueError as e:
                 return ReadFailure(transient=False, reason=f"ValueError: {e}")
         return book
     except Exception as e:  # noqa: BLE001
-        return ReadFailure(transient=_is_transient(e), reason=f"{type(e).__name__}: {e}")
+        return ReadFailure(transient=isinstance(e, TransientReadError), reason=f"{type(e).__name__}: {e}")
 
 
 def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
@@ -271,11 +277,21 @@ def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
     return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
 
 
+def _padded(df: pd.DataFrame) -> pd.DataFrame:
+    """`df` with its `cik` in the stored 10-digit form, whatever form it arrived in."""
+    return df.assign(cik=pad_cik_series(df["cik"]))
+
+
+def save_hr(context: Context, hr: pd.DataFrame) -> int:
+    """Upsert `sec13f_hr` rows with padded CIKs; the one writer of that table. Returns rows saved."""
+    return context.store.save(Tables.sec13f_hr, _padded(hr)) if not hr.empty else 0
+
+
 def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
-    """Upsert manager-book rows. Returns (rows saved, suspect-price rows)."""
+    """Upsert manager-book rows with padded CIKs. Returns (rows saved, suspect-price rows)."""
     if book.empty:
         return 0, 0
-    return context.store.save(Tables.sec13f_manager_holdings, book[_BOOK_COLS]), _suspect_prices(book)
+    return context.store.save(Tables.sec13f_manager_holdings, _padded(book[_BOOK_COLS])), _suspect_prices(book)
 
 
 def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
@@ -292,34 +308,40 @@ def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster
     """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
     `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip). Counts accumulate on
     `walk`."""
-    book = _latest_per_key(book)
+    book = _latest_per_key(_padded(book))
     hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
     if not hr.empty:
         walk.hr_suspect += _suspect_prices(hr)
-        walk.hr_saved += context.store.save(Tables.sec13f_hr, hr)
+        walk.hr_saved += save_hr(context, hr)
     saved, suspect = _save_book(context, book[book["cik"].isin(roster_ciks)])
     walk.book_saved += saved
     walk.book_suspect += suspect
 
 
 def _resolve_window(
-    context: Context, years_history: int, lookback_days: int, filing_window: tuple[str, str] | None
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """(since, until) filing dates: the backfill window when given (watermark untouched), else
-    `max(filing_date) - lookback_days` to today, or `years_history` back on an empty table."""
-    today = cast(pd.Timestamp, pd.Timestamp.today().normalize())
+    context: Context, years_history: int, filing_window: tuple[str, str] | None, as_of: pd.Timestamp, scoped: bool
+) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp | None]:
+    """`(since, until, hold_from)` filing dates. A `filing_window` is read as given and never holds the
+    walk back. Otherwise `max(filing_date)` minus the overlap (the history floor on an empty table) to
+    `as_of`, capped at the stored frontier on a scoped run; a filing filed on or after `hold_from` that
+    still fails holds back every filing after it."""
     if filing_window is not None:
         since, until = (cast(pd.Timestamp, pd.Timestamp(d).normalize()) for d in filing_window)
         if since > until:
             raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
         logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
-        return since, until
+        return since, until, None
+    overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
+    hold_from = as_of - overlap
     watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
     if watermark is None:
-        since = cast(pd.Timestamp, today - pd.DateOffset(years=years_history))
+        since = document_floor(Tables.sec13f_hr, as_of, years_history)
         logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
-        return since, today
-    return watermark - pd.Timedelta(days=lookback_days), today
+        return since, as_of, hold_from
+    watermark = watermark.normalize()
+    if scoped:
+        logger.info(f"13F: scoped run reads up to the stored frontier {watermark:%Y-%m-%d} only, so the next window is unchanged")
+    return watermark - overlap, min(as_of, watermark) if scoped else as_of, hold_from
 
 
 def _oldest_first(listing: Filings) -> Filings:
@@ -331,14 +353,91 @@ def _oldest_first(listing: Filings) -> Filings:
     return Filings(data.take(pc.sort_indices(data.append_column("_is_amendment", is_amendment), sort_keys=keys)))
 
 
-def _record(context: Context, tickers: list[str] | None, saved: int, filing_window: tuple[str, str] | None) -> None:
-    """Log the run in the manifest: as an incremental, or as a backfill that leaves every
-    watermark (`last_run_date`) untouched."""
-    n_tickers = len(set(tickers or ()))
-    if filing_window is None:
-        record_run(context, Tables.sec13f_hr, n_tickers, saved)
-    else:
-        record_run(context, Tables.sec13f_hr, n_tickers, saved, backfill_window=filing_window)
+@dataclass
+class _Read:
+    """One listed filing in walk order and its latest read: a book, or a `ReadFailure`."""
+
+    stamp: FilingStamp
+    result: pd.DataFrame | ReadFailure
+
+    @property
+    def transient(self) -> bool:
+        return isinstance(self.result, ReadFailure) and self.result.transient
+
+
+@dataclass
+class _Saver:
+    """Books waiting to be saved, upserted every `save_every` filings with rows."""
+
+    context: Context
+    universe: set[str]
+    roster_ciks: set[str]
+    save_every: int
+    walk: _WalkState = field(default_factory=_WalkState)
+    batch: list[pd.DataFrame] = field(default_factory=list)
+
+    def add(self, read: _Read) -> None:
+        """Queue a read's book (an unreadable filing is skipped with an ERROR); save a full batch."""
+        if isinstance(read.result, ReadFailure):
+            logger.error(f"13F {read.stamp.accession_number} (filed {read.stamp.filed:%Y-%m-%d}) is unreadable ({read.result.reason}); skipped")
+        elif not read.result.empty:
+            self.batch.append(read.result)
+        if len(self.batch) >= self.save_every:
+            self.flush()
+
+    def flush(self) -> None:
+        if self.batch:
+            _save_batch(self.context, pd.concat(self.batch, ignore_index=True), self.universe, self.roster_ciks, self.walk)
+            self.batch.clear()
+
+
+def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
+    """Read every filing in order, saving books until the first transient failure; from that
+    filing on, the reads are returned unsaved for the retry rounds."""
+    held: list[_Read] = []
+    for filing in tqdm(filings, total=len(filings), desc="13F-HR"):
+        stamp = FilingStamp.of(filing, "")
+        read = _Read(stamp, _read_filing(stamp))
+        if held or read.transient:
+            held.append(read)
+        else:
+            saver.add(read)
+    saver.flush()
+    return held
+
+
+def _retry_rounds(context: Context, held: list[_Read]) -> None:
+    """Re-read the transiently failed filings in up to `data_extract.retry_rounds.rounds` rounds, in place."""
+    policy = RetryRounds.from_config(getattr(context, "config", None))
+    for round_no in range(1, policy.rounds + 1):
+        failed = [read for read in held if read.transient]
+        if not failed:
+            return
+        wait = policy.waits[min(round_no - 1, len(policy.waits) - 1)]
+        logger.info(f"13F: retry round {round_no}/{policy.rounds} for {len(failed)} filing(s) after {wait:.0f}s")
+        _sleep(wait)
+        for read in failed:
+            read.result = _read_filing(read.stamp)
+
+
+def _save_held(held: list[_Read], hold_from: pd.Timestamp | None, saver: _Saver) -> int:
+    """Save the held reads in order, stopping at the first one still failing that was filed on or after
+    `hold_from`; an older failure is skipped with an ERROR. Returns the number of filings held back."""
+    for i, read in enumerate(held):
+        if not read.transient:
+            saver.add(read)
+            continue
+        reason, filed = cast(ReadFailure, read.result).reason, read.stamp.filed.normalize()
+        if hold_from is not None and filed >= hold_from:
+            saver.flush()
+            logger.warning(
+                f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}); it and the "
+                f"{len(held) - i - 1} filing(s) after it are held back, so the next run starts at or before it"
+            )
+            return len(held) - i
+        logger.error(f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}) and is older than the overlap; skipped")
+    saver.flush()
+    return 0
 
 
 def _log_walk(walk: _WalkState, total: int) -> None:
@@ -358,18 +457,22 @@ def _log_walk(walk: _WalkState, total: int) -> None:
 
 def fetch_13f(
     context: Context,
-    tickers: list[str] | None = None,
-    years_history: int = 15,
+    tickers: list[str],
+    years_history: int,
     save_every: int = 600,
-    lookback_days: int = 7,
     filing_window: tuple[str, str] | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> None:
-    """Ingest every 13F-HR filed since `sec13f_hr`'s latest `filing_date` minus `lookback_days`,
-    or the `filing_window` backfill (watermark untouched). Each batch upserts the universe slice to
-    `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs. One
-    EDGAR walk at a time; oldest-first, so an amendment overwrites its original."""
+    """Ingest every 13F-HR filed in the resume window (or the `filing_window` backfill, watermark
+    untouched), oldest first, so an amendment overwrites its original. Each batch upserts the `tickers`
+    slice to `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs.
+    One EDGAR walk at a time."""
     context.ensure_edgar_identity()
-    since, until = _resolve_window(context, years_history, lookback_days, filing_window)
+    configure(context)
+    run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
+    universe = {str(t).upper() for t in tickers}
+    scoped = bool(set(load_universe_tickers(context)) - universe)
+    since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
     roster_ciks = roster_cik_union(context)
     if not roster_ciks:
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
@@ -379,21 +482,10 @@ def fetch_13f(
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
     if not total:
-        _record(context, tickers, 0, filing_window)
         return
 
-    universe = set(cast(list[str], tickers))
-    walk, batch = _WalkState(), []
-    for i, filing in enumerate(tqdm(filings, total=total, desc="13F-HR"), start=1):
-        stamp = FilingStamp.of(filing, "")
-        rows = _read_filing(stamp)
-        if isinstance(rows, ReadFailure):
-            logger.warning(f"13F {stamp.accession_number}: {rows.reason}")
-        elif not rows.empty:
-            batch.append(rows)
-        if batch and (len(batch) >= save_every or i == total):
-            _save_batch(context, pd.concat(batch, ignore_index=True), universe, roster_ciks, walk)
-            batch.clear()
-
-    _log_walk(walk, total)
-    _record(context, tickers, walk.hr_saved, filing_window)
+    saver = _Saver(context, universe, roster_ciks, save_every)
+    held = _first_pass(filings, saver)
+    _retry_rounds(context, held)
+    n_held = _save_held(held, hold_from, saver)
+    _log_walk(saver.walk, total - n_held)

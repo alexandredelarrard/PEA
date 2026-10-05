@@ -40,7 +40,8 @@ if str(ROOT) not in sys.path:
 from src.constants.constants import DEF14A_FORMS, SEC_ARCHIVES_BASE_URL
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
+from src.data_extract.utils.common.sec_io import sec_get
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 
 #: NEVER change -- the baseline is keyed to it. Phase 6 must resolve the identical 23 tickers

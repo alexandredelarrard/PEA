@@ -18,8 +18,8 @@ from typing import Any, cast
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
+from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -31,6 +31,7 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
+from src.data_store.schema import Tables
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
@@ -803,29 +804,29 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
     return history[new.values], codes[pd.to_datetime(codes["as_of"]).isin(set(history[new.values]["as_of"]))]
 
 
-def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: bool = False) -> None:
+def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_history: bool = False) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
     Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
     logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
     and rebuilds from stored facts, with no network.
     """
-    from src.data_store.schema import Tables  # local: avoids a package cycle
-
-    catalogue = load_catalogue(context.config_dir)
-    guards = load_guards(context.config_dir)
+    catalogue = load_catalogue(str(context.config_dir))
+    guards = load_guards(str(context.config_dir))
     history_rows = codes_rows = 0
     for ticker in tickers:
-        facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
-        if facts is None:
+        df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
+        if df_facts is None:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
             continue
-        built = build_ticker(ticker, facts, catalogue=catalogue, guards=guards)
+        built = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)
         if built.history.empty:
             continue
         # Explicit projection so the read fails loudly if the table and the column contract diverge.
-        stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
-        history, codes = built.history, built.reason_codes
+        df_stored = context.store.load(
+            Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True
+        )
+        df_history, df_codes = built.history, built.reason_codes
         if rebuild_history:
             deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
             context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
@@ -836,17 +837,16 @@ def build_fundamentals_history(context, tickers: list[str], *, rebuild_history: 
                 ticker,
                 deleted,
             )
-        elif stored is not None:
-            history, codes = _unpublished_events(context, ticker, stored, history, codes)
-        if history.empty:
+        elif df_stored is not None:
+            df_history, df_codes = _unpublished_events(context, ticker, df_stored, df_history, df_codes)
+        if df_history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
             continue
-        context.store.save(Tables.fundamentals_history_sec, history)
-        if not codes.empty:
-            context.store.save(Tables.fundamentals_reason_codes, codes)
-        context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(history), len(codes))
-        history_rows += len(history)
-        codes_rows += len(codes)
+        context.store.save(Tables.fundamentals_history_sec, df_history)
+        if not df_codes.empty:
+            context.store.save(Tables.fundamentals_reason_codes, df_codes)
+        context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(df_history), len(df_codes))
+        history_rows += len(df_history)
+        codes_rows += len(df_codes)
 
-    record_run(context, Tables.fundamentals_history_sec, len(tickers), history_rows, is_full_rescan=rebuild_history)
-    record_run(context, Tables.fundamentals_reason_codes, len(tickers), codes_rows, is_full_rescan=rebuild_history)
+    context.log.info("history: %d ticker(s), +%d event row(s), %d reason code(s)", len(tickers), history_rows, codes_rows)

@@ -63,7 +63,9 @@ def _context(sqlite_store, tmp_path) -> Any:
         store=sqlite_store,
         log=logging.getLogger("test.ftd"),
         paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
+        config=SimpleNamespace(
+            local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver")), data_extract=SimpleNamespace(redundant_ticks=[])
+        ),
     )
 
 
@@ -136,13 +138,13 @@ def test_parse_ftd_matches_real_legacy_and_modern_samples():
     )
 
 
-def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, monkeypatch, tmp_path):
-    """Resume contract: an already-ingested period is never re-fetched while the universe
-    is stable; a universe change re-parses cached periods, but the upsert on (ticker, date)
-    must not duplicate rows already stored."""
-    # `cache_dir(context, context.config.local.paths.fails_deliver)` -- the fetcher reads its
-    # cache subdirectory out of config, so the double has to carry it (value from
-    # configs/paths.yml).
+def _seed_universe(store, added_on: dict[str, str]) -> None:
+    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": list(added_on), "added_on": [pd.Timestamp(d) for d in added_on.values()]}))
+
+
+def test_fetch_skips_done_periods_and_re_parses_cached_ones_for_a_new_ticker_only(sqlite_store, monkeypatch, tmp_path):
+    """Resume contract: a stored period is never re-fetched; a new ticker with no row gets every cached
+    period re-parsed for its own symbols only, and the upsert on (ticker, date) never duplicates."""
     ctx = _context(sqlite_store, tmp_path)
     identity = _identity()
 
@@ -159,57 +161,74 @@ def test_fetch_skips_done_periods_and_upserts_without_duplicating(sqlite_store, 
 
     def _fake_ensure_zip(context, path, urls, *, label, timeout, log):
         requested.append(label)
+        path.write_bytes(b"cached")
         return path
 
     monkeypatch.setattr(ftd, "ensure_zip", _fake_ensure_zip)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: _raw_for(path))
     monkeypatch.setattr(ftd, "_periods", lambda years_history, today=None: ["202401a", "202401b"])
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
+    _seed_universe(sqlite_store, {"AAPL": "2000-01-01"})
 
-    # period 202401a already ingested, universe already converged on AAPL
+    # 202401a already ingested and cached
     sqlite_store.replace(
         "sec_fails_to_deliver",
         pd.DataFrame(
             {
                 "ticker": ["AAPL"],
                 "date": pd.to_datetime(["2024-01-01"]),
-                "fails_quantity": [100.0],
+                "fails_quantity": [999.0],
                 "fails_value": [19000.0],
                 "period": ["202401a"],
             }
         ),
     )
-    cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, ftd.Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
+    (ftd.cache_dir(ctx, "sec_fails_to_deliver") / "cnsfails202401a.zip").write_bytes(b"cached")
 
-    # 1) stable universe -> the already-done period is skipped, only the new one is fetched
-    saved = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity)
+    # 1) only the period with no stored row is fetched
+    saved = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity, as_of=pd.Timestamp("2024-02-01"))
     assert requested == ["FTD 202401b"], f"already-done period was re-fetched: {requested}"
-    assert saved == 1
-    stored = sqlite_store.load("sec_fails_to_deliver")
-    assert len(stored) == 2  # seeded 202401a row + new 202401b row
+    assert saved == 1 and len(sqlite_store.load("sec_fails_to_deliver")) == 2
 
-    # 2) an identity-policy revision replays both cached periods even with a stable universe
+    # 2) MSFT joins the universe -> both cached periods are re-read for MSFT only
     requested.clear()
-    monkeypatch.setattr(ftd, "_POLICY_MARKER", "__point_in_time_symbol_identity_v3__")
-    assert ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL"], years_history=1, identity=identity) == 2
+    _seed_universe(sqlite_store, {"AAPL": "2000-01-01", "MSFT": "2024-01-30"})
+    saved2 = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL", "MSFT"], years_history=1, identity=identity, as_of=pd.Timestamp("2024-02-01"))
+    stored = sqlite_store.load("sec_fails_to_deliver").set_index(["ticker", "period"])
     assert requested == ["FTD 202401a", "FTD 202401b"]
+    assert saved2 == 2 and len(stored) == 4  # AAPL+MSFT x 2 periods, no duplicates
+    assert stored.loc[("AAPL", "202401a"), "fails_quantity"] == 999.0  # the AAPL row is untouched
 
-    # 3) universe grows (MSFT) -> both cached periods are re-parsed, but the upsert on
-    #    (ticker, date) must not duplicate the 202401a/202401b AAPL rows already stored
+    # 3) MSFT now holds rows -> nothing left to read
     requested.clear()
-    saved2 = ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL", "MSFT"], years_history=1, identity=identity)
-    assert requested == ["FTD 202401a", "FTD 202401b"]
-    stored2 = sqlite_store.load("sec_fails_to_deliver")
-    assert len(stored2) == 4  # AAPL+MSFT x 2 periods, no duplicates
-    assert saved2 == 4
+    assert ftd.fetch_fails_to_deliver(ctx, tickers=["AAPL", "MSFT"], years_history=1, identity=identity, as_of=pd.Timestamp("2024-02-02")) == 0
+    assert requested == []
 
-    print("\n=== SANITY CHECK: FTD resume + universe-growth reparse ===")
+    print("\n=== SANITY CHECK: FTD resume + new-ticker re-parse ===")
     print(
-        f"  stable universe -> 202401a skipped; policy revision and universe growth each reparse both periods; "
-        f"{len(stored2)} distinct rows stored "
-        "(upsert, no duplicates). Validated."
+        f"  stored 202401a skipped; new MSFT re-reads both cached periods for itself (AAPL's 999 untouched); "
+        f"{len(stored)} distinct rows (upsert, no duplicates); the next night reads nothing. Validated."
     )
+
+
+def test_a_scoped_full_run_upserts_its_keys_and_never_replaces_the_table(sqlite_store, monkeypatch, tmp_path):
+    ctx = _context(sqlite_store, tmp_path)
+    identity = _identity()
+    _seed_universe(sqlite_store, {"AAPL": "2000-01-01", "MSFT": "2000-01-01"})
+    sqlite_store.replace(
+        Tables.sec_fails_to_deliver,
+        pd.DataFrame({"ticker": ["MSFT"], "date": pd.to_datetime(["2024-01-02"]), "fails_quantity": [7.0], "period": ["202401a"]}),
+    )
+    raw = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240102|X|AAPL|100|APPLE|1\n20240102|Y|MSFT|50|MSFT|1\n"
+    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a"])
+    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
+    monkeypatch.setattr(sqlite_store, "replace", lambda *a, **k: pytest.fail("a scoped -F must never replace the table"))
+
+    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], years_history=1, full=True, identity=identity, as_of=pd.Timestamp("2024-02-01")) == 1
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
+    assert stored.loc["MSFT", "fails_quantity"] == 7.0 and stored.loc["AAPL", "fails_quantity"] == 100.0
+    print("\n=== SANITY CHECK: FTD -t AAPL -F ===")
+    print("  AAPL re-read and upserted; MSFT's stored row survives (no table replace on a scoped run). Validated.")
 
 
 def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite_store, monkeypatch, tmp_path):
@@ -225,10 +244,9 @@ def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite
         ),
     }
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["201501a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"201501a"})
+    monkeypatch.setattr(ftd, "cached_periods", lambda cache, prefix="", suffix=".zip": {"201501a"})
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
     sqlite_store.replace(
         Tables.sec_fails_to_deliver,
@@ -252,9 +270,9 @@ def test_full_rebuild_relabels_reuse_excludes_prior_holder_and_aggregates(sqlite
 
     monkeypatch.setattr(sqlite_store, "replace", _replace)
     universe = ["META", "TT", "IR", "WTW"]
-    ftd.fetch_fails_to_deliver(ctx, universe, full=True, identity=identity)
+    ftd.fetch_fails_to_deliver(ctx, universe, years_history=15, full=True, identity=identity)
     first = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("ticker").reset_index(drop=True)
-    ftd.fetch_fails_to_deliver(ctx, universe, full=True, identity=identity)
+    ftd.fetch_fails_to_deliver(ctx, universe, years_history=15, full=True, identity=identity)
     second = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values("ticker").reset_index(drop=True)
 
     assert replace_calls == 2
@@ -284,12 +302,12 @@ def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_stor
     )
     sqlite_store.replace(Tables.sec_fails_to_deliver, seeded)
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a"])
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"202401a"})
+    monkeypatch.setattr(ftd, "cached_periods", lambda cache, prefix="", suffix=".zip": {"202401a"})
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: None)
 
     with pytest.raises(ValueError, match="cannot read cached period 202401a"):
-        ftd.fetch_fails_to_deliver(ctx, ["AAPL"], full=True, identity=identity)
+        ftd.fetch_fails_to_deliver(ctx, ["AAPL"], years_history=15, full=True, identity=identity)
     stored = sqlite_store.load(Tables.sec_fails_to_deliver).reset_index(drop=True)
     assert len(stored) == 1 and stored.iloc[0]["ticker"] == "AAPL"
     assert pd.Timestamp(stored.iloc[0]["date"]) == pd.Timestamp("2024-01-02")
@@ -314,14 +332,11 @@ def test_ftd_resume_uses_only_stored_source_periods(sqlite_store, monkeypatch, t
             }
         ),
     )
-    cache = ftd.cache_dir(ctx, "sec_fails_to_deliver")
-    ftd.mark_processed(cache, Tables.sec_fails_to_deliver, set(identity.candidate_symbols(frozenset({"AAPL"}))) | {ftd._POLICY_MARKER})
     monkeypatch.setattr(ftd, "_periods", lambda *a, **k: ["202401a", "202401b"])
     monkeypatch.setattr(ftd, "ensure_zip", lambda *a, **k: pytest.fail("stored periods must not download"))
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
     for _ in range(2):
-        assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
+        assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], years_history=1, identity=identity) == 0
     stored = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert len(stored) == 2 and set(stored["period"]) == {"202401a", "202401b"}
     print("\n=== SANITY CHECK: FTD resume from stored source periods ===")
@@ -351,10 +366,9 @@ def test_ftd_first_successful_http_response_stores_source_period(sqlite_store, m
         "read_zip_text",
         lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|037833100|AAPL|100|APPLE INC|190.00\n",
     )
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
-    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 1
-    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], identity=identity) == 0
+    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], years_history=1, identity=identity) == 1
+    assert ftd.fetch_fails_to_deliver(ctx, ["AAPL"], years_history=1, identity=identity) == 0
     stored = sqlite_store.load(Tables.sec_fails_to_deliver).iloc[0]
     assert len(requested) == 1
     assert stored["period"] == "202609a"

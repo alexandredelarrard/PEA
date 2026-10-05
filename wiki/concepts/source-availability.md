@@ -23,7 +23,7 @@ Configuration dates are only outer bounds; they do not fill missing cells or pro
 - Availability configuration: [configs/data.yml](../../configs/data.yml)
 - Validation declarations: [configs/validate.yml](../../configs/validate.yml)
 - Availability utilities: [availability.py](../../src/data_aggregate/utils/institutionals/availability.py)
-- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), one `schedule_complete_through` rule for insider, 13D and 13G: the source's run-manifest entry proves completeness through its `last_run_date` only when it is `coverage_complete` and its tickers equal the cube universe exactly, otherwise the frontier is unknown. For insiders only the EDGAR run writes that entry; a zip ingest never does
+- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), one `schedule_complete_through` rule for insider, 13D and 13G, read from the table alone: absence reads as zero through the last price session while the table's newest `filing_date` (markers included) lies within its 7-day resume overlap of that session, otherwise through that newest filing date; an empty table has no frontier. A late filing therefore reads as zero for at most 7 days, until the 7-session cube tail rewrites it
 - Conditioning sink: [sink.py](../../src/data_aggregate/utils/institutionals/sink.py)
 - Leakage checks: [validate/checks/leakage.py](../../src/validate/checks/leakage.py)
 - Source constraints: [data sources](../reference/data-sources.md)

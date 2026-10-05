@@ -14,7 +14,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.insider_features import CLUSTER_MIN, EMISSION, INSIDER_FLOOR, TEN_B5_1_FLOOR, build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_features import (
+    CLUSTER_MIN,
+    EMISSION,
+    INSIDER_FLOOR,
+    TEN_B5_1_FLOOR,
+    _owner_surprise,
+    build_insider_feature_panel,
+)
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
     clean_transactions,
@@ -439,6 +446,30 @@ def test_owner_surprise_uses_only_that_owners_prior_purchases():
         f"would score it {leaky:.2f} by ranking it against itself. The first purchase is "
         f"NaN ({int(got.loc[:'2015-01-14'].notna().sum())} values before it): 'unusually "
         f"large for this person' is undefined before there is a person."
+    )
+
+
+def test_owner_surprise_counts_ties_at_or_below_per_owner():
+    """Known truth by hand: each purchase's share of that owner's earlier purchases at or below it,
+    with ties counted, two owners interleaved, and the first purchase of each owner dropped."""
+    days = pd.to_datetime(["2015-01-05", "2015-01-06", "2015-01-07", "2015-01-08", "2015-01-09", "2015-01-12"])
+    ev = pd.DataFrame(
+        {
+            "owner_cik": ["A", "B", "A", "A", "B", "A"],
+            "value": [10.0, 7.0, 10.0, 5.0, 3.0, 7.0],
+            "anchor": days,
+            "visible_from": days,
+            "visible_until": pd.Series(pd.NaT, index=range(6), dtype="datetime64[ns]"),
+        }
+    )
+    got = _owner_surprise(ev)
+    assert got is not None
+    # A: 10 (first, dropped), 10 -> 1/1 (a tie), 5 -> 0/2, 7 -> 1/3 (the 5 only); B: 7 (first, dropped), 3 -> 0/1.
+    expected = pd.Series([1.0, 0.0, 0.0, 1 / 3], index=[2, 3, 4, 5], name="surprise")
+    pd.testing.assert_series_equal(got["surprise"].sort_index(), expected)
+    print(
+        f"=== SANITY CHECK: owner surprise on 6 hand-checked purchases = {got['surprise'].sort_index().round(3).tolist()}: "
+        f"ties count as at or below, each owner ranks only its own earlier purchases, first purchases are dropped ==="
     )
 
 

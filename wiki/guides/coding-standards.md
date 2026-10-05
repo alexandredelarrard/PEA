@@ -112,7 +112,7 @@ Tables are large and pipelines run daily.
 
 - Pre-filter a frame to the rows that need computing before computing anything.
 - Vectorise with column operations; do not use `DataFrame.apply` or Python loops over rows on large frames.
-- Fetchers resume from DB frontiers with `max_date` / `max_date_by`, never a full read.
+- Fetchers plan through their `schema.Resume` contract and `resume.py`, never a full read or a file.
 
 ## Prefer the smallest correct change
 

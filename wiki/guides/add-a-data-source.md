@@ -18,7 +18,7 @@ Add a source without bypassing the store boundary, losing point-in-time provenan
 2. Add exactly one `Table` declaration to [schema.py](../../src/data_store/schema.py), including the smallest safe read projection.
 3. Regenerate [sql/schema.sql](../../sql/schema.sql) through [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) when the table is managed.
 4. Implement the fetcher under the owning [data_extract utils package](../../src/data_extract/utils/) and accept `Context` rather than constructing a store.
-5. Resume from `store.max_date` or `store.max_date_by` using the source's actual retrieval grain.
+5. Declare the table's `Resume` contract (and an `empty_marker` when a read can find nothing) in [schema.py](../../src/data_store/schema.py), and plan the work list through [resume.py](../../src/data_extract/utils/common/resume.py) at the source's actual retrieval grain.
 6. Save bounded work per ticker, filing, or source chunk so interruption loses minimal progress.
 7. Add the fetcher to the correct transformer step and expose a source command in [data_extract/cli.py](../../src/data_extract/cli.py).
 8. Add an Airflow task only when scheduled refresh is appropriate, choosing the resource pool by operational constraint.

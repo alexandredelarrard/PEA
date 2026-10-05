@@ -1,30 +1,16 @@
 """
 fetch_dividends.py  (src/data_extract/utils/prices/fetch_dividends.py)
 ------------------------------------------------------------------------
-Cash-dividend history keyed on the EX-date (known/paid at that date, so
-point-in-time and backtestable). Dividends are otherwise invisible to the model
-because prices are auto-adjusted.
-
-Its OWN fetcher, not a side effect of the price pull: it resumes from the
-`dividends` table's own per-ticker max ex-date, a much sparser frontier than the
-daily price one (ex-dates are quarterly). It reuses `download_ohlcv` because the
-yfinance `actions=True` response already carries the ex-dates next to the OHLCV.
+Row shaping for `prices_dividends`: cash dividends keyed on the EX-date, one row per session
+(0 when none). The download is `fetch_prices.fetch_prices_and_actions`, which shares one
+yfinance `actions=True` response between prices, dividends and splits.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import cast
 
 import pandas as pd
-
-from src.context import Context
-from src.data_extract.utils.common.incremental import resume_since
-from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.prices.fetch_prices import PRICE_REFRESH_TRADING_DAYS, download_ohlcv
-from src.data_store.schema import Tables
-
-logger = logging.getLogger(__name__)
 
 _COLUMNS = ["date", "ticker", "dividends"]
 
@@ -43,34 +29,3 @@ def _extract_dividends(long_prices: pd.DataFrame | None) -> pd.DataFrame:
     d["dividends"] = pd.to_numeric(d["dividends"], errors="coerce")
     d["date"] = pd.to_datetime(d["date"], format="%Y-%m-%d")
     return d.reset_index(drop=True)
-
-
-def fetch_dividends(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    chunk_size: int = 50,
-    pause: float = 2.0,
-) -> None:
-    """Download cash dividends for `tickers` and upsert them into the `dividends`
-    table (column `dividends`), returning the freshly-extracted rows. Zero-dividend
-    days are kept: a 0 is itself informative, and storing it makes the incremental
-    refresh idempotent rather than dependent on which bars happened to be nonzero.
-
-    Call with the EQUITY universe only: the market/macro tickers (SPY, ^VIX, FX,
-    commodities) pay nothing and would just cost a download."""
-
-    today = pd.Timestamp.today().normalize()
-    since = resume_since(context, Tables.dividends, tickers, years_history, include_missing=False)
-    since = min(since, today - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS))
-
-    logger.info(f"Downloading dividends for {len(tickers)} tickers since {since.date()}")
-    # auto_adjust=False for the same response shape the price fetcher uses, so a future
-    # combined pull is a straight reuse. The ex-dates themselves are basis-independent.
-    df_downloaded = download_ohlcv(tickers, since, today, chunk_size, pause, desc="Downloading dividends", auto_adjust=False, actions=True)
-    df_dividends = _extract_dividends(df_downloaded)
-
-    # upsert on (ticker, date) — the DB merges with any prior ex-dates
-    n = context.store.save(Tables.dividends, df_dividends)
-    logger.info(f"Saved {n} dividend rows to DB table '{Tables.dividends}'")
-    record_run(context, Tables.dividends, len(tickers), n)

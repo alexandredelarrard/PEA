@@ -83,7 +83,7 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context  # noqa: E402
 from src.data_extract.utils.common.registrant import load_registrants  # noqa: E402
-from src.data_extract.utils.common.sec_utils import sec_get  # noqa: E402
+from src.data_extract.utils.common.sec_io import sec_get  # noqa: E402
 
 #: A filing archive starting more than this many years after the first price is the symptom
 #: every candidate shares. Four years is loose enough to catch a 2019 boundary on a 1995 price

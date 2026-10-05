@@ -121,7 +121,6 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
     monkeypatch.setattr(f13, "Filings", _FakeFilings)
     monkeypatch.setattr(f13, "get_filings", lambda **kwargs: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips: CMAP)
-    monkeypatch.setattr(f13, "record_run", lambda *args, **kwargs: None)
 
 
 def _stored(store: Any, table: Any) -> pd.DataFrame:
@@ -170,7 +169,7 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(sqlite_sto
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=600)
 
     hr = _stored(sqlite_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
@@ -196,7 +195,7 @@ def test_amendment_wins_in_both_tables_whatever_the_listing_order(sqlite_store, 
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
 
-    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=save_every)
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
 
     book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
     assert len(book) == 2
@@ -227,7 +226,7 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_st
     monkeypatch.setattr(f13, "_save_batch", _save_then_crash)
 
     with pytest.raises(ConnectionError):
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=1)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=1)
 
     watermark = pd.Timestamp(sqlite_store.max_date(Tables.sec13f_hr, "filing_date"))
     assert watermark == pd.Timestamp("2026-05-10"), watermark
@@ -240,7 +239,7 @@ def test_empty_roster_still_writes_hr_and_warns(sqlite_store, monkeypatch, caplo
     _patch_walk(monkeypatch, [_roster_original(), _other_filer()])
 
     with caplog.at_level(logging.WARNING):
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15)
 
     assert len(sqlite_store.load(Tables.sec13f_hr)) == 3
     assert not sqlite_store.exists(Tables.sec13f_manager_holdings.name)
@@ -292,8 +291,7 @@ def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_Fa
         def get_filings(self, form: Any) -> list[_FakeFiling]:
             return listings[self.cik]
 
-    monkeypatch.setattr(f13m, "Company", _FakeCompany)
-    monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
 
@@ -431,9 +429,8 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
         sent.append(book.copy())
         return real_save_book(context, book)
 
-    monkeypatch.setattr(f13m, "Company", _FakeCompany)
+    monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
     monkeypatch.setattr(f13m, "_save_book", _spy_save_book)
-    monkeypatch.setattr(f13m, "record_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
     saved = f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
@@ -466,7 +463,7 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqli
     _seed_roster(sqlite_store, [ROSTER])
     if path == "walk":
         _patch_walk(monkeypatch, filings)
-        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, save_every=600)
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=600)
     else:
         _patch_company(monkeypatch, {ROSTER: filings})
         f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
@@ -547,8 +544,10 @@ def test_a_parse_failure_skips_only_its_filing_and_the_quarter_saves(sqlite_stor
     )
 
 
-@pytest.mark.parametrize("fail_error", [RuntimeError, ConnectionError, TimeoutError])
-def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error):
+# `sec_io` retries a "429" up to its 3 attempts, so that failure must last 3 reads to outlive the
+# policy; a network error edgartools already retried fails at once.
+@pytest.mark.parametrize(("fail_error", "fail_reads"), [(RuntimeError, 3), (ConnectionError, 1), (TimeoutError, 1)])
+def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error, fail_reads):
     original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
     amendment = _FakeFiling(
         ROSTER,
@@ -557,7 +556,7 @@ def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite
         [_line("037833100", "APPLE INC", 2_000.0, 20)],
         form="13F-HR/A",
         accession="0000000001-26-000002",
-        fail_reads=1,
+        fail_reads=fail_reads,
         fail_error=fail_error,
     )
     other_quarter = _FakeFiling(ROSTER, "2026-02-14", "2025-12-31", [_line("037833100", "APPLE INC", 500.0, 5)], accession="0000000001-26-000000")

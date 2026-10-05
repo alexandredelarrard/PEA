@@ -14,8 +14,8 @@ Guarantees:
       `sp500_tickers` and nothing else;
   (2) `fetch_macro` writes ONLY `prices_macro`, with the (date, ticker, close) schema, and
       never touches `prices`;
-  (3) prices and dividends stay DECOUPLED: `fetch_price_history` writes clean OHLCV and never
-      the `dividends` table.
+  (3) the one yfinance response is SPLIT: `prices` gets clean OHLCV, the ex-dates go only to
+      `prices_dividends` / `prices_splits`.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_PRICE_SERIES
 from src.data_extract.step_extract_all_data import StepExtractAllData
-from src.data_extract.utils.prices import fetch_dividends as fd
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
@@ -71,7 +70,6 @@ def test_fetch_macro_writes_only_prices_macro(sqlite_store, monkeypatch):
 
     monkeypatch.setattr(fm, "_fetch_price_leg", _fake_price_leg)
     monkeypatch.setattr(fm, "_fetch_fred_leg", _fake_fred_leg)
-    monkeypatch.setattr(fm, "record_run", lambda *a, **k: None)
     monkeypatch.setenv("FRED_API_KEY", "test-key")
 
     ctx = SimpleNamespace(store=sqlite_store, log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
@@ -112,26 +110,23 @@ def _yf_frame(ticker: str, dividend: float | None = None) -> pd.DataFrame:
     return df
 
 
-def test_price_fetch_writes_clean_ohlcv_and_never_the_dividends_table(sqlite_store, monkeypatch):
-    """`fetch_price_history` writes clean OHLCV and never the `dividends` table."""
-    monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL"))
-    monkeypatch.setattr(fp, "record_run", lambda *a, **k: None)
+def test_price_fetch_writes_clean_ohlcv_and_the_ex_dates_elsewhere(sqlite_store, monkeypatch):
+    """`prices` gets clean OHLCV; the dividend column of the same response lands only in `prices_dividends`."""
+    monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fp.fetch_price_history(cast(Any, ctx), tickers=["AAPL"], years_history=15)
+    fp.fetch_prices_and_actions(cast(Any, ctx), tickers=["AAPL"], years_history=15, pause=0.0)
 
-    # assert on what LANDED, not on the return value: these fetchers write to the store and
-    # their return is incidental (fetch_macro returns None outright)
+    # assert on what LANDED, not on the return value: these fetchers write to the store
     saved = sqlite_store.load(Tables.prices)
+    dividends = sqlite_store.load(Tables.dividends)
     assert set(saved.columns) == {"date", "ticker", "open", "high", "low", "close", "volume"}
-    assert not sqlite_store.exists(Tables.dividends), "price fetch wrote the dividends table"
     assert list(saved["ticker"]) == ["AAPL"]
+    assert list(dividends.columns) == ["date", "ticker", "dividends"] and dividends["dividends"].tolist() == [0.24]
+    assert not sqlite_store.exists(Tables.prices_splits), "a zero split must not create a split row"
 
     print("\n=== SANITY CHECK: prices holds clean OHLCV ===")
-    print(
-        f"  fetch_price_history(['AAPL']) -> prices cols {sorted(saved.columns)}; "
-        f"dividends table created: {sqlite_store.exists(Tables.dividends)}. Validated."
-    )
+    print(f"  one response -> prices cols {sorted(saved.columns)}; prices_dividends {list(dividends.columns)} = 0.24; no split row. Validated.")
 
 
 def test_actions_and_basis_are_explicit_per_caller():
@@ -156,8 +151,8 @@ def test_actions_and_basis_are_explicit_per_caller():
     try:
         mod._download_price_chunk = _spy_chunk
         since, until = pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-05")
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, auto_adjust=False, actions=False)  # the price path
-        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading dividends", auto_adjust=False, actions=True)  # the ex-date path
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, auto_adjust=False, actions=False)  # a bars-only pull
+        mod.download_ohlcv(["AAPL"], since, until, pause=0.0, desc="Downloading prices", auto_adjust=False, actions=True)  # the equity path
         mod.download_ohlcv(
             list(MACRO_PRICE_SERIES), since, until, pause=0.0, desc="Downloading macro/market prices", auto_adjust=True, actions=False
         )  # the macro path
@@ -167,31 +162,14 @@ def test_actions_and_basis_are_explicit_per_caller():
     assert seen == [(False, False), (True, False), (False, True)], f"flags {seen}"
 
     print("\n=== SANITY CHECK: actions + auto_adjust per caller ===")
-    print(f"  price path  -> actions={seen[0][0]}, auto_adjust={seen[0][1]}  (clean OHLCV; Close AND Adj Close both arrive anyway)")
-    print(f"  ex-dates    -> actions={seen[1][0]}, auto_adjust={seen[1][1]}")
+    print(f"  bars only   -> actions={seen[0][0]}, auto_adjust={seen[0][1]}  (Close AND Adj Close both arrive anyway)")
+    print(f"  equity path -> actions={seen[1][0]}, auto_adjust={seen[1][1]}  (one response for prices, dividends, splits)")
     print(
         f"  macro path  -> actions={seen[2][0]}, auto_adjust={seen[2][1]}  "
         f"(TOTAL RETURN -- SPY is stored as equity_tr and every label is measured "
         f"against it)"
     )
     print("  No caller can pick a basis by accident, and none can leak an ex-date into `prices`. Validated.")
-
-
-def test_dividend_fetch_is_the_only_ex_date_writer(sqlite_store, monkeypatch):
-    """Carried over unchanged from the old file. Asserts the `dividends` table schema that
-    `sql/schema.sql` / `Tables.dividends` declare: [date, ticker, dividends]."""
-    monkeypatch.setattr(fd, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
-    monkeypatch.setattr(fd, "record_run", lambda *a, **k: None)
-    ctx = SimpleNamespace(store=sqlite_store)
-
-    fd.fetch_dividends(cast(Any, ctx), tickers=["AAPL"], years_history=15)
-
-    saved = sqlite_store.load(Tables.dividends)
-    assert list(saved.columns) == ["date", "ticker", "dividends"]
-    assert len(saved) == 1
-
-    print("\n=== SANITY CHECK: dividend fetcher ===")
-    print(f"  fetch_dividends(['AAPL']) -> {len(saved)} row in `dividends`, schema {list(saved.columns)}. Validated.")
 
 
 if __name__ == "__main__":

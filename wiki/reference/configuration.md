@@ -26,8 +26,8 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 
 | Top-level key | Owner | Responsibility |
 | --- | --- | --- |
-| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, redundant tickers, and manifest self-healing cadence. |
-| `local.paths` | [paths.yml](../../configs/paths.yml) | Repository root, artifact store, output, model, log, and peer-dictionary locations. |
+| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, redundant tickers, the SEC retry policy, document retry rounds, the per-run document cap, and the prediction fresh-share threshold. |
+| `local.paths` | [paths.yml](../../configs/paths.yml) | Repository root, artifact store, output, model, log, and peer-dictionary locations, and the source caches, including the local EDGAR filing index (`sec_edgar_index`) and the SEC 13F data sets (`sec_13f_datasets`). |
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
@@ -54,7 +54,7 @@ The Dataroma superinvestor roster keeps its two registers under `configs/superin
 
 ## Extraction settings
 
-At the inspected revision, equity, macro, and Sharadar history windows are each 31 years, while the manifest forces a full EDGAR relist every 30 days. The source series registry itself is not configurable: symbol-to-series mappings are world facts and remain in constants.
+Equity, macro, and Sharadar history windows are each 31 years. The source series registry itself is not configurable: symbol-to-series mappings are world facts and remain in constants. A table's resume overlap, EDGAR forms and source start are part of its `Resume` contract in [schema.py](../../src/data_store/schema.py), not YAML knobs.
 
 Key distinctions:
 
@@ -63,7 +63,11 @@ Key distinctions:
 - `sharadar_years_history` is separate because entitlement and response size differ;
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
-- `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `lookback_days: 45` (an incremental run re-checks calls dated within this many days of the stored frontier), `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread) and `reconcile_days: 7` (a full comparison of every scoped call at least this often). The dataset repo and file path are module constants of the extractor;
+- `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread). The dataset repo and file path are module constants of the extractor;
+- `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
+- `retry_rounds` (3 rounds, waits of 60, 120 and 240 s, threshold 0.985, `min_failed` 2): a ticker whose EDGAR read rate in a run is below the threshold, with at least `min_failed` failed documents, re-reads only those documents in-task; the rest is listed again on the next run;
+- `max_documents_per_run` (5,000) caps the documents one EDGAR fetch reads per run, newest first; a larger work list logs an ERROR and drains over later runs, and `--no-cap` lifts the cap for a one-time backlog;
+- `prediction_fresh_share` (0.95): `modelling predict` refuses to score, and `extraction-status` marks the table RED, when the share of universe tickers whose own latest `prices`, `fundamentals_sharadar` or `fundamentals_history` date is within the table's cadence tolerance falls below it;
 - LLM model, concurrency, prompt cache, and action-specific character budgets are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` remains the GPT-6 Sol default; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction pins one thread per ticker in code;
 - regulatory dates are code constants, not knobs: the DEF 14A ECD listing floor 2022-12-16 (Item 402(v) effective date) is `_PVP_EFFECTIVE` in [fetch_def14a_edgar.py](../../src/data_extract/utils/structure/fetch_def14a_edgar.py).
 
@@ -79,7 +83,7 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_max_lag_days` is the only insider freshness knob: the status gate fails when the insider completeness frontier (the EDGAR run's manifest entry over the exact cube universe) is unknown or lags the institutionals part by more than this many days. There is no reviewed cutover date and no insider parity threshold; the zip and EDGAR sources share one table and EDGAR always wins.
+`source_freshness.insider_max_lag_days` is the only insider freshness knob: `cube-status` names the insider source behind when its completeness frontier (the last price session while the newest `insider_transactions` filing, markers included, lies within the table's 7-day overlap of it, else that filing date) is unknown or lags the institutionals part by more than this many days. There is no reviewed cutover date and no insider parity threshold; the zip and EDGAR sources share one table and EDGAR always wins.
 
 ## Cube settings
 

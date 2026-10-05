@@ -17,12 +17,12 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, Field
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, IncompleteEdgarRunError
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.registrant import load_registrants, resolve_registrant_filings
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_io import configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -34,6 +34,7 @@ FRAME_COLUMNS = ["ticker", "as_of", "employees"]
 MANUAL_ROSTER = Path("sec") / "employees_manual_roster.json"
 _GAP = "[... filing gap ...]"
 _FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
+_FAILED_SHOWN = 20  # failed tickers named in the coverage log
 
 _CONTEXT_RE = re.compile(
     r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
@@ -109,6 +110,7 @@ def filing_body_text(filing: Filing) -> str:
     """Primary-document text (visible HTML table cells included, no OCR), else the full submission; "" if none.
 
     edgartools raises AttributeError for a filing with no primary document; that is absorbed as a filing property.
+    Each read runs under the `sec_io` retry policy; a transient failure raises.
     """
     readers: tuple[tuple[str, Callable[[str], str]], ...] = (
         ("html", html_to_text),
@@ -117,7 +119,7 @@ def filing_body_text(filing: Filing) -> str:
     )
     for method, to_text in readers:
         try:
-            raw = getattr(filing, method)()
+            raw = sec_call(getattr(filing, method), label=f"{getattr(filing, 'accession_number', '?')} {method}")
         except AttributeError:  # edgartools dereferences a missing primary document
             continue
         if raw and (text := to_text(raw)).strip():
@@ -460,9 +462,11 @@ def fetch_fundamentals_employees(
     Each run lists the whole `years_history` window and skips filing dates already in
     `fundamentals_employees`. A filing with no supported count is stored as a NULL row, so it is
     decided once and never sent to the LLM again. A filing listed in the manual roster takes its
-    value from there instead of the LLM, on `--full` too.
+    value from there instead of the LLM, on `--full` too. A ticker that fails saves nothing, is named
+    in the coverage log and is retried on the next run; the run never raises for it.
     """
     context.ensure_edgar_identity()
+    configure(context)
     cik_map = load_cik_mapping(context, tickers)
     missing = set(tickers) - set(cik_map["ticker"])
     if missing:
@@ -485,7 +489,8 @@ def fetch_fundamentals_employees(
         max_workers=int(context.config.data_extract.fundamentals_workers),
     )
     successful = [result for result in results if result is not None]
-    failed = len(results) - len(successful)
+    failed_tickers = [str(ticker) for ticker, result in zip(cik_map["ticker"], results, strict=True) if result is None]
+    failed = len(failed_tickers)
     outcomes = [outcome for result in successful for outcome in result.outcomes]
     rows = sum(len(result.frame) for result in successful)
     counted = sum(int(result.frame["employees"].notna().sum()) for result in successful)
@@ -501,6 +506,12 @@ def fetch_fundamentals_employees(
         counted,
         rows - counted,
     )
-    if failed:
-        raise IncompleteEdgarRunError(f"fundamentals employees: {failed} ticker(s) failed; decided filings were saved and the rest retry next run")
-    record_run(context, Tables.fundamentals_employees, len(cik_map), counted, is_full_rescan=True, coverage_complete=True, tickers=tickers)
+    if failed_tickers:
+        more = f" (+{failed - _FAILED_SHOWN} more)" if failed > _FAILED_SHOWN else ""
+        context.log.warning(
+            "fundamentals employees: %d/%d ticker(s) not read, listed again next run: %s%s",
+            failed,
+            len(cik_map),
+            ", ".join(failed_tickers[:_FAILED_SHOWN]),
+            more,
+        )

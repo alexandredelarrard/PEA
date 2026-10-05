@@ -20,6 +20,7 @@ from typing import cast
 
 import pandas as pd
 
+from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, ExecutiveCompensation
 from src.data_extract.utils.structure.def14a.validate import (
@@ -605,7 +606,8 @@ def _log_director_comp_recall(ticker: str, filing: pd.Series, payload: str, n_ro
 
 
 def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
-    """One answer -> the five frames it fans out to, save-ready.
+    """One answer -> the five frames it fans out to, save-ready; an answer without domain evidence
+    -> one `def14a_llm` empty-filing marker and no child row.
 
     CHILDREN FIRST, parent last: `run_extraction` saves in this order, so a crash between
     the two leaves a child row without a parent (recoverable -- the accession dedup keys on
@@ -617,13 +619,14 @@ def _result_frames(result: LlmResult) -> dict[Table, pd.DataFrame]:
     assert isinstance(extract, Def14AExtract)
 
     if not _has_extract_evidence(extract):
-        logger.warning(
-            "%s %s (%s): DEF 14A extract contained no domain evidence; writing no completion row so it remains retryable",
+        logger.info(
+            "%s %s (%s): DEF 14A extract contained no domain evidence; stored as an empty-filing marker",
             ticker,
             filing.get("filing_date", ""),
             filing.get("accession_number", ""),
         )
-        return {}
+        values = {"ticker": ticker, "accession_number": filing["accession_number"], "as_of": filing["filing_date"]}
+        return {Tables.def14a_llm: marker_frame(Tables.def14a_llm, values)}
 
     _log_director_comp_recall(ticker, filing, result.task.payload, len(_director_comp_rows(ticker, filing, extract)))
 

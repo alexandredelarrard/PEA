@@ -180,6 +180,15 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Evidence: `reports/validate/2026-10-03-insider-transactions-merge/` (`03-implementation.md`)
 - Operational boundary: the live database still holds the retired tables until the user drops them and runs the refill.
 
+## 2026-10-04: refresh — extraction resume reads only the database
+
+- Profile: internal/standard
+- source_commit: 6080c74 (branch `feat/db-derived-resume`)
+- Coverage: every extracted table declares a `Resume` contract and, where a read can find nothing, an empty-filing marker in `schema.py`; `resume.py` derives series windows, EDGAR document work lists (local filing index minus stored accessions) and archive work lists from the tables alone; consumer reads drop markers; the run manifest, the bulk sidecars and their config keys are retired; `sec_io` is the one SEC retry policy; fetchers save what they read, retry in rounds and exit 0; one `price-history` download writes prices, dividends and splits; short interest reads day-level holes, with `--repair-gaps` for per-key gaps; the 13F low watermark and the new-ticker backfill from the SEC 13F data sets; the insider EDGAR window starts at the earlier of the day after the last zip quarter and the run date minus 7 days; the insider, 13D and 13G frontiers are read from the tables; every cube part rewrites at least 7 sessions; DAG gates run on `ALL_DONE`; `extraction-status` reports and exits 0; `predict` raises `StaleInputsError`. TODO: the "Extraction resume reads only the database" item is closed and removed.
+- Pages: [Data extraction](./modules/data-extract.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Table catalog](./reference/table-catalog.md), [Data access](./guides/data-access.md), [Data sources](./reference/data-sources.md), [Cube build](./flows/cube-build.md), [Live database](./reference/live-database.md), [Source availability](./concepts/source-availability.md), [Model training and daily prediction](./flows/model-training-and-prediction.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [Coding standards](./guides/coding-standards.md), [Add a data source](./guides/add-a-data-source.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-03-db-derived-extraction-resume/` (`02-plan.md`, `03-implementation-phase-*.md`)
+- Operational boundary: the live database gets `sp500_tickers.added_on`, the markers and the cache builds only at the cutover.
+
 ## 2026-10-04: refresh — verified point-in-time superinvestor roster
 
 - Profile: internal/standard
@@ -188,3 +197,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-04-sec13f-superinvestor-roster/` (`03-implementation.md`)
 - Operational boundary: the live roster was rebuilt from the branch; after merge the user reruns `superinvestors --seed`, unpauses the `data_extraction` DAG and rebuilds the cube.
+
+## 2026-10-05: refresh — extraction resume cutover and refactor
+
+- Profile: internal/standard
+- source_commit: f02bbb6 (branch `feat/db-derived-resume`)
+- Coverage: the document planner reads each table's stored accessions once and cuts them to each key's listing; `incremental.stored_values` is the one stored-value reader; Item 5.07 votes run as load, plan, tasks, extract and save steps; the 13F backfill treats a missing `added_on` as no new tickers; 13F information-table downloads and the superinvestor 13F listing go through `sec_io`; `sp500_tickers.added_on` exists (cutover rows 2000-01-01); the EDGAR index cache is in `data/sec_edgar_index`; `sec13f_hr` CIKs are 10-digit; `sec_short_interest` starts at 2018-08-01 and a scoped `-F` upserts its own tickers; the manifest and sidecars are retired to `data/_retired/2026-10/`. TODO: the R-07 unpadded-CIK item is removed, the insider 2026q1 ingest is marked done, and an entity-symbol-lineage re-run block is added.
+- Pages: [Data extraction](./modules/data-extract.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-03-db-derived-extraction-resume/` (`05-final-report.md`, `refactor/04-validate.md`, `03-implementation-phase-11-*.md`)
+- Operational boundary: the stage E file move, stage D, the cube rebuild and `superinvestors --seed` run after the merge into dev.

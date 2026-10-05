@@ -13,9 +13,29 @@ data_extract:
   sharadar_years_history: 31
   sharadar_request_pace: 0.35
   redundant_ticks: ["GOOG", "FOX", "NWS", "EA", "BRK-A"] #EA got acquired; BRK-A is a separate class from roster BRK-B
-  # Self-heal cadence for the EDGAR filing-listing fetchers (13D, 8-K, DEF 14A
-  # edgar + LLM, fundamentals edgartools): each uses the extraction manifest's
-  manifest_full_rescan_days: 30
+  # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
+  # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
+  # waiting `waits` seconds between them (the last repeats); a Retry-After lengthens a wait up to the cap.
+  sec_retry:
+    attempts: 3
+    waits: [5, 20]
+    retry_after_cap: 120
+  # EDGAR document fetchers (`utils/common/edgar_driver.py`): a key whose read rate in a run is
+  # below `threshold`, with at least `min_failed` failed documents, re-reads only those documents
+  # in up to `rounds` in-task rounds, waiting `waits` seconds before each; the rest is listed again
+  # on the next run, which always exits 0.
+  retry_rounds:
+    rounds: 3
+    waits: [60, 120, 240]
+    threshold: 0.985
+    min_failed: 2
+  # Per-fetch cap on documents read in one run, newest first; a larger work list logs an ERROR and
+  # drains over later runs. The one-time backlog run lifts it with `--no-cap`.
+  max_documents_per_run: 5000
+  # `modelling predict` refuses to score when the share of universe tickers whose own latest
+  # prices / fundamentals_sharadar / fundamentals_history date is within the table's cadence
+  # tolerance falls below this; `extraction-status` marks those three tables RED on the same rule.
+  prediction_fresh_share: 0.95
   # Thread-pool width for the fundamentals per-filing XBRL walk. Its own knob rather than
   # parallel_fetch's DEFAULT_WORKERS because this is the only fetcher whose from-scratch
   # backfill is measured in HOURS (~490 tickers x ~60 filings ~= 30k filing.xbrl() calls at

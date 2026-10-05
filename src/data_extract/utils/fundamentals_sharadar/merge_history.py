@@ -32,7 +32,6 @@ from src.constants.constants import (
 )
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, TranslationReport, apply_derived, load_field_map, translate
@@ -431,4 +430,3 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
         len(overrides.pending),
         report.summary(),
     )
-    record_run(context, Tables.fundamentals_history, len(names), written, is_full_rescan=full)

@@ -42,10 +42,18 @@ def _edgar_line(cusip: str, issuer: str, value: float, shares: float) -> dict[st
 
 
 class _Report:
-    """The `ThirteenF` surface `_read_filing` reads; counts every `infotable_txt` access."""
+    """The `ThirteenF` surface `_read_filing` reads; counts every `infotable_txt` access. `download_error`
+    is raised by the information-table download (the `infotable_xml` access)."""
 
-    def __init__(self, infotable: pd.DataFrame | None, txt: str | None = None, xml: str | None = None, error: Exception | None = None) -> None:
-        self._infotable, self._txt, self._xml, self._error = infotable, txt, xml, error
+    def __init__(
+        self,
+        infotable: pd.DataFrame | None,
+        txt: str | None = None,
+        xml: str | None = None,
+        error: Exception | None = None,
+        download_error: Exception | None = None,
+    ) -> None:
+        self._infotable, self._txt, self._xml, self._error, self._download_error = infotable, txt, xml, error, download_error
         self.txt_reads = 0
 
     @property
@@ -56,6 +64,8 @@ class _Report:
 
     @property
     def infotable_xml(self) -> str | None:
+        if self._download_error is not None:
+            raise self._download_error
         return self._xml
 
     @property
@@ -236,11 +246,21 @@ def test_edgartools_text_exception_uses_the_verified_source() -> None:
 
 
 def test_transient_error_stays_transient_without_reading_text() -> None:
-    report = _Report(None, txt=_table(_HEADER, _AFLAC), error=ConnectionError("429 Too Many Requests"))
+    """A throttle on the information-table download is retried by `sec_io` and stays transient (held back
+    by the low watermark); the text table is never read and no fallback is attempted."""
+    report = _Report(None, txt=_table(_HEADER, _AFLAC), download_error=ConnectionError("429 Too Many Requests"))
     out = _read(report)
-    assert isinstance(out, f13.ReadFailure) and out.transient
+    assert isinstance(out, f13.ReadFailure) and out.transient and "TransientReadError" in out.reason
     assert report.txt_reads == 0
-    print("\n=== SANITY: a throttle inside the infotable read stays a transient failure; no fallback attempted. Validated.")
+    print("\n=== SANITY: a throttle on the infotable download stays a transient failure; no fallback attempted. Validated.")
+
+
+def test_a_parse_error_quoting_429_is_not_transient() -> None:
+    """EdgarTools' own text-parse error quoting ',429' is parsed outside `sec_io`, so it never reads as a throttle."""
+    raw = _table(_HEADER, _AFLAC).replace("Entry Total: 1", "Entry Total: 460,429")
+    out = _read(_Report(None, txt=raw, error=ValueError("bad row 460,429 Too Many")))
+    assert isinstance(out, f13.ReadFailure) and not out.transient
+    print(f"\n=== SANITY: an EdgarTools ValueError quoting ',429' -> ReadFailure(transient=False): {out.reason[:70]!r}. Validated.")
 
 
 def test_unverifiable_text_is_a_parse_failure_not_stored() -> None:

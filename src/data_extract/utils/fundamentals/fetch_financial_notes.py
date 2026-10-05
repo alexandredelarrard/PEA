@@ -2,8 +2,8 @@
 
 Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for universe filers, keeping only
 curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. Rows carry their archive
-`period` and point-in-time `available_at` clock. Incremental: a stored period is skipped unless the universe gained
-tickers or `reparse` is set. Zips are large, so the window is the dedicated `notes_years_history` knob.
+`period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
+list comes from `resume.archive_worklist`.
 """
 
 from __future__ import annotations
@@ -22,10 +22,9 @@ from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     archive_available_at,
     cache_dir,
+    cached_periods,
     ensure_zip,
     is_cached,
-    mark_processed,
-    pending_periods,
     period_end,
     quarter_periods,
     read_zip_tables,
@@ -33,7 +32,8 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import Registrant, drop_rows_outside_segment, load_registrants
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import archive_worklist
+from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.common.sec_utils import cik_to_ticker, load_cik_mapping
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik_series
@@ -129,13 +129,11 @@ def _period_year(tag: str) -> int:
 def _scrape_available_periods(context: Context) -> list[str] | None:
     """Available period tags scraped from the SEC landing page; None on any failure (caller falls back to the generator)."""
     try:
-        r = context.sec_session.get(_LANDING_URL, timeout=60)
-        if r.status_code != 200:
-            return None
-        tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
-        return sorted(set(tags)) or None
+        r = sec_get(context, _LANDING_URL, timeout=60)
     except Exception:  # noqa: BLE001 (best-effort)
         return None
+    tags = re.findall(r"/(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip", r.text)
+    return sorted(set(tags)) or None
 
 
 def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -314,15 +312,16 @@ def _save_period(context: Context, table: Table, frame: pd.DataFrame, columns: l
 def fetch_financial_notes(
     context: Context,
     tickers: list[str],
-    years_history: int = 15,
+    years_history: int,
     reparse: bool = False,
     repair_availability: bool = False,
+    as_of: pd.Timestamp | None = None,
 ) -> int:
     """Fetch the notes data sets over `years_history` into `notes_num` and `notes_text`; returns rows upserted.
 
-    A stored period is skipped unless the universe gained tickers. `reparse` re-reads the WHOLE cached window
-    (needed after a registrant/CIK-resolution change; never a partial suffix). `repair_availability` only
-    repairs stored `available_at` clocks and returns 0 before any download or parse.
+    Periods missing from either table are parsed for every ticker, and cached periods again for a new ticker
+    with no row. `reparse` re-reads every stored period too (after a registrant/CIK-resolution change).
+    `repair_availability` only repairs stored `available_at` clocks and returns 0 before any download or parse.
     """
 
     cikmap = load_cik_mapping(context)
@@ -334,13 +333,15 @@ def fetch_financial_notes(
     if repair_availability:
         return 0  # Metadata-only mode: never download or reparse a ZIP.
 
-    periods = _notes_periods(context, years_history + 1)
-    pending = set(pending_periods(context, cache, _NOTES_TABLES, periods, tickers, reparse=reparse))
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    periods = _notes_periods(context, years_history + 1, run_date)
+    work = archive_worklist(context, _NOTES_TABLES, periods, cached_periods(cache, suffix="_notes.zip"), tickers, run_date, full=reparse)
+    units = dict(work.units())
     n_num = n_txt = 0
     for period in tqdm(periods, desc="SEC financial-statement notes"):
         # every stored period validates its immutable clock, including those skipped below
         available_at = period_clocks.get(period) or stored_period_clock(context, _NOTES_TABLES, period)
-        if period not in pending:
+        if period not in units:
             continue
 
         archive_path = cache / f"{period}_notes.zip"
@@ -353,12 +354,9 @@ def fetch_financial_notes(
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
 
-        num, txt = _read_notes(path, cik2tkr, set(tickers), registrants)
+        num, txt = _read_notes(path, cik2tkr, set(units[period]), registrants)
         n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
         n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
 
-    mark_processed(cache, Tables.notes_num, tickers)
-    logger.info("notes: upserted %d num + %d text rows (%d periods scanned)", n_num, n_txt, len(periods))
-    record_run(context, Tables.notes_num, len(tickers), n_num)
-    record_run(context, Tables.notes_text, len(tickers), n_txt)
+    logger.info("notes: upserted %d num + %d text rows (%d pending + %d rescanned periods)", n_num, n_txt, len(work.pending), len(work.rescan))
     return n_num + n_txt

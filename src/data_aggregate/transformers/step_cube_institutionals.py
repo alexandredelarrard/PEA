@@ -48,7 +48,7 @@ from omegaconf import DictConfig
 
 from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import (
@@ -122,14 +122,16 @@ class StepCubeInstitutionals(Step):
             return self.run(full=True)
 
     def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, PartWindow]:
-        """The merge chain, WITHOUT the write. Extracted so `validate institutionals` scores
-        the same panel this step persists instead of carrying a second copy of the chain --
-        the "two declarations of one fact" failure the registry's `read_columns` exists to end.
-
-        `frames` and `shares` are locals and die with the frame on return, which is what the
-        `del` before `write_part` used to buy."""
+        """The merge chain without the write, so `validate institutionals` scores the same panel
+        this step persists. Returns the merged panel and its `PartWindow`; the source frames are
+        locals, freed on return."""
         window = plan_window(
-            self._store, Tables.cube_part_institutionals, full=full, warmup=self._warmup(), trading_index=load_trading_calendar(self._store)
+            self._store,
+            Tables.cube_part_institutionals,
+            full=full,
+            warmup=self._warmup(),
+            trading_index=load_trading_calendar(self._store),
+            refresh=PART_REFRESH_TRADING_DAYS,
         )
 
         price_frames = self._load_frames()
@@ -344,15 +346,13 @@ class StepCubeInstitutionals(Step):
         selling. Point-in-time on the filing date. The dollar figures are scoped and repaired
         by `insider_quality` before they are summed, never read raw from `value_usd`.
 
-        The completeness frontier is the last EDGAR run that covered exactly this universe,
-        read from the run manifest; without that proof absence stays unknown."""
+        Absence reads as zero through the table's DB frontier (`schedule_complete_through`), the
+        same rule as 13D/13G; after it absence stays unknown."""
         insider = self._load_source(Tables.insider_transactions, frames.universe)
         if insider is None or insider.empty:
             return None
-        complete_through = self._schedule_complete_through(
-            Tables.insider_transactions,
-            expected_tickers=sorted(set(map(str, frames.universe))),
-        )
+        last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
+        complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
         return build_insider_feature_panel(
             frames,
             insider,
@@ -398,15 +398,7 @@ class StepCubeInstitutionals(Step):
         docstring."""
         sec_13d = self._load_source(Tables.sec_13d, frames.universe)
         sec_13g = self._load_source(Tables.sec_13g, frames.universe)
-        expected_tickers = sorted(set(map(str, frames.universe)))
-        complete_13d = self._schedule_complete_through(
-            Tables.sec_13d,
-            expected_tickers=expected_tickers,
-        )
-        complete_13g = self._schedule_complete_through(
-            Tables.sec_13g,
-            expected_tickers=expected_tickers,
-        )
+        last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
         return build_ownership_feature_panel(
             frames,
             sec_13d,
@@ -414,22 +406,9 @@ class StepCubeInstitutionals(Step):
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             availability=self._availability,
-            complete_through_13d=complete_13d,
-            complete_through_13g=complete_13g,
+            complete_through_13d=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session),
+            complete_through_13g=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session),
             sink=sink,
-        )
-
-    def _schedule_complete_through(
-        self,
-        table: Table,
-        *,
-        expected_tickers: Sequence[str],
-    ) -> pd.Timestamp | None:
-        return institutional_frontiers.schedule_complete_through(
-            self._context,
-            self._log,
-            table,
-            expected_tickers=expected_tickers,
         )
 
     def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:

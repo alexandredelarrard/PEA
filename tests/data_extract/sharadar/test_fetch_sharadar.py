@@ -15,7 +15,7 @@ Every test prints a sanity-check conclusion.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pandas.api.types as ptypes
@@ -27,13 +27,14 @@ from src.constants.constants import (
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
 from src.data_extract.utils.fundamentals_sharadar.client import (
     NotEntitledError,
+    SharadarRequestError,
     canonical_symbols,
     cast_value_columns,
     sharadar_get,
     vendor_symbol,
 )
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import SHARADAR_DIMENSIONS, fetch_sharadar_fundamentals, fetch_sharadar_tickers
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 CONFIG_DIR = "./configs"
 ENTITLED = "AAPL"  # measured entitled on the current key
@@ -158,9 +159,10 @@ def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
     while BRK-B kept appearing in the cube via the price panel. If this test ever starts
     failing because the dash form returns rows, the mapping can be deleted."""
     common = dict(dimension="ARQ", sort="date.asc", limit=5)
-    wrong = sharadar_get_untyped(context, "fundamentals", ticker="BRK-B", **common, **{"date.gte": "2020-01-01"})
-    right = sharadar_get_untyped(context, "fundamentals", ticker=vendor_symbol("BRK-B"), **common, **{"date.gte": "2020-01-01"})
-    if wrong is None or right is None:
+    try:
+        wrong = sharadar_get_untyped(context, "fundamentals", ticker="BRK-B", **common, **{"date.gte": "2020-01-01"})
+        right = sharadar_get_untyped(context, "fundamentals", ticker=vendor_symbol("BRK-B"), **common, **{"date.gte": "2020-01-01"})
+    except SharadarRequestError:
         pytest.skip("Sharadar request failed (network)")
 
     print("\n=== SANITY CHECK: the wrong spelling fails SILENTLY ===")
@@ -179,8 +181,11 @@ def test_response_header_matches_contract(context):
     """`fields=` drops an unavailable field SILENTLY -- a typo yields a missing column and no
     warning. So the header is validated against `SHARADAR_SF1_COLUMNS` on every response, and
     this test pins that contract against the live feed."""
-    frame = sharadar_get_untyped(context, "fundamentals", ticker=ENTITLED, dimension="ARQ", sort="date.asc", limit=5, **{"date.gte": "2024-01-01"})
-    if frame is None:
+    try:
+        frame = sharadar_get_untyped(
+            context, "fundamentals", ticker=ENTITLED, dimension="ARQ", sort="date.asc", limit=5, **{"date.gte": "2024-01-01"}
+        )
+    except SharadarRequestError:
         pytest.skip("Sharadar request failed (network)")
 
     got = tuple(frame.columns)
@@ -252,9 +257,8 @@ def _rows_for(context, ticker: str) -> int:
 
 @pytest.mark.live  # live Sharadar GETs + upserts into live sharadar_tickers / fundamentals_sharadar
 def test_resume_is_incremental(context):
-    """The second run must write nothing and must never ask for a date at or before the
-    stored max -- that is the whole point of resuming from `max_date_by` rather than
-    re-pulling the window."""
+    """The second run must write nothing and must never ask for a date before the stored max
+    minus the contract overlap -- it resumes per ticker rather than re-pulling the window."""
     fetch_sharadar_tickers(context)  # the USD assertion needs this dimension
     fetch_sharadar_fundamentals(context, tickers=[ENTITLED], years_history=int(context.config.data_extract.sharadar_years_history))
     after_first = _rows_for(context, ENTITLED)
@@ -277,19 +281,20 @@ def test_resume_is_incremental(context):
         fetch_mod.sharadar_get = real_get
     after_second = _rows_for(context, ENTITLED)
 
-    too_early = [d for d in requested if pd.Timestamp(d) <= stored_max]
+    overlap = pd.Timedelta(days=cast(Resume, Tables.sharadar_fundamentals.resume).overlap_days)
+    too_early = [d for d in requested if pd.Timestamp(d) < stored_max - overlap]
 
     print("\n=== SANITY CHECK: the second run is incremental ===")
     print(f"  {ENTITLED} rows after run 1 : {after_first}")
     print(f"  {ENTITLED} rows after run 2 : {after_second}  (delta {after_second - after_first})")
     print(f"  stored max date   : {stored_max.date()}")
     print(f"  date.gte requested: {sorted(set(requested))}")
-    print(f"  requests reaching at/before the stored max: {too_early or 'none'}")
+    print(f"  requests reaching before the stored max - overlap: {too_early or 'none'}")
 
     assert after_second == after_first, "the second run must write no new rows"
     assert requested, "the second run must still issue requests (with a resumed bound)"
     assert not too_early, f"resume asked for data it already has: {too_early}"
-    print("  OK: run 2 wrote 0 rows and asked only for dates after the stored max.")
+    print("  OK: run 2 wrote 0 rows and asked only for the overlap behind the stored max.")
 
 
 # --------------------------------------------------------------------------- #

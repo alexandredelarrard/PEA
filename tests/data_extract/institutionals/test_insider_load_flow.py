@@ -1,9 +1,11 @@
 """The single-table insider load flow on a real SQLite `DataStore`: the zip ingest stamps `quarter`
-on EDGAR-stored filings and inserts only the filings EDGAR lacks, EDGAR replaces a zip-sourced
-filing whole, both reruns are no-ops, and the REQ-007 / REQ-008 log lines are emitted.
+on EDGAR-stored filings and inserts only the filings EDGAR lacks, EDGAR reads only after the last
+zip quarter and replaces a zip-sourced filing there whole, both reruns are no-ops, and the
+REQ-007 / REQ-008 log lines are emitted.
 
-The SEC is faked at the fetchers' IO seams (zip members per quarter, the EDGAR filing lister);
-parsing, screening, the shared driver and every store read and write are the real code.
+The SEC is faked at the fetchers' IO seams (zip members per quarter, the local EDGAR index and the
+filing objects it yields); parsing, screening, the planner, the shared driver and every store read
+and write are the real code.
 """
 
 from __future__ import annotations
@@ -21,15 +23,15 @@ import pytest
 from sqlalchemy import text
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_extract.utils.common import edgar_driver
+from src.data_extract.utils.common import edgar_driver, edgar_index
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.run_manifest import get_entry
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store import store as store_module
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
 
 AAA_CIK = "0000000001"
@@ -132,10 +134,13 @@ def _xml(spec: Spec) -> str:
 
 
 class _Filing:
-    """The attributes `fetch_insider_edgar` reads from an edgartools filing."""
+    """The attributes `fetch_insider_edgar` and the driver read from an edgartools filing."""
 
-    def __init__(self, spec: Spec) -> None:
+    def __init__(self, spec: Spec, cik: str) -> None:
         self.accession_number = spec.accession
+        self.cik = int(cik)
+        self.form = "4"
+        self.company = f"{spec.symbol} CORP"
         self.filing_date = pd.Timestamp(spec.filed)
         self.header = SimpleNamespace(acceptance_datetime=f"{spec.filed} 16:05:00")
         self._xml = _xml(spec)
@@ -145,23 +150,33 @@ class _Filing:
 
 
 class _FakeSec:
-    """Zip members per quarter and EDGAR filings, patched over the fetchers' IO seams."""
+    """Zip members per quarter, plus EDGAR filings published in the local index (under the issuer's
+    CIK, or under a listed owner's CIK) and served by accession; `read` records every filing read."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, identity: Identity, cache: Path) -> None:
         self.zips: dict[str, tuple[pd.DataFrame, ...]] = {}
-        self.filings: list[Spec] = []
-        self.listing_since: list[pd.Timestamp | None] = []
+        self.specs: dict[str, Spec] = {}
+        self.read: list[str] = []
         monkeypatch.setattr(ins, "load_identity", lambda context: identity)
         monkeypatch.setattr(ins, "cache_dir", lambda context, key: cache)
-        monkeypatch.setattr(ins, "quarter_periods", lambda span, first_year: list(QUARTERS))
+        monkeypatch.setattr(ins, "quarter_periods", lambda *args: list(QUARTERS))
         monkeypatch.setattr(ins, "ensure_zip", lambda context, path, url, **kwargs: path)
         monkeypatch.setattr(ins, "_read_tables", lambda path: self.zips.get(path.stem))
-        monkeypatch.setattr(edgar, "load_identity", lambda context: identity)
-        monkeypatch.setattr(edgar, "insider_filings", self._list)
+        monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
+        monkeypatch.setattr(edgar_driver, "load_registrants", lambda config_dir: {})
+        # One worker (the in-memory SQLite store shares one connection across threads) and no index download.
+        monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1, refresh_index=False))
+        monkeypatch.setattr(edgar_index, "index_filing", self._filing)
 
-    def _list(self, ticker: str, cik: str, *, since: pd.Timestamp | None, through: pd.Timestamp, done_accessions: frozenset[str], scope: Any) -> list:
-        self.listing_since.append(since)
-        return [_Filing(spec) for spec in self.filings if spec.symbol == ticker and spec.accession not in done_accessions]
+    def publish(self, context: Any, specs: list[Spec], *, owner_listed: tuple[tuple[Spec, str], ...] = ()) -> None:
+        """EDGAR's index lists `specs` under their issuer CIK and each `(spec, cik)` of `owner_listed` under that CIK."""
+        listed = [(spec, spec.issuer_cik) for spec in specs] + list(owner_listed)
+        self.specs = {spec.accession: spec for spec, _ in listed}
+        seed_index(context, [(int(cik), f"{spec.symbol} CORP", "4", spec.filed, spec.accession) for spec, cik in listed])
+
+    def _filing(self, cik: object, company: object, form: object, filed: object, accession: object) -> _Filing:
+        self.read.append(str(accession))
+        return _Filing(self.specs[str(accession)], str(cik))
 
 
 @pytest.fixture(scope="module")
@@ -198,7 +213,7 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
-        config=extract_config(data_extract={"manifest_full_rescan_days": 30, "redundant_ticks": []}),
+        config=extract_config(data_extract={"redundant_ticks": []}),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
     )
@@ -250,10 +265,10 @@ def test_zip_over_edgar_stamps_quarter_inserts_only_missing_filings_and_reports(
 
     sec.zips["2026q1"] = _zip_tables([Q0])
     _run_zip(context)
-    sec.filings = [E1, E2]
+    sec.publish(context, [Q0, E1, E2])
     _run_edgar(context)
     df_edgar_only = _table(sqlite_store)
-    assert sec.listing_since[-1] == pd.Timestamp("2026-01-26"), "EDGAR lists from the max stored filing date - 7 days"
+    assert sec.read == [E1.accession, E2.accession], "EDGAR reads only after the stored 2026q1 zip quarter"
 
     caplog.clear()
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z0, Z1, R1])
@@ -276,9 +291,6 @@ def test_zip_over_edgar_stamps_quarter_inserts_only_missing_filings_and_reports(
     assert len(df_after) == len(df_edgar_only) + 2
     # (e) one source per accession
     assert _mixed_accessions(df_after) == 0
-    # D-06: the zip ingest never writes the insider_transactions manifest entry; EDGAR's run does
-    entry = get_entry(context, Tables.insider_transactions)
-    assert entry is not None and entry["coverage_complete"] is True
 
     warnings, infos = _messages(caplog, logging.WARNING), _messages(caplog, logging.INFO)
     report = "insider 2026q2: 1 / 2 filings missing from EDGAR (50.0%), added from zip; top: AAA 1"
@@ -302,45 +314,34 @@ def test_zip_over_edgar_stamps_quarter_inserts_only_missing_filings_and_reports(
     )
 
 
-def zip_after_edgar_keeps_the_proof(context: Any, sec: _FakeSec, run_zip: Callable[[Any], int]) -> tuple[dict, pd.Timestamp | None]:
-    """EDGAR run, then a zip quarter through `run_zip`; asserts the EDGAR manifest entry and the
-    frontier it proves are unchanged. Returns the entry and the frontier."""
-    log = logging.getLogger("tests.insider_load_flow")
+LAST_SESSION = pd.Timestamp("2026-05-08")
+
+
+def zip_after_edgar_keeps_the_frontier(context: Any, sec: _FakeSec, run_zip: Callable[[Any], int]) -> pd.Timestamp | None:
+    """EDGAR run, then a zip quarter through `run_zip`; asserts the table's DB frontier is unchanged. Returns it."""
     sec.zips["2026q1"] = _zip_tables([Q0])
     run_zip(context)
-    sec.filings = [E1, E2]
+    sec.publish(context, [E1, E2])
     _run_edgar(context)
-    before = get_entry(context, Tables.insider_transactions)
-    frontier_before = schedule_complete_through(context, log, Tables.insider_transactions, expected_tickers=UNIVERSE)
-    assert before is not None and before.get("coverage_complete") is True and before.get("tickers") == UNIVERSE
-    assert frontier_before == pd.Timestamp(before["last_run_date"])
+    frontier_before = schedule_complete_through(context.store, Tables.insider_transactions, LAST_SESSION)
+    assert frontier_before == LAST_SESSION, "EDGAR's latest filing (2026-05-05) is inside the 7-day overlap"
 
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z0, Z1])
     run_zip(context)
-    after = get_entry(context, Tables.insider_transactions)
-    frontier_after = schedule_complete_through(context, log, Tables.insider_transactions, expected_tickers=UNIVERSE)
-
-    proof = ("coverage_complete", "last_run_date", "tickers")
-    kept = {key: (after or {}).get(key) for key in proof}
-    assert kept == {key: before[key] for key in proof}, f"EDGAR proof changed by the zip ingest: {kept}"
-    assert after == before, "the zip ingest leaves the whole EDGAR entry untouched"
+    frontier_after = schedule_complete_through(context.store, Tables.insider_transactions, LAST_SESSION)
     assert frontier_after == frontier_before, f"frontier moved: {frontier_before} -> {frontier_after}"
-    return before, frontier_after
+    return frontier_after
 
 
-def test_a_zip_ingest_after_an_edgar_run_keeps_the_edgar_completeness_proof(tmp_path, sqlite_store, monkeypatch, identity):
-    """AC-009 (O12): a zip ingest neither erases nor advances the EDGAR run's manifest proof."""
+def test_a_zip_ingest_after_an_edgar_run_keeps_the_db_frontier(tmp_path, sqlite_store, monkeypatch, identity):
+    """AC-009 (O12): a zip ingest neither erases nor moves the frontier the EDGAR rows give."""
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
 
-    entry, frontier = zip_after_edgar_keeps_the_proof(context, sec, _run_zip)
+    frontier = zip_after_edgar_keeps_the_frontier(context, sec, _run_zip)
 
     assert frontier is not None
-    print(
-        f"\nSANITY: after a zip quarter following the EDGAR run, the insider_transactions manifest entry is unchanged "
-        f"(coverage_complete={entry['coverage_complete']}, last_run_date={entry['last_run_date']}, tickers={entry['tickers']}) "
-        f"and complete_through stays {frontier.date()}."
-    )
+    print(f"\nSANITY: after a zip quarter following the EDGAR run, complete_through stays {frontier.date()} (no manifest is read).")
 
 
 def test_a_quarter_without_edgar_rows_logs_info_only(tmp_path, sqlite_store, monkeypatch, identity, caplog):
@@ -356,21 +357,23 @@ def test_a_quarter_without_edgar_rows_logs_info_only(tmp_path, sqlite_store, mon
     assert inserted == 2 and set(df["source"]) == {"zip"}
     assert "insider 2026q2: loaded from zip (no EDGAR coverage)" in _messages(caplog, logging.INFO)
     assert _messages(caplog, logging.WARNING) == []
-    assert get_entry(context, Tables.insider_transactions) is None, "the zip ingest records no manifest entry (D-06)"
     print("\nSANITY: a zip quarter with no EDGAR rows inserted 2 zip rows, logged 'loaded from zip (no EDGAR coverage)' and no WARNING.")
 
 
-A = Spec("0000000001-26-000200", "2026-05-04", tuple(Trade("2026-05-01", "S", 10 + i, 20, 500 - i) for i in range(3)))
-A_EDGAR = Spec(A.accession, A.filed, (Trade("2026-05-01", "S", 30, 20, 470), Trade("2026-05-01", "S", 31, 20, 439)))
-B = Spec("0000000001-26-000201", "2026-05-05", (Trade("2026-05-04", "P", 1, 20, 440),))
-B_EDGAR = Spec(B.accession, B.filed, (Trade("2026-05-04", "P", 1, 20, 440), Trade("2026-05-04", "P", 2, 20, 442)))
+# A and B sit in the 2026q2 zip but carry a 2026-07-01 filing date (accepted after the quarter's last
+# dissemination), so they fall after the zip floor where EDGAR reads.
+A = Spec("0000000001-26-000200", "2026-07-01", tuple(Trade("2026-06-29", "S", 10 + i, 20, 500 - i) for i in range(3)))
+A_EDGAR = Spec(A.accession, A.filed, (Trade("2026-06-29", "S", 30, 20, 470), Trade("2026-06-29", "S", 31, 20, 439)))
+B = Spec("0000000001-26-000201", "2026-07-01", (Trade("2026-06-30", "P", 1, 20, 440),))
+B_EDGAR = Spec(B.accession, B.filed, (Trade("2026-06-30", "P", 1, 20, 440), Trade("2026-06-30", "P", 2, 20, 442)))
 C = Spec("0000000001-26-000202", "2026-05-06", (Trade("2026-05-05", "S", 3, 20, 439),))
 N = Spec("0000000001-26-000300", "2026-07-01", (Trade("2026-06-30", "P", 4, 21, 443),))
 X = Spec("0000000099-26-000002", "2026-07-01", (Trade("2026-06-30", "S", 9, 9, 9),), issuer_cik=OTHER_CIK)
 
 
 def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, sqlite_store, monkeypatch, identity, caplog):
-    """AC-006 (c), (d), (e); AC-008 for the EDGAR run (exclusions collected across the worker pool)."""
+    """AC-006 (c), (d), (e): a zip row never makes a filing look read by EDGAR; a filing listed under
+    AAA only as an owner (X) becomes AAA's marker and is excluded nowhere."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
@@ -379,11 +382,11 @@ def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, s
     df_zip = _table(sqlite_store)
 
     caplog.clear()
-    sec.filings = [A_EDGAR, B_EDGAR, N, X]
+    sec.publish(context, [A_EDGAR, B_EDGAR, C, N], owner_listed=((X, AAA_CIK),))
     _run_edgar(context)
     df_after = _table(sqlite_store)
 
-    assert sec.listing_since[-1] == pd.Timestamp("2026-04-29"), "max stored filing_date 2026-05-06 - 7 days"
+    assert sorted(sec.read) == sorted([A.accession, B.accession, N.accession, X.accession]), "C (May) is behind the 2026q2 floor"
     rows_a = _rows_of(df_after, A.accession)
     assert len(rows_a) == 2 and set(rows_a["source"]) == {"edgar"} and set(rows_a["quarter"]) == {"2026q2"}
     assert list(rows_a["shares"]) == [30.0, 31.0], "EDGAR's values replace the zip's"
@@ -394,15 +397,19 @@ def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, s
     rows_n = _rows_of(df_after, N.accession)
     assert list(rows_n["source"]) == ["edgar"] and rows_n["quarter"].isna().all()
     assert X.accession not in set(df_after["accession_number"])
+    marker = sqlite_store.load(Tables.insider_transactions, markers=True, where={"accession_number": X.accession})
+    assert marker[["ticker", "security_type", "source"]].to_dict("records") == [{"ticker": "AAA", "security_type": "_empty", "source": "edgar"}]
     assert _mixed_accessions(df_after) == 0
-    exclusion = next(message for message in _messages(caplog, logging.WARNING) if "excluded" in message)
-    assert "1 filing(s), 1 row(s), 1 P/S row(s)" in exclusion and "entity_mismatch 1" in exclusion
+    assert "insider EDGAR run: no filing excluded by the identity screen" in _messages(caplog, logging.INFO)
 
+    sec.read.clear()
     _run_edgar(context)
     pd.testing.assert_frame_equal(_table(sqlite_store), df_after)
+    assert sec.read == [], "every filing after the floor is now stored from EDGAR (X as AAA's marker)"
     print(
-        f"\nSANITY: EDGAR re-read zip filing A (3 zip rows -> {len(rows_a)} EDGAR rows) and B (1 -> 2), keeping quarter 2026q2 on every row; "
-        f"C stays zip, N is new with NULL quarter, X excluded with a WARNING; an EDGAR rerun changed none of the {len(df_after)} rows."
+        f"\nSANITY: EDGAR re-read zip filings A (3 zip rows -> {len(rows_a)} EDGAR rows) and B (1 -> 2) filed after the 2026q2 floor, "
+        f"keeping quarter 2026q2; C stays zip; N is new with NULL quarter; X (AAA only an owner) is AAA's marker; "
+        f"an EDGAR rerun read nothing and changed none of the {len(df_after)} rows."
     )
 
 
@@ -440,14 +447,12 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     against the whole universe, is skipped, so BBB's zip and EDGAR rows survive unchanged."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
-    # Two tickers: one worker, since the in-memory SQLite store shares one connection across threads.
-    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sweep = "insider: stored-row sweep -- "
 
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
-    sec.filings = [E1, B1]
+    sec.publish(context, [E1, B1])
     edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
     df_before = _table(sqlite_store)
     bbb = df_before["ticker"].eq("BBB")
@@ -475,11 +480,10 @@ def test_un_normalised_universe_tickers_sweep_against_the_loaded_universe(tmp_pa
     adjudicate against the loaded universe, not the raw spelling, so every universe company's rows survive."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
-    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
-    sec.filings = [E1, B1]
+    sec.publish(context, [E1, B1])
     edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
     df_before = _table(sqlite_store)
 
@@ -493,50 +497,35 @@ def test_un_normalised_universe_tickers_sweep_against_the_loaded_universe(tmp_pa
     print(f"\nSANITY: tickers [' bbb ', 'aaa'] ran the sweep against the loaded universe and kept all {len(df_after)} rows; log: '{sweep}'.")
 
 
-def test_a_ticker_subset_edgar_run_never_moves_another_tickers_listing_window(tmp_path, sqlite_store, monkeypatch, identity_two):
-    """R-07: each ticker lists from its OWN latest stored `filing_date` - 7 days, so a `-t AAA` EDGAR run
-    cannot push BBB's window past a BBB filing filed in between; the next full run lists and stores it."""
+def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, sqlite_store, monkeypatch, identity_two):
+    """R-07: the work list is each ticker's indexed filings minus its own stored EDGAR accessions, so a
+    `-t AAA` EDGAR run cannot hide a BBB filing filed in between; the next full run reads and stores it."""
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
-    monkeypatch.setattr(edgar, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
-    listed: list[tuple[str, pd.Timestamp | None]] = []
-
-    def list_since(ticker: str, cik: str, *, since: pd.Timestamp | None, through: pd.Timestamp, done_accessions: frozenset[str], scope: Any) -> list:
-        """The EDGAR lister honouring `since`, as the Atom paging does."""
-        listed.append((ticker, since))
-        return [
-            _Filing(spec)
-            for spec in sec.filings
-            if spec.symbol == ticker and spec.accession not in done_accessions and (since is None or pd.Timestamp(spec.filed) >= since)
-        ]
-
-    monkeypatch.setattr(edgar, "insider_filings", list_since)
     sec.zips["2026q1"] = _zip_tables([Q0, B0])
     ins.fetch_insider_transactions(context, tickers=["AAA", "BBB"], years_history=1)
-    sec.filings = [E1, B1]
+    sec.publish(context, [E1, B1])
     edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
 
     a_late = Spec("0000000001-26-000900", "2026-07-01", (Trade("2026-06-30", "P", 5, 10, 50),))
     b_gap = Spec("0000000002-26-000700", "2026-06-01", (Trade("2026-05-29", "P", 5, 10, 50),), issuer_cik=BBB_CIK, symbol="BBB")
-    sec.filings = [E1, B1, a_late]
-    listed.clear()
+    sec.publish(context, [E1, B1, a_late, b_gap])
+    sec.read.clear()
     edgar.fetch_insider_edgar(context, tickers=["AAA"], years_history=15)
-    subset_listing = dict(listed)
+    subset_read = list(sec.read)
 
-    sec.filings = [E1, B1, a_late, b_gap]
-    listed.clear()
+    sec.read.clear()
     edgar.fetch_insider_edgar(context, tickers=["AAA", "BBB"], years_history=15)
-    full_listing = dict(listed)
+    full_read = list(sec.read)
     df = _table(sqlite_store)
 
-    assert subset_listing == {"AAA": pd.Timestamp("2026-04-27")}, "AAA lists from its own max 2026-05-04 - 7 days"
-    assert full_listing == {"AAA": pd.Timestamp("2026-06-24"), "BBB": pd.Timestamp("2026-04-27")}, full_listing
+    assert subset_read == [a_late.accession], "the -t AAA run reads AAA's new filing only"
+    assert full_read == [b_gap.accession], "the full run reads BBB's filing from the gap, and nothing already stored"
     assert b_gap.accession in set(df["accession_number"]), "the BBB filing in the old gap is stored"
     assert _mixed_accessions(df) == 0
     print(
-        f"\nSANITY: after a -t AAA EDGAR run stored AAA's {a_late.filed} filing, the full run listed AAA from "
-        f"{full_listing['AAA']:%Y-%m-%d} and BBB from its own {full_listing['BBB']:%Y-%m-%d} (BBB max 2026-05-04 - 7 days), "
-        f"so BBB's {b_gap.filed} filing in the old gap was stored ({len(df)} rows, one source per accession)."
+        f"\nSANITY: a -t AAA EDGAR run read only AAA's {a_late.filed} filing; the next full run read BBB's {b_gap.filed} filing "
+        f"(and nothing already stored), so it is stored ({len(df)} rows, one source per accession)."
     )
 
 
@@ -562,11 +551,11 @@ def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sq
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
 
-    sec.filings = [E1, E2]
+    sec.publish(context, [E1, E2])
     _run_edgar(context)
     df_edgar_only = _table(sqlite_store)
     assert "quarter" not in df_edgar_only.columns and len(df_edgar_only) == 3
-    noop = next(message for message in _messages(caplog, logging.INFO) if "no zip row" in message)
+    assert not any("zip-sourced filing" in message for message in _messages(caplog, logging.INFO)), "no zip quarter -> no reconcile"
 
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z1])
     assert _run_zip(context) == 1
@@ -577,22 +566,26 @@ def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sq
     assert list(_rows_of(df_zip, Z1.accession)["source"]) == ["zip"]
 
     z1_edgar = Spec(Z1.accession, Z1.filed, (*Z1.trades, Trade("2026-05-05", "P", 8, 12, 945)))
-    sec.filings = [E1, E2, z1_edgar]
+    sec.publish(context, [E1, E2, z1_edgar])
+    sec.read.clear()
     _run_edgar(context)
     df_final = _table(sqlite_store)
     rows_z1 = _rows_of(df_final, Z1.accession)
-    assert list(rows_z1["source"]) == ["edgar", "edgar"] and list(rows_z1["quarter"]) == ["2026q2", "2026q2"]
+    assert sec.read == [], "Z1 is behind the 2026q2 zip floor, so EDGAR never re-reads it"
+    assert list(rows_z1["source"]) == ["zip"] and list(rows_z1["quarter"]) == ["2026q2"]
     assert _mixed_accessions(df_final) == 0
     print(
-        f"\nSANITY: EDGAR-first run saved {len(df_edgar_only)} rows and its reconcile was a no-op ('{noop}'); the zip then stamped "
-        f"quarter 2026q2 on E1 and inserted Z1; EDGAR re-read Z1 (1 zip row -> 2 EDGAR rows, quarter kept); no accession holds two sources."
+        f"\nSANITY: EDGAR-first run saved {len(df_edgar_only)} rows with no reconcile (no zip quarter); the zip then stamped "
+        f"quarter 2026q2 on E1 and inserted Z1, which EDGAR never re-reads (filed before the floor); no accession holds two sources."
     )
 
 
 def test_a_reconcile_failure_never_masks_the_run_error(tmp_path, sqlite_store, monkeypatch, identity, caplog):
     """R-03: when the EDGAR run fails, an error in the follow-up reconcile is logged and the run's own error propagates."""
-    _FakeSec(monkeypatch, identity, tmp_path)
+    sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
+    sec.zips["2026q1"] = _zip_tables([Q0])
+    _run_zip(context)  # a stored zip quarter, so the run reconciles after it
 
     def run_fails(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("EDGAR listing failed")

@@ -12,9 +12,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
-import pytest
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
 from src.data_store.schema import Tables
@@ -39,17 +38,15 @@ class _RaisingPeriodFiling:
         return period
 
 
-def _list(monkeypatch: pytest.MonkeyPatch, filings: list[object]) -> None:
-    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
+def _stamp(filing: object, cik: str) -> FilingStamp:
+    return FilingStamp.of(filing, cik)
 
 
-def test_def14a_walk_stores_none_when_period_of_report_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_def14a_parse_stores_none_when_period_of_report_raises() -> None:
     facts = pd.read_parquet(FIXTURES / "ecd_ba_2025.parquet")
     filing = _RaisingPeriodFiling(form="DEF 14A", accession="0000012927-25-000001", filing_date="2025-03-07", cik="12927")
     filing.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: facts))  # type: ignore[attr-defined]
-    _list(monkeypatch, [filing])
-
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.def14a_edgar]
+    df = DEF14A_EDGAR_FETCH.parse("BA", "0000012927", _stamp(filing, "0000012927"), EdgarScope(None, {}))[Tables.def14a_edgar]
 
     assert len(df) == 1
     row = df.iloc[0]
@@ -60,13 +57,11 @@ def test_def14a_walk_stores_none_when_period_of_report_raises(monkeypatch: pytes
     print(f"  1 ECD row kept, period_of_report={row['period_of_report']!r}, cik={row['cik']}: a raising property no longer aborts the walk.")
 
 
-def test_filing_text_walk_stores_none_when_period_of_report_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_filing_text_parse_stores_none_when_period_of_report_raises() -> None:
     body = "Revenue increased because demand grew. " * (FILING_TEXT_MIN_CHARS // 20)
     filing = _RaisingPeriodFiling(form="10-K", accession="0000320193-24-000010", filing_date="2024-05-03", cik="320193")
     filing.obj = lambda: SimpleNamespace(risk_factors=None, management_discussion=body)  # type: ignore[attr-defined]
-    _list(monkeypatch, [filing])
-
-    df = FILING_TEXT_FETCH.build("AAPL", "0000320193", since=None, done_accessions=frozenset(), scope=EdgarScope(None, {}))[Tables.filing_risk_text]
+    df = FILING_TEXT_FETCH.parse("AAPL", "0000320193", _stamp(filing, "0000320193"), EdgarScope(None, {}))[Tables.filing_risk_text]
 
     assert len(df) == 1
     row = df.iloc[0]

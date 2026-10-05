@@ -1,28 +1,12 @@
 """
 fetch_prices.py  (src/data_extract/utils/prices/fetch_prices.py)
 ------------------------------------------------------------------
-Daily OHLCV price history per ticker via yfinance (free, no API key), upserted
-into the `prices` table. The universe itself is scraped elsewhere
-(`fetch_tickers.py`); this module only fetches bars.
+Daily OHLCV, cash dividends and share splits per equity ticker from ONE yfinance `actions=True`
+download per window group, split into `prices`, `prices_dividends` and `prices_splits`.
 
-Notes:
-  - yfinance can rate-limit / hiccup on big batch downloads, so we download in
-    chunks with retries and upsert, which makes re-runs cheap.
-  - Re-runs are incremental: `resume_since` (utils/common/incremental.py) finds
-    the oldest per-ticker last-extracted date across the whole batch, and every
-    ticker is re-fetched forward from that ONE shared date. Some tickers get
-    redundant rows this way, but that is cheap and the upsert no-ops them --
-    simpler than planning a bespoke window per ticker.
-  - OHLCV only. Dividends are a SEPARATE fetcher (`fetch_dividends.py`, called
-    alongside this one by `StepExtractPrices`) with its own resume window, since
-    ex-dates are quarterly and sparse where bars are daily. `download_ohlcv` is
-    the shared entry point -- one yfinance response serves both.
-  - EQUITY ONLY. The market/macro series (SPY, ^VIX, oil/gold/energy, FX) used to be
-    extra OHLCV rows in `prices`, fetched by this function over `other_tickers`.
-    They are now rows in `prices_macro` (`fetch_macro.py`) -- close-only from
-    yfinance, or a FRED level for FX -- so `prices` holds the analysed universe and
-    nothing else, which is what let the cube drop its `cube_part_market` firewall
-    and three `drop(columns=[market])` guards.
+Windows are planned by `resume.series_windows` from the tables' own rows. `download_ohlcv` is the
+shared chunked entry point (the macro fetcher calls it on the total-return basis). Market/macro
+series are not fetched here; they live in `prices_macro` (`fetch_macro.py`).
 """
 
 import logging
@@ -35,25 +19,16 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT
 from src.context import Context
-from src.data_extract.utils.common.incremental import resume_since
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
+from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
+from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------------- #
-# ROLLING RE-PULL FLOOR                                                        #
-# --------------------------------------------------------------------------- #
-#: How far back an incremental run always re-pulls, whatever `resume_since` says.
-#: `resume_since` reads only each ticker's MAX date, so an INTERIOR hole leaves every MAX
-#: current and can never heal: the live table held 45 of 491 tickers on 2026-08-28 with
-#: 491 on both neighbouring sessions, and no incremental run would ever have revisited it.
-#: A trailing floor also re-writes the last few bars, which is what lets a bar that was
-#: fetched mid-session be replaced by its settled close.
-#: 7 business days buys a week of self-healing for ~7 sessions x 491 tickers (10 chunked
-#: calls) per run -- the upsert merges on (ticker, date), so the redundant rows are free.
-PRICE_REFRESH_TRADING_DAYS = 7
+#: yfinance action columns: kept for the dividend and split rows, never written to `prices`.
+_ACTION_COLUMNS = ("dividends", "stock splits", "capital gains")
 
 # --------------------------------------------------------------------------- #
 # PRICE PRE-LISTING TRIM                                                       #
@@ -173,21 +148,6 @@ def trim_prelisting_bars(prices: pd.DataFrame) -> pd.DataFrame:
     return prices.loc[~drop].reset_index(drop=True)
 
 
-def _refresh_floor(since: pd.Timestamp, until: pd.Timestamp, window_start: pd.Timestamp) -> pd.Timestamp:
-    """Widen an incremental `since` back over the recent tail, but never past `window_start`.
-
-    `resume_since` answers "the oldest per-ticker MAX date", which is the right frontier only
-    if every ticker's history is CONTIGUOUS up to its max. Two live failures say it is not:
-    an interior hole (45 of 491 tickers on 2026-08-28, 491 on both neighbours) leaves every
-    MAX current, and a bar written mid-session is never revisited to pick up its settled
-    close. Both heal on the next run once the window is floored.
-
-    Clamped at `window_start` so a short `years_history` is still respected -- the floor may
-    only ever look BACK from `until`, never widen the configured history."""
-    floor = until - pd.tseries.offsets.BDay(PRICE_REFRESH_TRADING_DAYS)
-    return max(min(since, floor), window_start)
-
-
 def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.DataFrame]:
     frames = []
     if isinstance(data.columns, pd.MultiIndex):
@@ -267,20 +227,12 @@ def download_ohlcv(
 ) -> pd.DataFrame:
     """Chunked yfinance pull over [since, until] -> one normalized long frame
     [date, ticker, open/high/low, close_split and/or close_total, volume, dividends,
-    stock splits]. Empty frame when every chunk failed.
+    stock splits]. Empty frame when every chunk failed; `actions` adds the action columns.
 
-    ⚠ `auto_adjust` is KEYWORD-ONLY and REQUIRED, because this function is SHARED and its
-    three callers need different bases:
-
-      * `fetch_price_history` / `fetch_splits` -> `auto_adjust=False`, giving both `Close`
-        (split-adjusted, the market-cap basis) and `Adj Close` (total return).
-      * `fetch_macro._fetch_price_leg`         -> `auto_adjust=True`. `SPY` is stored as
-        `equity_tr` and feeds the L/S benchmark leg, `beta_market` and `fwd_market` inside
-        every label; `XLE` pays ~3%. Flipping either to a PRICE return corrupts all of that.
-
-    It used to be a hard-coded `True` here and `actions` was inferred from the `desc` STRING
-    ("dividend" in desc), which meant the basis and the action columns were both decided by a
-    progress-bar label. Both are now explicit arguments."""
+    `auto_adjust` is keyword-only and required because the callers need different bases:
+    `fetch_prices_and_actions` passes False (split-adjusted `Close`, the market-cap basis, plus
+    `Adj Close`, total return); `fetch_macro._fetch_price_leg` passes True, because its `SPY` leg
+    is stored as `equity_tr` and feeds the L/S benchmark, `beta_market` and every label's `fwd_market`."""
     frames: list[pd.DataFrame] = []
     for i in tqdm(range(0, len(tickers), chunk_size), desc=desc):
         chunk = tickers[i : i + chunk_size]
@@ -293,112 +245,88 @@ def download_ohlcv(
     return _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
 
 
-def tickers_needing_repull(context: Context, tickers: list[str]) -> list[str]:
-    """Tickers whose stored history is on a STALE adjustment basis, because a split has an
-    ex-date after their last stored bar.
-
-    Split adjustment is RETROACTIVE: the day a stock splits, every prior bar Yahoo serves is
-    restated, but nothing in an incremental upsert ever revisits them. So the table ends up
-    interleaving two vintages inside one ticker. This is live today on MNST, which split
-    2026-07-20 and whose July/August bars alternate between ~97 and ~47 -- day-to-day returns
-    of +-95% that never happened, flowing straight into momentum, vol, betas and the labels.
-
-    Without this trigger, EVERY future splitter re-corrupts the table the same way, and the
-    one-off `--full` re-download buys only a clean snapshot. Empty list when `prices_splits`
-    has no rows yet (P2 not run), so this degrades to today's behaviour rather than failing."""
-    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date"], where={"ticker": tickers}, optional=True)
-    if splits is None or splits.empty:
+def _split_repulls(df_splits: pd.DataFrame, last: dict[str, pd.Timestamp], full_keys: set[str]) -> list[str]:
+    """Keys whose response carries a split after their last stored bar: split adjustment restates
+    every earlier bar, so their stored history is on a stale basis. Keys already pulled in full are skipped."""
+    if df_splits.empty:
         return []
-    last_bar = context.store.max_date_by(Tables.prices, "ticker", "date")
-    if not last_bar:
-        return []
-
-    splits = splits.copy()
-    splits["date"] = pd.to_datetime(splits["date"])
     stale = {
-        ticker
-        for ticker, event in zip(splits["ticker"], splits["date"], strict=False)
-        if ticker in last_bar and event > pd.Timestamp(last_bar[ticker])
+        str(ticker)
+        for ticker, day in zip(df_splits["ticker"], pd.to_datetime(df_splits["date"]), strict=True)
+        if str(ticker) in last and str(ticker) not in full_keys and day > last[str(ticker)]
     }
     return sorted(stale)
 
 
-def fetch_price_history(
+def _price_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """The `prices` rows of an `actions=True` response: the action columns dropped, rows with no bar
+    dropped (what an `actions=False` response holds), then the synthetic pre-listing prefix trimmed."""
+    if df_raw.empty:
+        return df_raw
+    df_bars = df_raw.drop(columns=[c for c in _ACTION_COLUMNS if c in df_raw.columns])
+    bar_columns = [c for c in df_bars.columns if c not in ("date", "ticker")]
+    return trim_prelisting_bars(df_bars.dropna(subset=bar_columns, how="all").reset_index(drop=True))
+
+
+def _download_groups(groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], chunk_size: int, pause: float, label: str) -> pd.DataFrame:
+    """One `actions=True` download per window group, concatenated; duplicate `(ticker, date)` rows keep the last."""
+    frames = []
+    for since, until, keys in groups:
+        logger.info("Downloading prices and actions for %d ticker(s) over %s .. %s (%s)", len(keys), since.date(), until.date(), label)
+        frames.append(download_ohlcv(keys, since, until, chunk_size, pause, desc=f"Downloading prices ({label})", auto_adjust=False, actions=True))
+    frames = [df for df in frames if not df.empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ticker", "date"], keep="last").reset_index(drop=True)
+
+
+def fetch_prices_and_actions(
     context: Context,
     tickers: list[str],
     years_history: int,
-    chunk_size: int = 50,
-    pause: float = 1,
+    *,
     full: bool = False,
+    as_of: pd.Timestamp | None = None,
+    chunk_size: int = 50,
+    pause: float = 1.0,
 ) -> None:
-    """Download daily OHLCV for `tickers`, upserting into the `prices` DB table.
+    """`prices`, `prices_dividends` and `prices_splits` from ONE yfinance `actions=True` download per window group.
 
-    Two price columns are written from ONE response: `close_split` (split-adjusted only --
-    the basis market cap, EV, dividend yield and ATR need, because on it the future-split
-    factor cancels exactly against Sharadar's `sharesbas`) and `close_total` (further reduced
-    for later dividends -- the basis returns, momentum, betas and labels need).
+    Windows come from `series_windows` over `prices` and `prices_dividends` (each key from its own last
+    date minus the overlap, holes, new keys in full) and end at the last completed session. A key whose
+    response holds a split after its last stored bar is re-pulled over the whole window before saving."""
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    until = last_completed_session(as_of)
+    calendar = trading_calendar(context)
+    plan = {"until": until, "years_history": years_history, "full": full, "calendar": calendar}
+    prices_work = series_windows(context, Tables.prices, tickers, run_date, **plan)
+    work = prices_work.merge(series_windows(context, Tables.dividends, tickers, run_date, **plan))
+    df_raw = _download_groups(work.groups(), chunk_size, pause, "resume")
 
-    Windows, widest first:
-      * `full=True`          -- the whole `years_history` window for every ticker. Needed
-        because a split restates history retroactively and an incremental tail never revisits
-        it, so the stored table interleaves adjustment vintages.
-      * a pending split      -- the same full window, for those tickers only, whatever `full`
-        says (see `tickers_needing_repull`).
-      * otherwise            -- `resume_since`, the shared per-batch frontier, floored back
-        over the recent tail by `_refresh_floor` so a hole or a partial bar self-heals.
+    floor = document_floor(Tables.prices, run_date, years_history)
+    full_keys = {key for key, spans in work.windows.items() if spans and spans[0][0] <= floor}
+    repull = _split_repulls(_extract_splits(df_raw), prices_work.last, full_keys)
+    if repull:
+        logger.info("%d ticker(s) split after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull))
+        df_raw = pd.concat(
+            [df_raw[~df_raw["ticker"].isin(repull)], _download_groups([(floor, until, repull)], chunk_size, pause, "post-split re-pull")],
+            ignore_index=True,
+        )
 
-    The two windows are TWO CALLS rather than a per-ticker `since`, which keeps `resume_since`
-    and its one-shared-date contract untouched.
-
-    The window ENDS at `last_completed_session()`, never at "today". An unclamped end asks
-    yfinance for a session that may still be trading and gets a real-looking bar built from a
-    partial OHLC and a fraction of the day's volume (measured: 0.535x the ticker's own
-    trailing median). Nothing downstream can distinguish it from a settled close."""
-    until = last_completed_session()
-    window_start = until - pd.DateOffset(years=years_history)
-
-    repull = [] if full else tickers_needing_repull(context, tickers)
-    incremental = [t for t in tickers if t not in set(repull)]
-
-    batches: list[tuple[list[str], pd.Timestamp, str]] = []
-    if full:
-        batches.append((tickers, window_start, "full history"))
-    else:
-        if repull:
-            logger.info(
-                "%d ticker(s) split after their last stored bar -- re-pulling their full history to clear the stale adjustment basis: %s",
-                len(repull),
-                ", ".join(repull),
-            )
-            batches.append((repull, window_start, "post-split re-pull"))
-        if incremental:
-            since = resume_since(context, Tables.prices, incremental, years_history)
-            # No skip-if-fresh branch. There used to be one (`since >= today - 1 BDay` ->
-            # return), and it is exactly what let a hole and a partial bar persist: the table's
-            # max date looked current, so the run that could have repaired the tail returned
-            # without fetching. The floor below deliberately makes every run re-pull the last
-            # PRICE_REFRESH_TRADING_DAYS sessions; that redundancy IS the repair mechanism and
-            # the upsert merges it away.
-            batches.append((incremental, _refresh_floor(since, until, window_start), "incremental"))
-
-    total = 0
-    for batch, since, label in batches:
-        logger.info("Downloading prices for %d tickers over %s .. %s (%s)", len(batch), since.date(), until.date(), label)
-        # actions=False keeps `prices` clean OHLCV: no `dividends` / `stock splits` column
-        # can reach the upsert. Both price bases arrive regardless -- `auto_adjust=False`
-        # returns `Close` AND `Adj Close` on its own (verified: AAPL 2020-07-31 -> 106.26 and
-        # 102.795). Ex-dates and split events have their own fetchers with their own sparse
-        # resume frontiers.
-        df_prices = download_ohlcv(batch, since, until, chunk_size, pause, auto_adjust=False, actions=False)
-
-        # Drop the synthetic pre-listing prefix BEFORE the upsert, so a full-history pull
-        # never writes another ticker's predecessor line into `prices`. It matters most on
-        # exactly these wide windows: an incremental tail carries no prefix.
-        df_prices = trim_prelisting_bars(df_prices)
-
-        # upsert the freshly-downloaded delta; the DB merges on (ticker, date)
-        context.store.save(Tables.prices, df_prices)
-        total += len(df_prices)
-        logger.info("Saved %d price rows to DB table '%s' (%s)", len(df_prices), Tables.prices, label)
-
-    record_run(context, Tables.prices, len(tickers), total)
+    n_prices = context.store.save(Tables.prices, _price_rows(df_raw))
+    n_dividends = context.store.save(Tables.dividends, _extract_dividends(df_raw))
+    df_splits = _extract_splits(df_raw)
+    n_splits = context.store.save(Tables.prices_splits, df_splits) if not df_splits.empty else 0
+    served = set(df_raw["ticker"]) if not df_raw.empty else set()
+    missing = sorted(key for key, spans in work.windows.items() if spans and key not in served)
+    logger.info(
+        "Saved %d price, %d dividend and %d split row(s) for %d ticker(s) in %d window group(s); key classes %s",
+        n_prices,
+        n_dividends,
+        n_splits,
+        len(tickers),
+        len(work.groups()),
+        {cls: sum(1 for c in work.key_class.values() if c == cls) for cls in sorted(set(work.key_class.values()))},
+    )
+    if missing:
+        logger.warning("No bars returned for %d ticker(s) with a window; they are re-listed next run: %s", len(missing), ", ".join(missing))

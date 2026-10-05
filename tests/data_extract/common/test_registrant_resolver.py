@@ -29,7 +29,6 @@ from src.data_extract.utils.common.registrant import (
     Registrant,
     Segment,
     combine_for,
-    identity_scope_fingerprint,
     resolve_registrant_filings,
 )
 
@@ -78,24 +77,6 @@ def _identity(ticker: str, roster_cik: str, entity_by_cik: dict[str, str], *tenu
         ),
         roster=pd.DataFrame([{"ticker": ticker, "cik": roster_cik}]),
     )
-
-
-def test_identity_scope_fingerprint_is_order_stable_and_ticker_scoped():
-    lineage = {"0001136869": "zimmer"}
-    first = identity_scope_fingerprint(
-        _identity("ZBH", "0001136869", lineage, ("ZMH", "0001136869"), ("ZBH", "0001136869")).filing_scope("ZBH"), None
-    )
-    reordered = identity_scope_fingerprint(
-        _identity("ZBH", "0001136869", lineage, ("ZBH", "0001136869"), ("ZMH", "0001136869")).filing_scope("ZBH"), None
-    )
-    changed = identity_scope_fingerprint(
-        _identity("ZBH", "0001136869", lineage, ("ZBH", "0001136869"), ("ZMH", "0001136869"), ("OLDZ", "0001136869")).filing_scope("ZBH"),
-        None,
-    )
-
-    assert first == reordered
-    assert first != changed
-    print("\nSANITY: an identity-scope digest is stable under row order and changes only when that ticker's candidates change.")
 
 
 # --------------------------------------------------------------------------- #

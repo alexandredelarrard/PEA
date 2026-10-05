@@ -1,15 +1,19 @@
 """Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
 
-Per ticker: list its DEF 14A filings over the manifest window (across its registrant chain), carve
-the relevant sections, send only accessions without stored evidence to the LLM, and upsert that
-ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`, `def14a_director_comp`,
-`def14a_ownership`, `def14a_directors`) before the next ticker. A cross-ticker gender consensus runs
-once after the loop. Skips with a warning when no OpenAI key is configured.
+Per ticker: list its DEF 14A filings over `years_history` (across its registrant chain), carve the
+relevant sections, send only accessions with no saved `def14a_llm` row to the LLM,
+and upsert that ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`,
+`def14a_director_comp`, `def14a_ownership`, `def14a_directors`) before the next ticker. An answer
+without evidence from a proxy that was read is stored as one `def14a_llm` marker; a failed read or
+LLM call writes nothing and is listed again next run. `full` re-sends the saved rows without
+evidence. A cross-ticker gender consensus runs once
+after the loop. Skips with a warning when no OpenAI key is configured.
 """
 
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import cast
 
 import pandas as pd
@@ -17,18 +21,20 @@ from edgar import Filing
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.constants.constants import DATE_FORMAT, DEF14A_FORMS
+from src.constants.constants import DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
+from src.data_extract.utils.common.empty_markers import drop_markers_over_data
+from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import (
     Registrant,
     header_subject_ciks,
     issuer_ciks,
     load_registrants,
 )
-from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
-from src.data_extract.utils.common.sec_utils import load_cik_mapping, sec_get
+from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.flatten import (
@@ -43,12 +49,12 @@ from src.data_extract.utils.structure.def14a.gender import (
     log_consensus,
     recompute_parent_gender,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
-from src.gpt_extract.utils.schemas_gpt import LlmTask
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
@@ -56,9 +62,11 @@ logger = logging.getLogger(__name__)
 
 def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
     """The filing's raw markup, falling back to the `<accession>.txt` full submission when the primary
-    document cannot be fetched; re-raises when there is no distinct `.txt` URL."""
+    document is not served; re-raises a transient failure, and when there is no distinct `.txt` URL."""
     try:
         return sec_get(context, filing["doc_url"]).text
+    except TransientReadError:
+        raise
     except Exception:
         txt_url = filing.get("txt_url")
         if not txt_url or txt_url == filing["doc_url"]:
@@ -98,12 +106,16 @@ def _subject_is_accepted(
     filing: pd.Series,
     accepted_subject_ciks: frozenset[str],
 ) -> bool:
-    """Reject only a known subject that is outside the accepted registrant entity."""
+    """Reject only a known subject that is outside the accepted registrant entity. A header SEC could
+    not serve skips the filing this run (it is not queued, so a later run reads it again)."""
     accession = str(filing["accession_number"])
     filer_cik = pad_cik(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
+    except TransientReadError as exc:
+        context.log.warning("%s: DEF 14A accession %s subject header unreadable (%s); skipped this run", ticker, accession, exc)
+        return False
     except Exception as exc:  # noqa: BLE001 -- an unknown header follows the existing path
         context.log.info(
             "%s: DEF 14A accession %s subject header unavailable (%s); continuing",
@@ -173,38 +185,32 @@ def _list_across_registrants(
     return out
 
 
-def _is_up_to_date(context: Context, requested_tickers: list[str]) -> bool:
-    """Up to date only when the manifest entry was refreshed today AND every requested ticker
-    already has rows in `def14a_llm` (per-ticker coverage, so a same-day rerun still picks up a
-    missing name)."""
-    if not context.store.exists(Tables.def14a_llm):
-        return False
-    entry = get_entry(context, Tables.def14a_llm)
-    if entry is None or entry.get("last_run_date") != pd.Timestamp.today().strftime(DATE_FORMAT):
-        return False
-    have = set(context.store.distinct(Tables.def14a_llm, "ticker", where={"ticker": list(requested_tickers)}))
-    return set(requested_tickers).issubset(have)
-
-
 def _completed_accessions(context: Context) -> set[str]:
     """Accessions whose parent row carries real extracted evidence, not merely a PK.
 
-    Evidence-free parents stay in the table but do not count as completed, so a later run re-extracts them.
+    Evidence-free parents stay in the table but do not count as completed, so a `full` run re-extracts them.
+    A table created by a marker-only save may lack evidence columns; only the stored ones are read.
     """
-    if not context.store.exists(Tables.def14a_llm):
+    stored_columns = set(context.store.columns(Tables.def14a_llm))
+    if not stored_columns:
         return set()
-    stored = context.store.load(
+    df_stored = context.store.load(
         Tables.def14a_llm,
-        columns=["accession_number", *_DEF14A_EVIDENCE_COLUMNS],
+        columns=["accession_number", *(c for c in _DEF14A_EVIDENCE_COLUMNS if c in stored_columns)],
         optional=True,
     )
-    if stored is None or stored.empty:
+    if df_stored is None or df_stored.empty:
         return set()
     return {
         str(row["accession_number"])
-        for row in stored.to_dict(orient="records")
+        for row in cast(list[dict[str, object]], df_stored.to_dict(orient="records"))
         if row.get("accession_number") is not None and _has_parent_evidence(row)
     }
+
+
+def _frames_off_data(context: Context, result: LlmResult) -> dict[Table, pd.DataFrame]:
+    """`_result_frames` for one answer, minus any marker whose key already holds a real parent row."""
+    return {table: drop_markers_over_data(context.store, table, df, log=context.log) for table, df in _result_frames(result).items()}
 
 
 def _finalise_gender(context: Context) -> None:
@@ -266,15 +272,13 @@ def _ticker_tasks(context: Context, ticker: str, filings: pd.DataFrame, seen: se
 
 def _extract_ticker(context: Context, extractor: LLMExtractor, ticker: str, tasks: list[LlmTask]) -> tuple[list[str], int]:
     """Run one ticker's tasks (the extractor saves that ticker's five frames once) and return the
-    accessions whose answer carries domain evidence plus the count of evidence-free answers, which
-    save no completion row and stay retryable."""
-    results = extractor.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
+    accessions whose answer carries domain evidence plus the count of evidence-free answers, each
+    saved as an empty-filing marker unless its key already holds a parent row."""
+    results = extractor.run_extraction(tasks, flatten=partial(_frames_off_data, context), group_key=lambda t: str(t.meta["ticker"]))
     evidenced = [r for r in results if r.ok and isinstance(r.parsed, Def14AExtract) and _has_extract_evidence(r.parsed)]
     semantic_empty = sum(1 for r in results if r.ok) - len(evidenced)
     if semantic_empty:
-        context.log.warning(
-            "%s: %d DEF 14A result(s) contained no domain evidence; no completion row was saved and they remain retryable", ticker, semantic_empty
-        )
+        context.log.info("%s: %d DEF 14A result(s) contained no domain evidence; marked as read", ticker, semantic_empty)
     return [str(cast(pd.Series, r.task.meta["filing"])["accession_number"]) for r in evidenced], semantic_empty
 
 
@@ -290,39 +294,25 @@ def fetch_def14a_llm(
 ) -> None:
     """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
 
-    Lists each ticker's proxies across its registrant chain over the manifest window and sends
-    only accessions without stored evidence to the LLM; each ticker's rows are upserted before
-    the next starts. Skips when no OpenAI key is configured.
-
-    `model` / `max_chars` / `cache` default to `config.gpt` and `workers` (concurrent LLM calls)
-    to `config.gpt.threads`; an explicit keyword pins one without touching config. `full`
-    bypasses the run-wide up-to-date gate and lists the whole `years_history` window.
+    Lists each ticker's proxies across its registrant chain over `years_history`, sends only
+    accessions with no saved row to the LLM and upserts each ticker's rows before the next starts.
+    Skips when no OpenAI key is configured. `model` / `max_chars` / `cache` default to `config.gpt`
+    and `workers` (concurrent LLM calls) to `config.gpt.threads`; an explicit keyword pins one
+    without touching config. `full` also re-sends the saved accessions without evidence (markers
+    included); a proxy with stored evidence is never re-sent.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
     de = context.config.data_extract
     cik_map = load_cik_mapping(context, tickers)
-    requested = cik_map["ticker"].astype(str).tolist()
-    if not full and _is_up_to_date(context, requested):
-        context.log.info("DEF 14A LLM already up to date — every requested ticker present — skipping")
-        return
     try:
         extractor = LLMExtractor(context, config, action="def14a", threads=workers)
     except OSError as e:
         context.log.warning("DEF 14A LLM extraction skipped: %s", e)
         return
 
-    # Accessions with real extracted evidence are never re-sent; an evidence-free parent is absent so a later listing repairs it.
-    seen = _completed_accessions(context)
+    # A saved row is done; `full` re-sends every accession without evidence (evidence-free rows and markers).
+    seen = _completed_accessions(context) if full else set(stored_values(context, Tables.def14a_llm, "accession_number"))
     years = int(de.years_history)
-    since, is_full_rescan = manifest_window(
-        context,
-        Tables.def14a_llm,
-        requested,
-        fallback_since=pd.Timestamp.today() - pd.DateOffset(years=years),
-        full_rescan_days=int(getattr(de, "manifest_full_rescan_days", 30)),
-    )
-    # `list_filings` keeps filings STRICTLY AFTER its `since`, so the inclusive cutoff steps back one day; None lists all `years`.
-    list_since = None if (full or is_full_rescan) else since - pd.Timedelta(days=1)
     # The curated registrant register (a dated SPLIT chain per ticker); `{}` when the file is absent.
     cutovers = load_registrants(str(context.config_dir))
     if cutovers:
@@ -332,7 +322,7 @@ def fetch_def14a_llm(
     for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
         ticker, cik, company = str(r["ticker"]), str(r["cik"]), str(r.get("name", ""))
         try:
-            filings = _list_across_registrants(context, ticker, cik, company, years, list_since, cutovers)
+            filings = _list_across_registrants(context, ticker, cik, company, years, None, cutovers)
         except Exception as e:
             context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
             continue
@@ -348,6 +338,4 @@ def fetch_def14a_llm(
     # The gender consensus groups directors across tickers, so it runs once after the loop.
     if total_new:
         _finalise_gender(context)
-    if total_semantic_empty:
-        context.log.warning("DEF 14A: %d semantic-empty result(s) left retryable", total_semantic_empty)
-    record_run(context, Tables.def14a_llm, len(cik_map), total_new, is_full_rescan=is_full_rescan, tickers=requested)
+    context.log.info("DEF 14A: %d filing(s) extracted, %d evidence-free answer(s) marked as read", total_new, total_semantic_empty)

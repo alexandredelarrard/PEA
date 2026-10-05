@@ -44,21 +44,13 @@ from src.data_store.store import DataStore
 # tell the caller "your column set no longer matches the stored table -- re-run full".
 COLUMNS_CHANGED = -1
 
-#: How many trading days of a backward-looking part's own tail every incremental run
-#: recomputes and REWRITES, rather than only appending after.
+#: How many trading days of its own tail every incremental part run recomputes and REWRITES.
 #:
-#: One trading week. The bound that matters is the price fetcher's own re-pull floor
-#: (`PRICE_REFRESH_TRADING_DAYS = 7` business days): a part must rewrite at least as far back
-#: as its inputs can still change underneath it, or a corrected price would sit in `prices`
-#: with the stale feature built from its predecessor left in the part forever. 5 trading days
-#: covers 7 business days of calendar (they are the same span; the fetcher counts BDays from
-#: the settled close, the part counts sessions on the trading index).
-#:
-#: The cost is bounded and small: 5 dates x ~491 tickers re-computed and re-written per part
-#: per run, against parts of ~3.3M rows. `store.append_tail(inclusive=True)` DELETEs `>=` the
-#: cutoff before appending, so re-running the same day is idempotent -- it never duplicates
-#: and never leaves a stale row behind.
-PART_REFRESH_TRADING_DAYS = 5
+#: Seven sessions cover the price fetcher's 7-day re-pull overlap, and let a filing recovered
+#: within a week replace the features first built without it. Fundamentals (45) and targets
+#: (their maturing-label horizon) rewrite wider tails. `store.append_tail(inclusive=True)`
+#: deletes `>=` the cutoff before appending, so a same-day re-run is idempotent.
+PART_REFRESH_TRADING_DAYS = 7
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +82,10 @@ def plan_window(
     """Decide what to rebuild.
 
     `full=True`, a missing part, or no usable calendar -> a full rebuild. Otherwise the
-    window reaches `warmup + extra_back + refresh` trading days before the stored max date;
+    window reaches `warmup + extra_back + refresh` trading days before the stored max date:
     `extra_back` is the target step's forward horizon (so maturing labels are recomputed) and
-    `refresh` is how far back the part REWRITES its own tail.
-
-    ⚠ `warmup + extra_back + refresh`, not `warmup + extra_back`. The warm-up has to be
-    measured from the earliest REWRITTEN date, not from `last`, or the oldest refreshed date
-    gets only `warmup - refresh` days of look-back context and is computed differently from
-    the way a full rebuild would compute it. For momentum that would be 1,320 - 5 = 1,315
-    days against a binding look-back of 1,260: it happens to survive today purely on margin,
-    and would break silently the moment either number moved. Adding `refresh` removes the
-    coupling instead of relying on the slack.
+    `refresh` is how far back the part rewrites its own tail. The warm-up counts from the
+    earliest rewritten date, so every rewritten row gets the look-back a full rebuild gives it.
     """
     if full:
         return PartWindow(None, None)
@@ -142,23 +127,12 @@ def write_part(
 ) -> int:
     """Persist a part according to `window`.
 
-    FULL -> replace. INCREMENTAL -> compare the stored column set against `rows` and
-    return `COLUMNS_CHANGED` when they differ (the caller must re-run with full=True,
-    since an append into a changed schema would silently misalign); otherwise write the
-    tail from the widest cutoff on offer:
-
-      1. an explicit `refresh_from` -- the target step's maturing-label window (~90 trading
-         days), which is always the widest and so takes precedence;
-      2. `window.refresh_from` -- the backward-looking part's own trailing rewrite;
-      3. `window.last`, strictly after -- the pre-refresh behaviour, kept for the parts that
-         opt out (fundamentals / text / extras, all driven by filing-space sources rather
-         than the daily price grid).
-
-    Cases 1 and 2 write INCLUSIVELY, so the cutoff date's own row is replaced rather than
-    skipped. `store.append_tail(inclusive=True)` DELETEs `>=` the cutoff first, which makes
-    a same-day re-run idempotent.
-
-    `drop_empty` (feature parts) removes rows carrying no feature values at all.
+    FULL -> replace. INCREMENTAL -> `COLUMNS_CHANGED` when the stored column set differs
+    from `rows` (the caller re-runs with full=True); otherwise append the tail from the first
+    cutoff given: an explicit `refresh_from` (the target step's maturing-label window), then
+    `window.refresh_from` (the part's own trailing rewrite), both inclusive because
+    `append_tail` deletes `>=` the cutoff first, so a same-day re-run is idempotent; else
+    strictly after `window.last`. `drop_empty` removes rows with no feature value at all.
     """
     if rows is not None and not rows.empty and drop_empty:
         rows = drop_empty_feature_rows(rows, keys, part)

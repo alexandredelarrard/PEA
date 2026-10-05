@@ -2,12 +2,12 @@
 `earnings_call_sections`, one row per source paragraph; the speaker-turn split runs at aggregate time.
 
 A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the scope
-(and, incrementally, whose latest call reaches the frontier minus `lookback_days`), diffs their index
-columns against the stored calls and reads the `transcripts` column only for new or re-issued calls.
-An unchanged file hash, scope and reconcile clock is a no-op. A reconcile (`-F`, scope change, cold
-table, or every `reconcile_days`) also deletes stored calls absent from the source; a re-issued or
-removed call has its derivatives invalidated and a pending refresh marker written. Reads run on
-`read_workers` threads; every DB write runs on the calling thread, one row group per batch.
+and whose latest call reaches the stored frontier minus the table's contract overlap (a new ticker's
+groups at any date; a cold table or `-F` reads every group), diffs their index columns against the
+stored calls and reads the `transcripts` column only for new or re-issued calls. Only `-F` also
+deletes stored calls absent from the source; a re-issued or removed call has its derivatives
+invalidated and a pending refresh marker written. Reads run on `read_workers` threads; every DB
+write runs on the calling thread, one row group per batch.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import IO, Any
+from typing import IO, Any, SupportsInt, cast
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
-from huggingface_hub.hf_api import RepoFile
 from omegaconf import DictConfig
 
 from src.constants.constants import NO_EARNINGS_CALL_TICKERS
@@ -38,23 +37,21 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
     pending_refresh_markers,
 )
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_extract.utils.common.run_manifest import get_entry, manifest_window, record_run
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker
-from src.utils.universe import load_universe_tickers
+from src.utils.universe import load_universe_tickers, new_tickers
 
 logger = logging.getLogger(__name__)
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
-# The manifest key under which the transcripts file's content hash is recorded.
 SOURCE_KEY = f"{DATASET_REPO}/{DATASET_FILE}"
 
 INDEX_COLUMNS = ("symbol", "fiscal_year", "fiscal_quarter", "report_date", "transcripts_id")
 TRANSCRIPTS_COLUMN = "transcripts"
 PARAGRAPH_FIELDS = ("paragraph_number", "speaker", "content")
 FIRST_PARAGRAPH = 1
-# Full history (the dataset's first call is 2005-10-11); the fallback `since` of a reconcile.
+# Full history (the dataset's first call is 2005-10-11).
 HISTORY_START = "2005-01-01"
 _BLOCK_SIZE = 1 << 20
 _RETRIES = 4
@@ -65,10 +62,9 @@ _KEY = ["ticker", "quarter"]
 
 @dataclass(frozen=True)
 class TranscriptSource:
-    """One pinned revision of the transcripts file: what to read and how to recognise it."""
+    """One pinned revision of the transcripts file and an opener for it."""
 
     revision: str
-    fingerprint: str
     opener: Callable[[], IO[bytes]]
 
 
@@ -76,7 +72,6 @@ class TranscriptSource:
 class ExtractSummary:
     """What one extraction run did."""
 
-    noop: bool
     full: bool
     revision: str
     row_groups: int
@@ -97,23 +92,13 @@ class RowGroupStats:
 
 
 def resolve_hf_source() -> TranscriptSource:
-    """The dataset's current commit, the transcripts file's content hash, and an opener pinned to that commit."""
+    """The dataset's current commit and an opener for the transcripts file pinned to that commit."""
     api = HfApi()
     info = call_with_retries(lambda: api.dataset_info(DATASET_REPO), retries=_RETRIES, base_wait=_RETRY_WAIT_SECONDS, label="defeatbeta info")
     revision = str(info.sha)
-    entries = call_with_retries(
-        lambda: api.get_paths_info(DATASET_REPO, [DATASET_FILE], repo_type="dataset", revision=revision),
-        retries=_RETRIES,
-        base_wait=_RETRY_WAIT_SECONDS,
-        label="defeatbeta file",
-    )
-    files = [entry for entry in entries if isinstance(entry, RepoFile)]
-    if not files:
-        raise FileNotFoundError(f"{SOURCE_KEY} is absent at revision {revision}")
-    fingerprint = files[0].lfs.sha256 if files[0].lfs is not None else files[0].blob_id
     fs = HfFileSystem()
     path = f"datasets/{DATASET_REPO}@{revision}/{DATASET_FILE}"
-    return TranscriptSource(revision=revision, fingerprint=str(fingerprint), opener=lambda: fs.open(path, "rb", block_size=_BLOCK_SIZE))
+    return TranscriptSource(revision=revision, opener=lambda: cast(IO[bytes], fs.open(path, "rb", block_size=_BLOCK_SIZE)))
 
 
 def _is_text(dtype: pa.DataType) -> bool:
@@ -193,19 +178,19 @@ def dataset_symbols(tickers: list[str]) -> list[str]:
     return sorted({form for ticker in tickers for form in (ticker, ticker.replace("-", "."))})
 
 
-def calls_from_index(index: pd.DataFrame, scope: set[str], since: str | None) -> pd.DataFrame:
+def calls_from_index(index: pd.DataFrame, scope: set[str], since: str | None, backfill: frozenset[str] = frozenset()) -> pd.DataFrame:
     """One row per scoped call: ticker, quarter, as_of, transcript_id and its row-group position.
 
-    A (ticker, quarter) published twice keeps the latest `report_date`, then the highest
-    `transcripts_id`."""
+    Calls dated before `since` are dropped except a `backfill` ticker's. A (ticker, quarter)
+    published twice keeps the latest `report_date`, then the highest `transcripts_id`."""
     calls = index.assign(ticker=index["symbol"].astype(str).str.replace(".", "-", regex=False))
     calls = calls[calls["ticker"].isin(scope)]
     if since is not None:
-        calls = calls[calls["report_date"].astype(str) >= since]
+        calls = calls[(calls["report_date"].astype(str) >= since) | calls["ticker"].isin(backfill)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
         as_of=pd.to_datetime(calls["report_date"], format="%Y-%m-%d"),
-        transcript_id=pd.array(calls["transcripts_id"], dtype="Int64"),
+        transcript_id=calls["transcripts_id"].astype("Int64"),
     )
     calls = calls.sort_values([*_KEY, "as_of", "transcript_id"], na_position="first").drop_duplicates(_KEY, keep="last")
     calls = one_call_per_date(calls.assign(ordinal=calls["fiscal_year"].astype(int) * 4 + calls["fiscal_quarter"].astype(int)))
@@ -362,6 +347,16 @@ def _scope(context: Context, tickers: list[str] | None) -> list[str]:
     return sorted({normalise_ticker(t) for t in names if str(t).strip()} - NO_EARNINGS_CALL_TICKERS)
 
 
+def _window(context: Context, scope: list[str], frontier: pd.Timestamp | None, as_of: pd.Timestamp) -> tuple[str | None, frozenset[str]]:
+    """`(since, backfill)`: `frontier` minus the contract overlap (None for a full read), and the
+    scoped tickers new to the universe inside that overlap, read from the start."""
+    if frontier is None:
+        return None, frozenset()
+    overlap = _TABLE.resume.overlap_days if _TABLE.resume is not None else 0
+    since = (frontier - pd.Timedelta(days=overlap)).strftime("%Y-%m-%d")
+    return since, frozenset(new_tickers(context.store, overlap, as_of) & set(scope))
+
+
 def _stored_calls(context: Context, calls: pd.DataFrame, scope: list[str], full: bool) -> pd.DataFrame | None:
     """Stored (ticker, quarter, transcript_id, as_of), one row per call: every stored call of
     `scope` on a reconcile, else only the candidates' keys.
@@ -414,40 +409,39 @@ def extract_earnings_calls(
     full: bool = False,
     tickers: list[str] | None = None,
     source: TranscriptSource | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> ExtractSummary:
     """Bring `earnings_call_sections` up to the current defeatbeta revision.
 
-    `cfg` is the `earnings_calls` config block (`lookback_days`, `read_workers`,
-    `reconcile_days`). `tickers` narrows the scope (default: the analysis universe, minus the
-    names that hold no call). `full` forces a reconcile of every scoped call. `source`
-    replaces the HuggingFace file (tests)."""
+    `cfg` is the `earnings_calls` config block (`read_workers`). `tickers` narrows the scope
+    (default: the analysis universe, minus the names that hold no call). `full` reads every
+    scoped call and deletes stored calls absent from the source. `as_of` is the run date that
+    decides which tickers are new (default today). `source` replaces the HuggingFace file (tests)."""
     log = context.log
     started = time.monotonic()
     scope = _scope(context, tickers)
     src = source if source is not None else resolve_hf_source()
+    frontier = None if full else context.store.max_date(_TABLE)
+    is_full = frontier is None
+    since, backfill = _window(context, scope, frontier, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
 
-    _, reconcile_due = manifest_window(context, _TABLE, scope, fallback_since=pd.Timestamp(HISTORY_START), full_rescan_days=int(cfg.reconcile_days))
-    frontier = context.store.max_date(_TABLE)
-    is_full = full or reconcile_due or frontier is None
-    recorded = ((get_entry(context, _TABLE) or {}).get("identity_scope_fingerprints") or {}).get(SOURCE_KEY)
-    if not is_full and recorded == src.fingerprint:
-        log.info("Earnings calls: %s unchanged (%s) -> nothing to do (%.1fs).", SOURCE_KEY, src.fingerprint[:12], time.monotonic() - started)
-        return ExtractSummary(noop=True, full=False, revision=src.revision, row_groups=0, calls_new=0, calls_reissued=0, rows_written=0)
-
-    since = None if is_full else (frontier - pd.Timedelta(days=int(cfg.lookback_days))).strftime("%Y-%m-%d")
     with src.opener() as handle:
         footer = pq.ParquetFile(handle)
         metadata = footer.metadata
         check_source_schema(footer.schema_arrow)
-    groups = select_row_groups(row_group_stats(metadata), dataset_symbols(scope), since)
+    stats = row_group_stats(metadata)
+    groups = sorted(
+        set(select_row_groups(stats, dataset_symbols(scope), since)) | set(select_row_groups(stats, dataset_symbols(sorted(backfill)), None))
+    )
     log.info(
-        "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups%s.",
+        "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups%s%s.",
         src.revision[:12],
         "full" if is_full else "incremental",
         len(scope),
         len(groups),
         metadata.num_row_groups,
         "" if since is None else f" with calls since {since}",
+        f"; full history for new ticker(s) {sorted(backfill)}" if backfill else "",
     )
 
     workers = int(cfg.read_workers)
@@ -455,53 +449,45 @@ def extract_earnings_calls(
     rows_written = 0
     try:
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
-        index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
-        calls = calls_from_index(index, set(scope), since)
-        stored = _stored_calls(context, calls, scope, is_full)
-        new, reissued = diff_calls(calls, stored)
-        gone, vanished = stale_calls(calls, stored if is_full else None)
+        df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
+        df_calls = calls_from_index(df_index, set(scope), since, backfill)
+        df_stored = _stored_calls(context, df_calls, scope, is_full)
+        df_new, df_reissued = diff_calls(df_calls, df_stored)
+        df_gone, vanished = stale_calls(df_calls, df_stored if is_full else None)
         if vanished:
             log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])
         log.info(
             "Earnings calls: %d source calls in scope, %d new, %d re-issued, %d removed from the source.",
-            len(calls),
-            len(new),
-            len(reissued),
-            len(gone),
+            len(df_calls),
+            len(df_new),
+            len(df_reissued),
+            len(df_gone),
         )
-        if not gone.empty:
-            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(gone), _sample_keys(gone))
-            _remove_calls(context, gone)
+        if not df_gone.empty:
+            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(df_gone), _sample_keys(df_gone))
+            _remove_calls(context, df_gone)
 
-        needed = pd.concat([new.assign(old_as_of=pd.NaT), reissued], ignore_index=True)
-        by_group = {int(g): part for g, part in needed.groupby("row_group", sort=True)}
+        df_needed = pd.concat(
+            [df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]")), df_reissued], ignore_index=True
+        )
+        by_group = {int(cast(SupportsInt, g)): df_part for g, df_part in df_needed.groupby("row_group", sort=True)}
         empty_calls = 0
-        for group, paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
-            part = by_group[group]
-            empty_calls += len(part) - paragraphs[_KEY].drop_duplicates().shape[0]
-            rows_written += _write_batch(context, paragraphs, part[part["old_as_of"].notna()].reset_index(drop=True))
+        for group, df_paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
+            df_part = by_group[group]
+            empty_calls += len(df_part) - df_paragraphs[_KEY].drop_duplicates().shape[0]
+            rows_written += _write_batch(context, df_paragraphs, df_part[df_part["old_as_of"].notna()].reset_index(drop=True))
         if empty_calls:
             log.warning("Earnings calls: %d call(s) carry no paragraph in the source.", empty_calls)
     finally:
         readers.close()
 
-    record_run(
-        context,
-        _TABLE,
-        len(scope),
-        rows_written,
-        is_full_rescan=is_full,
-        identity_scope_fingerprints={SOURCE_KEY: src.fingerprint},
-        tickers=scope,
-    )
     log.info("Earnings calls: +%d paragraph rows in %.1fs.", rows_written, time.monotonic() - started)
     return ExtractSummary(
-        noop=False,
         full=is_full,
         revision=src.revision,
         row_groups=len(groups),
-        calls_new=len(new),
-        calls_reissued=len(reissued),
+        calls_new=len(df_new),
+        calls_reissued=len(df_reissued),
         rows_written=rows_written,
-        calls_removed=len(gone),
+        calls_removed=len(df_gone),
     )

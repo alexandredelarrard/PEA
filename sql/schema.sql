@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     "industry_group" TEXT,
     "sub_industry" TEXT,
     "cik" TEXT,
+    "added_on" DATE,
     PRIMARY KEY ("ticker")
 );
 

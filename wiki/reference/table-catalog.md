@@ -30,14 +30,18 @@ This is the canonical map of PostgreSQL table grain, ownership, temporal key, an
 | `freshness`, `freshness_date_col` | Expected cadence and, when different, the actual publication clock. |
 | `vector_col`, `vector_prefix` | Wide embedding columns collapsed to a PostgreSQL `float8[]`. |
 | `managed` | Managed tables retain generated DDL on replacement; unmanaged cube parts are dropped and recreated so removed features disappear. |
+| `resume` | The `Resume` contract the nightly work list is derived from: mode (`series`, `documents`, `archive`, `market`, `snapshot`), key column, frontier column, overlap days, EDGAR forms (the forms the fetcher lists), archive period column, and source start. |
+| `empty_marker` | The (column, sentinel) of an empty-filing marker: a filing that was read and holds no data for its key is stored once as a row with the key columns, that sentinel and a typed NULL everywhere else, so it is not listed again. |
 
-Derived registry views such as `ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `by_kind()`, and `projection_report()` are computed from the declarations. Adding a managed table means adding one declaration and regenerating [sql/schema.sql](../../sql/schema.sql) through [generate_schema_sql.py](../../scripts/generate_schema_sql.py).
+Marker tables: `fundamentals_facts` (`field`), `insider_transactions` (`security_type`), `sec_13d` and `sec_13g` (`rp_seq` = -1), `def14a_llm` (`def14a_json`), `sec_def14a` (`form`), `sec_8k` (`item`), `sec_8k_votes` (`proposal_seq` = 0) and `sec_filing_text` (`section`); text sentinels are `_empty`. `load` and `iter_load` drop marker rows unless `markers=True`; resume reads (`distinct`, `max_date`, `max_date_by`, `key_stats`) and raw SQL count them.
+
+Derived registry views such as `ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `by_kind()`, `resume_tables()`, `marker_tables()` and `projection_report()` are computed from the declarations. Adding a managed table means adding one declaration and regenerating [sql/schema.sql](../../sql/schema.sql) through [generate_schema_sql.py](../../scripts/generate_schema_sql.py).
 
 ## Reference and identity tables
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `sp500_tickers` | ticker | Current research universe and the roster ticker-to-CIK mapping. Universe loading also applies the insufficient-history exclusions in [universe.py](../../src/utils/universe.py). |
+| `sp500_tickers` | ticker | Current research universe and the roster ticker-to-CIK mapping. `added_on` (DATE) dates a ticker's entry: one added within a table's overlap is new and gets full history; NULL means established, and the rows present at the cutover carry 2000-01-01. Universe loading also applies the insufficient-history exclusions in [universe.py](../../src/utils/universe.py). |
 | `superinvestor_roster` | snapshot date × Dataroma code | Point-in-time elite-manager roster. The code, not CIK, is the key because manager codes can rename and some managers never file 13F. Snapshots are dated at their capture: one per calendar quarter from the committed Wayback history (`source_url` a Wayback URL), then a live snapshot only on a day the code-to-CIK map changed (`source_url` the Dataroma home page). `cik` is the filer CIK of the manager's chain member valid at the last quarter end before the snapshot date, and every non-exception CIK passed the 13F activity gate; `resolution` records `override` or `edgar`. Readers (`roster_as_of`, `roster_map_as_of`) return manager IDs, the oldest CIK of each chain, and `roster_cik_union` returns every chain member. Rebuilt whole by `superinvestors --seed`. See [Superinvestor roster (Dataroma)](./data-sources.md#superinvestor-roster-dataroma). |
 | `symbol_tenure` | symbol × issuer CIK × valid-from | Dated symbol-to-issuer membership. Intervals are half-open and may overlap; callers perform membership tests rather than assuming a unique answer. |
 | `entity_lineage` | CIK | Maps legal registrants into economic-company entities. Missing rows mean singleton entities, not unknown identity. |
@@ -52,7 +56,7 @@ The identity model has two axes: [registrant policy](../../src/data_extract/util
 | `dividends` | ticker × ex-date | date | Sparse cash distributions; absence is normal for non-payers. |
 | `prices_splits` | ticker × ex-date | date | Sparse split/spinoff factors used in price-basis reconciliation. |
 | `prices_macro` | named series × date | date | Long-form benchmark, volatility, commodity, energy, rate, credit, breakeven, FX, and derived macro series. These series never enter the equity `prices` cross-section. |
-| `short_interest` | ticker × date | date | FINRA RegSHO tape. The source is market-wide per day, so incremental resume is global. |
+| `short_interest` | ticker × date | date | FINRA RegSHO tape. One day file covers every symbol: a run reads the sessions any key needs plus every day inside the stored span on which no key has a row; `short-interest --repair-gaps` re-reads per-key gap days once. No day before the `Resume` source start, 2018-08-01, is requested. `-t X -F` upserts X's rows only; an unscoped `-F` replaces the table. |
 | `sec_fails_to_deliver` | ticker × settlement date | date | SEC semi-monthly settlement-fail rows. The persisted `period` identifies the source ZIP and drives feature availability on the fly; a `b` ZIP can contain a day-15 settlement, so settlement date cannot select the ZIP or serve as feature as-of. |
 
 | `cusip_ticker_map` | CUSIP | none | CUSIP-to-ticker resolution, including curated overrides. |
@@ -81,7 +85,7 @@ The distinction between the two histories is load-bearing: [data extraction](../
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `sec13f_hr` | manager CIK × period × ticker × CUSIP | Universe-filtered quarterly holdings. Filing-date lag and manager-coverage quality must be applied before constructing deltas. Raw reported value units require per-filing repair. |
+| `sec13f_hr` | manager CIK × period × ticker × CUSIP | Universe-filtered quarterly holdings. Filing-date lag and manager-coverage quality must be applied before constructing deltas. Raw reported value units require per-filing repair. `cik` is the 10-digit padded filer CIK. |
 | `sec13f_manager_holdings` | manager CIK × period × CUSIP | Complete roster-manager books without an S&P 500 filter; use this denominator for portfolio weights. `cik` is the padded filer CIK. Readers keyed on the roster load every filer CIK of a chained manager and relabel through `to_manager_books`, which keeps each member's rows only for periods inside its window and labels them with the manager ID, so they compare with `roster_as_of`. Rows of a CIK that left the roster are kept. NULL `shares`/`value_usd` (with the other seven amount columns) marks an unverifiable legacy text book (F-001): positions kept, amounts unknown. The `(period, filing_date)` pair stays, so the catch-up never re-reads it, and `load_superinvestor_holdings` drops any book whose `value_usd` is NULL on every row, so that manager-quarter reads as unfiled. |
 | `insider_transactions` | `accession_number` × `security_type` × `row_sequence` | The only Forms 3/4/5 transaction table. `row_sequence` is the 1-based row inside the filing's non-derivative or derivative table (XML order; the zip's surrogate key ranked per table gives the same number). Daily EDGAR rows are authoritative (`source='edgar'`); a quarterly zip adds only the filings EDGAR lacks (`source='zip'`), never both sources in one accession. `quarter` is the zip quarter that covered the filing, NULL until one has. Joint filings keep one row per trade: the primary owner (best role Officer < Director < 10% owner < Other, then lowest CIK) fills `owner_cik`/`owner_name`/`officer_title`, `owner_ciks` lists every reporting owner, `n_reporting_owners` counts them, and the four role flags are OR'ed across owners. Also `original_submission_date` (set on amendments), `document_type`, `fetched_at`; `footnote_ids` and `acceptance_datetime` are EDGAR-only (NULL on zip rows). Ticker is resolved CIK-first; identity rejects are not stored. Daily freshness on `filing_date`; the derivative block is structurally null on non-derivative rows. |
 | `insider_footnotes` | accession × footnote id | Filing-level Form 3/4/5 prose. Joins through transactions; no ticker is required. |
@@ -126,7 +130,7 @@ Earnings-call `as_of` is stored as the call date with no +1 day. The text aggreg
 | `predictions_latest` | date × ticker × horizon × model | Long-form production scores with distinct as-of, prediction horizon, and production timestamp semantics. |
 | `trend_asset_returns` | date | Net returns of the removed macro trend sleeve; unused since 2026-10 (registry entry kept until the next data-store change). |
 | `strategy` | trading day × sleeve × ticker | Upserted trade ledger; opening rows are completed when exits occur. |
-| `extraction_run` | table × run id | Durable extraction-run ledger. Different scopes on the same day remain distinct. |
+
 
 ## Cube parts
 
@@ -136,7 +140,7 @@ Every part uses `(date, ticker)` as its persisted key. Targets encode label and 
 
 ## Freshness and current state
 
-Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. Freshness metadata describes source expectations; runtime gates such as the insider completeness frontier (the EDGAR run's manifest entry over the exact cube universe) add stricter operational checks.
+Cadence names map to maximum ages in [constants.py](../../src/constants/constants.py). Publication-clock overrides matter for SEC facts, notes, pension data, and insider transactions. `extraction-status` reports every declared table against its cadence, and the per-ticker fresh share of `prices`, `fundamentals_sharadar` and `fundamentals_history`; `modelling predict` refuses to score when one of those three is stale per ticker. The insider, 13D and 13G completeness frontiers are read from the tables themselves (see [source availability](../concepts/source-availability.md)).
 
 For row counts, physical size, known holes, and tables registered but absent from the local database, use the [live database snapshot](./live-database.md). Re-measure it before operational decisions.
 

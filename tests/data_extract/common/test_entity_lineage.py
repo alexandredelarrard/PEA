@@ -203,7 +203,6 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
             ]
         ),
     )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
@@ -246,7 +245,6 @@ def test_entity_lineage_replace_is_skipped_when_unchanged(monkeypatch, caplog):
     monkeypatch.setattr(
         lineage_module, "load_manual_symbol_tenure", lambda *args, **kwargs: pd.DataFrame({"canonical_ticker": ["AAA"], "issuer_cik": ["0000000001"]})
     )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.skip"))
     caplog.set_level(logging.INFO)
 
@@ -370,7 +368,6 @@ def test_an_exact_rekey_approval_allows_the_guarded_lineage_replace(monkeypatch,
             ]
         ),
     )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.rekey"))
 
     with pytest.raises(lineage_module.EntityRekeyError):

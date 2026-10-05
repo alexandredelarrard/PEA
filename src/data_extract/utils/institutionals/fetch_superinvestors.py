@@ -23,12 +23,11 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from edgar import Company
 from urllib3.exceptions import InsecureRequestWarning
 
 from src.constants.constants import BROWSER_HEADERS, SEC_13F_FORMS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
-from src.data_extract.utils.common.sec_utils import sec_get
+from src.data_extract.utils.common.sec_io import company, company_filings, configure, sec_get
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import (
@@ -483,8 +482,9 @@ def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
     """Report periods of every 13F-HR(/A) EDGAR lists for one CIK (the listing's `reportDate`); empty when it lists
     none. A failed listing raises `EdgarListingError` naming the CIK."""
     context.ensure_edgar_identity()
+    configure(context)
     try:
-        listing = Company(int(cik)).get_filings(form=SEC_13F_FORMS)
+        listing = company_filings(company(int(cik)), SEC_13F_FORMS)
         frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
     except Exception as e:
         raise EdgarListingError(

@@ -23,7 +23,6 @@ from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.symbol_tenure import load_manual_symbol_tenure
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -458,35 +457,34 @@ def build_entity_lineage(
     An older-CIK rekey fails closed (`EntityRekeyError`) unless every observed
     ``(old_entity_id, new_entity_id)`` pair is in `approved_rekeys`. Returns the derived frame.
     """
-    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
-    assert roster is not None
-    existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
-    out, blocked = derive_entity_lineage(tenure, roster, owner_pairs, config_dir)
-    manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
-    validate_manual_tenure_entities(manual_tenure, out, roster)
+    df_roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
+    assert df_roster is not None
+    df_existing = context.store.load(Tables.entity_lineage, project=True, optional=True)
+    df_lineage, df_blocked = derive_entity_lineage(tenure, df_roster, owner_pairs, config_dir)
+    df_manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
+    validate_manual_tenure_entities(df_manual_tenure, df_lineage, df_roster)
     context.log.info(
-        f"entity_lineage: {len(manual_tenure)} manual symbol interval(s) resolve to "
-        f"their {manual_tenure['canonical_ticker'].nunique()} canonical entity(ies)"
+        f"entity_lineage: {len(df_manual_tenure)} manual symbol interval(s) resolve to "
+        f"their {df_manual_tenure['canonical_ticker'].nunique()} canonical entity(ies)"
     )
-    if not blocked.empty:
+    if not df_blocked.empty:
         logger.warning(
             "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",
-            len(blocked),
-            blocked.to_string(index=False),
+            len(df_blocked),
+            df_blocked.to_string(index=False),
         )
-    if existing is None:
-        context.log.info(f"entity_lineage: cold build with {len(out)} CIK assignment(s) over {out['entity_id'].nunique()} entity(ies)")
+    if df_existing is None:
+        context.log.info(f"entity_lineage: cold build with {len(df_lineage)} CIK assignment(s) over {df_lineage['entity_id'].nunique()} entity(ies)")
     else:
-        _check_rekeys(context, existing, out, config_dir, approved_rekeys)
-        _log_changed_assignments(context, existing, out, roster)
-    unchanged = matches_stored(existing, out, Tables.entity_lineage)
-    written = 0 if unchanged else context.store.replace(Tables.entity_lineage, out)
-    record_run(context, Tables.entity_lineage, 0, written, is_full_rescan=True)
+        _check_rekeys(context, df_existing, df_lineage, config_dir, approved_rekeys)
+        _log_changed_assignments(context, df_existing, df_lineage, df_roster)
+    unchanged = matches_stored(df_existing, df_lineage, Tables.entity_lineage)
+    written = 0 if unchanged else context.store.replace(Tables.entity_lineage, df_lineage)
     if unchanged:
-        logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(out))
+        logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(df_lineage))
     else:
         logger.info("entity_lineage: wrote %d row(s)", written)
-    return out
+    return df_lineage
 
 
 def _check_rekeys(

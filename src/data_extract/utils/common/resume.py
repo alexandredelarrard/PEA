@@ -260,7 +260,7 @@ def series_windows(
     overlap = pd.Timedelta(days=table.resume.overlap_days)
     floor = document_floor(table, as_of, years_history)
     df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)})
-    stats = {str(k): (pd.Timestamp(f), pd.Timestamp(lst), int(n)) for k, f, lst, n in df_stats[["key", "first", "last", "n"]].itertuples(index=False)}
+    stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
     new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
     table_max = context.store.max_date(table, date_col)
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}

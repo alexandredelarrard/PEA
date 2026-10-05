@@ -633,7 +633,8 @@ def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
     """The `fundamentals_facts` fetch: the catalogue from `context.config_dir`, all three GICS levels of `cik_map`'s tickers."""
     catalogue = load_catalogue(str(context.config_dir))
     levels = ["sector", "industry_group", "sub_industry"]
-    gics = {str(row.ticker): {lvl: getattr(row, lvl) for lvl in levels} for row in cik_map.itertuples()}
+    df_gics = cik_map[levels].set_index(cik_map["ticker"].map(str))
+    gics = cast(dict[str, dict], df_gics[~df_gics.index.duplicated(keep="last")].to_dict("index"))
     return EdgarFetch(
         desc="fundamentals (linkbase)",
         tables=(Tables.fundamentals_facts,),

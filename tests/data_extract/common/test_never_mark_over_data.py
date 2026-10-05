@@ -74,6 +74,45 @@ def test_a_marker_beside_its_real_row_in_the_same_frame_is_dropped(sqlite_store)
     print("  the real row survives; the marker with its key is dropped before the upsert can merge them.")
 
 
+_SENTINEL = str(Tables.def14a_edgar.empty_marker[1]) if Tables.def14a_edgar.empty_marker else ""
+_DATED = Table(
+    "dated_marker_fixture", ("ticker", "as_of", "accession_number"), date_col="as_of", date_type_cols=("as_of",), empty_marker=("form", _SENTINEL)
+)
+
+
+class _StoredKeys:
+    """A store double serving one stored real row's key (`as_of` as the DB's ISO day) and recording the read."""
+
+    def __init__(self) -> None:
+        self.reads: list[dict[str, object]] = []
+
+    def load(self, table: Table, *, columns: list[str], where: dict[str, object], optional: bool) -> pd.DataFrame:
+        self.reads.append({"columns": columns, "where": where})
+        return pd.DataFrame([{"ticker": "AAA", "as_of": "2026-04-01", "accession_number": _KEPT}])
+
+
+def test_a_marker_whose_dated_key_is_only_stored_is_dropped() -> None:
+    store = _StoredKeys()
+    markers = pd.DataFrame(
+        [
+            {"ticker": "AAA", "as_of": pd.Timestamp("2026-04-01 15:30"), "accession_number": _KEPT, "form": _SENTINEL},
+            {"ticker": "AAA", "as_of": pd.Timestamp("2026-04-02"), "accession_number": _KEPT, "form": _SENTINEL},
+            {"ticker": "BBB", "as_of": pd.Timestamp("2026-04-01"), "accession_number": _KEPT, "form": _SENTINEL},
+            {"ticker": "AAA", "as_of": pd.Timestamp("2026-04-01"), "accession_number": _NEW, "form": _SENTINEL},
+        ],
+        index=[10, 11, 12, 13],
+    )
+
+    kept = drop_markers_over_data(store, _DATED, markers)  # type: ignore[arg-type]
+
+    assert kept.index.tolist() == [11, 12, 13]
+    assert kept.equals(markers.loc[[11, 12, 13]])
+    assert store.reads == [{"columns": list(_DATED.pk), "where": {"ticker": ["AAA", "BBB"], "accession_number": sorted({_KEPT, _NEW})}}]
+    print("\n=== SANITY CHECK: marker whose dated key exists only in the store ===")
+    print("  4 markers, no real row in the frame; the one on the stored (AAA, 2026-04-01, accession) key is dropped")
+    print("  (its time of day normalised to the ISO day); another day, another ticker and another accession are kept.")
+
+
 def test_a_table_whose_sentinel_is_in_the_key_is_returned_unread() -> None:
     marker = marker_row(Tables.sec_8k, "AAA", FilingStamp.of(fake_filing(_KEPT, 1, "2026-04-01"), "0000000001"))
 

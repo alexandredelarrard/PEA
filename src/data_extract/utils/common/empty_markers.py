@@ -80,8 +80,8 @@ def drop_markers_over_data(store: DataStore, table: Table, df: pd.DataFrame, log
     scope = {c: sorted({str(v) for v in df_markers[c].dropna()}) for c in table.pk if c not in table.date_type_cols}
     df_stored = store.load(table, columns=list(table.pk), where=scope, optional=True)
     real = [df_keys[~is_marker]] + ([_key_frame(table, df_stored)] if df_stored is not None else [])
-    taken = set(pd.concat(real, ignore_index=True).itertuples(index=False, name=None))
-    over_data = is_marker & pd.Series([key in taken for key in df_keys.itertuples(index=False, name=None)], index=df.index)
+    taken = pd.MultiIndex.from_frame(pd.concat(real, ignore_index=True))
+    over_data = is_marker & pd.Series(pd.MultiIndex.from_frame(df_keys).isin(taken), index=df.index)
     if not over_data.any():
         return df
     (log or logger).info(

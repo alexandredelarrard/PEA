@@ -13,6 +13,7 @@ exists to remove.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, date, datetime
@@ -430,7 +431,7 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
 
     _seed_13f(sqlite_store, books=[("0000001234", "2015-06-30")])
     ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir), paths={"DATA_STORE": data_store}))
-    df = si.seed_roster_history(ctx, get_fn=empty_edgar, listing_fn=_no_listing)
+    df = si.rebuild_roster(ctx, get_fn=empty_edgar, listing_fn=_no_listing)
     got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
     assert got == {
         ("2015-03-30", "AAA", "0000001234", si.RESOLUTION_OVERRIDE),
@@ -469,7 +470,7 @@ def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
 
     _seed_13f(sqlite_store, hr=[(old, "2015-09-30"), (new, "2016-03-31"), ("0001067983", "2015-12-31")])
     ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir)))
-    df = si.seed_roster_history(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"), listing_fn=_no_listing)
+    df = si.rebuild_roster(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"), listing_fn=_no_listing)
     am = {str(r.snapshot_date): r.cik for r in df.itertuples(index=False) if r.dataroma_code == "AM"}
     assert am == {"2015-11-20": old, "2016-02-15": old, "2016-03-31": old, "2016-04-01": new, "2016-08-01": new}
     assert set(df.loc[df["dataroma_code"] == "BRK", "cik"]) == {"0001067983"}  # a singleton is stored as resolved
@@ -480,4 +481,104 @@ def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
     print(
         f"  AM resolves to Appaloosa LP ({new}); snapshots 2015-11-20, 2016-02-15 and 2016-03-31 (Q = 2015-12-31, inside "
         f"the succession quarter) store {old}, 2016-04-01 and 2016-08-01 store {new}. Validated on the real store."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Full rebuild (P-2): committed history + stored live snapshots, resolved fresh  #
+# --------------------------------------------------------------------------- #
+_BRK, _GLRE, _GLRE_WRONG, _PSC, _PSC_WRONG = "0001067983", "0001079114", "0000846222", "0001336528", "0002026053"
+_PSC_ATOM = (
+    '<?xml version="1.0"?><feed><company-info><cik>0001336528</cik>'
+    "<conformed-name>PERSHING SQUARE CAPITAL MANAGEMENT, L.P.</conformed-name></company-info></feed>"
+)
+
+
+def _rebuild_fixture(sqlite_store, tmp_path, extra_history: list[dict[str, Any]] | None = None) -> tuple[Any, list[str]]:
+    """Two committed history snapshots (BRK, GLRE by override) and a stored table as an old run left it: a stale
+    1-January seed snapshot, two identical live snapshots with a wrong GLRE CIK (stored `edgar`) and a wrong PSC CIK
+    (live-only code, resolved by EDGAR), plus 13F activity near every snapshot. Returns the context and the
+    list the stub EDGAR search appends its queries to."""
+    config_dir = _write_overrides(tmp_path, {"cik_overrides": {"BRK": {"cik": _BRK}, "GLRE": {"cik": _GLRE}}, "unresolvable": {}})
+    pair = {"BRK": "Warren Buffett - Berkshire Hathaway", "GLRE": "David Einhorn - Greenlight Capital"}
+    history = {
+        "_README": ["fixture"],
+        "snapshots": [
+            {"captured_at": "2015-03-30T10:00:00Z", "source_url": "https://web.archive.org/web/a", "managers": pair},
+            {"captured_at": "2016-03-15T10:00:00Z", "source_url": "https://web.archive.org/web/b", "managers": pair},
+            *(extra_history or []),
+        ],
+    }
+    (Path(config_dir) / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps(history), encoding="utf-8")
+    stale = [dict(_gate_row(c, k, "2015-01-01"), source_url="https://web.archive.org/web/old") for c, k in (("BRK", _BRK), ("GLRE", _GLRE_WRONG))]
+    live = [
+        dict(_gate_row(code, cik, day), resolution=si.RESOLUTION_EDGAR, source_url=si.DATAROMA_HOME_URL, manager_name=name)
+        for day in ("2026-09-08", "2026-09-09")
+        for code, cik, name in (
+            ("BRK", _BRK, pair["BRK"]),
+            ("GLRE", _GLRE_WRONG, pair["GLRE"]),
+            ("PSC", _PSC_WRONG, "Bill Ackman - Pershing Square Capital Management"),
+        )
+    ]
+    sqlite_store.save(si.Tables.superinvestor_roster, pd.DataFrame(stale + live))
+    _seed_13f(
+        sqlite_store, hr=[(_BRK, "2015-03-31"), (_GLRE, "2015-03-31"), (_GLRE, "2026-06-30")], books=[(_BRK, "2026-06-30"), (_PSC, "2026-06-30")]
+    )
+    queried: list[str] = []
+
+    def edgar(url: str) -> Any:
+        queried.append(url)
+        return SimpleNamespace(text=_PSC_ATOM if "Pershing" in url else "no company-info")
+
+    return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, edgar=edgar)), queried
+
+
+def _table_hash(store: Any) -> str:
+    """sha256 of the whole roster table, every column, rows sorted."""
+    df = store.load(si.Tables.superinvestor_roster).astype(str)
+    return hashlib.sha256(df.sort_values(list(df.columns)).to_csv(index=False).encode()).hexdigest()
+
+
+def test_rebuild_roster_combines_history_and_live_resolved_fresh(sqlite_store, tmp_path):
+    """The rebuild replaces the table with every committed history snapshot plus every stored live snapshot (none
+    collapsed), all resolved fresh: a wrong stored CIK is corrected by the override or by EDGAR, a stale seed
+    snapshot outside the history disappears, and a second rebuild leaves the table byte-identical."""
+    ctx, queried = _rebuild_fixture(sqlite_store, tmp_path)
+    df = si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    stored = sqlite_store.load(si.Tables.superinvestor_roster)
+    got = {(str(d)[:10], c, k, r) for d, c, k, r in stored[["snapshot_date", "dataroma_code", "cik", "resolution"]].itertuples(index=False)}
+    history = {(d, c, k, si.RESOLUTION_OVERRIDE) for d in ("2015-03-30", "2016-03-15") for c, k in (("BRK", _BRK), ("GLRE", _GLRE))}
+    live = {
+        (d, c, k, r)
+        for d in ("2026-09-08", "2026-09-09")
+        for c, k, r in (("BRK", _BRK, si.RESOLUTION_OVERRIDE), ("GLRE", _GLRE, si.RESOLUTION_OVERRIDE), ("PSC", _PSC, si.RESOLUTION_EDGAR))
+    }
+    assert got == history | live and len(stored) == len(df) == 10
+    assert set(stored.loc[stored["snapshot_date"].astype(str).str[:10] >= "2026", "source_url"]) == {si.DATAROMA_HOME_URL}
+    assert len(queried) == 1 and "Pershing" in queried[0]  # stored resolution ignored; memoised per code
+    first = _table_hash(sqlite_store)
+    si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=_no_listing)
+    assert _table_hash(sqlite_store) == first
+    print("\n=== SANITY: full roster rebuild ===")
+    print(
+        f"  stale 2015-01-01 seed dropped; 2 history + 2 identical live snapshots kept = {len(stored)} rows; GLRE {_GLRE_WRONG} -> {_GLRE} "
+        f"(override), PSC {_PSC_WRONG} -> {_PSC} (fresh EDGAR, 1 query); second rebuild hash {first[:12]} unchanged. Validated on the real store."
+    )
+
+
+@pytest.mark.parametrize("failure", ["gate", "pk"])
+def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
+    """A gate failure (a CIK with no 13F activity near its snapshot) or a duplicate (snapshot_date, code) between
+    history and live raises before the replace, leaving the table untouched."""
+    overlap = [{"captured_at": "2026-09-08T01:00:00Z", "source_url": "https://web.archive.org/web/c", "managers": {"BRK": "Warren Buffett"}}]
+    ctx, _ = _rebuild_fixture(sqlite_store, tmp_path, extra_history=overlap if failure == "pk" else None)
+    if failure == "gate":
+        sqlite_store.delete(si.Tables.sec13f_manager_holdings, where={"cik": [_PSC]})
+    before = _table_hash(sqlite_store)
+    expected = (si.SuperinvestorResolutionError, "no 13F-HR activity") if failure == "gate" else (ValueError, "duplicate")
+    with pytest.raises(expected[0], match=expected[1]):
+        si.rebuild_roster(ctx, get_fn=ctx.edgar, listing_fn=lambda cik: set())
+    assert _table_hash(sqlite_store) == before
+    print(
+        f"\n=== SANITY: rebuild refuses on a {failure} failure ===\n  raised {expected[0].__name__}; table hash {before[:12]} unchanged. Validated."
     )

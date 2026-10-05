@@ -6,8 +6,9 @@ WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), on
 company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
 loaded by `src/utils/superinvestor_roster.py`, which is also the read side; a chained manager's row
 stores the filer CIK valid at `snapshot_quarter(snapshot_date)`. Entry points:
-`seed_roster_history` (committed Wayback captures) and `upsert_roster_snapshot` (today's roster,
-written only when its code -> CIK mapping differs from the latest stored snapshot).
+`rebuild_roster` (the committed Wayback history plus every stored live snapshot, all resolved fresh, then a
+full table replace) and `upsert_roster_snapshot` (today's roster, written only when its code -> CIK mapping
+differs from the latest stored snapshot).
 Every write passes two gates: `assert_fully_resolved` (no unexpected NULL CIK) and `assert_active`
 (each CIK filed a 13F-HR near its snapshot, from local tables, else the EDGAR listing).
 The committed history is built by `quarterly_capture_candidates` + `history_from_captures`, driven by
@@ -20,10 +21,11 @@ import json
 import logging
 import re
 import warnings
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 from urllib.parse import quote
 
 import pandas as pd
@@ -488,10 +490,9 @@ def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
     return {p.date() for p in periods}
 
 
-def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
-    """Gate the rows (resolution, then 13F activity), upsert them and report the resolution split. Returns the
-    written frame. `listing_fn` defaults to `edgar_13f_report_dates`, asked only on a local miss."""
-    df = pd.DataFrame(rows)
+def _gate(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> None:
+    """Run both write gates on `rows` (resolution, then 13F activity) and log the recorded exceptions they let
+    through. `listing_fn` defaults to `edgar_13f_report_dates`, asked only on a local miss."""
     unresolvable = overrides.unresolvable
     unresolved = assert_fully_resolved(rows, unresolvable)
     if unresolved:
@@ -508,49 +509,102 @@ def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides
             len(skipped),
             "; ".join(f"{c}: {overrides.inactive[c].reason}" for c in skipped),
         )
-    context.store.save(Tables.superinvestor_roster, df)
+
+
+def _log_written(df: pd.DataFrame, verb: str) -> None:
+    """One INFO line: rows, snapshots and resolution split of a roster write."""
     logger.info(
-        "superinvestor_roster: wrote %d rows across %d snapshot(s); resolution %s",
+        "superinvestor_roster: %s %d rows across %d snapshot(s); resolution %s",
+        verb,
         len(df),
         df["snapshot_date"].nunique(),
         df["resolution"].value_counts().to_dict(),
     )
+
+
+def _write(context: Context, rows: list[dict], overrides: SuperinvestorOverrides, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+    """Gate the rows (`_gate`), upsert them and report the resolution split. Returns the written frame."""
+    _gate(context, rows, overrides, listing_fn)
+    df = pd.DataFrame(rows)
+    context.store.save(Tables.superinvestor_roster, df)
+    _log_written(df, "wrote")
     return df
+
+
+def _live_snapshots(context: Context) -> list[tuple[date, list[dict]]]:
+    """Every stored live snapshot (`source_url == DATAROMA_HOME_URL`) as `(snapshot_date, [{code, name}])`, oldest
+    first, codes sorted; empty on a cold table."""
+    df = context.store.load(
+        Tables.superinvestor_roster,
+        columns=["snapshot_date", "dataroma_code", "manager_name"],
+        where={"source_url": DATAROMA_HOME_URL},
+        optional=True,
+    )
+    if df is None or df.empty:
+        return []
+    df = df.assign(snapshot_date=pd.to_datetime(df["snapshot_date"]).dt.date).sort_values(["snapshot_date", "dataroma_code"])
+    return [
+        (cast(date, day), [{"code": c, "name": n} for c, n in grp[["dataroma_code", "manager_name"]].itertuples(index=False)])
+        for day, grp in df.groupby("snapshot_date", sort=True)
+    ]
+
+
+def rebuild_rows(context: Context, get_fn, overrides: SuperinvestorOverrides) -> list[dict]:
+    """The rows a full rebuild writes: every committed history snapshot (dated at its capture day, its capture URL
+    as `source_url`) plus every stored live snapshot, none collapsed, all resolved fresh (overrides, then EDGAR on
+    the code's names newest first; stored resolutions are ignored). Reads only, writes nothing."""
+    history = json.loads(roster_history_path(getattr(context, "config_dir", None)).read_text(encoding="utf-8"))
+    snapshots: list[tuple[date, str, list[dict]]] = [
+        (datetime.fromisoformat(s["captured_at"]).date(), s["source_url"], [{"code": c, "name": n} for c, n in s["managers"].items()])
+        for s in sorted(history["snapshots"], key=lambda s: s["captured_at"])
+    ]
+    live = _live_snapshots(context)
+    snapshots += [(day, DATAROMA_HOME_URL, roster) for day, roster in live]
+
+    # Newest name first, so a renamed code resolves on its most recent name.
+    name_history: dict[str, list[str]] = {}
+    for _day, _url, roster in sorted(snapshots, key=lambda s: s[0], reverse=True):
+        for entry in roster:
+            names = name_history.setdefault(entry["code"], [])
+            if entry["name"] not in names:
+                names.append(entry["name"])
+    logger.info(
+        "Roster rebuild: %d history + %d live snapshots, %d manager-rows, %d distinct codes",
+        len(history["snapshots"]),
+        len(live),
+        sum(len(roster) for _day, _url, roster in snapshots),
+        len(name_history),
+    )
+    resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known={})
+    rows: list[dict] = []
+    for day, url, roster in snapshots:
+        rows += snapshot_rows(roster, day, url, resolver, overrides=overrides)
+    return rows
+
+
+def _assert_unique_pk(rows: list[dict]) -> None:
+    """Raise `ValueError` when two rows share a (snapshot_date, dataroma_code) primary key."""
+    keys = Counter((str(r["snapshot_date"]), r["dataroma_code"]) for r in rows)
+    duplicate = sorted(k for k, n in keys.items() if n > 1)
+    if duplicate:
+        raise ValueError(f"superinvestor_roster rebuild: {len(duplicate)} duplicate (snapshot_date, dataroma_code) key(s), e.g. {duplicate[:5]}")
 
 
 # --------------------------------------------------------------------------- #
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
-def seed_roster_history(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
-    """One-off: write the committed Wayback snapshots, one row per (snapshot_date, dataroma_code); each
-    snapshot is dated at its capture day and keeps its capture URL as `source_url`. Gated as `_write`."""
+def rebuild_roster(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
+    """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, both write gates, then
+    `store.replace`. Any failure raises before the table is touched. Returns the written frame."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
-    config_dir = getattr(context, "config_dir", None)
-    history = json.loads(roster_history_path(config_dir).read_text(encoding="utf-8"))
-    snapshots: list[dict[str, Any]] = sorted(history["snapshots"], key=lambda s: s["captured_at"])
-
-    # Newest name first, so a renamed code resolves on its most recent name.
-    name_history: dict[str, list[str]] = {}
-    for snap in reversed(snapshots):
-        for code, name in snap["managers"].items():
-            names = name_history.setdefault(code, [])
-            if name not in names:
-                names.append(name)
-    logger.info(
-        "Roster history: %d snapshots, %d manager-rows, %d distinct codes",
-        len(snapshots),
-        sum(len(s["managers"]) for s in snapshots),
-        len(name_history),
-    )
-
-    known, _ = _stored_resolutions(context)
-    overrides = load_superinvestor_overrides(config_dir)
-    resolver = _make_resolver(get_fn, overrides.cik_by_code, name_history, known)
-    rows: list[dict] = []
-    for snap in snapshots:
-        roster = [{"code": c, "name": n} for c, n in snap["managers"].items()]
-        rows += snapshot_rows(roster, datetime.fromisoformat(snap["captured_at"]).date(), snap["source_url"], resolver, overrides=overrides)
-    return _write(context, rows, overrides, listing_fn)
+    overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
+    rows = rebuild_rows(context, get_fn, overrides)
+    _assert_unique_pk(rows)
+    _gate(context, rows, overrides, listing_fn)
+    df = pd.DataFrame(rows).sort_values(["snapshot_date", "dataroma_code"], ignore_index=True)
+    context.store.replace(Tables.superinvestor_roster, df)
+    _log_written(df, "rebuilt with")
+    return df
 
 
 def _code_to_cik(codes: Iterable[object], ciks: Iterable[object]) -> dict[str, str | None]:

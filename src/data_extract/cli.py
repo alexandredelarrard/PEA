@@ -69,7 +69,7 @@ from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_f
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
-from src.data_extract.utils.institutionals.fetch_superinvestors import seed_roster_history, upsert_roster_snapshot
+from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_dividends import fetch_dividends
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import fetch_price_history
@@ -245,18 +245,19 @@ def thirteen_f_managers(config_path: str, years: int | None) -> None:
     fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
 
 
-@cli.command(help="Superinvestor roster (Dataroma) -> today's `superinvestor_roster` snapshot. Light.")
+@cli.command(help="Superinvestor roster (Dataroma) -> today's `superinvestor_roster` snapshot, written only when it changed. Light.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(
     "--seed",
     is_flag=True,
     default=False,
-    help="ONE-OFF: also replay the 13 committed web.archive.org captures (2013-2026) so the roster has a history to be point-in-time about.",
+    help="REBUILD first: replace the table with the committed quarterly Wayback history (configs/superinvestors/) plus every "
+    "stored live snapshot, all re-resolved and 13F-gated; idempotent. Rerun after any overrides.json change.",
 )
 def superinvestors(config_path: str, seed: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     if seed:
-        seed_roster_history(context)
+        rebuild_roster(context)
     upsert_roster_snapshot(context)
 
 

@@ -156,10 +156,10 @@ def _overrides_at(superinvestors_dir: str) -> SuperinvestorOverrides:
     if blank or both or twice:
         raise ValueError(f"{path}: blank CIK for {blank}; both overridden and unresolvable: {both}; both inactive and unresolvable: {twice}")
     manager_ciks = {pad_cik(mid): _chain(path, pad_cik(mid), entries) for mid, entries in blob.get("manager_ciks", {}).items()}
-    members = [w.cik for chain in manager_ciks.values() for w in chain]
+    members = [c for chain in manager_ciks.values() for c in {w.cik for w in chain}]
     shared = sorted({c for c in members if members.count(c) > 1})
     if shared:
-        raise ValueError(f"{path}: CIK(s) {shared} listed in more than one chain (or twice in one)")
+        raise ValueError(f"{path}: CIK(s) {shared} listed in more than one chain")
     return SuperinvestorOverrides(cik_by_code=cik_by_code, unresolvable=unresolvable, inactive=inactive, manager_ciks=manager_ciks)
 
 
@@ -173,7 +173,8 @@ def _range(path: Path, label: str, start: str | None, end: str | None) -> Period
 
 def _chain(path: Path, manager_id: str, entries: list[dict[str, Any]]) -> tuple[CikWindow, ...]:
     """A manager's filer chain, validated: at least two members, listed chronologically with the
-    manager ID (the oldest CIK) first, and no two windows sharing a period."""
+    manager ID (the oldest CIK) first, and no two windows sharing a period. A filer may return later
+    in its own chain (A -> B -> A) with a second window."""
     chain = tuple(CikWindow(pad_cik(e["cik"]), _range(path, manager_id, e.get("from"), e.get("to"))) for e in entries)
     if len(chain) < 2:
         raise ValueError(f"{path}: chain {manager_id} needs at least two filer CIKs, got {len(chain)}")
@@ -299,7 +300,7 @@ def filer_ciks(manager_ids: Iterable[object], config_dir: str | Path | None = No
 
 def to_manager_books(df: pd.DataFrame, cik_col: str = "cik", period_col: str = "period", config_dir: str | Path | None = None) -> pd.DataFrame:
     """A book read by filer CIK, keyed by manager ID: each chain member's rows are kept only for
-    periods inside its window and relabelled to the manager ID; other rows are untouched. Padded
+    periods inside one of its windows and relabelled to the manager ID; other rows are untouched. Padded
     and unpadded CIK strings both match; `period` may be date, Timestamp or ISO string."""
     overrides = load_superinvestor_overrides(config_dir)
     if df is None or df.empty or not overrides.manager_ciks:
@@ -308,16 +309,19 @@ def to_manager_books(df: pd.DataFrame, cik_col: str = "cik", period_col: str = "
     keep = np.ones(len(df), dtype=bool)
     label = np.full(len(df), None, dtype=object)
     for mid, chain in overrides.manager_ciks.items():
-        for member in chain:
-            rows = padded == member.cik
+        for cik in dict.fromkeys(w.cik for w in chain):
+            rows = padded == cik
             if not rows.any():
                 continue
             periods = pd.to_datetime(df[period_col].to_numpy()[rows])
-            inside = np.ones(int(rows.sum()), dtype=bool)
-            if member.window.start is not None:
-                inside &= periods >= pd.Timestamp(member.window.start)
-            if member.window.end is not None:
-                inside &= periods <= pd.Timestamp(member.window.end)
+            inside = np.zeros(int(rows.sum()), dtype=bool)
+            for member in (w for w in chain if w.cik == cik):  # a returning filer has several windows
+                hit = np.ones(int(rows.sum()), dtype=bool)
+                if member.window.start is not None:
+                    hit &= periods >= pd.Timestamp(member.window.start)
+                if member.window.end is not None:
+                    hit &= periods <= pd.Timestamp(member.window.end)
+                inside |= hit
             keep[rows] = inside
             label[rows] = mid
     chained = pd.notna(label)

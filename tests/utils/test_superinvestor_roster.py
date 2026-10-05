@@ -202,6 +202,47 @@ def test_union_contains_whole_chain(sqlite_store, tmp_path):
     print(f"  a roster naming only {_AM_OLD} walks {sorted(roster_cik_union(ctx))}; a singleton stays itself. Validated.")
 
 
+_COOPERMAN, _OMEGA = "0000898382", "0000898202"
+_OMEGA_CHAIN = {
+    _COOPERMAN: [
+        {"cik": _COOPERMAN, "to": "2014-06-30"},
+        {"cik": _OMEGA, "from": "2014-09-30", "to": "2018-12-31"},
+        {"cik": _COOPERMAN, "from": "2019-03-31"},
+    ]
+}
+
+
+def test_chain_with_returning_filer(tmp_path):
+    """A filer that hands its book to another CIK and later takes it back (Cooperman -> Omega Advisors -> Cooperman)
+    is one chain with two windows for the returning CIK: each period maps to exactly one filer and both of the
+    returning filer's windows survive the relabel."""
+    config_dir = _config_dir(tmp_path, _OMEGA_CHAIN)
+    overrides = sr.load_superinvestor_overrides(config_dir)
+    assert [overrides.member_at(_COOPERMAN, d) for d in ("2014-06-30", "2014-09-30", "2018-12-31", "2019-03-31")] == [
+        _COOPERMAN,
+        _OMEGA,
+        _OMEGA,
+        _COOPERMAN,
+    ]
+    assert sr.manager_id(_OMEGA, config_dir) == _COOPERMAN and sr.filer_ciks({_OMEGA}, config_dir) == {_COOPERMAN, _OMEGA}
+    books = pd.DataFrame(
+        {
+            "cik": [_COOPERMAN, _COOPERMAN, _OMEGA, _OMEGA, "898382", _OMEGA],
+            "period": [date(2014, 6, 30), date(2016, 3, 31), date(2016, 3, 31), date(2018, 12, 31), date(2019, 3, 31), date(2019, 3, 31)],
+            "value_usd": [1, 99, 2, 3, 4, 98],
+        }
+    )
+    out = sr.to_manager_books(books, config_dir=config_dir).sort_values("period")
+    assert list(out["value_usd"]) == [1, 2, 3, 4] and set(out["cik"]) == {_COOPERMAN}
+    assert not out["period"].duplicated().any()
+    print("\n=== SANITY: chain with a returning filer ===")
+    print(
+        f"  {_COOPERMAN} -> {_OMEGA} (2014Q3-2018Q4) -> {_COOPERMAN}: member_at picks the right filer on each side of both "
+        f"handovers; books {len(books)} -> {len(out)} rows, Cooperman's 2016 and Omega's 2019 rows (outside their windows) dropped, "
+        "one book per quarter. Validated."
+    )
+
+
 @pytest.mark.parametrize(
     ("manager_ciks", "match"),
     [
